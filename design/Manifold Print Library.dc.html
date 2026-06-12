@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #121214; }
+    * { box-sizing: border-box; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #2e2e32; border-radius: 6px; border: 2px solid #121214; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    input::placeholder, textarea::placeholder { color: #6c6c73; }
+    input, textarea, select, button { font-family: 'Archivo', sans-serif; }
+    canvas { -webkit-user-select: none; user-select: none; }
+  </style>
+  <script src="./mesh3d.js"></script>
+  <script src="./data.js"></script>
+  <script src="./image-slot.js"></script>
+</helmet>
+
+<div data-screen-label="Library" style="display: flex; flex-direction: column; height: 100vh; background: #121214; color: #eaeaec; font-family: 'Archivo', sans-serif; overflow: hidden;">
+
+  <!-- ============ TOP NAV ============ -->
+  <header style="display: flex; align-items: center; gap: 18px; padding: 0 22px; height: 58px; background: #0d0d0e; border-bottom: 1px solid #26262a; flex: 0 0 auto;">
+    <div style="display: flex; align-items: center; gap: 10px; flex: 0 0 auto;">
+      <div style="width: 24px; height: 24px; border: 1.5px solid #2cb4f5; transform: rotate(45deg); display: grid; place-items: center;">
+        <div style="width: 8px; height: 8px; background: #2cb4f5;"></div>
+      </div>
+      <div style="font-weight: 800; letter-spacing: 0.14em; font-size: 14px;">MANIFOLD</div>
+    </div>
+
+    <div style="position: relative; flex: 1; max-width: 620px; margin: 0 auto;">
+      <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #6c6c73; font-size: 13px; pointer-events: none;">⌕</div>
+      <input value="{{ query }}" onChange="{{ onQuery }}" onFocus="{{ onSearchFocus }}" onBlur="{{ onSearchBlur }}" placeholder="Search models, tags, creators — try “dragon”" style="width: 100%; background: #1d1d20; border: 1px solid #2c2c30; border-radius: 99px; color: #eaeaec; font-size: 13px; padding: 9px 14px 9px 33px; outline: none;" style-focus="border-color: #2cb4f5; background: #212125;" />
+
+      <!-- search dropdown -->
+      <sc-if value="{{ showSearchPanel }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="Search suggestions" onMouseDown="{{ keepFocus }}" style="position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: #1a1a1d; border: 1px solid #2c2c30; border-radius: 12px; box-shadow: 0 28px 64px rgba(0,0,0,0.65); z-index: 80; max-height: 460px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 10px;">
+
+          <sc-if value="{{ hasModelHits }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #6c6c73; padding: 4px 8px;">MODELS</div>
+              <sc-for list="{{ modelHits }}" as="h" hint-placeholder-count="3">
+                <button onClick="{{ h.open }}" style="display: flex; align-items: center; gap: 10px; width: 100%; background: transparent; border: none; border-radius: 8px; padding: 6px 8px; cursor: pointer; text-align: left;" style-hover="background: #242428;">
+                  <div style="width: 42px; height: 36px; border-radius: 6px; background: #212125; border: 1px solid #2c2c30; flex: 0 0 auto; overflow: hidden;">
+                    <div style="{{ h.thumbStyle }}"></div>
+                  </div>
+                  <div style="min-width: 0; flex: 1;">
+                    <div style="font-size: 12.5px; font-weight: 600; color: #eaeaec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ h.name }}</div>
+                    <div style="font-size: 10.5px; color: #9b9ba1;">{{ h.creator }} · {{ h.type }}</div>
+                  </div>
+                </button>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ hasCreatorHits }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #6c6c73; padding: 4px 8px;">CREATORS</div>
+              <sc-for list="{{ creatorHits }}" as="c" hint-placeholder-count="2">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button onClick="{{ c.select }}" style="display: flex; align-items: center; gap: 9px; flex: 1; background: transparent; border: none; border-radius: 8px; padding: 7px 8px; cursor: pointer; text-align: left; min-width: 0;" style-hover="background: #242428;">
+                    <span style="color: #2cb4f5; font-size: 10px;">◆</span>
+                    <span style="font-size: 12.5px; font-weight: 600; color: #eaeaec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.name }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #82828a;">{{ c.count }} models</span>
+                  </button>
+                  <button onClick="{{ c.pin }}" title="Pin creator" style="background: none; border: none; color: #82828a; cursor: pointer; font-size: 13px; padding: 4px 8px; flex: 0 0 auto;" style-hover="color: #2cb4f5;">{{ c.pinIcon }}</button>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ hasTagHits }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #6c6c73; padding: 4px 8px 0;">{{ tagHeader }}</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 6px;">
+                <sc-for list="{{ tagHits }}" as="t" hint-placeholder-count="5">
+                  <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #2cb4f5;">{{ t.name }}<span style="opacity: 0.55;">{{ t.count }}</span></button>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ noHits }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 14px 10px; font-size: 12px; color: #82828a; text-align: center;">No matches in the library.</div>
+          </sc-if>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; flex: 0 0 auto;">
+      <div style="display: flex; gap: 2px; background: #1d1d20; border: 1px solid #2c2c30; border-radius: 9px; padding: 3px;">
+        <button onClick="{{ setGrid }}" style="{{ vGrid }}">Grid</button>
+        <button onClick="{{ setCards }}" style="{{ vCards }}">Cards</button>
+        <button onClick="{{ setList }}" style="{{ vList }}">List</button>
+      </div>
+      <button onClick="{{ openTags }}" style="background: transparent; border: 1px solid #34343a; color: #c9c9cf; border-radius: 9px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;" style-hover="border-color: #4a4a52; color: #f2f2f4;">Tags ⁄ Groups</button>
+      <button onClick="{{ openAdd }}" style="background: #2cb4f5; border: 1px solid #2cb4f5; color: #06151d; border-radius: 9px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer;" style-hover="background: #4cc3ff; border-color: #4cc3ff;">+ Add model</button>
+    </div>
+  </header>
+
+  <!-- ============ PINNED + GROUPS BAR ============ -->
+  <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px 22px 0; flex: 0 0 auto;">
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #6c6c73; margin-right: 2px;">PINNED</span>
+    <sc-for list="{{ pins }}" as="p" hint-placeholder-count="2">
+      <span style="{{ p.style }}">
+        <button onClick="{{ p.select }}" style="display: inline-flex; align-items: center; gap: 7px; background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; min-width: 0;">
+          <span style="font-size: 10px; opacity: 0.7;">{{ p.icon }}</span>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.name }}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; opacity: 0.6;">{{ p.count }}</span>
+        </button>
+        <button onClick="{{ p.unpin }}" title="Unpin" style="background: none; border: none; color: inherit; opacity: 0.5; cursor: pointer; font-size: 10px; padding: 0 0 0 2px; line-height: 1;" style-hover="opacity: 1;">✕</button>
+      </span>
+    </sc-for>
+    <sc-if value="{{ noPins }}" hint-placeholder-val="{{ false }}">
+      <span style="font-size: 11.5px; color: #6c6c73;">pin creators, tags or groups from search ☆</span>
+    </sc-if>
+
+    <div style="width: 1px; height: 18px; background: #2c2c30; margin: 0 8px;"></div>
+
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #6c6c73; margin-right: 2px;">GROUPS</span>
+    <sc-for list="{{ sideGroups }}" as="g" hint-placeholder-count="4">
+      <span style="{{ g.style }}">
+        <button onClick="{{ g.select }}" style="display: inline-flex; align-items: center; gap: 7px; background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; min-width: 0;">
+          <span style="font-size: 10px; opacity: 0.7;">▣</span>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
+          <sc-if value="{{ g.shared }}" hint-placeholder-val="{{ false }}">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 7.5px; letter-spacing: 0.12em; opacity: 0.65; border: 1px solid currentColor; border-radius: 4px; padding: 1px 4px;">SHARED</span>
+          </sc-if>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; opacity: 0.6;">{{ g.count }}</span>
+        </button>
+        <button onClick="{{ g.pin }}" title="Pin group" style="background: none; border: none; color: inherit; opacity: 0.5; cursor: pointer; font-size: 11px; padding: 0 0 0 2px; line-height: 1;" style-hover="opacity: 1;">{{ g.pinIcon }}</button>
+      </span>
+    </sc-for>
+    <input value="{{ newCol }}" onChange="{{ onNewCol }}" onKeyDown="{{ newColKey }}" placeholder="+ new group ↵" style="background: transparent; border: 1px dashed #34343a; border-radius: 99px; color: #eaeaec; font-size: 11.5px; padding: 5px 12px; outline: none; width: 118px;" style-focus="border-color: #2cb4f5;" />
+  </div>
+
+  <!-- ============ TAG RAIL ============ -->
+  <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 22px 2px; flex: 0 0 auto;">
+    <button onClick="{{ goAll }}" style="{{ railAllStyle }}" style-hover="border-color: #2cb4f5;">All</button>
+    <sc-for list="{{ railTags }}" as="t" hint-placeholder-count="8">
+      <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #2cb4f5;">{{ t.name }}</button>
+    </sc-for>
+  </div>
+
+  <!-- ============ GALLERY ============ -->
+  <div style="flex: 1; overflow-y: auto; padding: 16px 22px 40px; min-height: 0;">
+    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px;">
+      <div style="font-size: 19px; font-weight: 700; letter-spacing: -0.01em;">{{ scopeTitle }}</div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #82828a;">{{ countLabel }}</div>
+      <sc-for list="{{ filterChips }}" as="f" hint-placeholder-count="1">
+        <span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 99px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #06151d; background: #2cb4f5; border: 1px solid #2cb4f5;">{{ f.label }}<button onClick="{{ f.remove }}" style="background: none; border: none; color: #06151d; opacity: 0.6; cursor: pointer; padding: 0; font-size: 11px; line-height: 1;" style-hover="opacity: 1;">✕</button></span>
+      </sc-for>
+      <sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}">
+        <button onClick="{{ clearFilters }}" style="background: transparent; border: none; color: #9b9ba1; font-size: 11.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; padding: 0;" style-hover="color: #eaeaec;">clear all</button>
+      </sc-if>
+    </div>
+
+    <!-- GRID view : image-first tiles -->
+    <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ true }}">
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(234px, 1fr)); gap: 10px;">
+        <sc-for list="{{ models }}" as="m" hint-placeholder-count="12">
+          <div onClick="{{ m.open }}" style="position: relative; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden; cursor: pointer; background: #1a1a1d;">
+            <div style="{{ m.tileStyle }}"></div>
+            <div style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 14px; background: linear-gradient(to top, rgba(8,8,10,0.92) 0%, rgba(8,8,10,0.4) 30%, rgba(8,8,10,0) 58%); opacity: 0; transition: opacity 0.16s ease;" style-hover="opacity: 1;">
+              <div style="font-weight: 650; font-size: 14px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
+              <div style="font-size: 11.5px; color: #c2c2c9; margin-top: 3px;">{{ m.creator }} · {{ m.type }}</div>
+              <div style="display: flex; gap: 6px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.08em; color: #a8a8b0;">
+                <span style="background: rgba(28,28,32,0.85); border: 1px solid #36363c; padding: 2px 7px; border-radius: 5px;">{{ m.format }}</span>
+                <span style="background: rgba(28,28,32,0.85); border: 1px solid #36363c; padding: 2px 7px; border-radius: 5px;">{{ m.sizeShort }} MM</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- CARDS view -->
+    <sc-if value="{{ isCards }}" hint-placeholder-val="{{ false }}">
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(312px, 1fr)); gap: 18px;">
+        <sc-for list="{{ models }}" as="m" hint-placeholder-count="6">
+          <div onClick="{{ m.open }}" style="background: #1a1a1d; border: 1px solid #28282c; border-radius: 13px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;" style-hover="border-color: #3e3e46; transform: translateY(-2px); box-shadow: 0 14px 30px rgba(0,0,0,0.5);">
+            <div style="height: 212px; background: radial-gradient(circle at 50% 40%, #232328 0%, #18181b 75%); position: relative; display: grid; place-items: center;">
+              <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ m.thumbStyle }}"></div>
+              </sc-if>
+              <div style="position: absolute; top: 10px; left: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #9b9ba1; background: rgba(13,13,15,0.72); border: 1px solid #2e2e34; padding: 2px 6px; border-radius: 5px;">{{ m.format }}</div>
+              <div style="position: absolute; top: 10px; right: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #9b9ba1; background: rgba(13,13,15,0.72); border: 1px solid #2e2e34; padding: 2px 6px; border-radius: 5px;">{{ m.sizeShort }} mm</div>
+            </div>
+            <div style="padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 8px;">
+              <div>
+                <div style="font-weight: 650; font-size: 15px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
+                <div style="font-size: 12px; color: #9b9ba1; margin-top: 2px;">{{ m.creator }} · {{ m.type }}</div>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                <sc-for list="{{ m.tagChips }}" as="t" hint-placeholder-count="3">
+                  <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #2cb4f5;">{{ t.name }}</button>
+                </sc-for>
+              </div>
+              <div style="display: flex; justify-content: space-between; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #75757d; border-top: 1px solid #26262a; padding-top: 9px;">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.printersLabel }}</span>
+                <span style="flex: 0 0 auto;">{{ m.addedLabel }}</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- LIST view -->
+    <sc-if value="{{ isList }}" hint-placeholder-val="{{ false }}">
+      <div style="border: 1px solid #28282c; border-radius: 12px; overflow: hidden;">
+        <div style="display: grid; grid-template-columns: 56px 2.2fr 1.2fr 0.8fr 1fr 1.8fr 0.9fr; gap: 12px; align-items: center; padding: 9px 16px; background: #19191c; border-bottom: 1px solid #26262a; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6c6c73;">
+          <span></span><span>MODEL</span><span>CREATOR</span><span>TYPE</span><span>SIZE (MM)</span><span>TAGS</span><span style="text-align: right;">ADDED</span>
+        </div>
+        <sc-for list="{{ models }}" as="m" hint-placeholder-count="10">
+          <div onClick="{{ m.open }}" style="display: grid; grid-template-columns: 56px 2.2fr 1.2fr 0.8fr 1fr 1.8fr 0.9fr; gap: 12px; align-items: center; padding: 8px 16px; border-bottom: 1px solid #222226; cursor: pointer; background: #161619;" style-hover="background: #1f1f23;">
+            <div style="width: 44px; height: 40px; border-radius: 7px; background: #1d1d21; border: 1px solid #2a2a2e; display: grid; place-items: center; overflow: hidden;">
+              <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ m.thumbStyle }}"></div>
+              </sc-if>
+            </div>
+            <div style="min-width: 0;">
+              <div style="font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.name }}</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #75757d;">{{ m.format }} · {{ m.fileSizeLabel }}</div>
+            </div>
+            <div style="font-size: 12px; color: #b3b3ba; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.creator }}</div>
+            <div style="font-size: 12px; color: #b3b3ba;">{{ m.type }}</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #9b9ba1;">{{ m.sizeShort }}</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #82828a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.tagsLabel }}</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #82828a; text-align: right;">{{ m.addedLabel }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 70px 20px; text-align: center; color: #82828a;">
+        <div style="font-size: 30px; opacity: 0.5; margin-bottom: 10px;">◇</div>
+        <div style="font-size: 14px; font-weight: 600; color: #b3b3ba;">No models match</div>
+        <div style="font-size: 12px; margin-top: 4px;">Try a different search, or <button onClick="{{ clearFilters }}" style="background: none; border: none; color: #2cb4f5; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; font-size: 12px; padding: 0;">clear all filters</button></div>
+      </div>
+    </sc-if>
+  </div>
+
+  <!-- ============ DETAIL OVERLAY ============ -->
+  <sc-if value="{{ hasSelected }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Model detail" onClick="{{ closeDetail }}" style="position: fixed; inset: 0; background: rgba(6,6,8,0.74); backdrop-filter: blur(7px); z-index: 50; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(1180px, 96vw); height: min(790px, 92vh); background: #18181b; border: 1px solid #2e2e34; border-radius: 16px; overflow: hidden; display: grid; grid-template-columns: 1.05fr 1fr; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+
+        <!-- 3D viewer -->
+        <div style="position: relative; background: radial-gradient(ellipse at 50% 44%, #222227 0%, #131316 78%); border-right: 1px solid #26262a; display: flex; min-width: 0;">
+          <canvas ref="{{ viewerRef }}" width="880" height="680" onPointerDown="{{ vDown }}" onPointerMove="{{ vMove }}" onPointerUp="{{ vUp }}" onWheel="{{ vWheel }}" style="width: 100%; height: 100%; object-fit: contain; cursor: grab; touch-action: none; display: block; flex: 1;"></canvas>
+          <div style="position: absolute; left: 16px; top: 14px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: #9b9ba1; background: rgba(13,13,15,0.72); border: 1px solid #2e2e34; padding: 3px 8px; border-radius: 6px;">{{ selected.fileLabel }}</div>
+          <div style="position: absolute; left: 16px; bottom: 14px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #6c6c73;">DRAG TO ROTATE · SCROLL TO ZOOM</div>
+          <button onClick="{{ resetView }}" style="position: absolute; right: 14px; bottom: 12px; background: rgba(24,24,28,0.85); border: 1px solid #34343a; color: #b3b3ba; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.12em; padding: 5px 10px; border-radius: 6px; cursor: pointer;" style-hover="color: #eaeaec; border-color: #2cb4f5;">RESET VIEW</button>
+        </div>
+
+        <!-- metadata -->
+        <div style="overflow-y: auto; padding: 24px 26px 30px; display: flex; flex-direction: column; gap: 19px; min-height: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;">
+            <div style="min-width: 0;">
+              <div style="font-size: 21px; font-weight: 750; line-height: 1.15; letter-spacing: -0.01em; text-wrap: pretty;">{{ selected.name }}</div>
+              <div style="margin-top: 6px; font-size: 12.5px; color: #9b9ba1; display: flex; align-items: center; gap: 8px;">
+                <span>by {{ selected.creator }} · added {{ selected.addedLabel }}</span>
+                <button onClick="{{ selected.pinCreator }}" title="Pin creator" style="background: none; border: 1px solid #34343a; color: #b3b3ba; cursor: pointer; font-size: 11px; padding: 2px 9px; border-radius: 99px; display: inline-flex; align-items: center; gap: 5px;" style-hover="color: #2cb4f5; border-color: #2cb4f5;">{{ selected.pinIcon }} creator</button>
+              </div>
+            </div>
+            <button onClick="{{ closeDetail }}" style="background: #212125; border: 1px solid #2e2e34; color: #b3b3ba; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; flex: 0 0 auto; display: grid; place-items: center;" style-hover="color: #f2f2f4; border-color: #4a4a52;">✕</button>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">TAGS</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+              <sc-for list="{{ selected.detailTags }}" as="t" hint-placeholder-count="3">
+                <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #c9c9cf; background: #212125; border: 1px solid #303036;">{{ t.name }}<button onClick="{{ t.remove }}" style="background: none; border: none; color: #82828a; cursor: pointer; padding: 0; font-size: 11px; line-height: 1;" style-hover="color: #f2f2f4;">✕</button></span>
+              </sc-for>
+              <input value="{{ tagDraft }}" onChange="{{ onTagDraft }}" onKeyDown="{{ tagDraftKey }}" placeholder="+ add tag ↵" style="background: transparent; border: 1px dashed #36363c; border-radius: 99px; color: #eaeaec; font-size: 11px; font-family: 'JetBrains Mono', monospace; padding: 4px 11px; outline: none; width: 110px;" style-focus="border-color: #2cb4f5;" />
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73; margin-bottom: 6px;">SPECS</div>
+            <sc-for list="{{ selected.specRows }}" as="r" hint-placeholder-count="5">
+              <div style="display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid #232327; font-size: 12.5px;">
+                <span style="color: #8b8b93;">{{ r.k }}</span>
+                <span style="color: #e0e0e5; font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">{{ r.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">PRINTER COMPATIBILITY</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <sc-for list="{{ selected.printerChips }}" as="p" hint-placeholder-count="4">
+                <span style="{{ p.style }}">{{ p.name }}</span>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73; margin-bottom: 6px;">SUGGESTED PRINT SETTINGS</div>
+            <div style="background: #1c1c20; border: 1px solid #2a2a2e; border-radius: 10px; padding: 4px 14px;">
+              <sc-for list="{{ selected.settingRows }}" as="r" hint-placeholder-count="5">
+                <div style="display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid #242428; font-size: 12px;">
+                  <span style="color: #8b8b93;">{{ r.k }}</span>
+                  <span style="color: #e0e0e5; font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ r.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">GROUPS</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <sc-for list="{{ selected.groupChips }}" as="c" hint-placeholder-count="4">
+                <button onClick="{{ c.toggle }}" style="{{ c.style }}" style-hover="border-color: #2cb4f5;">{{ c.name }}</button>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">PRINTED RESULTS</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <image-slot id="{{ selected.slotA }}" shape="rounded" radius="10" placeholder="Drop photo — printed" style="width: 100%; height: 150px;"></image-slot>
+              <image-slot id="{{ selected.slotB }}" shape="rounded" radius="10" placeholder="Drop photo — painted / finished" style="width: 100%; height: 150px;"></image-slot>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ ADD MODEL MODAL ============ -->
+  <sc-if value="{{ showAdd }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Add model" onClick="{{ closeAdd }}" style="position: fixed; inset: 0; background: rgba(6,6,8,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(620px, 94vw); max-height: 92vh; overflow-y: auto; background: #18181b; border: 1px solid #2e2e34; border-radius: 16px; padding: 26px 28px 28px; display: flex; flex-direction: column; gap: 18px; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 19px; font-weight: 750;">Add model to library</div>
+          <button onClick="{{ closeAdd }}" style="background: #212125; border: 1px solid #2e2e34; color: #b3b3ba; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center;" style-hover="color: #f2f2f4;">✕</button>
+        </div>
+
+        <div style="border: 1.5px dashed #36363c; border-radius: 12px; padding: 22px; text-align: center; color: #8b8b93; font-size: 12.5px; cursor: pointer; background: #1c1c20;" style-hover="border-color: #2cb4f5; color: #b3b3ba;">
+          Drop an <span style="color: #2cb4f5; font-family: 'JetBrains Mono', monospace;">.stl · .3mf · .obj</span> file here, or click to browse
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 6px; color: #6c6c73;">PROTOTYPE — pick a preview shape below instead</div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Model name
+            <input name="name" value="{{ addForm.name }}" onChange="{{ onAddField }}" placeholder="e.g. Wyvern Rider" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none;" style-focus="border-color: #2cb4f5;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Creator
+            <input name="creator" value="{{ addForm.creator }}" onChange="{{ onAddField }}" placeholder="e.g. Forge & Fathom" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none;" style-focus="border-color: #2cb4f5;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Type
+            <select name="type" value="{{ addForm.type }}" onChange="{{ onAddField }}" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none;">
+              <option value="Miniature">Miniature</option>
+              <option value="Terrain">Terrain</option>
+              <option value="Functional">Functional</option>
+              <option value="Display">Display</option>
+              <option value="Tool">Tool</option>
+            </select>
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Preview shape
+            <select name="mesh" value="{{ addForm.mesh }}" onChange="{{ onAddField }}" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none;">
+              <option value="egg">Egg / organic</option>
+              <option value="pawn">Figure / idol</option>
+              <option value="vase">Vase — smooth</option>
+              <option value="facetVase">Vase — faceted</option>
+              <option value="gear">Gear</option>
+              <option value="diceTower">Tower</option>
+              <option value="hexTile">Hex tile</option>
+              <option value="crystals">Crystal cluster</option>
+              <option value="bracket">Bracket</option>
+              <option value="tray">Tray / box</option>
+            </select>
+          </label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Width (mm)
+            <input name="sx" value="{{ addForm.sx }}" onChange="{{ onAddField }}" placeholder="50" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #2cb4f5;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Depth (mm)
+            <input name="sy" value="{{ addForm.sy }}" onChange="{{ onAddField }}" placeholder="50" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #2cb4f5;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Height (mm)
+            <input name="sz" value="{{ addForm.sz }}" onChange="{{ onAddField }}" placeholder="50" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #2cb4f5;" />
+          </label>
+        </div>
+
+        <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #9b9ba1; font-weight: 600;">Tags <span style="font-weight: 400; color: #75757d;">(comma separated)</span>
+          <input name="tags" value="{{ addForm.tags }}" onChange="{{ onAddField }}" placeholder="dragon, miniature, warhammer" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #2cb4f5;" />
+        </label>
+
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <div style="font-size: 11px; color: #9b9ba1; font-weight: 600;">Compatible printers</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <sc-for list="{{ addPrinters }}" as="p" hint-placeholder-count="4">
+              <button onClick="{{ p.toggle }}" style="{{ p.style }}" style-hover="border-color: #2cb4f5;">{{ p.name }}</button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-size: 11px; color: #9b9ba1; font-weight: 600;">Suggested print settings</div>
+            <button onClick="{{ fakeImport }}" style="background: transparent; border: 1px solid #34343a; color: #c9c9cf; border-radius: 7px; padding: 5px 11px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: 'JetBrains Mono', monospace;" style-hover="border-color: #2cb4f5; color: #2cb4f5;">⇪ Import from slicer preset</button>
+          </div>
+          <sc-if value="{{ hasImport }}" hint-placeholder-val="{{ false }}">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6fd394;">✓ imported {{ addForm.importName }}</div>
+          </sc-if>
+          <textarea name="settings" value="{{ addForm.settings }}" onChange="{{ onAddField }}" rows="4" placeholder="Layer height: 0.16 mm&#10;Infill: 15 % gyroid&#10;Supports: tree (auto)" style="background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 12px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace; resize: vertical; line-height: 1.6;" style-focus="border-color: #2cb4f5;"></textarea>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px;">
+          <button onClick="{{ closeAdd }}" style="background: transparent; border: 1px solid #34343a; color: #c9c9cf; border-radius: 9px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer;" style-hover="border-color: #4a4a52;">Cancel</button>
+          <button onClick="{{ submitAdd }}" style="background: #2cb4f5; border: 1px solid #2cb4f5; color: #06151d; border-radius: 9px; padding: 9px 20px; font-size: 13px; font-weight: 700; cursor: pointer;" style-hover="background: #4cc3ff;">Add to library</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ TAGS / GROUPS MANAGER ============ -->
+  <sc-if value="{{ showTags }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Tags and groups" onClick="{{ closeTags }}" style="position: fixed; inset: 0; background: rgba(6,6,8,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(560px, 94vw); max-height: 88vh; overflow-y: auto; background: #18181b; border: 1px solid #2e2e34; border-radius: 16px; padding: 26px 28px 28px; display: flex; flex-direction: column; gap: 20px; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 19px; font-weight: 750;">Tags ⁄ Groups</div>
+          <button onClick="{{ closeTags }}" style="background: #212125; border: 1px solid #2e2e34; color: #b3b3ba; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center;" style-hover="color: #f2f2f4;">✕</button>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">TAGS</div>
+          <div style="display: flex; gap: 8px;">
+            <input value="{{ newTag }}" onChange="{{ onNewTag }}" onKeyDown="{{ newTagKey }}" placeholder="New tag, e.g. dragon" style="flex: 1; background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 12.5px; padding: 8px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #2cb4f5;" />
+            <button onClick="{{ createTag }}" style="background: #2cb4f5; border: none; color: #06151d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #4cc3ff;">Create</button>
+          </div>
+          <div style="display: flex; flex-direction: column;">
+            <sc-for list="{{ manageTags }}" as="t" hint-placeholder-count="6">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #222226;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #dcdce1; flex: 1;">{{ t.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #75757d;">{{ t.count }} models</span>
+                <button onClick="{{ t.pin }}" title="Pin tag" style="background: transparent; border: none; color: #82828a; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #2cb4f5;">{{ t.pinIcon }}</button>
+                <button onClick="{{ t.apply }}" style="background: transparent; border: 1px solid #34343a; color: #b3b3ba; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #2cb4f5; border-color: #2cb4f5;">filter</button>
+                <button onClick="{{ t.remove }}" style="background: transparent; border: none; color: #75757d; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #6c6c73;">GROUPS <span style="letter-spacing: 0.05em; color: #5a5a61;">— personal & shared folders</span></div>
+          <div style="display: flex; gap: 8px;">
+            <input value="{{ newColModal }}" onChange="{{ onNewColModal }}" onKeyDown="{{ newColModalKey }}" placeholder="New group, e.g. Dragon Hoard" style="flex: 1; background: #1d1d20; border: 1px solid #2c2c30; border-radius: 8px; color: #eaeaec; font-size: 12.5px; padding: 8px 11px; outline: none;" style-focus="border-color: #2cb4f5;" />
+            <button onClick="{{ createColModal }}" style="background: #2cb4f5; border: none; color: #06151d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #4cc3ff;">Create</button>
+          </div>
+          <div style="display: flex; flex-direction: column;">
+            <sc-for list="{{ manageGroups }}" as="c" hint-placeholder-count="4">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #222226;">
+                <span style="font-size: 12.5px; color: #dcdce1; flex: 1; display: inline-flex; align-items: center; gap: 8px;">{{ c.name }}
+                  <sc-if value="{{ c.shared }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 7.5px; letter-spacing: 0.14em; color: #82828a; border: 1px solid #303036; border-radius: 4px; padding: 1px 4px;">SHARED</span>
+                  </sc-if>
+                </span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #75757d;">{{ c.count }} models</span>
+                <button onClick="{{ c.toggleShared }}" style="background: transparent; border: 1px solid #34343a; color: #b3b3ba; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #2cb4f5; border-color: #2cb4f5;">{{ c.shareLabel }}</button>
+                <button onClick="{{ c.apply }}" style="background: transparent; border: 1px solid #34343a; color: #b3b3ba; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #2cb4f5; border-color: #2cb4f5;">open</button>
+                <button onClick="{{ c.remove }}" style="background: transparent; border: none; color: #75757d; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    ready: false, query: '', activeTags: [], groupScope: null, creatorScope: null,
+    searchFocus: false, view: 'grid', selectedId: null, showAdd: false, showTags: false,
+    models: [], groups: [], extraTags: [], thumbs: {}, tagDraft: '', newTag: '', newCol: '', newColModal: '',
+    pins: [{ kind: 'creator', name: 'TrenchWorks' }, { kind: 'tag', name: 'dragon' }],
+    addForm: { name: '', creator: '', type: 'Miniature', mesh: 'egg', sx: '', sy: '', sz: '', tags: '', printers: ['Bambu X1C', 'Bambu P1S'], settings: '', importName: '' }
+  };
+  meshes = {};
+  setViewerRef = (el) => {
+    this._canvas = el;
+    if (el) requestAnimationFrame(() => this.drawViewer());
+  };
+  view3 = { rx: -0.38, ry: 0.85, zoom: 1 };
+
+  componentDidMount() {
+    this._esc = (e) => { if (e.key === 'Escape') this.setState({ selectedId: null, showAdd: false, showTags: false, searchFocus: false }); };
+    document.addEventListener('keydown', this._esc);
+    this.boot();
+  }
+  componentWillUnmount() { document.removeEventListener('keydown', this._esc); clearTimeout(this._bt); clearTimeout(this._blurT); }
+
+  boot() {
+    if (!window.VAULT || !window.Mesh3D) { this._bt = setTimeout(() => this.boot(), 80); return; }
+    const models = window.VAULT.models.map(m => ({ ...m, tags: [...m.tags], groups: [...m.groups], printers: [...m.printers] }));
+    this.setState({ models, groups: window.VAULT.groups.map(g => ({ ...g })), ready: true }, () => this.genThumbs());
+  }
+
+  buildMesh(kind) {
+    if (!this.meshes[kind]) this.meshes[kind] = window.Mesh3D.build(kind);
+    return this.meshes[kind];
+  }
+
+  genThumbs() {
+    if (!window.Mesh3D) return;
+    const thumbs = { ...this.state.thumbs };
+    let changed = false;
+    for (const m of this.state.models) {
+      if (thumbs[m.id]) continue;
+      try {
+        const c = document.createElement('canvas');
+        c.width = 560; c.height = 560;
+        window.Mesh3D.render(c, this.buildMesh(m.mesh), { ry: 0.85, rx: -0.4, zoom: 0.96, color: m.color });
+        thumbs[m.id] = c.toDataURL();
+        changed = true;
+      } catch (e) { console.warn('thumb failed', m.id, e); }
+    }
+    if (changed) this.setState({ thumbs });
+  }
+
+  componentDidUpdate(pp, ps) {
+    if (this.state.selectedId && ps.selectedId !== this.state.selectedId) {
+      this.view3 = { rx: -0.38, ry: 0.85, zoom: 1 };
+      requestAnimationFrame(() => this.drawViewer());
+    }
+  }
+
+  curModel() { return this.state.models.find(m => m.id === this.state.selectedId) || null; }
+
+  drawViewer() {
+    const c = this._canvas, m = this.curModel();
+    if (!c || !m || !window.Mesh3D) return;
+    window.Mesh3D.render(c, this.buildMesh(m.mesh), { rx: this.view3.rx, ry: this.view3.ry, zoom: this.view3.zoom, color: m.color });
+  }
+
+  vDown = (e) => { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {} this._drag = { x: e.clientX, y: e.clientY }; };
+  vMove = (e) => {
+    if (!this._drag) return;
+    this.view3.ry += (e.clientX - this._drag.x) * 0.011;
+    this.view3.rx = Math.max(-1.5, Math.min(1.5, this.view3.rx + (e.clientY - this._drag.y) * 0.011));
+    this._drag = { x: e.clientX, y: e.clientY };
+    this.drawViewer();
+  };
+  vUp = () => { this._drag = null; };
+  vWheel = (e) => {
+    this.view3.zoom = Math.max(0.4, Math.min(3.2, this.view3.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
+    this.drawViewer();
+  };
+  resetView = () => { this.view3 = { rx: -0.38, ry: 0.85, zoom: 1 }; this.drawViewer(); };
+
+  fmtDate(d) {
+    try { return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+    catch (e) { return d; }
+  }
+  normTag(t) { return t.trim().toLowerCase().replace(/\s+/g, '-'); }
+
+  toggleTag(t) {
+    this.setState(s => ({ activeTags: s.activeTags.includes(t) ? s.activeTags.filter(x => x !== t) : [...s.activeTags, t] }));
+  }
+  patchModel(id, fn) {
+    this.setState(s => ({ models: s.models.map(m => m.id === id ? fn({ ...m, tags: [...m.tags], groups: [...m.groups] }) : m) }));
+  }
+
+  isPinned(kind, name) { return this.state.pins.some(p => p.kind === kind && p.name === name); }
+  togglePin(kind, name) {
+    this.setState(s => ({
+      pins: s.pins.some(p => p.kind === kind && p.name === name)
+        ? s.pins.filter(p => !(p.kind === kind && p.name === name))
+        : [...s.pins, { kind, name }]
+    }));
+  }
+
+  // ----- styles -----
+  barChip(active) {
+    return {
+      display: 'inline-flex', alignItems: 'center', gap: '6px', maxWidth: '240px',
+      padding: '5px 12px', borderRadius: '99px', fontSize: '12px', fontWeight: 600, lineHeight: '1.5',
+      cursor: 'default',
+      color: active ? '#06151d' : '#c9c9cf', background: active ? '#2cb4f5' : '#1d1d20',
+      border: '1px solid ' + (active ? '#2cb4f5' : '#2c2c30')
+    };
+  }
+  tagChip(active) {
+    return {
+      display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px',
+      fontSize: '11px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace", lineHeight: '1.6',
+      color: active ? '#06151d' : '#b3b3ba', background: active ? '#2cb4f5' : '#212125',
+      border: '1px solid ' + (active ? '#2cb4f5' : '#303036')
+    };
+  }
+  railChip(active) {
+    return {
+      flex: '0 0 auto', padding: '7px 16px', borderRadius: '99px', fontSize: '12.5px', fontWeight: 600,
+      cursor: 'pointer', lineHeight: '1.4',
+      color: active ? '#06151d' : '#b3b3ba', background: active ? '#2cb4f5' : '#1d1d20',
+      border: '1px solid ' + (active ? '#2cb4f5' : '#2c2c30')
+    };
+  }
+  segBtn(active) {
+    return {
+      background: active ? '#2e2e34' : 'transparent', border: 'none', color: active ? '#f2f2f4' : '#9b9ba1',
+      borderRadius: '7px', padding: '6px 13px', fontSize: '12px', fontWeight: 600, cursor: 'pointer'
+    };
+  }
+  thumbBg(t) {
+    return { width: '100%', height: '100%', backgroundImage: t ? 'url(' + t + ')' : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' };
+  }
+  tintOf(hex, f) {
+    try {
+      const h = hex.replace('#', '');
+      const r = Math.round(parseInt(h.slice(0, 2), 16) * f);
+      const g = Math.round(parseInt(h.slice(2, 4), 16) * f);
+      const b = Math.round(parseInt(h.slice(4, 6), 16) * f);
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    } catch (e) { return '#1f1f23'; }
+  }
+  tileBg(t, color) {
+    const grad = 'radial-gradient(circle at 50% 42%, ' + this.tintOf(color, 0.3) + ' 0%, #17171a 82%)';
+    return {
+      position: 'absolute', inset: 0,
+      backgroundImage: t ? 'url(' + t + '), ' + grad : grad,
+      backgroundSize: t ? '88%, cover' : 'cover',
+      backgroundPosition: 'center', backgroundRepeat: 'no-repeat'
+    };
+  }
+
+  enrich(m) {
+    const t = this.state.thumbs[m.id];
+    return {
+      ...m,
+      thumb: t || '', hasThumb: !!t,
+      thumbStyle: this.thumbBg(t),
+      tileStyle: this.tileBg(t, m.color),
+      sizeShort: m.size[0] + '×' + m.size[1] + '×' + m.size[2],
+      sizeLabel: m.size[0] + ' × ' + m.size[1] + ' × ' + m.size[2] + ' mm',
+      addedLabel: this.fmtDate(m.added),
+      createdLabel: this.fmtDate(m.created),
+      fileLabel: m.format + ' · ' + (m.fileMB || 1).toFixed(1) + ' MB',
+      fileSizeLabel: (m.fileMB || 1).toFixed(1) + ' MB',
+      printersLabel: m.printers.join(' · '),
+      tagsLabel: m.tags.join(', '),
+      tagChips: m.tags.map(tg => ({
+        name: tg,
+        style: this.tagChip(this.state.activeTags.includes(tg)),
+        toggle: (e) => { e.stopPropagation(); this.toggleTag(tg); }
+      })),
+      open: () => this.setState({ selectedId: m.id })
+    };
+  }
+
+  enrichDetail(m) {
+    const e = this.enrich(m);
+    const allP = window.VAULT ? window.VAULT.printers : [];
+    e.printerChips = allP.map(p => {
+      const ok = m.printers.includes(p);
+      return {
+        name: p,
+        style: {
+          padding: '5px 12px', borderRadius: '7px', fontSize: '11px', fontFamily: "'JetBrains Mono', monospace",
+          border: '1px solid ' + (ok ? '#3a3a42' : '#26262a'),
+          background: ok ? '#242429' : 'transparent',
+          color: ok ? '#e0e0e5' : '#5a5a61',
+          textDecoration: ok ? 'none' : 'line-through'
+        }
+      };
+    });
+    e.settingRows = (m.settings || []).map(r => ({ k: r[0], v: r[1] }));
+    let tris = '—';
+    try { tris = this.buildMesh(m.mesh).f.length.toLocaleString() + ' (preview proxy)'; } catch (err) {}
+    e.specRows = [
+      { k: 'Type', v: m.type },
+      { k: 'Dimensions', v: e.sizeLabel },
+      { k: 'File', v: e.fileLabel },
+      { k: 'Designed', v: e.createdLabel },
+      { k: 'Added to library', v: e.addedLabel },
+      { k: 'Triangles', v: tris }
+    ];
+    e.detailTags = m.tags.map(tg => ({
+      name: tg,
+      remove: () => this.patchModel(m.id, x => { x.tags = x.tags.filter(z => z !== tg); return x; })
+    }));
+    e.groupChips = this.state.groups.map(g => {
+      const on = m.groups.includes(g.name);
+      return {
+        name: g.name, style: this.tagChip(on),
+        toggle: () => this.patchModel(m.id, x => { x.groups = on ? x.groups.filter(z => z !== g.name) : [...x.groups, g.name]; return x; })
+      };
+    });
+    e.pinIcon = this.isPinned('creator', m.creator) ? '★' : '☆';
+    e.pinCreator = () => this.togglePin('creator', m.creator);
+    e.slotA = 'photo-' + m.id + '-printed';
+    e.slotB = 'photo-' + m.id + '-painted';
+    return e;
+  }
+
+  submitAdd = () => {
+    const f = this.state.addForm;
+    const id = 'u' + Date.now();
+    const today = new Date().toISOString().slice(0, 10);
+    const model = {
+      id,
+      name: f.name.trim() || 'Untitled model',
+      creator: f.creator.trim() || 'You',
+      type: f.type, mesh: f.mesh, color: '#bcc0c8',
+      tags: f.tags.split(',').map(t => this.normTag(t)).filter(Boolean),
+      groups: [], format: 'STL', fileMB: 1.2,
+      size: [parseFloat(f.sx) || 50, parseFloat(f.sy) || 50, parseFloat(f.sz) || 50],
+      created: today, added: today,
+      printers: [...f.printers],
+      settings: f.settings
+        ? f.settings.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+            const i = line.indexOf(':');
+            return i > 0 ? [line.slice(0, i).trim(), line.slice(i + 1).trim()] : ['Note', line];
+          })
+        : []
+    };
+    this.setState(s => ({
+      models: [model, ...s.models],
+      showAdd: false,
+      selectedId: id,
+      addForm: { name: '', creator: '', type: 'Miniature', mesh: 'egg', sx: '', sy: '', sz: '', tags: '', printers: ['Bambu X1C', 'Bambu P1S'], settings: '', importName: '' }
+    }), () => this.genThumbs());
+  };
+
+  fakeImport = () => {
+    this.setState(s => ({
+      addForm: {
+        ...s.addForm,
+        importName: 'bambu_x1c_0.16mm_strength.json',
+        settings: 'Process: FDM · 0.4 mm nozzle\nLayer height: 0.16 mm\nInfill: 15 % gyroid\nSupports: Tree (auto)\nMaterial: PLA matte'
+      }
+    }));
+  };
+
+  addTagToSelected() {
+    const t = this.normTag(this.state.tagDraft);
+    if (!t || !this.state.selectedId) return;
+    this.patchModel(this.state.selectedId, x => { if (!x.tags.includes(t)) x.tags.push(t); return x; });
+    this.setState({ tagDraft: '' });
+  }
+
+  createTag() {
+    const t = this.normTag(this.state.newTag);
+    if (!t) return;
+    this.setState(s => ({ extraTags: s.extraTags.includes(t) ? s.extraTags : [...s.extraTags, t], newTag: '' }));
+  }
+  createGroup(name) {
+    const c = name.trim();
+    if (!c) return;
+    this.setState(s => ({
+      groups: s.groups.some(g => g.name === c) ? s.groups : [...s.groups, { name: c, shared: false }],
+      newCol: '', newColModal: ''
+    }));
+  }
+
+  renderVals() {
+    const s = this.state;
+    const q = s.query.trim().toLowerCase();
+
+    const matchesQuery = (m) => {
+      if (!q) return true;
+      const hay = (m.name + ' ' + m.creator + ' ' + m.type + ' ' + m.tags.join(' ') + ' ' + m.groups.join(' ')).toLowerCase();
+      return hay.includes(q);
+    };
+    const matches = (m) => {
+      if (!matchesQuery(m)) return false;
+      for (const t of s.activeTags) if (!m.tags.includes(t)) return false;
+      if (s.groupScope && !m.groups.includes(s.groupScope)) return false;
+      if (s.creatorScope && m.creator !== s.creatorScope) return false;
+      return true;
+    };
+    const filtered = s.models.filter(matches).sort((a, b) => (b.added || '').localeCompare(a.added || ''));
+    const models = filtered.map(m => this.enrich(m));
+
+    const tagCount = {};
+    for (const m of s.models) for (const t of m.tags) tagCount[t] = (tagCount[t] || 0) + 1;
+    for (const t of s.extraTags) if (tagCount[t] == null) tagCount[t] = 0;
+    const tagNames = Object.keys(tagCount).sort((a, b) => (tagCount[b] - tagCount[a]) || a.localeCompare(b));
+
+    const creatorCount = {}, groupCount = {};
+    for (const m of s.models) {
+      creatorCount[m.creator] = (creatorCount[m.creator] || 0) + 1;
+      for (const g of m.groups) groupCount[g] = (groupCount[g] || 0) + 1;
+    }
+
+    const hasFilters = !!(q || s.activeTags.length || s.groupScope || s.creatorScope);
+    const scopeTitle = s.groupScope || s.creatorScope || 'All models';
+
+    // ----- search suggestions -----
+    const qHits = q ? s.models.filter(matchesQuery) : [];
+    const modelHits = qHits.slice(0, 5).map(m => ({
+      name: m.name, creator: m.creator, type: m.type,
+      thumbStyle: this.thumbBg(s.thumbs[m.id]),
+      open: () => this.setState({ selectedId: m.id, searchFocus: false })
+    }));
+    let creatorHits = [], tagHits = [], tagHeader = 'TAGS';
+    if (q) {
+      const cset = new Set();
+      for (const c of Object.keys(creatorCount)) if (c.toLowerCase().includes(q)) cset.add(c);
+      for (const m of qHits) cset.add(m.creator);
+      creatorHits = [...cset].slice(0, 4).map(c => ({
+        name: c, count: creatorCount[c] || 0,
+        pinIcon: this.isPinned('creator', c) ? '★' : '☆',
+        pin: () => this.togglePin('creator', c),
+        select: () => this.setState({ creatorScope: s.creatorScope === c ? null : c, query: '', searchFocus: false })
+      }));
+      const tset = new Set();
+      for (const t of tagNames) if (t.includes(q)) tset.add(t);
+      for (const m of qHits) for (const t of m.tags) tset.add(t);
+      tagHits = [...tset].filter(t => !s.activeTags.includes(t)).slice(0, 8).map(t => ({
+        name: t, count: tagCount[t],
+        style: this.tagChip(false),
+        toggle: () => this.setState(st => ({ activeTags: [...st.activeTags, t], query: '', searchFocus: false }))
+      }));
+      tagHeader = 'TAGS & SUGGESTIONS';
+    } else {
+      tagHits = tagNames.slice(0, 9).map(t => ({
+        name: t, count: tagCount[t],
+        style: this.tagChip(s.activeTags.includes(t)),
+        toggle: () => this.setState(st => ({
+          activeTags: st.activeTags.includes(t) ? st.activeTags.filter(x => x !== t) : [...st.activeTags, t],
+          searchFocus: false
+        }))
+      }));
+      tagHeader = 'POPULAR TAGS';
+    }
+    const showSearchPanel = s.searchFocus && (q ? true : tagHits.length > 0);
+    const noHits = !!q && !modelHits.length && !creatorHits.length && !tagHits.length;
+
+    // ----- channel rail -----
+    const railTags = tagNames.filter(t => tagCount[t] > 0).slice(0, 12).map(t => ({
+      name: t,
+      style: this.railChip(s.activeTags.includes(t)),
+      toggle: () => this.toggleTag(t)
+    }));
+    const railAllStyle = this.railChip(!hasFilters);
+
+    // ----- filter chips -----
+    const filterChips = [];
+    for (const t of s.activeTags) filterChips.push({ label: '#' + t, remove: () => this.toggleTag(t) });
+    if (s.creatorScope) filterChips.push({ label: '◆ ' + s.creatorScope, remove: () => this.setState({ creatorScope: null }) });
+
+    // ----- pins -----
+    const pins = s.pins.map(p => {
+      const active = (p.kind === 'creator' && s.creatorScope === p.name)
+        || (p.kind === 'tag' && s.activeTags.includes(p.name))
+        || (p.kind === 'group' && s.groupScope === p.name);
+      const count = p.kind === 'creator' ? (creatorCount[p.name] || 0)
+        : p.kind === 'tag' ? (tagCount[p.name] || 0)
+        : (groupCount[p.name] || 0);
+      return {
+        name: p.name, icon: p.kind === 'creator' ? '◆' : p.kind === 'tag' ? '#' : '▣', count,
+        style: this.barChip(active),
+        select: () => {
+          if (p.kind === 'creator') this.setState({ creatorScope: s.creatorScope === p.name ? null : p.name });
+          else if (p.kind === 'tag') this.toggleTag(p.name);
+          else this.setState({ groupScope: s.groupScope === p.name ? null : p.name });
+        },
+        unpin: () => this.togglePin(p.kind, p.name)
+      };
+    });
+
+    const selModel = s.selectedId ? this.curModel() : null;
+    const selected = selModel ? this.enrichDetail(selModel) : null;
+
+    return {
+      // gallery
+      models,
+      isEmpty: s.ready && filtered.length === 0,
+      isGrid: s.view === 'grid', isCards: s.view === 'cards', isList: s.view === 'list',
+      setGrid: () => this.setState({ view: 'grid' }),
+      setCards: () => this.setState({ view: 'cards' }),
+      setList: () => this.setState({ view: 'list' }),
+      vGrid: this.segBtn(s.view === 'grid'), vCards: this.segBtn(s.view === 'cards'), vList: this.segBtn(s.view === 'list'),
+      scopeTitle,
+      countLabel: filtered.length + (filtered.length === 1 ? ' MODEL' : ' MODELS') + (q ? ' · “' + s.query.trim() + '”' : ''),
+      totalCount: s.models.length,
+      hasFilters, filterChips, railTags, railAllStyle,
+      clearFilters: () => this.setState({ query: '', activeTags: [], groupScope: null, creatorScope: null }),
+
+      // search
+      query: s.query,
+      onQuery: (e) => this.setState({ query: e.target.value, searchFocus: true }),
+      onSearchFocus: () => { clearTimeout(this._blurT); this.setState({ searchFocus: true }); },
+      onSearchBlur: () => { this._blurT = setTimeout(() => this.setState({ searchFocus: false }), 140); },
+      keepFocus: (e) => e.preventDefault(),
+      showSearchPanel, noHits,
+      hasModelHits: modelHits.length > 0, modelHits,
+      hasCreatorHits: creatorHits.length > 0, creatorHits,
+      hasTagHits: tagHits.length > 0, tagHits, tagHeader,
+
+      // pinned + groups bar
+      goAll: () => this.setState({ groupScope: null, creatorScope: null, activeTags: [], query: '' }),
+      pins,
+      noPins: s.ready && pins.length === 0,
+      sideGroups: s.groups.map(g => {
+        const active = s.groupScope === g.name;
+        return {
+          name: g.name, shared: !!g.shared, count: groupCount[g.name] || 0,
+          style: this.barChip(active),
+          pinIcon: this.isPinned('group', g.name) ? '★' : '☆',
+          pin: () => this.togglePin('group', g.name),
+          select: () => this.setState({ groupScope: active ? null : g.name })
+        };
+      }),
+      newCol: s.newCol,
+      onNewCol: (e) => this.setState({ newCol: e.target.value }),
+      newColKey: (e) => { if (e.key === 'Enter') this.createGroup(this.state.newCol); },
+
+      // detail
+      hasSelected: !!selected,
+      selected,
+      closeDetail: () => this.setState({ selectedId: null }),
+      stop: (e) => e.stopPropagation(),
+      viewerRef: this.setViewerRef,
+      vDown: this.vDown, vMove: this.vMove, vUp: this.vUp, vWheel: this.vWheel, resetView: this.resetView,
+      tagDraft: s.tagDraft,
+      onTagDraft: (e) => this.setState({ tagDraft: e.target.value }),
+      tagDraftKey: (e) => { if (e.key === 'Enter') this.addTagToSelected(); },
+
+      // add modal
+      showAdd: s.showAdd,
+      openAdd: () => this.setState({ showAdd: true }),
+      closeAdd: () => this.setState({ showAdd: false }),
+      addForm: s.addForm,
+      onAddField: (e) => { const n = e.target.name, v = e.target.value; this.setState(st => ({ addForm: { ...st.addForm, [n]: v } })); },
+      addPrinters: (window.VAULT ? window.VAULT.printers : []).map(p => ({
+        name: p,
+        style: this.tagChip(s.addForm.printers.includes(p)),
+        toggle: () => this.setState(st => ({
+          addForm: {
+            ...st.addForm,
+            printers: st.addForm.printers.includes(p) ? st.addForm.printers.filter(x => x !== p) : [...st.addForm.printers, p]
+          }
+        }))
+      })),
+      hasImport: !!s.addForm.importName,
+      fakeImport: this.fakeImport,
+      submitAdd: this.submitAdd,
+
+      // tags/groups manager
+      showTags: s.showTags,
+      openTags: () => this.setState({ showTags: true }),
+      closeTags: () => this.setState({ showTags: false }),
+      newTag: s.newTag,
+      onNewTag: (e) => this.setState({ newTag: e.target.value }),
+      newTagKey: (e) => { if (e.key === 'Enter') this.createTag(); },
+      createTag: () => this.createTag(),
+      manageTags: tagNames.map(t => ({
+        name: t, count: tagCount[t],
+        pinIcon: this.isPinned('tag', t) ? '★' : '☆',
+        pin: () => this.togglePin('tag', t),
+        apply: () => this.setState(st => ({ activeTags: st.activeTags.includes(t) ? st.activeTags : [...st.activeTags, t], showTags: false })),
+        remove: () => this.setState(st => ({
+          models: st.models.map(m => ({ ...m, tags: m.tags.filter(x => x !== t) })),
+          extraTags: st.extraTags.filter(x => x !== t),
+          activeTags: st.activeTags.filter(x => x !== t),
+          pins: st.pins.filter(p => !(p.kind === 'tag' && p.name === t))
+        }))
+      })),
+      newColModal: s.newColModal,
+      onNewColModal: (e) => this.setState({ newColModal: e.target.value }),
+      newColModalKey: (e) => { if (e.key === 'Enter') this.createGroup(this.state.newColModal); },
+      createColModal: () => this.createGroup(this.state.newColModal),
+      manageGroups: s.groups.map(g => ({
+        name: g.name, shared: !!g.shared, count: groupCount[g.name] || 0,
+        shareLabel: g.shared ? 'make personal' : 'share',
+        toggleShared: () => this.setState(st => ({ groups: st.groups.map(x => x.name === g.name ? { ...x, shared: !x.shared } : x) })),
+        apply: () => this.setState({ groupScope: g.name, showTags: false }),
+        remove: () => this.setState(st => ({
+          groups: st.groups.filter(x => x.name !== g.name),
+          models: st.models.map(m => ({ ...m, groups: m.groups.filter(x => x !== g.name) })),
+          groupScope: st.groupScope === g.name ? null : st.groupScope,
+          pins: st.pins.filter(p => !(p.kind === 'group' && p.name === g.name))
+        }))
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

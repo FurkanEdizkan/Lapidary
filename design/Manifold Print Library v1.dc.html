@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #08080a; }
+    * { box-sizing: border-box; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #232329; border-radius: 6px; border: 2px solid #08080a; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    input::placeholder, textarea::placeholder { color: #56565f; }
+    input, textarea, select, button { font-family: 'Archivo', sans-serif; }
+    canvas { -webkit-user-select: none; user-select: none; }
+  </style>
+  <script src="./mesh3d.js"></script>
+  <script src="./data.js"></script>
+  <script src="./image-slot.js"></script>
+</helmet>
+
+<div data-screen-label="Library" style="display: flex; height: 100vh; background: #08080a; color: #e8e8ea; font-family: 'Archivo', sans-serif; overflow: hidden;">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside style="width: 250px; flex: 0 0 250px; border-right: 1px solid #19191e; background: #0b0b0d; display: flex; flex-direction: column; min-height: 0;">
+    <div style="padding: 18px 18px 16px; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid #19191e;">
+      <div style="width: 26px; height: 26px; border: 1.5px solid #d8d8dc; transform: rotate(45deg); display: grid; place-items: center; flex: 0 0 auto;">
+        <div style="width: 9px; height: 9px; background: #d8d8dc;"></div>
+      </div>
+      <div>
+        <div style="font-weight: 800; letter-spacing: 0.14em; font-size: 14.5px;">MANIFOLD</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: #66666f; letter-spacing: 0.18em; margin-top: 1px;">PRINT LIBRARY</div>
+      </div>
+    </div>
+
+    <div style="overflow-y: auto; flex: 1; padding: 14px 12px 24px; display: flex; flex-direction: column; gap: 22px; min-height: 0;">
+
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <button onClick="{{ goAll }}" style="{{ allBtnStyle }}" style-hover="color: #f2f2f4;">
+          <span style="display: flex; align-items: center; gap: 8px; font-weight: 600;">All models</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ totalCount }}</span>
+        </button>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">COLLECTIONS</div>
+        <sc-for list="{{ sideCollections }}" as="c" hint-placeholder-count="4">
+          <button onClick="{{ c.select }}" style="{{ c.style }}" style-hover="color: #f2f2f4;">
+            <span style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="color: #5d5d66; font-size: 10px;">▣</span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.name }}</span></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ c.count }}</span>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">SMART GROUPS · TYPE</div>
+        <sc-for list="{{ typeGroups }}" as="g" hint-placeholder-count="5">
+          <button onClick="{{ g.select }}" style="{{ g.style }}" style-hover="color: #f2f2f4;">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ g.count }}</span>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">SMART GROUPS · CREATOR</div>
+        <sc-for list="{{ creatorGroups }}" as="g" hint-placeholder-count="5">
+          <button onClick="{{ g.select }}" style="{{ g.style }}" style-hover="color: #f2f2f4;">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ g.count }}</span>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px;">TAGS</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px;">
+          <sc-for list="{{ sideTags }}" as="t" hint-placeholder-count="8">
+            <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #3c3c46;">{{ t.name }}<span style="opacity: 0.55;">{{ t.count }}</span></button>
+          </sc-for>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main style="flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;">
+
+    <!-- topbar -->
+    <div style="display: flex; align-items: center; gap: 12px; padding: 12px 22px; border-bottom: 1px solid #19191e; background: #0a0a0c;">
+      <div style="position: relative; flex: 1; max-width: 460px;">
+        <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #5d5d66; font-size: 13px; pointer-events: none;">⌕</div>
+        <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Search models, tags, creators — try “dragon”" style="width: 100%; background: #121216; border: 1px solid #222228; border-radius: 9px; color: #e8e8ea; font-size: 13px; padding: 9px 12px 9px 32px; outline: none;" style-focus="border-color: #3c3c46; background: #15151a;" />
+      </div>
+      <div style="flex: 1;"></div>
+      <div style="display: flex; gap: 2px; background: #121216; border: 1px solid #222228; border-radius: 9px; padding: 3px;">
+        <button onClick="{{ setGrid }}" style="{{ vGrid }}">Grid</button>
+        <button onClick="{{ setCards }}" style="{{ vCards }}">Cards</button>
+        <button onClick="{{ setList }}" style="{{ vList }}">List</button>
+      </div>
+      <button onClick="{{ openTags }}" style="background: transparent; border: 1px solid #2a2a32; color: #c5c5cd; border-radius: 9px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;" style-hover="border-color: #44444e; color: #f0f0f2;">Tags ⁄ Collections</button>
+      <button onClick="{{ openAdd }}" style="background: #e8e8ea; border: 1px solid #e8e8ea; color: #0b0b0d; border-radius: 9px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">+ Add model</button>
+    </div>
+
+    <!-- gallery -->
+    <div style="flex: 1; overflow-y: auto; padding: 20px 24px 40px; min-height: 0;">
+      <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px;">
+        <div style="font-size: 20px; font-weight: 700; letter-spacing: -0.01em;">{{ scopeTitle }}</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #6d6d76;">{{ countLabel }}</div>
+        <sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{ clearFilters }}" style="background: transparent; border: none; color: #8b8b95; font-size: 11.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; padding: 0;" style-hover="color: #e8e8ea;">clear filters</button>
+        </sc-if>
+      </div>
+
+      <!-- GRID view -->
+      <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 14px;">
+          <sc-for list="{{ models }}" as="m" hint-placeholder-count="10">
+            <div onClick="{{ m.open }}" style="background: #111114; border: 1px solid #1e1e24; border-radius: 11px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;" style-hover="border-color: #3a3a44; transform: translateY(-2px); box-shadow: 0 14px 30px rgba(0,0,0,0.5);">
+              <div style="height: 152px; background: radial-gradient(circle at 50% 40%, #1a1a20 0%, #0f0f12 75%); position: relative; display: grid; place-items: center;">
+                <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ m.thumbStyle }}"></div>
+                </sc-if>
+                <div style="position: absolute; top: 8px; left: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #7c7c86; background: rgba(8,8,10,0.72); border: 1px solid #24242a; padding: 2px 6px; border-radius: 5px;">{{ m.format }}</div>
+              </div>
+              <div style="padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px;">
+                <div style="font-weight: 600; font-size: 13.5px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
+                <div style="font-size: 11.5px; color: #84848e;">{{ m.creator }}</div>
+                <div style="display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6d6d76;">
+                  <span>{{ m.type }}</span><span>{{ m.sizeShort }} mm</span>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- CARDS view -->
+      <sc-if value="{{ isCards }}" hint-placeholder-val="{{ false }}">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(312px, 1fr)); gap: 18px;">
+          <sc-for list="{{ models }}" as="m" hint-placeholder-count="6">
+            <div onClick="{{ m.open }}" style="background: #111114; border: 1px solid #1e1e24; border-radius: 13px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;" style-hover="border-color: #3a3a44; transform: translateY(-2px); box-shadow: 0 14px 30px rgba(0,0,0,0.5);">
+              <div style="height: 212px; background: radial-gradient(circle at 50% 40%, #1b1b21 0%, #0f0f12 75%); position: relative; display: grid; place-items: center;">
+                <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ m.thumbStyle }}"></div>
+                </sc-if>
+                <div style="position: absolute; top: 10px; left: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #7c7c86; background: rgba(8,8,10,0.72); border: 1px solid #24242a; padding: 2px 6px; border-radius: 5px;">{{ m.format }}</div>
+                <div style="position: absolute; top: 10px; right: 10px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #7c7c86; background: rgba(8,8,10,0.72); border: 1px solid #24242a; padding: 2px 6px; border-radius: 5px;">{{ m.sizeShort }} mm</div>
+              </div>
+              <div style="padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 8px;">
+                <div>
+                  <div style="font-weight: 650; font-size: 15px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
+                  <div style="font-size: 12px; color: #84848e; margin-top: 2px;">{{ m.creator }} · {{ m.type }}</div>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                  <sc-for list="{{ m.tagChips }}" as="t" hint-placeholder-count="3">
+                    <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #3c3c46;">{{ t.name }}</button>
+                  </sc-for>
+                </div>
+                <div style="display: flex; justify-content: space-between; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #62626c; border-top: 1px solid #1b1b20; padding-top: 9px;">
+                  <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.printersLabel }}</span>
+                  <span style="flex: 0 0 auto;">{{ m.addedLabel }}</span>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- LIST view -->
+      <sc-if value="{{ isList }}" hint-placeholder-val="{{ false }}">
+        <div style="border: 1px solid #1e1e24; border-radius: 12px; overflow: hidden;">
+          <div style="display: grid; grid-template-columns: 56px 2.2fr 1.2fr 0.8fr 1fr 1.8fr 0.9fr; gap: 12px; align-items: center; padding: 9px 16px; background: #101013; border-bottom: 1px solid #1c1c21; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #5d5d66;">
+            <span></span><span>MODEL</span><span>CREATOR</span><span>TYPE</span><span>SIZE (MM)</span><span>TAGS</span><span style="text-align: right;">ADDED</span>
+          </div>
+          <sc-for list="{{ models }}" as="m" hint-placeholder-count="10">
+            <div onClick="{{ m.open }}" style="display: grid; grid-template-columns: 56px 2.2fr 1.2fr 0.8fr 1fr 1.8fr 0.9fr; gap: 12px; align-items: center; padding: 8px 16px; border-bottom: 1px solid #16161a; cursor: pointer; background: #0e0e11;" style-hover="background: #15151a;">
+              <div style="width: 44px; height: 40px; border-radius: 7px; background: #131318; border: 1px solid #1e1e24; display: grid; place-items: center; overflow: hidden;">
+                <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ m.thumbStyle }}"></div>
+                </sc-if>
+              </div>
+              <div style="min-width: 0;">
+                <div style="font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.name }}</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #62626c;">{{ m.format }} · {{ m.fileSizeLabel }}</div>
+              </div>
+              <div style="font-size: 12px; color: #9b9ba4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.creator }}</div>
+              <div style="font-size: 12px; color: #9b9ba4;">{{ m.type }}</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #84848e;">{{ m.sizeShort }}</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6f6f79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.tagsLabel }}</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6f6f79; text-align: right;">{{ m.addedLabel }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="padding: 70px 20px; text-align: center; color: #6d6d76;">
+          <div style="font-size: 30px; opacity: 0.5; margin-bottom: 10px;">◇</div>
+          <div style="font-size: 14px; font-weight: 600; color: #9b9ba4;">No models match</div>
+          <div style="font-size: 12px; margin-top: 4px;">Try a different search, or <button onClick="{{ clearFilters }}" style="background: none; border: none; color: #c5c5cd; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; font-size: 12px; padding: 0;">clear all filters</button></div>
+        </div>
+      </sc-if>
+    </div>
+  </main>
+
+  <!-- ============ DETAIL OVERLAY ============ -->
+  <sc-if value="{{ hasSelected }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Model detail" onClick="{{ closeDetail }}" style="position: fixed; inset: 0; background: rgba(4,4,6,0.74); backdrop-filter: blur(7px); z-index: 50; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(1180px, 96vw); height: min(790px, 92vh); background: #0e0e11; border: 1px solid #25252c; border-radius: 16px; overflow: hidden; display: grid; grid-template-columns: 1.05fr 1fr; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+
+        <!-- 3D viewer -->
+        <div style="position: relative; background: radial-gradient(ellipse at 50% 44%, #17171d 0%, #0a0a0d 78%); border-right: 1px solid #1c1c22; display: flex; min-width: 0;">
+          <canvas ref="{{ viewerRef }}" width="880" height="680" onPointerDown="{{ vDown }}" onPointerMove="{{ vMove }}" onPointerUp="{{ vUp }}" onWheel="{{ vWheel }}" style="width: 100%; height: 100%; object-fit: contain; cursor: grab; touch-action: none; display: block; flex: 1;"></canvas>
+          <div style="position: absolute; left: 16px; top: 14px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: #7c7c86; background: rgba(8,8,10,0.72); border: 1px solid #24242a; padding: 3px 8px; border-radius: 6px;">{{ selected.fileLabel }}</div>
+          <div style="position: absolute; left: 16px; bottom: 14px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.14em; color: #55555e;">DRAG TO ROTATE · SCROLL TO ZOOM</div>
+          <button onClick="{{ resetView }}" style="position: absolute; right: 14px; bottom: 12px; background: rgba(18,18,22,0.85); border: 1px solid #2a2a32; color: #9b9ba4; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.12em; padding: 5px 10px; border-radius: 6px; cursor: pointer;" style-hover="color: #e8e8ea; border-color: #44444e;">RESET VIEW</button>
+        </div>
+
+        <!-- metadata -->
+        <div style="overflow-y: auto; padding: 24px 26px 30px; display: flex; flex-direction: column; gap: 19px; min-height: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;">
+            <div style="min-width: 0;">
+              <div style="font-size: 21px; font-weight: 750; line-height: 1.15; letter-spacing: -0.01em; text-wrap: pretty;">{{ selected.name }}</div>
+              <div style="margin-top: 6px; font-size: 12.5px; color: #8b8b95;">by {{ selected.creator }} · added {{ selected.addedLabel }}</div>
+            </div>
+            <button onClick="{{ closeDetail }}" style="background: #16161a; border: 1px solid #26262e; color: #9b9ba4; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; flex: 0 0 auto; display: grid; place-items: center;" style-hover="color: #f0f0f2; border-color: #44444e;">✕</button>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">TAGS</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+              <sc-for list="{{ selected.detailTags }}" as="t" hint-placeholder-count="3">
+                <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #c0c0c8; background: #17171b; border: 1px solid #26262c;">{{ t.name }}<button onClick="{{ t.remove }}" style="background: none; border: none; color: #6a6a74; cursor: pointer; padding: 0; font-size: 11px; line-height: 1;" style-hover="color: #f0f0f2;">✕</button></span>
+              </sc-for>
+              <input value="{{ tagDraft }}" onChange="{{ onTagDraft }}" onKeyDown="{{ tagDraftKey }}" placeholder="+ add tag ↵" style="background: transparent; border: 1px dashed #2c2c34; border-radius: 99px; color: #e8e8ea; font-size: 11px; font-family: 'JetBrains Mono', monospace; padding: 4px 11px; outline: none; width: 110px;" style-focus="border-color: #4a4a55;" />
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; margin-bottom: 6px;">SPECS</div>
+            <sc-for list="{{ selected.specRows }}" as="r" hint-placeholder-count="5">
+              <div style="display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid #18181d; font-size: 12.5px;">
+                <span style="color: #74747e;">{{ r.k }}</span>
+                <span style="color: #d8d8de; font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">{{ r.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">PRINTER COMPATIBILITY</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <sc-for list="{{ selected.printerChips }}" as="p" hint-placeholder-count="4">
+                <span style="{{ p.style }}">{{ p.name }}</span>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; margin-bottom: 6px;">SUGGESTED PRINT SETTINGS</div>
+            <div style="background: #101014; border: 1px solid #1e1e24; border-radius: 10px; padding: 4px 14px;">
+              <sc-for list="{{ selected.settingRows }}" as="r" hint-placeholder-count="5">
+                <div style="display: grid; grid-template-columns: 140px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid #18181d; font-size: 12px;">
+                  <span style="color: #74747e;">{{ r.k }}</span>
+                  <span style="color: #d8d8de; font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ r.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">COLLECTIONS</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <sc-for list="{{ selected.colChips }}" as="c" hint-placeholder-count="4">
+                <button onClick="{{ c.toggle }}" style="{{ c.style }}" style-hover="border-color: #3c3c46;">{{ c.name }}</button>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">PRINTED RESULTS</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <image-slot id="{{ selected.slotA }}" shape="rounded" radius="10" placeholder="Drop photo — printed" style="width: 100%; height: 150px;"></image-slot>
+              <image-slot id="{{ selected.slotB }}" shape="rounded" radius="10" placeholder="Drop photo — painted / finished" style="width: 100%; height: 150px;"></image-slot>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ ADD MODEL MODAL ============ -->
+  <sc-if value="{{ showAdd }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Add model" onClick="{{ closeAdd }}" style="position: fixed; inset: 0; background: rgba(4,4,6,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(620px, 94vw); max-height: 92vh; overflow-y: auto; background: #0e0e11; border: 1px solid #25252c; border-radius: 16px; padding: 26px 28px 28px; display: flex; flex-direction: column; gap: 18px; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 19px; font-weight: 750;">Add model to library</div>
+          <button onClick="{{ closeAdd }}" style="background: #16161a; border: 1px solid #26262e; color: #9b9ba4; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center;" style-hover="color: #f0f0f2;">✕</button>
+        </div>
+
+        <div style="border: 1.5px dashed #2c2c34; border-radius: 12px; padding: 22px; text-align: center; color: #74747e; font-size: 12.5px; cursor: pointer; background: #0f0f13;" style-hover="border-color: #4a4a55; color: #a9a9b2;">
+          Drop an <span style="color: #c5c5cd; font-family: 'JetBrains Mono', monospace;">.stl · .3mf · .obj</span> file here, or click to browse
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 6px; color: #55555e;">PROTOTYPE — pick a preview shape below instead</div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Model name
+            <input name="name" value="{{ addForm.name }}" onChange="{{ onAddField }}" placeholder="e.g. Wyvern Rider" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none;" style-focus="border-color: #3c3c46;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Creator
+            <input name="creator" value="{{ addForm.creator }}" onChange="{{ onAddField }}" placeholder="e.g. Forge & Fathom" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none;" style-focus="border-color: #3c3c46;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Type
+            <select name="type" value="{{ addForm.type }}" onChange="{{ onAddField }}" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none;">
+              <option value="Miniature">Miniature</option>
+              <option value="Terrain">Terrain</option>
+              <option value="Functional">Functional</option>
+              <option value="Display">Display</option>
+              <option value="Tool">Tool</option>
+            </select>
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Preview shape
+            <select name="mesh" value="{{ addForm.mesh }}" onChange="{{ onAddField }}" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none;">
+              <option value="egg">Egg / organic</option>
+              <option value="pawn">Figure / idol</option>
+              <option value="vase">Vase — smooth</option>
+              <option value="facetVase">Vase — faceted</option>
+              <option value="gear">Gear</option>
+              <option value="diceTower">Tower</option>
+              <option value="hexTile">Hex tile</option>
+              <option value="crystals">Crystal cluster</option>
+              <option value="bracket">Bracket</option>
+              <option value="tray">Tray / box</option>
+            </select>
+          </label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Width (mm)
+            <input name="sx" value="{{ addForm.sx }}" onChange="{{ onAddField }}" placeholder="50" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #3c3c46;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Depth (mm)
+            <input name="sy" value="{{ addForm.sy }}" onChange="{{ onAddField }}" placeholder="50" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #3c3c46;" />
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Height (mm)
+            <input name="sz" value="{{ addForm.sz }}" onChange="{{ onAddField }}" placeholder="50" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #3c3c46;" />
+          </label>
+        </div>
+
+        <label style="display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #84848e; font-weight: 600;">Tags <span style="font-weight: 400; color: #62626c;">(comma separated)</span>
+          <input name="tags" value="{{ addForm.tags }}" onChange="{{ onAddField }}" placeholder="dragon, miniature, warhammer" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 13px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #3c3c46;" />
+        </label>
+
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <div style="font-size: 11px; color: #84848e; font-weight: 600;">Compatible printers</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <sc-for list="{{ addPrinters }}" as="p" hint-placeholder-count="4">
+              <button onClick="{{ p.toggle }}" style="{{ p.style }}" style-hover="border-color: #3c3c46;">{{ p.name }}</button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-size: 11px; color: #84848e; font-weight: 600;">Suggested print settings</div>
+            <button onClick="{{ fakeImport }}" style="background: transparent; border: 1px solid #2a2a32; color: #c5c5cd; border-radius: 7px; padding: 5px 11px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: 'JetBrains Mono', monospace;" style-hover="border-color: #44444e; color: #f0f0f2;">⇪ Import from slicer preset</button>
+          </div>
+          <sc-if value="{{ hasImport }}" hint-placeholder-val="{{ false }}">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #84cf9b;">✓ imported {{ addForm.importName }}</div>
+          </sc-if>
+          <textarea name="settings" value="{{ addForm.settings }}" onChange="{{ onAddField }}" rows="4" placeholder="Layer height: 0.16 mm&#10;Infill: 15 % gyroid&#10;Supports: tree (auto)" style="background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 12px; padding: 9px 11px; outline: none; font-family: 'JetBrains Mono', monospace; resize: vertical; line-height: 1.6;" style-focus="border-color: #3c3c46;"></textarea>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px;">
+          <button onClick="{{ closeAdd }}" style="background: transparent; border: 1px solid #2a2a32; color: #c5c5cd; border-radius: 9px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer;" style-hover="border-color: #44444e;">Cancel</button>
+          <button onClick="{{ submitAdd }}" style="background: #e8e8ea; border: 1px solid #e8e8ea; color: #0b0b0d; border-radius: 9px; padding: 9px 20px; font-size: 13px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">Add to library</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ TAGS / COLLECTIONS MANAGER ============ -->
+  <sc-if value="{{ showTags }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Tags and collections" onClick="{{ closeTags }}" style="position: fixed; inset: 0; background: rgba(4,4,6,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
+      <div onClick="{{ stop }}" style="width: min(560px, 94vw); max-height: 88vh; overflow-y: auto; background: #0e0e11; border: 1px solid #25252c; border-radius: 16px; padding: 26px 28px 28px; display: flex; flex-direction: column; gap: 20px; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 19px; font-weight: 750;">Tags ⁄ Collections</div>
+          <button onClick="{{ closeTags }}" style="background: #16161a; border: 1px solid #26262e; color: #9b9ba4; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center;" style-hover="color: #f0f0f2;">✕</button>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">TAGS</div>
+          <div style="display: flex; gap: 8px;">
+            <input value="{{ newTag }}" onChange="{{ onNewTag }}" onKeyDown="{{ newTagKey }}" placeholder="New tag, e.g. dragon" style="flex: 1; background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 12.5px; padding: 8px 11px; outline: none; font-family: 'JetBrains Mono', monospace;" style-focus="border-color: #3c3c46;" />
+            <button onClick="{{ createTag }}" style="background: #e8e8ea; border: none; color: #0b0b0d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">Create</button>
+          </div>
+          <div style="display: flex; flex-direction: column;">
+            <sc-for list="{{ manageTags }}" as="t" hint-placeholder-count="6">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #17171c;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #d0d0d6; flex: 1;">{{ t.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #62626c;">{{ t.count }} models</span>
+                <button onClick="{{ t.apply }}" style="background: transparent; border: 1px solid #2a2a32; color: #9b9ba4; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #f0f0f2; border-color: #44444e;">filter</button>
+                <button onClick="{{ t.remove }}" style="background: transparent; border: none; color: #62626c; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 9px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">COLLECTIONS</div>
+          <div style="display: flex; gap: 8px;">
+            <input value="{{ newCol }}" onChange="{{ onNewCol }}" onKeyDown="{{ newColKey }}" placeholder="New collection, e.g. Dragon Hoard" style="flex: 1; background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 12.5px; padding: 8px 11px; outline: none;" style-focus="border-color: #3c3c46;" />
+            <button onClick="{{ createCol }}" style="background: #e8e8ea; border: none; color: #0b0b0d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">Create</button>
+          </div>
+          <div style="display: flex; flex-direction: column;">
+            <sc-for list="{{ manageCols }}" as="c" hint-placeholder-count="4">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #17171c;">
+                <span style="font-size: 12.5px; color: #d0d0d6; flex: 1;">{{ c.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #62626c;">{{ c.count }} models</span>
+                <button onClick="{{ c.apply }}" style="background: transparent; border: 1px solid #2a2a32; color: #9b9ba4; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #f0f0f2; border-color: #44444e;">open</button>
+                <button onClick="{{ c.remove }}" style="background: transparent; border: none; color: #62626c; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    ready: false, query: '', activeTags: [], scopeCol: null, smartKind: null, smartVal: null,
+    view: 'grid', selectedId: null, showAdd: false, showTags: false,
+    models: [], collections: [], extraTags: [], thumbs: {}, tagDraft: '', newTag: '', newCol: '',
+    addForm: { name: '', creator: '', type: 'Miniature', mesh: 'egg', sx: '', sy: '', sz: '', tags: '', printers: ['Bambu X1C', 'Bambu P1S'], settings: '', importName: '' }
+  };
+  meshes = {};
+  viewerRef = React.createRef();
+  view3 = { rx: -0.38, ry: 0.85, zoom: 1 };
+
+  componentDidMount() {
+    this._esc = (e) => { if (e.key === 'Escape') this.setState({ selectedId: null, showAdd: false, showTags: false }); };
+    document.addEventListener('keydown', this._esc);
+    this.boot();
+  }
+  componentWillUnmount() { document.removeEventListener('keydown', this._esc); clearTimeout(this._bt); }
+
+  boot() {
+    if (!window.VAULT || !window.Mesh3D) { this._bt = setTimeout(() => this.boot(), 80); return; }
+    const models = window.VAULT.models.map(m => ({ ...m, tags: [...m.tags], collections: [...m.collections], printers: [...m.printers] }));
+    this.setState({ models, collections: [...window.VAULT.collections], ready: true }, () => this.genThumbs());
+  }
+
+  buildMesh(kind) {
+    if (!this.meshes[kind]) this.meshes[kind] = window.Mesh3D.build(kind);
+    return this.meshes[kind];
+  }
+
+  genThumbs() {
+    if (!window.Mesh3D) return;
+    const thumbs = { ...this.state.thumbs };
+    let changed = false;
+    for (const m of this.state.models) {
+      if (thumbs[m.id]) continue;
+      try {
+        const c = document.createElement('canvas');
+        c.width = 520; c.height = 400;
+        window.Mesh3D.render(c, this.buildMesh(m.mesh), { ry: 0.85, rx: -0.4, zoom: 0.92, color: m.color });
+        thumbs[m.id] = c.toDataURL();
+        changed = true;
+      } catch (e) { console.warn('thumb failed', m.id, e); }
+    }
+    if (changed) this.setState({ thumbs });
+  }
+
+  componentDidUpdate(pp, ps) {
+    if (this.state.selectedId && ps.selectedId !== this.state.selectedId) {
+      this.view3 = { rx: -0.38, ry: 0.85, zoom: 1 };
+      requestAnimationFrame(() => this.drawViewer());
+    }
+  }
+
+  curModel() { return this.state.models.find(m => m.id === this.state.selectedId) || null; }
+
+  drawViewer() {
+    const c = this.viewerRef.current, m = this.curModel();
+    if (!c || !m || !window.Mesh3D) return;
+    window.Mesh3D.render(c, this.buildMesh(m.mesh), { rx: this.view3.rx, ry: this.view3.ry, zoom: this.view3.zoom, color: m.color });
+  }
+
+  vDown = (e) => { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {} this._drag = { x: e.clientX, y: e.clientY }; };
+  vMove = (e) => {
+    if (!this._drag) return;
+    this.view3.ry += (e.clientX - this._drag.x) * 0.011;
+    this.view3.rx = Math.max(-1.5, Math.min(1.5, this.view3.rx + (e.clientY - this._drag.y) * 0.011));
+    this._drag = { x: e.clientX, y: e.clientY };
+    this.drawViewer();
+  };
+  vUp = () => { this._drag = null; };
+  vWheel = (e) => {
+    this.view3.zoom = Math.max(0.4, Math.min(3.2, this.view3.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
+    this.drawViewer();
+  };
+  resetView = () => { this.view3 = { rx: -0.38, ry: 0.85, zoom: 1 }; this.drawViewer(); };
+
+  fmtDate(d) {
+    try { return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+    catch (e) { return d; }
+  }
+  normTag(t) { return t.trim().toLowerCase().replace(/\s+/g, '-'); }
+
+  toggleTag(t) {
+    this.setState(s => ({ activeTags: s.activeTags.includes(t) ? s.activeTags.filter(x => x !== t) : [...s.activeTags, t] }));
+  }
+  patchModel(id, fn) {
+    this.setState(s => ({ models: s.models.map(m => m.id === id ? fn({ ...m, tags: [...m.tags], collections: [...m.collections] }) : m) }));
+  }
+
+  // ----- styles -----
+  sideRow(active) {
+    return {
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%',
+      padding: '6px 10px', borderRadius: '7px', cursor: 'pointer', fontSize: '12.5px', textAlign: 'left',
+      color: active ? '#f4f4f6' : '#9b9ba4', background: active ? '#1e1e24' : 'transparent',
+      border: '1px solid ' + (active ? '#2e2e36' : 'transparent')
+    };
+  }
+  tagChip(active) {
+    return {
+      display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px',
+      fontSize: '11px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace", lineHeight: '1.6',
+      color: active ? '#0c0c0e' : '#a6a6b0', background: active ? '#e8e8ea' : '#17171b',
+      border: '1px solid ' + (active ? '#e8e8ea' : '#26262c')
+    };
+  }
+  segBtn(active) {
+    return {
+      background: active ? '#26262e' : 'transparent', border: 'none', color: active ? '#f0f0f2' : '#84848e',
+      borderRadius: '7px', padding: '6px 13px', fontSize: '12px', fontWeight: 600, cursor: 'pointer'
+    };
+  }
+
+  enrich(m) {
+    const t = this.state.thumbs[m.id];
+    return {
+      ...m,
+      thumb: t || '', hasThumb: !!t,
+      thumbStyle: { width: '100%', height: '100%', backgroundImage: t ? 'url(' + t + ')' : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+      sizeShort: m.size[0] + '×' + m.size[1] + '×' + m.size[2],
+      sizeLabel: m.size[0] + ' × ' + m.size[1] + ' × ' + m.size[2] + ' mm',
+      addedLabel: this.fmtDate(m.added),
+      createdLabel: this.fmtDate(m.created),
+      fileLabel: m.format + ' · ' + (m.fileMB || 1).toFixed(1) + ' MB',
+      fileSizeLabel: (m.fileMB || 1).toFixed(1) + ' MB',
+      printersLabel: m.printers.join(' · '),
+      tagsLabel: m.tags.join(', '),
+      tagChips: m.tags.map(tg => ({
+        name: tg,
+        style: this.tagChip(this.state.activeTags.includes(tg)),
+        toggle: (e) => { e.stopPropagation(); this.toggleTag(tg); }
+      })),
+      open: () => this.setState({ selectedId: m.id })
+    };
+  }
+
+  enrichDetail(m) {
+    const e = this.enrich(m);
+    const allP = window.VAULT ? window.VAULT.printers : [];
+    e.printerChips = allP.map(p => {
+      const ok = m.printers.includes(p);
+      return {
+        name: p,
+        style: {
+          padding: '5px 12px', borderRadius: '7px', fontSize: '11px', fontFamily: "'JetBrains Mono', monospace",
+          border: '1px solid ' + (ok ? '#34343e' : '#1c1c22'),
+          background: ok ? '#1a1a21' : 'transparent',
+          color: ok ? '#dcdce2' : '#4e4e57',
+          textDecoration: ok ? 'none' : 'line-through'
+        }
+      };
+    });
+    e.settingRows = (m.settings || []).map(r => ({ k: r[0], v: r[1] }));
+    let tris = '—';
+    try { tris = this.buildMesh(m.mesh).f.length.toLocaleString() + ' (preview proxy)'; } catch (err) {}
+    e.specRows = [
+      { k: 'Type', v: m.type },
+      { k: 'Dimensions', v: e.sizeLabel },
+      { k: 'File', v: e.fileLabel },
+      { k: 'Designed', v: e.createdLabel },
+      { k: 'Added to library', v: e.addedLabel },
+      { k: 'Triangles', v: tris }
+    ];
+    e.detailTags = m.tags.map(tg => ({
+      name: tg,
+      remove: () => this.patchModel(m.id, x => { x.tags = x.tags.filter(z => z !== tg); return x; })
+    }));
+    e.colChips = this.state.collections.map(c => {
+      const on = m.collections.includes(c);
+      return {
+        name: c, style: this.tagChip(on),
+        toggle: () => this.patchModel(m.id, x => { x.collections = on ? x.collections.filter(z => z !== c) : [...x.collections, c]; return x; })
+      };
+    });
+    e.slotA = 'photo-' + m.id + '-printed';
+    e.slotB = 'photo-' + m.id + '-painted';
+    return e;
+  }
+
+  submitAdd = () => {
+    const f = this.state.addForm;
+    const id = 'u' + Date.now();
+    const today = new Date().toISOString().slice(0, 10);
+    const model = {
+      id,
+      name: f.name.trim() || 'Untitled model',
+      creator: f.creator.trim() || 'You',
+      type: f.type, mesh: f.mesh, color: '#bcc0c8',
+      tags: f.tags.split(',').map(t => this.normTag(t)).filter(Boolean),
+      collections: [], format: 'STL', fileMB: 1.2,
+      size: [parseFloat(f.sx) || 50, parseFloat(f.sy) || 50, parseFloat(f.sz) || 50],
+      created: today, added: today,
+      printers: [...f.printers],
+      settings: f.settings
+        ? f.settings.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+            const i = line.indexOf(':');
+            return i > 0 ? [line.slice(0, i).trim(), line.slice(i + 1).trim()] : ['Note', line];
+          })
+        : []
+    };
+    this.setState(s => ({
+      models: [model, ...s.models],
+      showAdd: false,
+      selectedId: id,
+      addForm: { name: '', creator: '', type: 'Miniature', mesh: 'egg', sx: '', sy: '', sz: '', tags: '', printers: ['Bambu X1C', 'Bambu P1S'], settings: '', importName: '' }
+    }), () => this.genThumbs());
+  };
+
+  fakeImport = () => {
+    this.setState(s => ({
+      addForm: {
+        ...s.addForm,
+        importName: 'bambu_x1c_0.16mm_strength.json',
+        settings: 'Process: FDM · 0.4 mm nozzle\nLayer height: 0.16 mm\nInfill: 15 % gyroid\nSupports: Tree (auto)\nMaterial: PLA matte'
+      }
+    }));
+  };
+
+  addTagToSelected() {
+    const t = this.normTag(this.state.tagDraft);
+    if (!t || !this.state.selectedId) return;
+    this.patchModel(this.state.selectedId, x => { if (!x.tags.includes(t)) x.tags.push(t); return x; });
+    this.setState({ tagDraft: '' });
+  }
+
+  renderVals() {
+    const s = this.state;
+    const q = s.query.trim().toLowerCase();
+
+    const matches = (m) => {
+      if (q) {
+        const hay = (m.name + ' ' + m.creator + ' ' + m.type + ' ' + m.tags.join(' ') + ' ' + m.collections.join(' ')).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      for (const t of s.activeTags) if (!m.tags.includes(t)) return false;
+      if (s.scopeCol && !m.collections.includes(s.scopeCol)) return false;
+      if (s.smartKind === 'type' && m.type !== s.smartVal) return false;
+      if (s.smartKind === 'creator' && m.creator !== s.smartVal) return false;
+      return true;
+    };
+    const filtered = s.models.filter(matches).sort((a, b) => (b.added || '').localeCompare(a.added || ''));
+    const models = filtered.map(m => this.enrich(m));
+
+    const tagCount = {};
+    for (const m of s.models) for (const t of m.tags) tagCount[t] = (tagCount[t] || 0) + 1;
+    for (const t of s.extraTags) if (tagCount[t] == null) tagCount[t] = 0;
+    const tagNames = Object.keys(tagCount).sort((a, b) => (tagCount[b] - tagCount[a]) || a.localeCompare(b));
+
+    const typeCount = {}, creatorCount = {}, colCount = {};
+    for (const m of s.models) {
+      typeCount[m.type] = (typeCount[m.type] || 0) + 1;
+      creatorCount[m.creator] = (creatorCount[m.creator] || 0) + 1;
+      for (const c of m.collections) colCount[c] = (colCount[c] || 0) + 1;
+    }
+
+    const noScope = !s.scopeCol && !s.smartKind;
+    const hasFilters = !!(q || s.activeTags.length || s.scopeCol || s.smartKind);
+
+    let scopeTitle = 'All models';
+    if (s.scopeCol) scopeTitle = s.scopeCol;
+    else if (s.smartKind === 'type') scopeTitle = s.smartVal;
+    else if (s.smartKind === 'creator') scopeTitle = 'By ' + s.smartVal;
+    if (s.activeTags.length) scopeTitle += ' · #' + s.activeTags.join(' #');
+    if (q) scopeTitle += ' · “' + s.query.trim() + '”';
+
+    const selModel = s.selectedId ? this.curModel() : null;
+    const selected = selModel ? this.enrichDetail(selModel) : null;
+
+    return {
+      // gallery
+      models,
+      isEmpty: s.ready && filtered.length === 0,
+      isGrid: s.view === 'grid', isCards: s.view === 'cards', isList: s.view === 'list',
+      setGrid: () => this.setState({ view: 'grid' }),
+      setCards: () => this.setState({ view: 'cards' }),
+      setList: () => this.setState({ view: 'list' }),
+      vGrid: this.segBtn(s.view === 'grid'), vCards: this.segBtn(s.view === 'cards'), vList: this.segBtn(s.view === 'list'),
+      scopeTitle,
+      countLabel: filtered.length + (filtered.length === 1 ? ' MODEL' : ' MODELS'),
+      totalCount: s.models.length,
+      hasFilters,
+      clearFilters: () => this.setState({ query: '', activeTags: [], scopeCol: null, smartKind: null, smartVal: null }),
+
+      // search
+      query: s.query,
+      onQuery: (e) => this.setState({ query: e.target.value }),
+
+      // sidebar
+      goAll: () => this.setState({ scopeCol: null, smartKind: null, smartVal: null, activeTags: [], query: '' }),
+      allBtnStyle: this.sideRow(noScope && !s.activeTags.length && !q),
+      sideCollections: s.collections.map(c => ({
+        name: c, count: colCount[c] || 0,
+        style: this.sideRow(s.scopeCol === c),
+        select: () => this.setState({ scopeCol: s.scopeCol === c ? null : c, smartKind: null, smartVal: null })
+      })),
+      typeGroups: Object.keys(typeCount).sort().map(t => ({
+        name: t, count: typeCount[t],
+        style: this.sideRow(s.smartKind === 'type' && s.smartVal === t),
+        select: () => this.setState(s.smartKind === 'type' && s.smartVal === t
+          ? { smartKind: null, smartVal: null }
+          : { smartKind: 'type', smartVal: t, scopeCol: null })
+      })),
+      creatorGroups: Object.keys(creatorCount).sort().map(c => ({
+        name: c, count: creatorCount[c],
+        style: this.sideRow(s.smartKind === 'creator' && s.smartVal === c),
+        select: () => this.setState(s.smartKind === 'creator' && s.smartVal === c
+          ? { smartKind: null, smartVal: null }
+          : { smartKind: 'creator', smartVal: c, scopeCol: null })
+      })),
+      sideTags: tagNames.map(t => ({
+        name: t, count: tagCount[t],
+        style: this.tagChip(s.activeTags.includes(t)),
+        toggle: () => this.toggleTag(t)
+      })),
+
+      // detail
+      hasSelected: !!selected,
+      selected,
+      closeDetail: () => this.setState({ selectedId: null }),
+      stop: (e) => e.stopPropagation(),
+      viewerRef: this.viewerRef,
+      vDown: this.vDown, vMove: this.vMove, vUp: this.vUp, vWheel: this.vWheel, resetView: this.resetView,
+      tagDraft: s.tagDraft,
+      onTagDraft: (e) => this.setState({ tagDraft: e.target.value }),
+      tagDraftKey: (e) => { if (e.key === 'Enter') this.addTagToSelected(); },
+
+      // add modal
+      showAdd: s.showAdd,
+      openAdd: () => this.setState({ showAdd: true }),
+      closeAdd: () => this.setState({ showAdd: false }),
+      addForm: s.addForm,
+      onAddField: (e) => { const n = e.target.name, v = e.target.value; this.setState(st => ({ addForm: { ...st.addForm, [n]: v } })); },
+      addPrinters: (window.VAULT ? window.VAULT.printers : []).map(p => ({
+        name: p,
+        on: s.addForm.printers.includes(p),
+        style: this.tagChip(s.addForm.printers.includes(p)),
+        toggle: () => this.setState(st => ({
+          addForm: {
+            ...st.addForm,
+            printers: st.addForm.printers.includes(p) ? st.addForm.printers.filter(x => x !== p) : [...st.addForm.printers, p]
+          }
+        }))
+      })),
+      hasImport: !!s.addForm.importName,
+      fakeImport: this.fakeImport,
+      submitAdd: this.submitAdd,
+
+      // tags/collections manager
+      showTags: s.showTags,
+      openTags: () => this.setState({ showTags: true }),
+      closeTags: () => this.setState({ showTags: false }),
+      newTag: s.newTag,
+      onNewTag: (e) => this.setState({ newTag: e.target.value }),
+      newTagKey: (e) => { if (e.key === 'Enter') this.createTag(); },
+      createTag: () => this.createTag(),
+      manageTags: tagNames.map(t => ({
+        name: t, count: tagCount[t],
+        apply: () => this.setState(st => ({ activeTags: st.activeTags.includes(t) ? st.activeTags : [...st.activeTags, t], showTags: false })),
+        remove: () => this.setState(st => ({
+          models: st.models.map(m => ({ ...m, tags: m.tags.filter(x => x !== t) })),
+          extraTags: st.extraTags.filter(x => x !== t),
+          activeTags: st.activeTags.filter(x => x !== t)
+        }))
+      })),
+      newCol: s.newCol,
+      onNewCol: (e) => this.setState({ newCol: e.target.value }),
+      newColKey: (e) => { if (e.key === 'Enter') this.createCol(); },
+      createCol: () => this.createCol(),
+      manageCols: s.collections.map(c => ({
+        name: c, count: colCount[c] || 0,
+        apply: () => this.setState({ scopeCol: c, smartKind: null, smartVal: null, showTags: false }),
+        remove: () => this.setState(st => ({
+          collections: st.collections.filter(x => x !== c),
+          models: st.models.map(m => ({ ...m, collections: m.collections.filter(x => x !== c) })),
+          scopeCol: st.scopeCol === c ? null : st.scopeCol
+        }))
+      }))
+    };
+  }
+
+  createTag() {
+    const t = this.normTag(this.state.newTag);
+    if (!t) return;
+    this.setState(s => ({ extraTags: s.extraTags.includes(t) ? s.extraTags : [...s.extraTags, t], newTag: '' }));
+  }
+  createCol() {
+    const c = this.state.newCol.trim();
+    if (!c) return;
+    this.setState(s => ({ collections: s.collections.includes(c) ? s.collections : [...s.collections, c], newCol: '' }));
+  }
+}
+</script>
+</body>
+</html>

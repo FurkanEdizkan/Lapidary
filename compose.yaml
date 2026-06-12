@@ -1,0 +1,32 @@
+# Works with `docker compose up` and `podman compose up` / `podman-compose up`.
+# Redis is optional: remove the service (and REDIS_URL) and the app falls back to
+# an in-process LRU cache with no loss of functionality.
+
+services:
+  app:
+    build: .
+    image: manifold-print-library
+    ports:
+      - "5174:5174"
+    environment:
+      DATA_DIR: /data
+      PORT: "5174"
+      REDIS_URL: redis://redis:6379
+      # Scan target inside the container (see the optional bind mount below).
+      LIBRARY_PATH: /library
+    volumes:
+      - forge-data:/data
+      # Optional: mount a host model library read-only so "Scan" can index it at /library.
+      # Set LIBRARY_PATH on the host (e.g. `export LIBRARY_PATH=~/3d-models`) before `up`.
+      - ${LIBRARY_PATH:-./fixtures}:/library:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+
+volumes:
+  forge-data:

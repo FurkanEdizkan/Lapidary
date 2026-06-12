@@ -1,0 +1,124 @@
+import { useEffect, useRef, useState } from 'react';
+import type { ModelDetail } from '../api/client';
+import { api } from '../api/client';
+import { getMesh3D, buildProxy } from '../lib/mesh3d';
+import { mountViewer, type ViewerHandle } from '../lib/threeViewer';
+import { C, F } from '../theme';
+
+type Tier = 'lod' | 'original';
+
+/**
+ * Viewer for a single model. Real files (hasLod/hasOriginal) render via Three.js,
+ * loading the Tier-2 LOD first and the Tier-3 original on demand. Seeded "proxy"
+ * models (meshKind only) render with the prototype's flat-shaded 2D renderer.
+ */
+export function ModelViewer({ model }: { model: ModelDetail }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const handleRef = useRef<ViewerHandle | null>(null);
+  const isReal = model.hasLod || model.hasOriginal;
+  const [tier, setTier] = useState<Tier>(model.hasLod ? 'lod' : 'original');
+  const [loading, setLoading] = useState(isReal);
+  const [error, setError] = useState<string | null>(null);
+
+  // ---- Real mesh path (Three.js) ----
+  useEffect(() => {
+    if (!isReal || !canvasRef.current) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const url = tier === 'lod' && model.hasLod ? `/api/models/${model.id}/lod` : `/api/models/${model.id}/original`;
+    mountViewer(canvasRef.current, url, model.format)
+      .then((handle) => {
+        if (cancelled) { handle.destroy(); return; }
+        handleRef.current = handle;
+        setLoading(false);
+        // Persist a thumbnail and real bbox the first time we render a model that lacks them.
+        if (!model.hasThumbnail) {
+          const dataUrl = handle.thumbnail();
+          if (dataUrl) api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
+        }
+        const bbox = handle.boundingBox();
+        if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);
+      })
+      .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } });
+    return () => {
+      cancelled = true;
+      handleRef.current?.destroy();
+      handleRef.current = null;
+    };
+  }, [model.id, tier, isReal, model.format, model.hasLod]);
+
+  // ---- Proxy mesh path (2D canvas renderer) ----
+  useEffect(() => {
+    if (isReal || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const api3d = getMesh3D();
+    const mesh = buildProxy(model.meshKind || 'egg');
+    if (!api3d || !mesh) return;
+    const view = { rx: -0.38, ry: 0.85, zoom: 1 };
+    const draw = () => api3d.render(canvas, mesh, { rx: view.rx, ry: view.ry, zoom: view.zoom, color: model.color });
+    draw();
+    let drag: { x: number; y: number } | null = null;
+    const down = (e: PointerEvent) => { drag = { x: e.clientX, y: e.clientY }; try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ } };
+    const moveE = (e: PointerEvent) => {
+      if (!drag) return;
+      view.ry += (e.clientX - drag.x) * 0.011;
+      view.rx = Math.max(-1.5, Math.min(1.5, view.rx + (e.clientY - drag.y) * 0.011));
+      drag = { x: e.clientX, y: e.clientY };
+      draw();
+    };
+    const up = () => { drag = null; };
+    const wheel = (e: WheelEvent) => { e.preventDefault(); view.zoom = Math.max(0.4, Math.min(3.2, view.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); draw(); };
+    (canvas as HTMLCanvasElement & { _reset?: () => void })._reset = () => { view.rx = -0.38; view.ry = 0.85; view.zoom = 1; draw(); };
+    canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('pointermove', moveE);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('wheel', wheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('pointerdown', down);
+      canvas.removeEventListener('pointermove', moveE);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('wheel', wheel);
+    };
+  }, [model.id, isReal, model.meshKind, model.color]);
+
+  const reset = () => {
+    if (isReal) handleRef.current?.reset();
+    else (canvasRef.current as (HTMLCanvasElement & { _reset?: () => void }) | null)?._reset?.();
+  };
+
+  return (
+    <div style={{ position: 'relative', background: 'radial-gradient(ellipse at 50% 44%, #222227 0%, #131316 78%)', borderRight: `1px solid ${C.border}`, display: 'flex', minWidth: 0 }}>
+      <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
+      <div style={badge('left', 14)}>{model.format} · {(model.fileSizeBytes / (1024 * 1024) || 0).toFixed(1)} MB</div>
+      <div style={{ position: 'absolute', left: 16, bottom: 14, fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.14em', color: C.textFaint }}>DRAG TO ROTATE · SCROLL TO ZOOM</div>
+
+      {isReal && model.hasLod && (
+        <button
+          onClick={() => setTier((t) => (t === 'lod' ? 'original' : 'lod'))}
+          className="hover-cyan"
+          style={{ position: 'absolute', right: 14, top: 12, ...pill }}
+          title="LOD loads instantly; full mesh reads the real file"
+        >
+          {tier === 'lod' ? 'VIEW FULL MESH' : 'BACK TO LOD'}
+        </button>
+      )}
+      <button onClick={reset} className="hover-cyan" style={{ position: 'absolute', right: 14, bottom: 12, ...pill }}>RESET VIEW</button>
+
+      {loading && <div style={overlayMsg}>loading mesh…</div>}
+      {error && <div style={{ ...overlayMsg, color: C.danger }}>could not load mesh</div>}
+    </div>
+  );
+}
+
+const pill: React.CSSProperties = {
+  background: 'rgba(24,24,28,0.85)', border: `1px solid ${C.border4}`, color: '#b3b3ba',
+  fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.12em', padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
+};
+function badge(side: 'left' | 'right', top: number): React.CSSProperties {
+  return { position: 'absolute', [side]: 16, top, fontFamily: F.mono, fontSize: 10, letterSpacing: '0.1em', color: C.textMute, background: 'rgba(13,13,15,0.72)', border: `1px solid ${C.border3}`, padding: '3px 8px', borderRadius: 6 } as React.CSSProperties;
+}
+const overlayMsg: React.CSSProperties = {
+  position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+  fontFamily: F.mono, fontSize: 11, letterSpacing: '0.1em', color: '#9b9ba1',
+};
