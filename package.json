@@ -1,8 +1,8 @@
 {
-  "name": "manifold-print-library",
+  "name": "lapidary",
   "version": "0.1.0",
   "private": true,
-  "description": "Manifold Print Library — fast dark-themed gallery for 3D printable models",
+  "description": "Lapidary — fast dark-themed gallery for 3D printable models",
   "workspaces": [
     "server",
     "web"

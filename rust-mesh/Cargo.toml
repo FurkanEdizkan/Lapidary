@@ -2,7 +2,7 @@
 name = "rust-mesh"
 version = "0.1.0"
 edition = "2021"
-description = "Optional mesh sidecar for Manifold: bbox + triangle count + decimated LOD"
+description = "Optional mesh sidecar for Lapidary: bbox + triangle count + decimated LOD"
 
 [[bin]]
 name = "rust-mesh"

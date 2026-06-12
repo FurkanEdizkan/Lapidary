@@ -1,4 +1,4 @@
-# Manifold Print Library — single-image build for Docker and Podman.
+# Lapidary — single-image build for Docker and Podman.
 # Multi-stage: (1) optional Rust mesh sidecar, (2) Node build, (3) slim runtime.
 
 # ---------- Stage 1: Rust mesh sidecar (optional but included) ----------

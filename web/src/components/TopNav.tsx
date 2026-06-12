@@ -18,7 +18,7 @@ export function TopNav() {
         <div style={{ width: 24, height: 24, border: `1.5px solid ${C.accent}`, transform: 'rotate(45deg)', display: 'grid', placeItems: 'center' }}>
           <div style={{ width: 8, height: 8, background: C.accent }} />
         </div>
-        <div style={{ fontWeight: 800, letterSpacing: '0.14em', fontSize: 14 }}>MANIFOLD</div>
+        <div style={{ fontWeight: 800, letterSpacing: '0.14em', fontSize: 14 }}>LAPIDARY</div>
       </div>
 
       <div style={{ position: 'relative', flex: 1, maxWidth: 620, margin: '0 auto' }}>

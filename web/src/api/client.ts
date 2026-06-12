@@ -1,4 +1,4 @@
-/** Typed fetch wrappers + React Query hooks for the Manifold API. */
+/** Typed fetch wrappers + React Query hooks for the Lapidary API. */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 export interface Model {

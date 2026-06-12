@@ -1,4 +1,4 @@
-//! rust-mesh — optional CPU mesh sidecar for Manifold Print Library.
+//! rust-mesh — optional CPU mesh sidecar for Lapidary.
 //!
 //! Usage:
 //!   rust-mesh <file.stl|.obj> [--lod out.stl] [--json]

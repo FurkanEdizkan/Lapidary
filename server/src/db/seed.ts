@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 
 /**
  * Sample library, mirrored from the design bundle's `design/data.js`, so a fresh
- * install opens to a populated Manifold gallery. Seeding runs once (when models is empty).
+ * install opens to a populated Lapidary gallery. Seeding runs once (when models is empty).
  */
 export interface SeedModel {
   id: string;

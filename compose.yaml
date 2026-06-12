@@ -5,7 +5,7 @@
 services:
   app:
     build: .
-    image: manifold-print-library
+    image: lapidary
     ports:
       - "5174:5174"
     environment:
@@ -15,7 +15,7 @@ services:
       # Scan target inside the container (see the optional bind mount below).
       LIBRARY_PATH: /library
     volumes:
-      - forge-data:/data
+      - lapidary-data:/data
       # Optional: mount a host model library read-only so "Scan" can index it at /library.
       # Set LIBRARY_PATH on the host (e.g. `export LIBRARY_PATH=~/3d-models`) before `up`.
       - ${LIBRARY_PATH:-./fixtures}:/library:ro
@@ -29,4 +29,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  forge-data:
+  lapidary-data:

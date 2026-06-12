@@ -1,4 +1,4 @@
-# Manifold Print Library
+# Lapidary
 
 A fast, dark-themed gallery for your 3D-printable models (STL · 3MF · OBJ). Browse an
 image-first grid, open any model in an interactive 3D viewer, and **tag, pin, group, and
@@ -44,12 +44,12 @@ npm start            # serves web/dist + API on :5174 -> http://localhost:5174
 ## Run with Docker / Podman
 
 ```bash
-docker build -t manifold .        # or: podman build -t manifold .
+docker build -t lapidary .        # or: podman build -t lapidary .
 docker compose up                 # or: podman compose up  /  podman-compose up
 # open http://localhost:5174
 ```
 
-- Library data persists in the `forge-data` volume (`/data` in the container).
+- Library data persists in the `lapidary-data` volume (`/data` in the container).
 - To index an existing on-disk library, point `LIBRARY_PATH` at it before `up`; it is mounted
   read-only at `/library` and indexed by **Scan** (or `POST /api/scan`).
 - Remove the `redis` service to run with the LRU cache fallback.
@@ -63,9 +63,9 @@ See `.env.example`. Key variables: `PORT`, `DATA_DIR`, `REDIS_URL` (optional),
 
 - `server/` — Fastify + SQLite (`better-sqlite3`). Modular services (one responsibility each)
   under `server/src/services`, thin routes in `server/src/routes`.
-- `web/` — React + Vite. Design reproduced from the Manifold handoff bundle in `design/`.
+- `web/` — React + Vite. Design reproduced from the design handoff bundle in `design/`.
 - `rust-mesh/` — optional Cargo crate: bbox + triangle count + decimated LOD.
 - `data/` — runtime library storage: `models/` (compressed), `lod/`, `thumbnails/`,
-  `images/`, `profiles/`, `manifold.db`.
+  `images/`, `profiles/`, `lapidary.db`.
 
 A fresh install is seeded with 20 sample models so the gallery is populated immediately.

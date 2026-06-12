@@ -30,7 +30,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: '0.0.0.0' });
   app.log.info(
-    `Manifold Print Library on :${config.port} | data=${config.dataDir} | cache=${cacheBackend()} | spa=${config.webDist ? 'served' : 'dev (vite)'}`,
+    `Lapidary on :${config.port} | data=${config.dataDir} | cache=${cacheBackend()} | spa=${config.webDist ? 'served' : 'dev (vite)'}`,
   );
 }
 

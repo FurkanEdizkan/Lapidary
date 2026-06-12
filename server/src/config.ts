@@ -53,7 +53,7 @@ export function loadConfig(): Config {
     thumbnailsDir: ensureDir(path.join(dataDir, 'thumbnails')),
     imagesDir: ensureDir(path.join(dataDir, 'images')),
     profilesDir: ensureDir(path.join(dataDir, 'profiles')),
-    dbPath: path.join(dataDir, 'manifold.db'),
+    dbPath: path.join(dataDir, 'lapidary.db'),
     redisUrl: process.env.REDIS_URL || null,
     libraryPath: process.env.LIBRARY_PATH || null,
     meshSidecarBin: process.env.MESH_SIDECAR_BIN || null,
