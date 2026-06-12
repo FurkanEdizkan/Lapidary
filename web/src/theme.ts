@@ -1,4 +1,4 @@
-/** Design tokens lifted verbatim from `design/Manifold Print Library.dc.html`. */
+/** Design tokens lifted verbatim from `design/Lapidary.dc.html`. */
 export const C = {
   page: '#121214',
   nav: '#0d0d0e',

@@ -35,12 +35,12 @@
         <div style="width: 9px; height: 9px; background: #d8d8dc;"></div>
       </div>
       <div>
-        <div style="font-weight: 800; letter-spacing: 0.14em; font-size: 14.5px;">MANIFOLD</div>
+        <div style="font-weight: 800; letter-spacing: 0.14em; font-size: 14.5px;">LAPIDARY</div>
         <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: #66666f; letter-spacing: 0.18em; margin-top: 1px;">PRINT LIBRARY</div>
       </div>
     </div>
 
-    <div style="overflow-y: auto; flex: 1; padding: 14px 12px 24px; display: flex; flex-direction: column; gap: 22px; min-height: 0;">
+    <div style="overflow-y: auto; flex: 1; padding: 14px 12px 24px; display: flex; flex-direction: column; gap: 24px; min-height: 0;">
 
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <button onClick="{{ goAll }}" style="{{ allBtnStyle }}" style-hover="color: #f2f2f4;">
@@ -50,42 +50,38 @@
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 4px;">
-        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">COLLECTIONS</div>
-        <sc-for list="{{ sideCollections }}" as="c" hint-placeholder-count="4">
-          <button onClick="{{ c.select }}" style="{{ c.style }}" style-hover="color: #f2f2f4;">
-            <span style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="color: #5d5d66; font-size: 10px;">▣</span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.name }}</span></span>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ c.count }}</span>
-          </button>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">PINNED</div>
+        <sc-for list="{{ pins }}" as="p" hint-placeholder-count="2">
+          <div style="{{ p.rowStyle }}">
+            <button onClick="{{ p.select }}" style="{{ p.btnStyle }}" style-hover="color: #f2f2f4;">
+              <span style="color: #5d5d66; font-size: 10px; flex: 0 0 auto;">{{ p.icon }}</span>
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.name }}</span>
+            </button>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76; flex: 0 0 auto;">{{ p.count }}</span>
+            <button onClick="{{ p.unpin }}" title="Unpin" style="background: none; border: none; color: #4e4e57; cursor: pointer; font-size: 11px; padding: 2px 3px; flex: 0 0 auto;" style-hover="color: #e8e8ea;">✕</button>
+          </div>
         </sc-for>
+        <sc-if value="{{ noPins }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 4px 10px; font-size: 11px; color: #56565f; line-height: 1.5;">Pin creators, tags or groups from search results to keep them here.</div>
+        </sc-if>
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 4px;">
-        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">SMART GROUPS · TYPE</div>
-        <sc-for list="{{ typeGroups }}" as="g" hint-placeholder-count="5">
-          <button onClick="{{ g.select }}" style="{{ g.style }}" style-hover="color: #f2f2f4;">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ g.count }}</span>
-          </button>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">GROUPS</div>
+        <sc-for list="{{ sideGroups }}" as="g" hint-placeholder-count="4">
+          <div style="{{ g.rowStyle }}">
+            <button onClick="{{ g.select }}" style="{{ g.btnStyle }}" style-hover="color: #f2f2f4;">
+              <span style="color: #5d5d66; font-size: 10px; flex: 0 0 auto;">▣</span>
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
+              <sc-if value="{{ g.shared }}" hint-placeholder-val="{{ false }}">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 7.5px; letter-spacing: 0.14em; color: #6f6f79; border: 1px solid #26262c; border-radius: 4px; padding: 1px 4px; flex: 0 0 auto;">SHARED</span>
+              </sc-if>
+            </button>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76; flex: 0 0 auto;">{{ g.count }}</span>
+            <button onClick="{{ g.pin }}" title="Pin group" style="background: none; border: none; color: #4e4e57; cursor: pointer; font-size: 11px; padding: 2px 3px; flex: 0 0 auto;" style-hover="color: #e8e8ea;">{{ g.pinIcon }}</button>
+          </div>
         </sc-for>
-      </div>
-
-      <div style="display: flex; flex-direction: column; gap: 4px;">
-        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px 4px;">SMART GROUPS · CREATOR</div>
-        <sc-for list="{{ creatorGroups }}" as="g" hint-placeholder-count="5">
-          <button onClick="{{ g.select }}" style="{{ g.style }}" style-hover="color: #f2f2f4;">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ g.name }}</span>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #6d6d76;">{{ g.count }}</span>
-          </button>
-        </sc-for>
-      </div>
-
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66; padding: 0 10px;">TAGS</div>
-        <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px;">
-          <sc-for list="{{ sideTags }}" as="t" hint-placeholder-count="8">
-            <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #3c3c46;">{{ t.name }}<span style="opacity: 0.55;">{{ t.count }}</span></button>
-          </sc-for>
-        </div>
+        <input value="{{ newCol }}" onChange="{{ onNewCol }}" onKeyDown="{{ newColKey }}" placeholder="+ New group ↵" style="margin: 6px 8px 0; background: transparent; border: 1px dashed #26262e; border-radius: 8px; color: #e8e8ea; font-size: 12px; padding: 6px 10px; outline: none;" style-focus="border-color: #4a4a55;" />
       </div>
 
     </div>
@@ -96,46 +92,108 @@
 
     <!-- topbar -->
     <div style="display: flex; align-items: center; gap: 12px; padding: 12px 22px; border-bottom: 1px solid #19191e; background: #0a0a0c;">
-      <div style="position: relative; flex: 1; max-width: 460px;">
+      <div style="position: relative; flex: 1; max-width: 520px;">
         <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #5d5d66; font-size: 13px; pointer-events: none;">⌕</div>
-        <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Search models, tags, creators — try “dragon”" style="width: 100%; background: #121216; border: 1px solid #222228; border-radius: 9px; color: #e8e8ea; font-size: 13px; padding: 9px 12px 9px 32px; outline: none;" style-focus="border-color: #3c3c46; background: #15151a;" />
+        <input value="{{ query }}" onChange="{{ onQuery }}" onFocus="{{ onSearchFocus }}" onBlur="{{ onSearchBlur }}" placeholder="Search models, tags, creators — try “dragon”" style="width: 100%; background: #121216; border: 1px solid #222228; border-radius: 9px; color: #e8e8ea; font-size: 13px; padding: 9px 12px 9px 32px; outline: none;" style-focus="border-color: #3c3c46; background: #15151a;" />
+
+        <!-- search dropdown -->
+        <sc-if value="{{ showSearchPanel }}" hint-placeholder-val="{{ false }}">
+          <div data-screen-label="Search suggestions" onMouseDown="{{ keepFocus }}" style="position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #101014; border: 1px solid #26262e; border-radius: 12px; box-shadow: 0 28px 64px rgba(0,0,0,0.65); z-index: 80; max-height: 460px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 10px;">
+
+            <sc-if value="{{ hasModelHits }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #5d5d66; padding: 4px 8px;">MODELS</div>
+                <sc-for list="{{ modelHits }}" as="h" hint-placeholder-count="3">
+                  <button onClick="{{ h.open }}" style="display: flex; align-items: center; gap: 10px; width: 100%; background: transparent; border: none; border-radius: 8px; padding: 6px 8px; cursor: pointer; text-align: left;" style-hover="background: #1a1a20;">
+                    <div style="width: 42px; height: 36px; border-radius: 6px; background: #15151a; border: 1px solid #1e1e24; flex: 0 0 auto; overflow: hidden;">
+                      <div style="{{ h.thumbStyle }}"></div>
+                    </div>
+                    <div style="min-width: 0; flex: 1;">
+                      <div style="font-size: 12.5px; font-weight: 600; color: #e4e4e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ h.name }}</div>
+                      <div style="font-size: 10.5px; color: #7c7c86;">{{ h.creator }} · {{ h.type }}</div>
+                    </div>
+                  </button>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ hasCreatorHits }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #5d5d66; padding: 4px 8px;">CREATORS</div>
+                <sc-for list="{{ creatorHits }}" as="c" hint-placeholder-count="2">
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <button onClick="{{ c.select }}" style="display: flex; align-items: center; gap: 9px; flex: 1; background: transparent; border: none; border-radius: 8px; padding: 7px 8px; cursor: pointer; text-align: left; min-width: 0;" style-hover="background: #1a1a20;">
+                      <span style="color: #5d5d66; font-size: 10px;">◆</span>
+                      <span style="font-size: 12.5px; font-weight: 600; color: #e4e4e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.name }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6d6d76;">{{ c.count }} models</span>
+                    </button>
+                    <button onClick="{{ c.pin }}" title="Pin creator" style="background: none; border: none; color: #6a6a74; cursor: pointer; font-size: 13px; padding: 4px 8px; flex: 0 0 auto;" style-hover="color: #f0f0f2;">{{ c.pinIcon }}</button>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ hasTagHits }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.2em; color: #5d5d66; padding: 4px 8px 0;">{{ tagHeader }}</div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 6px;">
+                  <sc-for list="{{ tagHits }}" as="t" hint-placeholder-count="5">
+                    <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #3c3c46;">{{ t.name }}<span style="opacity: 0.55;">{{ t.count }}</span></button>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ noHits }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 14px 10px; font-size: 12px; color: #6d6d76; text-align: center;">No matches in the library.</div>
+            </sc-if>
+          </div>
+        </sc-if>
       </div>
+
       <div style="flex: 1;"></div>
       <div style="display: flex; gap: 2px; background: #121216; border: 1px solid #222228; border-radius: 9px; padding: 3px;">
         <button onClick="{{ setGrid }}" style="{{ vGrid }}">Grid</button>
         <button onClick="{{ setCards }}" style="{{ vCards }}">Cards</button>
         <button onClick="{{ setList }}" style="{{ vList }}">List</button>
       </div>
-      <button onClick="{{ openTags }}" style="background: transparent; border: 1px solid #2a2a32; color: #c5c5cd; border-radius: 9px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;" style-hover="border-color: #44444e; color: #f0f0f2;">Tags ⁄ Collections</button>
+      <button onClick="{{ openTags }}" style="background: transparent; border: 1px solid #2a2a32; color: #c5c5cd; border-radius: 9px; padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;" style-hover="border-color: #44444e; color: #f0f0f2;">Tags ⁄ Groups</button>
       <button onClick="{{ openAdd }}" style="background: #e8e8ea; border: 1px solid #e8e8ea; color: #0b0b0d; border-radius: 9px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">+ Add model</button>
     </div>
 
+    <!-- channel rail -->
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 22px 2px; flex: 0 0 auto;">
+      <button onClick="{{ goAll }}" style="{{ railAllStyle }}" style-hover="border-color: #3c3c46;">All</button>
+      <sc-for list="{{ railTags }}" as="t" hint-placeholder-count="8">
+        <button onClick="{{ t.toggle }}" style="{{ t.style }}" style-hover="border-color: #3c3c46;">{{ t.name }}</button>
+      </sc-for>
+    </div>
+
     <!-- gallery -->
-    <div style="flex: 1; overflow-y: auto; padding: 20px 24px 40px; min-height: 0;">
-      <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px;">
+    <div style="flex: 1; overflow-y: auto; padding: 16px 22px 40px; min-height: 0;">
+      <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px;">
         <div style="font-size: 20px; font-weight: 700; letter-spacing: -0.01em;">{{ scopeTitle }}</div>
         <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #6d6d76;">{{ countLabel }}</div>
+        <sc-for list="{{ filterChips }}" as="f" hint-placeholder-count="1">
+          <span style="display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 99px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #0c0c0e; background: #e8e8ea; border: 1px solid #e8e8ea;">{{ f.label }}<button onClick="{{ f.remove }}" style="background: none; border: none; color: #44444c; cursor: pointer; padding: 0; font-size: 11px; line-height: 1;" style-hover="color: #000000;">✕</button></span>
+        </sc-for>
         <sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}">
-          <button onClick="{{ clearFilters }}" style="background: transparent; border: none; color: #8b8b95; font-size: 11.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; padding: 0;" style-hover="color: #e8e8ea;">clear filters</button>
+          <button onClick="{{ clearFilters }}" style="background: transparent; border: none; color: #8b8b95; font-size: 11.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; padding: 0;" style-hover="color: #e8e8ea;">clear all</button>
         </sc-if>
       </div>
 
-      <!-- GRID view -->
+      <!-- GRID view : image-first tiles -->
       <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ true }}">
-        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 14px;">
-          <sc-for list="{{ models }}" as="m" hint-placeholder-count="10">
-            <div onClick="{{ m.open }}" style="background: #111114; border: 1px solid #1e1e24; border-radius: 11px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;" style-hover="border-color: #3a3a44; transform: translateY(-2px); box-shadow: 0 14px 30px rgba(0,0,0,0.5);">
-              <div style="height: 152px; background: radial-gradient(circle at 50% 40%, #1a1a20 0%, #0f0f12 75%); position: relative; display: grid; place-items: center;">
-                <sc-if value="{{ m.hasThumb }}" hint-placeholder-val="{{ false }}">
-                  <div style="{{ m.thumbStyle }}"></div>
-                </sc-if>
-                <div style="position: absolute; top: 8px; left: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: #7c7c86; background: rgba(8,8,10,0.72); border: 1px solid #24242a; padding: 2px 6px; border-radius: 5px;">{{ m.format }}</div>
-              </div>
-              <div style="padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px;">
-                <div style="font-weight: 600; font-size: 13.5px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
-                <div style="font-size: 11.5px; color: #84848e;">{{ m.creator }}</div>
-                <div style="display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6d6d76;">
-                  <span>{{ m.type }}</span><span>{{ m.sizeShort }} mm</span>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(234px, 1fr)); gap: 10px;">
+          <sc-for list="{{ models }}" as="m" hint-placeholder-count="12">
+            <div onClick="{{ m.open }}" style="position: relative; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden; cursor: pointer; background: #101013;">
+              <div style="{{ m.tileStyle }}"></div>
+              <div style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; padding: 14px; background: linear-gradient(to top, rgba(4,4,7,0.92) 0%, rgba(4,4,7,0.4) 30%, rgba(4,4,7,0) 58%); opacity: 0; transition: opacity 0.16s ease;" style-hover="opacity: 1;">
+                <div style="font-weight: 650; font-size: 14px; line-height: 1.25; text-wrap: pretty;">{{ m.name }}</div>
+                <div style="font-size: 11.5px; color: #b9b9c2; margin-top: 3px;">{{ m.creator }} · {{ m.type }}</div>
+                <div style="display: flex; gap: 6px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.08em; color: #9a9aa4;">
+                  <span style="background: rgba(20,20,26,0.85); border: 1px solid #2a2a32; padding: 2px 7px; border-radius: 5px;">{{ m.format }}</span>
+                  <span style="background: rgba(20,20,26,0.85); border: 1px solid #2a2a32; padding: 2px 7px; border-radius: 5px;">{{ m.sizeShort }} MM</span>
                 </div>
               </div>
             </div>
@@ -230,7 +288,10 @@
           <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;">
             <div style="min-width: 0;">
               <div style="font-size: 21px; font-weight: 750; line-height: 1.15; letter-spacing: -0.01em; text-wrap: pretty;">{{ selected.name }}</div>
-              <div style="margin-top: 6px; font-size: 12.5px; color: #8b8b95;">by {{ selected.creator }} · added {{ selected.addedLabel }}</div>
+              <div style="margin-top: 6px; font-size: 12.5px; color: #8b8b95; display: flex; align-items: center; gap: 8px;">
+                <span>by {{ selected.creator }} · added {{ selected.addedLabel }}</span>
+                <button onClick="{{ selected.pinCreator }}" title="Pin creator to sidebar" style="background: none; border: 1px solid #2a2a32; color: #9b9ba4; cursor: pointer; font-size: 11px; padding: 2px 9px; border-radius: 99px; display: inline-flex; align-items: center; gap: 5px;" style-hover="color: #f0f0f2; border-color: #44444e;">{{ selected.pinIcon }} creator</button>
+              </div>
             </div>
             <button onClick="{{ closeDetail }}" style="background: #16161a; border: 1px solid #26262e; color: #9b9ba4; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; flex: 0 0 auto; display: grid; place-items: center;" style-hover="color: #f0f0f2; border-color: #44444e;">✕</button>
           </div>
@@ -277,9 +338,9 @@
           </div>
 
           <div style="display: flex; flex-direction: column; gap: 8px;">
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">COLLECTIONS</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">GROUPS</div>
             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-              <sc-for list="{{ selected.colChips }}" as="c" hint-placeholder-count="4">
+              <sc-for list="{{ selected.groupChips }}" as="c" hint-placeholder-count="4">
                 <button onClick="{{ c.toggle }}" style="{{ c.style }}" style-hover="border-color: #3c3c46;">{{ c.name }}</button>
               </sc-for>
             </div>
@@ -387,12 +448,12 @@
     </div>
   </sc-if>
 
-  <!-- ============ TAGS / COLLECTIONS MANAGER ============ -->
+  <!-- ============ TAGS / GROUPS MANAGER ============ -->
   <sc-if value="{{ showTags }}" hint-placeholder-val="{{ false }}">
-    <div data-screen-label="Tags and collections" onClick="{{ closeTags }}" style="position: fixed; inset: 0; background: rgba(4,4,6,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
+    <div data-screen-label="Tags and groups" onClick="{{ closeTags }}" style="position: fixed; inset: 0; background: rgba(4,4,6,0.74); backdrop-filter: blur(7px); z-index: 60; display: grid; place-items: center; padding: 28px;">
       <div onClick="{{ stop }}" style="width: min(560px, 94vw); max-height: 88vh; overflow-y: auto; background: #0e0e11; border: 1px solid #25252c; border-radius: 16px; padding: 26px 28px 28px; display: flex; flex-direction: column; gap: 20px; box-shadow: 0 44px 90px rgba(0,0,0,0.65);">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div style="font-size: 19px; font-weight: 750;">Tags ⁄ Collections</div>
+          <div style="font-size: 19px; font-weight: 750;">Tags ⁄ Groups</div>
           <button onClick="{{ closeTags }}" style="background: #16161a; border: 1px solid #26262e; color: #9b9ba4; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 13px; display: grid; place-items: center;" style-hover="color: #f0f0f2;">✕</button>
         </div>
 
@@ -407,6 +468,7 @@
               <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #17171c;">
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #d0d0d6; flex: 1;">{{ t.name }}</span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #62626c;">{{ t.count }} models</span>
+                <button onClick="{{ t.pin }}" title="Pin tag" style="background: transparent; border: none; color: #6a6a74; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #f0f0f2;">{{ t.pinIcon }}</button>
                 <button onClick="{{ t.apply }}" style="background: transparent; border: 1px solid #2a2a32; color: #9b9ba4; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #f0f0f2; border-color: #44444e;">filter</button>
                 <button onClick="{{ t.remove }}" style="background: transparent; border: none; color: #62626c; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
               </div>
@@ -415,16 +477,21 @@
         </div>
 
         <div style="display: flex; flex-direction: column; gap: 9px;">
-          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">COLLECTIONS</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.2em; color: #5d5d66;">GROUPS <span style="letter-spacing: 0.05em; color: #4e4e57;">— personal & shared folders</span></div>
           <div style="display: flex; gap: 8px;">
-            <input value="{{ newCol }}" onChange="{{ onNewCol }}" onKeyDown="{{ newColKey }}" placeholder="New collection, e.g. Dragon Hoard" style="flex: 1; background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 12.5px; padding: 8px 11px; outline: none;" style-focus="border-color: #3c3c46;" />
-            <button onClick="{{ createCol }}" style="background: #e8e8ea; border: none; color: #0b0b0d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">Create</button>
+            <input value="{{ newColModal }}" onChange="{{ onNewColModal }}" onKeyDown="{{ newColModalKey }}" placeholder="New group, e.g. Dragon Hoard" style="flex: 1; background: #121216; border: 1px solid #222228; border-radius: 8px; color: #e8e8ea; font-size: 12.5px; padding: 8px 11px; outline: none;" style-focus="border-color: #3c3c46;" />
+            <button onClick="{{ createColModal }}" style="background: #e8e8ea; border: none; color: #0b0b0d; border-radius: 8px; padding: 8px 15px; font-size: 12px; font-weight: 700; cursor: pointer;" style-hover="background: #ffffff;">Create</button>
           </div>
           <div style="display: flex; flex-direction: column;">
-            <sc-for list="{{ manageCols }}" as="c" hint-placeholder-count="4">
+            <sc-for list="{{ manageGroups }}" as="c" hint-placeholder-count="4">
               <div style="display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid #17171c;">
-                <span style="font-size: 12.5px; color: #d0d0d6; flex: 1;">{{ c.name }}</span>
+                <span style="font-size: 12.5px; color: #d0d0d6; flex: 1; display: inline-flex; align-items: center; gap: 8px;">{{ c.name }}
+                  <sc-if value="{{ c.shared }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 7.5px; letter-spacing: 0.14em; color: #6f6f79; border: 1px solid #26262c; border-radius: 4px; padding: 1px 4px;">SHARED</span>
+                  </sc-if>
+                </span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #62626c;">{{ c.count }} models</span>
+                <button onClick="{{ c.toggleShared }}" style="background: transparent; border: 1px solid #2a2a32; color: #9b9ba4; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #f0f0f2; border-color: #44444e;">{{ c.shareLabel }}</button>
                 <button onClick="{{ c.apply }}" style="background: transparent; border: 1px solid #2a2a32; color: #9b9ba4; border-radius: 6px; padding: 3px 9px; font-size: 10.5px; cursor: pointer;" style-hover="color: #f0f0f2; border-color: #44444e;">open</button>
                 <button onClick="{{ c.remove }}" style="background: transparent; border: none; color: #62626c; cursor: pointer; font-size: 12px; padding: 2px 4px;" style-hover="color: #e07a7a;">✕</button>
               </div>
@@ -440,9 +507,10 @@
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   state = {
-    ready: false, query: '', activeTags: [], scopeCol: null, smartKind: null, smartVal: null,
-    view: 'grid', selectedId: null, showAdd: false, showTags: false,
-    models: [], collections: [], extraTags: [], thumbs: {}, tagDraft: '', newTag: '', newCol: '',
+    ready: false, query: '', activeTags: [], groupScope: null, creatorScope: null,
+    searchFocus: false, view: 'grid', selectedId: null, showAdd: false, showTags: false,
+    models: [], groups: [], extraTags: [], thumbs: {}, tagDraft: '', newTag: '', newCol: '', newColModal: '',
+    pins: [{ kind: 'creator', name: 'TrenchWorks' }, { kind: 'tag', name: 'dragon' }],
     addForm: { name: '', creator: '', type: 'Miniature', mesh: 'egg', sx: '', sy: '', sz: '', tags: '', printers: ['Bambu X1C', 'Bambu P1S'], settings: '', importName: '' }
   };
   meshes = {};
@@ -450,16 +518,16 @@ class Component extends DCLogic {
   view3 = { rx: -0.38, ry: 0.85, zoom: 1 };
 
   componentDidMount() {
-    this._esc = (e) => { if (e.key === 'Escape') this.setState({ selectedId: null, showAdd: false, showTags: false }); };
+    this._esc = (e) => { if (e.key === 'Escape') this.setState({ selectedId: null, showAdd: false, showTags: false, searchFocus: false }); };
     document.addEventListener('keydown', this._esc);
     this.boot();
   }
-  componentWillUnmount() { document.removeEventListener('keydown', this._esc); clearTimeout(this._bt); }
+  componentWillUnmount() { document.removeEventListener('keydown', this._esc); clearTimeout(this._bt); clearTimeout(this._blurT); }
 
   boot() {
     if (!window.VAULT || !window.Mesh3D) { this._bt = setTimeout(() => this.boot(), 80); return; }
-    const models = window.VAULT.models.map(m => ({ ...m, tags: [...m.tags], collections: [...m.collections], printers: [...m.printers] }));
-    this.setState({ models, collections: [...window.VAULT.collections], ready: true }, () => this.genThumbs());
+    const models = window.VAULT.models.map(m => ({ ...m, tags: [...m.tags], groups: [...m.groups], printers: [...m.printers] }));
+    this.setState({ models, groups: window.VAULT.groups.map(g => ({ ...g })), ready: true }, () => this.genThumbs());
   }
 
   buildMesh(kind) {
@@ -475,8 +543,8 @@ class Component extends DCLogic {
       if (thumbs[m.id]) continue;
       try {
         const c = document.createElement('canvas');
-        c.width = 520; c.height = 400;
-        window.Mesh3D.render(c, this.buildMesh(m.mesh), { ry: 0.85, rx: -0.4, zoom: 0.92, color: m.color });
+        c.width = 560; c.height = 560;
+        window.Mesh3D.render(c, this.buildMesh(m.mesh), { ry: 0.85, rx: -0.4, zoom: 0.96, color: m.color });
         thumbs[m.id] = c.toDataURL();
         changed = true;
       } catch (e) { console.warn('thumb failed', m.id, e); }
@@ -524,10 +592,35 @@ class Component extends DCLogic {
     this.setState(s => ({ activeTags: s.activeTags.includes(t) ? s.activeTags.filter(x => x !== t) : [...s.activeTags, t] }));
   }
   patchModel(id, fn) {
-    this.setState(s => ({ models: s.models.map(m => m.id === id ? fn({ ...m, tags: [...m.tags], collections: [...m.collections] }) : m) }));
+    this.setState(s => ({ models: s.models.map(m => m.id === id ? fn({ ...m, tags: [...m.tags], groups: [...m.groups] }) : m) }));
+  }
+
+  isPinned(kind, name) { return this.state.pins.some(p => p.kind === kind && p.name === name); }
+  togglePin(kind, name) {
+    this.setState(s => ({
+      pins: s.pins.some(p => p.kind === kind && p.name === name)
+        ? s.pins.filter(p => !(p.kind === kind && p.name === name))
+        : [...s.pins, { kind, name }]
+    }));
   }
 
   // ----- styles -----
+  sideRowOuter(active) {
+    return {
+      display: 'flex', alignItems: 'center', gap: '6px', width: '100%',
+      padding: '2px 8px 2px 0', borderRadius: '7px',
+      background: active ? '#1e1e24' : 'transparent',
+      border: '1px solid ' + (active ? '#2e2e36' : 'transparent')
+    };
+  }
+  sideRowBtn(active) {
+    return {
+      display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0,
+      padding: '6px 4px 6px 10px', background: 'transparent', border: 'none',
+      cursor: 'pointer', fontSize: '12.5px', textAlign: 'left',
+      color: active ? '#f4f4f6' : '#9b9ba4'
+    };
+  }
   sideRow(active) {
     return {
       display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', width: '100%',
@@ -544,10 +637,39 @@ class Component extends DCLogic {
       border: '1px solid ' + (active ? '#e8e8ea' : '#26262c')
     };
   }
+  railChip(active) {
+    return {
+      flex: '0 0 auto', padding: '7px 16px', borderRadius: '99px', fontSize: '12.5px', fontWeight: 600,
+      cursor: 'pointer', lineHeight: '1.4',
+      color: active ? '#0c0c0e' : '#a9a9b2', background: active ? '#e8e8ea' : '#121216',
+      border: '1px solid ' + (active ? '#e8e8ea' : '#222228')
+    };
+  }
   segBtn(active) {
     return {
       background: active ? '#26262e' : 'transparent', border: 'none', color: active ? '#f0f0f2' : '#84848e',
       borderRadius: '7px', padding: '6px 13px', fontSize: '12px', fontWeight: 600, cursor: 'pointer'
+    };
+  }
+  thumbBg(t) {
+    return { width: '100%', height: '100%', backgroundImage: t ? 'url(' + t + ')' : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' };
+  }
+  tintOf(hex, f) {
+    try {
+      const h = hex.replace('#', '');
+      const r = Math.round(parseInt(h.slice(0, 2), 16) * f);
+      const g = Math.round(parseInt(h.slice(2, 4), 16) * f);
+      const b = Math.round(parseInt(h.slice(4, 6), 16) * f);
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    } catch (e) { return '#15151a'; }
+  }
+  tileBg(t, color) {
+    const grad = 'radial-gradient(circle at 50% 42%, ' + this.tintOf(color, 0.24) + ' 0%, #0d0d10 82%)';
+    return {
+      position: 'absolute', inset: 0,
+      backgroundImage: t ? 'url(' + t + '), ' + grad : grad,
+      backgroundSize: t ? '88%, cover' : 'cover',
+      backgroundPosition: 'center', backgroundRepeat: 'no-repeat'
     };
   }
 
@@ -556,7 +678,8 @@ class Component extends DCLogic {
     return {
       ...m,
       thumb: t || '', hasThumb: !!t,
-      thumbStyle: { width: '100%', height: '100%', backgroundImage: t ? 'url(' + t + ')' : 'none', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+      thumbStyle: this.thumbBg(t),
+      tileStyle: this.tileBg(t, m.color),
       sizeShort: m.size[0] + '×' + m.size[1] + '×' + m.size[2],
       sizeLabel: m.size[0] + ' × ' + m.size[1] + ' × ' + m.size[2] + ' mm',
       addedLabel: this.fmtDate(m.added),
@@ -605,13 +728,15 @@ class Component extends DCLogic {
       name: tg,
       remove: () => this.patchModel(m.id, x => { x.tags = x.tags.filter(z => z !== tg); return x; })
     }));
-    e.colChips = this.state.collections.map(c => {
-      const on = m.collections.includes(c);
+    e.groupChips = this.state.groups.map(g => {
+      const on = m.groups.includes(g.name);
       return {
-        name: c, style: this.tagChip(on),
-        toggle: () => this.patchModel(m.id, x => { x.collections = on ? x.collections.filter(z => z !== c) : [...x.collections, c]; return x; })
+        name: g.name, style: this.tagChip(on),
+        toggle: () => this.patchModel(m.id, x => { x.groups = on ? x.groups.filter(z => z !== g.name) : [...x.groups, g.name]; return x; })
       };
     });
+    e.pinIcon = this.isPinned('creator', m.creator) ? '★' : '☆';
+    e.pinCreator = () => this.togglePin('creator', m.creator);
     e.slotA = 'photo-' + m.id + '-printed';
     e.slotB = 'photo-' + m.id + '-painted';
     return e;
@@ -627,7 +752,7 @@ class Component extends DCLogic {
       creator: f.creator.trim() || 'You',
       type: f.type, mesh: f.mesh, color: '#bcc0c8',
       tags: f.tags.split(',').map(t => this.normTag(t)).filter(Boolean),
-      collections: [], format: 'STL', fileMB: 1.2,
+      groups: [], format: 'STL', fileMB: 1.2,
       size: [parseFloat(f.sx) || 50, parseFloat(f.sy) || 50, parseFloat(f.sz) || 50],
       created: today, added: today,
       printers: [...f.printers],
@@ -663,19 +788,34 @@ class Component extends DCLogic {
     this.setState({ tagDraft: '' });
   }
 
+  createTag() {
+    const t = this.normTag(this.state.newTag);
+    if (!t) return;
+    this.setState(s => ({ extraTags: s.extraTags.includes(t) ? s.extraTags : [...s.extraTags, t], newTag: '' }));
+  }
+  createGroup(name) {
+    const c = name.trim();
+    if (!c) return;
+    this.setState(s => ({
+      groups: s.groups.some(g => g.name === c) ? s.groups : [...s.groups, { name: c, shared: false }],
+      newCol: '', newColModal: ''
+    }));
+  }
+
   renderVals() {
     const s = this.state;
     const q = s.query.trim().toLowerCase();
 
+    const matchesQuery = (m) => {
+      if (!q) return true;
+      const hay = (m.name + ' ' + m.creator + ' ' + m.type + ' ' + m.tags.join(' ') + ' ' + m.groups.join(' ')).toLowerCase();
+      return hay.includes(q);
+    };
     const matches = (m) => {
-      if (q) {
-        const hay = (m.name + ' ' + m.creator + ' ' + m.type + ' ' + m.tags.join(' ') + ' ' + m.collections.join(' ')).toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
+      if (!matchesQuery(m)) return false;
       for (const t of s.activeTags) if (!m.tags.includes(t)) return false;
-      if (s.scopeCol && !m.collections.includes(s.scopeCol)) return false;
-      if (s.smartKind === 'type' && m.type !== s.smartVal) return false;
-      if (s.smartKind === 'creator' && m.creator !== s.smartVal) return false;
+      if (s.groupScope && !m.groups.includes(s.groupScope)) return false;
+      if (s.creatorScope && m.creator !== s.creatorScope) return false;
       return true;
     };
     const filtered = s.models.filter(matches).sort((a, b) => (b.added || '').localeCompare(a.added || ''));
@@ -686,22 +826,89 @@ class Component extends DCLogic {
     for (const t of s.extraTags) if (tagCount[t] == null) tagCount[t] = 0;
     const tagNames = Object.keys(tagCount).sort((a, b) => (tagCount[b] - tagCount[a]) || a.localeCompare(b));
 
-    const typeCount = {}, creatorCount = {}, colCount = {};
+    const creatorCount = {}, groupCount = {};
     for (const m of s.models) {
-      typeCount[m.type] = (typeCount[m.type] || 0) + 1;
       creatorCount[m.creator] = (creatorCount[m.creator] || 0) + 1;
-      for (const c of m.collections) colCount[c] = (colCount[c] || 0) + 1;
+      for (const g of m.groups) groupCount[g] = (groupCount[g] || 0) + 1;
     }
 
-    const noScope = !s.scopeCol && !s.smartKind;
-    const hasFilters = !!(q || s.activeTags.length || s.scopeCol || s.smartKind);
+    const hasFilters = !!(q || s.activeTags.length || s.groupScope || s.creatorScope);
+    const scopeTitle = s.groupScope || s.creatorScope || 'All models';
 
-    let scopeTitle = 'All models';
-    if (s.scopeCol) scopeTitle = s.scopeCol;
-    else if (s.smartKind === 'type') scopeTitle = s.smartVal;
-    else if (s.smartKind === 'creator') scopeTitle = 'By ' + s.smartVal;
-    if (s.activeTags.length) scopeTitle += ' · #' + s.activeTags.join(' #');
-    if (q) scopeTitle += ' · “' + s.query.trim() + '”';
+    // ----- search suggestions -----
+    const qHits = q ? s.models.filter(matchesQuery) : [];
+    const modelHits = qHits.slice(0, 5).map(m => ({
+      name: m.name, creator: m.creator, type: m.type,
+      thumbStyle: this.thumbBg(s.thumbs[m.id]),
+      open: () => this.setState({ selectedId: m.id, searchFocus: false })
+    }));
+    let creatorHits = [], tagHits = [], tagHeader = 'TAGS';
+    if (q) {
+      const cset = new Set();
+      for (const c of Object.keys(creatorCount)) if (c.toLowerCase().includes(q)) cset.add(c);
+      for (const m of qHits) cset.add(m.creator);
+      creatorHits = [...cset].slice(0, 4).map(c => ({
+        name: c, count: creatorCount[c] || 0,
+        pinIcon: this.isPinned('creator', c) ? '★' : '☆',
+        pin: () => this.togglePin('creator', c),
+        select: () => this.setState({ creatorScope: s.creatorScope === c ? null : c, query: '', searchFocus: false })
+      }));
+      const tset = new Set();
+      for (const t of tagNames) if (t.includes(q)) tset.add(t);
+      for (const m of qHits) for (const t of m.tags) tset.add(t);
+      tagHits = [...tset].filter(t => !s.activeTags.includes(t)).slice(0, 8).map(t => ({
+        name: t, count: tagCount[t],
+        style: this.tagChip(false),
+        toggle: () => this.setState(st => ({ activeTags: [...st.activeTags, t], query: '', searchFocus: false }))
+      }));
+      tagHeader = 'TAGS & SUGGESTIONS';
+    } else {
+      tagHits = tagNames.slice(0, 9).map(t => ({
+        name: t, count: tagCount[t],
+        style: this.tagChip(s.activeTags.includes(t)),
+        toggle: () => this.setState(st => ({
+          activeTags: st.activeTags.includes(t) ? st.activeTags.filter(x => x !== t) : [...st.activeTags, t],
+          searchFocus: false
+        }))
+      }));
+      tagHeader = 'POPULAR TAGS';
+    }
+    const showSearchPanel = s.searchFocus && (q ? true : tagHits.length > 0);
+    const noHits = !!q && !modelHits.length && !creatorHits.length && !tagHits.length;
+
+    // ----- filter chips -----
+    const filterChips = [];
+    for (const t of s.activeTags) filterChips.push({ label: '#' + t, remove: () => this.toggleTag(t) });
+    if (s.creatorScope) filterChips.push({ label: '◆ ' + s.creatorScope, remove: () => this.setState({ creatorScope: null }) });
+
+    // ----- pins -----
+    const pins = s.pins.map(p => {
+      const active = (p.kind === 'creator' && s.creatorScope === p.name)
+        || (p.kind === 'tag' && s.activeTags.includes(p.name))
+        || (p.kind === 'group' && s.groupScope === p.name);
+      const count = p.kind === 'creator' ? (creatorCount[p.name] || 0)
+        : p.kind === 'tag' ? (tagCount[p.name] || 0)
+        : (groupCount[p.name] || 0);
+      return {
+        name: p.name, icon: p.kind === 'creator' ? '◆' : p.kind === 'tag' ? '#' : '▣', count,
+        rowStyle: this.sideRowOuter(active),
+        btnStyle: this.sideRowBtn(active),
+        select: () => {
+          if (p.kind === 'creator') this.setState({ creatorScope: s.creatorScope === p.name ? null : p.name });
+          else if (p.kind === 'tag') this.toggleTag(p.name);
+          else this.setState({ groupScope: s.groupScope === p.name ? null : p.name });
+        },
+        unpin: () => this.togglePin(p.kind, p.name)
+      };
+    });
+
+    // ----- channel rail -----
+    const railTags = tagNames.filter(t => tagCount[t] > 0).slice(0, 12).map(t => ({
+      name: t,
+      style: this.railChip(s.activeTags.includes(t)),
+      toggle: () => this.toggleTag(t)
+    }));
+    const railAllStyle = this.railChip(!hasFilters);
 
     const selModel = s.selectedId ? this.curModel() : null;
     const selected = selModel ? this.enrichDetail(selModel) : null;
@@ -716,42 +923,41 @@ class Component extends DCLogic {
       setList: () => this.setState({ view: 'list' }),
       vGrid: this.segBtn(s.view === 'grid'), vCards: this.segBtn(s.view === 'cards'), vList: this.segBtn(s.view === 'list'),
       scopeTitle,
-      countLabel: filtered.length + (filtered.length === 1 ? ' MODEL' : ' MODELS'),
+      countLabel: filtered.length + (filtered.length === 1 ? ' MODEL' : ' MODELS') + (q ? ' · “' + s.query.trim() + '”' : ''),
       totalCount: s.models.length,
-      hasFilters,
-      clearFilters: () => this.setState({ query: '', activeTags: [], scopeCol: null, smartKind: null, smartVal: null }),
+      hasFilters, filterChips, railTags, railAllStyle,
+      clearFilters: () => this.setState({ query: '', activeTags: [], groupScope: null, creatorScope: null }),
 
       // search
       query: s.query,
-      onQuery: (e) => this.setState({ query: e.target.value }),
+      onQuery: (e) => this.setState({ query: e.target.value, searchFocus: true }),
+      onSearchFocus: () => { clearTimeout(this._blurT); this.setState({ searchFocus: true }); },
+      onSearchBlur: () => { this._blurT = setTimeout(() => this.setState({ searchFocus: false }), 140); },
+      keepFocus: (e) => e.preventDefault(),
+      showSearchPanel, noHits,
+      hasModelHits: modelHits.length > 0, modelHits,
+      hasCreatorHits: creatorHits.length > 0, creatorHits,
+      hasTagHits: tagHits.length > 0, tagHits, tagHeader,
 
       // sidebar
-      goAll: () => this.setState({ scopeCol: null, smartKind: null, smartVal: null, activeTags: [], query: '' }),
-      allBtnStyle: this.sideRow(noScope && !s.activeTags.length && !q),
-      sideCollections: s.collections.map(c => ({
-        name: c, count: colCount[c] || 0,
-        style: this.sideRow(s.scopeCol === c),
-        select: () => this.setState({ scopeCol: s.scopeCol === c ? null : c, smartKind: null, smartVal: null })
-      })),
-      typeGroups: Object.keys(typeCount).sort().map(t => ({
-        name: t, count: typeCount[t],
-        style: this.sideRow(s.smartKind === 'type' && s.smartVal === t),
-        select: () => this.setState(s.smartKind === 'type' && s.smartVal === t
-          ? { smartKind: null, smartVal: null }
-          : { smartKind: 'type', smartVal: t, scopeCol: null })
-      })),
-      creatorGroups: Object.keys(creatorCount).sort().map(c => ({
-        name: c, count: creatorCount[c],
-        style: this.sideRow(s.smartKind === 'creator' && s.smartVal === c),
-        select: () => this.setState(s.smartKind === 'creator' && s.smartVal === c
-          ? { smartKind: null, smartVal: null }
-          : { smartKind: 'creator', smartVal: c, scopeCol: null })
-      })),
-      sideTags: tagNames.map(t => ({
-        name: t, count: tagCount[t],
-        style: this.tagChip(s.activeTags.includes(t)),
-        toggle: () => this.toggleTag(t)
-      })),
+      goAll: () => this.setState({ groupScope: null, creatorScope: null, activeTags: [], query: '' }),
+      allBtnStyle: this.sideRow(!hasFilters),
+      pins,
+      noPins: s.ready && pins.length === 0,
+      sideGroups: s.groups.map(g => {
+        const active = s.groupScope === g.name;
+        return {
+          name: g.name, shared: !!g.shared, count: groupCount[g.name] || 0,
+          rowStyle: this.sideRowOuter(active),
+          btnStyle: this.sideRowBtn(active),
+          pinIcon: this.isPinned('group', g.name) ? '★' : '☆',
+          pin: () => this.togglePin('group', g.name),
+          select: () => this.setState({ groupScope: active ? null : g.name })
+        };
+      }),
+      newCol: s.newCol,
+      onNewCol: (e) => this.setState({ newCol: e.target.value }),
+      newColKey: (e) => { if (e.key === 'Enter') this.createGroup(this.state.newCol); },
 
       // detail
       hasSelected: !!selected,
@@ -772,7 +978,6 @@ class Component extends DCLogic {
       onAddField: (e) => { const n = e.target.name, v = e.target.value; this.setState(st => ({ addForm: { ...st.addForm, [n]: v } })); },
       addPrinters: (window.VAULT ? window.VAULT.printers : []).map(p => ({
         name: p,
-        on: s.addForm.printers.includes(p),
         style: this.tagChip(s.addForm.printers.includes(p)),
         toggle: () => this.setState(st => ({
           addForm: {
@@ -785,7 +990,7 @@ class Component extends DCLogic {
       fakeImport: this.fakeImport,
       submitAdd: this.submitAdd,
 
-      // tags/collections manager
+      // tags/groups manager
       showTags: s.showTags,
       openTags: () => this.setState({ showTags: true }),
       closeTags: () => this.setState({ showTags: false }),
@@ -795,38 +1000,33 @@ class Component extends DCLogic {
       createTag: () => this.createTag(),
       manageTags: tagNames.map(t => ({
         name: t, count: tagCount[t],
+        pinIcon: this.isPinned('tag', t) ? '★' : '☆',
+        pin: () => this.togglePin('tag', t),
         apply: () => this.setState(st => ({ activeTags: st.activeTags.includes(t) ? st.activeTags : [...st.activeTags, t], showTags: false })),
         remove: () => this.setState(st => ({
           models: st.models.map(m => ({ ...m, tags: m.tags.filter(x => x !== t) })),
           extraTags: st.extraTags.filter(x => x !== t),
-          activeTags: st.activeTags.filter(x => x !== t)
+          activeTags: st.activeTags.filter(x => x !== t),
+          pins: st.pins.filter(p => !(p.kind === 'tag' && p.name === t))
         }))
       })),
-      newCol: s.newCol,
-      onNewCol: (e) => this.setState({ newCol: e.target.value }),
-      newColKey: (e) => { if (e.key === 'Enter') this.createCol(); },
-      createCol: () => this.createCol(),
-      manageCols: s.collections.map(c => ({
-        name: c, count: colCount[c] || 0,
-        apply: () => this.setState({ scopeCol: c, smartKind: null, smartVal: null, showTags: false }),
+      newColModal: s.newColModal,
+      onNewColModal: (e) => this.setState({ newColModal: e.target.value }),
+      newColModalKey: (e) => { if (e.key === 'Enter') this.createGroup(this.state.newColModal); },
+      createColModal: () => this.createGroup(this.state.newColModal),
+      manageGroups: s.groups.map(g => ({
+        name: g.name, shared: !!g.shared, count: groupCount[g.name] || 0,
+        shareLabel: g.shared ? 'make personal' : 'share',
+        toggleShared: () => this.setState(st => ({ groups: st.groups.map(x => x.name === g.name ? { ...x, shared: !x.shared } : x) })),
+        apply: () => this.setState({ groupScope: g.name, showTags: false }),
         remove: () => this.setState(st => ({
-          collections: st.collections.filter(x => x !== c),
-          models: st.models.map(m => ({ ...m, collections: m.collections.filter(x => x !== c) })),
-          scopeCol: st.scopeCol === c ? null : st.scopeCol
+          groups: st.groups.filter(x => x.name !== g.name),
+          models: st.models.map(m => ({ ...m, groups: m.groups.filter(x => x !== g.name) })),
+          groupScope: st.groupScope === g.name ? null : st.groupScope,
+          pins: st.pins.filter(p => !(p.kind === 'group' && p.name === g.name))
         }))
       }))
     };
-  }
-
-  createTag() {
-    const t = this.normTag(this.state.newTag);
-    if (!t) return;
-    this.setState(s => ({ extraTags: s.extraTags.includes(t) ? s.extraTags : [...s.extraTags, t], newTag: '' }));
-  }
-  createCol() {
-    const c = this.state.newCol.trim();
-    if (!c) return;
-    this.setState(s => ({ collections: s.collections.includes(c) ? s.collections : [...s.collections, c], newCol: '' }));
   }
 }
 </script>

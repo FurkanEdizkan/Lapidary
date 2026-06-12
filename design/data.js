@@ -1,4 +1,4 @@
-/* Sample library data for Manifold print library prototype */
+/* Sample library data for Lapidary prototype */
 window.VAULT = {
   printers: ['Bambu X1C', 'Bambu P1S', 'Ender 3', 'Elegoo Saturn'],
   groups: [
