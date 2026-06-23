@@ -6,7 +6,7 @@
 
 **Architecture:** Add a second Node process (`server/src/worker.ts`) that polls a new `jobs` table and runs the heavy work, sharing the existing SQLite (WAL) + `DATA_DIR` with the Fastify server. The scan endpoint stops doing work inline and instead *enqueues* one `index_archive` job per library item; the worker peeks each archive, derives metadata from the path, and creates a model row that points at the archive in place (nothing is copied).
 
-**Tech Stack:** TypeScript (ESM, `moduleResolution: Bundler`), Fastify, `better-sqlite3`, `nanoid`, `p-limit`; new: `vitest` (tests), `adm-zip` (zip), `node-unrar-js` (rar, pure-WASM), `node-7z` + `7zip-bin` (7z).
+**Tech Stack:** TypeScript (ESM, `moduleResolution: Bundler`), Fastify, `better-sqlite3`, `nanoid`; new: `vitest` (tests), `adm-zip` (zip), `node-unrar-js` (rar, pure-WASM), `7zip-bin` (bundled `7za` binary, shelled out for 7z listing).
 
 ## Global Constraints
 
@@ -14,29 +14,29 @@
 - **Index in place:** never copy archives or extracted STLs into `DATA_DIR`. `models.original_path` holds the absolute source path on disk.
 - **Schema parity:** the 9 existing tables are **untouched**. New schema is added only via a forward migration that bumps `PRAGMA user_version` from 1 to 2.
 - **Two-process safety:** `getDb()` sets `journal_mode=WAL`, `foreign_keys=ON`, and `busy_timeout=5000`.
-- **Testability seam:** every new service function takes the `better-sqlite3` handle as a trailing parameter defaulting to `getDb()` (e.g. `enqueue(input, db = getDb())`), so unit tests run against an isolated `new Database(':memory:')`. Tests that exercise `createModel` (which uses the `getDb()` singleton internally) run against a throwaway file DB via `DATA_DIR=./.test-data` and clean tables in `beforeEach`.
+- **Testability seam:** every new service function takes the `better-sqlite3` handle as a trailing parameter defaulting to `getDb()` (e.g. `enqueue(input, db = getDb())`), so unit tests run against an isolated `new Database(':memory:')`. Tests that exercise `createModel` (which uses the `getDb()` singleton internally) run against a throwaway file DB via `DATA_DIR=./.test-data` and clean tables in `beforeEach`. (`createModel` calls `invalidate()` → `bumpNamespace`, which is safe without `initCache()`: with no `REDIS_URL` it takes the synchronous in-process LRU branch and never throws.)
+- **Test fixture paths:** resolve via `server/test/helpers.ts` (`fixturesDir`/`archivesDir`), which use `fileURLToPath(import.meta.url)` — do **not** use `import.meta.dirname` (not reliably populated under Vitest).
 - **Job kinds:** `'index_archive' | 'thumbnail' | 'image_fetch'`. Only `index_archive` has a handler in this plan; `thumbnail`/`image_fetch` rows are enqueued but left `queued` for later phases (the worker never claims a kind it has no handler for).
 - **Mesh extensions:** `.stl`, `.3mf`, `.obj`. **Archive extensions:** `.zip`, `.rar`, `.7z`.
 - **Test command (run from repo root):** `npm --workspace server test`.
 
 ---
 
-### Task 1: Test harness, dependencies, and worker scripts
+### Task 1: Test harness, dependencies, fixtures helper, and worker scripts
 
 **Files:**
 - Modify: `server/package.json`
 - Modify: `package.json` (root)
 - Create: `server/vitest.config.ts`
+- Create: `server/test/helpers.ts`
 - Create: `server/test/sanity.test.ts`
 - Modify: `.gitignore`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a working `npm --workspace server test`; the dependencies every later task imports.
+- Produces: a working `npm --workspace server test`; `fixturesDir`/`archivesDir` (absolute paths, used by every fixture-backed test); the dependencies every later task imports.
 
-- [ ] **Step 1: Add dependencies and scripts to `server/package.json`**
-
-Edit the `scripts`, `dependencies`, and `devDependencies` blocks so they read:
+- [ ] **Step 1: Set the `scripts`, `dependencies`, and `devDependencies` in `server/package.json`**
 
 ```jsonc
   "scripts": {
@@ -58,24 +58,20 @@ Edit the `scripts`, `dependencies`, and `devDependencies` blocks so they read:
     "ioredis": "^5.4.2",
     "lru-cache": "^11.0.2",
     "nanoid": "^5.0.9",
-    "node-7z": "^3.0.0",
     "node-unrar-js": "^2.0.2",
     "p-limit": "^6.2.0"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.7",
+    "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.5",
-    "@types/node-7z": "^3.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.0"
+    "vitest": "^3.2.0"
   }
 ```
 
-- [ ] **Step 2: Wire the worker into the root dev script**
-
-In root `package.json`, replace the `dev` and add a `dev:worker` script:
+- [ ] **Step 2: Wire the worker into the root dev script in `package.json`**
 
 ```jsonc
   "scripts": {
@@ -110,36 +106,55 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 4: Create `server/test/sanity.test.ts`**
+- [ ] **Step 4: Create `server/test/helpers.ts`**
+
+```ts
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// fileURLToPath(import.meta.url) is the portable way to get this file's dir under
+// both Node and Vitest. server/test -> ../../ is the repo root.
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+export const fixturesDir = path.resolve(here, '../../fixtures');
+export const archivesDir = path.resolve(fixturesDir, 'archives');
+```
+
+- [ ] **Step 5: Create `server/test/sanity.test.ts` (also proves the fixture-path mechanism at Task 1)**
 
 ```ts
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fixturesDir } from './helpers.js';
 
 describe('test harness', () => {
   it('runs', () => {
     expect(1 + 1).toBe(2);
   });
+
+  it('resolves the fixtures dir via fileURLToPath', () => {
+    expect(fs.existsSync(path.join(fixturesDir, 'cube.stl'))).toBe(true);
+  });
 });
 ```
 
-- [ ] **Step 5: Ignore the test data dir**
-
-Append to `.gitignore`:
+- [ ] **Step 6: Ignore the test data dir — append to `.gitignore`**
 
 ```
 .test-data/
 ```
 
-- [ ] **Step 6: Install and run**
+- [ ] **Step 7: Install and run**
 
 Run: `npm install`
 Then run: `npm --workspace server test`
-Expected: vitest runs `sanity.test.ts` → 1 passed.
+Expected: vitest runs `sanity.test.ts` → 2 passed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add server/package.json package.json package-lock.json server/vitest.config.ts server/test/sanity.test.ts .gitignore
+git add server/package.json package.json package-lock.json server/vitest.config.ts server/test/helpers.ts server/test/sanity.test.ts .gitignore
 git commit -m "chore(server): add vitest harness, archive deps, and worker scripts"
 ```
 
@@ -817,65 +832,69 @@ git commit -m "feat(scan): derive creator/category/type/name from library path"
 
 ---
 
-### Task 6: `archive.service` — zip reader + extension dispatch + fixtures
+### Task 6: `archive.service` — zip / 7z / rar readers + extension dispatch
 
 **Files:**
 - Create: `server/src/services/archive.service.ts`
 - Create: `fixtures/archives/cube.zip` (generated)
-- Test: `server/test/archive.zip.test.ts`
-- Test: `server/test/archive.dispatch.test.ts`
+- Create: `fixtures/archives/cube.7z` (generated)
+- Test: `server/test/archive.test.ts`
 
 **Interfaces:**
-- Consumes: `adm-zip`, `node:path`.
+- Consumes: `adm-zip` (zip), `7zip-bin` + `node:child_process` (7z), `node-unrar-js` (rar), `node:path`.
 - Produces:
   - `interface MeshEntry { innerPath: string; ext: string; sizeBytes: number }`
   - `const MESH_EXTS: Set<string>`
   - `type ArchiveReader = (archivePath: string) => Promise<MeshEntry[]>`
-  - `listZip(archivePath: string): Promise<MeshEntry[]>`
+  - `listZip(p): Promise<MeshEntry[]>`, `listSevenZip(p): Promise<MeshEntry[]>`, `listRar(p): Promise<MeshEntry[]>`
   - `listMeshEntries(archivePath: string, readers?: Record<string, ArchiveReader>): Promise<MeshEntry[]>`
-  - (declared here, implemented in Tasks 7–8) `listSevenZip`, `listRar`
 
-- [ ] **Step 1: Generate the zip fixture**
+> **Fixture note (honest constraint):** zip and 7z fixtures are generated deterministically below (the box has `zip` + `7z`). There is **no free RAR writer** on the box (`unrar` only extracts), so we cannot generate a tiny `cube.rar`. The rar reader is therefore covered by the **dispatch test** (deterministic) plus a test that runs the real reader **only** when `LAPIDARY_TEST_RAR` points at a real `.rar`; the Task 10 acceptance exercises the rar path for real on Creature Caster (which has `.rar` archives).
+
+- [ ] **Step 1: Generate the zip + 7z fixtures**
 
 Run from the repo root:
 
 ```bash
 mkdir -p fixtures/archives
 ( cd fixtures && zip -j archives/cube.zip cube.stl )
+( cd fixtures && 7z a archives/cube.7z cube.stl >/dev/null )
 ```
 
-Verify: `unzip -l fixtures/archives/cube.zip` lists a single entry `cube.stl`.
+Verify: `unzip -l fixtures/archives/cube.zip` and `7z l fixtures/archives/cube.7z` each list a single entry `cube.stl`.
 
-- [ ] **Step 2: Write the failing tests**
-
-`server/test/archive.zip.test.ts`:
-
-```ts
-import { describe, it, expect } from 'vitest';
-import path from 'node:path';
-import { listZip } from '../src/services/archive.service.js';
-
-const ZIP = path.resolve(import.meta.dirname, '../../fixtures/archives/cube.zip');
-
-describe('archive zip reader', () => {
-  it('lists the inner cube.stl mesh entry', async () => {
-    const entries = await listZip(ZIP);
-    expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
-    expect(entries[0].ext).toBe('.stl');
-  });
-});
-```
-
-`server/test/archive.dispatch.test.ts`:
+- [ ] **Step 2: Write the failing test — `server/test/archive.test.ts`**
 
 ```ts
 import { describe, it, expect, vi } from 'vitest';
-import { listMeshEntries, type ArchiveReader } from '../src/services/archive.service.js';
+import path from 'node:path';
+import { archivesDir } from './helpers.js';
+import {
+  listZip, listSevenZip, listMeshEntries, type ArchiveReader,
+} from '../src/services/archive.service.js';
+
+const ZIP = path.join(archivesDir, 'cube.zip');
+const SZ = path.join(archivesDir, 'cube.7z');
+const RAR = process.env.LAPIDARY_TEST_RAR; // e.g. a real Creature Caster .rar
+
+describe('archive readers', () => {
+  it('listZip lists the inner cube.stl mesh entry', async () => {
+    const entries = await listZip(ZIP);
+    expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
+    expect(entries.find((e) => e.innerPath === 'cube.stl')!.ext).toBe('.stl');
+  });
+
+  it('listSevenZip lists the inner cube.stl mesh entry', async () => {
+    const entries = await listSevenZip(SZ);
+    expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
+    expect(entries.find((e) => e.innerPath === 'cube.stl')!.ext).toBe('.stl');
+  });
+});
 
 describe('listMeshEntries dispatch', () => {
   it('routes by extension to the matching reader', async () => {
-    const rar = vi.fn<ArchiveReader>().mockResolvedValue([{ innerPath: 'x.stl', ext: '.stl', sizeBytes: 1 }]);
-    const out = await listMeshEntries('/some/file.rar', { '.rar': rar });
+    const rar = vi.fn().mockResolvedValue([{ innerPath: 'x.stl', ext: '.stl', sizeBytes: 1 }]);
+    const out = await listMeshEntries('/some/file.rar', { '.rar': rar as ArchiveReader });
     expect(rar).toHaveBeenCalledWith('/some/file.rar');
     expect(out[0].innerPath).toBe('x.stl');
   });
@@ -883,10 +902,23 @@ describe('listMeshEntries dispatch', () => {
   it('throws on an unsupported archive extension', async () => {
     await expect(listMeshEntries('/x.tar', {})).rejects.toThrow(/Unsupported archive/);
   });
+
+  it('resolves a real .zip through the default dispatch', async () => {
+    expect((await listMeshEntries(ZIP)).length).toBeGreaterThan(0);
+  });
+});
+
+describe.skipIf(!RAR)('archive rar reader (guarded by LAPIDARY_TEST_RAR)', () => {
+  it('lists mesh entries from a real .rar', async () => {
+    const { listRar } = await import('../src/services/archive.service.js');
+    const entries = await listRar(RAR!);
+    expect(Array.isArray(entries)).toBe(true);
+    expect(entries.every((e) => ['.stl', '.3mf', '.obj'].includes(e.ext))).toBe(true);
+  });
 });
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `npm --workspace server test -- archive`
 Expected: FAIL — cannot find module `archive.service`.
@@ -895,7 +927,13 @@ Expected: FAIL — cannot find module `archive.service`.
 
 ```ts
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import AdmZip from 'adm-zip';
+import sevenBin from '7zip-bin';
+import { createExtractorFromFile } from 'node-unrar-js';
+
+const execFileP = promisify(execFile);
 
 export interface MeshEntry {
   innerPath: string;
@@ -921,24 +959,55 @@ export async function listZip(archivePath: string): Promise<MeshEntry[]> {
     .filter((e) => MESH_EXTS.has(e.ext));
 }
 
-// Implemented in Tasks 7 (7z) and 8 (rar). Declared here so the dispatch table is complete.
-export let listSevenZip: ArchiveReader = async () => {
-  throw new Error('listSevenZip not implemented yet');
-};
-export let listRar: ArchiveReader = async () => {
-  throw new Error('listRar not implemented yet');
-};
-export function __setSevenZipReader(fn: ArchiveReader): void { listSevenZip = fn; }
-export function __setRarReader(fn: ArchiveReader): void { listRar = fn; }
-
-function defaultReaders(): Record<string, ArchiveReader> {
-  return { '.zip': listZip, '.7z': (p) => listSevenZip(p), '.rar': (p) => listRar(p) };
+/**
+ * List supported mesh entries inside a .7z by shelling out to the bundled 7za with a
+ * technical listing (`-slt`): blocks of "Path = …" / "Size = …" / "Attributes = …"
+ * separated by blank lines. Avoids any node-7z stream/type quirks.
+ */
+export async function listSevenZip(archivePath: string): Promise<MeshEntry[]> {
+  const { stdout } = await execFileP(sevenBin.path7za, ['l', '-slt', archivePath], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const entries: MeshEntry[] = [];
+  for (const block of stdout.split(/\r?\n\r?\n/)) {
+    const pathMatch = block.match(/^Path = (.+)$/m);
+    if (!pathMatch) continue;
+    const innerPath = pathMatch[1].trim();
+    const attrs = (block.match(/^Attributes = (.+)$/m)?.[1] ?? '').trim();
+    if (attrs.startsWith('D')) continue; // directory entry
+    const ext = path.extname(innerPath).toLowerCase();
+    if (!MESH_EXTS.has(ext)) continue;
+    const sizeBytes = Number(block.match(/^Size = (\d+)$/m)?.[1] ?? 0);
+    entries.push({ innerPath, ext, sizeBytes });
+  }
+  return entries;
 }
+
+/** List supported mesh entries inside a .rar (pure-WASM, no system binary). */
+export async function listRar(archivePath: string): Promise<MeshEntry[]> {
+  const extractor = await createExtractorFromFile({ filepath: archivePath });
+  const list = extractor.getFileList();
+  const entries: MeshEntry[] = [];
+  for (const h of list.fileHeaders) {
+    if (h.flags.directory) continue;
+    const ext = path.extname(h.name).toLowerCase();
+    if (!MESH_EXTS.has(ext)) continue;
+    const sizeBytes = Number((h as { unpSize?: number }).unpSize ?? 0) || 0; // unpacked size
+    entries.push({ innerPath: h.name, ext, sizeBytes });
+  }
+  return entries;
+}
+
+const DEFAULT_READERS: Record<string, ArchiveReader> = {
+  '.zip': listZip,
+  '.7z': listSevenZip,
+  '.rar': listRar,
+};
 
 /** List mesh entries inside an archive, dispatching on file extension. */
 export async function listMeshEntries(
   archivePath: string,
-  readers: Record<string, ArchiveReader> = defaultReaders(),
+  readers: Record<string, ArchiveReader> = DEFAULT_READERS,
 ): Promise<MeshEntry[]> {
   const ext = path.extname(archivePath).toLowerCase();
   const reader = readers[ext];
@@ -947,229 +1016,36 @@ export async function listMeshEntries(
 }
 ```
 
-> Note: `listSevenZip`/`listRar` are declared as reassignable bindings so Tasks 7–8 can fill them in as standalone, individually-tested functions without this file importing their heavyweight deps up front. Tasks 7–8 will replace the placeholder bodies with real implementations directly in this file.
-
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `npm --workspace server test -- archive`
-Expected: PASS (zip: 1, dispatch: 2).
+Expected: PASS (zip 1, 7z 1, dispatch 3; rar suite skipped unless `LAPIDARY_TEST_RAR` is set).
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add server/src/services/archive.service.ts server/test/archive.zip.test.ts server/test/archive.dispatch.test.ts fixtures/archives/cube.zip
-git commit -m "feat(archive): zip reader + extension dispatch"
-```
-
----
-
-### Task 7: `archive.service` — 7z reader
-
-**Files:**
-- Modify: `server/src/services/archive.service.ts`
-- Create: `fixtures/archives/cube.7z` (generated)
-- Test: `server/test/archive.sevenzip.test.ts`
-
-**Interfaces:**
-- Consumes: `node-7z`, `7zip-bin`.
-- Produces: a real `listSevenZip` implementation (replaces the Task 6 placeholder).
-
-- [ ] **Step 1: Generate the 7z fixture**
-
-Run from the repo root:
+- [ ] **Step 6: (Optional but recommended) verify the rar reader against a real archive**
 
 ```bash
-( cd fixtures && 7z a archives/cube.7z cube.stl )
+LAPIDARY_TEST_RAR="/mnt/Storage2/All/STL Files/Creators/Creature Caster/Miniatures/Creature Caster - Guild Assassins.rar" \
+  npm --workspace server test -- archive
 ```
-
-Verify: `7z l fixtures/archives/cube.7z` lists `cube.stl`.
-
-- [ ] **Step 2: Write the failing test — `server/test/archive.sevenzip.test.ts`**
-
-```ts
-import { describe, it, expect } from 'vitest';
-import path from 'node:path';
-import { listSevenZip } from '../src/services/archive.service.js';
-
-const SZ = path.resolve(import.meta.dirname, '../../fixtures/archives/cube.7z');
-
-describe('archive 7z reader', () => {
-  it('lists the inner cube.stl mesh entry', async () => {
-    const entries = await listSevenZip(SZ);
-    expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
-    expect(entries.find((e) => e.innerPath === 'cube.stl')!.ext).toBe('.stl');
-  });
-});
-```
-
-- [ ] **Step 3: Run the test to verify it fails**
-
-Run: `npm --workspace server test -- archive.sevenzip`
-Expected: FAIL — "listSevenZip not implemented yet".
-
-- [ ] **Step 4: Replace the `listSevenZip` placeholder in `archive.service.ts`**
-
-At the top of the file, add the imports:
-
-```ts
-import SevenZip from 'node-7z';
-import sevenBin from '7zip-bin';
-```
-
-Then replace the `listSevenZip`/`__setSevenZipReader` placeholder block with:
-
-```ts
-/** List supported mesh entries inside a .7z using the bundled 7za binary. */
-export const listSevenZip: ArchiveReader = (archivePath: string) =>
-  new Promise<MeshEntry[]>((resolve, reject) => {
-    const entries: MeshEntry[] = [];
-    const stream = SevenZip.list(archivePath, { $bin: sevenBin.path7za });
-    stream.on('data', (d: { file: string; size?: number; attributes?: string }) => {
-      const isDir = (d.attributes ?? '').includes('D');
-      const ext = path.extname(d.file).toLowerCase();
-      if (!isDir && MESH_EXTS.has(ext)) {
-        entries.push({ innerPath: d.file, ext, sizeBytes: Number(d.size) || 0 });
-      }
-    });
-    stream.on('end', () => resolve(entries));
-    stream.on('error', reject);
-  });
-```
-
-Update `defaultReaders()` to call `listSevenZip` directly:
-
-```ts
-function defaultReaders(): Record<string, ArchiveReader> {
-  return { '.zip': listZip, '.7z': listSevenZip, '.rar': (p) => listRar(p) };
-}
-```
-
-(Remove the now-unused `__setSevenZipReader` export.)
-
-- [ ] **Step 5: Run the test to verify it passes**
-
-Run: `npm --workspace server test -- archive.sevenzip`
-Expected: PASS (1 test).
-
-- [ ] **Step 6: Run the whole archive suite to confirm no regressions**
-
-Run: `npm --workspace server test -- archive`
-Expected: PASS (zip 1, dispatch 2, 7z 1).
+Expected: the guarded rar test now runs and passes (lists `.stl` entries).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/src/services/archive.service.ts server/test/archive.sevenzip.test.ts fixtures/archives/cube.7z
-git commit -m "feat(archive): 7z reader via bundled 7za"
+git add server/src/services/archive.service.ts server/test/archive.test.ts fixtures/archives/cube.zip fixtures/archives/cube.7z
+git commit -m "feat(archive): zip/7z/rar mesh-entry readers + extension dispatch"
 ```
 
 ---
 
-### Task 8: `archive.service` — rar reader (pure-WASM)
-
-**Files:**
-- Modify: `server/src/services/archive.service.ts`
-- Test: `server/test/archive.rar.test.ts` (guarded — runs only against a real `.rar`)
-
-**Interfaces:**
-- Consumes: `node-unrar-js`.
-- Produces: a real `listRar` implementation (replaces the Task 6 placeholder).
-
-> **Fixture note (honest constraint):** there is no free RAR *writer* on the build box (only `unrar`, which extracts). So unlike zip/7z, we cannot generate a tiny `cube.rar` fixture deterministically. The rar reader is therefore covered two ways: the **dispatch test** (Task 6) already proves `.rar` routes to `listRar`; and the test below runs the real reader **only** when `LAPIDARY_TEST_RAR` points at a real `.rar` file (e.g. a Creature Caster archive). The Definition-of-Done acceptance (Task 12) exercises the rar path for real against the live library.
-
-- [ ] **Step 1: Write the guarded test — `server/test/archive.rar.test.ts`**
-
-```ts
-import { describe, it, expect } from 'vitest';
-import { listRar } from '../src/services/archive.service.js';
-
-const RAR = process.env.LAPIDARY_TEST_RAR; // e.g. ".../Creature Caster/Miniatures/Creature Caster - Guild Assassins.rar"
-
-describe.skipIf(!RAR)('archive rar reader (guarded by LAPIDARY_TEST_RAR)', () => {
-  it('lists mesh entries from a real .rar', async () => {
-    const entries = await listRar(RAR!);
-    expect(Array.isArray(entries)).toBe(true);
-    expect(entries.every((e) => e.ext === '.stl' || e.ext === '.3mf' || e.ext === '.obj')).toBe(true);
-  });
-});
-```
-
-- [ ] **Step 2: Run it to confirm it is skipped by default**
-
-Run: `npm --workspace server test -- archive.rar`
-Expected: the suite is reported as skipped (0 failures) because `LAPIDARY_TEST_RAR` is unset.
-
-- [ ] **Step 3: Replace the `listRar` placeholder in `archive.service.ts`**
-
-At the top of the file, add the import:
-
-```ts
-import { createExtractorFromFile } from 'node-unrar-js';
-```
-
-Replace the `listRar`/`__setRarReader` placeholder block with:
-
-```ts
-/** List supported mesh entries inside a .rar (pure-WASM, no system binary). */
-export const listRar: ArchiveReader = async (archivePath: string) => {
-  const extractor = await createExtractorFromFile({ filepath: archivePath });
-  const list = extractor.getFileList();
-  const entries: MeshEntry[] = [];
-  for (const h of list.fileHeaders) {
-    if (h.flags.directory) continue;
-    const ext = path.extname(h.name).toLowerCase();
-    if (MESH_EXTS.has(ext)) {
-      const size = (h as { unpSize?: number }).unpSize ?? 0; // unpacked size
-      entries.push({ innerPath: h.name, ext, sizeBytes: Number(size) || 0 });
-    }
-  }
-  return entries;
-};
-```
-
-Update `defaultReaders()` to its final form:
-
-```ts
-function defaultReaders(): Record<string, ArchiveReader> {
-  return { '.zip': listZip, '.7z': listSevenZip, '.rar': listRar };
-}
-```
-
-(Remove the now-unused `__setRarReader` export.)
-
-- [ ] **Step 4: Verify against a real rar (manual, optional but recommended)**
-
-Run (substitute a real path):
-
-```bash
-LAPIDARY_TEST_RAR="/mnt/Storage2/All/STL Files/Creators/Creature Caster/Miniatures/Creature Caster - Guild Assassins.rar" \
-  npm --workspace server test -- archive.rar
-```
-
-Expected: 1 passed (lists `.stl` entries from the real archive).
-
-- [ ] **Step 5: Run the full archive suite**
-
-Run: `npm --workspace server test -- archive`
-Expected: PASS (zip 1, dispatch 2, 7z 1; rar skipped unless the env var is set).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add server/src/services/archive.service.ts server/test/archive.rar.test.ts
-git commit -m "feat(archive): rar reader via node-unrar-js (pure-WASM)"
-```
-
----
-
-### Task 9: `indexArchive` — the `index_archive` job handler
+### Task 7: `indexArchive` — the `index_archive` job handler
 
 **Files:**
 - Create: `server/src/services/indexArchive.service.ts`
 - Test: `server/test/indexArchive.test.ts`
 
 **Interfaces:**
-- Consumes: `createModel` (`NewModelInput → ModelDetailDTO`, from `model.service.ts`), `enqueue` (Task 3), `listMeshEntries`/`MESH_EXTS` (Tasks 6–8), `deriveLibraryMeta` (Task 5), `nanoid`, `node:fs`, `node:path`.
+- Consumes: `createModel` (`NewModelInput → ModelDetailDTO`, from `model.service.ts`), `enqueue` + `JobRow` (Task 3), `listMeshEntries`/`MESH_EXTS` (Task 6), `deriveLibraryMeta` (Task 5), `nanoid`, `node:fs`, `node:path`.
 - Produces: `indexArchiveJob(job: JobRow, db: Database.Database): Promise<void>` — a `JobHandler`.
 - Payload shape carried by an `index_archive` job: `{ path: string; root: string }`.
 
@@ -1178,12 +1054,13 @@ git commit -m "feat(archive): rar reader via node-unrar-js (pure-WASM)"
 ```ts
 import { beforeEach, describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { archivesDir, fixturesDir } from './helpers.js';
 import { getDb } from '../src/db/database.js';
 import { indexArchiveJob } from '../src/services/indexArchive.service.js';
 import { enqueue, countByStatus } from '../src/services/jobs.service.js';
 
-const ZIP = path.resolve(import.meta.dirname, '../../fixtures/archives/cube.zip');
-const ROOT = path.resolve(import.meta.dirname, '../../fixtures');
+const ZIP = path.join(archivesDir, 'cube.zip');
+const ROOT = fixturesDir;
 
 function clean(): void {
   const d = getDb();
@@ -1206,7 +1083,7 @@ describe('indexArchiveJob', () => {
     expect(m!.original_path).toBe(ZIP);
     expect(m!.format).toBe('STL');
 
-    // thumbnail + image_fetch were enqueued (index job itself is still queued in this unit test)
+    // thumbnail + image_fetch were enqueued (the index job itself is still queued here)
     expect(countByStatus(d).queued).toBeGreaterThanOrEqual(2);
   });
 
@@ -1220,7 +1097,7 @@ describe('indexArchiveJob', () => {
     expect(n).toBe(1);
   });
 
-  it('fails a job whose archive contains no mesh files', async () => {
+  it('throws when the archive path does not exist / has no mesh', async () => {
     const d = getDb();
     const payload = { path: '/does/not/exist.zip', root: ROOT };
     const job = enqueue({ kind: 'index_archive', payload }, d);
@@ -1242,8 +1119,7 @@ import path from 'node:path';
 import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 import { createModel } from './model.service.js';
-import { enqueue } from './jobs.service.js';
-import type { JobRow } from './jobs.service.js';
+import { enqueue, type JobRow } from './jobs.service.js';
 import { listMeshEntries, MESH_EXTS } from './archive.service.js';
 import { deriveLibraryMeta } from './libraryPath.js';
 
@@ -1324,11 +1200,11 @@ git commit -m "feat(ingest): index_archive job handler (peek + create model in p
 
 ---
 
-### Task 10: Rewrite `libraryScan` to enqueue jobs + update the scan route
+### Task 8: Rewrite `libraryScan` to enqueue jobs + update the scan route
 
 **Files:**
 - Modify: `server/src/services/libraryScan.service.ts` (full rewrite)
-- Modify: `server/src/routes/api.ts:172-182` (scan route — response field rename only)
+- Modify: `server/src/routes/api.ts` (scan route comment + response shape)
 - Test: `server/test/libraryScan.test.ts`
 
 **Interfaces:**
@@ -1342,10 +1218,11 @@ git commit -m "feat(ingest): index_archive job handler (peek + create model in p
 ```ts
 import { beforeEach, describe, it, expect } from 'vitest';
 import path from 'node:path';
+import { archivesDir } from './helpers.js';
 import { getDb } from '../src/db/database.js';
 import { scanFolder } from '../src/services/libraryScan.service.js';
 
-const ARCH_DIR = path.resolve(import.meta.dirname, '../../fixtures/archives');
+const ARCH_DIR = archivesDir;
 
 function clean(): void {
   const d = getDb();
@@ -1382,7 +1259,7 @@ describe('scanFolder', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npm --workspace server test -- libraryScan`
-Expected: FAIL — `scanFolder` still imports `ingestMesh`/`createModel` and returns `imported`, so the `enqueued` assertions fail (or it errors).
+Expected: FAIL — the current `scanFolder` imports `ingestMesh`/`createModel` and returns `imported`, so `enqueued` is undefined.
 
 - [ ] **Step 3: Rewrite `server/src/services/libraryScan.service.ts`**
 
@@ -1459,9 +1336,9 @@ export function scanFolder(folderPath: string, db: Database.Database = getDb()):
 }
 ```
 
-- [ ] **Step 4: Update the scan route response in `server/src/routes/api.ts`**
+- [ ] **Step 4: Update the scan route block in `server/src/routes/api.ts`**
 
-The route at `server/src/routes/api.ts:173-182` already calls `scanFolder(target)`; its return shape now has `enqueued` instead of `imported`. No code change is required for it to compile (it returns the object verbatim), but update the surrounding comment for accuracy. Replace the `// ---------- scan ----------` block with:
+Replace the `// ---------- scan ----------` block (currently `server/src/routes/api.ts:172-182`) with:
 
 ```ts
   // ---------- scan ----------
@@ -1498,14 +1375,14 @@ git commit -m "feat(scan): walk archives + loose meshes and enqueue index jobs"
 
 ---
 
-### Task 11: Worker process entry + run scripts
+### Task 9: Worker process entry + run scripts
 
 **Files:**
 - Create: `server/src/worker.ts`
 - Test: `server/test/worker.entry.test.ts`
 
 **Interfaces:**
-- Consumes: `startWorker`/`HandlerMap` (Task 4), `indexArchiveJob` (Task 9), `getDb`.
+- Consumes: `startWorker`/`HandlerMap` (Task 4), `indexArchiveJob` (Task 7), `getDb`.
 - Produces: a runnable `server/src/worker.ts` process entry that registers `index_archive → indexArchiveJob`; an exported `WORKER_HANDLERS` map for the test.
 
 - [ ] **Step 1: Write the failing test — `server/test/worker.entry.test.ts`**
@@ -1579,27 +1456,25 @@ git commit -m "feat(worker): process entry wiring index_archive handler"
 
 ---
 
-### Task 12: End-to-end ingest + real-library acceptance + runbook
+### Task 10: End-to-end ingest + real-library acceptance + runbook
 
 **Files:**
 - Test: `server/test/ingest.e2e.test.ts`
 - Modify: `README.md` (add a "Scan a library" runbook section)
 
 **Interfaces:**
-- Consumes: `scanFolder` (Task 10), `processOnce` (Task 4), `WORKER_HANDLERS` (Task 11), `getDb`.
+- Consumes: `scanFolder` (Task 8), `processOnce` (Task 4), `WORKER_HANDLERS` (Task 9), `getDb`.
 - Produces: a green end-to-end test on the fixtures; a documented runbook; a verified gate on Creature Caster.
 
 - [ ] **Step 1: Write the end-to-end test — `server/test/ingest.e2e.test.ts`**
 
 ```ts
 import { beforeEach, describe, it, expect } from 'vitest';
-import path from 'node:path';
+import { archivesDir } from './helpers.js';
 import { getDb } from '../src/db/database.js';
 import { scanFolder } from '../src/services/libraryScan.service.js';
 import { processOnce } from '../src/services/worker.service.js';
 import { WORKER_HANDLERS } from '../src/worker.js';
-
-const ARCH_DIR = path.resolve(import.meta.dirname, '../../fixtures/archives');
 
 function clean(): void {
   const d = getDb();
@@ -1611,7 +1486,7 @@ describe('scan -> worker end to end', () => {
   beforeEach(() => clean());
 
   it('indexes the fixture archives into model rows', async () => {
-    scanFolder(ARCH_DIR);
+    scanFolder(archivesDir);
     // drain only the index_archive jobs the worker can handle
     while (await processOnce(WORKER_HANDLERS)) {
       /* keep draining */
@@ -1623,7 +1498,7 @@ describe('scan -> worker end to end', () => {
     }[];
     expect(models.length).toBeGreaterThanOrEqual(2);
     expect(models.every((m) => m.format === 'STL')).toBe(true);
-    expect(models.every((m) => m.original_path.startsWith(ARCH_DIR))).toBe(true);
+    expect(models.every((m) => m.original_path.startsWith(archivesDir))).toBe(true);
   });
 });
 ```
@@ -1631,7 +1506,7 @@ describe('scan -> worker end to end', () => {
 - [ ] **Step 2: Run the full server test suite**
 
 Run: `npm --workspace server test`
-Expected: all suites PASS (sanity, migrate, jobs.service, worker.service, libraryPath, archive.zip, archive.dispatch, archive.sevenzip, archive.rar [skipped], indexArchive, libraryScan, worker.entry, ingest.e2e).
+Expected: all suites PASS (sanity, migrate, jobs.service, worker.service, libraryPath, archive, indexArchive, libraryScan, worker.entry, ingest.e2e); the guarded rar test is skipped.
 
 - [ ] **Step 3: Add the runbook to `README.md`**
 
@@ -1697,9 +1572,10 @@ git commit -m "test(ingest): end-to-end scan->worker + library runbook"
 
 ## Self-Review (completed during planning)
 
-- **Spec coverage (Phases 0–1):** worker process + jobs table (Tasks 1–4, 11) ✓; index-in-place archive walking incl. `.zip/.rar/.7z` (Tasks 6–8, 10) ✓; creator/category/name derivation (Task 5) ✓; model rows created pointing at source (Task 9) ✓; `thumbnail`/`image_fetch` jobs enqueued but unhandled, awaiting Phases 2–3 (Task 9) ✓; gate on Creature Caster (Task 12) ✓. Phases 2–5 are intentionally out of scope and get their own plans.
-- **Deviation from spec §5 (noted intentionally):** migration `user_version = 2` here adds **only** the `jobs` table. The spec's other v2 additions (`secrets`, `models.source_url/license/creator_url`, `images.source_url/attribution/confidence`) are not needed until Phase 3 and will land in a later migration (`user_version = 3`) in the Phase 3 plan. This keeps Phase 0–1 minimal and avoids unused columns.
-- **Placeholder scan:** the only deliberate "not implemented yet" bodies are `listSevenZip`/`listRar` in Task 6, each replaced with a tested implementation in Tasks 7–8. No vague TODOs remain.
-- **Type consistency:** `JobRow`, `JobKind`, `JobStatus`, `JobHandler`, `HandlerMap`, `MeshEntry`, `ArchiveReader`, `LibraryMeta`, `ScanResult`, and the `index_archive` payload `{ path, root }` are used identically across Tasks 3–12. `createModel(NewModelInput)` matches the real signature in `server/src/services/model.service.ts`.
-- **Known constraint surfaced, not hidden:** no RAR writer on the box → no committed `.rar` fixture; the rar reader is covered by the dispatch test (deterministic) + a guarded real-file test + the Task 12 live gate (Creature Caster has `.rar` files).
+- **Spec coverage (Phases 0–1):** worker process + jobs table (Tasks 1–4, 9) ✓; index-in-place archive walking incl. `.zip/.rar/.7z` (Tasks 6, 8) ✓; creator/category/name derivation (Task 5) ✓; model rows created pointing at source (Task 7) ✓; `thumbnail`/`image_fetch` jobs enqueued but unhandled, awaiting Phases 2–3 (Task 7) ✓; gate on Creature Caster (Task 10) ✓. Phases 2–5 are intentionally out of scope and get their own plans.
+- **Deviation from spec §5 (intentional):** migration `user_version = 2` here adds **only** the `jobs` table. The spec's other v2 additions (`secrets`, `models.source_url/license/creator_url`, `images.source_url/attribution/confidence`) are not needed until Phase 3 and will land in a later migration (`user_version = 3`) in the Phase 3 plan. This keeps Phase 0–1 minimal and avoids unused columns.
+- **Toolchain hardening (from review):** fixture paths use `fileURLToPath(import.meta.url)` via `server/test/helpers.ts` (not `import.meta.dirname`), and the path mechanism is asserted at Task 1; 7z listing shells out to the bundled `7za` (`7zip-bin`) instead of `node-7z`, removing default-import/`@types` ambiguity; all three archive readers live in one task (Task 6) to avoid mid-file binding-reassignment edits by fresh-context subagents; `createModel`'s cache invalidation is confirmed safe without `initCache()` (synchronous LRU branch).
+- **Placeholder scan:** no `TODO`/`TBD`/"implement later" remain; every code step shows complete code.
+- **Type consistency:** `JobRow`, `JobKind`, `JobStatus`, `JobHandler`, `HandlerMap`, `MeshEntry`, `ArchiveReader`, `LibraryMeta`, `ScanResult`, and the `index_archive` payload `{ path, root }` are used identically across Tasks 3–10. `createModel(NewModelInput)` matches the real signature in `server/src/services/model.service.ts`.
+- **Known constraint surfaced, not hidden:** no RAR writer on the box → no committed `.rar` fixture; the rar reader is covered by the dispatch test (deterministic) + a guarded real-file test + the Task 10 live gate (Creature Caster has `.rar` files).
 ```
