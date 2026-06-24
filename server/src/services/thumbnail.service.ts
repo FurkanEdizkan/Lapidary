@@ -30,30 +30,29 @@ export async function thumbnailJob(job: JobRow, _db: Database.Database): Promise
 
   const ext = path.extname(srcPath).toLowerCase();
 
-  let meshPath: string;
-  let entryPath: string | null;
+  const lodOut = path.join(config.lodDir, `${modelId}.stl`);
+  const thumbOut = path.join(config.thumbnailsDir, `${modelId}.png`);
+
   let tmp: string | null = null;
-
-  if (ARCHIVE_EXTS.has(ext)) {
-    const entries = await listMeshEntries(srcPath);
-    if (!entries.length) throw new Error(`No mesh entries in archive: ${srcPath}`);
-    const largest = entries.reduce((a, b) => (b.sizeBytes > a.sizeBytes ? b : a));
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lap-thumb-'));
-    meshPath = await extractEntry(srcPath, largest.innerPath, tmp);
-    entryPath = largest.innerPath;
-  } else if (MESH_EXTS.has(ext)) {
-    meshPath = srcPath;
-    entryPath = null;
-  } else {
-    throw new Error(`thumbnail: unsupported file type: ${ext}`);
-  }
-
   try {
-    const lodOut = path.join(config.lodDir, `${modelId}.stl`);
-    const thumbOut = path.join(config.thumbnailsDir, `${modelId}.png`);
+    let meshPath: string;
+    let entryPath: string | null = null;
+    if (ARCHIVE_EXTS.has(ext)) {
+      const entries = await listMeshEntries(srcPath);
+      if (!entries.length) throw new Error(`No mesh entries in archive: ${srcPath}`);
+      const largest = entries.reduce((a, b) => (b.sizeBytes > a.sizeBytes ? b : a));
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lap-thumb-'));
+      meshPath = await extractEntry(srcPath, largest.innerPath, tmp);
+      entryPath = largest.innerPath;
+    } else if (MESH_EXTS.has(ext)) {
+      meshPath = srcPath;
+    } else {
+      throw new Error(`thumbnail: unsupported file type: ${ext}`);
+    }
 
     const res = await renderAndAnalyze(meshPath, lodOut, thumbOut, 512);
     if (!res) throw new Error('mesh sidecar unavailable');
+    if (!res.lodWritten && !res.thumbWritten) throw new Error('rust-mesh produced no output');
 
     // Build the patch only with defined values — better-sqlite3 rejects undefined bindings.
     const patch: Record<string, unknown> = {
