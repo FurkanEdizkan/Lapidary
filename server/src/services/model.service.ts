@@ -27,6 +27,7 @@ interface ModelRow {
   original_path: string | null;
   lod_path: string | null;
   thumbnail_path: string | null;
+  entry_path: string | null;
   notes: string | null;
 }
 
@@ -161,6 +162,7 @@ export function updateModel(id: string, patch: Partial<Record<string, unknown>>)
   const allowed: Record<string, string> = {
     name: 'name', creator: 'creator', type: 'type', notes: 'notes', color: 'color',
     triangleCount: 'triangle_count', thumbnailPath: 'thumbnail_path', lodPath: 'lod_path',
+    entryPath: 'entry_path',
   };
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -233,13 +235,13 @@ export function detachPrinter(modelId: string, name: string): void {
   invalidate();
 }
 
-export function getModelPaths(id: string): { original: string | null; lod: string | null; thumbnail: string | null; format: string } | null {
+export function getModelPaths(id: string): { original: string | null; lod: string | null; thumbnail: string | null; entry: string | null; format: string } | null {
   const d = getDb();
-  const r = d.prepare('SELECT original_path, lod_path, thumbnail_path, format FROM models WHERE id = ?').get(id) as
-    | { original_path: string | null; lod_path: string | null; thumbnail_path: string | null; format: string }
+  const r = d.prepare('SELECT original_path, lod_path, thumbnail_path, entry_path, format FROM models WHERE id = ?').get(id) as
+    | { original_path: string | null; lod_path: string | null; thumbnail_path: string | null; entry_path: string | null; format: string }
     | undefined;
   if (!r) return null;
-  return { original: r.original_path, lod: r.lod_path, thumbnail: r.thumbnail_path, format: r.format };
+  return { original: r.original_path, lod: r.lod_path, thumbnail: r.thumbnail_path, entry: r.entry_path, format: r.format };
 }
 
 /** Bump cache namespaces affected by any model write. */
