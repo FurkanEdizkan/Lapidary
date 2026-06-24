@@ -8,3 +8,14 @@ rust-mesh/target/
 web/dist/
 server/dist/
 .test-data/
+
+# generated knowledge graph — regenerate with /graphify
+graphify-out/
+
+# impeccable: design.json is committed; these are machine-local / scratch
+.impeccable/live/
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+
+# subagent-driven-development scratch workspace
+.superpowers/

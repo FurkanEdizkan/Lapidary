@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-24T00:00:00Z",
+  "title": "Design System: Lapidary",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Loupe Cyan",
+        "canonical": "#2cb4f5",
+        "tonalRamp": ["#072d3d", "#0a4a63", "#0e6589", "#1284b4", "#1fa0db", "#2cb4f5", "#62c9ff", "#a6e0ff"]
+      },
+      "page": {
+        "role": "neutral",
+        "displayName": "Velvet Page",
+        "canonical": "#121214",
+        "tonalRamp": ["#0d0d0e", "#121214", "#18181b", "#1f1f23", "#2a2a2f", "#3a3a40", "#5a5a62", "#9b9ba1"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Ink Ramp",
+        "canonical": "#eaeaec",
+        "tonalRamp": ["#4a4a52", "#6c6c73", "#82828a", "#9b9ba1", "#b3b3ba", "#c9c9cf", "#dadade", "#eaeaec"]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Signal Coral",
+        "canonical": "#e07a7a",
+        "tonalRamp": ["#3a1414", "#5a1f1f", "#7e2c2c", "#a64545", "#c45f5f", "#e07a7a", "#ec9d9d", "#f5c2c2"]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Signal Sage",
+        "canonical": "#6fd394",
+        "tonalRamp": ["#10301d", "#16462b", "#1d603b", "#2c8052", "#4aa873", "#6fd394", "#9ce3b4", "#c4f0d4"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Modal and section titles. The type ceiling — no hero exists in product UI." },
+      "title": { "displayName": "Title", "purpose": "Model names on tiles and rows; loudest element in a dense grid." },
+      "body": { "displayName": "Body", "purpose": "Controls, copy, secondary metadata. The workhorse." },
+      "label": { "displayName": "Label", "purpose": "Field labels and inline control text; muted ink." },
+      "mono": { "displayName": "Mono Data", "purpose": "Every measured value, tag, file badge, and print setting." },
+      "kicker": { "displayName": "Kicker", "purpose": "Sparse tracked-uppercase system micro-label (e.g. SPECS). Never a per-section eyebrow." }
+    },
+    "shadows": [
+      { "name": "lift", "value": "0 14px 30px rgba(0,0,0,0.5)", "purpose": "Grid tile on hover, paired with a 2px upward translate. The only resting-element shadow." },
+      { "name": "float", "value": "0 44px 90px rgba(0,0,0,0.65)", "purpose": "Modal dialogs above a blur(7px) scrim." }
+    ],
+    "motion": [
+      { "name": "ui-fast", "value": "0.15s", "purpose": "State transitions on tiles, cards, list rows, buttons, chips." },
+      { "name": "reveal", "value": "0.16s ease", "purpose": "Tile hover-overlay opacity reveal." },
+      { "name": "ease-standard", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "Prescribed default easing for state transitions; every transition needs a prefers-reduced-motion fallback." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "1024px" },
+      { "name": "lg", "value": "1440px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Highest-emphasis action on a surface (Add model, Add to library). The cyan facet.",
+      "html": "<button class=\"ds-btn-primary\">+ Add model</button>",
+      "css": ".ds-btn-primary { background:#2cb4f5; color:#06151d; border:1px solid #2cb4f5; border-radius:9px; padding:9px 20px; font-family:'Archivo',sans-serif; font-size:13px; font-weight:700; cursor:pointer; transition:background .15s, transform .15s; } .ds-btn-primary:hover { background:#4cc3ff; transform:translateY(-1px); } .ds-btn-primary:focus-visible { outline:2px solid #2cb4f5; outline-offset:2px; } @media (prefers-reduced-motion: reduce) { .ds-btn-primary { transition:none; } .ds-btn-primary:hover { transform:none; } }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Non-primary action (Cancel, Tags / Groups). Transparent with a hairline border that shifts to cyan on hover.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost { background:transparent; color:#c9c9cf; border:1px solid #34343a; border-radius:9px; padding:9px 18px; font-family:'Archivo',sans-serif; font-size:13px; font-weight:600; cursor:pointer; transition:border-color .15s; } .ds-btn-ghost:hover { border-color:#2cb4f5; } .ds-btn-ghost:focus-visible { outline:2px solid #2cb4f5; outline-offset:2px; } @media (prefers-reduced-motion: reduce) { .ds-btn-ghost { transition:none; } }"
+    },
+    {
+      "name": "Pill Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Filter / tag pill. Inactive is a graphite surface; selected fills the cyan facet (also the higher-contrast state, so selection reads without color).",
+      "html": "<div style=\"display:flex; gap:6px;\"><button class=\"ds-chip ds-chip-active\">dragon</button><button class=\"ds-chip\">miniature</button></div>",
+      "css": ".ds-chip { display:inline-flex; align-items:center; gap:6px; background:#1d1d20; color:#c9c9cf; border:1px solid #2c2c30; border-radius:99px; padding:5px 12px; font-family:'Archivo',sans-serif; font-size:12px; font-weight:600; line-height:1.5; cursor:pointer; transition:border-color .15s; } .ds-chip:hover { border-color:#2cb4f5; } .ds-chip:focus-visible { outline:2px solid #2cb4f5; outline-offset:2px; } .ds-chip-active { background:#2cb4f5; color:#06151d; border-color:#2cb4f5; } @media (prefers-reduced-motion: reduce) { .ds-chip { transition:none; } }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "The one pill-shaped input — global search in the top bar. Faint placeholder held at the readable floor.",
+      "html": "<input class=\"ds-input-search\" placeholder=\"Search models, tags, creators — try &ldquo;dragon&rdquo;\" />",
+      "css": ".ds-input-search { width:100%; box-sizing:border-box; background:#1d1d20; color:#eaeaec; border:1px solid #2c2c30; border-radius:99px; padding:9px 16px; font-family:'Archivo',sans-serif; font-size:13px; outline:none; } .ds-input-search::placeholder { color:#6c6c73; } .ds-input-search:focus-visible { border-color:#2cb4f5; outline:2px solid rgba(44,180,245,0.4); outline-offset:1px; }"
+    },
+    {
+      "name": "Model Tile",
+      "kind": "card",
+      "refersTo": "tile",
+      "description": "Square, image-first grid tile. Flat at rest; lifts on hover and reveals a name/creator/format scrim.",
+      "html": "<button class=\"ds-tile\" aria-label=\"Wyvern Rider\"><span class=\"ds-tile-img\"></span><span class=\"ds-tile-scrim\"><span class=\"ds-tile-name\">Wyvern Rider</span><span class=\"ds-tile-meta\">Forge &amp; Fathom &middot; Miniature</span><span class=\"ds-tile-badges\"><span class=\"ds-tile-badge\">STL</span><span class=\"ds-tile-badge\">62 MM</span></span></span></button>",
+      "css": ".ds-tile { position:relative; display:block; width:200px; aspect-ratio:1/1; padding:0; border:1px solid #26262a; border-radius:8px; overflow:hidden; background:#1a1a1d; cursor:pointer; transition:transform .15s, box-shadow .15s, border-color .15s; } .ds-tile:hover { transform:translateY(-2px); box-shadow:0 14px 30px rgba(0,0,0,0.5); border-color:#3e3e46; } .ds-tile:focus-visible { outline:2px solid #2cb4f5; outline-offset:2px; } .ds-tile-img { position:absolute; inset:0; background:radial-gradient(circle at 50% 42%, #34505f 0%, #17171a 82%); } .ds-tile-scrim { position:absolute; inset:0; display:flex; flex-direction:column; justify-content:flex-end; padding:14px; text-align:left; background:linear-gradient(to top, rgba(8,8,10,0.92) 0%, rgba(8,8,10,0.4) 30%, rgba(8,8,10,0) 58%); opacity:0; transition:opacity .16s ease; } .ds-tile:hover .ds-tile-scrim, .ds-tile:focus-visible .ds-tile-scrim { opacity:1; } .ds-tile-name { font-family:'Archivo',sans-serif; font-weight:650; font-size:14px; line-height:1.25; color:#eaeaec; } .ds-tile-meta { font-size:11.5px; color:#c2c2c9; margin-top:3px; } .ds-tile-badges { display:flex; gap:6px; margin-top:8px; } .ds-tile-badge { font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:0.08em; color:#a8a8b0; background:rgba(28,28,32,0.85); border:1px solid #36363c; padding:2px 7px; border-radius:5px; } @media (prefers-reduced-motion: reduce) { .ds-tile { transition:none; } .ds-tile:hover { transform:none; } .ds-tile-scrim { transition:none; } }"
+    },
+    {
+      "name": "Spec Row",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Read-only label/value row in the detail view. Archivo key, JetBrains Mono value — the Measured-Value Rule made visible.",
+      "html": "<div class=\"ds-spec\"><span class=\"ds-spec-k\">Dimensions</span><span class=\"ds-spec-v\">62 &times; 40 &times; 88 mm</span></div>",
+      "css": ".ds-spec { display:grid; grid-template-columns:140px 1fr; gap:10px; padding:6px 0; border-bottom:1px solid #232327; font-size:12.5px; } .ds-spec-k { color:#8b8b93; font-family:'Archivo',sans-serif; } .ds-spec-v { color:#e0e0e5; font-family:'JetBrains Mono',monospace; font-size:11.5px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lapidary's Loupe",
+    "overview": "Lapidary is a dark velvet field with one bright facet of light. Surfaces recede into a near-black graphite (#121214); a single cyan accent (#2cb4f5) is the one cut that catches the light. The name is the brief: a lapidary cuts and polishes gems, and this interface treats each model as the gem under inspection — the chrome is the loupe, precise and almost invisible, and the model is the thing in focus. The personality is Precise · Fast · Trustworthy: instrument-like, confident, dense but always legible. Archivo carries the structure; JetBrains Mono carries the data. The accent is rationed: it marks the live thing and nothing else.",
+    "keyCharacteristics": [
+      "Near-black tonal layering; depth from subtle borders, not heavy shadow.",
+      "A single rationed cyan accent — the facet, never decoration.",
+      "Dual-typeface system: Archivo for structure, JetBrains Mono for every measured value.",
+      "Image-first: the model fills the frame; metadata reveals on intent.",
+      "High density held calm by a tight type scale and rhythmic spacing."
+    ],
+    "rules": [
+      { "name": "The One Facet Rule", "body": "Loupe Cyan appears on a small fraction of any screen — the primary action, the current selection, the focus ring. Its rarity is the point; never use cyan for decoration, borders-at-rest, or body text.", "section": "colors" },
+      { "name": "The Tonal Depth Rule", "body": "Surfaces separate by lightness and a hairline border, not by drop shadow. If two panels are hard to tell apart, raise the border one step on the ramp — do not add a shadow.", "section": "colors" },
+      { "name": "The Measured-Value Rule", "body": "Anything that is a measurement — size, triangle count, file size, print setting, date — is set in JetBrains Mono. Anything that is a name or a sentence is set in Archivo.", "section": "typography" },
+      { "name": "The No-Eyebrow Rule", "body": "The mono kicker is a sparse system accent, not section scaffolding. Never stack a tracked-uppercase label above every section.", "section": "typography" },
+      { "name": "The Flat-At-Rest Rule", "body": "Surfaces cast no shadow until they change state. Depth at rest is tone and border; depth on interaction is the Lift; depth above the app is the Float.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do ration Loupe Cyan to the live thing only — primary action, current selection, focus.",
+      "Do set every measured value in JetBrains Mono, and every name or sentence in Archivo.",
+      "Do build depth from tone + hairline borders; add a shadow only on hover-lift or for modals.",
+      "Do render a visible Loupe Cyan focus ring on every interactive control (the current code sets outline:none on inputs with no replacement — an accessibility gap to close).",
+      "Do carry a second, non-color cue for every state so the UI is legible to colorblind users (WCAG 2.1 AA).",
+      "Do give every transition a prefers-reduced-motion alternative.",
+      "Do keep body and placeholder text at ≥ 4.5:1 against its graphite surface."
+    ],
+    "donts": [
+      "Don't ship consumer marketplace clutter — no ad rails, infinite-scroll noise, or social cruft.",
+      "Don't drift into heavy enterprise CAD/PLM — no gray nested toolbars or industrial-bleak density.",
+      "Don't apply the generic SaaS dashboard look — no purple gradients, identical card grids, hero-metric template, or per-section uppercase eyebrow.",
+      "Don't slip into playful / childish maker vibes — no cartoonish rounding, emoji chrome, or toy-like styling.",
+      "Don't use gradient text, decorative glassmorphism (the modal blur is the one sanctioned use), or a colored side-stripe accent.",
+      "Don't let Loupe Cyan become a second neutral; if more than a small fraction of a screen is cyan, the facet is gone."
+    ]
+  }
+}
