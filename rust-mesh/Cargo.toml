@@ -8,6 +8,9 @@ description = "Optional mesh sidecar for Lapidary: bbox + triangle count + decim
 name = "rust-mesh"
 path = "src/main.rs"
 
+[dependencies]
+png = "0.17"
+
 [profile.release]
 opt-level = 3
 lto = true
