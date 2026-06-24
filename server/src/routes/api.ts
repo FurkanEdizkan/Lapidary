@@ -25,7 +25,8 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
   app.get('/api/models', async (req) => {
     const q = req.query as Record<string, string>;
     const key = JSON.stringify(q);
-    return cached('models', key, 60, () =>
+    // Short TTL: the worker writes models in a separate process, so this in-process LRU can lag; keep it small (Redis gives true cross-process invalidation).
+    return cached('models', key, 2, () =>
       listModels({
         search: q.search,
         tags: q.tags ? q.tags.split(',').filter(Boolean) : undefined,
@@ -165,9 +166,9 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
   // ---------- search ----------
   app.get('/api/search/suggest', async (req) => {
     const q = (req.query as { q?: string }).q || '';
-    return cached('suggest', q, 30, () => suggest(q));
+    return cached('suggest', q, 3, () => suggest(q));
   });
-  app.get('/api/rail-tags', async () => cached('suggest', 'rail', 60, () => railTags()));
+  app.get('/api/rail-tags', async () => cached('suggest', 'rail', 3, () => railTags()));
 
   // ---------- scan ----------
   // Enqueues an index_archive job per library item; the worker indexes them in the
