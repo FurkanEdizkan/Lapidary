@@ -14,12 +14,14 @@ describe('archive readers', () => {
     const entries = await listZip(ZIP);
     expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
     expect(entries.find((e) => e.innerPath === 'cube.stl')!.ext).toBe('.stl');
+    expect(entries.find((e) => e.innerPath === 'cube.stl')!.sizeBytes).toBeGreaterThan(0);
   });
 
   it('listSevenZip lists the inner cube.stl mesh entry', async () => {
     const entries = await listSevenZip(SZ);
     expect(entries.map((e) => e.innerPath)).toContain('cube.stl');
     expect(entries.find((e) => e.innerPath === 'cube.stl')!.ext).toBe('.stl');
+    expect(entries.find((e) => e.innerPath === 'cube.stl')!.sizeBytes).toBeGreaterThan(0);
   });
 });
 

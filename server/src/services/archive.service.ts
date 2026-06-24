@@ -8,13 +8,14 @@ import { createExtractorFromFile } from 'node-unrar-js';
 
 const execFileP = promisify(execFile);
 
-let sevenZipReady = false;
-async function ensureSevenZipExecutable(): Promise<void> {
-  if (sevenZipReady) return;
-  // 7zip-bin sometimes ships without the exec bit (and npm/Docker can drop it);
-  // chmod is best-effort and a harmless no-op on Windows.
-  try { await fsp.chmod(sevenBin.path7za, 0o755); } catch { /* ignore */ }
-  sevenZipReady = true;
+let sevenZipReadyP: Promise<void> | null = null;
+function ensureSevenZipExecutable(): Promise<void> {
+  // chmod once per process; cache the promise so concurrent first-callers share it.
+  // best-effort: harmless no-op on Windows / read-only FS.
+  sevenZipReadyP ??= (async () => {
+    try { await fsp.chmod(sevenBin.path7za, 0o755); } catch { /* ignore */ }
+  })();
+  return sevenZipReadyP;
 }
 
 export interface MeshEntry {
