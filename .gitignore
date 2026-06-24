@@ -7,3 +7,4 @@ data/
 rust-mesh/target/
 web/dist/
 server/dist/
+.test-data/

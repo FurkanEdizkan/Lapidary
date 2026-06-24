@@ -59,6 +59,32 @@ docker compose up                 # or: podman compose up  /  podman-compose up
 See `.env.example`. Key variables: `PORT`, `DATA_DIR`, `REDIS_URL` (optional),
 `LIBRARY_PATH` (optional scan target), `MESH_SIDECAR_BIN` (optional path to `rust-mesh`).
 
+## Scan a library (background ingest)
+
+Lapidary indexes archived models (`.zip`/`.rar`/`.7z`) and loose meshes
+(`.stl`/`.3mf`/`.obj`) **in place** — nothing is copied out of your library.
+
+1. Start the app and the background worker:
+   ```bash
+   npm run dev          # runs server + worker + web
+   ```
+2. Point a scan at a folder (or set `LIBRARY_PATH` and omit `folderPath`):
+   ```bash
+   curl -X POST localhost:5174/api/scan \
+     -H 'content-type: application/json' \
+     -d '{"folderPath": "/path/to/Creators/Creature Caster"}'
+   # -> { "scanned": N, "enqueued": N, "skipped": 0 }
+   ```
+3. Watch rows appear (the worker peeks each archive and creates a model that
+   points at the source file):
+   ```bash
+   curl -s localhost:5174/api/models | jq 'length'
+   ```
+
+Models are grouped by creator and category derived from the folder layout
+(`Creators/<Creator>/<Miniatures|Sets|Terrain>/<item>`). Thumbnails and images
+are added by later phases.
+
 ## Architecture
 
 - `server/` — Fastify + SQLite (`better-sqlite3`). Modular services (one responsibility each)

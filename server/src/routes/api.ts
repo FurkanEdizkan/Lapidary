@@ -25,7 +25,8 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
   app.get('/api/models', async (req) => {
     const q = req.query as Record<string, string>;
     const key = JSON.stringify(q);
-    return cached('models', key, 60, () =>
+    // Short TTL: the worker writes models in a separate process, so this in-process LRU can lag; keep it small (Redis gives true cross-process invalidation).
+    return cached('models', key, 2, () =>
       listModels({
         search: q.search,
         tags: q.tags ? q.tags.split(',').filter(Boolean) : undefined,
@@ -165,17 +166,26 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
   // ---------- search ----------
   app.get('/api/search/suggest', async (req) => {
     const q = (req.query as { q?: string }).q || '';
-    return cached('suggest', q, 30, () => suggest(q));
+    return cached('suggest', q, 3, () => suggest(q));
   });
-  app.get('/api/rail-tags', async () => cached('suggest', 'rail', 60, () => railTags()));
+  app.get('/api/rail-tags', async () => cached('suggest', 'rail', 3, () => railTags()));
 
   // ---------- scan ----------
+  // Enqueues an index_archive job per library item; the worker indexes them in the
+  // background. Returns { scanned, enqueued, skipped } — poll /api/models to watch rows appear.
   app.post('/api/scan', async (req, reply) => {
     const { folderPath } = req.body as { folderPath?: string };
     const target = folderPath || config.libraryPath;
     if (!target) return reply.code(400).send({ error: 'no folderPath and no LIBRARY_PATH configured' });
+    if (config.libraryPath) {
+      const root = path.resolve(config.libraryPath);
+      const resolved = path.resolve(target);
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        return reply.code(400).send({ error: 'folderPath must be within LIBRARY_PATH' });
+      }
+    }
     try {
-      return await scanFolder(target);
+      return scanFolder(target);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }

@@ -8,11 +8,13 @@
     "web"
   ],
   "scripts": {
-    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "concurrently -n server,worker,web -c cyan,yellow,magenta \"npm:dev:server\" \"npm:dev:worker\" \"npm:dev:web\"",
     "dev:server": "npm --workspace server run dev",
+    "dev:worker": "npm --workspace server run dev:worker",
     "dev:web": "npm --workspace web run dev",
     "build": "npm --workspace server run build && npm --workspace web run build",
-    "start": "node server/dist/index.js"
+    "start": "node server/dist/index.js",
+    "start:worker": "node server/dist/worker.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
