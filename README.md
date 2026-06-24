@@ -91,10 +91,23 @@ Lapidary indexes archived models (`.zip`/`.rar`/`.7z`) and loose meshes
    ```bash
    curl -s localhost:5174/api/models | jq 'length'
    ```
+4. **Thumbnails and the 3D viewer mesh populate automatically in the background.**
+   After `index_archive` jobs finish, the worker enqueues `thumbnail` jobs that
+   extract the best mesh entry, run the Rust sidecar to produce a decimated
+   LOD mesh (for the in-browser 3D viewer) and a rendered PNG thumbnail, then
+   store both under `$DATA_DIR/lod/` and `$DATA_DIR/thumbnails/`. Gallery tiles
+   show a skeleton while rendering and switch to the thumbnail when ready.
+   Full-resolution meshes are extracted on demand from the source archive when
+   you open a model and click *View full mesh*.
+
+   > **Prerequisite:** build the Rust mesh sidecar once before starting the
+   > worker (see above: `npm run build:mesh`). Without the binary the worker
+   > still runs but thumbnail/LOD jobs will be skipped.
 
 Models are grouped by creator and category derived from the folder layout
-(`Creators/<Creator>/<Miniatures|Sets|Terrain>/<item>`). Thumbnails and images
-are added by later phases.
+(`Creators/<Creator>/<Miniatures|Sets|Terrain>/<item>`). Re-scanning the same
+folder is safe — already-indexed archives are skipped (`enqueued: 0, skipped: N`)
+and nothing is written to the source library.
 
 ## Architecture
 
