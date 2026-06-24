@@ -49,4 +49,25 @@ describe('indexArchiveJob', () => {
     const job = enqueue({ kind: 'index_archive', payload }, d);
     await expect(indexArchiveJob({ ...job, payload }, d)).rejects.toThrow();
   });
+
+  it('indexes a loose .stl in place (non-archive path)', async () => {
+    const d = getDb();
+    const STL = path.join(fixturesDir, 'cube.stl');
+    const payload = { path: STL, root: fixturesDir };
+    const job = enqueue({ kind: 'index_archive', payload }, d);
+    await indexArchiveJob({ ...job, payload }, d);
+    const m = d.prepare('SELECT format, original_path FROM models WHERE original_path = ?').get(STL) as
+      | { format: string; original_path: string }
+      | undefined;
+    expect(m?.format).toBe('STL');
+    expect(m?.original_path).toBe(STL);
+  });
+
+  it('throws when the archive contains no mesh entries', async () => {
+    const d = getDb();
+    const NO_MESH = path.join(fixturesDir, 'no-mesh.zip');
+    const payload = { path: NO_MESH, root: fixturesDir };
+    const job = enqueue({ kind: 'index_archive', payload }, d);
+    await expect(indexArchiveJob({ ...job, payload }, d)).rejects.toThrow(/No mesh/);
+  });
 });

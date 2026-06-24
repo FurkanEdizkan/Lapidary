@@ -51,6 +51,7 @@ export async function listSevenZip(archivePath: string): Promise<MeshEntry[]> {
   await ensureSevenZipExecutable();
   const { stdout } = await execFileP(sevenBin.path7za, ['l', '-slt', archivePath], {
     maxBuffer: 64 * 1024 * 1024,
+    timeout: 60_000,
   });
   const entries: MeshEntry[] = [];
   for (const block of stdout.split(/\r?\n\r?\n/)) {

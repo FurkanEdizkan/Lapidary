@@ -176,6 +176,13 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
     const { folderPath } = req.body as { folderPath?: string };
     const target = folderPath || config.libraryPath;
     if (!target) return reply.code(400).send({ error: 'no folderPath and no LIBRARY_PATH configured' });
+    if (config.libraryPath) {
+      const root = path.resolve(config.libraryPath);
+      const resolved = path.resolve(target);
+      if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        return reply.code(400).send({ error: 'folderPath must be within LIBRARY_PATH' });
+      }
+    }
     try {
       return scanFolder(target);
     } catch (e) {

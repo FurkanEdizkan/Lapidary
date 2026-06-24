@@ -122,13 +122,17 @@ const JOBS_SCHEMA = `
 export function migrate(d: Database.Database): void {
   let version = d.pragma('user_version', { simple: true }) as number;
   if (version < 1) {
-    d.exec(BASE_SCHEMA);
-    d.pragma('user_version = 1');
+    d.transaction(() => {
+      d.exec(BASE_SCHEMA);
+      d.pragma('user_version = 1');
+    })();
     version = 1;
   }
   if (version < 2) {
-    d.exec(JOBS_SCHEMA);
-    d.pragma('user_version = 2');
+    d.transaction(() => {
+      d.exec(JOBS_SCHEMA);
+      d.pragma('user_version = 2');
+    })();
     version = 2;
   }
 }

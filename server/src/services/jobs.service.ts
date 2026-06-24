@@ -78,8 +78,10 @@ export function claimNext(kinds: JobKind[], db: Database.Database = getDb()): Jo
       )
       .get(...kinds) as { id: string } | undefined;
     if (!r) return null;
-    db.prepare(`UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?`)
+    const info = db
+      .prepare(`UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'queued'`)
       .run(now(), r.id);
+    if (info.changes === 0) return null; // lost the claim to a concurrent worker
     return getJob(r.id, db);
   });
   return tx();

@@ -10,7 +10,11 @@ export const WORKER_HANDLERS: HandlerMap = {
 /** Only start the loop when run as a process, not when imported by a test. */
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
-  getDb(); // ensure migrations have run before polling
+  const db = getDb(); // ensure migrations have run before polling
+  const requeued = db
+    .prepare("UPDATE jobs SET status = 'queued', updated_at = ? WHERE status = 'running'")
+    .run(new Date().toISOString());
+  if (requeued.changes > 0) console.log(`[worker] requeued ${requeued.changes} stale running job(s)`);
   const stop = startWorker(WORKER_HANDLERS, 1500);
   // eslint-disable-next-line no-console
   console.log('[worker] started; handling: index_archive');
