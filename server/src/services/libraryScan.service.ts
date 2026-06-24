@@ -1,14 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { nanoid } from 'nanoid';
-import pLimit from 'p-limit';
+import type Database from 'better-sqlite3';
 import { getDb } from '../db/database.js';
-import { ingestMesh } from './assetPipeline.service.js';
-import { createModel } from './model.service.js';
+import { enqueue } from './jobs.service.js';
 
-const SUPPORTED = new Set(['.stl', '.3mf', '.obj']);
+const ARCHIVE_EXTS = new Set(['.zip', '.rar', '.7z']);
+const MESH_EXTS = new Set(['.stl', '.3mf', '.obj']);
 
-/** Recursively collect supported mesh files under a directory. */
+/** Recursively collect archive + loose-mesh files under a directory. */
 function collect(dir: string, out: string[] = [], depth = 0): string[] {
   if (depth > 8) return out;
   let entries: fs.Dirent[];
@@ -19,69 +18,51 @@ function collect(dir: string, out: string[] = [], depth = 0): string[] {
   }
   for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) collect(full, out, depth + 1);
-    else if (SUPPORTED.has(path.extname(e.name).toLowerCase())) out.push(full);
+    if (e.isDirectory()) {
+      collect(full, out, depth + 1);
+    } else {
+      const ext = path.extname(e.name).toLowerCase();
+      if (ARCHIVE_EXTS.has(ext) || MESH_EXTS.has(ext)) out.push(full);
+    }
   }
   return out;
 }
 
 export interface ScanResult {
   scanned: number;
-  imported: number;
+  enqueued: number;
   skipped: number;
 }
 
-/** Scan a folder and import any new meshes through the asset pipeline. */
-export async function scanFolder(folderPath: string): Promise<ScanResult> {
+/**
+ * Walk a library folder and enqueue one `index_archive` job per archive/mesh found.
+ * Index-in-place: nothing is extracted or copied here — each job carries the absolute
+ * source path and the scan root. Items already indexed (by `original_path`) are skipped;
+ * a duplicate enqueue is harmless because the handler is idempotent.
+ */
+export function scanFolder(folderPath: string, db: Database.Database = getDb()): ScanResult {
   const root = path.resolve(folderPath);
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     throw new Error(`Not a directory: ${root}`);
   }
   const files = collect(root);
-  const d = getDb();
-  const existingNames = new Set(
-    (d.prepare('SELECT name FROM models').all() as { name: string }[]).map((r) => r.name),
+  const indexed = new Set(
+    (db.prepare('SELECT original_path FROM models WHERE original_path IS NOT NULL').all() as {
+      original_path: string;
+    }[]).map((r) => r.original_path),
   );
 
-  const limit = pLimit(3); // bounded concurrency so a large library cannot exhaust memory
-  let imported = 0;
+  const seen = new Set<string>();
+  let enqueued = 0;
   let skipped = 0;
-
-  await Promise.all(
-    files.map((file) =>
-      limit(async () => {
-        const name = path.basename(file, path.extname(file));
-        if (existingNames.has(name)) {
-          skipped += 1;
-          return;
-        }
-        existingNames.add(name);
-        try {
-          const buffer = fs.readFileSync(file);
-          const id = `u${nanoid(10)}`;
-          const ingest = await ingestMesh(id, path.basename(file), buffer);
-          createModel({
-            id,
-            name,
-            creator: 'Imported',
-            type: 'Miniature',
-            format: ingest.format,
-            fileSizeBytes: ingest.fileSizeBytes,
-            size: ingest.size ?? [0, 0, 0],
-            originalPath: ingest.originalPath,
-            lodPath: ingest.lodPath,
-            tags: [],
-          });
-          if (ingest.triangleCount) {
-            d.prepare('UPDATE models SET triangle_count = ? WHERE id = ?').run(ingest.triangleCount, id);
-          }
-          imported += 1;
-        } catch {
-          skipped += 1;
-        }
-      }),
-    ),
-  );
-
-  return { scanned: files.length, imported, skipped };
+  for (const file of files) {
+    if (indexed.has(file) || seen.has(file)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(file);
+    enqueue({ kind: 'index_archive', payload: { path: file, root } }, db);
+    enqueued += 1;
+  }
+  return { scanned: files.length, enqueued, skipped };
 }

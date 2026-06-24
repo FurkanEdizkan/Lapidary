@@ -170,12 +170,14 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
   app.get('/api/rail-tags', async () => cached('suggest', 'rail', 60, () => railTags()));
 
   // ---------- scan ----------
+  // Enqueues an index_archive job per library item; the worker indexes them in the
+  // background. Returns { scanned, enqueued, skipped } — poll /api/models to watch rows appear.
   app.post('/api/scan', async (req, reply) => {
     const { folderPath } = req.body as { folderPath?: string };
     const target = folderPath || config.libraryPath;
     if (!target) return reply.code(400).send({ error: 'no folderPath and no LIBRARY_PATH configured' });
     try {
-      return await scanFolder(target);
+      return scanFolder(target);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
