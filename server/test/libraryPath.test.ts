@@ -32,4 +32,26 @@ describe('deriveLibraryMeta', () => {
   it('keeps the basename when there is no "<creator> - " prefix', () => {
     expect(deriveLibraryMeta(ROOT, '/lib/Creators/Foo/Miniatures/Dragon King.zip').name).toBe('Dragon King');
   });
+
+  it('derives the right creator when the scan root is a single creator folder (the gate bug)', () => {
+    // root = the creator folder itself, not the Creators parent
+    const m = deriveLibraryMeta(
+      '/lib/Creators/Creature Caster',
+      '/lib/Creators/Creature Caster/Miniatures/Creature Caster - Lady of Arcana.zip',
+    );
+    expect(m.creator).toBe('Creature Caster');
+    expect(m.category).toBe('Miniatures');
+    expect(m.type).toBe('Miniature');
+    expect(m.name).toBe('Lady of Arcana');
+  });
+
+  it('anchors on the category folder even with deeper nesting below it', () => {
+    const m = deriveLibraryMeta(
+      '/lib/Creators',
+      '/lib/Creators/Foo/Terrain/Ruins/Foo - Wall Section.stl',
+    );
+    expect(m.creator).toBe('Foo');
+    expect(m.category).toBe('Terrain');
+    expect(m.type).toBe('Terrain');
+  });
 });
