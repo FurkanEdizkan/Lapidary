@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-color",
+        "value": "rgba(0,0,0,0.5)",
+        "reason": "Intentional DESIGN.md Lift shadow (box-shadow: 0 14px 30px rgba(0,0,0,0.5)) — documented elevation token for card hover state",
+        "createdAt": "2026-06-24T06:20:09.825Z"
+      }
+    ]
+  }
+}

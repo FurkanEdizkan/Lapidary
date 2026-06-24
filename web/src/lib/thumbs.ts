@@ -24,6 +24,15 @@ function generate(model: Model): string | null {
   return url;
 }
 
+/**
+ * True when a real model has been ingested but its server thumbnail hasn't been
+ * generated yet. The background worker will fill it in; tiles use this to show a
+ * "rendering…" skeleton rather than an empty/broken state.
+ */
+export function isRenderingThumb(model: Model): boolean {
+  return !!(model.hasOriginal && !model.hasThumbnail && !model.meshKind);
+}
+
 /** Resolve a tile's image source: server PNG if cached, else a client proxy render. */
 export function useThumbnail(model: Model): string | null {
   const [src, setSrc] = useState<string | null>(model.hasThumbnail ? thumbUrl(model.id) : null);
