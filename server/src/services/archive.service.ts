@@ -1,11 +1,21 @@
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { promises as fsp } from 'node:fs';
 import AdmZip from 'adm-zip';
 import sevenBin from '7zip-bin';
 import { createExtractorFromFile } from 'node-unrar-js';
 
 const execFileP = promisify(execFile);
+
+let sevenZipReady = false;
+async function ensureSevenZipExecutable(): Promise<void> {
+  if (sevenZipReady) return;
+  // 7zip-bin sometimes ships without the exec bit (and npm/Docker can drop it);
+  // chmod is best-effort and a harmless no-op on Windows.
+  try { await fsp.chmod(sevenBin.path7za, 0o755); } catch { /* ignore */ }
+  sevenZipReady = true;
+}
 
 export interface MeshEntry {
   innerPath: string;
@@ -37,6 +47,7 @@ export async function listZip(archivePath: string): Promise<MeshEntry[]> {
  * separated by blank lines. Avoids any node-7z stream/type quirks.
  */
 export async function listSevenZip(archivePath: string): Promise<MeshEntry[]> {
+  await ensureSevenZipExecutable();
   const { stdout } = await execFileP(sevenBin.path7za, ['l', '-slt', archivePath], {
     maxBuffer: 64 * 1024 * 1024,
   });
