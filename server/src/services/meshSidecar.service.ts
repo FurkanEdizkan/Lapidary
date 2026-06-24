@@ -17,6 +17,13 @@ export interface MeshAnalysis {
   lodWritten: boolean;
 }
 
+export interface RenderAnalysis {
+  bbox: [number, number, number];
+  triangles: number;
+  lodWritten: boolean;
+  thumbWritten: boolean;
+}
+
 let availability: boolean | null = null;
 
 export async function sidecarAvailable(): Promise<boolean> {
@@ -32,6 +39,36 @@ export async function sidecarAvailable(): Promise<boolean> {
     availability = false;
   }
   return availability;
+}
+
+/**
+ * Analyze a mesh file and render a thumbnail, writing a decimated LOD to
+ * `lodOut` and a PNG thumbnail to `thumbOut`. Returns null when the sidecar
+ * is unavailable or an error occurs.
+ */
+export async function renderAndAnalyze(
+  inputPath: string,
+  lodOut: string,
+  thumbOut: string,
+  size = 512,
+): Promise<RenderAnalysis | null> {
+  if (!(await sidecarAvailable()) || !config.meshSidecarBin) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      config.meshSidecarBin,
+      [inputPath, '--lod', lodOut, '--thumb', thumbOut, '--size', String(size), '--json'],
+      { timeout: 120_000, maxBuffer: 1024 * 1024 },
+    );
+    const parsed = JSON.parse(stdout) as { bbox: [number, number, number]; triangles: number };
+    return {
+      bbox: parsed.bbox,
+      triangles: parsed.triangles,
+      lodWritten: fs.existsSync(lodOut),
+      thumbWritten: fs.existsSync(thumbOut),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Analyze a mesh file, writing a decimated LOD to `lodOut` when possible. */
