@@ -14,7 +14,8 @@
     "dev:web": "npm --workspace web run dev",
     "build": "npm --workspace server run build && npm --workspace web run build",
     "start": "node server/dist/index.js",
-    "start:worker": "node server/dist/worker.js"
+    "start:worker": "node server/dist/worker.js",
+    "build:mesh": "cargo build --release --manifest-path rust-mesh/Cargo.toml"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

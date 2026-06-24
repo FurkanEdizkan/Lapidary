@@ -43,6 +43,26 @@ function resolveWebDist(): string | null {
   return null;
 }
 
+/**
+ * Resolve the rust-mesh binary path.
+ * Priority: MESH_SIDECAR_BIN env var > auto-detected build output > null.
+ * Build it once with `npm run build:mesh` (requires a Rust toolchain).
+ */
+export function resolveMeshSidecarBin(): string | null {
+  if (process.env.MESH_SIDECAR_BIN) return process.env.MESH_SIDECAR_BIN;
+  const bin = 'rust-mesh/target/release/rust-mesh';
+  const candidates = [
+    path.resolve(process.cwd(), bin),
+    path.resolve(import.meta.dirname, `../../${bin}`),
+    path.resolve(import.meta.dirname, `../../../${bin}`),
+    path.resolve(import.meta.dirname, `../../../../${bin}`),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
 export function loadConfig(): Config {
   const dataDir = ensureDir(resolveDataDir());
   return {
@@ -56,7 +76,7 @@ export function loadConfig(): Config {
     dbPath: path.join(dataDir, 'lapidary.db'),
     redisUrl: process.env.REDIS_URL || null,
     libraryPath: process.env.LIBRARY_PATH || null,
-    meshSidecarBin: process.env.MESH_SIDECAR_BIN || null,
+    meshSidecarBin: resolveMeshSidecarBin(),
     webDist: resolveWebDist(),
   };
 }

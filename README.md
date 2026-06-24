@@ -34,6 +34,17 @@ npm run dev          # Fastify API on :5174, Vite UI on :5173 (proxies /api)
 # open http://localhost:5173
 ```
 
+To enable server-side thumbnails and LOD generation, build the Rust mesh sidecar once
+(requires a [Rust toolchain](https://rustup.rs/); run `. "$HOME/.cargo/env"` first if
+`cargo` is not yet on your PATH):
+
+```bash
+npm run build:mesh
+```
+
+The server auto-detects `rust-mesh/target/release/rust-mesh` on startup; no env var needed.
+Set `MESH_SIDECAR_BIN` only to override the path (see `.env.example`).
+
 Production (single server serving the built UI + API):
 
 ```bash
