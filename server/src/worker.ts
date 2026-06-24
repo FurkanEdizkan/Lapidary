@@ -1,10 +1,12 @@
 import { getDb } from './db/database.js';
 import { startWorker, type HandlerMap } from './services/worker.service.js';
 import { indexArchiveJob } from './services/indexArchive.service.js';
+import { thumbnailJob } from './services/thumbnail.service.js';
 
 /** Job kinds this worker can process. Phase 2/3 add thumbnail + image_fetch. */
 export const WORKER_HANDLERS: HandlerMap = {
   index_archive: indexArchiveJob,
+  thumbnail: thumbnailJob,
 };
 
 /** Only start the loop when run as a process, not when imported by a test. */
@@ -17,7 +19,7 @@ if (isMain) {
   if (requeued.changes > 0) console.log(`[worker] requeued ${requeued.changes} stale running job(s)`);
   const stop = startWorker(WORKER_HANDLERS, 1500);
   // eslint-disable-next-line no-console
-  console.log('[worker] started; handling: index_archive');
+  console.log('[worker] started; handling: index_archive, thumbnail');
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {
       stop();

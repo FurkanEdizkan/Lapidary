@@ -1,5 +1,5 @@
 import type { Model } from '../api/client';
-import { useThumbnail } from '../lib/thumbs';
+import { useThumbnail, isRenderingThumb } from '../lib/thumbs';
 import { sizeShort, fmtDate, fileMB } from '../lib/format';
 import { C, F } from '../theme';
 import { useUI } from '../store';
@@ -9,14 +9,16 @@ const COLS = '56px 2.2fr 1.2fr 0.8fr 1fr 1.8fr 0.9fr';
 function Row({ model }: { model: Model }) {
   const thumb = useThumbnail(model);
   const open = useUI((s) => s.open);
+  const rendering = !thumb && isRenderingThumb(model);
   return (
     <div
       className="list-row"
       onClick={() => open(model.id)}
       style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, alignItems: 'center', padding: '8px 16px', borderBottom: '1px solid #222226', cursor: 'pointer', background: '#161619' }}
     >
-      <div style={{ width: 44, height: 40, borderRadius: 7, background: '#1d1d21', border: '1px solid #2a2a2e', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+      <div style={{ width: 44, height: 40, borderRadius: 7, background: '#1d1d21', border: '1px solid #2a2a2e', display: 'grid', placeItems: 'center', overflow: 'hidden', position: 'relative' }}>
         {thumb && <div style={{ width: '100%', height: '100%', backgroundImage: `url(${thumb})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }} />}
+        {rendering && <div className="thumb-rendering" style={{ borderRadius: 7 }} />}
       </div>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model.name}</div>

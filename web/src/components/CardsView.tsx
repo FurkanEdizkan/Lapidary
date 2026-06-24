@@ -1,5 +1,5 @@
 import type { Model } from '../api/client';
-import { useThumbnail } from '../lib/thumbs';
+import { useThumbnail, isRenderingThumb } from '../lib/thumbs';
 import { sizeShort, fmtDate, fileMB } from '../lib/format';
 import { C, F, chip } from '../theme';
 import { useUI } from '../store';
@@ -9,6 +9,7 @@ function Card({ model }: { model: Model }) {
   const open = useUI((s) => s.open);
   const toggleTag = useUI((s) => s.toggleTag);
   const activeTags = useUI((s) => s.activeTags);
+  const rendering = !thumb && isRenderingThumb(model);
   return (
     <div
       className="card-hover"
@@ -17,6 +18,11 @@ function Card({ model }: { model: Model }) {
     >
       <div style={{ height: 212, background: 'radial-gradient(circle at 50% 40%, #232328 0%, #18181b 75%)', position: 'relative', display: 'grid', placeItems: 'center' }}>
         {thumb && <div style={{ width: '100%', height: '100%', backgroundImage: `url(${thumb})`, backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }} />}
+        {rendering && (
+          <div className="thumb-rendering" style={{ borderRadius: 0 }}>
+            <span className="thumb-rendering-label">Rendering…</span>
+          </div>
+        )}
         <div style={{ position: 'absolute', top: 10, left: 10, fontFamily: F.mono, fontSize: 9, letterSpacing: '0.1em', color: C.textMute, background: 'rgba(13,13,15,0.72)', border: '1px solid #2e2e34', padding: '2px 6px', borderRadius: 5 }}>{model.format}</div>
         <div style={{ position: 'absolute', top: 10, right: 10, fontFamily: F.mono, fontSize: 9, letterSpacing: '0.1em', color: C.textMute, background: 'rgba(13,13,15,0.72)', border: '1px solid #2e2e34', padding: '2px 6px', borderRadius: 5 }}>{sizeShort(model)} mm</div>
       </div>

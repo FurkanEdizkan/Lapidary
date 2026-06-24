@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import AdmZip from 'adm-zip';
 import sevenBin from '7zip-bin';
@@ -98,4 +99,57 @@ export async function listMeshEntries(
   const reader = readers[ext];
   if (!reader) throw new Error(`Unsupported archive type: ${ext}`);
   return reader(archivePath);
+}
+
+/**
+ * Extract a single entry flat (no sub-directories) from an archive into destDir.
+ * Returns the path of the written file: `path.join(destDir, path.basename(innerPath))`.
+ */
+export async function extractEntry(
+  archivePath: string,
+  innerPath: string,
+  destDir: string,
+): Promise<string> {
+  const ext = path.extname(archivePath).toLowerCase();
+  const out = path.join(destDir, path.basename(innerPath));
+
+  if (ext === '.zip') {
+    const zip = new AdmZip(archivePath);
+    // Try direct lookup first; fall back to scanning entries by name.
+    let buf: Buffer | null = zip.readFile(innerPath);
+    if (!buf) {
+      const entry = zip.getEntries().find((e) => e.entryName === innerPath);
+      if (!entry) throw new Error(`Entry not found in zip: ${innerPath}`);
+      buf = zip.readFile(entry);
+    }
+    if (!buf) throw new Error(`Failed to read entry from zip: ${innerPath}`);
+    fs.writeFileSync(out, buf);
+    return out;
+  }
+
+  if (ext === '.7z') {
+    await ensureSevenZipExecutable();
+    await execFileP(
+      sevenBin.path7za,
+      ['e', archivePath, `-o${destDir}`, innerPath, '-y'],
+      { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    return out;
+  }
+
+  if (ext === '.rar') {
+    // createExtractorFromFile writes files to targetPath.
+    // Use basename filenameTransform so extraction is flat (no sub-dirs).
+    const extractor = await createExtractorFromFile({
+      filepath: archivePath,
+      targetPath: destDir,
+      filenameTransform: (filename: string) => path.basename(filename),
+    });
+    const extracted = extractor.extract({ files: [innerPath] });
+    // Consume the generator to trigger the actual file writes.
+    for (const _file of extracted.files) { /* write happens as a side-effect */ }
+    return out;
+  }
+
+  throw new Error(`Unsupported archive type: ${ext}`);
 }

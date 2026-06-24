@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { nanoid } from 'nanoid';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
@@ -18,6 +19,7 @@ import { parseProfile } from '../services/profileImport.service.js';
 import { listImages, addImage, getImagePath, deleteImage } from '../services/image.service.js';
 import { ingestMesh, decompress, formatFromName } from '../services/assetPipeline.service.js';
 import { scanFolder } from '../services/libraryScan.service.js';
+import { extractEntry } from '../services/archive.service.js';
 
 /** Registers all /api routes. Routes stay thin; logic lives in the services. */
 export async function registerApi(app: FastifyInstance): Promise<void> {
@@ -126,6 +128,23 @@ export async function registerApi(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const paths = getModelPaths(id);
     if (!paths?.original || !fs.existsSync(paths.original)) return reply.code(404).send({ error: 'no original' });
+
+    const ext = path.extname(paths.original).toLowerCase();
+    if (ext === '.zip' || ext === '.rar' || ext === '.7z') {
+      if (!paths.entry) return reply.code(404).send({ error: 'no extractable mesh entry' });
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lap-orig-'));
+      try {
+        const meshFile = await extractEntry(paths.original, paths.entry, tmp);
+        const buf = fs.readFileSync(meshFile);
+        reply.header('Content-Type', 'application/octet-stream');
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        reply.header('X-Model-Format', paths.format);
+        return reply.send(buf);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+
     const buf = decompress(paths.original);
     reply.header('Content-Type', 'application/octet-stream');
     reply.header('Cache-Control', 'public, max-age=31536000, immutable');

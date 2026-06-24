@@ -135,4 +135,15 @@ export function migrate(d: Database.Database): void {
     })();
     version = 2;
   }
+  if (version < 3) {
+    d.transaction(() => {
+      // Check if entry_path column already exists before adding
+      const columns = (d.prepare("PRAGMA table_info(models)").all() as { name: string }[]).map((c) => c.name);
+      if (!columns.includes('entry_path')) {
+        d.exec('ALTER TABLE models ADD COLUMN entry_path TEXT');
+      }
+      d.pragma('user_version = 3');
+    })();
+    version = 3;
+  }
 }

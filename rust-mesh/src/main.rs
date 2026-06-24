@@ -1,17 +1,17 @@
 //! rust-mesh — optional CPU mesh sidecar for Lapidary.
 //!
 //! Usage:
-//!   rust-mesh <file.stl|.obj> [--lod out.stl] [--json]
+//!   rust-mesh <file.stl|.obj> [--lod out.stl] [--thumb out.png] [--size N] [--json]
 //!   rust-mesh --version
 //!
 //! It computes the exact bounding box (mm) and triangle count, and — given --lod —
-//! writes a decimated binary-STL level-of-detail mesh via vertex clustering. Output
-//! (with --json) is a single line: {"bbox":[x,y,z],"triangles":N}.
-//!
-//! Dependency-free so it compiles offline in the container build.
+//! writes a decimated binary-STL level-of-detail mesh via vertex clustering. Given
+//! --thumb writes a software-rasterized PNG thumbnail. Output (with --json) is a
+//! single line: {"bbox":[x,y,z],"triangles":N}.
 
 use std::env;
 use std::fs;
+use std::io::BufWriter;
 use std::process::exit;
 
 type V3 = [f32; 3];
@@ -27,11 +27,15 @@ fn main() {
         return;
     }
     if args.len() < 2 {
-        eprintln!("usage: rust-mesh <file> [--lod out.stl] [--json]");
+        eprintln!("usage: rust-mesh <file> [--lod out.stl] [--thumb out.png] [--size N] [--json]");
         exit(2);
     }
     let input = &args[1];
     let lod_out = flag_value(&args, "--lod");
+    let thumb_out = flag_value(&args, "--thumb");
+    let size: u32 = flag_value(&args, "--size")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(512);
     let want_json = args.iter().any(|a| a == "--json");
 
     let mesh = match load(input) {
@@ -57,6 +61,13 @@ fn main() {
         }
     }
 
+    if let Some(out) = thumb_out {
+        let rgba = render(&mesh, size);
+        if let Err(e) = write_png(&out, size, &rgba) {
+            eprintln!("warning: could not write thumb: {e}");
+        }
+    }
+
     if want_json {
         println!(
             "{{\"bbox\":[{},{},{}],\"triangles\":{}}}",
@@ -66,6 +77,191 @@ fn main() {
         println!("bbox {}x{}x{} mm, {} triangles", bbox[0], bbox[1], bbox[2], triangles);
     }
 }
+
+// ─── PNG thumbnail ──────────────────────────────────────────────────────────
+
+/// Render `mesh` to an RGBA8 image of `size`×`size` pixels using a simple
+/// software rasterizer: isometric-ish rotation, orthographic projection, Lambert.
+fn render(mesh: &Mesh, size: u32) -> Vec<u8> {
+    let sz = size as usize;
+    let bg = [13u8, 13, 14, 255];
+
+    // Isometric-ish rotation: ~30° about Y, ~25° about X.
+    let ry = 30.0f32.to_radians();
+    let rx = 25.0f32.to_radians();
+
+    // Rotate all vertices and accumulate rotated bounds for scale.
+    let rotate = |v: V3| -> V3 {
+        // Y rotation
+        let vx = v[0] * ry.cos() + v[2] * ry.sin();
+        let vy = v[1];
+        let vz = -v[0] * ry.sin() + v[2] * ry.cos();
+        // X rotation
+        let ox = vx;
+        let oy = vy * rx.cos() - vz * rx.sin();
+        let oz = vy * rx.sin() + vz * rx.cos();
+        [ox, oy, oz]
+    };
+
+    // Find the rotated bounding box (in 2D screen space x,y) for centering.
+    let mut rmin = [f32::INFINITY; 2];
+    let mut rmax = [f32::NEG_INFINITY; 2];
+    for tri in &mesh.tris {
+        for v in tri {
+            let r = rotate(*v);
+            rmin[0] = rmin[0].min(r[0]);
+            rmin[1] = rmin[1].min(r[1]);
+            rmax[0] = rmax[0].max(r[0]);
+            rmax[1] = rmax[1].max(r[1]);
+        }
+    }
+    // Compute scale to fit rotated footprint into image with a small margin.
+    let margin = 0.05f32;
+    let span_x = (rmax[0] - rmin[0]).max(1e-6);
+    let span_y = (rmax[1] - rmin[1]).max(1e-6);
+    let usable = size as f32 * (1.0 - 2.0 * margin);
+    let scale = usable / span_x.max(span_y);
+    let cx = (rmin[0] + rmax[0]) * 0.5;
+    let cy = (rmin[1] + rmax[1]) * 0.5;
+    let half = size as f32 * 0.5;
+
+    // Light direction (view-space) normalized: [-0.4, 0.6, 0.8].
+    let light_raw = [-0.4f32, 0.6, 0.8];
+    let light_len = (light_raw[0] * light_raw[0]
+        + light_raw[1] * light_raw[1]
+        + light_raw[2] * light_raw[2])
+        .sqrt();
+    let light = [
+        light_raw[0] / light_len,
+        light_raw[1] / light_len,
+        light_raw[2] / light_len,
+    ];
+    let ambient = 0.15f32;
+    // Base color #bcc0c8 = (188,192,200).
+    let base_r = 188.0f32 / 255.0;
+    let base_g = 192.0f32 / 255.0;
+    let base_b = 200.0f32 / 255.0;
+
+    // RGBA pixel buffer (row-major, y=0 is top).
+    let mut rgba = vec![0u8; sz * sz * 4];
+    for px in rgba.chunks_exact_mut(4) {
+        px[0] = bg[0]; px[1] = bg[1]; px[2] = bg[2]; px[3] = bg[3];
+    }
+    // Depth buffer: largest z-value wins (nearest to camera).
+    let mut zbuf = vec![f32::NEG_INFINITY; sz * sz];
+
+    // Project a world point → (screen_x, screen_y, depth).
+    let project = |v: V3| -> (f32, f32, f32) {
+        let r = rotate(v);
+        let sx = (r[0] - cx) * scale + half;
+        // Flip Y so +Y world → up on screen.
+        let sy = half - (r[1] - cy) * scale;
+        let depth = r[2]; // +z toward viewer
+        (sx, sy, depth)
+    };
+
+    for tri in &mesh.tris {
+        // Project all three verts.
+        let (x0, y0, z0) = project(tri[0]);
+        let (x1, y1, z1) = project(tri[1]);
+        let (x2, y2, z2) = project(tri[2]);
+
+        // Face normal from rotated verts for correct shading.
+        let rv0 = rotate(tri[0]);
+        let rv1 = rotate(tri[1]);
+        let rv2 = rotate(tri[2]);
+        let n = normal_v3(&rv0, &rv1, &rv2);
+        let diff = (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]).max(0.0);
+        let lum = ambient + (1.0 - ambient) * diff;
+
+        let pr = (base_r * lum * 255.0).round().clamp(0.0, 255.0) as u8;
+        let pg = (base_g * lum * 255.0).round().clamp(0.0, 255.0) as u8;
+        let pb = (base_b * lum * 255.0).round().clamp(0.0, 255.0) as u8;
+
+        // Tight axis-aligned bounding box of this triangle.
+        let min_x = x0.min(x1).min(x2).floor() as i32;
+        let max_x = x0.max(x1).max(x2).ceil() as i32;
+        let min_y = y0.min(y1).min(y2).floor() as i32;
+        let max_y = y0.max(y1).max(y2).ceil() as i32;
+
+        // Scanline rasterize.
+        for py in min_y..=max_y {
+            if py < 0 || py >= sz as i32 { continue; }
+            for px_i in min_x..=max_x {
+                if px_i < 0 || px_i >= sz as i32 { continue; }
+
+                let pcx = px_i as f32 + 0.5;
+                let pcy = py as f32 + 0.5;
+
+                // Barycentric test.
+                let (u, v, w) = barycentric(
+                    x0, y0, x1, y1, x2, y2,
+                    pcx, pcy,
+                );
+                if u < -1e-5 || v < -1e-5 || w < -1e-5 { continue; }
+
+                // Interpolate depth.
+                let depth = u * z0 + v * z1 + w * z2;
+
+                let idx = py as usize * sz + px_i as usize;
+                if depth > zbuf[idx] {
+                    zbuf[idx] = depth;
+                    let base = idx * 4;
+                    rgba[base]     = pr;
+                    rgba[base + 1] = pg;
+                    rgba[base + 2] = pb;
+                    rgba[base + 3] = 255;
+                }
+            }
+        }
+    }
+
+    rgba
+}
+
+/// Barycentric coordinates of (px,py) in triangle (x0,y0)(x1,y1)(x2,y2).
+fn barycentric(
+    x0: f32, y0: f32,
+    x1: f32, y1: f32,
+    x2: f32, y2: f32,
+    px: f32, py: f32,
+) -> (f32, f32, f32) {
+    let denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+    if denom.abs() < 1e-10 {
+        return (-1.0, -1.0, -1.0);
+    }
+    let u = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / denom;
+    let v = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom;
+    let w = 1.0 - u - v;
+    (u, v, w)
+}
+
+/// Surface normal from three 3-D points (as references to arrays).
+fn normal_v3(a: &V3, b: &V3, c: &V3) -> V3 {
+    let u = sub(*b, *a);
+    let v = sub(*c, *a);
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0, 0.0, 1.0] }
+}
+
+/// Encode RGBA8 pixel data to a PNG file using the `png` crate.
+fn write_png(path: &str, size: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|e| e.to_string())?;
+    let ref mut bw = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(bw, size, size);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ─── existing helpers ────────────────────────────────────────────────────────
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
