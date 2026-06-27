@@ -1,4 +1,4 @@
-import type { Model } from '../api/client';
+import type { Model, PlateTransform } from '../api/client';
 
 export function fmtDate(d: string | null): string {
   if (!d) return '—';
@@ -35,4 +35,16 @@ export function tint(hex: string, f: number): string {
 /** URL of a model's cached thumbnail (server PNG) — only meaningful when hasThumbnail. */
 export function thumbUrl(id: string): string {
   return `/api/models/${id}/thumbnail`;
+}
+
+/**
+ * A short, deterministic, URL-safe token derived from a model's saved transform.
+ * Appended as `?v=` to the thumbnail URL so the browser re-fetches the PNG after an
+ * orientation edit (the endpoint sends a 1-day Cache-Control, so the byte-identical
+ * URL would otherwise show the stale image). `null` → a stable sentinel.
+ */
+export function thumbCacheKey(t: PlateTransform | null): string {
+  if (!t) return '0';
+  const r = (n: number) => Math.round(n * 1000);
+  return [...t.position.map(r), ...t.quaternion.map(r), r(t.scale)].join('_');
 }
