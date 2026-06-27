@@ -23,7 +23,12 @@ export interface Model {
 }
 export interface SettingRow { id: number; k: string; v: string; source: string; }
 export interface ImageItem { id: number; url: string; caption: string | null; kind: string; }
-export interface ModelDetail extends Model { notes: string | null; settings: SettingRow[]; images: ImageItem[]; }
+export interface PlateTransform {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  scale: number;
+}
+export interface ModelDetail extends Model { notes: string | null; settings: SettingRow[]; images: ImageItem[]; transform: PlateTransform | null; }
 export interface TagInfo { name: string; count: number; }
 export interface GroupInfo { name: string; shared: boolean; count: number; }
 export interface Pin { kind: 'creator' | 'tag' | 'group'; name: string; }
@@ -92,6 +97,7 @@ export function useInvalidate() {
 
 export const api = {
   patchModel: (id: string, patch: Record<string, unknown>) => jsend<ModelDetail>(`/api/models/${id}`, 'PATCH', patch),
+  saveTransform: (id: string, transform: PlateTransform) => jsend<ModelDetail>(`/api/models/${id}`, 'PATCH', { transform }),
   deleteModel: (id: string) => jsend<{ deleted: boolean }>(`/api/models/${id}`, 'DELETE'),
   addTag: (id: string, name: string) => jsend<ModelDetail>(`/api/models/${id}/tags`, 'POST', { name }),
   removeTag: (id: string, name: string) => jsend<ModelDetail>(`/api/models/${id}/tags/${encodeURIComponent(name)}`, 'DELETE'),

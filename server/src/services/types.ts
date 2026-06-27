@@ -34,10 +34,17 @@ export interface ImageDTO {
   kind: string;
 }
 
+export interface PlateTransform {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  scale: number;
+}
+
 export interface ModelDetailDTO extends ModelDTO {
   notes: string | null;
   settings: SettingRow[];
   images: ImageDTO[];
+  transform: PlateTransform | null;
 }
 
 export interface ModelFilter {

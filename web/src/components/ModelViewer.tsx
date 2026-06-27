@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ModelDetail } from '../api/client';
-import { api } from '../api/client';
+import { api, useInvalidate } from '../api/client';
 import { getMesh3D, buildProxy } from '../lib/mesh3d';
 import { mountViewer, type ViewerHandle } from '../lib/threeViewer';
 import { C, F } from '../theme';
+import { TransformPanel } from './TransformPanel';
 
 type Tier = 'lod' | 'original';
 
@@ -14,38 +15,52 @@ type Tier = 'lod' | 'original';
  */
 export function ModelViewer({ model }: { model: ModelDetail }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<ViewerHandle | null>(null);
   const isReal = model.hasLod || model.hasOriginal;
   const [tier, setTier] = useState<Tier>(model.hasLod ? 'lod' : 'original');
   const [loading, setLoading] = useState(isReal);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [gizmoMode, setGizmoMode] = useState<'translate' | 'rotate'>('rotate');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const invalidate = useInvalidate();
 
   // ---- Real mesh path (Three.js) ----
   useEffect(() => {
-    if (!isReal || !canvasRef.current) return;
-    let cancelled = false;
+    if (!isReal || !hostRef.current) return;
     setLoading(true);
     setError(null);
     const url = tier === 'lod' && model.hasLod ? `/api/models/${model.id}/lod` : `/api/models/${model.id}/original`;
-    mountViewer(canvasRef.current, url, model.format)
-      .then((handle) => {
-        if (cancelled) { handle.destroy(); return; }
-        handleRef.current = handle;
+    // mountViewer is synchronous: the handle (and its canvas) exist immediately, so
+    // this effect's cleanup can always tear down exactly the renderer it created —
+    // even under StrictMode's mount→cleanup→mount double-invoke. `ready` resolves
+    // after the mesh frames. A destroy() before that makes the load a no-op.
+    const handle = mountViewer(hostRef.current, url, model.format, { transform: model.transform ?? undefined });
+    handleRef.current = handle;
+    handle.ready
+      .then(() => {
+        if (handleRef.current !== handle) return; // superseded by a newer mount
         setLoading(false);
         // Persist a thumbnail and real bbox the first time we render a model that lacks them.
         if (!model.hasThumbnail) {
-          const dataUrl = handle.thumbnail();
+          const dataUrl = handle.thumbnail({ hidePlate: true });
           if (dataUrl) api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
         }
         const bbox = handle.boundingBox();
         if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);
       })
-      .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } });
+      .catch((e) => { if (handleRef.current === handle) { setError(String(e)); setLoading(false); } });
     return () => {
-      cancelled = true;
-      handleRef.current?.destroy();
-      handleRef.current = null;
+      handle.destroy();
+      if (handleRef.current === handle) handleRef.current = null;
     };
+  // model.transform is intentionally omitted: the saved transform is applied once via
+  // mountViewer(..., { transform }) at mount time. Re-running this effect on every
+  // Save would destroy + re-parse the whole mesh unnecessarily — a fresh mount already
+  // picks up the latest transform when the model is next opened.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.id, tier, isReal, model.format, model.hasLod]);
 
   // ---- Proxy mesh path (2D canvas renderer) ----
@@ -87,9 +102,35 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
     else (canvasRef.current as (HTMLCanvasElement & { _reset?: () => void }) | null)?._reset?.();
   };
 
+  const enterEdit = () => { setSaveError(null); setEditing(true); handleRef.current?.setEditMode(true); handleRef.current?.setGizmoMode(gizmoMode); };
+  const cancelEdit = () => { setSaveError(null); setEditing(false); handleRef.current?.setEditMode(false); handleRef.current?.setTransform(model.transform ?? undefined); };
+  const chooseMode = (m: 'translate' | 'rotate') => { setGizmoMode(m); handleRef.current?.setGizmoMode(m); };
+  const save = async () => {
+    const h = handleRef.current; if (!h) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const t = h.getTransform();
+      await api.saveTransform(model.id, t);
+      const dataUrl = h.thumbnail({ hidePlate: true });
+      if (dataUrl) await api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
+      invalidate(['model', 'models']);
+      setEditing(false); h.setEditMode(false);
+    } catch (e) {
+      // Keep the in-editor pose so the user can retry; surface the failure inline.
+      setSaveError(String(e));
+    } finally { setSaving(false); }
+  };
+
   return (
     <div style={{ position: 'relative', background: 'radial-gradient(ellipse at 50% 44%, #222227 0%, #131316 78%)', borderRight: `1px solid ${C.border}`, display: 'flex', minWidth: 0 }}>
-      <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
+      {isReal ? (
+        // Three.js owns its own canvas, mounted into this host. A fresh canvas per
+        // mount keeps destroy()/forceContextLoss() scoped to one viewer (StrictMode-safe).
+        <div ref={hostRef} style={{ position: 'absolute', inset: 0, display: 'block' }} />
+      ) : (
+        <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
+      )}
       <div style={badge('left', 14)}>{model.format} · {(model.fileSizeBytes / (1024 * 1024) || 0).toFixed(1)} MB</div>
       <div style={{ position: 'absolute', left: 16, bottom: 14, fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.14em', color: C.textFaint }}>DRAG TO ROTATE · SCROLL TO ZOOM</div>
 
@@ -102,6 +143,18 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         >
           {tier === 'lod' ? 'VIEW FULL MESH' : 'BACK TO LOD'}
         </button>
+      )}
+      {isReal && !editing && !loading && (
+        <button onClick={enterEdit} className="hover-cyan" style={{ position: 'absolute', left: 14, bottom: 40, ...pill }}>EDIT POSITION</button>
+      )}
+      {isReal && editing && (
+        <TransformPanel mode={gizmoMode} onMode={chooseMode} onDrop={() => handleRef.current?.dropToPlane()}
+          onReset={() => handleRef.current?.resetTransform()} onSave={save} onCancel={cancelEdit} saving={saving} />
+      )}
+      {saveError && (
+        <div style={{ position: 'absolute', left: 14, bottom: 82, fontFamily: F.mono, fontSize: 9.5, color: '#e05252', letterSpacing: '0.08em', maxWidth: 260 }}>
+          SAVE FAILED: {saveError}
+        </div>
       )}
       <button onClick={reset} className="hover-cyan" style={{ position: 'absolute', right: 14, bottom: 12, ...pill }}>RESET VIEW</button>
 

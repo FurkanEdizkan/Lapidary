@@ -8,39 +8,43 @@ function tables(db: Database.Database): string[] {
 }
 
 describe('migrate', () => {
-  it('creates base schema + jobs + entry_path and sets user_version to 3', () => {
+  it('creates base schema + jobs + entry_path + transform_json and sets user_version to 4', () => {
     const db = new Database(':memory:');
     migrate(db);
-    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
     expect(tables(db)).toEqual(expect.arrayContaining(['models', 'tags', 'jobs']));
+    const columns = (db.prepare('PRAGMA table_info(models)').all() as { name: string }[]).map((c) => c.name);
+    expect(columns).toContain('transform_json');
   });
 
-  it('upgrades a v1 database through v2 to v3 without recreating existing tables', () => {
+  it('upgrades a v1 database through v2 to v4 without recreating existing tables', () => {
     const db = new Database(':memory:');
-    migrate(db);                 // -> v3
+    migrate(db);                 // -> v4
     db.exec('DROP TABLE jobs');  // simulate a pre-jobs v1 database
     db.pragma('user_version = 1');
-    migrate(db);                 // should add jobs (v2) and entry_path (v3), bump to 3
-    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    migrate(db);                 // should add jobs (v2) and entry_path (v3) and transform_json (v4), bump to 4
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
     expect(tables(db)).toContain('jobs');
     const columns = (db.prepare("PRAGMA table_info(models)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toContain('entry_path');
+    expect(columns).toContain('transform_json');
   });
 
-  it('upgrades to v3 and adds entry_path column', () => {
+  it('upgrades to v4 and adds entry_path and transform_json columns', () => {
     const db = new Database(':memory:');
     migrate(db);
-    expect(db.pragma('user_version', { simple: true })).toBe(3);
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
     const columns = (db.prepare("PRAGMA table_info(models)").all() as { name: string }[]).map((c) => c.name);
     expect(columns).toContain('entry_path');
+    expect(columns).toContain('transform_json');
   });
 
-  it('upgrades a v2 database to v3 without recreating existing tables', () => {
+  it('upgrades a v2 database to v4 without recreating existing tables', () => {
     const db = new Database(':memory:');
-    migrate(db);                 // -> v3
+    migrate(db);                 // -> v4
     db.pragma('user_version = 2'); // force back to v2
-    // Since entry_path now exists, we can't truly test a fresh v2->v3 upgrade.
-    // Instead, create a fresh :memory: db at v2 state and migrate to v3.
+    // Since entry_path now exists, we can't truly test a fresh v2->v4 upgrade.
+    // Instead, create a fresh :memory: db at v2 state and migrate to v4.
     const db2 = new Database(':memory:');
     db2.exec(`
       CREATE TABLE models (
@@ -135,8 +139,9 @@ describe('migrate', () => {
     `);
     db2.pragma('user_version = 2');
     migrate(db2);
-    expect(db2.pragma('user_version', { simple: true })).toBe(3);
-    const columns2 = (db2.prepare("PRAGMA table_info(models)").all() as { name: string }[]).map((c) => c.name);
+    expect(db2.pragma('user_version', { simple: true })).toBe(4);
+    const columns2 = (db2.prepare('PRAGMA table_info(models)').all() as { name: string }[]).map((c) => c.name);
     expect(columns2).toContain('entry_path');
+    expect(columns2).toContain('transform_json');
   });
 });

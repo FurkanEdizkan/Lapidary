@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { getDb } from '../db/database.js';
 import { bumpNamespace } from './cache.service.js';
-import type { ModelDTO, ModelDetailDTO, ModelFilter, SettingRow, ImageDTO } from './types.js';
+import type { ModelDTO, ModelDetailDTO, ModelFilter, SettingRow, ImageDTO, PlateTransform } from './types.js';
 
 /**
  * Model service — single source of truth for reading/writing models and their
@@ -28,6 +28,7 @@ interface ModelRow {
   lod_path: string | null;
   thumbnail_path: string | null;
   entry_path: string | null;
+  transform_json: string | null;
   notes: string | null;
 }
 
@@ -96,7 +97,11 @@ export function getModel(id: string): ModelDetailDTO | null {
     .prepare('SELECT id, path, caption, kind FROM images WHERE model_id = ? ORDER BY id')
     .all(id) as { id: number; path: string; caption: string | null; kind: string }[];
   const images: ImageDTO[] = imgs.map((i) => ({ id: i.id, url: `/api/images/${i.id}`, caption: i.caption, kind: i.kind }));
-  return { ...base, notes: r.notes, settings, images };
+  let transform: PlateTransform | null = null;
+  if (r.transform_json) {
+    try { transform = JSON.parse(r.transform_json) as PlateTransform; } catch { transform = null; }
+  }
+  return { ...base, notes: r.notes, settings, images, transform };
 }
 
 export interface NewModelInput {
@@ -172,6 +177,10 @@ export function updateModel(id: string, patch: Partial<Record<string, unknown>>)
   if ('size' in patch && Array.isArray(patch.size)) {
     sets.push('bbox_x = ?', 'bbox_y = ?', 'bbox_z = ?');
     vals.push(patch.size[0], patch.size[1], patch.size[2]);
+  }
+  if ('transform' in patch) {
+    sets.push('transform_json = ?');
+    vals.push(patch.transform ? JSON.stringify(patch.transform) : null);
   }
   if (sets.length) {
     vals.push(id);
