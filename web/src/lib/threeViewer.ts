@@ -114,6 +114,7 @@ export function mountViewer(
   canvas.style.display = 'block';
   canvas.style.cursor = 'grab';
   canvas.style.touchAction = 'none';
+  canvas.style.objectFit = 'contain'; // never stretch the buffer during a resize transient
   host.appendChild(canvas);
 
   const scene = new THREE.Scene();
@@ -182,10 +183,33 @@ export function mountViewer(
     wbox.getCenter(wcenter);
     wbox.getSize(wsize);
     radius = Math.max(wsize.x, wsize.y, wsize.z) / 2 || 1;
-    dist = radius / Math.sin((camera.fov * Math.PI) / 360);
+    // Fit the bounding sphere within the TIGHTER of the vertical/horizontal FOV so the
+    // model is fully framed (never clipped) at any pane aspect — portrait or landscape.
+    const vHalf = (camera.fov * Math.PI) / 360;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    dist = radius / Math.sin(Math.min(vHalf, hHalf));
     target.copy(wcenter);
     frame();
   }
+
+  // Keep the render buffer + camera aspect in lockstep with the host's size, so the
+  // model is never rendered stretched. Without this, buffer/camera aspect is frozen
+  // at mount while the host box follows the window → non-uniform scaling. The
+  // observer's initial callback also corrects any off/fallback mount measurement.
+  function onResize() {
+    if (disposed) return;
+    const nw = host.clientWidth;
+    const nh = host.clientHeight;
+    if (nw === 0 || nh === 0) return;
+    renderer.setSize(nw, nh, false);
+    camera.aspect = nw / nh;
+    camera.updateProjectionMatrix();
+    // Re-fit (not just re-render): corrects the aspect AND re-frames the model to the
+    // new pane so it neither stretches nor clips. frameCamera() preserves orbit + zoom.
+    if (framed) frameCamera();
+  }
+  const ro = new ResizeObserver(onResize);
+  ro.observe(host);
 
   // Pointer interaction (attached immediately; harmless before the mesh frames).
   let drag: { x: number; y: number } | null = null;
@@ -267,6 +291,7 @@ export function mountViewer(
     destroy() {
       if (disposed) return;
       disposed = true;
+      ro.disconnect();
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
