@@ -146,4 +146,14 @@ export function migrate(d: Database.Database): void {
     })();
     version = 3;
   }
+  if (version < 4) {
+    d.transaction(() => {
+      const columns = (d.prepare('PRAGMA table_info(models)').all() as { name: string }[]).map((c) => c.name);
+      if (!columns.includes('transform_json')) {
+        d.exec('ALTER TABLE models ADD COLUMN transform_json TEXT');
+      }
+      d.pragma('user_version = 4');
+    })();
+    version = 4;
+  }
 }
