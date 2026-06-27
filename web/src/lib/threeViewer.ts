@@ -17,6 +17,7 @@ import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { defaultTransform, dropToPlane, type PlateTransform } from './plateTransform';
+import { buildMeasurementGrid, type GridHandle } from './measurementGrid';
 
 // Plate sits a hair below z=0 to avoid z-fighting (echoes OrcaSlicer GROUND_Z).
 const GROUND_Z = -0.02;
@@ -36,6 +37,8 @@ export interface ViewerHandle {
   dropToPlane(): void;
   resetTransform(): void;
   onTransformChange(cb: (t: PlateTransform) => void): void;
+  /** Update the measurement grid (cell size in mm and/or visibility). */
+  setGrid(opts: { cellMm?: number; visible?: boolean }): void;
 }
 
 function loadGeometry(url: string, format: string): Promise<THREE.Object3D> {
@@ -96,7 +99,7 @@ export function mountViewer(
   host: HTMLElement,
   url: string,
   format: string,
-  opts: { transform?: PlateTransform } = {},
+  opts: { transform?: PlateTransform; gridCellMm?: number; showGrid?: boolean } = {},
 ): ViewerHandle {
   let disposed = false;
 
@@ -145,13 +148,24 @@ export function mountViewer(
   const planeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1e, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
   const planeMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat); // sized after we know the model
   planeMesh.position.z = GROUND_Z;
-  const grid = new THREE.GridHelper(1, 10, 0x2cb4f5, 0x2a2a30);
-  (grid.material as THREE.Material).opacity = 0.35;
-  (grid.material as THREE.Material).transparent = true;
-  grid.rotation.x = Math.PI / 2; // GridHelper is XZ (Y-up) by default; rotate into plate's XY
-  grid.position.z = GROUND_Z;
-  grid.visible = false; // hidden until edit mode; setEditMode(true) reveals it
-  plate.add(planeMesh, grid);
+  plate.add(planeMesh);
+
+  // Measurement grid: dimensioned cells (e.g. 10mm) + cm edge labels. Rebuilt when the
+  // cell size changes; visibility is controlled from the viewport (viewerSettings),
+  // independent of edit mode.
+  let gridCellMm = opts.gridCellMm ?? 10;
+  let gridVisible = opts.showGrid ?? true;
+  let plateSizeMm = 200;
+  let gridHandle: GridHandle | null = null;
+  const gridHost = new THREE.Group();
+  plate.add(gridHost);
+  function rebuildGrid() {
+    if (gridHandle) { gridHost.remove(gridHandle.group); gridHandle.dispose(); gridHandle = null; }
+    if (gridVisible) {
+      gridHandle = buildMeasurementGrid(gridCellMm, plateSizeMm, GROUND_Z);
+      gridHost.add(gridHandle.group);
+    }
+  }
 
   // Pivot holds the saved transform; the mesh is offset so it is centered on the pivot origin.
   const pivot = new THREE.Group();
@@ -276,7 +290,8 @@ export function mountViewer(
     const plateSize = Math.min(256, Math.max(80, Math.ceil(1.5 * footprint)));
     planeMesh.geometry.dispose();
     planeMesh.geometry = new THREE.PlaneGeometry(plateSize, plateSize);
-    grid.scale.setScalar(plateSize); // base GridHelper is size 1
+    plateSizeMm = plateSize;
+    rebuildGrid();
 
     // Apply the saved transform, or the default (centered + dropped to plate).
     const t = opts.transform ?? defaultTransform(baseBox);
@@ -303,8 +318,7 @@ export function mountViewer(
       // but explicit disposal is clearer and safe even if traverse order changes).
       planeMesh.geometry.dispose();
       planeMat.dispose();
-      grid.geometry.dispose();
-      (grid.material as THREE.Material).dispose();
+      if (gridHandle) gridHandle.dispose(); // frees grid lines + label textures
       scene.traverse((c) => {
         const m = c as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
@@ -320,16 +334,22 @@ export function mountViewer(
     thumbnail(o?: { hidePlate?: boolean }) {
       if (!framed) return null;
       const hide = o?.hidePlate ?? false;
-      const pv = planeMesh.visible, gv = grid.visible, cv = controlHelper.visible;
-      if (hide) { planeMesh.visible = false; grid.visible = false; controlHelper.visible = false; }
+      const pv = planeMesh.visible, gv = gridHost.visible, cv = controlHelper.visible;
+      if (hide) { planeMesh.visible = false; gridHost.visible = false; controlHelper.visible = false; }
       try { frame(); return canvas.toDataURL('image/png'); }
-      finally { if (hide) { planeMesh.visible = pv; grid.visible = gv; controlHelper.visible = cv; frame(); } }
+      finally { if (hide) { planeMesh.visible = pv; gridHost.visible = gv; controlHelper.visible = cv; frame(); } }
     },
     boundingBox() { return framed ? [round(size.x), round(size.y), round(size.z)] : null; },
     setEditMode(on: boolean) {
       if (on) control.attach(pivot); else control.detach();
       control.enabled = on; control.visible = on; controlHelper.visible = on;
-      planeMesh.visible = true; grid.visible = on; // plate always visible; grid only while editing
+      planeMesh.visible = true; // plate stays visible; the measurement grid is controlled via setGrid
+      if (framed) frame();
+    },
+    setGrid({ cellMm, visible }: { cellMm?: number; visible?: boolean }) {
+      if (cellMm !== undefined) gridCellMm = cellMm;
+      if (visible !== undefined) gridVisible = visible;
+      rebuildGrid();
       if (framed) frame();
     },
     setGizmoMode(mode: 'translate' | 'rotate') { control.setMode(mode); if (framed) frame(); },
