@@ -46,7 +46,10 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         // Persist a thumbnail and real bbox the first time we render a model that lacks them.
         if (!model.hasThumbnail) {
           const dataUrl = handle.thumbnail({ hidePlate: true });
-          if (dataUrl) api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
+          // Invalidate AFTER the POST resolves so the static detail preview picks up the
+          // freshly-generated thumbnail. The mount-effect deps exclude hasThumbnail, so
+          // this refetch does not remount the viewer.
+          if (dataUrl) api.saveThumbnail(model.id, dataUrl).then(() => invalidate(['model', 'models'])).catch(() => undefined);
         }
         const bbox = handle.boundingBox();
         if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);

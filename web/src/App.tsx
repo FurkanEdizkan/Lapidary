@@ -3,6 +3,7 @@ import { PinnedGroupsBar } from './components/PinnedGroupsBar';
 import { TagRail } from './components/TagRail';
 import { Gallery } from './components/Gallery';
 import { DetailOverlay } from './components/DetailOverlay';
+import { InspectOverlay } from './components/InspectOverlay';
 import { AddModelModal } from './components/AddModelModal';
 import { TagsGroupsManager } from './components/TagsGroupsManager';
 import { C, F } from './theme';
@@ -15,6 +16,7 @@ export default function App() {
       <TagRail />
       <Gallery />
       <DetailOverlay />
+      <InspectOverlay />
       <AddModelModal />
       <TagsGroupsManager />
     </div>
