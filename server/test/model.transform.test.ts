@@ -22,4 +22,11 @@ describe('model transform persistence', () => {
     updateModel('t2', { transform: t });
     expect(getModel('t2')!.transform).toEqual(t);
   });
+
+  it('returns transform null (no throw) for a malformed transform_json', () => {
+    createModel({ id: 't3', name: 'M', creator: 'C', type: 'Miniature', format: 'STL' });
+    getDb().prepare('UPDATE models SET transform_json = ? WHERE id = ?').run('not json{', 't3');
+    expect(() => getModel('t3')).not.toThrow();
+    expect(getModel('t3')!.transform).toBeNull();
+  });
 });

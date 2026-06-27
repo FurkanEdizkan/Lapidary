@@ -97,7 +97,10 @@ export function getModel(id: string): ModelDetailDTO | null {
     .prepare('SELECT id, path, caption, kind FROM images WHERE model_id = ? ORDER BY id')
     .all(id) as { id: number; path: string; caption: string | null; kind: string }[];
   const images: ImageDTO[] = imgs.map((i) => ({ id: i.id, url: `/api/images/${i.id}`, caption: i.caption, kind: i.kind }));
-  const transform: PlateTransform | null = r.transform_json ? (JSON.parse(r.transform_json) as PlateTransform) : null;
+  let transform: PlateTransform | null = null;
+  if (r.transform_json) {
+    try { transform = JSON.parse(r.transform_json) as PlateTransform; } catch { transform = null; }
+  }
   return { ...base, notes: r.notes, settings, images, transform };
 }
 

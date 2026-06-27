@@ -141,7 +141,7 @@ export function mountViewer(
   scene.add(plate);
 
   // Subtle plate plane + grid at z = GROUND_Z (in plate/print space).
-  const planeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1e, transparent: true, opacity: 0.6, depthWrite: false });
+  const planeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1e, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
   const planeMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat); // sized after we know the model
   planeMesh.position.z = GROUND_Z;
   const grid = new THREE.GridHelper(1, 10, 0x2cb4f5, 0x2a2a30);
@@ -149,6 +149,7 @@ export function mountViewer(
   (grid.material as THREE.Material).transparent = true;
   grid.rotation.x = Math.PI / 2; // GridHelper is XZ (Y-up) by default; rotate into plate's XY
   grid.position.z = GROUND_Z;
+  grid.visible = false; // hidden until edit mode; setEditMode(true) reveals it
   plate.add(planeMesh, grid);
 
   // Pivot holds the saved transform; the mesh is offset so it is centered on the pivot origin.
@@ -199,6 +200,7 @@ export function mountViewer(
   };
   const onUp = () => { drag = null; };
   const onWheel = (e: WheelEvent) => {
+    if (gizmoDragging) return;
     e.preventDefault();
     state.zoom = Math.max(0.4, Math.min(3.2, state.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
     if (framed) frame();

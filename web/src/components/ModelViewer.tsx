@@ -24,6 +24,7 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   const [editing, setEditing] = useState(false);
   const [gizmoMode, setGizmoMode] = useState<'translate' | 'rotate'>('rotate');
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const invalidate = useInvalidate();
 
   // ---- Real mesh path (Three.js) ----
@@ -44,7 +45,7 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         setLoading(false);
         // Persist a thumbnail and real bbox the first time we render a model that lacks them.
         if (!model.hasThumbnail) {
-          const dataUrl = handle.thumbnail();
+          const dataUrl = handle.thumbnail({ hidePlate: true });
           if (dataUrl) api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
         }
         const bbox = handle.boundingBox();
@@ -55,7 +56,12 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
       handle.destroy();
       if (handleRef.current === handle) handleRef.current = null;
     };
-  }, [model.id, tier, isReal, model.format, model.hasLod, model.transform]);
+  // model.transform is intentionally omitted: the saved transform is applied once via
+  // mountViewer(..., { transform }) at mount time. Re-running this effect on every
+  // Save would destroy + re-parse the whole mesh unnecessarily — a fresh mount already
+  // picks up the latest transform when the model is next opened.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model.id, tier, isReal, model.format, model.hasLod]);
 
   // ---- Proxy mesh path (2D canvas renderer) ----
   useEffect(() => {
@@ -96,12 +102,13 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
     else (canvasRef.current as (HTMLCanvasElement & { _reset?: () => void }) | null)?._reset?.();
   };
 
-  const enterEdit = () => { setEditing(true); handleRef.current?.setEditMode(true); handleRef.current?.setGizmoMode(gizmoMode); };
-  const cancelEdit = () => { setEditing(false); handleRef.current?.setEditMode(false); handleRef.current?.setTransform(model.transform ?? undefined); };
+  const enterEdit = () => { setSaveError(null); setEditing(true); handleRef.current?.setEditMode(true); handleRef.current?.setGizmoMode(gizmoMode); };
+  const cancelEdit = () => { setSaveError(null); setEditing(false); handleRef.current?.setEditMode(false); handleRef.current?.setTransform(model.transform ?? undefined); };
   const chooseMode = (m: 'translate' | 'rotate') => { setGizmoMode(m); handleRef.current?.setGizmoMode(m); };
   const save = async () => {
     const h = handleRef.current; if (!h) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const t = h.getTransform();
       await api.saveTransform(model.id, t);
@@ -109,6 +116,9 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
       if (dataUrl) await api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
       invalidate(['model', 'models']);
       setEditing(false); h.setEditMode(false);
+    } catch (e) {
+      // Keep the in-editor pose so the user can retry; surface the failure inline.
+      setSaveError(String(e));
     } finally { setSaving(false); }
   };
 
@@ -134,12 +144,17 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
           {tier === 'lod' ? 'VIEW FULL MESH' : 'BACK TO LOD'}
         </button>
       )}
-      {isReal && !editing && (
+      {isReal && !editing && !loading && (
         <button onClick={enterEdit} className="hover-cyan" style={{ position: 'absolute', left: 14, bottom: 40, ...pill }}>EDIT POSITION</button>
       )}
       {isReal && editing && (
         <TransformPanel mode={gizmoMode} onMode={chooseMode} onDrop={() => handleRef.current?.dropToPlane()}
           onReset={() => handleRef.current?.resetTransform()} onSave={save} onCancel={cancelEdit} saving={saving} />
+      )}
+      {saveError && (
+        <div style={{ position: 'absolute', left: 14, bottom: 82, fontFamily: F.mono, fontSize: 9.5, color: '#e05252', letterSpacing: '0.08em', maxWidth: 260 }}>
+          SAVE FAILED: {saveError}
+        </div>
       )}
       <button onClick={reset} className="hover-cyan" style={{ position: 'absolute', right: 14, bottom: 12, ...pill }}>RESET VIEW</button>
 
