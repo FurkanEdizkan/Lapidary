@@ -10,6 +10,7 @@ interface UIState {
   searchFocus: boolean;
   view: ViewMode;
   selectedId: string | null;
+  inspectId: string | null;
   showAdd: boolean;
   showManager: boolean;
 
@@ -21,6 +22,8 @@ interface UIState {
   setCreatorScope: (c: string | null) => void;
   setView: (v: ViewMode) => void;
   open: (id: string | null) => void;
+  openInspect: (id: string) => void;
+  closeInspect: () => void;
   setShowAdd: (b: boolean) => void;
   setShowManager: (b: boolean) => void;
   clearFilters: () => void;
@@ -36,6 +39,7 @@ export const useUI = create<UIState>((set, get) => ({
   searchFocus: false,
   view: 'grid',
   selectedId: null,
+  inspectId: null,
   showAdd: false,
   showManager: false,
 
@@ -48,7 +52,10 @@ export const useUI = create<UIState>((set, get) => ({
   setGroupScope: (g) => set((s) => ({ groupScope: s.groupScope === g ? null : g })),
   setCreatorScope: (c) => set((s) => ({ creatorScope: s.creatorScope === c ? null : c, query: '', searchFocus: false })),
   setView: (v) => set({ view: v }),
-  open: (id) => set({ selectedId: id, searchFocus: false }),
+  // Closing the detail (id===null) also closes any open Inspect; switching detail keeps it.
+  open: (id) => set((s) => ({ selectedId: id, inspectId: id ? s.inspectId : null, searchFocus: false })),
+  openInspect: (id) => set({ inspectId: id }),
+  closeInspect: () => set({ inspectId: null }),
   setShowAdd: (b) => set({ showAdd: b }),
   setShowManager: (b) => set({ showManager: b }),
   clearFilters: () => set({ query: '', activeTags: [], groupScope: null, creatorScope: null }),
