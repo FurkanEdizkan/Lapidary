@@ -14,6 +14,7 @@ type Tier = 'lod' | 'original';
  */
 export function ModelViewer({ model }: { model: ModelDetail }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<ViewerHandle | null>(null);
   const isReal = model.hasLod || model.hasOriginal;
   const [tier, setTier] = useState<Tier>(model.hasLod ? 'lod' : 'original');
@@ -22,15 +23,19 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
 
   // ---- Real mesh path (Three.js) ----
   useEffect(() => {
-    if (!isReal || !canvasRef.current) return;
-    let cancelled = false;
+    if (!isReal || !hostRef.current) return;
     setLoading(true);
     setError(null);
     const url = tier === 'lod' && model.hasLod ? `/api/models/${model.id}/lod` : `/api/models/${model.id}/original`;
-    mountViewer(canvasRef.current, url, model.format)
-      .then((handle) => {
-        if (cancelled) { handle.destroy(); return; }
-        handleRef.current = handle;
+    // mountViewer is synchronous: the handle (and its canvas) exist immediately, so
+    // this effect's cleanup can always tear down exactly the renderer it created —
+    // even under StrictMode's mount→cleanup→mount double-invoke. `ready` resolves
+    // after the mesh frames. A destroy() before that makes the load a no-op.
+    const handle = mountViewer(hostRef.current, url, model.format);
+    handleRef.current = handle;
+    handle.ready
+      .then(() => {
+        if (handleRef.current !== handle) return; // superseded by a newer mount
         setLoading(false);
         // Persist a thumbnail and real bbox the first time we render a model that lacks them.
         if (!model.hasThumbnail) {
@@ -40,11 +45,10 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         const bbox = handle.boundingBox();
         if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);
       })
-      .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } });
+      .catch((e) => { if (handleRef.current === handle) { setError(String(e)); setLoading(false); } });
     return () => {
-      cancelled = true;
-      handleRef.current?.destroy();
-      handleRef.current = null;
+      handle.destroy();
+      if (handleRef.current === handle) handleRef.current = null;
     };
   }, [model.id, tier, isReal, model.format, model.hasLod]);
 
@@ -89,7 +93,13 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
 
   return (
     <div style={{ position: 'relative', background: 'radial-gradient(ellipse at 50% 44%, #222227 0%, #131316 78%)', borderRight: `1px solid ${C.border}`, display: 'flex', minWidth: 0 }}>
-      <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
+      {isReal ? (
+        // Three.js owns its own canvas, mounted into this host. A fresh canvas per
+        // mount keeps destroy()/forceContextLoss() scoped to one viewer (StrictMode-safe).
+        <div ref={hostRef} style={{ position: 'absolute', inset: 0, display: 'block' }} />
+      ) : (
+        <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
+      )}
       <div style={badge('left', 14)}>{model.format} · {(model.fileSizeBytes / (1024 * 1024) || 0).toFixed(1)} MB</div>
       <div style={{ position: 'absolute', left: 16, bottom: 14, fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.14em', color: C.textFaint }}>DRAG TO ROTATE · SCROLL TO ZOOM</div>
 
