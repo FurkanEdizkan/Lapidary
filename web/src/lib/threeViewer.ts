@@ -245,7 +245,6 @@ export function mountViewer(
     box.getSize(size); // populate size for boundingBox()
     object.position.sub(center); // center the mesh on the pivot origin
     pivot.add(object);
-    control.attach(pivot);
     baseBox.copy(box).translate(center.clone().negate()); // centered base box (mm)
 
     // Size the plate/grid to ~1.5x the model footprint, clamped to a sensible range.
@@ -303,6 +302,7 @@ export function mountViewer(
     },
     boundingBox() { return framed ? [round(size.x), round(size.y), round(size.z)] : null; },
     setEditMode(on: boolean) {
+      if (on) control.attach(pivot); else control.detach();
       control.enabled = on; control.visible = on; controlHelper.visible = on;
       planeMesh.visible = true; grid.visible = on; // plate always visible; grid only while editing
       if (framed) frame();
