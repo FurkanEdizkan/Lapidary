@@ -85,9 +85,10 @@ export function DetailPreview({ model }: { model: ModelDetail }) {
               <button
                 key={k}
                 onClick={() => setKind(k)}
+                title={`Add as ${k}`}
                 style={{ ...kindPill, ...(kind === k ? { borderColor: C.accent, color: C.accent } : {}) }}
               >
-                {k[0].toUpperCase()}
+                {k.slice(0, 2).replace(/^./, (c) => c.toUpperCase())}
               </button>
             ))}
           </div>
@@ -125,5 +126,5 @@ const msgStyle: React.CSSProperties = { fontFamily: F.mono, fontSize: 11, letter
 const badgeStyle: React.CSSProperties = { position: 'absolute', left: 16, top: 14, fontFamily: F.mono, fontSize: 10, letterSpacing: '0.1em', color: C.textMute, background: 'rgba(13,13,15,0.72)', border: `1px solid ${C.border3}`, padding: '3px 8px', borderRadius: 6 };
 const tileImg: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
 const tileLabel: React.CSSProperties = { fontFamily: F.mono, fontSize: 12, color: C.textMute };
-const tileBadge: React.CSSProperties = { position: 'absolute', left: 0, right: 0, bottom: 0, fontFamily: F.mono, fontSize: 7.5, letterSpacing: '0.06em', textAlign: 'center', color: '#cfcfd6', background: 'rgba(8,8,10,0.78)', padding: '1.5px 0', textTransform: 'uppercase' };
+const tileBadge: React.CSSProperties = { position: 'absolute', left: 0, right: 0, bottom: 0, fontFamily: F.mono, fontSize: 7.5, letterSpacing: '0.06em', textAlign: 'center', color: C.textDim, background: 'rgba(8,8,10,0.78)', padding: '1.5px 0', textTransform: 'uppercase' };
 const kindPill: React.CSSProperties = { width: 18, height: 16, borderRadius: 4, border: `1px solid ${C.border4}`, background: 'transparent', color: C.textMute2, fontFamily: F.mono, fontSize: 9, cursor: 'pointer', padding: 0 };
