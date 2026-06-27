@@ -1,26 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { thumbCacheKey } from './format';
-import type { PlateTransform } from '../api/client';
+import { thumbUrl } from './format';
 
-const t: PlateTransform = { position: [1, 2, 3], quaternion: [0, 0, 0, 1], scale: 1 };
-
-describe('thumbCacheKey', () => {
-  it('is deterministic for equal transforms', () => {
-    expect(thumbCacheKey(t)).toBe(thumbCacheKey({ ...t, position: [1, 2, 3] }));
+describe('thumbUrl', () => {
+  it('omits the version param when none is given', () => {
+    expect(thumbUrl('abc')).toBe('/api/models/abc/thumbnail');
   });
 
-  it('changes when any component changes', () => {
-    expect(thumbCacheKey(t)).not.toBe(thumbCacheKey({ ...t, scale: 1.5 }));
-    expect(thumbCacheKey(t)).not.toBe(thumbCacheKey({ ...t, position: [1, 2, 4] }));
-    expect(thumbCacheKey(t)).not.toBe(thumbCacheKey({ ...t, quaternion: [0, 0, 0.7071, 0.7071] }));
+  it('omits the version param when version is 0 (no thumbnail)', () => {
+    expect(thumbUrl('abc', 0)).toBe('/api/models/abc/thumbnail');
   });
 
-  it('null maps to a stable sentinel distinct from any transform', () => {
-    expect(thumbCacheKey(null)).toBe(thumbCacheKey(null));
-    expect(thumbCacheKey(null)).not.toBe(thumbCacheKey(t));
-  });
-
-  it('produces a URL-safe token', () => {
-    expect(thumbCacheKey(t)).toMatch(/^[A-Za-z0-9_-]+$/);
+  it('appends ?v=<version> so a regenerated thumbnail busts the cache', () => {
+    expect(thumbUrl('abc', 1717000000000)).toBe('/api/models/abc/thumbnail?v=1717000000000');
+    expect(thumbUrl('abc', 111)).not.toBe(thumbUrl('abc', 222));
   });
 });

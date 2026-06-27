@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { ModelDetail } from '../api/client';
 import { api, useInvalidate } from '../api/client';
 import { useThumbnail, isRenderingThumb } from '../lib/thumbs';
-import { thumbCacheKey } from '../lib/format';
 import { useUI } from '../store';
 import { C, F } from '../theme';
 
@@ -20,13 +19,12 @@ export function DetailPreview({ model }: { model: ModelDetail }) {
   const [heroId, setHeroId] = useState<'thumb' | number>('thumb');
   const [kind, setKind] = useState<Kind>('printed');
 
-  // After an orientation edit (transform changes), snap the hero back to the freshly
-  // re-rendered saved-view thumbnail so the user sees the new placement.
-  useEffect(() => setHeroId('thumb'), [model.transform]);
+  // When the saved-view thumbnail is regenerated (thumbVersion changes), snap the hero
+  // back to it so the user sees the new render/placement.
+  useEffect(() => setHeroId('thumb'), [model.thumbVersion]);
 
-  const thumb = useThumbnail(model); // server PNG URL (real) or proxy data URL or null
-  // Cache-bust the server PNG so an edit's new render is shown (1-day Cache-Control).
-  const thumbHero = thumb && model.hasThumbnail ? `${thumb}?v=${thumbCacheKey(model.transform)}` : thumb;
+  // Server PNG URL (cache-busted by thumbVersion) or proxy data URL or null.
+  const thumb = useThumbnail(model);
 
   const heroImage = typeof heroId === 'number' ? model.images.find((i) => i.id === heroId) : undefined;
 
@@ -42,8 +40,8 @@ export function DetailPreview({ model }: { model: ModelDetail }) {
       <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', padding: 18 }}>
         {heroImage ? (
           <img src={heroImage.url} alt={heroImage.caption || 'photo'} style={heroImgStyle} />
-        ) : thumbHero ? (
-          <img src={thumbHero} alt={model.name} style={heroImgStyle} />
+        ) : thumb ? (
+          <img src={thumb} alt={model.name} style={heroImgStyle} />
         ) : isRenderingThumb(model) ? (
           <div style={msgStyle}>rendering preview…</div>
         ) : (
@@ -65,8 +63,8 @@ export function DetailPreview({ model }: { model: ModelDetail }) {
       {/* Gallery strip */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderTop: `1px solid ${C.border}`, overflowX: 'auto', background: 'rgba(10,10,12,0.5)' }}>
         <Tile active={heroId === 'thumb'} onClick={() => setHeroId('thumb')}>
-          {thumbHero
-            ? <img src={thumbHero} alt="saved view" style={tileImg} />
+          {thumb
+            ? <img src={thumb} alt="saved view" style={tileImg} />
             : <span style={tileLabel}>3D</span>}
           <span style={tileBadge}>saved view</span>
         </Tile>

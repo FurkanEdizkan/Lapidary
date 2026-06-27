@@ -18,6 +18,7 @@ export interface ModelDTO {
   hasThumbnail: boolean;
   hasLod: boolean;
   hasOriginal: boolean;
+  thumbVersion: number;
 }
 
 export interface SettingRow {
