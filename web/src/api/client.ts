@@ -20,6 +20,7 @@ export interface Model {
   hasThumbnail: boolean;
   hasLod: boolean;
   hasOriginal: boolean;
+  thumbVersion: number;
 }
 export interface SettingRow { id: number; k: string; v: string; source: string; }
 export interface ImageItem { id: number; url: string; caption: string | null; kind: string; }

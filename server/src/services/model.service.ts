@@ -1,7 +1,18 @@
+import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import { getDb } from '../db/database.js';
 import { bumpNamespace } from './cache.service.js';
 import type { ModelDTO, ModelDetailDTO, ModelFilter, SettingRow, ImageDTO, PlateTransform } from './types.js';
+
+/**
+ * A cache-busting version token for a model's thumbnail: the file's mtime (ms).
+ * Appended as `?v=` to thumbnail URLs so the browser re-fetches whenever the PNG
+ * is regenerated (the endpoint sends a 1-day Cache-Control). 0 when no thumbnail.
+ */
+function thumbVersion(path: string | null): number {
+  if (!path) return 0;
+  try { return Math.round(fs.statSync(path).mtimeMs); } catch { return 0; }
+}
 
 /**
  * Model service — single source of truth for reading/writing models and their
@@ -52,6 +63,7 @@ function rowToDto(d: Database.Database, r: ModelRow): ModelDTO {
     hasThumbnail: !!r.thumbnail_path,
     hasLod: !!r.lod_path,
     hasOriginal: !!r.original_path,
+    thumbVersion: thumbVersion(r.thumbnail_path),
   };
 }
 

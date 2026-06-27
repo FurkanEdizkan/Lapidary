@@ -32,7 +32,13 @@ export function tint(hex: string, f: number): string {
   }
 }
 
-/** URL of a model's cached thumbnail (server PNG) — only meaningful when hasThumbnail. */
-export function thumbUrl(id: string): string {
-  return `/api/models/${id}/thumbnail`;
+/**
+ * URL of a model's cached thumbnail (server PNG) — only meaningful when hasThumbnail.
+ * `version` (the server-provided `thumbVersion`, a file mtime) is appended as `?v=` so
+ * the browser re-fetches whenever the PNG is regenerated (the endpoint sends a 1-day
+ * Cache-Control, so the byte-identical URL would otherwise show a stale/blank image).
+ */
+export function thumbUrl(id: string, version?: number): string {
+  const base = `/api/models/${id}/thumbnail`;
+  return version ? `${base}?v=${version}` : base;
 }

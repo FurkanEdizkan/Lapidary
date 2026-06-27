@@ -17,6 +17,8 @@ import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { defaultTransform, dropToPlane, type PlateTransform } from './plateTransform';
+import { buildMeasurementGrid, makeLabel, type GridHandle, type GridPlate } from './measurementGrid';
+import type { ResolvedPlate } from './platePresets';
 
 // Plate sits a hair below z=0 to avoid z-fighting (echoes OrcaSlicer GROUND_Z).
 const GROUND_Z = -0.02;
@@ -36,6 +38,12 @@ export interface ViewerHandle {
   dropToPlane(): void;
   resetTransform(): void;
   onTransformChange(cb: (t: PlateTransform) => void): void;
+  /** Update the measurement grid (cell size in mm and/or visibility). */
+  setGrid(opts: { cellMm?: number; visible?: boolean }): void;
+  /** Set the build plate (a real bed size or 'auto') — rebuilds plate + grid and re-fits. */
+  setPlate(plate: ResolvedPlate): void;
+  /** Toggle the live bounding-box overlay (W×D×H labels). */
+  setBoundingBox(visible: boolean): void;
 }
 
 function loadGeometry(url: string, format: string): Promise<THREE.Object3D> {
@@ -96,7 +104,7 @@ export function mountViewer(
   host: HTMLElement,
   url: string,
   format: string,
-  opts: { transform?: PlateTransform } = {},
+  opts: { transform?: PlateTransform; gridCellMm?: number; showGrid?: boolean; plate?: ResolvedPlate; showBoundingBox?: boolean } = {},
 ): ViewerHandle {
   let disposed = false;
 
@@ -114,6 +122,7 @@ export function mountViewer(
   canvas.style.display = 'block';
   canvas.style.cursor = 'grab';
   canvas.style.touchAction = 'none';
+  canvas.style.objectFit = 'contain'; // never stretch the buffer during a resize transient
   host.appendChild(canvas);
 
   const scene = new THREE.Scene();
@@ -140,21 +149,100 @@ export function mountViewer(
   plate.rotation.x = -Math.PI / 2;
   scene.add(plate);
 
-  // Subtle plate plane + grid at z = GROUND_Z (in plate/print space).
+  // Subtle plate plane (rect or circle) at z = GROUND_Z (in plate/print space).
   const planeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1e, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
-  const planeMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat); // sized after we know the model
+  const planeMesh: THREE.Mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat); // geometry set in applyPlate()
   planeMesh.position.z = GROUND_Z;
-  const grid = new THREE.GridHelper(1, 10, 0x2cb4f5, 0x2a2a30);
-  (grid.material as THREE.Material).opacity = 0.35;
-  (grid.material as THREE.Material).transparent = true;
-  grid.rotation.x = Math.PI / 2; // GridHelper is XZ (Y-up) by default; rotate into plate's XY
-  grid.position.z = GROUND_Z;
-  grid.visible = false; // hidden until edit mode; setEditMode(true) reveals it
-  plate.add(planeMesh, grid);
+  plate.add(planeMesh);
+
+  // Plate state: a real bed (rect/circle) or 'auto' (~1.5× the model footprint).
+  let plateState: ResolvedPlate = opts.plate ?? 'auto';
+  let footprintMm = 80;        // model footprint, set on load (for 'auto')
+  let plateW = 200, plateD = 200; // concrete plate extent (mm), set by applyPlate()
+  let gridPlate: GridPlate = { shape: 'rect', widthMm: 200, depthMm: 200 };
+
+  // Measurement grid (cells + cm labels + outline), rebuilt on cell-size/plate change.
+  let gridCellMm = opts.gridCellMm ?? 10;
+  let gridVisible = opts.showGrid ?? true;
+  let labelMm = 6; // grid + bbox label height (mm), set from the model size on load (view-relative)
+  let gridHandle: GridHandle | null = null;
+  const gridHost = new THREE.Group();
+  plate.add(gridHost);
+  function rebuildGrid() {
+    if (gridHandle) { gridHost.remove(gridHandle.group); gridHandle.dispose(); gridHandle = null; }
+    if (gridVisible) {
+      gridHandle = buildMeasurementGrid(gridPlate, gridCellMm, GROUND_Z, labelMm);
+      gridHost.add(gridHandle.group);
+    }
+  }
+
+  // Resolve plateState → a concrete plate footprint, build the plane geometry + grid.
+  function applyPlate() {
+    let gp: GridPlate;
+    if (plateState === 'auto') {
+      const s = Math.min(256, Math.max(80, Math.ceil(1.5 * footprintMm)));
+      gp = { shape: 'rect', widthMm: s, depthMm: s };
+    } else if (plateState.shape === 'circle') {
+      gp = { shape: 'circle', diameterMm: plateState.diameterMm };
+    } else {
+      gp = { shape: 'rect', widthMm: plateState.widthMm, depthMm: plateState.depthMm };
+    }
+    gridPlate = gp;
+    plateW = gp.shape === 'rect' ? gp.widthMm : gp.diameterMm;
+    plateD = gp.shape === 'rect' ? gp.depthMm : gp.diameterMm;
+    planeMesh.geometry.dispose();
+    planeMesh.geometry = gp.shape === 'circle'
+      ? new THREE.CircleGeometry(gp.diameterMm / 2, 72)
+      : new THREE.PlaneGeometry(plateW, plateD);
+    rebuildGrid();
+  }
 
   // Pivot holds the saved transform; the mesh is offset so it is centered on the pivot origin.
   const pivot = new THREE.Group();
   plate.add(pivot);
+
+  // Live bounding-box overlay (wireframe + W×D×H labels), in plate space.
+  let bboxVisible = opts.showBoundingBox ?? true;
+  const bboxGroup = new THREE.Group();
+  plate.add(bboxGroup);
+  const bboxLineMat = new THREE.LineBasicMaterial({ color: 0x2cb4f5, transparent: true, opacity: 0.55 });
+  let bboxTextures: THREE.Texture[] = [];
+  function clearBbox() {
+    while (bboxGroup.children.length) {
+      const c = bboxGroup.children.pop()!;
+      const g = (c as THREE.Mesh).geometry as THREE.BufferGeometry | undefined; if (g) g.dispose();
+      const m = (c as THREE.Sprite).material as (THREE.Material & { map?: THREE.Texture }) | undefined;
+      if (m && (c as THREE.Sprite).isSprite) { m.map?.dispose(); m.dispose(); }
+    }
+    bboxTextures.forEach((t) => t.dispose());
+    bboxTextures = [];
+  }
+  function rebuildBbox() {
+    clearBbox();
+    if (!bboxVisible || !framed) return;
+    pivot.updateMatrix();
+    // Plate-local AABB of the posed model (baseBox is the centered mesh box).
+    const box = baseBox.clone().applyMatrix4(pivot.matrix);
+    const mn = box.min, mx = box.max;
+    const v = (x: number, y: number, z: number) => [x, y, z];
+    const c = [
+      v(mn.x, mn.y, mn.z), v(mx.x, mn.y, mn.z), v(mx.x, mx.y, mn.z), v(mn.x, mx.y, mn.z),
+      v(mn.x, mn.y, mx.z), v(mx.x, mn.y, mx.z), v(mx.x, mx.y, mx.z), v(mn.x, mx.y, mx.z),
+    ];
+    const E = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    const pts: number[] = [];
+    for (const [a, b] of E) pts.push(...c[a], ...c[b]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    bboxGroup.add(new THREE.LineSegments(geo, bboxLineMat));
+    // W×D×H labels (mm)
+    const labelH = labelMm;
+    const wmm = Math.round(mx.x - mn.x), dmm = Math.round(mx.y - mn.y), hmm = Math.round(mx.z - mn.z);
+    const lw = makeLabel(`${wmm} mm`, labelH, bboxTextures); lw.position.set((mn.x + mx.x) / 2, mn.y - labelH, mn.z);
+    const ld = makeLabel(`${dmm} mm`, labelH, bboxTextures); ld.position.set(mn.x - labelH, (mn.y + mx.y) / 2, mn.z);
+    const lh = makeLabel(`${hmm} mm`, labelH, bboxTextures); lh.position.set(mn.x - labelH, mn.y - labelH, (mn.z + mx.z) / 2);
+    bboxGroup.add(lw, ld, lh);
+  }
 
   const baseBox = new THREE.Box3(); // centered mesh box, filled after load
 
@@ -182,10 +270,33 @@ export function mountViewer(
     wbox.getCenter(wcenter);
     wbox.getSize(wsize);
     radius = Math.max(wsize.x, wsize.y, wsize.z) / 2 || 1;
-    dist = radius / Math.sin((camera.fov * Math.PI) / 360);
+    // Fit the bounding sphere within the TIGHTER of the vertical/horizontal FOV so the
+    // model is fully framed (never clipped) at any pane aspect — portrait or landscape.
+    const vHalf = (camera.fov * Math.PI) / 360;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    dist = radius / Math.sin(Math.min(vHalf, hHalf));
     target.copy(wcenter);
     frame();
   }
+
+  // Keep the render buffer + camera aspect in lockstep with the host's size, so the
+  // model is never rendered stretched. Without this, buffer/camera aspect is frozen
+  // at mount while the host box follows the window → non-uniform scaling. The
+  // observer's initial callback also corrects any off/fallback mount measurement.
+  function onResize() {
+    if (disposed) return;
+    const nw = host.clientWidth;
+    const nh = host.clientHeight;
+    if (nw === 0 || nh === 0) return;
+    renderer.setSize(nw, nh, false);
+    camera.aspect = nw / nh;
+    camera.updateProjectionMatrix();
+    // Re-fit (not just re-render): corrects the aspect AND re-frames the model to the
+    // new pane so it neither stretches nor clips. frameCamera() preserves orbit + zoom.
+    if (framed) frameCamera();
+  }
+  const ro = new ResizeObserver(onResize);
+  ro.observe(host);
 
   // Pointer interaction (attached immediately; harmless before the mesh frames).
   let drag: { x: number; y: number } | null = null;
@@ -223,7 +334,7 @@ export function mountViewer(
   scene.add(controlHelper);
   let onChangeCb: ((t: PlateTransform) => void) | null = null;
   control.addEventListener('change', () => { if (framed) frame(); });
-  control.addEventListener('objectChange', () => { if (onChangeCb) onChangeCb(readPivotTransform()); });
+  control.addEventListener('objectChange', () => { rebuildBbox(); if (onChangeCb) onChangeCb(readPivotTransform()); });
   control.addEventListener('dragging-changed', (e) => { gizmoDragging = (e as unknown as { value: boolean }).value; });
 
   function readPivotTransform(): PlateTransform {
@@ -247,12 +358,10 @@ export function mountViewer(
     pivot.add(object);
     baseBox.copy(box).translate(center.clone().negate()); // centered base box (mm)
 
-    // Size the plate/grid to ~1.5x the model footprint, clamped to a sensible range.
-    const footprint = Math.max(size.x, size.y, 1);
-    const plateSize = Math.min(256, Math.max(80, Math.ceil(1.5 * footprint)));
-    planeMesh.geometry.dispose();
-    planeMesh.geometry = new THREE.PlaneGeometry(plateSize, plateSize);
-    grid.scale.setScalar(plateSize); // base GridHelper is size 1
+    // Build the plate (real bed, or 'auto' from the model footprint) + grid.
+    footprintMm = Math.max(size.x, size.y, 1);
+    labelMm = clamp(Math.max(size.x, size.y, size.z) * 0.06, 2.5, 9); // model/view-relative label size
+    applyPlate();
 
     // Apply the saved transform, or the default (centered + dropped to plate).
     const t = opts.transform ?? defaultTransform(baseBox);
@@ -260,6 +369,7 @@ export function mountViewer(
 
     framed = true;
     frameCamera();
+    rebuildBbox();
   });
 
   return {
@@ -267,6 +377,7 @@ export function mountViewer(
     destroy() {
       if (disposed) return;
       disposed = true;
+      ro.disconnect();
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
@@ -278,8 +389,8 @@ export function mountViewer(
       // but explicit disposal is clearer and safe even if traverse order changes).
       planeMesh.geometry.dispose();
       planeMat.dispose();
-      grid.geometry.dispose();
-      (grid.material as THREE.Material).dispose();
+      if (gridHandle) gridHandle.dispose(); // frees grid lines + label textures
+      clearBbox(); bboxLineMat.dispose();
       scene.traverse((c) => {
         const m = c as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
@@ -295,22 +406,40 @@ export function mountViewer(
     thumbnail(o?: { hidePlate?: boolean }) {
       if (!framed) return null;
       const hide = o?.hidePlate ?? false;
-      const pv = planeMesh.visible, gv = grid.visible, cv = controlHelper.visible;
-      if (hide) { planeMesh.visible = false; grid.visible = false; controlHelper.visible = false; }
+      const pv = planeMesh.visible, gv = gridHost.visible, cv = controlHelper.visible, bv = bboxGroup.visible;
+      if (hide) { planeMesh.visible = false; gridHost.visible = false; controlHelper.visible = false; bboxGroup.visible = false; }
       try { frame(); return canvas.toDataURL('image/png'); }
-      finally { if (hide) { planeMesh.visible = pv; grid.visible = gv; controlHelper.visible = cv; frame(); } }
+      finally { if (hide) { planeMesh.visible = pv; gridHost.visible = gv; controlHelper.visible = cv; bboxGroup.visible = bv; frame(); } }
     },
     boundingBox() { return framed ? [round(size.x), round(size.y), round(size.z)] : null; },
     setEditMode(on: boolean) {
       if (on) control.attach(pivot); else control.detach();
       control.enabled = on; control.visible = on; controlHelper.visible = on;
-      planeMesh.visible = true; grid.visible = on; // plate always visible; grid only while editing
+      planeMesh.visible = true; // plate stays visible; the measurement grid is controlled via setGrid
+      if (framed) frame();
+    },
+    setGrid({ cellMm, visible }: { cellMm?: number; visible?: boolean }) {
+      if (cellMm !== undefined) gridCellMm = cellMm;
+      if (visible !== undefined) gridVisible = visible;
+      rebuildGrid();
+      if (framed) frame();
+    },
+    setPlate(p: ResolvedPlate) {
+      plateState = p;
+      applyPlate();   // rebuilds plate plane + grid for the new bed
+      rebuildBbox();  // label sizing is plate-relative
+      if (framed) frameCamera(); // re-fit to the new plate extent
+    },
+    setBoundingBox(visible: boolean) {
+      bboxVisible = visible;
+      rebuildBbox();
       if (framed) frame();
     },
     setGizmoMode(mode: 'translate' | 'rotate') { control.setMode(mode); if (framed) frame(); },
     getTransform() { return readPivotTransform(); },
     setTransform(t?: PlateTransform) {
       applyTransformToPivot(pivot, t ?? defaultTransform(baseBox));
+      rebuildBbox();
       if (onChangeCb) onChangeCb(readPivotTransform());
       if (framed) frame();
     },
@@ -318,12 +447,14 @@ export function mountViewer(
       const next = dropToPlane(baseBox, readPivotTransform());
       pivot.position.set(next.position[0], next.position[1], next.position[2]);
       pivot.updateMatrixWorld(true);
+      rebuildBbox();
       if (onChangeCb) onChangeCb(readPivotTransform());
       if (framed) frame();
     },
     resetTransform() {
       const next = defaultTransform(baseBox);
       applyTransformToPivot(pivot, next);
+      rebuildBbox();
       if (onChangeCb) onChangeCb(next);
       if (framed) frame();
     },
@@ -332,3 +463,4 @@ export function mountViewer(
 }
 
 function round(n: number): number { return Math.round(n * 100) / 100; }
+function clamp(v: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, v)); }

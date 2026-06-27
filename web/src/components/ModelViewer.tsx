@@ -3,8 +3,11 @@ import type { ModelDetail } from '../api/client';
 import { api, useInvalidate } from '../api/client';
 import { getMesh3D, buildProxy } from '../lib/mesh3d';
 import { mountViewer, type ViewerHandle } from '../lib/threeViewer';
+import { useViewerSettings } from '../viewerSettings';
+import { resolvePlate } from '../lib/platePresets';
 import { C, F } from '../theme';
 import { TransformPanel } from './TransformPanel';
+import { ViewerControls } from './ViewerControls';
 
 type Tier = 'lod' | 'original';
 
@@ -26,6 +29,12 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const invalidate = useInvalidate();
+  const gridCellMm = useViewerSettings((s) => s.gridCellMm);
+  const showGrid = useViewerSettings((s) => s.showGrid);
+  const showBoundingBox = useViewerSettings((s) => s.showBoundingBox);
+  const platePresetId = useViewerSettings((s) => s.platePresetId);
+  const customPlate = useViewerSettings((s) => s.customPlate);
+  const printersKey = model.printers.join(',');
 
   // ---- Real mesh path (Three.js) ----
   useEffect(() => {
@@ -37,17 +46,23 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
     // this effect's cleanup can always tear down exactly the renderer it created —
     // even under StrictMode's mount→cleanup→mount double-invoke. `ready` resolves
     // after the mesh frames. A destroy() before that makes the load a no-op.
-    const handle = mountViewer(hostRef.current, url, model.format, { transform: model.transform ?? undefined });
+    const handle = mountViewer(hostRef.current, url, model.format, {
+      transform: model.transform ?? undefined,
+      gridCellMm, showGrid, showBoundingBox,
+      plate: resolvePlate(platePresetId, customPlate, model.printers),
+    });
     handleRef.current = handle;
     handle.ready
       .then(() => {
         if (handleRef.current !== handle) return; // superseded by a newer mount
         setLoading(false);
-        // Persist a thumbnail and real bbox the first time we render a model that lacks them.
-        if (!model.hasThumbnail) {
-          const dataUrl = handle.thumbnail({ hidePlate: true });
-          if (dataUrl) api.saveThumbnail(model.id, dataUrl).catch(() => undefined);
-        }
+        // The live viewer now mounts only inside Inspect, so refresh the saved-view
+        // thumbnail on every successful render (default camera, plate hidden). This keeps
+        // the static detail preview current and self-heals legacy blank/stale thumbnails
+        // (e.g. captures from the old Context-Lost bug). Invalidate AFTER the POST resolves;
+        // the mount-effect deps exclude hasThumbnail, so this refetch doesn't remount.
+        const dataUrl = handle.thumbnail({ hidePlate: true });
+        if (dataUrl) api.saveThumbnail(model.id, dataUrl).then(() => invalidate(['model', 'models'])).catch(() => undefined);
         const bbox = handle.boundingBox();
         if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);
       })
@@ -60,8 +75,26 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   // mountViewer(..., { transform }) at mount time. Re-running this effect on every
   // Save would destroy + re-parse the whole mesh unnecessarily — a fresh mount already
   // picks up the latest transform when the model is next opened.
+  // gridCellMm/showGrid are applied at mount via opts and live via the effect below;
+  // they're intentionally excluded here so a grid change never re-parses the mesh.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model.id, tier, isReal, model.format, model.hasLod]);
+
+  // Apply measurement-grid settings live (no remount) when changed from the viewport.
+  useEffect(() => {
+    handleRef.current?.setGrid({ cellMm: gridCellMm, visible: showGrid });
+  }, [gridCellMm, showGrid]);
+
+  // Apply the build-plate (resolved from the preset + the model's printers) live.
+  useEffect(() => {
+    handleRef.current?.setPlate(resolvePlate(platePresetId, customPlate, model.printers));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platePresetId, customPlate.widthMm, customPlate.depthMm, model.id, printersKey]);
+
+  // Toggle the bounding-box overlay live.
+  useEffect(() => {
+    handleRef.current?.setBoundingBox(showBoundingBox);
+  }, [showBoundingBox]);
 
   // ---- Proxy mesh path (2D canvas renderer) ----
   useEffect(() => {
@@ -132,6 +165,7 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
       )}
       <div style={badge('left', 14)}>{model.format} · {(model.fileSizeBytes / (1024 * 1024) || 0).toFixed(1)} MB</div>
+      {isReal && <ViewerControls />}
       <div style={{ position: 'absolute', left: 16, bottom: 14, fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.14em', color: C.textFaint }}>DRAG TO ROTATE · SCROLL TO ZOOM</div>
 
       {isReal && model.hasLod && (

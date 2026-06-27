@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react';
 import { useModel, usePins, api, useInvalidate } from '../api/client';
 import { useUI } from '../store';
 import { C, F, label } from '../theme';
-import { ModelViewer } from './ModelViewer';
+import { DetailPreview } from './DetailPreview';
 import { SpecTable } from './SpecTable';
 import { PrinterCompat } from './PrinterCompat';
 import { SettingsTable } from './SettingsTable';
 import { GroupChips } from './GroupChips';
-import { PrintedResults } from './PrintedResults';
 import { fmtDate } from '../lib/format';
 
 export function DetailOverlay() {
@@ -19,7 +18,9 @@ export function DetailOverlay() {
   const [tagDraft, setTagDraft] = useState('');
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    // When Inspect is open it's the topmost layer and owns Escape; one press closes
+    // only Inspect, leaving the static detail behind it.
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !useUI.getState().inspectId) close(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, []);
@@ -40,7 +41,7 @@ export function DetailOverlay() {
   return (
     <div onClick={close} style={{ position: 'fixed', inset: 0, background: 'rgba(6,6,8,0.74)', backdropFilter: 'blur(7px)', zIndex: 50, display: 'grid', placeItems: 'center', padding: 28 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(1180px, 96vw)', height: 'min(790px, 92vh)', background: C.surface3, border: `1px solid ${C.border3}`, borderRadius: 16, overflow: 'hidden', display: 'grid', gridTemplateColumns: '1.05fr 1fr', boxShadow: '0 44px 90px rgba(0,0,0,0.65)' }}>
-        <ModelViewer model={model} />
+        <DetailPreview model={model} />
 
         <div style={{ overflowY: 'auto', padding: '24px 26px 30px', display: 'flex', flexDirection: 'column', gap: 19, minHeight: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 14 }}>
@@ -70,7 +71,6 @@ export function DetailOverlay() {
           <PrinterCompat model={model} />
           <SettingsTable model={model} />
           <GroupChips model={model} />
-          <PrintedResults model={model} />
         </div>
       </div>
     </div>

@@ -35,10 +35,10 @@ export function isRenderingThumb(model: Model): boolean {
 
 /** Resolve a tile's image source: server PNG if cached, else a client proxy render. */
 export function useThumbnail(model: Model): string | null {
-  const [src, setSrc] = useState<string | null>(model.hasThumbnail ? thumbUrl(model.id) : null);
+  const [src, setSrc] = useState<string | null>(model.hasThumbnail ? thumbUrl(model.id, model.thumbVersion) : null);
   useEffect(() => {
     if (model.hasThumbnail) {
-      setSrc(thumbUrl(model.id));
+      setSrc(thumbUrl(model.id, model.thumbVersion));
       return;
     }
     if (model.meshKind) {
@@ -47,6 +47,6 @@ export function useThumbnail(model: Model): string | null {
       return () => clearTimeout(t);
     }
     setSrc(null);
-  }, [model.id, model.hasThumbnail, model.meshKind, model.color]);
+  }, [model.id, model.hasThumbnail, model.thumbVersion, model.meshKind, model.color]);
   return src;
 }
