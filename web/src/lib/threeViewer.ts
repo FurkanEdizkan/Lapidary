@@ -15,6 +15,10 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { defaultTransform, type PlateTransform } from './plateTransform';
+
+// Plate sits a hair below z=0 to avoid z-fighting (echoes OrcaSlicer GROUND_Z).
+const GROUND_Z = -0.02;
 
 export interface ViewerHandle {
   /** Resolves after the mesh has loaded and the first frame has rendered; rejects on load error. */
@@ -65,12 +69,26 @@ function disposeObject(object: THREE.Object3D): void {
   });
 }
 
+/** Apply a PlateTransform to an Object3D pivot (position/quaternion/scale). */
+function applyTransformToPivot(pivot: THREE.Object3D, t: PlateTransform): void {
+  pivot.matrixAutoUpdate = true;
+  pivot.position.set(t.position[0], t.position[1], t.position[2]);
+  pivot.quaternion.set(t.quaternion[0], t.quaternion[1], t.quaternion[2], t.quaternion[3]);
+  pivot.scale.setScalar(t.scale);
+  pivot.updateMatrixWorld(true);
+}
+
 /**
  * Mount a viewer into `host`; loads `url` as `format`. Returns a handle SYNCHRONOUSLY
  * (the renderer/canvas exist immediately); `handle.ready` resolves once the mesh is
  * loaded and framed.
  */
-export function mountViewer(host: HTMLElement, url: string, format: string): ViewerHandle {
+export function mountViewer(
+  host: HTMLElement,
+  url: string,
+  format: string,
+  opts: { transform?: PlateTransform } = {},
+): ViewerHandle {
   let disposed = false;
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -101,22 +119,62 @@ export function mountViewer(host: HTMLElement, url: string, format: string): Vie
   const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 5000);
 
   const state = { rx: -0.38, ry: 0.85, zoom: 1 };
-  const size = new THREE.Vector3();
+  const target = new THREE.Vector3(); // orbit center; set by frameCamera() after load
+  const size = new THREE.Vector3();   // kept for boundingBox()
   let radius = 1;
   let dist = 3;
   let framed = false;
 
+  // Plate group: print-space (Z-up) content, rotated into the Y-up scene.
+  const plate = new THREE.Group();
+  plate.rotation.x = -Math.PI / 2;
+  scene.add(plate);
+
+  // Subtle plate plane + grid at z = GROUND_Z (in plate/print space).
+  const planeMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1e, transparent: true, opacity: 0.6, depthWrite: false });
+  const planeMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat); // sized after we know the model
+  planeMesh.position.z = GROUND_Z;
+  const grid = new THREE.GridHelper(1, 10, 0x2cb4f5, 0x2a2a30);
+  (grid.material as THREE.Material).opacity = 0.35;
+  (grid.material as THREE.Material).transparent = true;
+  grid.rotation.x = Math.PI / 2; // GridHelper is XZ (Y-up) by default; rotate into plate's XY
+  grid.position.z = GROUND_Z;
+  plate.add(planeMesh, grid);
+
+  // Pivot holds the saved transform; the mesh is offset so it is centered on the pivot origin.
+  const pivot = new THREE.Group();
+  plate.add(pivot);
+
+  const baseBox = new THREE.Box3(); // centered mesh box, filled after load
+
   function applyCamera() {
     const d = dist / state.zoom;
     camera.position.set(
-      d * Math.cos(state.rx) * Math.sin(state.ry),
-      d * Math.sin(state.rx) + radius * 0.1,
-      d * Math.cos(state.rx) * Math.cos(state.ry),
+      target.x + d * Math.cos(state.rx) * Math.sin(state.ry),
+      target.y + d * Math.sin(state.rx) + radius * 0.1,
+      target.z + d * Math.cos(state.rx) * Math.cos(state.ry),
     );
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(target);
     camera.updateProjectionMatrix();
   }
   function frame() { applyCamera(); renderer.render(scene, camera); }
+
+  // Frame the model's CURRENT world bbox without moving the object.
+  // scene.updateMatrixWorld(true) is essential: it bakes plate.rotation.x = -π/2
+  // into plate.matrixWorld before setFromObject reads it (pivot.updateMatrixWorld
+  // only descends, never updates the parent plate).
+  function frameCamera() {
+    scene.updateMatrixWorld(true);
+    const wbox = new THREE.Box3().setFromObject(pivot);
+    const wcenter = new THREE.Vector3();
+    const wsize = new THREE.Vector3();
+    wbox.getCenter(wcenter);
+    wbox.getSize(wsize);
+    radius = Math.max(wsize.x, wsize.y, wsize.z) / 2 || 1;
+    dist = radius / Math.sin((camera.fov * Math.PI) / 360);
+    target.copy(wcenter);
+    frame();
+  }
 
   // Pointer interaction (attached immediately; harmless before the mesh frames).
   let drag: { x: number; y: number } | null = null;
@@ -143,17 +201,28 @@ export function mountViewer(host: HTMLElement, url: string, format: string): Vie
     // The caller may have torn us down while the mesh was loading (e.g. StrictMode
     // remount or the overlay closing). If so, drop the just-loaded object and stop.
     if (disposed) { disposeObject(object); return; }
-    scene.add(object);
 
     const box = new THREE.Box3().setFromObject(object);
     const center = new THREE.Vector3();
-    box.getSize(size);
     box.getCenter(center);
-    object.position.sub(center);
-    radius = Math.max(size.x, size.y, size.z) / 2 || 1;
-    dist = radius / Math.sin((camera.fov * Math.PI) / 360);
+    box.getSize(size); // populate size for boundingBox()
+    object.position.sub(center); // center the mesh on the pivot origin
+    pivot.add(object);
+    baseBox.copy(box).translate(center.clone().negate()); // centered base box (mm)
+
+    // Size the plate/grid to ~1.5x the model footprint, clamped to a sensible range.
+    const footprint = Math.max(size.x, size.y, 1);
+    const plateSize = Math.min(256, Math.max(80, Math.ceil(1.5 * footprint)));
+    planeMesh.geometry.dispose();
+    planeMesh.geometry = new THREE.PlaneGeometry(plateSize, plateSize);
+    grid.scale.setScalar(plateSize); // base GridHelper is size 1
+
+    // Apply the saved transform, or the default (centered + dropped to plate).
+    const t = opts.transform ?? defaultTransform(baseBox);
+    applyTransformToPivot(pivot, t);
+
     framed = true;
-    frame();
+    frameCamera();
   });
 
   return {
@@ -165,6 +234,12 @@ export function mountViewer(host: HTMLElement, url: string, format: string): Vie
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('wheel', onWheel);
+      // Explicit plate/grid disposal (scene.traverse below also catches these,
+      // but explicit disposal is clearer and safe even if traverse order changes).
+      planeMesh.geometry.dispose();
+      planeMat.dispose();
+      grid.geometry.dispose();
+      (grid.material as THREE.Material).dispose();
       scene.traverse((c) => {
         const m = c as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
