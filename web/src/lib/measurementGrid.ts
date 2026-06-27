@@ -1,7 +1,7 @@
-// A dimensioned build-plate grid (real-world cells, e.g. 10mm) with cm tick labels
-// along two edges, so the viewer conveys scale. Lives in plate/print space (Z-up, mm);
-// the caller places it on the plate plane. Pure geometry — no DOM beyond an offscreen
-// canvas for the label textures.
+// A dimensioned build-plate grid (real-world cells, e.g. 10mm) with cm tick labels along
+// two edges + a plate outline, so the viewer conveys scale and bed footprint. Lives in
+// plate/print space (Z-up, mm). Label size is decoupled from cell size: changing the cell
+// size changes the grid DENSITY (not the label text size).
 import * as THREE from 'three';
 
 export interface GridHandle {
@@ -9,69 +9,87 @@ export interface GridHandle {
   dispose(): void;
 }
 
-const GRID_MAJOR = 0x2cb4f5; // cyan accent — center lines
-const GRID_MINOR = 0x2a2a30; // faint grid
+/** The plate footprint the grid spans (already resolved to concrete mm). */
+export type GridPlate =
+  | { shape: 'rect'; widthMm: number; depthMm: number }
+  | { shape: 'circle'; diameterMm: number };
+
+const GRID_MINOR = 0x2a2a30; // faint grid lines
+const PLATE_OUTLINE = 0x2cb4f5; // cyan accent — the bed boundary
 const LABEL_COLOR = '#8c8c95';
 
-/**
- * Build a measurement grid of `cellMm` cells covering ~`plateSizeMm`, at z=`groundZ`.
- * Returns the THREE.Group and a dispose() that frees all geometry/materials/textures.
- */
-export function buildMeasurementGrid(cellMm: number, plateSizeMm: number, groundZ: number): GridHandle {
+export function buildMeasurementGrid(plate: GridPlate, cellMm: number, groundZ: number, labelMm: number): GridHandle {
   const group = new THREE.Group();
-  const divisions = Math.max(2, Math.round(plateSizeMm / cellMm));
-  const sizeMm = divisions * cellMm; // exact cells
-  const half = sizeMm / 2;
-
-  const grid = new THREE.GridHelper(sizeMm, divisions, GRID_MAJOR, GRID_MINOR);
-  const gmat = grid.material as THREE.Material;
-  gmat.opacity = 0.32;
-  gmat.transparent = true;
-  grid.rotation.x = Math.PI / 2; // GridHelper is XZ (Y-up) by default → rotate into plate's XY
-  grid.position.z = groundZ;
-  group.add(grid);
-
-  // cm tick labels along the bottom (+X) and left (+Y) edges, measured from the corner.
+  const w = plate.shape === 'rect' ? plate.widthMm : plate.diameterMm;
+  const d = plate.shape === 'rect' ? plate.depthMm : plate.diameterMm;
+  const cols = Math.max(2, Math.round(w / cellMm));
+  const rows = Math.max(2, Math.round(d / cellMm));
+  const gw = cols * cellMm; // snapped to whole cells
+  const gd = rows * cellMm;
+  const hw = gw / 2;
+  const hd = gd / 2;
   const textures: THREE.Texture[] = [];
-  const stepMm = cellMm >= 10 ? cellMm : 10; // label at most every 10mm
-  const labelH = Math.max(5, cellMm * 0.7);
-  const off = cellMm * 0.7;
-  for (let v = 0; v <= sizeMm + 1e-3; v += stepMm) {
-    const mm = Math.round(v);
-    const text = mm % 10 === 0 ? `${mm / 10}` : `${mm}`; // cm when round, else mm
-    const bottom = makeLabel(text, labelH, textures);
-    bottom.position.set(-half + v, -half - off, groundZ);
-    group.add(bottom);
-    if (v > 0) {
-      const left = makeLabel(text, labelH, textures);
-      left.position.set(-half - off, -half + v, groundZ);
-      group.add(left);
-    }
+
+  // Grid lines (every cellMm across the plate), as one LineSegments.
+  const pts: number[] = [];
+  for (let i = 0; i <= cols; i++) { const x = -hw + i * cellMm; pts.push(x, -hd, groundZ, x, hd, groundZ); }
+  for (let j = 0; j <= rows; j++) { const y = -hd + j * cellMm; pts.push(-hw, y, groundZ, hw, y, groundZ); }
+  const gridGeo = new THREE.BufferGeometry();
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  group.add(new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: GRID_MINOR, transparent: true, opacity: 0.35 })));
+
+  // Plate outline — rectangle or circle (the real bed boundary).
+  const outlineMat = new THREE.LineBasicMaterial({ color: PLATE_OUTLINE, transparent: true, opacity: 0.5 });
+  if (plate.shape === 'circle') {
+    const r = plate.diameterMm / 2;
+    const N = 72;
+    const ring: number[] = [];
+    for (let k = 0; k <= N; k++) { const a = (k / N) * Math.PI * 2; ring.push(Math.cos(a) * r, Math.sin(a) * r, groundZ); }
+    const ringGeo = new THREE.BufferGeometry();
+    ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(ring, 3));
+    group.add(new THREE.Line(ringGeo, outlineMat));
+  } else {
+    const o = [-hw, -hd, groundZ, hw, -hd, groundZ, hw, hd, groundZ, -hw, hd, groundZ, -hw, -hd, groundZ];
+    const oGeo = new THREE.BufferGeometry();
+    oGeo.setAttribute('position', new THREE.Float32BufferAttribute(o, 3));
+    group.add(new THREE.Line(oGeo, outlineMat));
   }
-  // unit marker at the origin corner
+
+  // cm tick labels at every 10mm, corner-origin (0…W along bottom, 0…D up the left).
+  // Label height is model/view-relative (passed in) — NOT cell-relative — so changing the
+  // cell size only changes the grid density, never the label text size.
+  const labelH = labelMm;
+  const off = labelMm;
+  for (let v = 0; v <= gw + 1e-3; v += 10) {
+    const s = makeLabel(`${Math.round(v) / 10}`, labelH, textures);
+    s.position.set(-hw + v, -hd - off, groundZ);
+    group.add(s);
+  }
+  for (let v = 10; v <= gd + 1e-3; v += 10) {
+    const s = makeLabel(`${Math.round(v) / 10}`, labelH, textures);
+    s.position.set(-hw - off, -hd + v, groundZ);
+    group.add(s);
+  }
   const unit = makeLabel('cm', labelH * 0.9, textures);
-  unit.position.set(-half - off, -half - off, groundZ);
+  unit.position.set(-hw - off, -hd - off, groundZ);
   group.add(unit);
 
   return {
     group,
     dispose() {
-      grid.geometry.dispose();
-      gmat.dispose();
       group.traverse((o) => {
-        const s = o as THREE.Sprite;
-        if (s.isSprite) {
-          const m = s.material as THREE.SpriteMaterial;
-          m.map?.dispose();
-          m.dispose();
-        }
+        const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+        if (g) g.dispose();
+        const mat = (o as THREE.Mesh).material as (THREE.Material & { map?: THREE.Texture }) | undefined;
+        if (mat) { mat.map?.dispose(); mat.dispose(); }
       });
       textures.forEach((t) => t.dispose());
     },
   };
 }
 
-function makeLabel(text: string, heightMm: number, textures: THREE.Texture[]): THREE.Sprite {
+/** A billboarded text label (sprite) `heightMm` tall in world units; tracks its texture. */
+export function makeLabel(text: string, heightMm: number, textures: THREE.Texture[]): THREE.Sprite {
   const c = document.createElement('canvas');
   c.width = 96;
   c.height = 48;

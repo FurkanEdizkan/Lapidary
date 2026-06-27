@@ -4,9 +4,10 @@ import { api, useInvalidate } from '../api/client';
 import { getMesh3D, buildProxy } from '../lib/mesh3d';
 import { mountViewer, type ViewerHandle } from '../lib/threeViewer';
 import { useViewerSettings } from '../viewerSettings';
+import { resolvePlate } from '../lib/platePresets';
 import { C, F } from '../theme';
 import { TransformPanel } from './TransformPanel';
-import { GridControls } from './GridControls';
+import { ViewerControls } from './ViewerControls';
 
 type Tier = 'lod' | 'original';
 
@@ -30,6 +31,10 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   const invalidate = useInvalidate();
   const gridCellMm = useViewerSettings((s) => s.gridCellMm);
   const showGrid = useViewerSettings((s) => s.showGrid);
+  const showBoundingBox = useViewerSettings((s) => s.showBoundingBox);
+  const platePresetId = useViewerSettings((s) => s.platePresetId);
+  const customPlate = useViewerSettings((s) => s.customPlate);
+  const printersKey = model.printers.join(',');
 
   // ---- Real mesh path (Three.js) ----
   useEffect(() => {
@@ -41,7 +46,11 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
     // this effect's cleanup can always tear down exactly the renderer it created —
     // even under StrictMode's mount→cleanup→mount double-invoke. `ready` resolves
     // after the mesh frames. A destroy() before that makes the load a no-op.
-    const handle = mountViewer(hostRef.current, url, model.format, { transform: model.transform ?? undefined, gridCellMm, showGrid });
+    const handle = mountViewer(hostRef.current, url, model.format, {
+      transform: model.transform ?? undefined,
+      gridCellMm, showGrid, showBoundingBox,
+      plate: resolvePlate(platePresetId, customPlate, model.printers),
+    });
     handleRef.current = handle;
     handle.ready
       .then(() => {
@@ -75,6 +84,17 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   useEffect(() => {
     handleRef.current?.setGrid({ cellMm: gridCellMm, visible: showGrid });
   }, [gridCellMm, showGrid]);
+
+  // Apply the build-plate (resolved from the preset + the model's printers) live.
+  useEffect(() => {
+    handleRef.current?.setPlate(resolvePlate(platePresetId, customPlate, model.printers));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platePresetId, customPlate.widthMm, customPlate.depthMm, model.id, printersKey]);
+
+  // Toggle the bounding-box overlay live.
+  useEffect(() => {
+    handleRef.current?.setBoundingBox(showBoundingBox);
+  }, [showBoundingBox]);
 
   // ---- Proxy mesh path (2D canvas renderer) ----
   useEffect(() => {
@@ -145,7 +165,7 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
         <canvas ref={canvasRef} width={880} height={680} style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'grab', touchAction: 'none', display: 'block', flex: 1 }} />
       )}
       <div style={badge('left', 14)}>{model.format} · {(model.fileSizeBytes / (1024 * 1024) || 0).toFixed(1)} MB</div>
-      {isReal && <GridControls />}
+      {isReal && <ViewerControls />}
       <div style={{ position: 'absolute', left: 16, bottom: 14, fontFamily: F.mono, fontSize: 9.5, letterSpacing: '0.14em', color: C.textFaint }}>DRAG TO ROTATE · SCROLL TO ZOOM</div>
 
       {isReal && model.hasLod && (
