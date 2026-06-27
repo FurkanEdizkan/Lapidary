@@ -19,3 +19,6 @@ graphify-out/
 
 # subagent-driven-development scratch workspace
 .superpowers/
+
+# local test/sample model archives (large; not part of the repo)
+example-models/
