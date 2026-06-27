@@ -21,7 +21,9 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<ViewerHandle | null>(null);
   const isReal = model.hasLod || model.hasOriginal;
-  const [tier, setTier] = useState<Tier>(model.hasLod ? 'lod' : 'original');
+  // Default to the FULL-detail original mesh: the rust-mesh LOD is a coarse
+  // vertex-clustering proxy (looks voxelated), so it's an opt-in "fast" mode only.
+  const [tier, setTier] = useState<Tier>(model.hasOriginal ? 'original' : 'lod');
   const [loading, setLoading] = useState(isReal);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -173,9 +175,9 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
           onClick={() => setTier((t) => (t === 'lod' ? 'original' : 'lod'))}
           className="hover-cyan"
           style={{ position: 'absolute', right: 14, top: 12, ...pill }}
-          title="LOD loads instantly; full mesh reads the real file"
+          title="Full detail reads the real mesh; fast is a low-detail proxy that loads instantly"
         >
-          {tier === 'lod' ? 'VIEW FULL MESH' : 'BACK TO LOD'}
+          {tier === 'lod' ? '✦ FULL DETAIL' : '⚡ FAST (LOW-DETAIL)'}
         </button>
       )}
       {isReal && !editing && !loading && (
