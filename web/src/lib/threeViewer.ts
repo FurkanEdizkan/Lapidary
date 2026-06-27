@@ -15,7 +15,8 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { defaultTransform, type PlateTransform } from './plateTransform';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { defaultTransform, dropToPlane, type PlateTransform } from './plateTransform';
 
 // Plate sits a hair below z=0 to avoid z-fighting (echoes OrcaSlicer GROUND_Z).
 const GROUND_Z = -0.02;
@@ -25,8 +26,16 @@ export interface ViewerHandle {
   ready: Promise<void>;
   destroy(): void;
   reset(): void;
-  thumbnail(): string | null;
+  thumbnail(opts?: { hidePlate?: boolean }): string | null;
   boundingBox(): [number, number, number] | null;
+  // Edit-mode API (Task 6)
+  setEditMode(on: boolean): void;
+  setGizmoMode(mode: 'translate' | 'rotate'): void;
+  getTransform(): PlateTransform;
+  setTransform(t?: PlateTransform): void;
+  dropToPlane(): void;
+  resetTransform(): void;
+  onTransformChange(cb: (t: PlateTransform) => void): void;
 }
 
 function loadGeometry(url: string, format: string): Promise<THREE.Object3D> {
@@ -124,6 +133,7 @@ export function mountViewer(
   let radius = 1;
   let dist = 3;
   let framed = false;
+  let gizmoDragging = false;
 
   // Plate group: print-space (Z-up) content, rotated into the Y-up scene.
   const plate = new THREE.Group();
@@ -178,8 +188,9 @@ export function mountViewer(
 
   // Pointer interaction (attached immediately; harmless before the mesh frames).
   let drag: { x: number; y: number } | null = null;
-  const onDown = (e: PointerEvent) => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); };
+  const onDown = (e: PointerEvent) => { if (gizmoDragging) return; drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); };
   const onMove = (e: PointerEvent) => {
+    if (gizmoDragging) return;
     if (!drag) return;
     state.ry -= (e.clientX - drag.x) * 0.011;
     state.rx = Math.max(-1.45, Math.min(1.45, state.rx + (e.clientY - drag.y) * 0.011));
@@ -197,6 +208,30 @@ export function mountViewer(
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('wheel', onWheel, { passive: false });
 
+  // TransformControls (move + rotate only; scale is Phase B).
+  // Cast: three 0.172 TransformControls is not typed as Object3D, so `.visible`
+  // doesn't appear in TS types even though it exists at runtime.
+  const control = new TransformControls(camera, canvas) as TransformControls & { visible: boolean };
+  control.setSpace('world');
+  control.setMode('rotate');
+  control.enabled = false;
+  control.visible = false;
+  const controlHelper = control.getHelper();
+  controlHelper.visible = false;
+  scene.add(controlHelper);
+  let onChangeCb: ((t: PlateTransform) => void) | null = null;
+  control.addEventListener('change', () => { if (framed) frame(); });
+  control.addEventListener('objectChange', () => { if (onChangeCb) onChangeCb(readPivotTransform()); });
+  control.addEventListener('dragging-changed', (e) => { gizmoDragging = (e as unknown as { value: boolean }).value; });
+
+  function readPivotTransform(): PlateTransform {
+    return {
+      position: [pivot.position.x, pivot.position.y, pivot.position.z],
+      quaternion: [pivot.quaternion.x, pivot.quaternion.y, pivot.quaternion.z, pivot.quaternion.w],
+      scale: pivot.scale.x,
+    };
+  }
+
   const ready = loadGeometry(url, format).then((object) => {
     // The caller may have torn us down while the mesh was loading (e.g. StrictMode
     // remount or the overlay closing). If so, drop the just-loaded object and stop.
@@ -208,6 +243,7 @@ export function mountViewer(
     box.getSize(size); // populate size for boundingBox()
     object.position.sub(center); // center the mesh on the pivot origin
     pivot.add(object);
+    control.attach(pivot);
     baseBox.copy(box).translate(center.clone().negate()); // centered base box (mm)
 
     // Size the plate/grid to ~1.5x the model footprint, clamped to a sensible range.
@@ -234,6 +270,9 @@ export function mountViewer(
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('wheel', onWheel);
+      control.detach();
+      control.dispose();
+      scene.remove(controlHelper);
       // Explicit plate/grid disposal (scene.traverse below also catches these,
       // but explicit disposal is clearer and safe even if traverse order changes).
       planeMesh.geometry.dispose();
@@ -252,11 +291,41 @@ export function mountViewer(
       if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
     },
     reset() { state.rx = -0.38; state.ry = 0.85; state.zoom = 1; if (framed) frame(); },
-    thumbnail() {
+    thumbnail(o?: { hidePlate?: boolean }) {
       if (!framed) return null;
-      try { frame(); return canvas.toDataURL('image/png'); } catch { return null; }
+      const hide = o?.hidePlate ?? false;
+      const pv = planeMesh.visible, gv = grid.visible, cv = controlHelper.visible;
+      if (hide) { planeMesh.visible = false; grid.visible = false; controlHelper.visible = false; }
+      try { frame(); return canvas.toDataURL('image/png'); }
+      finally { if (hide) { planeMesh.visible = pv; grid.visible = gv; controlHelper.visible = cv; frame(); } }
     },
     boundingBox() { return framed ? [round(size.x), round(size.y), round(size.z)] : null; },
+    setEditMode(on: boolean) {
+      control.enabled = on; control.visible = on; controlHelper.visible = on;
+      planeMesh.visible = true; grid.visible = on; // plate always visible; grid only while editing
+      if (framed) frame();
+    },
+    setGizmoMode(mode: 'translate' | 'rotate') { control.setMode(mode); if (framed) frame(); },
+    getTransform() { return readPivotTransform(); },
+    setTransform(t?: PlateTransform) {
+      applyTransformToPivot(pivot, t ?? defaultTransform(baseBox));
+      if (onChangeCb) onChangeCb(readPivotTransform());
+      if (framed) frame();
+    },
+    dropToPlane() {
+      const next = dropToPlane(baseBox, readPivotTransform());
+      pivot.position.set(next.position[0], next.position[1], next.position[2]);
+      pivot.updateMatrixWorld(true);
+      if (onChangeCb) onChangeCb(readPivotTransform());
+      if (framed) frame();
+    },
+    resetTransform() {
+      const next = defaultTransform(baseBox);
+      applyTransformToPivot(pivot, next);
+      if (onChangeCb) onChangeCb(next);
+      if (framed) frame();
+    },
+    onTransformChange(cb: (t: PlateTransform) => void) { onChangeCb = cb; },
   };
 }
 
