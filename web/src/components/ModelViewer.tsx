@@ -43,14 +43,13 @@ export function ModelViewer({ model }: { model: ModelDetail }) {
       .then(() => {
         if (handleRef.current !== handle) return; // superseded by a newer mount
         setLoading(false);
-        // Persist a thumbnail and real bbox the first time we render a model that lacks them.
-        if (!model.hasThumbnail) {
-          const dataUrl = handle.thumbnail({ hidePlate: true });
-          // Invalidate AFTER the POST resolves so the static detail preview picks up the
-          // freshly-generated thumbnail. The mount-effect deps exclude hasThumbnail, so
-          // this refetch does not remount the viewer.
-          if (dataUrl) api.saveThumbnail(model.id, dataUrl).then(() => invalidate(['model', 'models'])).catch(() => undefined);
-        }
+        // The live viewer now mounts only inside Inspect, so refresh the saved-view
+        // thumbnail on every successful render (default camera, plate hidden). This keeps
+        // the static detail preview current and self-heals legacy blank/stale thumbnails
+        // (e.g. captures from the old Context-Lost bug). Invalidate AFTER the POST resolves;
+        // the mount-effect deps exclude hasThumbnail, so this refetch doesn't remount.
+        const dataUrl = handle.thumbnail({ hidePlate: true });
+        if (dataUrl) api.saveThumbnail(model.id, dataUrl).then(() => invalidate(['model', 'models'])).catch(() => undefined);
         const bbox = handle.boundingBox();
         if (bbox && model.size.every((v) => v === 0)) api.patchModel(model.id, { size: bbox }).catch(() => undefined);
       })
