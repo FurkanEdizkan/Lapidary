@@ -65,6 +65,37 @@ docker compose up                 # or: podman compose up  /  podman-compose up
   read-only at `/library` and indexed by **Scan** (or `POST /api/scan`).
 - Remove the `redis` service to run with the LRU cache fallback.
 
+## Develop in a Dev Container (VS Code)
+
+The repo ships a [Dev Container](https://containers.dev/) so you can move to any
+machine with Docker + VS Code and continue development with the full toolchain
+(Node 22, Rust, Redis, native build deps) already in place — no host setup, no
+"works on my machine".
+
+1. Install [Docker](https://docs.docker.com/get-docker/), [VS Code](https://code.visualstudio.com/),
+   and the **Dev Containers** extension (`ms-vscode-remote.remote-containers`).
+2. Open the repo in VS Code → **Reopen in Container** (or run *Dev Containers:
+   Rebuild and Reopen in Container* from the command palette). First build pulls
+   images and compiles native modules; subsequent opens are fast.
+3. In the container terminal:
+   ```bash
+   npm run dev          # server :5174, worker, web :5173 — all hot-reloading
+   ```
+   VS Code auto-forwards both ports; the web UI opens at http://localhost:5173.
+
+What the container sets up for you (`postCreateCommand` → `.devcontainer/post-create.sh`):
+installs workspace deps, seeds `.env` from `.env.example`, and builds the optional
+`rust-mesh` sidecar. A `redis` sidecar is wired in for cache parity.
+
+Notes:
+- **Toolchain only — no library data is carried across machines.** `data/` is
+  local and gitignored; each machine starts fresh (this app is local-first with
+  no sync, by design).
+- `node_modules` lives in container-managed volumes, so a host-compiled
+  `better-sqlite3` (e.g. from a macOS/Windows host) never leaks in to crash the
+  Linux container.
+- The Dev Container is independent from the production `Dockerfile` / `compose.yaml`.
+
 ## Configuration
 
 See `.env.example`. Key variables: `PORT`, `DATA_DIR`, `REDIS_URL` (optional),

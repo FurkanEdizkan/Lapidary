@@ -1,0 +1,37 @@
+# Dev Container stack — used only for local development inside VS Code.
+# This is separate from the production ../compose.yaml (which builds the
+# slim runtime image). Here we keep the source bind-mounted for hot reload.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    # Keep the container alive so VS Code can attach; you run the dev servers
+    # yourself from a terminal with `npm run dev`.
+    command: sleep infinity
+    volumes:
+      # Live source mount for hot reload.
+      - ..:/workspaces/Lapidary:cached
+      # Native-module isolation: overlay fresh, container-built node_modules so a
+      # host-compiled better-sqlite3 (macOS/Windows/other glibc) can never leak in
+      # through the bind mount and crash on require(). These are populated by
+      # post-create.sh, never by the host.
+      - node-modules-root:/workspaces/Lapidary/node_modules
+      - node-modules-server:/workspaces/Lapidary/server/node_modules
+      - node-modules-web:/workspaces/Lapidary/web/node_modules
+    environment:
+      # Use the redis sidecar below for cache parity with production. Remove this
+      # (and the redis service) to fall back to the in-process LRU cache.
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+
+volumes:
+  node-modules-root:
+  node-modules-server:
+  node-modules-web:

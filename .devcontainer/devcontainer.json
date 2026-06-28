@@ -1,0 +1,32 @@
+{
+  "name": "Lapidary Dev",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/Lapidary",
+
+  // Rust toolchain for the rust-mesh sidecar (cargo build --release).
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+
+  // Vite web dev server and Fastify API. VS Code forwards these to the host;
+  // we intentionally do NOT publish them in docker-compose.yml to avoid
+  // double-binding / port collisions.
+  "forwardPorts": [5173, 5174],
+  "portsAttributes": {
+    "5173": { "label": "Web (Vite)", "onAutoForward": "openBrowser" },
+    "5174": { "label": "API (Fastify)", "onAutoForward": "silent" }
+  },
+
+  // Installs workspace deps, seeds .env, and builds the optional mesh sidecar.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vitest.explorer"
+      ]
+    }
+  }
+}
