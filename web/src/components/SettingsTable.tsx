@@ -37,7 +37,7 @@ export function SettingsTable({ model }: { model: ModelDetail }) {
           <div key={r.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 18px', gap: 10, padding: '7px 0', borderBottom: '1px solid #242428', fontSize: 12, alignItems: 'center' }}>
             <span style={{ color: '#8b8b93' }}>{r.k}</span>
             <span style={{ color: '#e0e0e5', fontFamily: F.mono, fontSize: 11 }}>{r.v}</span>
-            <button onClick={() => del(r.id)} title="Remove" style={{ background: 'none', border: 'none', color: C.textFaint2, cursor: 'pointer', fontSize: 11 }} className="hover-cyan">✕</button>
+            <button onClick={() => del(r.id)} title="Remove" style={{ background: 'none', border: 'none', color: C.textFaint, cursor: 'pointer', fontSize: 11 }} className="hover-cyan">✕</button>
           </div>
         ))}
         {model.settings.length === 0 && <div style={{ padding: '8px 0', fontSize: 11.5, color: C.textFaint }}>No settings yet — add one or import a preset.</div>}

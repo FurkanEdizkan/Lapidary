@@ -4,7 +4,7 @@ html, body { margin: 0; padding: 0; background: #121214; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #2e2e32; border-radius: 8px; border: 2px solid #121214; }
 ::-webkit-scrollbar-track { background: transparent; }
-input::placeholder, textarea::placeholder { color: #6c6c73; }
+input::placeholder, textarea::placeholder { color: #898991; }
 input, textarea, select, button { font-family: 'Archivo', sans-serif; }
 canvas { -webkit-user-select: none; user-select: none; }
 button { cursor: pointer; }
@@ -35,7 +35,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px; font-weight: 500;
   letter-spacing: 0.2em; text-transform: uppercase;
-  color: #6c6c73; /* text-faint */
+  color: #898991; /* text-faint */
   user-select: none;
 }
 @media (prefers-reduced-motion: no-preference) {

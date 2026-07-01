@@ -22,7 +22,7 @@ function Row({ model }: { model: Model }) {
       </div>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model.name}</div>
-        <div style={{ fontFamily: F.mono, fontSize: 9.5, color: C.textFaint2 }}>{model.format} · {fileMB(model.fileSizeBytes)}</div>
+        <div style={{ fontFamily: F.mono, fontSize: 9.5, color: C.textFaint }}>{model.format} · {fileMB(model.fileSizeBytes)}</div>
       </div>
       <div style={{ fontSize: 12, color: '#b3b3ba', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model.creator}</div>
       <div style={{ fontSize: 12, color: '#b3b3ba' }}>{model.type}</div>

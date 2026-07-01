@@ -40,7 +40,7 @@ export function TagsGroupsManager() {
             {tags.map((t) => (
               <Row key={t.name}>
                 <span style={{ fontFamily: F.mono, fontSize: 12, color: '#dcdce1', flex: 1 }}>{t.name}</span>
-                <span style={{ fontFamily: F.mono, fontSize: 10.5, color: C.textFaint2 }}>{t.count} models</span>
+                <span style={{ fontFamily: F.mono, fontSize: 10.5, color: C.textFaint }}>{t.count} models</span>
                 <IconBtn onClick={() => pin('tag', t.name)} title="Pin tag">{isPinned('tag', t.name) ? '★' : '☆'}</IconBtn>
                 <SmallBtn onClick={() => { addTagFilter(t.name); close(); }}>filter</SmallBtn>
                 <IconBtn onClick={() => deleteTag(t.name)} danger>✕</IconBtn>
@@ -62,7 +62,7 @@ export function TagsGroupsManager() {
                   {g.name}
                   {g.shared && <span style={{ fontFamily: F.mono, fontSize: 7.5, letterSpacing: '0.14em', color: C.textMute2, border: '1px solid #303036', borderRadius: 4, padding: '1px 4px' }}>SHARED</span>}
                 </span>
-                <span style={{ fontFamily: F.mono, fontSize: 10.5, color: C.textFaint2 }}>{g.count} models</span>
+                <span style={{ fontFamily: F.mono, fontSize: 10.5, color: C.textFaint }}>{g.count} models</span>
                 <SmallBtn onClick={() => shareGroup(g.name, g.shared)}>{g.shared ? 'make personal' : 'share'}</SmallBtn>
                 <SmallBtn onClick={() => { setGroupScope(g.name); close(); }}>open</SmallBtn>
                 <IconBtn onClick={() => deleteGroup(g.name)} danger>✕</IconBtn>
@@ -85,5 +85,5 @@ function SmallBtn({ children, onClick }: { children: React.ReactNode; onClick: (
   return <button onClick={onClick} className="hover-cyan" style={{ background: 'transparent', border: `1px solid ${C.border4}`, color: '#b3b3ba', borderRadius: 6, padding: '3px 9px', fontSize: 10.5, cursor: 'pointer' }}>{children}</button>;
 }
 function IconBtn({ children, onClick, title, danger }: { children: React.ReactNode; onClick: () => void; title?: string; danger?: boolean }) {
-  return <button onClick={onClick} title={title} className={danger ? '' : 'hover-cyan'} style={{ background: 'transparent', border: 'none', color: danger ? C.textFaint2 : C.textMute2, cursor: 'pointer', fontSize: 12, padding: '2px 4px' }}>{children}</button>;
+  return <button onClick={onClick} title={title} className={danger ? '' : 'hover-cyan'} style={{ background: 'transparent', border: 'none', color: danger ? C.textFaint : C.textMute2, cursor: 'pointer', fontSize: 12, padding: '2px 4px' }}>{children}</button>;
 }

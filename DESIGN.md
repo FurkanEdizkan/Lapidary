@@ -16,8 +16,8 @@ colors:
   text: "#eaeaec"
   text-dim: "#c9c9cf"
   text-mute: "#9b9ba1"
-  text-mute-2: "#82828a"
-  text-faint: "#6c6c73"
+  text-mute-2: "#8e8e96"
+  text-faint: "#898991"
   accent: "#2cb4f5"
   accent-hover: "#4cc3ff"
   on-accent: "#06151d"
@@ -166,9 +166,11 @@ semantic signals.
 - **Border Ramp** (`#26262a` → `#2c2c30` → `#2e2e34` → `#34343a`, hover `#4a4a52`): hairline
   separators doing the structural work shadows would do elsewhere. Heavier borders mark more
   interactive edges; `border-hover` is the lift.
-- **Ink Ramp** (`#eaeaec` primary → `#c9c9cf` dim → `#9b9ba1` mute → `#82828a` → `#6c6c73` faint):
+- **Ink Ramp** (`#eaeaec` primary → `#c9c9cf` dim → `#9b9ba1` mute → `#8e8e96` → `#898991` faint):
   the text scale. Primary ink for content, the muted steps for labels and secondary data. The faint
-  step is the placeholder floor — never lighter.
+  step (`#898991`) is the placeholder/kicker floor, tuned to hold WCAG AA 4.5:1 on every graphite
+  surface (down to the raised input well `#212125`) — never *darker*. (Earlier `#6c6c73`/`#75757d`
+  faint steps read below 4.5:1 and were merged up into this single AA-compliant floor.)
 
 ### Tertiary (Semantic)
 - **Signal Coral** (`#e07a7a`): danger / destructive only.
@@ -265,7 +267,8 @@ the Float. Nothing else casts.
 ### Inputs / Fields
 - **Style:** `surface-2` well, `border-2` hairline, 8px radius, primary ink, 13px. Mono variant for
   numeric, tag, and settings fields. The global search is the one pill-shaped input (99px).
-- **Placeholder:** `text-faint` (`#6c6c73`) — held at the readable floor, never lighter.
+- **Placeholder:** `text-faint` (`#898991`) — held at the AA-compliant readable floor (≥ 4.5:1 on
+  every surface), never darker.
 - **Focus:** must render a visible Loupe Cyan ring (see Do's). The drop-zone uses a dashed `border-4`
   that shifts to cyan on hover.
 - **Disabled:** reduced opacity (~0.5) with the control left in place; never removed.

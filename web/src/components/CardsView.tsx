@@ -36,7 +36,7 @@ function Card({ model }: { model: Model }) {
             <button key={t} onClick={(e) => { e.stopPropagation(); toggleTag(t); }} className="hover-cyan" style={chip(activeTags.includes(t))}>{t}</button>
           ))}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: F.mono, fontSize: 10, color: C.textFaint2, borderTop: `1px solid ${C.border}`, paddingTop: 9 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: F.mono, fontSize: 10, color: C.textFaint, borderTop: `1px solid ${C.border}`, paddingTop: 9 }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model.printers.join(' · ') || fileMB(model.fileSizeBytes)}</span>
           <span style={{ flex: '0 0 auto' }}>{fmtDate(model.added)}</span>
         </div>
