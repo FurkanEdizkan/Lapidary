@@ -187,20 +187,21 @@ Policy, all CI-enforced:
 - OCCT built from source in our own CI. LGPL-2.1 output stays a separately replaceable
   file.
 
-## Licensing — decision required
+## Licensing — decided: AGPL-3.0-only
 
-The plan is AGPL-3.0-only app plus a proprietary `lapidary-enterprise`. **These
+The plan was AGPL-3.0-only app plus a proprietary `lapidary-enterprise`. **These
 conflict.** A proprietary crate linking AGPL crates must itself be AGPL, and DCO-signed
 community contributions cannot be relicensed by us.
 
-Two coherent options:
+Two coherent options were considered:
 
 1. **Everything AGPL, sell the licence contractually.** The Ed25519 file gates fleet size
    and support entitlement as a contractual and support boundary, not technical DRM.
    AGPL already blocks a competitor from hosting without publishing changes. No CLA
-   fight, no relicensing problem. **Recommended.**
-2. **CLA instead of DCO**, keeping copyright assignment so `lapidary-enterprise` can stay
-   proprietary. Costs community goodwill and contributor friction.
+   fight, no relicensing problem. **Recommended, and decided.**
+2. CLA instead of DCO, keeping copyright assignment so `lapidary-enterprise` could stay
+   proprietary — considered and rejected for the goodwill and contributor friction it
+   would cost.
 
-Pick before accepting the first external contribution. After that, option 1 is the only
-one available without contacting every contributor.
+Option 1 stands: the entire workspace, including `lapidary-enterprise`, is AGPL-3.0-only.
+Contributions are taken under the DCO.

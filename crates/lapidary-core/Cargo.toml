@@ -1,0 +1,19 @@
+[package]
+name = "lapidary-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+# Only the serialisation tests need it. Keeping it out of [dependencies] stops the domain
+# crate acquiring a JSON representation it does not actually own.
+serde_json.workspace = true

@@ -20,6 +20,7 @@ volumes/
 
 # Generated
 sidecar/occt-bridge/build/
+crates/*/bindings/
 
 # OS
 .DS_Store

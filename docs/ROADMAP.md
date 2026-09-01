@@ -220,8 +220,6 @@ before incorporating** — some of it depends on day-one entity structure.
 
 # Open items
 
-- **Licensing conflict.** AGPL app + proprietary enterprise crate cannot coexist. Decide
-  before the first external contribution. See `docs/ARCHITECTURE.md`.
 - **Trademark.** "Lapidary" is a common English word — check TÜRKPATENT and EUIPO in the
   relevant software classes before registering a domain.
 - **`pgvector` and Turkish `tsvector`** against `postgres:18` — verify in Phase 0.

@@ -54,7 +54,6 @@ Start at [`docs/README.md`](docs/README.md) for the map.
 
 ## Licence
 
-**Not yet decided.** See the licensing section in `docs/ARCHITECTURE.md` — the choice
-between a fully AGPL-3.0-only project and an AGPL core with a separately licensed server
-must be settled before the first external contribution is accepted. Until a `LICENSE`
-file exists, all rights are reserved.
+**AGPL-3.0-only**, for the entire workspace including `lapidary-enterprise`. The Ed25519
+licence file gates fleet size and support entitlement as a contractual boundary, not as
+technical DRM. Contributions are taken under the DCO; there is no CLA.

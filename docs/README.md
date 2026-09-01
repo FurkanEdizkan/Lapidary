@@ -3,7 +3,7 @@
 | Doc | Contains | Read before |
 |---|---|---|
 | [`../CLAUDE.md`](../CLAUDE.md) | Non-negotiable product and technical rules, style | Always loaded |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate graph and layering, deployment topology, full tech stack, kernel trait, supply chain policy, licensing conflict | Any structural work, new crate, dependency, or deployment change |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate graph and layering, deployment topology, full tech stack, kernel trait, supply chain policy, licensing | Any structural work, new crate, dependency, or deployment change |
 | [`DATA.md`](DATA.md) | Blob CAS, compression and tiering, deletion semantics, fast-open path, metadata extraction, schema, search, source links, upload/download, versioning, watcher | Anything touching storage, the database, ingest, search, or the round-trip |
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
