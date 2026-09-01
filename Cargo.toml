@@ -15,6 +15,7 @@ members = [
     "crates/lapidary-vcs",
     "crates/lapidary-build",
     "crates/lapidary-targets",
+    "crates/lapidary-api",
     "crates/lapidary-enterprise",
     "xtask",
 ]

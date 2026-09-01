@@ -60,3 +60,12 @@ pub async fn migrate(pool: &PgPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
 }
+
+/// The PostgreSQL `server_version_num` (e.g. 180002). Lives here because no SQL may
+/// appear outside this crate.
+pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
+    let num = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
+        .fetch_one(pool)
+        .await?;
+    Ok(num)
+}
