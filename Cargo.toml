@@ -29,18 +29,21 @@ rust-version = "1.95"
 license = "AGPL-3.0-only"
 repository = "https://github.com/FurkanEdizkan/Lapidary"
 
+# Each internal path dependency carries an explicit version. Without one, cargo
+# records it as `*`, and deny.toml's `wildcards = "deny"` then rejects every
+# crate-to-crate edge in the workspace — `cargo deny check bans` fails outright.
 [workspace.dependencies]
-lapidary-core = { path = "crates/lapidary-core" }
-lapidary-db = { path = "crates/lapidary-db" }
-lapidary-storage = { path = "crates/lapidary-storage" }
-lapidary-cad = { path = "crates/lapidary-cad" }
-lapidary-jobs = { path = "crates/lapidary-jobs" }
-lapidary-index = { path = "crates/lapidary-index" }
-lapidary-vcs = { path = "crates/lapidary-vcs" }
-lapidary-build = { path = "crates/lapidary-build" }
-lapidary-targets = { path = "crates/lapidary-targets" }
-lapidary-api = { path = "crates/lapidary-api" }
-lapidary-enterprise = { path = "crates/lapidary-enterprise" }
+lapidary-core = { path = "crates/lapidary-core", version = "0.1.0" }
+lapidary-db = { path = "crates/lapidary-db", version = "0.1.0" }
+lapidary-storage = { path = "crates/lapidary-storage", version = "0.1.0" }
+lapidary-cad = { path = "crates/lapidary-cad", version = "0.1.0" }
+lapidary-jobs = { path = "crates/lapidary-jobs", version = "0.1.0" }
+lapidary-index = { path = "crates/lapidary-index", version = "0.1.0" }
+lapidary-vcs = { path = "crates/lapidary-vcs", version = "0.1.0" }
+lapidary-build = { path = "crates/lapidary-build", version = "0.1.0" }
+lapidary-targets = { path = "crates/lapidary-targets", version = "0.1.0" }
+lapidary-api = { path = "crates/lapidary-api", version = "0.1.0" }
+lapidary-enterprise = { path = "crates/lapidary-enterprise", version = "0.1.0" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.92"

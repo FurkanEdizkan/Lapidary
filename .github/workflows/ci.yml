@@ -41,9 +41,12 @@ jobs:
       - run: cargo xtask export-bindings
       - name: Bindings must be committed and current
         run: |
-          if ! git diff --quiet --exit-code web/src/bindings; then
+          # git status, not git diff. The export deletes and recreates the directory, so a
+          # type newly given #[ts(export)] produces an UNTRACKED file — and `git diff` never
+          # reports untracked files, so the stalest possible case would pass silently.
+          if git status --porcelain -- web/src/bindings | grep -q .; then
             echo "::error::web/src/bindings is stale. Run 'cargo xtask export-bindings' and commit the result."
-            git diff --stat web/src/bindings
+            git status --porcelain -- web/src/bindings
             exit 1
           fi
 
