@@ -7,7 +7,7 @@
 | [`DATA.md`](DATA.md) | Blob CAS, compression and tiering, deletion semantics, fast-open path, metadata extraction, schema, search, source links, upload/download, versioning, watcher | Anything touching storage, the database, ingest, search, or the round-trip |
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
-| [`MIGRATION.md`](MIGRATION.md) | One-time cutover from the Node prototype: what to keep, adapt, delete, and in what order | Before touching any existing file. **Delete once Phase 1 passes** |
+| [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, `lapidary-index` search, or `lapidary-cad` LOD |
 
 ## Fast answers
 

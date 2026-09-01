@@ -12,12 +12,10 @@ already use.
 
 ## Status
 
-**Pre-alpha, mid-rewrite.** `main` holds a working Node/Fastify prototype that validated
-the product idea. The Rust implementation described in `docs/` is being built alongside
-it on `rust-rewrite`. See `docs/MIGRATION.md` for what survives the cutover and what
-does not.
-
-Nothing here is production-ready and the licence is not yet decided.
+**Pre-alpha.** `main` holds the Node/Fastify prototype that validated the product idea. It
+is a reference implementation to read, not a base to build on. The Rust implementation
+described in `docs/` is being built fresh on `rust-rewrite`, and that is the only thing
+that will ship. There is no runnable application on `rust-rewrite` until Phase 1.
 
 ## What it does
 
@@ -39,7 +37,7 @@ Nothing here is production-ready and the licence is not yet decided.
 Container-first. Podman is recommended; Docker is supported.
 
 ```sh
-podman compose up
+podman compose -f deploy/compose.yaml up
 ```
 
 ## Documentation

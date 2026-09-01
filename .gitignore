@@ -19,7 +19,6 @@ web/dist/
 volumes/
 
 # Generated
-web/src/generated/
 sidecar/occt-bridge/build/
 
 # OS
