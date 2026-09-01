@@ -1846,6 +1846,10 @@ repository.workspace = true
 lapidary-api.workspace = true
 lapidary-db.workspace = true
 anyhow.workspace = true
+# This binary owns the listener, so it calls axum::serve directly. lapidary-api builds
+# the Router and does not re-export axum. Both resolve to the one version pinned in
+# [workspace.dependencies], so there is no skew between the Router's axum and this one.
+axum.workspace = true
 figment.workspace = true
 serde.workspace = true
 tokio.workspace = true
