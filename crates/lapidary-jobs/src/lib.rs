@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! The job queue: PostgreSQL `FOR UPDATE SKIP LOCKED` plus `LISTEN`/`NOTIFY`, deliberately
 //! with no Redis and no message broker. Workers take leases on jobs and heartbeat them.
 //! Implementation lands in Phase 1; see docs/DATA.md.

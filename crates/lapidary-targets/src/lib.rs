@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Automatic format negotiation: slicers get 3MF/STL, CAD gets STEP, the viewer gets
 //! glTF. Implementation lands in Phase 1; see docs/DATA.md.
 

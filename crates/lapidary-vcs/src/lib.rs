@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Versioning: immutable content-addressed snapshots, a lineage DAG, and pessimistic
 //! locks — Perforce-shaped, not Git-shaped. No merges, no branches.
 //! Implementation lands in Phase 1; see docs/DATA.md.

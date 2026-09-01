@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! The HTTP surface. This crate is a LIBRARY that builds a Router — never a binary,
 //! and never forked per distribution.
 

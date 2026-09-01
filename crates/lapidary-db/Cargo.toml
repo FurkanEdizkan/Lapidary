@@ -11,3 +11,6 @@ lapidary-core.workspace = true
 async-trait.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

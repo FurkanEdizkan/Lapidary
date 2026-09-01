@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Every SQL statement in Lapidary lives in this crate. Other crates go through the
 //! repository traits below.
 
@@ -84,7 +83,7 @@ pub async fn connect(url: &str) -> Result<PgPool, DbError> {
 
     if version < 180_000 {
         return Err(DbError::UnsupportedVersion {
-            found: version.to_string(),
+            found: (version / 10_000).to_string(),
         });
     }
 

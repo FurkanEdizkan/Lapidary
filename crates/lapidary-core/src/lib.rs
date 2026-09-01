@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Domain types shared by every Lapidary crate. Depends on no other Lapidary crate.
 
 mod approximate;
@@ -26,6 +25,16 @@ mod tests {
     #[test]
     fn blob_hash_rejects_wrong_length() {
         assert!(BlobHash::parse_hex("abcd").is_err());
+    }
+
+    #[test]
+    fn blob_hash_rejects_uppercase_hex() {
+        let hash = BlobHash::from_bytes([0xab; 32]);
+        let upper = hash.to_hex().to_ascii_uppercase();
+        assert!(
+            BlobHash::parse_hex(&upper).is_err(),
+            "uppercase hex must be rejected so a digest has exactly one string form"
+        );
     }
 
     #[test]

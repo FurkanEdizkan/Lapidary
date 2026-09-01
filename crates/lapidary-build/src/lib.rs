@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! The build graph of manufacturing process steps. Implementation lands in Phase 1;
 //! see docs/DATA.md.
 

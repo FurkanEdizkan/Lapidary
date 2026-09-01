@@ -27,3 +27,6 @@ tracing.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

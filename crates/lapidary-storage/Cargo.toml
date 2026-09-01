@@ -12,3 +12,6 @@ thiserror.workspace = true
 blake3.workspace = true
 zstd.workspace = true
 object_store.workspace = true
+
+[lints]
+workspace = true

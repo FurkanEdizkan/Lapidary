@@ -77,6 +77,13 @@ impl BlobHash {
         if hex.len() != 64 {
             return Err(crate::CoreError::BlobHashLength { got: hex.len() });
         }
+        // `u8::from_str_radix` below accepts `A-F` as well as `a-f`. Reject uppercase
+        // explicitly so a digest has exactly one string form — this string keys URLs
+        // and caches in a content-addressed store, so two spellings of the same blob
+        // is a real bug, not a cosmetic one.
+        if hex.bytes().any(|b| b.is_ascii_uppercase()) {
+            return Err(crate::CoreError::BlobHashHex);
+        }
         let mut bytes = [0u8; 32];
         for (i, byte) in bytes.iter_mut().enumerate() {
             let pair = hex

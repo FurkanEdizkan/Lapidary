@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! The offline Ed25519 licence file: `max_workers` and a grace period. A contractual
 //! and support boundary, not technical DRM. Implementation lands in Phase 1;
 //! see docs/DATA.md.

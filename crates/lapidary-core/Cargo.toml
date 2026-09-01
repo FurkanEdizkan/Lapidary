@@ -17,3 +17,6 @@ jiff.workspace = true
 # Only the serialisation tests need it. Keeping it out of [dependencies] stops the domain
 # crate acquiring a JSON representation it does not actually own.
 serde_json.workspace = true
+
+[lints]
+workspace = true

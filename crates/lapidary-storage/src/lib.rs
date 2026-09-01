@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Blob content-addressed storage: BLAKE3 addressing, zstd compression, tiering and
 //! quarantine. Implementation lands in Phase 1; see docs/DATA.md.
 

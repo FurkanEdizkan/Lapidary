@@ -34,10 +34,13 @@ that will ship. There is no runnable application on `rust-rewrite` until Phase 1
 
 ## Running it
 
-Container-first. Podman is recommended; Docker is supported.
+Container-first. Podman is recommended; Docker is supported. Copy the env file and set
+a password before the first run, then pass it explicitly with `--env-file` — Podman and
+Docker do not agree on auto-loading it.
 
 ```sh
-podman compose -f deploy/compose.yaml up
+cp deploy/.env.example deploy/.env   # then edit it and set POSTGRES_PASSWORD
+podman compose --env-file deploy/.env -f deploy/compose.yaml up
 ```
 
 ## Documentation

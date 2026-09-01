@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! The CAD kernel boundary. One shipped implementation (OCCT, native, in the worker
 //! container) plus a test double. The open path never invokes this crate.
 

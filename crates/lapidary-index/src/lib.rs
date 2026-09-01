@@ -1,4 +1,3 @@
-#![deny(clippy::unwrap_used)]
 //! Metadata extraction plus full-text search via `tsvector` and `pg_trgm`.
 //! Implementation lands in Phase 1; see docs/DATA.md.
 

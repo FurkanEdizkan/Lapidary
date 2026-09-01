@@ -15,6 +15,6 @@ export type PartSummary = { id: PartId, library: LibraryId, name: string, partNu
  */
 thumbnail: BlobHash | null, triangleCount: number | null, 
 /**
- * True when every geometric figure on this part is mesh-derived.
+ * True when any geometric figure on this part is mesh-derived.
  */
 approximate: boolean, createdAt: string, updatedAt: string, };

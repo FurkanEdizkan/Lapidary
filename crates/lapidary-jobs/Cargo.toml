@@ -11,3 +11,6 @@ lapidary-core.workspace = true
 thiserror.workspace = true
 lapidary-db.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

@@ -28,7 +28,7 @@ pub struct PartSummary {
     /// authorization to read it — the API still checks tenant and part reachability.
     pub thumbnail: Option<BlobHash>,
     pub triangle_count: Option<u32>,
-    /// True when every geometric figure on this part is mesh-derived.
+    /// True when any geometric figure on this part is mesh-derived.
     pub approximate: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
