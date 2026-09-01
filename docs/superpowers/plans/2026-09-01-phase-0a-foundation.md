@@ -1286,7 +1286,7 @@ Expected: `layering OK`
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates Cargo.lock
+git add crates Cargo.toml Cargo.lock
 git commit -m "feat: scaffold the remaining crates with error surfaces
 
 Each crate carries its thiserror enum and public traits; bodies arrive
@@ -1546,7 +1546,7 @@ Nothing in Phase 0a depends on this directory.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/lapidary-cad sidecar Cargo.lock
+git add crates/lapidary-cad sidecar Cargo.toml Cargo.lock
 git commit -m "feat(cad): Kernel trait and feature-gated MockKernel
 
 Phase 0b adds OcctKernel behind the same trait without changing it.
@@ -1759,7 +1759,7 @@ Expected: `OK: library only`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/lapidary-api crates/lapidary-db Cargo.lock
+git add crates/lapidary-api crates/lapidary-db Cargo.toml Cargo.lock
 git commit -m "feat(api): axum router with a database-backed health endpoint
 
 lapidary-api is a library that builds a Router and depends on every L2
