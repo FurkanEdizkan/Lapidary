@@ -17,6 +17,8 @@ members = [
     "crates/lapidary-targets",
     "crates/lapidary-api",
     "crates/lapidary-enterprise",
+    "bin/lapidary-server",
+    "bin/lapidary",
     "xtask",
 ]
 
