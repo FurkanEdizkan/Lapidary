@@ -2791,14 +2791,14 @@ including target/."
 - Consumes: every check established in Tasks 2–10.
 - Produces: the gate that keeps them true.
 
-**Action SHAs** — resolved 2026-09-01, use exactly these:
+**Action SHAs** — resolved 2026-09-01 and **re-verified against the GitHub API before Task 11 was dispatched**. Two of the five were wrong on first writing and did not exist as commits at all; these are the checked values. Verify with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` if you touch them:
 
 | Action | Tag | SHA |
 |---|---|---|
 | `actions/checkout` | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` |
 | `actions/setup-node` | v7.0.0 | `820762786026740c76f36085b0efc47a31fe5020` |
-| `Swatinem/rust-cache` | v2.9.2 | `63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7` |
-| `EmbarkStudios/cargo-deny-action` | v2.1.1 | `c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb` |
+| `Swatinem/rust-cache` | v2.9.2 | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` |
+| `EmbarkStudios/cargo-deny-action` | v2.1.1 | `3c6349835b2b7b196a839186cb8b78e02f7b5f25` |
 | `actions/upload-artifact` | v7.0.1 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` |
 
 - [ ] **Step 1: Write the cargo-deny policy**
@@ -2872,7 +2872,7 @@ jobs:
       DATABASE_URL: postgres://postgres:lapidary@localhost:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo xtask check-layers
@@ -2882,7 +2882,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: cargo xtask export-bindings
       - name: Bindings must be committed and current
         run: |
@@ -2896,7 +2896,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check
 
