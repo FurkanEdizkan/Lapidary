@@ -48,6 +48,34 @@ mod tests {
             .expect_err("unknown fixture must fail");
         let msg = err.to_string();
         assert!(msg.contains("nonexistent.step"));
-        assert!(msg.contains("fixture"), "error must say what to do");
+        // Assert the remedy clause, not just the word "fixture" — deleting the advice and
+        // leaving "No fixture is registered for {path}." must fail this test.
+        assert!(
+            msg.contains("add an arm"),
+            "error must say what to do, not just what broke"
+        );
+    }
+
+    /// The measurement invariant, locked. `CLAUDE.md` requires that mesh-derived values
+    /// are labelled approximate, always — which downstream code decides by asking whether
+    /// the kernel returned any analytic entities. If this ever returns a non-empty vec for
+    /// mesh input, tessellated numbers start being presented as exact.
+    #[tokio::test]
+    async fn mesh_input_yields_no_analytic_entities() {
+        let kernel = MockKernel::new();
+        let out = kernel
+            .process(
+                Path::new("bracket-lp-1042-03.stl"),
+                &KernelParams::default(),
+            )
+            .await
+            .expect("mock kernel processes the known mesh fixture");
+        assert_eq!(out.triangle_count, 12_940);
+        assert_eq!(out.bbox_mm, [88.0, 34.0, 12.0]);
+        assert!(
+            out.entities.is_empty(),
+            "mesh input must yield no analytic entities — every measurement taken from it \
+             is approximate, and an entity list is what tells callers otherwise"
+        );
     }
 }
