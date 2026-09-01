@@ -1274,6 +1274,23 @@ mod tests {
         assert_eq!(out, "postgres://<redacted>");
     }
 
+    /// Fragments are dropped on the well-formed path too, not only on the fail-closed one.
+    /// Without this test, changing `tail.split(['?', '#'])` to `tail.split(['?'])` passes the
+    /// whole suite while leaking whatever follows a '#'.
+    #[test]
+    fn redaction_drops_a_fragment_on_a_well_formed_url() {
+        let out = redact_credentials("postgres://user:pw@host:5432/db#secretfragment");
+        assert!(!out.contains("secretfragment"), "fragment must not survive, got {out}");
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_drops_a_fragment_when_there_are_no_credentials() {
+        let out = redact_credentials("postgres://host:5432/db#secretfragment");
+        assert!(!out.contains("secretfragment"), "fragment must not survive, got {out}");
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
     #[test]
     fn redaction_keeps_a_bracketed_ipv6_host() {
         assert_eq!(
