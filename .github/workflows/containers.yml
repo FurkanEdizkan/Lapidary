@@ -1,0 +1,15 @@
+name: Containers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .
+      - run: docker build -f deploy/web/Containerfile -t lapidary-web:${{ github.sha }} .
+      - run: docker build -f deploy/db/Containerfile -t lapidary-db:${{ github.sha }} deploy

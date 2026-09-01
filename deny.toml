@@ -1,0 +1,30 @@
+[graph]
+targets = [{ triple = "x86_64-unknown-linux-gnu" }]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# AGPL-3.0-only, not the bare AGPL-3.0: the bare id is deprecated in SPDX and does not
+# match what [workspace.package] declares, so cargo-deny would reject all fourteen of our
+# own crates while passing every third-party one.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0-only"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# No SQL outside lapidary-db. Enforced here rather than by review.
+[[bans.deny]]
+name = "sqlx"
+# lapidary-api appears only because #[sqlx::test] is a dev-dependency; it must never
+# gain a normal sqlx dependency. If this list grows any further, SQL has leaked.
+wrappers = ["lapidary-db", "lapidary-api"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
