@@ -1,0 +1,6 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/postgres:18@sha256:7341002d2b8c7c5bdd7542a671a95b36196c0b5b888daf454ae4fc33ba5346d7
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}-pgvector" \
+ && rm -rf /var/lib/apt/lists/*
+COPY db/init/10-extensions.sql /docker-entrypoint-initdb.d/10-extensions.sql

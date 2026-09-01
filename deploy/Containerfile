@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Rust workspace -> lapidary-server. OCCT is Phase 0b and is deliberately absent.
+
+FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+COPY bin ./bin
+COPY xtask ./xtask
+RUN cargo build --release --locked -p lapidary-server
+
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --uid 10001 --create-home lapidary
+COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
+USER lapidary
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/lapidary-server"]
