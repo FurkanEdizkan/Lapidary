@@ -49,7 +49,7 @@ fn check_layers() -> Result<()> {
             .as_array()
             .map(|ds| {
                 ds.iter()
-                    .filter(|d| d["kind"].is_null()) // normal deps only; dev-deps are exempt
+                    .filter(|d| d["kind"].is_null()) // normal deps only; dev and build deps exempt (deliberate — allows L2 test fixtures)
                     .filter_map(|d| d["name"].as_str())
                     .filter(|d| member_names.contains(*d))
                     .map(str::to_owned)
