@@ -41,8 +41,19 @@ pub(crate) fn redact_credentials(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "the configured database".to_owned();
     };
-    let host = rest.rsplit_once('@').map_or(rest, |(_creds, host)| host);
-    format!("{scheme}://{host}")
+    // Credentials live in the authority, which ends at the first '/', '?' or '#'. Scoping
+    // the split here matters: searching the whole remainder for the last '@' breaks on a
+    // query string that contains one, e.g. `?options=foo@bar`, which would report the
+    // host as `bar`.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_creds, host)| host);
+    // Drop the query and fragment. libpq connection URIs accept `?password=...`, so
+    // keeping them would reintroduce exactly the leak this function exists to prevent.
+    let path = tail.split(['?', '#']).next().unwrap_or("");
+    format!("{scheme}://{host}{path}")
 }
 
 /// Connect and verify the server is PostgreSQL 18 or newer.
@@ -101,6 +112,34 @@ mod tests {
         let out = redact_credentials("postgres://lapidary:p@ss@db:5432/lapidary");
         assert!(!out.contains("p@ss"), "must split on the last @, got {out}");
         assert_eq!(out, "postgres://db:5432/lapidary");
+    }
+
+    #[test]
+    fn redaction_is_scoped_to_the_authority_not_the_query_string() {
+        // The last '@' here is inside the query string. Splitting on it would report the
+        // host as "bar".
+        let out = redact_credentials("postgres://user:pass@host:5432/db?options=foo@bar");
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_drops_a_password_carried_in_the_query_string() {
+        // libpq URIs accept ?password=... . Keeping the query would leak it even though
+        // the authority had no credentials to strip.
+        let out = redact_credentials("postgres://host:5432/db?password=hunter2");
+        assert!(
+            !out.contains("hunter2"),
+            "query-string password must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_keeps_a_bracketed_ipv6_host() {
+        assert_eq!(
+            redact_credentials("postgres://user:pw@[::1]:5432/db"),
+            "postgres://[::1]:5432/db"
+        );
     }
 
     #[test]
