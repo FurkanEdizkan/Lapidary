@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b0c0e;
+  --color-surface: #131519;
+  --color-border: #24272d;
+  --color-text: #e6e8ec;
+  --color-muted: #9aa1ac;
+  --color-accent: #6ea8fe;
+
+  --ease-mechanical: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+}
+
+/* Dark only. No light mode, no toggle. */
+:root {
+  color-scheme: dark;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+*,
+*::before,
+*::after {
+  transition-timing-function: var(--ease-mechanical);
+  transition-duration: var(--duration-base);
+  transition-property: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
