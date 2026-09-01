@@ -12,9 +12,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(
-        "Could not reach the database at {url}. Check that the `db` service is running and that DATABASE_URL in your .env matches it."
+        "Could not reach the database at {target}. Check that the `db` service is running and that DATABASE_URL in your .env matches it."
     )]
-    Unreachable { url: String },
+    Unreachable { target: String },
 
     #[error(
         "The database is PostgreSQL {found}, but Lapidary requires 18 or newer. Generated columns must be STORED, which earlier versions do not support."
@@ -30,6 +30,21 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
 }
 
+/// Strip credentials from a connection URL so it is safe to put in an error or a log.
+/// `postgres://user:pw@host:5432/db` becomes `postgres://host:5432/db`.
+///
+/// This matters because `main` returns `anyhow::Result`, and anyhow prints the whole
+/// source chain on exit. Without redaction the connection string — password included —
+/// lands in `podman logs` the first time a container cannot reach its database.
+/// Splits on the LAST `@` so a password that itself contains `@` is still removed.
+pub(crate) fn redact_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "the configured database".to_owned();
+    };
+    let host = rest.rsplit_once('@').map_or(rest, |(_creds, host)| host);
+    format!("{scheme}://{host}")
+}
+
 /// Connect and verify the server is PostgreSQL 18 or newer.
 pub async fn connect(url: &str) -> Result<PgPool, DbError> {
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -37,7 +52,7 @@ pub async fn connect(url: &str) -> Result<PgPool, DbError> {
         .connect(url)
         .await
         .map_err(|_| DbError::Unreachable {
-            url: url.to_owned(),
+            target: redact_credentials(url),
         })?;
 
     let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
@@ -68,4 +83,31 @@ pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
         .fetch_one(pool)
         .await?;
     Ok(num)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_credentials;
+
+    #[test]
+    fn redaction_removes_the_password() {
+        let out = redact_credentials("postgres://lapidary:sup3rs3cret@db:5432/lapidary");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+        assert!(!out.contains("sup3rs3cret"));
+    }
+
+    #[test]
+    fn redaction_handles_a_password_containing_an_at_sign() {
+        let out = redact_credentials("postgres://lapidary:p@ss@db:5432/lapidary");
+        assert!(!out.contains("p@ss"), "must split on the last @, got {out}");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+    }
+
+    #[test]
+    fn redaction_passes_through_a_url_with_no_credentials() {
+        assert_eq!(
+            redact_credentials("postgres://db:5432/lapidary"),
+            "postgres://db:5432/lapidary"
+        );
+    }
 }

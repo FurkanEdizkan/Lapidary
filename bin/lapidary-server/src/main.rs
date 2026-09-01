@@ -20,14 +20,26 @@ fn default_bind() -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_env("LAPIDARY_LOG"))
+        // from_env() would default to ERROR, which silences the "listening" line below —
+        // a container-first product that prints nothing on a successful start is not
+        // operable. Default to INFO; LAPIDARY_LOG still overrides.
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .with_env_var("LAPIDARY_LOG")
+                .from_env_lossy(),
+        )
         .init();
 
     let config: Config = Figment::new()
-        .merge(Env::prefixed("LAPIDARY_"))
+        // Order matters: figment's later merge wins, so the namespaced variable is merged
+        // LAST and takes precedence. sqlx projects routinely have a bare DATABASE_URL in
+        // the environment for compile-time query checking, and it must not silently
+        // override an operator's deliberate LAPIDARY_DATABASE_URL.
         .merge(Env::raw().only(&["DATABASE_URL"]))
+        .merge(Env::prefixed("LAPIDARY_"))
         .extract()
-        .context("Configuration is incomplete. LAPIDARY_DATABASE_URL or DATABASE_URL must be set; see deploy/.env.example.")?;
+        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
     let db = lapidary_db::connect(&config.database_url).await.context(
         "Could not start: the database is unreachable. Check that the `db` service is running.",
