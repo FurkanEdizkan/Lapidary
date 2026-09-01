@@ -1185,17 +1185,31 @@ pub(crate) fn redact_credentials(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "the configured database".to_owned();
     };
-    // Credentials live in the authority, which ends at the first '/', '?' or '#'. Scoping
-    // the split here matters: searching the whole remainder for the last '@' breaks on a
-    // query string that contains one, e.g. `?options=foo@bar`, which would report the
-    // host as `bar`.
+    // The authority ends at the first '/', '?' or '#'. RFC 3986 requires userinfo to
+    // percent-encode all three, so in a well-formed URL the credentials are entirely
+    // inside `authority`.
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(authority_end);
-    let host = authority.rsplit_once('@').map_or(authority, |(_creds, host)| host);
-    // Drop the query and fragment. libpq connection URIs accept `?password=...`, so
-    // keeping them would reintroduce exactly the leak this function exists to prevent.
-    let path = tail.split(['?', '#']).next().unwrap_or("");
-    format!("{scheme}://{host}{path}")
+
+    match authority.rsplit_once('@') {
+        // Well-formed: strip the userinfo, keep host and path. Drop query and fragment —
+        // libpq URIs accept `?password=...`, so keeping them would leak by another route.
+        Some((_credentials, host)) => {
+            let path = tail.split(['?', '#']).next().unwrap_or("");
+            format!("{scheme}://{host}{path}")
+        }
+        // No '@' in the authority, but one appears later. Either it is a harmless '@' in a
+        // query string, or the userinfo contains an unencoded '/', '?' or '#' and the real
+        // credentials are sitting in `tail`. We cannot tell which without a full parser, so
+        // fail closed: an operator losing the hostname from one error message is a far
+        // cheaper mistake than printing a password.
+        None if tail.contains('@') => format!("{scheme}://<redacted>"),
+        // No credentials anywhere.
+        None => {
+            let path = tail.split(['?', '#']).next().unwrap_or("");
+            format!("{scheme}://{authority}{path}")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1231,6 +1245,33 @@ mod tests {
         let out = redact_credentials("postgres://host:5432/db?password=hunter2");
         assert!(!out.contains("hunter2"), "query-string password must not survive, got {out}");
         assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    /// An unencoded '/' in the password truncates the authority before the real '@'.
+    /// A previous version of this function returned the URL completely unredacted here.
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_slash_in_the_password() {
+        let out = redact_credentials("postgres://user:p/ssw0rd@host:5432/db");
+        assert!(!out.contains("ssw0rd"), "password must not survive, got {out}");
+        assert_eq!(out, "postgres://<redacted>");
+    }
+
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_question_mark_or_hash_in_the_password() {
+        for url in [
+            "postgres://user:p?ss@host:5432/db",
+            "postgres://user:p#ss@host:5432/db",
+        ] {
+            let out = redact_credentials(url);
+            assert_eq!(out, "postgres://<redacted>", "input {url}");
+        }
+    }
+
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_slash_in_the_username() {
+        let out = redact_credentials("postgres://ab/cd:secret@host:5432/db");
+        assert!(!out.contains("secret"), "password must not survive, got {out}");
+        assert_eq!(out, "postgres://<redacted>");
     }
 
     #[test]
