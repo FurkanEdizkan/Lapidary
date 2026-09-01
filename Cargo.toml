@@ -9,6 +9,7 @@ members = [
     "crates/lapidary-core",
     "crates/lapidary-db",
     "crates/lapidary-storage",
+    "crates/lapidary-cad",
     "crates/lapidary-jobs",
     "crates/lapidary-index",
     "crates/lapidary-vcs",

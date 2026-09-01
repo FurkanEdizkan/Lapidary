@@ -834,6 +834,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lapidary-cad"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lapidary-core",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "lapidary-core"
 version = "0.1.0"
 dependencies = [
