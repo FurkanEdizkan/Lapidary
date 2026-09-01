@@ -6,10 +6,13 @@
 //!
 //! If two L2 crates need to share something, it moves to lapidary-core.
 //!
-//! Note: L3→L3 edges (e.g., `lapidary-enterprise → lapidary-api`) are not caught by
-//! this rule. Such edges violate the project's promise that the application is free
-//! and complete with no gated features. This constraint is enforced by code review
-//! until both crates have content and a test can be injected.
+//! Note the gap this leaves. Permitting L3→L3 is deliberate: `lapidary-enterprise`
+//! wraps auth, RBAC and audit around `lapidary-api`, so `lapidary-enterprise →
+//! lapidary-api` must be allowed. The cost is that the reverse edge, `lapidary-api →
+//! lapidary-enterprise`, is also permitted by this rule — and that one would make the
+//! free application depend on the enterprise crate, breaking the project rule that the
+//! application is free and complete with no gated features. Until either crate has
+//! content, that direction is enforced by code review, not by this check.
 
 use std::collections::BTreeMap;
 
@@ -210,8 +213,9 @@ mod tests {
     #[test]
     fn allows_l3_to_depend_on_another_l3_so_enterprise_can_wrap_the_api() {
         // lapidary-enterprise wraps auth/RBAC/audit around lapidary-api, so
-        // lapidary-enterprise → lapidary-api must be permitted. This is allowed at L3
-        // but not caught by automated tests; the constraint is enforced by review.
+        // lapidary-enterprise → lapidary-api must be permitted.
+        // The reverse edge, lapidary-api → lapidary-enterprise, is permitted by the rule too
+        // and is the one that would break "free and complete"; see the module comment.
         let g = graph(&[
             ("lapidary-api", &[]),
             ("lapidary-enterprise", &["lapidary-api"]),
@@ -282,6 +286,7 @@ mod tests {
     #[test]
     fn produces_multiple_violations_at_once() {
         // Verify the accumulator collects all violations, not just the first.
+        // BTreeMap iteration order is deterministic (alphabetical by crate name).
         let g = graph(&[
             ("lapidary-core", &["lapidary-db"]),   // L0 -> L1 forbidden
             ("lapidary-vcs", &["lapidary-index"]), // L2 -> L2 forbidden
@@ -289,9 +294,27 @@ mod tests {
         ]);
         let violations = check(&g).expect_err("multiple violations must be collected");
         assert_eq!(
-            violations.len(),
-            3,
-            "all three violations should be reported"
+            violations,
+            vec![
+                Violation::ForbiddenEdge {
+                    from: "lapidary-core".to_owned(),
+                    from_layer: Layer::L0,
+                    to: "lapidary-db".to_owned(),
+                    to_layer: Layer::L1,
+                },
+                Violation::ForbiddenEdge {
+                    from: "lapidary-jobs".to_owned(),
+                    from_layer: Layer::L2,
+                    to: "lapidary-api".to_owned(),
+                    to_layer: Layer::L3,
+                },
+                Violation::ForbiddenEdge {
+                    from: "lapidary-vcs".to_owned(),
+                    from_layer: Layer::L2,
+                    to: "lapidary-index".to_owned(),
+                    to_layer: Layer::L2,
+                },
+            ]
         );
     }
 }
