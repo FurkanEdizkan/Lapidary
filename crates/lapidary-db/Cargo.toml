@@ -1,0 +1,13 @@
+[package]
+name = "lapidary-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lapidary-core.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true

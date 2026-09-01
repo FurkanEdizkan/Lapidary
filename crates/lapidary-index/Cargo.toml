@@ -1,0 +1,12 @@
+[package]
+name = "lapidary-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lapidary-core.workspace = true
+thiserror.workspace = true
+lapidary-db.workspace = true

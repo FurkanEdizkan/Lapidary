@@ -7,6 +7,14 @@ resolver = "3"
 # complete from the start.
 members = [
     "crates/lapidary-core",
+    "crates/lapidary-db",
+    "crates/lapidary-storage",
+    "crates/lapidary-jobs",
+    "crates/lapidary-index",
+    "crates/lapidary-vcs",
+    "crates/lapidary-build",
+    "crates/lapidary-targets",
+    "crates/lapidary-enterprise",
     "xtask",
 ]
 

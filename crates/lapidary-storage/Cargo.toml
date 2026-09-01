@@ -1,0 +1,14 @@
+[package]
+name = "lapidary-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lapidary-core.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+zstd.workspace = true
+object_store.workspace = true
