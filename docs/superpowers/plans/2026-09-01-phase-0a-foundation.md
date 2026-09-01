@@ -2837,7 +2837,15 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-lapidary}
     volumes:
-      - lapidary-db:/var/lib/postgresql/data:Z
+      # Mount the PARENT, not .../data. From PostgreSQL 18 the official image stores data in
+      # a major-version-scoped subdirectory (PGDATA defaults to /var/lib/postgresql/18/docker),
+      # and mounting at the old /var/lib/postgresql/data makes the entrypoint hard-fail with
+      # "in 18+, these Docker images are configured to store database data in a format which
+      # is compatible with pg_ctlcluster". Mounting the parent is what upstream recommends,
+      # and it is what allows `pg_upgrade --link` across a future major version without mount
+      # boundary issues. Note the consequence: moving to a PG19 image is a pg_upgrade job, not
+      # a tag change — a bare tag bump would start an empty 19/docker beside the 18 data.
+      - lapidary-db:/var/lib/postgresql:Z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lapidary} -d ${POSTGRES_DB:-lapidary}"]
       interval: 5s
