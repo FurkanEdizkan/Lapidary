@@ -673,10 +673,26 @@ Expected: 11 tests PASS — the 4 written above, plus the 7 `export_bindings_*` 
 `#[ts(export)]` generates, one per exported type. Those seven are what Task 8 drives to
 produce `web/src/bindings/`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Ignore ts-rs's default output location**
+
+Running the tests just wrote `crates/lapidary-core/bindings/*.ts`. That is ts-rs's default
+export directory when `TS_RS_EXPORT_DIR` is unset, and it is not where the bindings belong
+— Task 8 sets that variable and puts the canonical, committed copy in `web/src/bindings/`.
+Committing this second copy would leave seven generated files that nothing regenerates and
+nothing checks, which is the exact drift the Task 11 staleness job exists to prevent.
+
+Add one line to `.gitignore`, under the existing `# Generated` heading:
+
+```
+crates/*/bindings/
+```
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock rust-toolchain.toml LICENSE crates/lapidary-core
+git add Cargo.toml Cargo.lock rust-toolchain.toml LICENSE crates/lapidary-core .gitignore
+git add README.md CONTRIBUTING.md docs/ARCHITECTURE.md docs/README.md docs/ROADMAP.md
+git status --porcelain   # expect no stray crates/lapidary-core/bindings/ entries
 git commit -m "feat(core): cargo workspace, AGPL licence, and lapidary-core domain types
 
 Approximate<T> makes the measurement rule a type rather than a UI
