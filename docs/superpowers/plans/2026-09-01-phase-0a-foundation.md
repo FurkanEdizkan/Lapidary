@@ -1161,8 +1161,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DbError {
-    #[error("Could not reach the database at {url}. Check that the `db` service is running and that DATABASE_URL in your .env matches it.")]
-    Unreachable { url: String },
+    #[error("Could not reach the database at {target}. Check that the `db` service is running and that DATABASE_URL in your .env matches it.")]
+    Unreachable { target: String },
 
     #[error("The database is PostgreSQL {found}, but Lapidary requires 18 or newer. Generated columns must be STORED, which earlier versions do not support.")]
     UnsupportedVersion { found: String },
@@ -1174,13 +1174,55 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
 }
 
+/// Strip credentials from a connection URL so it is safe to put in an error or a log.
+/// `postgres://user:pw@host:5432/db` becomes `postgres://host:5432/db`.
+///
+/// This matters because `main` returns `anyhow::Result`, and anyhow prints the whole
+/// source chain on exit. Without redaction the connection string — password included —
+/// lands in `podman logs` the first time a container cannot reach its database.
+/// Splits on the LAST `@` so a password that itself contains `@` is still removed.
+pub(crate) fn redact_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "the configured database".to_owned();
+    };
+    let host = rest.rsplit_once('@').map_or(rest, |(_creds, host)| host);
+    format!("{scheme}://{host}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_credentials;
+
+    #[test]
+    fn redaction_removes_the_password() {
+        let out = redact_credentials("postgres://lapidary:sup3rs3cret@db:5432/lapidary");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+        assert!(!out.contains("sup3rs3cret"));
+    }
+
+    #[test]
+    fn redaction_handles_a_password_containing_an_at_sign() {
+        let out = redact_credentials("postgres://lapidary:p@ss@db:5432/lapidary");
+        assert!(!out.contains("p@ss"), "must split on the last @, got {out}");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+    }
+
+    #[test]
+    fn redaction_passes_through_a_url_with_no_credentials() {
+        assert_eq!(
+            redact_credentials("postgres://db:5432/lapidary"),
+            "postgres://db:5432/lapidary"
+        );
+    }
+}
+
 /// Connect and verify the server is PostgreSQL 18 or newer.
 pub async fn connect(url: &str) -> Result<PgPool, DbError> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(url)
         .await
-        .map_err(|_| DbError::Unreachable { url: url.to_owned() })?;
+        .map_err(|_| DbError::Unreachable { target: redact_credentials(url) })?;
 
     let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
         .fetch_one(&pool)
@@ -1882,14 +1924,26 @@ fn default_bind() -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_env("LAPIDARY_LOG"))
+        // from_env() would default to ERROR, which silences the "listening" line below —
+        // a container-first product that prints nothing on a successful start is not
+        // operable. Default to INFO; LAPIDARY_LOG still overrides.
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .with_env_var("LAPIDARY_LOG")
+                .from_env_lossy(),
+        )
         .init();
 
     let config: Config = Figment::new()
-        .merge(Env::prefixed("LAPIDARY_"))
+        // Order matters: figment's later merge wins, so the namespaced variable is merged
+        // LAST and takes precedence. sqlx projects routinely have a bare DATABASE_URL in
+        // the environment for compile-time query checking, and it must not silently
+        // override an operator's deliberate LAPIDARY_DATABASE_URL.
         .merge(Env::raw().only(&["DATABASE_URL"]))
+        .merge(Env::prefixed("LAPIDARY_"))
         .extract()
-        .context("Configuration is incomplete. LAPIDARY_DATABASE_URL or DATABASE_URL must be set; see deploy/.env.example.")?;
+        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
     let db = lapidary_db::connect(&config.database_url)
         .await
