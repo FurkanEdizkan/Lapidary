@@ -87,6 +87,17 @@ fn export_bindings() -> Result<()> {
         .parent()
         .context("xtask must live one level below the workspace root")?
         .to_path_buf();
+    // The line above only fires if CARGO_MANIFEST_DIR is the filesystem root, which never
+    // happens. Moving xtask deeper — to tools/xtask, say — would silently resolve `root` to
+    // the wrong directory and write bindings somewhere nothing reads. Fail loudly instead.
+    if !root.join("Cargo.toml").exists() {
+        bail!(
+            "Expected the workspace manifest at {}. xtask derives the workspace root from its \
+             own location, so it must stay one level below the root; move it back, or update \
+             this path.",
+            root.join("Cargo.toml").display()
+        );
+    }
     let out = root.join("web/src/bindings");
 
     // ts-rs writes on test run; clear first so removed types do not linger.
@@ -102,8 +113,14 @@ fn export_bindings() -> Result<()> {
         .context("Could not run the ts-rs export tests")?;
 
     if !status.success() {
+        // The output directory was cleared above, so the previously committed bindings are
+        // gone from the working tree. Say so — the user needs the recovery step, not just
+        // the diagnosis.
         bail!(
-            "ts-rs export failed. Run `cargo test -p lapidary-core` to see which type could not be exported."
+            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so \
+             the committed bindings are missing from your working tree. Run `git checkout -- \
+             web/src/bindings` to restore them, then `cargo test -p lapidary-core` to see \
+             which type could not be exported."
         );
     }
 
