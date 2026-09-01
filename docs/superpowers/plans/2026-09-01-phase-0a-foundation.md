@@ -4,7 +4,7 @@
 
 **Goal:** Replace the deleted Node prototype with a working Rust workspace, a TanStack SPA, and a four-service container stack that serves a health-checked page — with the crate layering rule enforced in CI from the first commit.
 
-**Architecture:** A modular monolith. Thirteen crates in four layers (L0 domain types → L1 db/storage → L2 feature crates → L3 api/enterprise), where L2 crates may never depend on each other; a custom `xtask` enforces this by parsing `cargo metadata`. `lapidary-api` is a library that builds an axum `Router`; only `bin/` produces executables. The CAD kernel sits behind a `Kernel` trait with an in-process `MockKernel` — the real OCCT sidecar is Phase 0b and nothing here depends on it.
+**Architecture:** A modular monolith. Eleven crates in four layers (L0 domain types → L1 db/storage → L2 feature crates → L3 api/enterprise), where L2 crates may never depend on each other; a custom `xtask` enforces this by parsing `cargo metadata`. `lapidary-api` is a library that builds an axum `Router`; only `bin/` produces executables. The CAD kernel sits behind a `Kernel` trait with an in-process `MockKernel` — the real OCCT sidecar is Phase 0b and nothing here depends on it.
 
 **Tech Stack:** Rust 1.95.0 (edition 2024), axum 0.8.9, sqlx 0.9.0, ts-rs 12.0.1, PostgreSQL 18, React 19.2.8, Vite 8.2.2, TanStack Router 1.170.32 / Query 5.102.8, Tailwind 4.3.3, TypeScript 7.0.2, Podman/Docker.
 
@@ -25,8 +25,9 @@ Every task's requirements implicitly include this section.
 - **Motion is mechanical.** 120/180/280ms, `cubic-bezier(0.2, 0, 0, 1)`, transform and opacity only, `prefers-reduced-motion` respected.
 - **Real content in all examples and fixtures.** Plausible part numbers and real dimensions. Never "Part 1 / Part 2".
 - **Generated columns are explicitly `STORED`.** PG 18 defaults to virtual and virtual columns cannot be indexed.
-- **Pin everything.** Container images by digest (values given in Task 11). GitHub Actions by commit SHA (values given in Task 12). `Cargo.lock` and `web/package-lock.json` committed.
+- **Pin everything.** Container images by digest (values given in Task 10). GitHub Actions by commit SHA (values given in Task 11). `Cargo.lock` and `web/package-lock.json` committed.
 - **Commit trailers.** Every commit in this plan ends with the session's standard `Co-Authored-By` and `Claude-Session` trailers.
+- **Run `cargo fmt --all` before every Rust commit.** The code blocks below are written for readability, not for rustfmt's exact output — several lines run past 100 columns. `cargo fmt --all --check` gates CI from Task 11 onward, so formatting drift becomes a red build.
 
 **Pinning mechanism, deliberately split:** `Cargo.toml` declares the versions below as ordinary caret requirements and `Cargo.lock` is the pin — this is idiomatic Cargo and what `cargo deny` checks. `package.json` uses exact versions with no caret **and** commits `package-lock.json`, because npm's resolution is looser. The spec's "no carets" rule applies to npm.
 
@@ -41,7 +42,7 @@ Every task's requirements implicitly include this section.
 | `serde_json` | 1.0.151 | `@tanstack/react-router` | 1.170.32 |
 | `ts-rs` | 12.0.1 | `@tanstack/router-plugin` | 1.168.35 |
 | `thiserror` | 2.0.20 | `@tanstack/react-query` | 5.102.8 |
-| `anyhow` | 1.0.104 | `@tanstack/react-query-devtools` | 5.102.8 |
+| `anyhow` | 1.0.104 | `@testing-library/dom` | 10.4.1 |
 | `blake3` | 1.8.7 | `tailwindcss` | 4.3.3 |
 | `zstd` | 0.13.3 | `@tailwindcss/vite` | 4.3.3 |
 | `object_store` | 0.14.1 | `vitest` | 4.1.11 |
@@ -96,7 +97,7 @@ The prototype carries domain knowledge that must survive its deletion. Capture i
 
 **Files:**
 - Create: `docs/prototype-notes.md`
-- Modify: `docs/README.md`, `.gitignore`
+- Modify: `README.md`, `docs/README.md`, `.gitignore`
 - Delete: `server/`, `rust-mesh/`, `package.json`, `package-lock.json`, `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example`, `MIGRATION.md`, `docs/MIGRATION.md`, `lapidary-docs.zip`, `web/`
 
 **Interfaces:**
@@ -177,17 +178,36 @@ In `docs/README.md`, delete the entire table row beginning `| [`MIGRATION.md`](M
 | [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, `lapidary-index` search, or `lapidary-cad` LOD |
 ```
 
+Then fix the root `README.md`, which is the other document still pointing at the withdrawn
+plan. Replace its **Status** section with:
+
+```markdown
+## Status
+
+**Pre-alpha.** `main` holds the Node/Fastify prototype that validated the product idea. It
+is a reference implementation to read, not a base to build on. The Rust implementation
+described in `docs/` is being built fresh on `rust-rewrite`, and that is the only thing
+that will ship. There is no runnable application on `rust-rewrite` until Phase 1.
+```
+
+Its **Running it** section is also stale — the compose file moved into `deploy/`. Change
+`podman compose up` to `podman compose -f deploy/compose.yaml up`. The **Licence** section
+is wrong too, but it cannot be corrected until `LICENSE` exists; Task 2 Step 3 handles it.
+
 - [ ] **Step 4: Fix the stale gitignore entry**
 
 `.gitignore` ignores `web/src/generated/`, which nothing writes. Bindings live in
-`web/src/bindings/` and are committed. Delete these two lines from `.gitignore`:
+`web/src/bindings/` and are committed. Delete just that one line:
 
 ```
-# Generated
 web/src/generated/
 ```
 
-Keep `sidecar/occt-bridge/build/`.
+Keep the `# Generated` heading and `sidecar/occt-bridge/build/` underneath it — Task 5
+creates the directory that entry refers to. Nothing else in `.gitignore` changes:
+`/target/`, `node_modules/`, `web/dist/` and `.env` are already present and correct. Note
+that the `.env` rule has no leading slash, so it matches at any depth and `deploy/.env`
+is already covered.
 
 - [ ] **Step 5: Verify nothing still references the deleted tree**
 
@@ -197,8 +217,11 @@ Run:
 grep -rn --exclude-dir=.git -E "better-sqlite3|fastify|REDIS_URL|npm run dev|rust-mesh|MIGRATION\.md" . || echo "CLEAN"
 ```
 
-Expected: `CLEAN`. If `docs/ROADMAP.md` or `CLAUDE.md` match, they are describing future
-state or rules — inspect each hit and only fix genuine references to deleted files.
+Expected: `CLEAN` — but only once Step 3 has run. Before Step 3 this grep hits
+`README.md:17` and `docs/README.md:10`, both genuine references to the withdrawn
+`MIGRATION.md`, and both fixed by Step 3. If `docs/ROADMAP.md` or `CLAUDE.md` match, they
+are describing future state or rules; inspect each hit and only fix genuine references to
+deleted files.
 
 - [ ] **Step 6: Verify the working tree is otherwise intact**
 
@@ -229,6 +252,7 @@ BREAKING CHANGE: no runnable application on this branch until Phase 1."
 **Files:**
 - Create: `Cargo.toml`, `rust-toolchain.toml`, `LICENSE`
 - Create: `crates/lapidary-core/Cargo.toml`, `src/lib.rs`, `src/ids.rs`, `src/part.rs`, `src/approximate.rs`, `src/error.rs`
+- Modify: `README.md`, `CONTRIBUTING.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md` — the licence is decided here, and all four still record it as open
 
 **Interfaces:**
 - Consumes: nothing.
@@ -287,7 +311,10 @@ tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["trace", "cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-ts-rs = "12.0.1"
+# uuid-impl and jiff-impl are not optional extras. Without them ts-rs has no TS impl
+# for Uuid or jiff::Timestamp, and lapidary-core derives TS on types built from both —
+# the crate does not compile.
+ts-rs = { version = "12.0.1", features = ["uuid-impl", "jiff-impl"] }
 uuid = { version = "1.26.0", features = ["v7", "serde"] }
 zstd = "0.13.3"
 
@@ -319,6 +346,33 @@ Expected: ~661 lines. If the fetch fails, copy the AGPL-3.0 text from
 <https://www.gnu.org/licenses/agpl-3.0.txt> by hand. Do not substitute a summary or a
 different licence — `ARCHITECTURE.md` records AGPL-3.0-only as a decision.
 
+Four documents still say the licence is undecided. A `LICENSE` file that contradicts the
+prose around it is worse than no file at all, so they are corrected in this same commit:
+
+**`README.md`** — replace the whole **Licence** section with:
+
+```markdown
+## Licence
+
+**AGPL-3.0-only**, for the entire workspace including `lapidary-enterprise`. The Ed25519
+licence file gates fleet size and support entitlement as a contractual boundary, not as
+technical DRM. Contributions are taken under the DCO; there is no CLA.
+```
+
+**`CONTRIBUTING.md`** — line 3 opens "Not yet open for contributions. The licence has not
+been decided". The licence is decided. Rewrite that sentence to state AGPL-3.0-only and
+DCO, and keep whatever it says about the project not yet accepting outside work if that
+is still true — those are two separate claims and only the licensing one has changed.
+
+**`docs/ARCHITECTURE.md`** — retitle `## Licensing — decision required` to
+`## Licensing — decided: AGPL-3.0-only`. Keep option 1 as the recorded decision with its
+full reasoning, and reduce option 2 to a single line noting it was considered and
+rejected. Do not delete the reasoning: it is the argument that keeps the decision from
+being relitigated, and `ARCHITECTURE.md` is where structural decisions live.
+
+**`docs/ROADMAP.md`** — delete the **Licensing conflict** bullet from `# Open items`. It
+is no longer open.
+
 - [ ] **Step 4: Write the failing tests for `lapidary-core`**
 
 `crates/lapidary-core/Cargo.toml`:
@@ -334,11 +388,15 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
 jiff.workspace = true
+
+[dev-dependencies]
+# Only the serialisation tests need it. Keeping it out of [dependencies] stops the domain
+# crate acquiring a JSON representation it does not actually own.
+serde_json.workspace = true
 ```
 
 `crates/lapidary-core/src/lib.rs`:
@@ -376,26 +434,36 @@ mod tests {
 
     #[test]
     fn part_summary_serialises_camel_case() {
+        let now = jiff::Timestamp::now();
         let summary = PartSummary {
             id: PartId::new(),
             library: LibraryId::new(),
             name: "Bearing block, 608ZZ".to_owned(),
             part_number: Some("LP-1042-03".to_owned()),
+            thumbnail: Some(BlobHash::from_bytes([0x11; 32])),
             triangle_count: Some(48_112),
             approximate: true,
+            created_at: now,
+            updated_at: now,
         };
         let json = serde_json::to_value(&summary).expect("serialises");
         assert!(json.get("partNumber").is_some(), "expected camelCase keys");
         assert!(json.get("part_number").is_none());
+        assert!(json.get("createdAt").is_some());
+        assert_eq!(
+            json["thumbnail"],
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "a blob hash must go over the wire as hex, never as a byte array"
+        );
     }
 
     #[test]
     fn approximate_marks_mesh_derived_values() {
-        let analytic = Approximate::exact(20.0_f64);
-        let meshed = Approximate::approximate(19.987_f64);
-        assert!(!analytic.is_approximate());
-        assert!(meshed.is_approximate());
-        assert_eq!(*meshed.value(), 19.987);
+        let from_brep = Approximate::analytic(20.0_f64);
+        let from_mesh = Approximate::tessellated(19.987_f64);
+        assert!(!from_brep.is_approximate());
+        assert!(from_mesh.is_approximate());
+        assert_eq!(*from_mesh.value(), 19.987);
     }
 }
 ```
@@ -518,13 +586,17 @@ pub struct Approximate<T> {
 }
 
 impl<T> Approximate<T> {
-    /// An analytic value read from a B-rep entity. Safe to present as exact.
-    pub fn exact(value: T) -> Self {
+    /// A value read from an analytic B-rep entity. Safe to present as exact.
+    pub fn analytic(value: T) -> Self {
         Self { value, approximate: false }
     }
 
     /// A value derived from tessellated geometry. The UI must label it.
-    pub fn approximate(value: T) -> Self {
+    ///
+    /// Named for its provenance rather than `approximate`, which would collide with the
+    /// type name and trip `clippy::self_named_constructors` under `-D warnings`. The
+    /// provenance is the more useful name at the call site anyway.
+    pub fn tessellated(value: T) -> Self {
         Self { value, approximate: true }
     }
 
@@ -541,7 +613,8 @@ impl<T> Approximate<T> {
 `crates/lapidary-core/src/part.rs`:
 
 ```rust
-use crate::{LibraryId, PartId};
+use crate::{BlobHash, LibraryId, PartId};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -555,8 +628,9 @@ pub enum LibraryMode {
     Controlled,
 }
 
-/// The grid row. Deliberately narrow — the open path reads metadata and derivatives
-/// only, never a source file.
+/// The grid row, in the shape the spec calls for: identity, part number, thumbnail
+/// reference, approximate flag, timestamps. Deliberately narrow — the open path reads
+/// metadata and derivatives only, never a source file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -565,9 +639,14 @@ pub struct PartSummary {
     pub library: LibraryId,
     pub name: String,
     pub part_number: Option<String>,
+    /// The thumbnail derivative's content hash, not a URL. Holding it is not
+    /// authorization to read it — the API still checks tenant and part reachability.
+    pub thumbnail: Option<BlobHash>,
     pub triangle_count: Option<u32>,
     /// True when every geometric figure on this part is mesh-derived.
     pub approximate: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 ```
 
@@ -590,7 +669,9 @@ pub enum CoreError {
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `cargo test -p lapidary-core`
-Expected: 4 tests PASS.
+Expected: 11 tests PASS — the 4 written above, plus the 7 `export_bindings_*` tests that
+`#[ts(export)]` generates, one per exported type. Those seven are what Task 8 drives to
+produce `web/src/bindings/`.
 
 - [ ] **Step 8: Commit**
 
@@ -956,7 +1037,7 @@ every crate exists."
 
 ---
 
-### Task 4: The remaining twelve crates
+### Task 4: The next eight crates
 
 Each crate gets its error type and public trait surface. No bodies — those are Phases 1 onward. The deliverable is a workspace that builds, plus proof the layering check bites.
 
@@ -1072,6 +1153,9 @@ pub enum DbError {
 
     #[error("A database query failed: {0}")]
     Query(#[from] sqlx::Error),
+
+    #[error("Could not bring the database schema up to date: {0}. If the database is at a newer schema version than this binary, check that the api and worker images are the same version.")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
 }
 
 /// Connect and verify the server is PostgreSQL 18 or newer.
@@ -1092,7 +1176,20 @@ pub async fn connect(url: &str) -> Result<PgPool, DbError> {
 
     Ok(pool)
 }
+
+/// Apply every migration in `crates/lapidary-db/migrations`. `sqlx::migrate!` embeds them
+/// at compile time, so an image carries its own schema and an air-gapped operator needs no
+/// migration tooling on the host.
+pub async fn migrate(pool: &PgPool) -> Result<(), DbError> {
+    sqlx::migrate!("./migrations").run(pool).await?;
+    Ok(())
+}
 ```
+
+`sqlx::migrate!` resolves its path against this crate's manifest directory, which is why
+the call lives here and not in the binary — the same reason all the SQL does. The
+migrations directory must be non-empty at compile time or the macro fails; `0001_init.sql`
+below satisfies that.
 
 `crates/lapidary-db/src/repo.rs`:
 
@@ -1190,7 +1287,7 @@ lapidary-index edge before reverting it."
 
 **Files:**
 - Create: `crates/lapidary-cad/Cargo.toml`, `src/lib.rs`, `src/kernel.rs`, `src/mock.rs`
-- Create: `crates/lapidary-cad/fixtures/bearing-block-608zz.json`
+- Create: `sidecar/occt-bridge/README.md` — the 0b placeholder the spec's repo end state calls for
 
 **Interfaces:**
 - Consumes: `lapidary-core` types.
@@ -1217,7 +1314,6 @@ mock-kernel = []
 lapidary-core.workspace = true
 async-trait.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -1319,7 +1415,7 @@ pub enum CadError {
     #[error("Could not read {path} — it may use an unsupported AP schema. Re-export from your CAD tool as AP214 or AP242 and retry.")]
     UnsupportedSchema { path: String },
 
-    #[error("No fixture is registered for {path}. MockKernel only answers for parts under crates/lapidary-cad/fixtures/; add one, or run against the real kernel.")]
+    #[error("No fixture is registered for {path}. MockKernel answers only for the part names matched in crates/lapidary-cad/src/mock.rs; add an arm there, or run against the real kernel.")]
     NoFixture { path: String },
 
     #[error("The CAD kernel did not respond within {seconds}s while processing {path}. The file may be unusually large; raise LAPIDARY_KERNEL_TIMEOUT or split the assembly.")]
@@ -1388,6 +1484,11 @@ impl Kernel for MockKernel {
 
 The `unwrap_or_default()` on the file name is intentional and not an `unwrap()` — it yields an empty name that falls through to `NoFixture`.
 
+The canned outputs live in the match arms rather than in fixture files on disk. A test
+double that reads and parses JSON has its own failure modes, and this one exists so tests
+never touch the filesystem or a kernel. That is why `serde_json` is not a dependency of
+this crate and why `CadError::NoFixture` names `src/mock.rs` rather than a directory.
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p lapidary-cad --features mock-kernel`
@@ -1403,10 +1504,33 @@ Expected: SUCCESS with no `MockKernel` compiled in.
 Run: `cargo xtask check-layers`
 Expected: `layering OK`
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Create the 0b sidecar placeholder**
+
+The spec's repo end state lists `sidecar/occt-bridge/` as existing in 0a with a README and
+nothing else, and `.gitignore` already carries `sidecar/occt-bridge/build/` — an entry
+pointing at a directory that does not exist. Create `sidecar/occt-bridge/README.md`:
+
+```markdown
+# occt-bridge
+
+Empty until Phase 0b.
+
+This directory will hold the C++ sidecar wrapping Open CASCADE: STEP and IGES reading,
+tessellation, analytic B-rep entity extraction for measurement, and format conversion. It
+is a separate process rather than a linked library, so an OCCT crash takes down one job
+instead of the worker.
+
+In Phase 0a the `Kernel` trait in `crates/lapidary-cad` has exactly one implementation,
+`MockKernel`, returning canned output for named parts. Phase 0b adds `OcctKernel` behind
+the same trait and builds OCCT from source in the worker image. The trait does not change.
+
+Nothing in Phase 0a depends on this directory.
+```
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crates/lapidary-cad Cargo.lock
+git add crates/lapidary-cad sidecar Cargo.lock
 git commit -m "feat(cad): Kernel trait and feature-gated MockKernel
 
 Phase 0b adds OcctKernel behind the same trait without changing it.
@@ -1424,7 +1548,7 @@ present tessellated values as analytic."
 
 **Interfaces:**
 - Consumes: `lapidary_db::{connect, PgPool}`.
-- Produces: `lapidary_api::router(state: AppState) -> axum::Router`, `lapidary_api::AppState`. Task 8's binary calls `router`.
+- Produces: `lapidary_api::router(state: AppState) -> axum::Router`, `lapidary_api::AppState`. Task 7's binary calls `router`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1470,7 +1594,7 @@ use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, router};
 use tower::ServiceExt;
 
-#[sqlx::test]
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn healthz_reports_ok_and_the_postgres_major_version(pool: sqlx::PgPool) {
     let app = router(AppState { db: pool });
 
@@ -1490,7 +1614,7 @@ async fn healthz_reports_ok_and_the_postgres_major_version(pool: sqlx::PgPool) {
     assert_eq!(json["database"]["major"], 18);
 }
 
-#[sqlx::test]
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn unknown_routes_are_not_found(pool: sqlx::PgPool) {
     let app = router(AppState { db: pool });
     let response = app
@@ -1501,7 +1625,15 @@ async fn unknown_routes_are_not_found(pool: sqlx::PgPool) {
 }
 ```
 
-`#[sqlx::test]` provisions a throwaway database per test from `DATABASE_URL` and runs `crates/lapidary-db/migrations/`. It needs a live Postgres — Task 12 supplies one in CI. Locally: `podman run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=lapidary --name lapidary-test-db postgres:18` then `export DATABASE_URL=postgres://postgres:lapidary@localhost:5432/postgres`.
+`#[sqlx::test]` provisions a throwaway database per test from `DATABASE_URL`.
+
+The explicit `migrations = "../lapidary-db/migrations"` is **required and not cosmetic**.
+Left off, sqlx infers `./migrations` relative to *this* crate's manifest directory, finds
+no such directory, and emits no migrator at all — no warning, no error, tests simply run
+against an empty schema. That is invisible for a health check that only reads
+`server_version_num`, and would silently invalidate every Phase 1 repository test.
+
+It needs a live Postgres — Task 11 supplies one in CI. Locally: `podman run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=lapidary --name lapidary-test-db postgres:18` then `export DATABASE_URL=postgres://postgres:lapidary@localhost:5432/postgres`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -1692,6 +1824,10 @@ async fn main() -> Result<()> {
         .await
         .context("Could not start: the database is unreachable. Check that the `db` service is running.")?;
 
+    lapidary_db::migrate(&db)
+        .await
+        .context("Could not start: the database schema could not be brought up to date.")?;
+
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("Could not bind {}. Another process may already hold that port.", config.bind))?;
@@ -1704,6 +1840,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+Migrations run at startup rather than as a separate deploy step: the image carries its
+own schema, which is what an air-gapped operator needs. `api` and `worker` are the same
+binary and start together, so both will call `migrate` — sqlx takes a Postgres advisory
+lock around the migrator, so the second waits rather than colliding with the first.
 
 - [ ] **Step 2: Write the desktop binary with subcommand stubs**
 
@@ -1859,6 +2000,8 @@ Expected: `bindings written to …/web/src/bindings`
 Run: `ls web/src/bindings/`
 Expected: `Approximate.ts`, `BlobHash.ts`, `LibraryId.ts`, `LibraryMode.ts`, `PartId.ts`, `PartSummary.ts`, `RevisionId.ts`.
 
+There is deliberately no `Timestamp.ts`: with the `jiff-impl` feature, `jiff::Timestamp` maps straight onto the TypeScript `string` primitive, so `PartSummary.ts` carries `createdAt: string` and no separate file is emitted. `BlobHash` does get its own file — `#[ts(as = "String")]` still exports the alias, as `export type BlobHash = string`.
+
 If a file is missing, the corresponding type is missing `#[ts(export)]` — add it in `lapidary-core` and re-run.
 
 - [ ] **Step 4: Verify the staleness check works**
@@ -1887,9 +2030,10 @@ between Rust types and the frontend by regenerating and diffing."
 
 **Files:**
 - Create: `web/package.json`, `web/vite.config.ts`, `web/tsconfig.json`, `web/index.html`
-- Create: `web/src/main.tsx`, `web/src/styles.css`, `web/src/lib/strings.ts`, `web/src/lib/api.ts`
+- Create: `web/src/main.tsx`, `web/src/styles.css`, `web/src/lib/strings.ts`, `web/src/lib/api.ts`, `web/src/lib/types.ts`
 - Create: `web/src/routes/__root.tsx`, `web/src/routes/index.tsx`
 - Create: `web/src/routes/index.test.tsx`, `web/vitest.config.ts`
+- Generate and **commit**: `web/src/routeTree.gen.ts`
 
 **Interfaces:**
 - Consumes: `web/src/bindings/*.ts` from Task 8; `GET /api/healthz` from Task 6.
@@ -1920,8 +2064,8 @@ between Rust types and the frontend by regenerating and diffing."
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",
-    "@tanstack/react-query-devtools": "5.102.8",
     "@tanstack/router-plugin": "1.168.35",
+    "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.0",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
@@ -1938,7 +2082,19 @@ between Rust types and the frontend by regenerating and diffing."
 }
 ```
 
-Install with `cd web && npm install`. If `@types/react`, `@testing-library/react` or `jsdom` resolve to different current versions, pin whatever `npm view <pkg> version` reports and record it — those three are test-only and not load-bearing on the spec.
+Install with `cd web && npm install`.
+
+`@testing-library/dom` is listed explicitly because `@testing-library/react` 16 declares it
+as a required peer. npm would install it silently, but an unlisted direct dependency is
+exactly what breaks under a different npm version or a stricter installer.
+
+`@tanstack/react-query-devtools` is deliberately absent. It was pinned in an earlier draft
+and never imported; Phase 1 can add it when there are queries worth inspecting.
+
+`@tanstack/router-plugin` 1.168.35 declares a peer of `@tanstack/react-router` `^1.170.32`
+— exactly the pin above. Move them together, never one alone.
+
+If `@types/react`, `@testing-library/*` or `jsdom` resolve to different current versions, pin whatever `npm view <pkg> version` reports and record it — those are test-only and not load-bearing on the spec.
 
 - [ ] **Step 2: Configure Vite**
 
@@ -2068,7 +2224,26 @@ export const strings = {
 
 - [ ] **Step 5: Write the API client and routes**
 
-`web/src/lib/api.ts`:
+`web/src/lib/types.ts` — the single import site for everything `cargo xtask export-bindings` produces. CI already fails when the bindings are stale, but staleness is not the only failure: a type that is renamed or dropped on the Rust side regenerates cleanly and then silently has no consumer. This file is what breaks instead:
+
+```ts
+/**
+ * Re-exports of the ts-rs output in ../bindings. Import domain types from here, never
+ * from ../bindings directly — this is the one file that fails to compile when a Rust
+ * type is renamed or removed.
+ *
+ * Phase 1 is the first real consumer, when the parts endpoint returns PartSummary.
+ */
+export type { Approximate } from '../bindings/Approximate'
+export type { BlobHash } from '../bindings/BlobHash'
+export type { LibraryId } from '../bindings/LibraryId'
+export type { LibraryMode } from '../bindings/LibraryMode'
+export type { PartId } from '../bindings/PartId'
+export type { PartSummary } from '../bindings/PartSummary'
+export type { RevisionId } from '../bindings/RevisionId'
+```
+
+`web/src/lib/api.ts` — `Health` is hand-written on purpose. It is `lapidary-api`'s own response shape, private to that crate and absent from `lapidary-core`, so no binding exists for it and inventing one would put an HTTP concern in the domain crate:
 
 ```ts
 export interface Health {
@@ -2184,7 +2359,17 @@ createRoot(rootElement).render(
 )
 ```
 
-`routeTree.gen.ts` is generated by the router plugin on first `vite dev` or `vite build`. Add it to `.gitignore` under a `# Generated` heading: `web/src/routeTree.gen.ts`.
+`web/src/routeTree.gen.ts` is written by the router plugin during a Vite run and is **committed**, not gitignored — the same rule as `web/src/bindings/`, and this time it is load-bearing rather than a preference.
+
+It has to be committed because both `npm run build` and `npm run typecheck` begin with `tsc --noEmit`, and `src/main.tsx` imports `./routeTree.gen`. On a clean clone — which is what CI checks out and what `deploy/web/Containerfile` copies — a gitignored route tree means `tsc` fails to resolve that import before Vite ever gets the chance to write it. This is TanStack's own default for file-based routing, for the same reason.
+
+Generate it once now, with a Vite build that skips tsc:
+
+```bash
+cd web && npx vite build
+```
+
+Expected: `src/routeTree.gen.ts` appears. From here `npm run build` works normally, and Task 11's CI job re-runs the build and fails if the committed tree has drifted.
 
 - [ ] **Step 6: Write the failing test**
 
@@ -2239,15 +2424,24 @@ Expected first: FAIL if any file above is missing. After all files exist: 2 test
 Run: `cd web && npm run typecheck && npm run build`
 Expected: no type errors; `web/dist/index.html` and hashed assets produced.
 
+`npm run typecheck` passing at all is the proof that Step 5's `npx vite build` wrote `src/routeTree.gen.ts`. If it reports `Cannot find module './routeTree.gen'`, that step was skipped.
+
 - [ ] **Step 9: Commit**
 
 ```bash
-git add web .gitignore
+git add web
 git commit -m "feat(web): TanStack Router and Query SPA on Vite
 
 Dark only, every string through lib/strings.ts, motion tokens at
 120/180/280ms with prefers-reduced-motion honoured. The index route
-renders the health endpoint's three states."
+renders the health endpoint's three states.
+
+routeTree.gen.ts is committed rather than gitignored: build and
+typecheck both run tsc first, so a clean clone must already have the
+route tree on disk before Vite gets a chance to write it.
+
+lib/types.ts is the single import site for the ts-rs bindings, so a
+renamed Rust type fails the typecheck instead of going unnoticed."
 ```
 
 ---
@@ -2255,11 +2449,12 @@ renders the health endpoint's three states."
 ### Task 10: Container images and the compose stack
 
 **Files:**
-- Create: `deploy/Containerfile`, `deploy/db/Containerfile`, `deploy/web/Containerfile`, `deploy/web/Caddyfile`, `deploy/compose.yaml`, `deploy/.env.example`, `.containerignore`
+- Create: `deploy/Containerfile`, `deploy/db/Containerfile`, `deploy/web/Containerfile`, `deploy/web/Caddyfile`, `deploy/compose.yaml`, `deploy/.env.example`
+- Create: `.containerignore` **and** `.dockerignore` at the repo root, plus `deploy/.containerignore` and `deploy/.dockerignore` for the `db` build context
 
 **Interfaces:**
 - Consumes: `lapidary-server` from Task 7, `web/dist` from Task 9, migrations from Task 4.
-- Produces: a four-service stack. Task 13 verifies it against the exit criteria.
+- Produces: a four-service stack. Task 12 verifies it against the exit criteria.
 
 **Image digests** — resolved 2026-09-01, use exactly these:
 
@@ -2452,7 +2647,15 @@ POSTGRES_DB=lapidary
 LAPIDARY_LOG=info
 ```
 
-`.containerignore` at the repo root:
+Two build contexts need ignore files, and each needs the file under two names. Podman
+reads `.containerignore` and falls back to `.dockerignore`; Docker reads **only**
+`.dockerignore`. Task 1 deleted the old `.dockerignore`, so without recreating it, the
+`docker compose build` in Step 9 ships the entire repository as build context — `target/`
+included, which is gigabytes — and `COPY web ./` in the web image copies a stale
+`web/node_modules` straight over the one `npm ci` just installed.
+
+`.containerignore` at the repo root, covering the `api`, `worker` and `web` builds whose
+context is `..`:
 
 ```
 target/
@@ -2461,7 +2664,24 @@ web/dist/
 .git/
 docs/
 design/
+fixtures/
+deploy/.env
 ```
+
+`deploy/.containerignore`, covering the `db` build whose context is `deploy/`:
+
+```
+.env
+```
+
+Then give each one its Docker name, copied so the content cannot differ:
+
+```bash
+cp .containerignore .dockerignore
+cp deploy/.containerignore deploy/.dockerignore
+```
+
+Task 11 Step 5 asserts the pairs stay identical.
 
 - [ ] **Step 6: Bring the stack up**
 
@@ -2470,10 +2690,16 @@ Run:
 ```bash
 cp deploy/.env.example deploy/.env
 sed -i 's/change-me-before-first-run/localdev/' deploy/.env
-podman compose -f deploy/compose.yaml up -d --build
+podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 ```
 
 Expected: four containers running. First build takes several minutes on 8 cores.
+
+`--env-file` is passed explicitly rather than relying on Compose auto-loading `deploy/.env`
+from the compose file's directory. `docker compose` does that; `podman-compose` has not
+always. Passing it removes the difference between the two runtimes, which is the whole
+point of Step 9. `deploy/.env` is already ignored by the root `.gitignore` rule `.env`,
+which has no leading slash and so matches at any depth.
 
 - [ ] **Step 7: Verify the health path end to end**
 
@@ -2493,7 +2719,7 @@ The second proves Caddy's reverse proxy works, so the SPA can reach the API thro
 Run:
 
 ```bash
-podman compose -f deploy/compose.yaml exec db psql -U lapidary -d lapidary \
+podman compose --env-file deploy/.env -f deploy/compose.yaml exec db psql -U lapidary -d lapidary \
   -c "SELECT extname FROM pg_extension WHERE extname IN ('vector','pg_trgm');" \
   -c "SELECT cfgname FROM pg_ts_config WHERE cfgname = 'turkish';"
 ```
@@ -2505,10 +2731,10 @@ Expected: both `vector` and `pg_trgm` listed; `turkish` returned.
 Run:
 
 ```bash
-podman compose -f deploy/compose.yaml down -v
-docker compose -f deploy/compose.yaml up -d --build
+podman compose --env-file deploy/.env -f deploy/compose.yaml down -v
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 curl -fsS http://localhost:8080/api/healthz
-docker compose -f deploy/compose.yaml down -v
+docker compose --env-file deploy/.env -f deploy/compose.yaml down -v
 ```
 
 Expected: identical health JSON. `CLAUDE.md` supports both runtimes and this machine has both, so it is verified now rather than assumed.
@@ -2516,7 +2742,7 @@ Expected: identical health JSON. `CLAUDE.md` supports both runtimes and this mac
 - [ ] **Step 10: Commit**
 
 ```bash
-git add deploy .containerignore
+git add deploy .containerignore .dockerignore
 git commit -m "feat(deploy): four-service compose stack on pinned digests
 
 web, api, worker, db. No Redis and no broker — the job queue is
@@ -2524,7 +2750,11 @@ FOR UPDATE SKIP LOCKED plus LISTEN/NOTIFY from Phase 1.
 
 The db image adds pgvector, which postgres:18 does not ship, and fails
 at init if the turkish text search config is ever absent. Verified under
-both podman compose and docker compose."
+both podman compose and docker compose.
+
+Ignore files are written under both names: Docker reads only
+.dockerignore, and without it the build context is the whole repo
+including target/."
 ```
 
 ---
@@ -2562,7 +2792,10 @@ yanked = "deny"
 
 [licenses]
 version = 2
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0"]
+# AGPL-3.0-only, not the bare AGPL-3.0: the bare id is deprecated in SPDX and does not
+# match what [workspace.package] declares, so cargo-deny would reject all fourteen of our
+# own crates while passing every third-party one.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "AGPL-3.0-only"]
 confidence-threshold = 0.9
 
 [bans]
@@ -2660,6 +2893,13 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: The committed route tree must match what the plugin generates
+        run: |
+          if ! git diff --quiet --exit-code src/routeTree.gen.ts; then
+            echo "::error::web/src/routeTree.gen.ts is stale. Run 'npm run build' in web/ and commit the result."
+            git diff --stat src/routeTree.gen.ts
+            exit 1
+          fi
 ```
 
 - [ ] **Step 3: Write the container workflow**
@@ -2700,15 +2940,23 @@ cargo xtask export-bindings && git diff --exit-code web/src/bindings
 
 Expected: every command exits 0. `cargo deny check` may warn on duplicate versions — that is `multiple-versions = "warn"` and does not fail the build.
 
-- [ ] **Step 5: Verify no unpinned Actions slipped in**
+If `cargo fmt --all --check` fails here, run `cargo fmt --all` and amend. The code blocks
+in this plan are written for readability and several run past 100 columns; rustfmt is the
+authority, not the plan.
+
+- [ ] **Step 5: Verify no unpinned Actions slipped in, and that the ignore files agree**
 
 Run:
 
 ```bash
 grep -rn "uses:" .github/workflows | grep -v "@[0-9a-f]\{40\}" && echo "FAIL: unpinned action" || echo "OK: all pinned"
+cmp .containerignore .dockerignore && cmp deploy/.containerignore deploy/.dockerignore && echo "OK: ignore files in sync"
 ```
 
-Expected: `OK: all pinned`
+Expected: `OK: all pinned` and `OK: ignore files in sync`. The second check exists because
+the two names are duplicated files rather than a symlink — symlinks do not survive a
+Windows checkout — and a duplicate that drifts silently gives Docker and Podman different
+build contexts.
 
 - [ ] **Step 6: Commit and push**
 
@@ -2773,25 +3021,30 @@ grep -rn "uses:" .github/workflows | grep -v "@[0-9a-f]\{40\}" && echo "FAIL" ||
 
 # 4. Stack serves a health-checked page
 cp deploy/.env.example deploy/.env && sed -i 's/change-me-before-first-run/localdev/' deploy/.env
-podman compose -f deploy/compose.yaml up -d --build
+podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 curl -fsS http://localhost:3000/api/healthz
 
 # 5. pgvector and turkish
-podman compose -f deploy/compose.yaml exec db psql -U lapidary -d lapidary \
+podman compose --env-file deploy/.env -f deploy/compose.yaml exec db psql -U lapidary -d lapidary \
   -c "SELECT extname FROM pg_extension WHERE extname IN ('vector','pg_trgm');" \
   -c "SELECT cfgname FROM pg_ts_config WHERE cfgname='turkish';"
 
-# 6. Bindings track the Rust types
+# 6. Bindings track the Rust types, and the route tree tracks the routes
 cargo xtask export-bindings && git diff --exit-code web/src/bindings && echo "bindings current"
+(cd web && npm ci && npm run build) && git diff --exit-code web/src/routeTree.gen.ts && echo "route tree current"
 
-# 7. Licence and docs
+# 7. Licence and docs — the LICENSE file and the prose around it must agree
 head -3 LICENSE
-grep -c "MIGRATION" docs/README.md || echo "0 — no MIGRATION references"
+grep -rn "MIGRATION" README.md docs/README.md && echo "FAIL: MIGRATION still referenced" || echo "OK: no MIGRATION references"
+grep -rn -i "licence has not been decided\|not yet decided\|all rights are reserved\|Licensing — decision required\|Licensing conflict" \
+  README.md CONTRIBUTING.md docs/ARCHITECTURE.md docs/ROADMAP.md \
+  && echo "FAIL: docs still record the licence as undecided" || echo "OK: licence recorded as AGPL-3.0-only"
 
-# 8. Docker as well as podman
-podman compose -f deploy/compose.yaml down -v
-docker compose -f deploy/compose.yaml up -d --build && curl -fsS http://localhost:8080/api/healthz
-docker compose -f deploy/compose.yaml down -v
+# 8. Docker as well as podman — and both ignore files present, or the context is the whole repo
+cmp .containerignore .dockerignore && cmp deploy/.containerignore deploy/.dockerignore
+podman compose --env-file deploy/.env -f deploy/compose.yaml down -v
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build && curl -fsS http://localhost:8080/api/healthz
+docker compose --env-file deploy/.env -f deploy/compose.yaml down -v
 ```
 
 - [ ] **Step 3: Record the results**
