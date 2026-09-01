@@ -9,8 +9,9 @@ use std::process::Command;
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("check-layers") => check_layers(),
-        Some(other) => bail!("Unknown xtask '{other}'. Available: check-layers"),
-        None => bail!("Usage: cargo xtask <check-layers>"),
+        Some("export-bindings") => export_bindings(),
+        Some(other) => bail!("Unknown xtask '{other}'. Available: check-layers, export-bindings"),
+        None => bail!("Usage: cargo xtask <check-layers|export-bindings>"),
     }
 }
 
@@ -78,4 +79,34 @@ fn check_layers() -> Result<()> {
             bail!("layering check failed")
         }
     }
+}
+
+/// Regenerate the TypeScript bindings from #[ts(export)] types in lapidary-core.
+fn export_bindings() -> Result<()> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live one level below the workspace root")?
+        .to_path_buf();
+    let out = root.join("web/src/bindings");
+
+    // ts-rs writes on test run; clear first so removed types do not linger.
+    if out.exists() {
+        std::fs::remove_dir_all(&out).context("Could not clear web/src/bindings")?;
+    }
+    std::fs::create_dir_all(&out).context("Could not create web/src/bindings")?;
+
+    let status = Command::new(env!("CARGO"))
+        .args(["test", "-p", "lapidary-core", "export_bindings"])
+        .env("TS_RS_EXPORT_DIR", &out)
+        .status()
+        .context("Could not run the ts-rs export tests")?;
+
+    if !status.success() {
+        bail!(
+            "ts-rs export failed. Run `cargo test -p lapidary-core` to see which type could not be exported."
+        );
+    }
+
+    println!("bindings written to {}", out.display());
+    Ok(())
 }
