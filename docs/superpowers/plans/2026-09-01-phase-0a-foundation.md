@@ -2124,7 +2124,14 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite'
 
 export default defineConfig({
   plugins: [
-    tanstackRouter({ target: 'react', autoCodeSplitting: true }),
+    tanstackRouter({
+      target: 'react',
+      autoCodeSplitting: true,
+      // index.test.tsx sits beside the route it tests. Without this the plugin scans it
+      // as a route file and warns "does not export a Route" on every single build, CI
+      // included. The pattern excludes any test file next to a route, not just this one.
+      routeFileIgnorePattern: '\\.test\\.tsx?$',
+    }),
     react(),
     tailwindcss(),
   ],
@@ -2385,7 +2392,7 @@ Generate it once now, with a Vite build that skips tsc:
 cd web && npx vite build
 ```
 
-Expected: `src/routeTree.gen.ts` appears. From here `npm run build` works normally, and Task 11's CI job re-runs the build and fails if the committed tree has drifted.
+Expected: `src/routeTree.gen.ts` appears, and the output carries **no** `does not export a Route` warning — if it does, `routeFileIgnorePattern` is missing from `vite.config.ts`. From here `npm run build` works normally, and Task 11's CI job re-runs the build and fails if the committed tree has drifted.
 
 - [ ] **Step 6: Write the failing test**
 

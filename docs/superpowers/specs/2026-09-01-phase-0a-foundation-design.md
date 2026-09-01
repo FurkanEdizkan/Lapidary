@@ -347,6 +347,11 @@ should be consulted deliberately in Phase 3 rather than carried forward now.
 proves incompatible during implementation, falling back to the last 5.x release is a
 contained change to `web/package.json` and must be recorded here if taken.
 
+*Retired 2026-09-01.* The whole web stack was stood up from the plan's own files before
+Task 9 was dispatched: `npm install` clean, `npx vite build` green, `tsc --noEmit` clean,
+`vitest` 2/2. TypeScript 7.0.2, Vite 8.2.2 and the TanStack router plugin work together as
+pinned. No fallback needed.
+
 **sqlx 0.9 against Postgres 18.** Verify at implementation time that the generated column
 `STORED` requirement and `LISTEN/NOTIFY` behave as expected. Confined to `lapidary-db`.
 
