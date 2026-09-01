@@ -2638,29 +2638,42 @@ beforeEach(() => {
   vi.restoreAllMocks()
 })
 
+// The expected text is written out literally rather than read from strings.ts. Asserting
+// against the same constant the component renders from would pass even if the string were
+// corrupted, because both sides would move together.
 test('renders the connected state from a healthy response', async () => {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: 'ok', database: { major: 18, reachable: true } }),
-    }),
-  )
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ status: 'ok', database: { major: 18, reachable: true } }),
+  })
+  vi.stubGlobal('fetch', fetchMock)
   renderIndex()
-  expect(await screen.findByText(strings.health.ok(18))).toBeDefined()
+  expect(await screen.findByText('Connected — PostgreSQL 18')).toBeDefined()
+  // Pin the endpoint. The stub resolves regardless of what it is called with, so without
+  // this a typo in the path would be invisible.
+  expect(fetchMock).toHaveBeenCalledWith('/api/healthz')
+})
+
+test('renders the checking state while the request is in flight', () => {
+  // A promise that never settles holds the query in its pending state.
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  renderIndex()
+  expect(screen.getByText('Checking the server…')).toBeDefined()
 })
 
 test('renders an actionable message when the server is unreachable', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
   renderIndex()
-  expect(await screen.findByText(strings.health.failed)).toBeDefined()
+  expect(
+    await screen.findByText('Could not reach the server. Check that the api and db services are running.'),
+  ).toBeDefined()
 })
 ```
 
 - [ ] **Step 7: Run the tests to verify they fail, then pass**
 
 Run: `cd web && npm test`
-Expected first: FAIL if any file above is missing. After all files exist: 2 tests PASS.
+Expected first: FAIL if any file above is missing. After all files exist: 3 tests PASS — one per state the component branches on.
 
 - [ ] **Step 8: Verify typecheck and build**
 
