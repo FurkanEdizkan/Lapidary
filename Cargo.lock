@@ -1146,7 +1146,9 @@ name = "lapidary-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "lapidary-build",
+ "lapidary-cad",
  "lapidary-core",
  "lapidary-db",
  "lapidary-index",
@@ -1157,6 +1159,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",

@@ -87,8 +87,9 @@ pub enum Violation {
     /// Parse-stale: no `ARG SERVER_FEATURES` declaration at all in
     /// `deploy/Containerfile`.
     ContainerfileMissingArgDeclaration,
-    /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
-    /// (`lapidary-api`) must never touch a source file — only derivatives.
+    /// A file under `crates/lapidary-api/src/`, other than one listed in
+    /// `OPEN_PATH_BOUNDARY_EXEMPTIONS`, names `SourceStore`. The open path must never
+    /// touch a source file — only derivatives.
     OpenPathNamesSourceStore { path: String },
 }
 
@@ -184,7 +185,9 @@ impl std::fmt::Display for Violation {
                 f,
                 "{path} names SourceStore. lapidary-api serves the open path, which must \
                  never touch a source file — it reads metadata and derivatives only. Use \
-                 DerivativeStore, or move the work into the worker."
+                 DerivativeStore, or move the work into crates/lapidary-api/src/scan.rs \
+                 (the one handler file OPEN_PATH_BOUNDARY_EXEMPTIONS allows, because \
+                 router() mounts it only under Role::Worker)."
             ),
         }
     }
@@ -497,28 +500,53 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     violations
 }
 
-/// Rule 4: `lapidary-api` must never name `SourceStore`. The type needs a `WorkerRole`
-/// token to construct, so the compiler already prevents obtaining one — this catches the
-/// earlier mistake of importing it at all, which is the first move someone makes before
-/// discovering they cannot build one, and the point at which to stop them.
+/// Files, matched by base name under `crates/lapidary-api/src/`, exempted from Rule 4
+/// below. A named allow-list, in the same spirit as `KERNEL_LINKED_SERVICES` above:
+/// edited only to permit a new worker-only handler file that legitimately needs
+/// `SourceStore`, never to make an ordinary open-path change pass.
+///
+/// `scan.rs` is the one file today. It is the ingest handler `router()` (`lib.rs`) mounts
+/// only under `Role::Worker` — see the module doc there — so naming `SourceStore` in it
+/// does not put a source file within reach of the open path; it puts it within reach of
+/// exactly the process role that is supposed to reach one.
+const OPEN_PATH_BOUNDARY_EXEMPTIONS: &[&str] = &["scan.rs"];
+
+/// Rule 4: no file in `lapidary-api` may name `SourceStore`, except the worker-only
+/// handler files listed in `OPEN_PATH_BOUNDARY_EXEMPTIONS`. The type needs a `WorkerRole`
+/// token to construct, so the compiler already prevents obtaining one from a file that
+/// never proved it is running as the worker — this catches the earlier mistake of
+/// importing it at all, which is the first move someone makes before discovering they
+/// cannot build one, and the point at which to stop them, in every file except the one
+/// that is allowed to make that move.
 ///
 /// A dependency-graph rule cannot express this: `lapidary-api` legitimately depends on
-/// `lapidary-storage` for `DerivativeStore`, so the boundary is *which type*, not whether
-/// the crates may connect. `main.rs` walks `crates/lapidary-api/src/**/*.rs` and passes
-/// `(path, contents)` pairs here.
+/// `lapidary-storage` for `DerivativeStore` (both roles hold one), and, since Task 9,
+/// legitimately contains one handler that legitimately holds a `SourceStore` too — so the
+/// boundary is *which file*, not whether the crate may name the type at all. `main.rs`
+/// walks `crates/lapidary-api/src/**/*.rs` and passes `(path, contents)` pairs here.
 ///
 /// This is a lint against accidental misuse, not a security boundary: it scans literal
 /// source text for the string `SourceStore`, so a third crate re-exporting it under another
 /// name — `pub use lapidary_storage::SourceStore as BlobStore` from somewhere `lapidary-api`
-/// then imports — would slip past. That is an acceptable trade for a cheap static check
-/// against the mistake this actually catches (importing the type directly, the first thing
-/// someone does before discovering the compiler won't let them build one); a future reader
-/// should not treat a green run here as proof no source bytes are reachable, only as proof
-/// nothing named `SourceStore` directly.
+/// then imports — would slip past, and the exemption matches on file *name*, not on proof
+/// that the file's routes only ever mount under `Role::Worker` — a second file also named
+/// `scan.rs` in a nested module would slip past too. That is an acceptable trade for a
+/// cheap static check against the mistake this actually catches (importing the type
+/// directly into an open-path file, the first thing someone does before discovering the
+/// compiler won't let them build one there); a future reader should not treat a green run
+/// here as proof no source bytes are reachable outside `scan.rs`, only as proof nothing
+/// named `SourceStore` directly outside the files this list names.
 pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
     api_sources
         .iter()
         .filter(|(_, body)| body.contains("SourceStore"))
+        .filter(|(path, _)| {
+            let exempt = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .is_some_and(|name| OPEN_PATH_BOUNDARY_EXEMPTIONS.contains(&name));
+            !exempt
+        })
         .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() })
         .collect()
 }
@@ -965,5 +993,40 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             "use lapidary_storage::DerivativeStore;\n".to_owned(),
         )];
         assert_eq!(check_open_path_boundary(&sources), vec![]);
+    }
+
+    #[test]
+    fn scan_rs_is_exempted_because_it_only_mounts_under_the_worker_role() {
+        // Task 9's ingest handler legitimately names SourceStore — it is the one route
+        // router() (crates/lapidary-api/src/lib.rs) mounts only under Role::Worker.
+        let sources = vec![(
+            "crates/lapidary-api/src/scan.rs".to_owned(),
+            "use lapidary_storage::SourceStore;\n".to_owned(),
+        )];
+        assert_eq!(check_open_path_boundary(&sources), vec![]);
+    }
+
+    #[test]
+    fn the_exemption_is_scoped_to_scan_rs_by_name_not_to_every_file() {
+        // Naming SourceStore in a different file — including a hypothetical open-path
+        // handler sitting beside scan.rs — must still fail. This is what pins the
+        // exemption to `scan.rs` specifically rather than the whole crate silently
+        // regaining a blanket pass.
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/scan.rs".to_owned(),
+                "use lapidary_storage::SourceStore;\n".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/parts.rs".to_owned(),
+                "use lapidary_storage::SourceStore;\n".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            check_open_path_boundary(&sources),
+            vec![Violation::OpenPathNamesSourceStore {
+                path: "crates/lapidary-api/src/parts.rs".to_owned()
+            }]
+        );
     }
 }

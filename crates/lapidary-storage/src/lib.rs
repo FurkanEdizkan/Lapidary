@@ -7,8 +7,11 @@
 //! This is the API-level half of "the open path never touches a source file". The
 //! dependency-graph half cannot express it: `lapidary-api` legitimately depends on this
 //! crate for derivatives, so the distinction is *which bytes*, not whether the crates may
-//! be connected. `cargo xtask check-deploy` asserts `lapidary-api` never names
-//! `SourceStore`.
+//! be connected. `cargo xtask check-deploy` asserts no file in `lapidary-api` names
+//! `SourceStore` except the worker-only ingest handler
+//! (`crates/lapidary-api/src/scan.rs`, listed in `deploy::OPEN_PATH_BOUNDARY_EXEMPTIONS`)
+//! — the one file `router()` mounts only under `Role::Worker`, so a `WorkerRole` obtained
+//! there is never reachable from the open path.
 
 use lapidary_core::BlobHash;
 use std::path::{Path, PathBuf};
@@ -33,11 +36,17 @@ pub enum StorageError {
 }
 
 /// Proof the holder is running in the worker role. Zero-sized and unconstructible except
-/// through `assume`, which the binary calls once after reading `LAPIDARY_ROLE`.
+/// through `assume`.
 pub struct WorkerRole(());
 
 impl WorkerRole {
-    /// Called by `bin/lapidary-server` when it has established the worker role.
+    /// Called once `LAPIDARY_ROLE` (or, in tests, the caller) has established the worker
+    /// role. Today that is `crates/lapidary-api/src/scan.rs`, per request, inside the one
+    /// handler `router()` mounts only under `Role::Worker` — `bin/lapidary-server` decides
+    /// the role before `router()` ever runs, and this is the type-level echo of that
+    /// decision at the one call site allowed to reach a source file. Nothing checks the
+    /// process's actual role at the call site itself: the proof is that this code is
+    /// reachable at all, which `Role::Api` structurally prevents.
     pub fn assume() -> Self {
         WorkerRole(())
     }

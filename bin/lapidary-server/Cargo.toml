@@ -9,18 +9,25 @@ publish = false
 
 [features]
 default = []
-# Compiles in the mock CAD kernel and reports it at startup. `deploy/Containerfile` takes
-# this as a build arg (SERVER_FEATURES), empty by default, instead of hardcoding it — and
-# deploy/compose.yaml only sets that arg for the `worker` service, so `api` builds without
-# linking lapidary-cad at all. The real OCCT kernel is Phase 0b.
+# Compiles in the mock CAD kernel's `Kernel` trait implementation and reports it at
+# startup. `deploy/Containerfile` takes this as a build arg (SERVER_FEATURES), empty by
+# default, instead of hardcoding it — and deploy/compose.yaml only sets that arg for the
+# `worker` service. This gate is about `lapidary-cad`'s own `mock-kernel` feature (the
+# `Kernel` trait, `MockKernel`), not about whether `lapidary-cad` is linked at all: since
+# Task 9, `lapidary-api` depends on `lapidary-cad` unconditionally for `MeshKernel` (real
+# STL parsing, no native dependency), so both images compile that crate in regardless of
+# this feature. The real OCCT kernel — a native dependency this distinction will matter
+# for — is Phase 0b; when it lands, expect it gated the same way this mock is.
 mock-kernel = ["dep:lapidary-cad", "lapidary-cad/mock-kernel"]
 
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
-# Optional, off by default: only the mock-kernel feature pulls this in. lapidary-api
-# never depends on lapidary-cad — the open path lives there and must never invoke the
-# kernel — so the worker reaches it directly, through this binary.
+# Optional, off by default: only the mock-kernel feature pulls this crate in *for this
+# binary's own use* (the `use lapidary_cad::...` in kernel_description() below needs a
+# direct dependency to name it). It is not what decides whether lapidary-cad is compiled
+# into the final binary at all — lapidary-api depends on it unconditionally now — see the
+# mock-kernel feature doc comment above.
 lapidary-cad = { workspace = true, optional = true }
 anyhow.workspace = true
 # This binary owns the listener, so it calls axum::serve directly. lapidary-api builds

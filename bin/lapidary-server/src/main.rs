@@ -5,6 +5,7 @@ use figment::Figment;
 use figment::providers::Env;
 use lapidary_api::{AppState, Role, router};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
 struct Config {
@@ -23,6 +24,15 @@ struct Config {
     // matching CI-side guard lives in xtask/src/deploy.rs, which fails `check-deploy` if
     // deploy/compose.yaml ever stops setting this for a service that runs lapidary-server.
     role: Option<String>,
+    // No default and no container path hardcoded here either, for the same reason as
+    // `role`: only the worker's `scan` route reads these, but both roles build one
+    // `AppState`, so both must set them. Task 12 wires the real values —
+    // `LAPIDARY_INGEST_DIR` to a `/ingest:ro` bind mount, `LAPIDARY_BLOB_ROOT` to the
+    // `lapidary-blobs` volume — into `deploy/compose.yaml`. Until then, starting either
+    // container without them fails here rather than starting a worker that silently 500s
+    // on the first scan.
+    ingest_dir: PathBuf,
+    blob_root: PathBuf,
 }
 
 fn default_bind() -> String {
@@ -68,7 +78,7 @@ async fn main() -> Result<()> {
         .merge(Env::raw().only(&["DATABASE_URL"]))
         .merge(Env::prefixed("LAPIDARY_"))
         .extract()
-        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
+        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL, plus LAPIDARY_INGEST_DIR and LAPIDARY_BLOB_ROOT; see deploy/.env.example.")?;
 
     let Some(role_str) = config.role.as_deref() else {
         bail!(
@@ -106,9 +116,19 @@ async fn main() -> Result<()> {
     // logs` tell an operator which one a given container actually took.
     tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
-    axum::serve(listener, router(AppState { db }, role))
-        .await
-        .context("The HTTP server stopped unexpectedly")?;
+    axum::serve(
+        listener,
+        router(
+            AppState {
+                db,
+                ingest_dir: config.ingest_dir,
+                blob_root: config.blob_root,
+            },
+            role,
+        ),
+    )
+    .await
+    .context("The HTTP server stopped unexpectedly")?;
 
     Ok(())
 }

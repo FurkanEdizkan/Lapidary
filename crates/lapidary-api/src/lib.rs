@@ -11,17 +11,39 @@ pub use error::ApiError;
 use axum::Router;
 use axum::routing::{get, post};
 use lapidary_db::PgPool;
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// The read-only mounted ingest directory `scan` walks. Only meaningful under
+    /// `Role::Worker`, but held here rather than behind an `Option` — both roles build
+    /// the same `AppState`, and a field the `api` role simply never reads is a smaller
+    /// surface than an `Option` every future worker-only field must unwrap. Never a
+    /// hardcoded container path: tests point it at a `TempDir`, and `deploy/compose.yaml`
+    /// (Task 12) supplies the real `/ingest` mount.
+    pub ingest_dir: PathBuf,
+    /// Root of the blob store — `lapidary_storage`'s two content-addressed handles both
+    /// open under it. Same reasoning as `ingest_dir` — both roles construct one
+    /// `AppState`; only the worker's `scan` handler ever opens the source-bytes handle
+    /// there (see that module's doc for which one, and why naming it directly is
+    /// confined to that one file).
+    pub blob_root: PathBuf,
 }
 
 /// Which process this is. `api` serves the open path and must never mount an ingest
-/// route: its image deliberately does not link `lapidary-cad` (enforced by
-/// `xtask/src/layers.rs`'s `FORBIDDEN_PAIRS` and `cargo xtask check-deploy`), and both
-/// containers run one binary from one router, so anything mounted unconditionally is
-/// served by both.
+/// route. Both containers run one binary from one router, so anything mounted
+/// unconditionally is served by both — `role` is what keeps `scan` off the `api` process.
+///
+/// This crate now depends on `lapidary-cad` unconditionally (Task 9's `scan` handler
+/// needs `MeshKernel`), so — unlike before that handler existed — the `api` image does
+/// compile that crate's code in. What `api` still never does is *invoke* it: `Role::Api`
+/// never mounts `scan::scan`, the one place `MeshKernel` and the source-bytes store are
+/// named (see that module's doc). `xtask/src/layers.rs` no longer forbids the
+/// `lapidary-api -> lapidary-cad` dependency edge for exactly this reason;
+/// `cargo xtask check-deploy` keeps the type that actually reaches a source file out of
+/// every file in this crate except `scan.rs` (named directly in that module's doc, and
+/// deliberately not spelled out here — this file is not on the exemption list either).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Api,
