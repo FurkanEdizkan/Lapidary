@@ -210,25 +210,37 @@ open path linked the kernel crate even though `lapidary-api` itself did not depe
 above, closed, kept that edge out of the crate graph).
 
 ### 15. The `worker`-only-links-kernel invariant is enforced by comment, not by CI
-Item 12 converted an invariant from comment-enforced to check-enforced: `lapidary-api ->
-lapidary-cad` now fails `cargo xtask check-layers`, which runs in `ci.yml` on every push, so
-that rule bites continuously. Item 13 created a sibling invariant — that only the `worker` image
-links the kernel — and left it enforced by a comment in `deploy/Containerfile` and nothing in
-CI. Nothing in CI builds the images, so setting `SERVER_FEATURES: mock-kernel` on the `api`
-service in `deploy/compose.yaml`, or re-hardcoding `--features` in `deploy/Containerfile`, would
-fail no check.
+**Configuration half closed — Task 2 (`34cabe4`, `69385e4`, `f5af5ad`), 2026-09-02.** `cargo
+xtask check-deploy` (new, `xtask/src/deploy.rs`) now checks three rules against the deploy
+config: exactly the services in `KERNEL_LINKED_SERVICES` (today `["worker"]`) set
+`SERVER_FEATURES` in `deploy/compose.yaml`; `deploy/Containerfile`'s `cargo build` line routes
+through the `${SERVER_FEATURES:+--features "$SERVER_FEATURES"}` expansion rather than a
+hardcoded flag; and `ARG SERVER_FEATURES` is visible to that build line — declared before it,
+with no `FROM` in between, checked across every stage rather than just the first. A fourth
+violation class catches the parser itself going stale (no `services:` key, no service block, no
+`cargo build` line, or no `ARG` declaration found), naming the function to fix rather than
+blaming the config. `.github/workflows/ci.yml` runs `cargo xtask check-deploy` on every push,
+beside `check-layers`. **The check is static**: it reads the text of `deploy/compose.yaml` and
+`deploy/Containerfile`; it does not build an image, and its own failure message says so.
 
-`.github/workflows/containers.yml` is already the first divergence: it runs
+**The image half is still open.** `.github/workflows/containers.yml` is unchanged by this work
+(last touched in `158bfa6`, before any of the three passes) and still runs
 `docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .` with no build arg.
-Before item 13 that produced an image with the mock kernel; now it produces only the
-kernel-free variant, and no build anywhere in CI exercises the `SERVER_FEATURES=mock-kernel`
-path. Harm today is zero — that workflow has never run, pushes to no registry, and
-`cargo test --workspace --all-features` compiles the kernel regardless of what any image build
-arg says.
+So no CI build exercises the `SERVER_FEATURES=mock-kernel` path, and — this is the part a green
+`check-deploy` cannot speak to — **nothing verifies the built artifacts**, only the configuration
+that would produce them. Harm today is still zero: that workflow has never run — it triggers
+only on `workflow_dispatch` or a `v*` tag push, neither of which has happened — and pushes to no
+registry. The fuller fix — a second `docker build --build-arg SERVER_FEATURES=mock-kernel` step
+in `containers.yml` — starts to pre-empt item 4 (the `worker`/`api` role split) and may be
+better left until that is decided.
 
-The fuller fix — a second `docker build --build-arg SERVER_FEATURES=mock-kernel` step in
-`containers.yml` — starts to pre-empt item 4 (the `worker`/`api` role split) and may be better
-left until that is decided.
+Previously: item 12 converted the kernel-dependency invariant from comment-enforced to
+check-enforced (`lapidary-api -> lapidary-cad` fails `cargo xtask check-layers`, in `ci.yml` on
+every push). Item 13 created a sibling invariant — that only the `worker` image links the
+kernel — and left it enforced by nothing but a comment in `deploy/Containerfile`: setting
+`SERVER_FEATURES: mock-kernel` on the `api` service in `deploy/compose.yaml`, or re-hardcoding
+`--features` in `deploy/Containerfile`, would fail no check. That configuration gap is what
+closed here; the image-verification gap did not.
 
 ### 16. The open-path rule's other half — never touches a source file — is unenforced
 Item 12 closed the kernel half of "the open path never touches a source file and never invokes
