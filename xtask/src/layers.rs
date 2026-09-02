@@ -139,7 +139,9 @@ impl std::fmt::Display for Violation {
             Violation::ForbiddenPair { from, to, why } => write!(
                 f,
                 "{from} -> {to} is forbidden: {why}. This is a named-pair prohibition, not \
-                 a tier rule — see FORBIDDEN_PAIRS in xtask/src/layers.rs."
+                 a tier rule — see FORBIDDEN_PAIRS in xtask/src/layers.rs. A handler that \
+                 needs geometry should read the derivatives lapidary-db already stores, not \
+                 invoke the kernel."
             ),
             Violation::Publishable { name } => write!(
                 f,
@@ -525,6 +527,11 @@ mod tests {
             "message must state the product rule: the open path never invokes the CAD \
              kernel — got {msg:?}"
         );
+        assert!(
+            msg.contains("lapidary-db"),
+            "message must state the remedy — read the derivatives lapidary-db already \
+             stores instead of invoking the kernel — got {msg:?}"
+        );
     }
 
     #[test]
@@ -557,8 +564,13 @@ mod tests {
 
     #[test]
     fn accepts_all_current_members_as_publishable_false() {
-        // Mirrors the fact verified against a live `cargo metadata` run: all 14 workspace
-        // members report `publish` as `[]` (not null).
+        // Documents intent, not a live guard: `check_publish` ignores `name` when the flag
+        // is `false`, so this loop cannot fail on its own — a fifteenth crate added here
+        // without `publish = false` would not turn this test red, only leave the hardcoded
+        // list stale. The real protection is `main.rs`, which walks live `cargo metadata`
+        // on every CI run and calls `check_publish` per actual member, so an inverted or
+        // missing `publish = false` on any of the 14 crates below turns CI red immediately
+        // regardless of what this list says.
         let members = [
             "lapidary-core",
             "lapidary-db",
