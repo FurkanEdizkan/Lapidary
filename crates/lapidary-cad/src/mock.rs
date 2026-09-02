@@ -38,7 +38,7 @@ impl Kernel for MockKernel {
                     "CYLINDRICAL_SURFACE:8.000".to_owned(),
                 ],
             }),
-            "bracket-lp-1042-03.stl" => Ok(KernelOutput {
+            "flange-lp-4400-02.stl" => Ok(KernelOutput {
                 triangle_count: 12_940,
                 bbox_mm: [88.0, 34.0, 12.0],
                 entities: Vec::new(), // mesh input: no analytic entities, values are approximate

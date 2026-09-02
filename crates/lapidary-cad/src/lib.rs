@@ -66,11 +66,13 @@ mod tests {
     #[tokio::test]
     async fn mesh_input_yields_no_analytic_entities() {
         let kernel = MockKernel::new();
+        // A fictional name — the mock's job is to answer for files that need not exist
+        // on disk. It must never share a name with a real fixture: `bracket-lp-1042-03.stl`
+        // exists for real under `fixtures/` (Task 3) with a real, different mesh, and a
+        // mock entry under that same name would just be a second, driftable answer for
+        // one part.
         let out = kernel
-            .process(
-                Path::new("bracket-lp-1042-03.stl"),
-                &KernelParams::default(),
-            )
+            .process(Path::new("flange-lp-4400-02.stl"), &KernelParams::default())
             .await
             .expect("mock kernel processes the known mesh fixture");
         assert_eq!(out.triangle_count, 12_940);
