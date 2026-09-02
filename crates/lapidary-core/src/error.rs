@@ -12,4 +12,9 @@ pub enum CoreError {
         "A blob hash must contain only the characters 0-9 and a-f. Copy the full hash from the part's detail panel rather than retyping it."
     )]
     BlobHashHex,
+
+    #[error(
+        "\"{got}\" is not a valid id — ids are UUIDs. Copy the id from the part, library, or revision it identifies rather than retyping it."
+    )]
+    IdParse { got: String },
 }

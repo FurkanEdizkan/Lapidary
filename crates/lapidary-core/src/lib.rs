@@ -62,6 +62,57 @@ mod tests {
     }
 
     #[test]
+    fn part_id_round_trips_through_uuid() {
+        let id = PartId::new();
+        assert_eq!(PartId::from_uuid(id.as_uuid()), id);
+    }
+
+    #[test]
+    fn ids_round_trip_through_display_and_from_str() {
+        let library = LibraryId::new();
+        assert_eq!(
+            library.to_string().parse::<LibraryId>().expect("valid id"),
+            library
+        );
+
+        let part = PartId::new();
+        assert_eq!(
+            part.to_string().parse::<PartId>().expect("valid id"),
+            part
+        );
+
+        let revision = RevisionId::new();
+        assert_eq!(
+            revision
+                .to_string()
+                .parse::<RevisionId>()
+                .expect("valid id"),
+            revision
+        );
+    }
+
+    #[test]
+    fn id_from_str_rejects_non_uuid() {
+        let err = "not-a-uuid"
+            .parse::<PartId>()
+            .expect_err("not a valid uuid");
+        assert!(
+            err.to_string().contains("not-a-uuid"),
+            "error message must name the rejected input, got: {err}"
+        );
+    }
+
+    #[test]
+    fn from_uuid_is_deterministic() {
+        // Two ids built with `from_uuid` on the same uuid are equal: identity comes
+        // from the wrapped uuid alone, not from anything tied to the call site.
+        let uuid = PartId::new().as_uuid();
+        let part = PartId::from_uuid(uuid);
+        let other_part = PartId::from_uuid(uuid);
+        assert_eq!(part, other_part);
+    }
+
+    #[test]
     fn approximate_marks_mesh_derived_values() {
         let from_brep = Approximate::analytic(20.0_f64);
         let from_mesh = Approximate::tessellated(19.987_f64);
