@@ -2,6 +2,7 @@
 
 mod deploy;
 mod layers;
+mod strings;
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -12,11 +13,14 @@ fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("check-layers") => check_layers(),
         Some("check-deploy") => check_deploy(),
+        Some("check-strings") => check_strings(),
         Some("export-bindings") => export_bindings(),
-        Some(other) => {
-            bail!("Unknown xtask '{other}'. Available: check-layers, check-deploy, export-bindings")
+        Some(other) => bail!(
+            "Unknown xtask '{other}'. Available: check-layers, check-deploy, check-strings, export-bindings"
+        ),
+        None => {
+            bail!("Usage: cargo xtask <check-layers|check-deploy|check-strings|export-bindings>")
         }
-        None => bail!("Usage: cargo xtask <check-layers|check-deploy|export-bindings>"),
     }
 }
 
@@ -114,6 +118,62 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<(String, String)>) -> R
         }
     }
     Ok(())
+}
+
+/// Scans every `.rs` file under `crates/`, `xtask/` and `bin/` for a string literal
+/// holding a mangled `\`-continuation — see `xtask/src/strings.rs` for what that looks
+/// like and why `cargo fmt --check` cannot catch it on its own. Does not touch `web/`:
+/// that tree is not Rust source and this check has nothing to say about it.
+fn check_strings() -> Result<()> {
+    let root = workspace_root()?;
+    let mut sources = Vec::new();
+    for dir in ["crates", "xtask", "bin"] {
+        collect_rs_files(&root.join(dir), &mut sources)?;
+    }
+
+    let mut violations = Vec::new();
+    for (path, contents) in &sources {
+        // Report relative to the workspace root, matching how EXEMPT's entries and every
+        // other check in this crate name a file, and so this check's own output stays
+        // stable if the workspace is checked out somewhere other than /home/.../Lapidary.
+        let relative = path
+            .strip_prefix(&format!("{}/", root.display()))
+            .unwrap_or(path);
+        violations.extend(
+            strings::check_source(relative, contents)
+                .map_err(|e| anyhow::anyhow!(e))
+                .with_context(|| format!("Could not scan {relative}"))?,
+        );
+    }
+
+    if violations.is_empty() {
+        println!(
+            "string literal check OK — no mangled continuations found ({} source file(s) checked)",
+            sources.len()
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "String literal check failed ({} problem(s)):\n",
+            violations.len()
+        );
+        for v in &violations {
+            eprintln!("  {v}");
+        }
+        eprintln!(
+            "\nEach of these is a string literal containing a run of three or more space \
+             characters between two words — the shape a `\\`-continuation leaves behind when \
+             something (a code-generation step, a find-and-replace, a tool that pre-processes \
+             the text before Rust ever sees it) strips the backslash and newline but not the \
+             following line's indentation. `cargo fmt --check` does not look inside string \
+             literals, so this passes fmt, clippy and every test silently — this check is what \
+             catches it. Fix the message (collapse it to one line, or use a real `\\`-continuation \
+             written directly rather than generated), or if the spacing is genuinely \
+             intentional (a YAML/Dockerfile fixture, reproduced external output), add a narrow, \
+             commented entry to EXEMPT in xtask/src/strings.rs naming exactly this file and line."
+        );
+        bail!("string literal check failed")
+    }
 }
 
 /// Read the workspace graph from `cargo metadata` and apply the layering rule.
@@ -258,18 +318,18 @@ fn export_bindings_into(out: &Path) -> Result<()> {
     let expected = count_listed_tests(&String::from_utf8_lossy(&list.stdout));
     if expected == 0 {
         bail!(
-            "`cargo test --workspace export_bindings` matches zero tests, so nothing would              be exported. This usually means a ts-rs upgrade changed the generated              `export_bindings_<type>` test name pattern. Nothing on disk was touched — fix              the filter (or ts-rs's generated name) before running this again."
+            "`cargo test --workspace export_bindings` matches zero tests, so nothing would be exported. This usually means a ts-rs upgrade changed the generated `export_bindings_<type>` test name pattern. Nothing on disk was touched — fix the filter (or ts-rs's generated name) before running this again."
         );
     }
 
     // ts-rs writes on test run; clear first so removed types do not linger.
     if out.exists() {
         std::fs::remove_dir_all(out).context(
-            "Could not clear web/src/bindings. If it was partially cleared, run `git              checkout -- web/src/bindings` to restore the committed files.",
+            "Could not clear web/src/bindings. If it was partially cleared, run `git checkout -- web/src/bindings` to restore the committed files.",
         )?;
     }
     std::fs::create_dir_all(out).context(
-        "Could not create web/src/bindings. Run `git checkout -- web/src/bindings` to          restore the committed files if the directory was already cleared.",
+        "Could not create web/src/bindings. Run `git checkout -- web/src/bindings` to restore the committed files if the directory was already cleared.",
     )?;
 
     let status = Command::new(env!("CARGO"))
@@ -283,19 +343,19 @@ fn export_bindings_into(out: &Path) -> Result<()> {
         // gone from the working tree. Say so — the user needs the recovery step, not just
         // the diagnosis.
         bail!(
-            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so              the committed bindings are missing from your working tree. Run `git checkout --              web/src/bindings` to restore them, then `cargo test --workspace export_bindings`              to see which type could not be exported."
+            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so the committed bindings are missing from your working tree. Run `git checkout -- web/src/bindings` to restore them, then `cargo test --workspace export_bindings` to see which type could not be exported."
         );
     }
 
     let written = count_ts_files(out)?;
     if written == 0 {
         bail!(
-            "The export tests reported success but wrote no bindings, and web/src/bindings/              was cleared before the attempt, so nothing was written back. Run `git checkout              -- web/src/bindings` to restore the committed files, then run `cargo test              --workspace export_bindings` directly to see what happened."
+            "The export tests reported success but wrote no bindings, and web/src/bindings/ was cleared before the attempt, so nothing was written back. Run `git checkout -- web/src/bindings` to restore the committed files, then run `cargo test --workspace export_bindings` directly to see what happened."
         );
     }
     if written != expected {
         bail!(
-            "Expected {expected} binding(s) — one per matching export test — but found              {written} file(s) in web/src/bindings/ after a successful run. Some type did              not write its file. Run `git checkout -- web/src/bindings` to restore the              committed files, then run `cargo test --workspace export_bindings` directly to              see which type is missing."
+            "Expected {expected} binding(s) — one per matching export test — but found {written} file(s) in web/src/bindings/ after a successful run. Some type did not write its file. Run `git checkout -- web/src/bindings` to restore the committed files, then run `cargo test --workspace export_bindings` directly to see which type is missing."
         );
     }
 

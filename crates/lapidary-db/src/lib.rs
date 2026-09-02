@@ -72,8 +72,10 @@ impl DbError {
             DbError::Query(_) => {
                 "A database query failed. Check the server logs for detail.".to_owned()
             }
-            DbError::Migrate(_) => "Could not bring the database schema up to date. Check the                  server logs for detail."
-                .to_owned(),
+            DbError::Migrate(_) => {
+                "Could not bring the database schema up to date. Check the server logs for detail."
+                    .to_owned()
+            }
             DbError::Unreachable { .. }
             | DbError::AuthenticationFailed { .. }
             | DbError::DatabaseMissing { .. }

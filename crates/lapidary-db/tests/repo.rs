@@ -282,14 +282,14 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
         .expect("records");
 
     let newer_revision: (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO revision (id, part_id, rev_label, origin, created_at, triangle_count, is_watertight)          SELECT gen_random_uuid(), part_id, '2', 'ingest', created_at + interval '1 hour', 99999, true          FROM revision WHERE part_id = $1          RETURNING id",
+        "INSERT INTO revision (id, part_id, rev_label, origin, created_at, triangle_count, is_watertight) SELECT gen_random_uuid(), part_id, '2', 'ingest', created_at + interval '1 hour', 99999, true FROM revision WHERE part_id = $1 RETURNING id",
     )
     .bind(id.as_uuid())
     .fetch_one(&pool)
     .await
     .expect("insert a strictly newer revision");
     sqlx::query(
-        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json)          VALUES (gen_random_uuid(), $1, 'thumbnail', $2, 'mesh stl-1+cpu-1', '{}')",
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) VALUES (gen_random_uuid(), $1, 'thumbnail', $2, 'mesh stl-1+cpu-1', '{}')",
     )
     .bind(newer_revision.0)
     .bind(b"newer-thumbnail".as_slice())
@@ -332,7 +332,7 @@ async fn two_thumbnail_derivatives_on_one_revision_do_not_duplicate_the_part(poo
         .expect("records");
 
     sqlx::query(
-        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at)          SELECT gen_random_uuid(), revision_id, 'thumbnail', $2, kernel_version, params_json, created_at + interval '1 hour'          FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'thumbnail', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
     )
     .bind(id.as_uuid())
     .bind(b"second-thumbnail".as_slice())
@@ -344,12 +344,12 @@ async fn two_thumbnail_derivatives_on_one_revision_do_not_duplicate_the_part(poo
     assert_eq!(
         page.len(),
         1,
-        "one part must still be one grid row, however many thumbnail derivatives its          latest revision has"
+        "one part must still be one grid row, however many thumbnail derivatives its latest revision has"
     );
     assert_eq!(
         page[0].thumbnail_webp.as_deref(),
         Some(b"second-thumbnail".as_slice()),
-        "the newer derivative wins, the same deterministic tie-break as the revision          pick above it"
+        "the newer derivative wins, the same deterministic tie-break as the revision pick above it"
     );
 }
 

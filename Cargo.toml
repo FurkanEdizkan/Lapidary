@@ -58,6 +58,10 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 image = { version = "0.25.10", default-features = false, features = ["webp"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 object_store = "0.14.1"
+# span-locations: gives Literal::span().start() a real line/column outside a proc-macro
+# context (stable, no nightly needed) — xtask/src/strings.rs uses it to report which
+# line a mangled string literal is on.
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "macros", "migrate", "uuid"] }
