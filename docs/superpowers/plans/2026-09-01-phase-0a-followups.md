@@ -210,7 +210,7 @@ open path linked the kernel crate even though `lapidary-api` itself did not depe
 above, closed, kept that edge out of the crate graph).
 
 ### 15. The `worker`-only-links-kernel invariant is enforced by comment, not by CI
-**Configuration half closed — Task 2 (`34cabe4`, `69385e4`, `f5af5ad`), 2026-09-02.** `cargo
+**Configuration half closed — deploy-check Task 1 (`34cabe4`, `69385e4`, `f5af5ad`), 2026-09-02.** `cargo
 xtask check-deploy` (new, `xtask/src/deploy.rs`) now checks three rules against the deploy
 config: exactly the services in `KERNEL_LINKED_SERVICES` (today `["worker"]`) set
 `SERVER_FEATURES` in `deploy/compose.yaml`; `deploy/Containerfile`'s `cargo build` line routes
