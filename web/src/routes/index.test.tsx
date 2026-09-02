@@ -44,20 +44,21 @@ function stubFetch(routes: {
 }
 
 /**
- * A real 2x2 lossless WebP, base64'd exactly as `PartCard.thumbnail` carries it. The
- * bytes matter: the thumbnail assertion compares the rendered `src` against this whole
- * string, so an `<img>` wired to `''`, to the part id, or to a hash-addressed URL that
- * slice 1 has no endpoint for all fail rather than pass on the mere presence of a tag.
+ * Two real lossless WebPs — 2x2 blue and 4x2 orange — base64'd exactly as
+ * `PartCard.thumbnail` carries them. They differ deliberately: when every fixture shared
+ * one payload, `src === part.thumbnail` compared identical strings, so a card rendering
+ * `parts[0].thumbnail` for every part — every user seeing the wrong preview — passed the
+ * whole suite. Distinct bytes are what make the card-to-thumbnail association testable.
  */
-const WEBP =
-  'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQ1LrVv/+BiOh/AAA='
+const WEBP_BLUE = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQ1LrVv/+BiOh/AAA='
+const WEBP_ORANGE = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQvJoXpf+BiOh/AAA='
 
 const MOTOR_MOUNT: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0001',
   library: DEFAULT_LIBRARY_ID,
   name: 'NEMA 17 motor mount, 42 mm face',
   partNumber: 'LP-3105-A',
-  thumbnail: WEBP,
+  thumbnail: WEBP_BLUE,
   triangleCount: 12486,
   approximate: true,
   createdAt: '2026-08-14T09:12:44Z',
@@ -69,14 +70,14 @@ const HEX_NUT: PartCard = {
   library: DEFAULT_LIBRARY_ID,
   name: 'Hex nut M8, DIN 934',
   partNumber: 'DIN934-M8-A2',
-  thumbnail: WEBP,
+  thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
   approximate: true,
   createdAt: '2026-08-14T09:12:51Z',
   updatedAt: '2026-08-14T09:12:51Z',
 }
 
-/** Ingested from a photogrammetry scan: rendered, but no thumbnail derivative yet. */
+/** Ingested, but the worker has not rasterized a thumbnail derivative for it yet. */
 const SHAFT_COUPLER: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0003',
   library: DEFAULT_LIBRARY_ID,
@@ -128,6 +129,7 @@ test('renders an actionable message when the server is unreachable', async () =>
 // rendered text, not import provenance, so this still passes if the component is hardcoded
 // to today's copy. It catches the component drifting from strings.ts later, when the copy
 // next changes and the component does not follow — a wiring test, not a content pin.
+// Provenance itself is enforced at the source level, in no-bare-strings.test.ts.
 test('renders the empty-library copy from strings.ts', async () => {
   stubFetch({ parts: ok(page([])) })
   renderIndex()
@@ -135,26 +137,28 @@ test('renders the empty-library copy from strings.ts', async () => {
   expect(screen.getByText(strings.emptyLibrary.body)).toBeDefined()
 })
 
-// "We have not asked yet" and "we asked and there is nothing" are different facts, and
-// only the second one is the empty state. Without this, a component that renders the
-// empty state during the request still passes every other test here, because the pages
-// they mock all resolve.
 // Ingest is a server-side scan over a mounted directory. The grid has no upload control
 // and slice 1 has no endpoint that would give it one, so copy that sends the user looking
-// for one is a wrong instruction, not a harmless flourish. This survives a rewording,
-// which the assertion above deliberately does not.
+// for one is a wrong instruction, not a harmless flourish. Read out of the DOM rather
+// than off the constants, so a hardcoded prompt in the component is caught too, and
+// phrased as an invariant so it survives a rewording.
 test('the empty state points at no upload control, because there is none', async () => {
   stubFetch({ parts: ok(page([])) })
   renderIndex()
-  const empty = await screen.findByText(strings.emptyLibrary.body)
-  const copy = `${strings.emptyLibrary.title} ${empty.textContent}`.toLowerCase()
+  await screen.findByText(strings.emptyLibrary.body)
+  const rendered = (document.body.textContent ?? '').toLowerCase()
+  expect(rendered.length).toBeGreaterThan(40)
   for (const claim of ['upload', 'drag', 'drop', 'browse', 'choose a file', 'add file']) {
-    expect(copy).not.toContain(claim)
+    expect(rendered).not.toContain(claim)
   }
   expect(screen.queryByRole('button')).toBeNull()
   expect(document.querySelector('input[type="file"]')).toBeNull()
 })
 
+// "We have not asked yet" and "we asked and there is nothing" are different facts, and
+// only the second one is the empty state. Without this, a component that renders the
+// empty state during the request still passes every other test here, because the pages
+// they mock all resolve.
 test('does not claim the library is empty while the request is still in flight', () => {
   stubFetch({})
   renderIndex()
@@ -170,7 +174,7 @@ test('does not show the empty state when the library has parts', async () => {
   expect(screen.queryByText(strings.emptyLibrary.body)).toBeNull()
 })
 
-test('renders a card per part with the thumbnail bytes inline as the image source', async () => {
+test('renders a card per part with that part own thumbnail bytes inline', async () => {
   const fetchMock = stubFetch({ parts: ok(page([MOTOR_MOUNT, HEX_NUT])) })
   renderIndex()
 
@@ -179,17 +183,23 @@ test('renders a card per part with the thumbnail bytes inline as the image sourc
   expect(within(mount).getByText(MOTOR_MOUNT.partNumber!)).toBeDefined()
   expect(within(nut).getByText(HEX_NUT.partNumber!)).toBeDefined()
 
-  // The whole data URL, not merely a non-empty src: this is the one assertion that
-  // proves the WebP the endpoint sent is what reaches the browser.
-  for (const [card, part] of [
-    [mount, MOTOR_MOUNT],
-    [nut, HEX_NUT],
-  ] as const) {
-    const img = within(card).getByRole('img')
-    expect(img.getAttribute('src')).toBe(part.thumbnail)
-    expect(img.getAttribute('src')).toMatch(/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/)
-    expect(img.getAttribute('alt')).toBe(strings.parts.thumbnailAlt(part.name))
+  // The two payloads differ, so this is an association assertion and not merely a
+  // presence one: a card wired to the first part's thumbnail fails on the second card.
+  expect(within(mount).getByRole('img').getAttribute('src')).toBe(WEBP_BLUE)
+  expect(within(nut).getByRole('img').getAttribute('src')).toBe(WEBP_ORANGE)
+  for (const card of [mount, nut]) {
+    expect(within(card).getByRole('img').getAttribute('src')).toMatch(
+      /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/,
+    )
   }
+
+  // Alt text literal, not read back from strings.ts: an alt of '' or 'image' would still
+  // satisfy the constant-based form, and the description is what a screen-reader user
+  // gets instead of the render.
+  expect(within(mount).getByRole('img').getAttribute('alt')).toBe(
+    'Rendered preview of NEMA 17 motor mount, 42 mm face',
+  )
+  expect(within(nut).getByRole('img').getAttribute('alt')).toBe('Rendered preview of Hex nut M8, DIN 934')
 
   // Keyset paging is not wired yet, but the library in the path is: pin it, since the
   // stub answers any URL containing "/parts".
@@ -206,22 +216,56 @@ test('shows a placeholder instead of an empty image when a part has no thumbnail
   expect(within(card).getByText(strings.parts.noThumbnail)).toBeDefined()
 })
 
+// A page is a mix in practice — the worker rasterizes as it goes — and the two cases were
+// only ever rendered alone. A missing thumbnail must not shift the neighbouring card's
+// bytes onto the wrong part, nor suppress the render of the part that does have one.
+test('renders a thumbnailed part and a thumbnail-less part side by side', async () => {
+  stubFetch({ parts: ok(page([SHAFT_COUPLER, HEX_NUT])) })
+  renderIndex()
+
+  const coupler = await screen.findByRole('article', { name: SHAFT_COUPLER.name })
+  const nut = screen.getByRole('article', { name: HEX_NUT.name })
+  expect(within(coupler).queryByRole('img')).toBeNull()
+  expect(within(coupler).getByText(strings.parts.noThumbnail)).toBeDefined()
+  expect(within(nut).getByRole('img').getAttribute('src')).toBe(WEBP_ORANGE)
+  expect(within(nut).queryByText(strings.parts.noThumbnail)).toBeNull()
+  expect(screen.getAllByRole('img')).toHaveLength(1)
+})
+
 // CLAUDE.md: mesh-derived measurements are labelled "approximate" in the UI, always. The
-// triangle count is the only figure this card shows and it is tessellation-derived by
-// construction, so it must never appear without the label.
+// triangle count is tessellation-derived by construction, so it must never appear
+// unlabelled. Both strings are literals: this is the exact wording the non-negotiable
+// exists to produce, and a badge reading "Exact" over a mesh figure is the failure mode.
 test('shows the triangle count only alongside the approximate label', async () => {
   stubFetch({ parts: ok(page([MOTOR_MOUNT])) })
   renderIndex()
   const card = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
-  expect(within(card).getByText(strings.parts.triangles(MOTOR_MOUNT.triangleCount!))).toBeDefined()
-  expect(within(card).getByText(strings.parts.approximate)).toBeDefined()
+  expect(within(card).getByText('12,486 triangles')).toBeDefined()
+  const badge = within(card).getByText('Approximate')
+  expect(badge.getAttribute('title')).toBe(
+    'At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.',
+  )
 })
 
-// The flag means "any figure on this part is mesh-derived", so the label is keyed to the
-// flag itself and not to the presence of a triangle count. Both fixtures here withhold
-// the count, which is what makes the two mistakes distinguishable: keying off
-// triangleCount would drop the label from the first card and keying off nothing at all
-// would add it to the second.
+// The one case that made the rule an accident rather than a guarantee: a part carrying a
+// triangle count while the wire says approximate=false. No fixture paired those, and the
+// count and the badge were independent conditionals, so the count rendered unlabelled —
+// latent only because the ingest path currently hardcodes the flag to true. A triangle
+// count IS a mesh-derived figure, so the label is not optional here; the component makes
+// the pair indivisible rather than trusting the flag.
+test('labels a triangle count even when the wire claims the part is not approximate', async () => {
+  const inconsistent: PartCard = { ...MOTOR_MOUNT, approximate: false }
+  stubFetch({ parts: ok(page([inconsistent])) })
+  renderIndex()
+  const card = await screen.findByRole('article', { name: inconsistent.name })
+  expect(within(card).getByText('12,486 triangles')).toBeDefined()
+  expect(within(card).getByText('Approximate')).toBeDefined()
+})
+
+// The flag means "any figure on this part is mesh-derived", so a part can be approximate
+// with no count on the card at all. Both fixtures here withhold the count, which is what
+// distinguishes the two mistakes: keying the label to triangleCount alone would drop it
+// from the first card, and keying it to nothing would add it to the second.
 test('labels a mesh-derived part approximate and leaves an analytic one unlabelled', async () => {
   const meshDerived: PartCard = {
     ...SHAFT_COUPLER,
@@ -243,8 +287,8 @@ test('labels a mesh-derived part approximate and leaves an analytic one unlabell
 
   const mesh = await screen.findByRole('article', { name: meshDerived.name })
   const brep = screen.getByRole('article', { name: analytic.name })
-  expect(within(mesh).getByText(strings.parts.approximate)).toBeDefined()
-  expect(within(brep).queryByText(strings.parts.approximate)).toBeNull()
+  expect(within(mesh).getByText('Approximate')).toBeDefined()
+  expect(within(brep).queryByText('Approximate')).toBeNull()
 })
 
 // Literal, not the constant, for the same reason the health failure above is literal:

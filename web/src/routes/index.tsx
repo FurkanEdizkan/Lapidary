@@ -79,29 +79,47 @@ function Card({ part }: { part: PartCard }) {
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
-        <h3 id={nameId} className="text-sm leading-snug">
+        <h2 id={nameId} className="text-sm leading-snug">
           {part.name}
-        </h3>
+        </h2>
         {part.partNumber === null ? null : (
           <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
         )}
-        <p className="mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
-          {part.triangleCount === null ? null : (
-            <span>{strings.parts.triangles(part.triangleCount)}</span>
-          )}
-          {/* The triangle count is tessellation-derived by construction, and the flag
-              covers whatever else on this part is. Keyed to the flag rather than to the
-              count so a part whose mesh-derived figure is not shown here still says so. */}
-          {part.approximate ? (
-            <span
-              title={strings.parts.approximateDetail}
-              className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[0.65rem] tracking-wider uppercase"
-            >
-              {strings.parts.approximate}
-            </span>
-          ) : null}
-        </p>
+        <Measurements part={part} />
       </div>
     </article>
+  )
+}
+
+/**
+ * The card's measurement line, rendered as one indivisible unit.
+ *
+ * A triangle count is tessellation-derived by construction, so a card showing one is
+ * showing a mesh-derived figure whatever the wire's `approximate` says. CLAUDE.md
+ * forbids such a figure appearing unlabelled, so the label is not a sibling conditional
+ * that the count can drift away from: either the whole line renders or none of it does,
+ * and within it the badge is unconditional. No branch here can emit a count without a
+ * label, which is the difference between the rule holding and the rule happening to
+ * hold because the ingest path currently sets the flag to a constant.
+ *
+ * The line still renders for a part with no count but the flag set, because the flag
+ * means *any* figure on this part is mesh-derived — not that this count is.
+ */
+function Measurements({ part }: { part: PartCard }) {
+  if (!part.approximate && part.triangleCount === null) {
+    return null
+  }
+  return (
+    <p className="mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
+      {part.triangleCount === null ? null : (
+        <span>{strings.parts.triangles(part.triangleCount)}</span>
+      )}
+      <span
+        title={strings.parts.approximateDetail}
+        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[0.65rem] tracking-wider uppercase"
+      >
+        {strings.parts.approximate}
+      </span>
+    </p>
   )
 }
