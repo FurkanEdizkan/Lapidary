@@ -108,7 +108,7 @@ implementation. This deletes the highest-risk item in the original plan.
 ```rust
 trait Kernel {
     fn version(&self) -> KernelVersion;   // pinned across the fleet — see below
-    fn process(&self, src: &Path, params: &KernelParams) -> Result<KernelOutput>;
+    async fn process(&self, src: &Path, params: &KernelParams) -> Result<KernelOutput>;
 }
 // KernelOutput = { tessellation_l0/l1/l2.glb, structure.json, entities.json }
 ```

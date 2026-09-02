@@ -17,9 +17,11 @@ fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
 }
 
-/// Human-readable kernel description for the startup log. The `mock-kernel` feature is
-/// what the `worker` compose service builds with in Phase 0a — this line is the only way
-/// an operator can tell from `podman logs` whether that feature chain actually held.
+/// Human-readable kernel description for the startup log. `deploy/compose.yaml`'s `api` and
+/// `worker` services share one image built with the `mock-kernel` feature (both build from
+/// `deploy/Containerfile`), so both logs will print this — not just `worker`'s. This line is
+/// the only way an operator can tell from `podman logs` whether that feature chain actually
+/// held.
 #[cfg(feature = "mock-kernel")]
 fn kernel_description() -> String {
     use lapidary_cad::Kernel;
