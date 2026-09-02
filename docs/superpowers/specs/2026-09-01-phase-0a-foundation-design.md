@@ -89,6 +89,11 @@ design/                       kept — authoritative visual language
 fixtures/                     kept, licence-audited
 ```
 
+> Superseded 2026-09-02 by the `Enterprise` tier; see `docs/ARCHITECTURE.md`. The tree above
+> lists `lapidary-enterprise/` as `L3`; it now lives in its own `Enterprise` wrapper tier above
+> L3, not at L3 with `lapidary-api`. This is a closed phase's spec, left as originally written
+> — this note exists so a later reader does not build on the superseded layer assignment.
+
 ### Deleted by this phase
 
 `server/`, `rust-mesh/`, `package.json`, `package-lock.json`, `Dockerfile`,
@@ -220,6 +225,11 @@ workspace member its layer from a table in the xtask source, and asserts:
 - L1 depends only on L0.
 - L2 depends only on L0 and L1 — never on another L2, never on L3.
 - L3 may depend on anything below it.
+
+> Superseded 2026-09-02 by the `Enterprise` tier; see `docs/ARCHITECTURE.md`. L3 may depend on
+> L0-L3, but not on the `Enterprise` tier that now sits above it (`lapidary-enterprise`) — "L3
+> may depend on anything below it" no longer holds without that carve-out. Left as originally
+> written; this note exists so a later reader does not build on the superseded rule.
 
 Failure prints the offending edge by name: `lapidary-vcs (L2) -> lapidary-index (L2)`.
 Unit tests run the rule against a synthetic in-memory graph and assert it **catches** a
