@@ -223,6 +223,26 @@ mod tests {
     }
 
     #[test]
+    fn derivatives_are_never_compressed_because_they_are_hot_path_and_already_packed() {
+        // docs/DATA.md §1.2: derivatives (thumbnails, tessellations) are already packed
+        // (meshopt, WebP) and sit on the hot open path — every grid render, every viewer
+        // load. Compressing them would buy ~2% space for a decode stage paid on every
+        // one of those reads, which is the opposite of what the inline-thumbnail design
+        // exists for. Asserted on observable facts, not the internal flag: input shaped
+        // to visibly shrink under zstd (mirrors the source-store test above) must come
+        // back the same size, uncompressed — a compressed store would shrink it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let d = DerivativeStore::open(dir.path());
+        let compressible = "solid ".repeat(4096).into_bytes();
+        let stored = d.put(&compressible).expect("put");
+        assert_eq!(
+            stored.stored_bytes, stored.size_bytes,
+            "derivatives must be stored as-is, not shrunk by compression"
+        );
+        assert_eq!(stored.zstd_level, 0);
+    }
+
+    #[test]
     fn getting_an_unknown_hash_says_which_hash_and_what_that_means() {
         let (_dir, s) = store();
         let missing = lapidary_core::BlobHash::from_bytes([0x11; 32]);
