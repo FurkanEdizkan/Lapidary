@@ -5,12 +5,14 @@ mod kernel;
 mod measure;
 #[cfg(feature = "mock-kernel")]
 mod mock;
+mod raster;
 mod stl;
 
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
+pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
 pub use stl::{Mesh, parse_stl};
 
 #[cfg(all(test, feature = "mock-kernel"))]

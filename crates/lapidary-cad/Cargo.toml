@@ -14,6 +14,7 @@ mock-kernel = []
 [dependencies]
 lapidary-core.workspace = true
 async-trait.workspace = true
+image.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

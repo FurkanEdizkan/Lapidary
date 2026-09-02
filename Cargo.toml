@@ -52,6 +52,7 @@ axum = "0.8.9"
 blake3 = "1.8.7"
 clap = { version = "4.6.6", features = ["derive"] }
 figment = { version = "0.10.19", features = ["env", "toml"] }
+image = { version = "0.25.10", default-features = false, features = ["webp"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 object_store = "0.14.1"
 serde = { version = "1.0.229", features = ["derive"] }

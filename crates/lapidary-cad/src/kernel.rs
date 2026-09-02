@@ -45,6 +45,11 @@ pub enum CadError {
         "Could not read this STL — {detail}. Re-export it from your CAD or slicing tool and retry; if it came from a download, the transfer may have been cut short."
     )]
     MalformedStl { detail: String },
+
+    #[error(
+        "Could not render a thumbnail — {detail}. The file parsed, so the geometry itself may be degenerate; open it in your CAD tool to check."
+    )]
+    Unrenderable { detail: String },
 }
 
 /// One shipped implementation. The trait exists so tests have a double.
