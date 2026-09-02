@@ -209,6 +209,13 @@ POST /api/libraries/{id}/scan                                    (worker role on
         INSERT part → revision (measurements + *_source) → file → derivative(thumbnail)
 │
 └─ 200 { ingested, skipped, failed: [{ file, reason }] }
+        ingested — parsed, rasterized, rows written
+        skipped  — hash already known; a file row was linked, no work done
+        failed   — could not be ingested; each with an actionable reason
+
+   The three are disjoint and sum to the number of candidate files walked. A file that
+   is not *.stl is not a candidate and is counted nowhere — it is not an error for a
+   library folder to contain a README.
 
 GET /api/libraries/{id}/parts?after=&limit=                      (api role only)
 └─ one keyset query, thumbnails inline from bytea                ← no per-card round trip
