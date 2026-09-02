@@ -1,24 +1,107 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { fetchHealth } from '../lib/api'
+import { DEFAULT_LIBRARY_ID, fetchHealth, fetchParts } from '../lib/api'
 import { strings } from '../lib/strings'
+import type { PartCard } from '../lib/types'
 
 export const Route = createFileRoute('/')({ component: Index })
 
 export function Index() {
-  const { data, isPending, isError } = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
+  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
+  const parts = useQuery({
+    queryKey: ['parts', DEFAULT_LIBRARY_ID],
+    queryFn: () => fetchParts(DEFAULT_LIBRARY_ID),
+  })
 
   return (
     <section>
-      <h2 className="text-lg">{strings.emptyLibrary.title}</h2>
-      <p className="text-[var(--color-muted)]">{strings.emptyLibrary.body}</p>
+      {parts.isPending ? (
+        <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
+      ) : parts.isError ? (
+        <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
+      ) : parts.data.parts.length === 0 ? (
+        // An empty page and a page still in flight are different facts, so only a page
+        // that came back empty gets the empty state.
+        <EmptyLibrary />
+      ) : (
+        <Grid parts={parts.data.parts} />
+      )}
       <p className="mt-6 text-sm text-[var(--color-muted)]">
-        {isPending
+        {health.isPending
           ? strings.health.checking
-          : isError
+          : health.isError
             ? strings.health.failed
-            : strings.health.ok(data.database.major)}
+            : strings.health.ok(health.data.database.major)}
       </p>
     </section>
+  )
+}
+
+function EmptyLibrary() {
+  return (
+    <div className="max-w-prose">
+      <h2 className="text-lg">{strings.emptyLibrary.title}</h2>
+      <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.body}</p>
+    </div>
+  )
+}
+
+function Grid({ parts }: { parts: readonly PartCard[] }) {
+  return (
+    <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
+      {parts.map((part) => (
+        <li key={part.id}>
+          <Card part={part} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function Card({ part }: { part: PartCard }) {
+  const nameId = `part-name-${part.id}`
+  return (
+    <article
+      aria-labelledby={nameId}
+      className="ease-mechanical flex h-full flex-col overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5"
+    >
+      <div className="flex aspect-square items-center justify-center bg-[var(--color-bg)]">
+        {part.thumbnail === null ? (
+          // Never an <img> with an empty src: a broken-image glyph reads as a failure,
+          // and "the worker has not rasterized this yet" is not one.
+          <span className="text-xs text-[var(--color-muted)]">{strings.parts.noThumbnail}</span>
+        ) : (
+          <img
+            src={part.thumbnail}
+            alt={strings.parts.thumbnailAlt(part.name)}
+            className="h-full w-full object-contain"
+          />
+        )}
+      </div>
+      <div className="flex flex-1 flex-col gap-1 p-3">
+        <h3 id={nameId} className="text-sm leading-snug">
+          {part.name}
+        </h3>
+        {part.partNumber === null ? null : (
+          <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
+        )}
+        <p className="mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
+          {part.triangleCount === null ? null : (
+            <span>{strings.parts.triangles(part.triangleCount)}</span>
+          )}
+          {/* The triangle count is tessellation-derived by construction, and the flag
+              covers whatever else on this part is. Keyed to the flag rather than to the
+              count so a part whose mesh-derived figure is not shown here still says so. */}
+          {part.approximate ? (
+            <span
+              title={strings.parts.approximateDetail}
+              className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[0.65rem] tracking-wider uppercase"
+            >
+              {strings.parts.approximate}
+            </span>
+          ) : null}
+        </p>
+      </div>
+    </article>
   )
 }
