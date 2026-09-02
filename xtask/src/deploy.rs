@@ -92,8 +92,9 @@ impl std::fmt::Display for Violation {
             Violation::MissingKernelLink { service } => write!(
                 f,
                 "deploy/compose.yaml service '{service}' is listed in KERNEL_LINKED_SERVICES \
-                 (xtask/src/deploy.rs) but does not set SERVER_FEATURES, so its image would \
-                 build without the CAD kernel it needs. Add `args: SERVER_FEATURES: \
+                 (xtask/src/deploy.rs) but does not set SERVER_FEATURES — or is absent from \
+                 the file entirely — so its image would build without the CAD kernel it \
+                 needs. Add `args: SERVER_FEATURES: \
                  mock-kernel` (or the current feature name) under {service} in \
                  deploy/compose.yaml, or remove {service} from KERNEL_LINKED_SERVICES if it \
                  no longer needs the kernel."
@@ -634,6 +635,25 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             "message must describe the actual problem (wrong stage), not just \
              'before the first FROM' — got {msg:?}"
         );
+    }
+
+    #[test]
+    fn lowercase_from_between_arg_and_build_line_hides_the_stage_boundary() {
+        // Dockerfile instructions are case-insensitive, so a lowercase `from` starts a
+        // real stage exactly like `FROM` does. Before from_indices matched
+        // case-insensitively, this `from` would not register as a stage boundary at all —
+        // ARG SERVER_FEATURES would look visible to the build line (no FROM detected
+        // between them), and the check would report OK on a Containerfile where the arg
+        // silently does not reach the build. Asserting the full vector, not just
+        // `contains`, also catches a case-insensitive match firing twice (once via a
+        // hypothetical fallback) and producing a spurious second violation.
+        let bad = CORRECT_CONTAINERFILE.replacen(
+            "ARG SERVER_FEATURES=\nWORKDIR /src\n",
+            "ARG SERVER_FEATURES=\nfrom docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS extra\nWORKDIR /src\n",
+            1,
+        );
+        let violations = check_containerfile(&bad);
+        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
     }
 
     #[test]
