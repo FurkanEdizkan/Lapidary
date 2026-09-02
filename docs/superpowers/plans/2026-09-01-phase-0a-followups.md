@@ -142,6 +142,33 @@ and what was deliberately dropped. Three were missed:
 All recoverable from `main`, which is why this was not urgent. Slicer `.ini`/`.json` parsing is
 hard-won and headed for `lapidary-targets`; it was captured before that work starts.
 
+### 12. `lapidary-api → lapidary-cad` is still permitted by `edge_allowed` (L3→L2)
+**Still open.** Item 5 above (closed) removed the actual dependency edge and left a comment in
+`bin/lapidary-server/Cargo.toml` asserting the invariant ("lapidary-api never depends on
+lapidary-cad — the open path lives there and must never invoke the kernel"), but nothing
+structural stops the edge coming back: `edge_allowed(Layer::L3, Layer::L2)` in
+`xtask/src/layers.rs` returns `true` unconditionally for any L3→L2 pair, `lapidary-cad` included.
+A future contributor who adds `lapidary-cad.workspace = true` back to `crates/lapidary-api/
+Cargo.toml` passes `cargo xtask check-layers` cleanly.
+
+The same argument that justified item 1 above ("enforced today only by review — and I am not
+always the reviewer") applies here, and this rule has a non-negotiable product statement behind
+it: "the open path never touches a source file and never invokes the CAD kernel." A tier rule
+can't express it, because it is a named-pair exception (this one L3 crate, this one L2 crate),
+not a layer relation — `edge_allowed` operates on `Layer`, not on crate names. It needs a
+different mechanism: an explicit forbidden-pairs list checked alongside the tier rule, or an
+allow-list of the specific L2 crates `lapidary-api` may depend on.
+
+### 13. The `api` container links `lapidary-cad`
+**Still open.** Because both compose services (`api`, `worker`) build from the same
+`deploy/Containerfile` with `--features mock-kernel` (item 3 above, closed), the single binary
+that serves the open path links the kernel crate even though `lapidary-api` itself does not
+depend on it (item 5 above, closed, keeps that edge out of the crate graph). Harmless in 0a
+while nothing in the `api` role calls into `lapidary-cad` — but it means the open-path binary
+and the worker binary are, today, literally the same artifact. Worth separating the images, or
+splitting the binary by role (see item 4 above), before Phase 1 puts real code behind the
+open-path/kernel boundary.
+
 ---
 
 ## Hardening, any time
@@ -194,6 +221,18 @@ external manager when the fleet story lands.
   shape belongs to `lapidary-api` and has no binding — but it is the template Phase 1 will copy,
   in a branch whose `types.ts` says never to import domain types except through it. Deliberately
   out of scope for the 2026-09-02 pass: there was nothing wrong to fix yet.
+
+### 14. The `publish = false` / `allow-wildcard-paths` pair is enforced by comment only
+**Still open.** Item 9 above (closed) set `publish = false` on all 13 internal manifests and
+added `allow-wildcard-paths = true` to `deny.toml`, with a comment tying the two together —
+`allow-wildcard-paths` is workspace-wide, and it is only safe because every member that could be
+reached by a wildcard path dependency also carries `publish = false`. But that pairing is
+enforced by the comment alone: a new crate added to the workspace without `publish = false`
+silently inherits the wildcard-path exemption, and nothing fails to tell you.
+`cargo xtask check-layers` already fails on a workspace member missing from `layer_of`, so it is
+a natural place to also assert `publish = false` on every member it walks. Low risk today — one
+person adding crates, reviewing their own PRs — but this repo's stated style is "enforced here
+rather than by review," and this is exactly the kind of invariant that erodes silently.
 
 ---
 
