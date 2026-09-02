@@ -61,9 +61,11 @@ pub enum Violation {
     /// `deploy/Containerfile`'s `cargo build` line contains a second, hardcoded
     /// `--features` flag alongside the expansion.
     BuildLineHardcodedFeatures,
-    /// `ARG SERVER_FEATURES` is declared before the first `FROM`, so it is invisible
-    /// inside the build stage.
-    ArgBeforeFirstFrom,
+    /// `ARG SERVER_FEATURES` is declared somewhere the `cargo build` line that uses it
+    /// cannot see it — after that line, or in a different build stage (a `FROM` sits
+    /// between the `ARG` and the `RUN cargo build` line, and `ARG` scope does not cross a
+    /// `FROM`).
+    ArgNotVisibleToBuildLine,
     /// Parse-stale: `deploy/compose.yaml` has no top-level `services:` key this parser
     /// recognizes.
     ComposeMissingServicesKey,
@@ -113,13 +115,16 @@ impl std::fmt::Display for Violation {
                  Remove the hardcoded --features flag and let SERVER_FEATURES alone decide \
                  which image gets the kernel."
             ),
-            Violation::ArgBeforeFirstFrom => write!(
+            Violation::ArgNotVisibleToBuildLine => write!(
                 f,
-                "deploy/Containerfile declares ARG SERVER_FEATURES before the first FROM. An \
-                 ARG before the first FROM is a different scope and is invisible inside the \
-                 build stage, so the {ARG_EXPANSION} expansion would silently see an empty \
-                 value and the worker image would ship without the CAD kernel it needs. Move \
-                 the ARG SERVER_FEATURES declaration to after `FROM ... AS build`."
+                "deploy/Containerfile declares ARG SERVER_FEATURES somewhere the `cargo \
+                 build` line that uses it cannot see it — either it comes after that line, \
+                 or a FROM starting a later build stage sits between the ARG and the RUN \
+                 cargo build line, and ARG scope does not cross a FROM. So the \
+                 {ARG_EXPANSION} expansion would silently see an empty value and the worker \
+                 image would ship without the CAD kernel it needs. Move ARG SERVER_FEATURES \
+                 to a line after the FROM that starts the stage containing `RUN cargo \
+                 build`, and before that RUN line, with no other FROM between them."
             ),
             Violation::ComposeMissingServicesKey => write!(
                 f,
@@ -240,42 +245,99 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
     violations
 }
 
+/// Join backslash line-continuations into logical lines, so a `RUN` instruction wrapped
+/// across multiple physical lines (`RUN cargo build ... \` followed by an indented
+/// continuation) is inspected as one line rather than several. Docker's own parser joins
+/// continuations the same way before evaluating an instruction; without this, a wrapped
+/// `cargo build` line with the expansion on the continuation would make
+/// `BuildLineMissingArgExpansion` fire on a perfectly correct file, because the substring
+/// search would only ever see the first physical line.
+fn logical_lines(contents: &str) -> Vec<String> {
+    let mut logical = Vec::new();
+    let mut buffer = String::new();
+    let mut continuing = false;
+
+    for raw in contents.lines() {
+        if continuing {
+            buffer.push(' ');
+            buffer.push_str(raw.trim_start());
+        } else {
+            buffer.push_str(raw);
+        }
+
+        if let Some(stripped) = buffer.trim_end().strip_suffix('\\') {
+            buffer = stripped.trim_end().to_owned();
+            continuing = true;
+        } else {
+            continuing = false;
+            logical.push(std::mem::take(&mut buffer));
+        }
+    }
+    // A trailing continuation with nothing following it: keep whatever was gathered
+    // rather than silently dropping the tail of the file.
+    if continuing {
+        logical.push(buffer);
+    }
+    logical
+}
+
 /// Rules 2 and 3: `deploy/Containerfile` still routes `SERVER_FEATURES` through the arg
-/// expansion in its `cargo build` line, and declares the arg after the first `FROM` so it
-/// is visible inside the build stage.
+/// expansion in its `cargo build` line, and `ARG SERVER_FEATURES` is declared where that
+/// line can actually see it.
+///
+/// "Visible" is not "after the first FROM" — a multi-stage Containerfile can declare the
+/// arg in one stage and use `cargo build` in a later one, or (the bug this replaced) place
+/// the arg after some *other* FROM while `cargo build` runs in an earlier stage. `ARG`
+/// scope does not cross a `FROM`, so the real requirement is: the arg's declaration comes
+/// before the `cargo build` line, and no `FROM` sits between them. That is checked against
+/// every `FROM` in the file, not just the first, so it stays correct if a third stage is
+/// ever added.
 pub fn check_containerfile(contents: &str) -> Vec<Violation> {
-    let lines: Vec<&str> = contents.lines().collect();
+    let lines = logical_lines(contents);
     let mut violations = Vec::new();
 
-    let first_from = lines
+    let from_indices: Vec<usize> = lines
         .iter()
-        .position(|l| l.trim_start().starts_with("FROM "));
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with("FROM "))
+        .map(|(i, _)| i)
+        .collect();
+
     let arg_decl = lines
         .iter()
         .position(|l| l.trim_start().starts_with("ARG SERVER_FEATURES"));
-
-    match arg_decl {
-        None => violations.push(Violation::ContainerfileMissingArgDeclaration),
-        Some(arg_i) => {
-            // If there is no FROM at all the file is too malformed to build regardless of
-            // this check — nothing more useful to say about scoping in that case.
-            if let Some(from_i) = first_from
-                && arg_i < from_i
-            {
-                violations.push(Violation::ArgBeforeFirstFrom);
-            }
-        }
+    if arg_decl.is_none() {
+        violations.push(Violation::ContainerfileMissingArgDeclaration);
     }
 
-    match lines.iter().find(|l| l.contains("cargo build")) {
+    // Anchored on `RUN cargo build`, not the bare substring "cargo build": a comment
+    // mentioning "cargo build" above the real RUN line must not be mistaken for it. Excludes
+    // comment lines the same way parse_services does for deploy/compose.yaml.
+    let build_line = lines.iter().enumerate().find(|(_, l)| {
+        let trimmed = l.trim_start();
+        !trimmed.starts_with('#') && trimmed.starts_with("RUN cargo build")
+    });
+
+    match build_line {
         None => violations.push(Violation::ContainerfileMissingBuildLine),
-        Some(build_line) => {
-            if !build_line.contains(ARG_EXPANSION) {
+        Some((build_i, build_content)) => {
+            if !build_content.contains(ARG_EXPANSION) {
                 violations.push(Violation::BuildLineMissingArgExpansion);
             }
-            if build_line.matches("--features").count() > 1 {
+            if build_content.matches("--features").count() > 1 {
                 violations.push(Violation::BuildLineHardcodedFeatures);
             }
+            if let Some(arg_i) = arg_decl {
+                let visible = arg_i < build_i
+                    && !from_indices
+                        .iter()
+                        .any(|&from_i| from_i > arg_i && from_i < build_i);
+                if !visible {
+                    violations.push(Violation::ArgNotVisibleToBuildLine);
+                }
+            }
+            // If arg_decl is None, ContainerfileMissingArgDeclaration was already pushed
+            // above — nothing more useful to say about where it's visible from.
         }
     }
 
@@ -406,7 +468,69 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
     fn arg_before_first_from_fails() {
         let bad = format!("ARG SERVER_FEATURES=\n{CORRECT_CONTAINERFILE}");
         let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::ArgBeforeFirstFrom]);
+        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
+    }
+
+    #[test]
+    fn arg_after_second_from_fails_even_though_it_is_after_the_first() {
+        // The bug this replaced: checking only `arg_i < first_from_i` accepts this,
+        // because the ARG is indeed after the *first* FROM — it just isn't in the stage
+        // that runs `cargo build`, so the expansion sees nothing.
+        let bad = CORRECT_CONTAINERFILE
+            .replacen("ARG SERVER_FEATURES=\n", "", 1)
+            .replacen(
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f\n",
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f\nARG SERVER_FEATURES=\n",
+                1,
+            );
+        let violations = check_containerfile(&bad);
+        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
+        let msg = violations[0].to_string();
+        assert!(
+            msg.contains("FROM") && msg.contains("stage"),
+            "message must describe the actual problem (wrong stage), not just \
+             'before the first FROM' — got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn arg_correctly_placed_in_a_three_stage_file_passes() {
+        let three_stage = "\
+# syntax=docker/dockerfile:1
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS deps
+RUN apt-get update
+
+FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
+ARG SERVER_FEATURES=
+WORKDIR /src
+RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
+
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
+EXPOSE 8080 8081
+ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
+";
+        assert_eq!(check_containerfile(three_stage), vec![]);
+    }
+
+    #[test]
+    fn comment_mentioning_cargo_build_above_the_real_run_line_does_not_misfire() {
+        let with_comment = CORRECT_CONTAINERFILE.replacen(
+            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            "# Remember: cargo build needs SERVER_FEATURES threaded through the ARG below.\nRUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            1,
+        );
+        assert_eq!(check_containerfile(&with_comment), vec![]);
+    }
+
+    #[test]
+    fn wrapped_run_cargo_build_line_with_expansion_on_the_continuation_passes() {
+        let wrapped = CORRECT_CONTAINERFILE.replacen(
+            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            "RUN cargo build --release --locked -p lapidary-server \\\n    ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            1,
+        );
+        assert_eq!(check_containerfile(&wrapped), vec![]);
     }
 
     #[test]
