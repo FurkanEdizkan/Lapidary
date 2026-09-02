@@ -89,13 +89,9 @@ fn check_layers() -> Result<()> {
              Enterprise, the wrapper tier that holds lapidary-enterprise; and nothing — \
              not even Enterprise — may depend on a binary (lapidary-server, lapidary, \
              xtask), which sits outside the tier rule and depends on everything instead. \
-             Beyond the tier rule, a small set of specific edges are forbidden by name even \
-             where their tiers would otherwise permit them — see FORBIDDEN_PAIRS in \
-             xtask/src/layers.rs; today that list forbids lapidary-api -> lapidary-cad \
-             because the open path lives in lapidary-api and must never invoke the CAD \
-             kernel. And every workspace member must set `publish = false`: deny.toml's \
-             `allow-wildcard-paths = true` is workspace-wide and is only sound because \
-             every member is unpublishable."
+             Beyond the tier rule, specific edges may also be forbidden by name — see \
+             FORBIDDEN_PAIRS in xtask/src/layers.rs. And every workspace member must set \
+             `publish = false`: deny.toml's `allow-wildcard-paths` depends on it."
         );
         bail!("layering check failed")
     }
