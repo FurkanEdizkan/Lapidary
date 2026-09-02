@@ -43,6 +43,14 @@
 /// check for it.
 const KERNEL_LINKED_SERVICES: &[&str] = &["worker"];
 
+/// The `build: dockerfile:` value that identifies a `deploy/compose.yaml` service as one
+/// that builds and runs `lapidary-server` — as opposed to `db` (`db/Containerfile`, runs
+/// Postgres) or `web` (`deploy/web/Containerfile`, a different binary entirely). Matching
+/// on the dockerfile path rather than naming `api`/`worker` in a list means a future
+/// `lapidary-server`-based service is covered by the `LAPIDARY_ROLE` rule below without
+/// anyone remembering to add its name anywhere.
+const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
+
 /// The exact expansion `deploy/Containerfile`'s `cargo build` line must contain so the
 /// `SERVER_FEATURES` arg actually reaches the build. Kept as one constant so the check and
 /// its own doc comment can't drift apart.
@@ -55,6 +63,9 @@ pub enum Violation {
     UnexpectedKernelLink { service: String },
     /// A service in `KERNEL_LINKED_SERVICES` does not set `SERVER_FEATURES`.
     MissingKernelLink { service: String },
+    /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` (i.e. runs
+    /// `lapidary-server`) but does not set `LAPIDARY_ROLE`.
+    MissingRole { service: String },
     /// `deploy/Containerfile`'s `cargo build` line does not contain the
     /// `${SERVER_FEATURES:+...}` expansion.
     BuildLineMissingArgExpansion,
@@ -101,6 +112,17 @@ impl std::fmt::Display for Violation {
                  mock-kernel` (or the current feature name) under {service} in \
                  deploy/compose.yaml, or remove {service} from KERNEL_LINKED_SERVICES if it \
                  no longer needs the kernel."
+            ),
+            Violation::MissingRole { service } => write!(
+                f,
+                "deploy/compose.yaml service '{service}' builds {LAPIDARY_SERVER_DOCKERFILE} \
+                 (runs lapidary-server) but does not set LAPIDARY_ROLE. \
+                 bin/lapidary-server/src/main.rs requires it — there is no default, because \
+                 the two roles are not interchangeable and a missing value on the worker \
+                 service fails silently (the container starts, binds, and passes its \
+                 healthcheck, but never mounts /scan). Add `LAPIDARY_ROLE: api` (serves the \
+                 grid and the open path) or `LAPIDARY_ROLE: worker` (runs ingest) under \
+                 {service}'s environment: block in deploy/compose.yaml."
             ),
             Violation::BuildLineMissingArgExpansion => write!(
                 f,
@@ -168,24 +190,37 @@ impl std::fmt::Display for Violation {
     }
 }
 
-/// Parse `deploy/compose.yaml`'s `services:` block into `(service name, sets
-/// SERVER_FEATURES)` pairs.
+/// One `deploy/compose.yaml` service block, as far as these checks need it.
+struct ServiceBlock {
+    name: String,
+    /// Does the service set `SERVER_FEATURES` (any nesting depth)?
+    sets_features: bool,
+    /// The `dockerfile:` value under `build:`, if any — used to recognize a service that
+    /// builds `deploy/Containerfile` and therefore runs `lapidary-server`, without having
+    /// to name every such service (`api`, `worker`, and any future one) in a list.
+    dockerfile: Option<String>,
+    /// Does the service set `LAPIDARY_ROLE` (any nesting depth)?
+    sets_role: bool,
+}
+
+/// Parse `deploy/compose.yaml`'s `services:` block into one [`ServiceBlock`] per service.
 ///
 /// Line-wise, not a YAML parser: a service name is a line indented by exactly two spaces
 /// ending in `:` (`  worker:`); everything more deeply indented until the next such line —
 /// or the next unindented top-level key — belongs to that service's body. Within a body,
-/// any non-comment line starting with `SERVER_FEATURES:` (after its own leading
-/// whitespace) marks that service as setting it, regardless of nesting depth (it always
-/// lives under `build: args:`, but this does not require that exact path — a boring, tolerant
-/// check).
-fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
+/// any non-comment line starting with `SERVER_FEATURES:` or `LAPIDARY_ROLE:` (after its own
+/// leading whitespace) marks that service as setting it, regardless of nesting depth (each
+/// normally lives under a specific key — `build: args:`, `environment:` — but this does not
+/// require that exact path — a boring, tolerant check); a `dockerfile:` line records its
+/// value.
+fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
     let lines: Vec<&str> = contents.lines().collect();
     let Some(start) = lines.iter().position(|l| *l == "services:") else {
         return Err(Violation::ComposeMissingServicesKey);
     };
 
-    let mut services: Vec<(String, bool)> = Vec::new();
-    let mut current: Option<(String, bool)> = None;
+    let mut services: Vec<ServiceBlock> = Vec::new();
+    let mut current: Option<ServiceBlock> = None;
 
     for line in &lines[start + 1..] {
         // A non-blank, unindented line ends the services: block (e.g. a top-level
@@ -217,12 +252,17 @@ fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
                 if let Some(finished) = current.take() {
                     services.push(finished);
                 }
-                current = Some((name.to_owned(), false));
+                current = Some(ServiceBlock {
+                    name: name.to_owned(),
+                    sets_features: false,
+                    dockerfile: None,
+                    sets_role: false,
+                });
                 continue;
             }
         }
 
-        if let Some((_, sets_features)) = current.as_mut() {
+        if let Some(block) = current.as_mut() {
             let trimmed = line.trim_start();
             if !trimmed.starts_with('#') {
                 // Mapping form (`SERVER_FEATURES: mock-kernel`, the form deploy/compose.yaml
@@ -230,12 +270,20 @@ fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
                 // valid Compose syntax for `args:`) both count. Recognizing only the mapping
                 // form would make a list-form worker report MissingKernelLink — telling the
                 // reader their image ships kernel-less when it would not.
-                let list_item = trimmed
-                    .strip_prefix('-')
-                    .map(str::trim_start)
-                    .is_some_and(|rest| rest.starts_with("SERVER_FEATURES="));
-                if trimmed.starts_with("SERVER_FEATURES:") || list_item {
-                    *sets_features = true;
+                let list_item = |key: &str| {
+                    trimmed
+                        .strip_prefix('-')
+                        .map(str::trim_start)
+                        .is_some_and(|rest| rest.starts_with(key))
+                };
+                if trimmed.starts_with("SERVER_FEATURES:") || list_item("SERVER_FEATURES=") {
+                    block.sets_features = true;
+                }
+                if trimmed.starts_with("LAPIDARY_ROLE:") || list_item("LAPIDARY_ROLE=") {
+                    block.sets_role = true;
+                }
+                if let Some(value) = trimmed.strip_prefix("dockerfile:") {
+                    block.dockerfile = Some(value.trim().to_owned());
                 }
             }
         }
@@ -252,6 +300,14 @@ fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
 
 /// Rule 1: exactly the services in `KERNEL_LINKED_SERVICES` set `SERVER_FEATURES` in
 /// `deploy/compose.yaml` — no more, no fewer.
+///
+/// Rule 5: every service that builds `LAPIDARY_SERVER_DOCKERFILE` (i.e. runs
+/// `lapidary-server`) sets `LAPIDARY_ROLE` explicitly. `bin/lapidary-server/src/main.rs`
+/// deliberately has no default for it — the two roles are not interchangeable, and a
+/// missing `api` value looks fine (the process just stays `api`) while a missing `worker`
+/// value fails silently (the container starts, binds, passes its healthcheck, and never
+/// mounts `/scan`). This rule is the CI-time half of closing that hole: it catches
+/// `deploy/compose.yaml` losing the variable before anyone runs the container.
 pub fn check_compose(contents: &str) -> Vec<Violation> {
     let services = match parse_services(contents) {
         Ok(services) => services,
@@ -259,16 +315,24 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
     };
 
     let mut violations = Vec::new();
-    for (name, sets_features) in &services {
-        let is_kernel_linked = KERNEL_LINKED_SERVICES.contains(&name.as_str());
-        match (sets_features, is_kernel_linked) {
+    for service in &services {
+        let is_kernel_linked = KERNEL_LINKED_SERVICES.contains(&service.name.as_str());
+        match (service.sets_features, is_kernel_linked) {
             (true, false) => violations.push(Violation::UnexpectedKernelLink {
-                service: name.clone(),
+                service: service.name.clone(),
             }),
             (false, true) => violations.push(Violation::MissingKernelLink {
-                service: name.clone(),
+                service: service.name.clone(),
             }),
             _ => {}
+        }
+
+        let runs_lapidary_server =
+            service.dockerfile.as_deref() == Some(LAPIDARY_SERVER_DOCKERFILE);
+        if runs_lapidary_server && !service.sets_role {
+            violations.push(Violation::MissingRole {
+                service: service.name.clone(),
+            });
         }
     }
 
@@ -278,7 +342,7 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
     // raises nothing there. Check the reverse direction too: every name this module
     // expects to exist must have been found among the parsed services.
     for &expected in KERNEL_LINKED_SERVICES {
-        if !services.iter().any(|(name, _)| name == expected) {
+        if !services.iter().any(|s| s.name == expected) {
             violations.push(Violation::MissingKernelLink {
                 service: expected.to_owned(),
             });
@@ -491,6 +555,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
       LAPIDARY_BIND: 0.0.0.0:8080
+      LAPIDARY_ROLE: api
     ports:
       - \"8080:8080\"
 
@@ -503,6 +568,7 @@ services:
         SERVER_FEATURES: mock-kernel
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
+      LAPIDARY_ROLE: worker
 
   web:
     build:
@@ -596,7 +662,7 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         // ever walked the services the parser found, so a KERNEL_LINKED_SERVICES entry that
         // never parsed at all raised nothing. This pins the reverse check.
         let bad = CORRECT_COMPOSE.replacen(
-            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n\n",
+            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
             "",
             1,
         );
@@ -622,6 +688,55 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             1,
         );
         assert_eq!(check_compose(&list_form), vec![]);
+    }
+
+    #[test]
+    fn worker_missing_lapidary_role_fails_and_names_it() {
+        // The worker case matters most: losing LAPIDARY_ROLE here is the silent failure
+        // this rule exists to catch — the container would still start, bind, and pass its
+        // healthcheck, and simply never mount /scan.
+        let bad = CORRECT_COMPOSE.replacen("      LAPIDARY_ROLE: worker\n", "", 1);
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![Violation::MissingRole {
+                service: "worker".to_owned()
+            }]
+        );
+        assert!(violations[0].to_string().contains("worker"));
+        assert!(violations[0].to_string().contains("LAPIDARY_ROLE"));
+    }
+
+    #[test]
+    fn api_missing_lapidary_role_fails_and_names_it() {
+        // The rule is generic over every service that builds deploy/Containerfile, not
+        // special-cased to worker — pin that api is checked too.
+        let bad = CORRECT_COMPOSE.replacen("      LAPIDARY_ROLE: api\n", "", 1);
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![Violation::MissingRole {
+                service: "api".to_owned()
+            }]
+        );
+        assert!(violations[0].to_string().contains("api"));
+    }
+
+    #[test]
+    fn services_not_running_lapidary_server_need_no_lapidary_role() {
+        // CORRECT_COMPOSE's db (db/Containerfile) and web (deploy/web/Containerfile)
+        // services never set LAPIDARY_ROLE and never should — neither builds
+        // deploy/Containerfile, so neither runs lapidary-server. Pinned directly (not just
+        // via correct_configuration_passes returning an empty vec) so a future reader can
+        // see this was checked on purpose.
+        let violations = check_compose(CORRECT_COMPOSE);
+        assert!(
+            !violations.iter().any(|v| matches!(
+                v,
+                Violation::MissingRole { service } if service == "db" || service == "web"
+            )),
+            "db and web must never be asked for LAPIDARY_ROLE: {violations:?}"
+        );
     }
 
     #[test]

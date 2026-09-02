@@ -152,7 +152,10 @@ async fn the_worker_role_serves_the_scan_route(pool: sqlx::PgPool) {
         )
         .await
         .expect("responds");
-    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    // Pin the exact placeholder status, not merely "not 404" — assert_ne! here would also
+    // pass if the stub handler panicked into a 500. Task 9 replaces this handler and must
+    // update this assertion to whatever it actually returns.
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -167,7 +170,10 @@ async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
         )
         .await
         .expect("responds");
-    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    // Same reasoning as the_worker_role_serves_the_scan_route above: pin the exact
+    // placeholder status so a panicking handler can't slip past as "not 404". Task 10
+    // replaces this handler and must update this assertion.
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
 #[test]

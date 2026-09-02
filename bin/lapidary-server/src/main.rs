@@ -1,6 +1,6 @@
 //! Container entrypoint: the API, and optionally an in-process worker.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use figment::Figment;
 use figment::providers::Env;
 use lapidary_api::{AppState, Role, router};
@@ -11,20 +11,22 @@ struct Config {
     database_url: String,
     #[serde(default = "default_bind")]
     bind: String,
-    // `deploy/compose.yaml` sets LAPIDARY_ROLE per service. Defaulting to "api" here (not
-    // to a role that mounts ingest) means a compose file that forgets to set it fails
-    // safe: the process serves the open path, not silently gains a scan route it can't
-    // execute (the api image doesn't link lapidary-cad).
-    #[serde(default = "default_role")]
-    role: String,
+    // No default, deliberately, and left `Option` (checked by hand below) rather than a
+    // required field on the struct, so a missing LAPIDARY_ROLE gets its own actionable
+    // error instead of being folded into the generic "configuration is incomplete"
+    // message below, which is written for the DATABASE_URL case and would be misleading
+    // for this one. The two roles are not interchangeable, and that asymmetry is exactly
+    // why a *default* would be wrong: if the `api` service loses this variable it stays
+    // `api` and nothing looks wrong; if `worker` loses it, ingest silently stops with no
+    // error anywhere — the container would start, bind its port, and pass its healthcheck
+    // while never mounting /scan. Missing it is now a startup failure instead. The
+    // matching CI-side guard lives in xtask/src/deploy.rs, which fails `check-deploy` if
+    // deploy/compose.yaml ever stops setting this for a service that runs lapidary-server.
+    role: Option<String>,
 }
 
 fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
-}
-
-fn default_role() -> String {
-    "api".to_owned()
 }
 
 /// Human-readable kernel description for the startup log. `deploy/Containerfile` takes the
@@ -68,7 +70,14 @@ async fn main() -> Result<()> {
         .extract()
         .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
-    let role = Role::from_env_str(&config.role).context("Could not start: bad LAPIDARY_ROLE.")?;
+    let Some(role_str) = config.role.as_deref() else {
+        bail!(
+            "Could not start: LAPIDARY_ROLE is not set. Set it to `api` (serves the grid \
+             and the open path) or `worker` (runs ingest) — deploy/compose.yaml sets it per \
+             service."
+        );
+    };
+    let role = Role::from_env_str(role_str).context("Could not start: bad LAPIDARY_ROLE.")?;
 
     // `lapidary_db::connect()` now classifies *why* the connection failed
     // (unreachable, wrong credentials, missing database) and that message is
@@ -95,7 +104,7 @@ async fn main() -> Result<()> {
     // Two containers run this one binary (deploy/compose.yaml: api on 8080, worker on
     // 8081) and only the router differs between them — this line is what lets `podman
     // logs` tell an operator which one a given container actually took.
-    tracing::info!(role = %config.role, "role");
+    tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
     axum::serve(listener, router(AppState { db }, role))
         .await
