@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use figment::Figment;
 use figment::providers::Env;
-use lapidary_api::{AppState, router};
+use lapidary_api::{AppState, Role, router};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -11,10 +11,20 @@ struct Config {
     database_url: String,
     #[serde(default = "default_bind")]
     bind: String,
+    // `deploy/compose.yaml` sets LAPIDARY_ROLE per service. Defaulting to "api" here (not
+    // to a role that mounts ingest) means a compose file that forgets to set it fails
+    // safe: the process serves the open path, not silently gains a scan route it can't
+    // execute (the api image doesn't link lapidary-cad).
+    #[serde(default = "default_role")]
+    role: String,
 }
 
 fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
+}
+
+fn default_role() -> String {
+    "api".to_owned()
 }
 
 /// Human-readable kernel description for the startup log. `deploy/Containerfile` takes the
@@ -58,6 +68,8 @@ async fn main() -> Result<()> {
         .extract()
         .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
+    let role = Role::from_env_str(&config.role).context("Could not start: bad LAPIDARY_ROLE.")?;
+
     // `lapidary_db::connect()` now classifies *why* the connection failed
     // (unreachable, wrong credentials, missing database) and that message is
     // actionable on its own — this outer line must only name the startup stage, not
@@ -80,8 +92,12 @@ async fn main() -> Result<()> {
         })?;
 
     tracing::info!(bind = %config.bind, "lapidary-server listening");
+    // Two containers run this one binary (deploy/compose.yaml: api on 8080, worker on
+    // 8081) and only the router differs between them — this line is what lets `podman
+    // logs` tell an operator which one a given container actually took.
+    tracing::info!(role = %config.role, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
-    axum::serve(listener, router(AppState { db }))
+    axum::serve(listener, router(AppState { db }, role))
         .await
         .context("The HTTP server stopped unexpectedly")?;
 

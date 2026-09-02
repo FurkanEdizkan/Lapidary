@@ -33,6 +33,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8080
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Serves the grid and the open path. Never the scan route — this image deliberately
+      # does not link the CAD kernel (no SERVER_FEATURES build arg below).
+      LAPIDARY_ROLE: api
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +53,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8081
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Runs ingest. Must never be "api" — see lapidary-api::Role and ApiError::UnknownRole.
+      LAPIDARY_ROLE: worker
     depends_on:
       db:
         condition: service_healthy
