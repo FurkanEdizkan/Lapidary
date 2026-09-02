@@ -76,10 +76,7 @@ mod tests {
         );
 
         let part = PartId::new();
-        assert_eq!(
-            part.to_string().parse::<PartId>().expect("valid id"),
-            part
-        );
+        assert_eq!(part.to_string().parse::<PartId>().expect("valid id"), part);
 
         let revision = RevisionId::new();
         assert_eq!(
