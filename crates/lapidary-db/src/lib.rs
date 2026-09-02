@@ -42,6 +42,47 @@ pub enum DbError {
         "`{column}` holds {value} microseconds since the epoch, which is not a representable timestamp. The row is corrupt — it was probably written by something other than lapidary-db."
     )]
     TimestampOutOfRange { column: &'static str, value: i64 },
+
+    #[error(
+        "`{column}` holds {value}, which is negative and cannot be a triangle count. The row is corrupt — it was probably written by something other than lapidary-db."
+    )]
+    NegativeTriangleCount { column: &'static str, value: i32 },
+
+    #[error(
+        "A triangle count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the mesh kernel reported — a real mesh should never have this many triangles."
+    )]
+    TriangleCountTooLarge { column: &'static str, value: u32 },
+}
+
+impl DbError {
+    /// The message safe to hand back in a client-visible error body.
+    ///
+    /// Every variant already carries actionable, operator-facing text via `Display` —
+    /// but two of them wrap an upstream error this crate did not compose itself
+    /// (`Query`'s `sqlx::Error`, `Migrate`'s `sqlx::migrate::MigrateError`), and neither
+    /// has been audited the way `redact_credentials` audits the three connection-
+    /// classification variants below (their `target` field is built *only* through
+    /// `redact_credentials`, at construction time, so their `Display` text is already
+    /// safe to show a caller). An un-audited upstream `Display` could in principle
+    /// surface anything — this is deliberately an exhaustive match, not a wildcard
+    /// fallthrough, so a new `DbError` variant forces a decision here at compile time
+    /// instead of silently inheriting "safe to show" by default.
+    pub fn client_message(&self) -> String {
+        match self {
+            DbError::Query(_) => {
+                "A database query failed. Check the server logs for detail.".to_owned()
+            }
+            DbError::Migrate(_) => "Could not bring the database schema up to date. Check the                  server logs for detail."
+                .to_owned(),
+            DbError::Unreachable { .. }
+            | DbError::AuthenticationFailed { .. }
+            | DbError::DatabaseMissing { .. }
+            | DbError::UnsupportedVersion { .. }
+            | DbError::TimestampOutOfRange { .. }
+            | DbError::NegativeTriangleCount { .. }
+            | DbError::TriangleCountTooLarge { .. } => self.to_string(),
+        }
+    }
 }
 
 /// Strip credentials from a connection URL so it is safe to put in an error or a log.
@@ -171,6 +212,34 @@ pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
 #[cfg(test)]
 mod tests {
     use super::{DbError, classify_connect_error, redact_credentials};
+
+    #[test]
+    fn client_message_passes_through_a_curated_variants_own_text_verbatim() {
+        let err = DbError::TimestampOutOfRange {
+            column: "part.created_at",
+            value: 123,
+        };
+        assert_eq!(err.client_message(), err.to_string());
+    }
+
+    #[test]
+    fn client_message_scrubs_an_opaque_query_error_instead_of_the_wrapped_sqlx_text() {
+        // sqlx::Error::PoolClosed needs no live connection to construct — its Display
+        // text ("attempted to acquire a connection on a closed pool") is harmless here,
+        // but DbError::Query wraps whatever sqlx::Error the query call produced, and
+        // that is not audited the way the three connection-classification variants'
+        // `target` field is (see `redact_credentials`) — so this must never depend on
+        // which sqlx::Error happens to be inside.
+        let err = DbError::Query(sqlx::Error::PoolClosed);
+        assert_eq!(
+            err.client_message(),
+            "A database query failed. Check the server logs for detail."
+        );
+        assert!(
+            !err.client_message().contains("pool"),
+            "must not leak the wrapped sqlx::Error's own text"
+        );
+    }
 
     #[test]
     fn redaction_removes_the_password() {

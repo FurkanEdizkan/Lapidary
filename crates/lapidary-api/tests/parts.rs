@@ -215,3 +215,135 @@ async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
     );
     assert_eq!(parts[0]["name"], "Bracket, LP-1042-03");
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: sqlx::PgPool) {
+    // MAX_LIMIT is 100 (see parts.rs) — seed one more than that so a correctly-capped
+    // page (exactly 100) is distinguishable from an uncapped one (all 101, since
+    // nothing caps below the row count once the bound is defeated) with a small, fast
+    // fixture rather than needing tens of thousands of rows.
+    for i in 0..101u16 {
+        seed_part(
+            &pool,
+            library(),
+            (i % 256) as u8,
+            &format!("Fixture part {i:03}"),
+            b"webp",
+        )
+        .await;
+    }
+
+    // No `limit` at all: DEFAULT_LIMIT (50), not every row that exists. Distinguishes
+    // a correct default from a broken one (e.g. `DEFAULT_LIMIT = 5000`) the same way —
+    // a broken default would return all 101 rows, since nothing else caps it below the
+    // row count.
+    let (status, default_page) = get_page(pool.clone(), SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        default_page["parts"].as_array().expect("array").len(),
+        50,
+        "the default page size, not every row in the library"
+    );
+
+    // A limit far past MAX_LIMIT: the request must not 400 (the field used to be a
+    // `u16`, which fails to deserialize a value this large *before* the clamp below
+    // ever runs), and the page must be capped at exactly MAX_LIMIT (100), not the 101
+    // rows that actually exist and not `limit`'s raw value.
+    let (status2, huge_page) = get_page(pool, SEEDED_LIBRARY, "limit=100000").await;
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "a limit past u16::MAX must clamp, not fail to parse"
+    );
+    let parts = huge_page["parts"].as_array().expect("array");
+    assert_eq!(
+        parts.len(),
+        100,
+        "capped at MAX_LIMIT even though 101 rows exist and the client asked for 100000"
+    );
+    assert!(
+        huge_page["next"].is_string(),
+        "a further page (the 101st part) still exists"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_empty_after_and_limit_are_treated_as_absent(pool: sqlx::PgPool) {
+    seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03", b"webp-a").await;
+
+    // The literal shape this endpoint's own docs use:
+    // `after=${cursor ?? ''}&limit=${n}` sends exactly this on the first page, before
+    // any cursor exists. An empty value must mean the same as omitting the key, not
+    // "invalid part id" / "invalid number".
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "after=&limit=").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an empty after/limit must not 400 — it means the same as omitting them"
+    );
+    let parts = json["parts"].as_array().expect("parts is an array");
+    assert_eq!(parts.len(), 1);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_malformed_query_string_gets_an_actionable_json_body(pool: sqlx::PgPool) {
+    // Non-empty and genuinely unparsable, unlike the empty-string case above — this
+    // must still 400, but with a JSON body that names what broke, not axum's raw
+    // plain-text rejection line (get_page's serde_json::from_slice would panic on that
+    // instead of reaching the assertions below, which is itself part of what this
+    // pins).
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "limit=not-a-number").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = json["message"].as_str().expect("message is a string");
+    assert!(
+        message.contains("limit"),
+        "must say what a client can send instead: {message}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_database_failure_returns_a_generic_scrubbed_message(pool: sqlx::PgPool) {
+    // Closing the pool is the cheapest reliable way to make the grid query fail
+    // without corrupting data — the same technique tests/health.rs's healthz test
+    // uses for the same reason.
+    pool.close().await;
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let message = json["message"].as_str().expect("message is a string");
+    // Exact match, not a substring check: pins both that the old wrong advice ("Check
+    // that the `db` service is running…", appended to every DbError regardless of
+    // whether it was a connectivity problem) is gone, and that DbError::Query's raw
+    // wrapped sqlx::Error text (un-audited, unlike the three connection-classification
+    // variants) never reaches the response body.
+    assert_eq!(
+        message, "A database query failed. Check the server logs for detail.",
+        "a DbError::Query must get the generic, scrubbed message"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_corrupt_rows_own_error_text_reaches_the_client_verbatim(pool: sqlx::PgPool) {
+    seed_part(&pool, library(), 0x51, "Bracket, LP-1042-03", b"webp").await;
+    sqlx::query(
+        "UPDATE revision SET triangle_count = -7 WHERE part_id = (SELECT id FROM part LIMIT 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("corrupt the column directly");
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let message = json["message"].as_str().expect("message is a string");
+    // DbError::NegativeTriangleCount's own crafted text, verbatim — not the generic
+    // "A database query failed" text DbError::Query gets. This variant's Display was
+    // written to be safe and actionable on its own; genericising it too would point an
+    // operator at server logs for a problem the message already fully explains.
+    assert!(
+        message.contains("negative") && message.contains("triangle count"),
+        "must surface the variant's own actionable text verbatim: {message}"
+    );
+    assert!(
+        !message.contains("db` service is running"),
+        "must not append connectivity advice on top of a corrupt-row error: {message}"
+    );
+}

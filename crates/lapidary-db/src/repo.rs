@@ -9,6 +9,7 @@ use uuid::Uuid;
 /// and the grid renders it directly. `PgParts::page` already fetches that column (it
 /// is a `LEFT JOIN` away from every row it reads regardless), so the bytes ride along
 /// here rather than being fetched and thrown away.
+#[derive(Debug)]
 pub struct PartRow {
     pub summary: PartSummary,
     pub thumbnail_webp: Option<Vec<u8>>,
@@ -99,6 +100,17 @@ async fn insert_part_chain(
     let revision = Uuid::now_v7();
     let m = req.measurements;
     let tess = Provenance::Tessellated.as_str();
+    // Converted — and, deliberately, checked — before the first INSERT below: a
+    // triangle count that does not fit `revision.triangle_count`'s 32-bit column (a
+    // mesh kernel bug, or corrupt input) must fail before any row is written, not
+    // silently wrap to a negative count that a later read (see PgParts::page) would
+    // then have to reject anyway. `as i32` here previously wrapped 3_000_000_000 to
+    // -1_294_967_296 and stored it without complaint.
+    let triangle_count =
+        i32::try_from(m.triangle_count).map_err(|_| DbError::TriangleCountTooLarge {
+            column: "revision.triangle_count",
+            value: m.triangle_count,
+        })?;
 
     sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
         .bind(part.as_uuid())
@@ -125,7 +137,7 @@ async fn insert_part_chain(
     .bind(m.bbox_mm[1])
     .bind(m.bbox_mm[2])
     .bind(tess)
-    .bind(m.triangle_count as i32)
+    .bind(triangle_count)
     .bind(m.is_watertight)
     .execute(&mut **tx)
     .await?;
@@ -180,6 +192,17 @@ impl PartRepository for PgParts {
         // sqlx cannot decode jiff::Timestamp (it ships chrono/time support, not jiff), so
         // timestamps are pulled out as epoch microseconds and reassembled below rather
         // than adding a second date-time crate just to carry the value across.
+        //
+        // Both LATERALs below pick one row deterministically out of a set that could
+        // hold more than one, newest (`created_at DESC, id DESC`) first: the revision
+        // LATERAL because a part could in principle carry more than one revision (only
+        // Phase 2 will actually write a second one), and the derivative LATERAL for the
+        // same reason on `derivative` — `(revision_id, kind)` has no unique constraint,
+        // so nothing stops a second `kind = 'thumbnail'` row for one revision the
+        // moment anything regenerates a thumbnail. A plain (non-LATERAL) LEFT JOIN on
+        // that second one would fan out: two thumbnail rows for one revision means two
+        // identical grid cards for one part, and a page of `limit` rows holding fewer
+        // than `limit` distinct parts, silently under-reporting `next`.
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
             Uuid,
@@ -198,7 +221,7 @@ impl PartRepository for PgParts {
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN derivative d ON d.revision_id = r.id AND d.kind = 'thumbnail' \
+             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = 'thumbnail' ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
@@ -222,6 +245,17 @@ impl PartRepository for PgParts {
                     created_us,
                     updated_us,
                 )| {
+                    // `as u32` previously turned a negative column value into a number
+                    // near 4.29 billion instead of failing — the same silent-wraparound
+                    // shape as the write side above, just in the other direction.
+                    let triangle_count = triangles
+                        .map(|t| {
+                            u32::try_from(t).map_err(|_| DbError::NegativeTriangleCount {
+                                column: "revision.triangle_count",
+                                value: t,
+                            })
+                        })
+                        .transpose()?;
                     Ok(PartRow {
                         summary: PartSummary {
                             id: PartId::from_uuid(id),
@@ -232,7 +266,7 @@ impl PartRepository for PgParts {
                             // and the grid renders them directly. A hash-addressed
                             // thumbnail endpoint arrives with the viewer.
                             thumbnail: None,
-                            triangle_count: triangles.map(|t| t as u32),
+                            triangle_count,
                             // Every figure on a mesh part is tessellated, so any is all.
                             approximate: true,
                             created_at: jiff::Timestamp::from_microsecond(created_us).map_err(

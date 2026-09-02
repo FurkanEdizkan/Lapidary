@@ -2,9 +2,15 @@
 //! `api` role only. The open path's main read — this is what the grid renders from —
 //! and it reads metadata and derivatives only, never a source file and never the CAD
 //! kernel (structurally: this crate cannot link `lapidary-cad`, see `lib.rs`).
+//!
+//! `after=` with nothing after the `=` is not a client bug: it is the literal shape of
+//! `` `…/parts?after=${cursor ?? ''}&limit=${n}` ``, the natural way to build this URL
+//! before a cursor exists, and this handler treats it the same as `after` being absent
+//! entirely rather than rejecting it as an invalid id.
 
 use crate::AppState;
 use axum::Json;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -12,7 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{LibraryId, PartId};
-use lapidary_db::{PartRepository, PartRow, PgParts};
+use lapidary_db::{DbError, PartRepository, PartRow, PgParts};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -68,8 +74,35 @@ pub struct PartsPage {
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
+    /// The previous page's last id, or absent/empty for the first page.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
     after: Option<PartId>,
-    limit: Option<u16>,
+    /// Parsed as `i64`, not `u16`: the query string is untrusted text, and a value
+    /// like `100000` must reach the `clamp` below and come out as `MAX_LIMIT`, not
+    /// fail deserialization because it does not fit a 16-bit type before the clamp
+    /// ever runs — `u16`'s serde impl rejects an out-of-range number outright rather
+    /// than saturating.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    limit: Option<i64>,
+}
+
+/// Treats an empty query-string value the same as an absent key. `#[serde(default)]`
+/// alone only covers the key being missing entirely — a key that is present with
+/// nothing after the `=` still reaches the field's own deserializer as the empty
+/// string, and `T::from_str("")` rejects it for every `T` this endpoint uses (`PartId`,
+/// `i64`), which is what turned the documented `after=&limit=` URL shape into a 400.
+fn empty_str_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = String::deserialize(deserializer)?;
+    if raw.is_empty() {
+        Ok(None)
+    } else {
+        raw.parse().map(Some).map_err(serde::de::Error::custom)
+    }
 }
 
 /// `GET /api/libraries/{id}/parts?after=&limit=` — the grid's one read. Keyset paged,
@@ -77,14 +110,24 @@ pub struct PageQuery {
 pub async fn page(
     State(state): State<AppState>,
     Path(library): Path<LibraryId>,
-    Query(query): Query<PageQuery>,
+    query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Response {
+    let PageQuery { after, limit } = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => return bad_query(&rejection),
+    };
+
     // Zero would ask PgParts::page for a LIMIT 0 query and then always report `next:
     // null` (a short page, by definition) even though more rows exist — clamp the
-    // bottom as well as the top.
-    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    // bottom as well as the top. The clamp runs on the widened `i64` so an
+    // out-of-range value (too large *or* negative) lands inside [1, MAX_LIMIT] instead
+    // of failing to parse; the cast back to `u16` afterward is safe because the value
+    // is now guaranteed to fit.
+    let limit = limit
+        .unwrap_or(i64::from(DEFAULT_LIMIT))
+        .clamp(1, i64::from(MAX_LIMIT)) as u16;
 
-    match PgParts(state.db).page(library, query.after, limit).await {
+    match PgParts(state.db).page(library, after, limit).await {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -97,17 +140,43 @@ pub async fn page(
             let parts = rows.into_iter().map(to_card).collect();
             Json(PartsPage { parts, next }).into_response()
         }
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "message": format!(
-                    "Could not load parts for this library: {err}. Check that the `db` \
-                     service is running and that DATABASE_URL matches it."
-                )
-            })),
-        )
-            .into_response(),
+        Err(err) => internal_error(&err),
     }
+}
+
+/// The query string failed to parse — a malformed (non-empty) `after` or a `limit`
+/// that isn't a number. axum's default rejection body is a bare, unstructured line of
+/// text; wrap it so the response says what broke and what a client can send instead.
+fn bad_query(rejection: &QueryRejection) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "message": format!(
+                "Could not read the query string: {rejection}. `after` must be a part id \
+                 from a previous page (or omitted/empty for the first page); `limit` must \
+                 be a whole number."
+            )
+        })),
+    )
+        .into_response()
+}
+
+/// The query itself failed. Every `DbError` variant already carries its own
+/// operator-facing remedy via `Display` — appending fixed connectivity advice on top,
+/// as this handler once did, points a `TimestampOutOfRange` (a corrupt row, nothing to
+/// do with connectivity) at the wrong system. `client_message` is what decides which
+/// variants' text is safe to hand back verbatim; the ones that are not (an upstream
+/// `sqlx`/migration error this crate did not compose) get a generic message here while
+/// the real detail still reaches the operator, through the log line below rather than
+/// the response body — the same asymmetry `health::healthz` already keeps by never
+/// putting a live error's text in its response at all.
+fn internal_error(err: &DbError) -> Response {
+    tracing::error!(error = %err, "grid page query failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "message": err.client_message() })),
+    )
+        .into_response()
 }
 
 fn to_card(row: PartRow) -> PartCard {

@@ -1,5 +1,7 @@
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
-use lapidary_db::{IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, StoredBlobRow};
+use lapidary_db::{
+    DbError, IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, StoredBlobRow,
+};
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -253,5 +255,181 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
     assert!(
         page.is_empty(),
         "delete is soft, but soft-deleted parts are still hidden"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sqlx::PgPool) {
+    // F2: `PgParts::page`'s revision LATERAL orders by `created_at DESC` (with an
+    // `id DESC` tie-break for a tie in that same instant — see the tie-break tests'
+    // notes on why that half stays unpinned). Flipping DESC to ASC on the primary key
+    // leaves the whole workspace green otherwise, because nothing else exercises a
+    // part with more than one revision: `insert_part_chain` is the only writer today
+    // and it always creates a brand-new part, so this seeds the second revision
+    // directly. "Measurement must not lie" — this is the query deciding which
+    // revision's numbers the grid shows, so a regression here is a stale figure shown
+    // as current, not a crash.
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0x51),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"older-thumbnail",
+        })
+        .await
+        .expect("records");
+
+    let newer_revision: (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO revision (id, part_id, rev_label, origin, created_at, triangle_count, is_watertight)          SELECT gen_random_uuid(), part_id, '2', 'ingest', created_at + interval '1 hour', 99999, true          FROM revision WHERE part_id = $1          RETURNING id",
+    )
+    .bind(id.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("insert a strictly newer revision");
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json)          VALUES (gen_random_uuid(), $1, 'thumbnail', $2, 'mesh stl-1+cpu-1', '{}')",
+    )
+    .bind(newer_revision.0)
+    .bind(b"newer-thumbnail".as_slice())
+    .execute(&pool)
+    .await
+    .expect("insert the newer revision's own derivative");
+
+    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    assert_eq!(page.len(), 1, "still one part");
+    assert_eq!(
+        page[0].summary.triangle_count,
+        Some(99999),
+        "the newer revision's triangle count, not the one it was ingested with"
+    );
+    assert_eq!(
+        page[0].thumbnail_webp.as_deref(),
+        Some(b"newer-thumbnail".as_slice()),
+        "the newer revision's own thumbnail, not the original ingest's"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_thumbnail_derivatives_on_one_revision_do_not_duplicate_the_part(pool: sqlx::PgPool) {
+    // F6: `derivative` has no unique constraint on (revision_id, kind) — a plain
+    // (non-LATERAL) `LEFT JOIN derivative ... AND kind = 'thumbnail'` fans out on a
+    // second thumbnail row for the same revision, turning one part into two identical
+    // grid cards and silently under-reporting `next`. Nothing writes a second
+    // thumbnail today (insert_part_chain writes exactly one derivative per call), so
+    // this is seeded directly — reachable the moment anything regenerates one.
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0x60),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"first-thumbnail",
+        })
+        .await
+        .expect("records");
+
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at)          SELECT gen_random_uuid(), revision_id, 'thumbnail', $2, kernel_version, params_json, created_at + interval '1 hour'          FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
+    )
+    .bind(id.as_uuid())
+    .bind(b"second-thumbnail".as_slice())
+    .execute(&pool)
+    .await
+    .expect("insert a second thumbnail derivative for the same revision");
+
+    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    assert_eq!(
+        page.len(),
+        1,
+        "one part must still be one grid row, however many thumbnail derivatives its          latest revision has"
+    );
+    assert_eq!(
+        page[0].thumbnail_webp.as_deref(),
+        Some(b"second-thumbnail".as_slice()),
+        "the newer derivative wins, the same deterministic tie-break as the revision          pick above it"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(pool: sqlx::PgPool) {
+    // F5 (read side): `as u32` on a negative i32 column wraps to a huge positive
+    // number (-7 becomes 4_294_967_289) instead of failing, the same silent-wraparound
+    // shape TimestampOutOfRange already refuses to allow for a corrupt timestamp.
+    // insert_part_chain cannot write a negative value itself (it stores a u32
+    // unconditionally), so this is only reachable via a row written by something else
+    // — exactly what the error message says.
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0x70),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"webp",
+        })
+        .await
+        .expect("records");
+    sqlx::query("UPDATE revision SET triangle_count = -7 WHERE part_id = $1")
+        .bind(id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("corrupt the column directly");
+
+    let err = PgParts(pool)
+        .page(library(), None, 10)
+        .await
+        .expect_err("a negative triangle count must be reported, not reinterpreted");
+    match err {
+        DbError::NegativeTriangleCount { column, value } => {
+            assert_eq!(column, "revision.triangle_count");
+            assert_eq!(value, -7);
+        }
+        other => panic!("expected NegativeTriangleCount, got {other:?}"),
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sqlx::PgPool) {
+    // F5 (write side): `m.triangle_count as i32` silently wrapped a count above
+    // i32::MAX into a negative number instead of failing — 3_000_000_000 stored as
+    // -1_294_967_296, and the read path's (former) `as u32` would have round-tripped
+    // it straight back to 3_000_000_000, making the API look correct while the column
+    // itself was wrong for every SQL-level consumer that isn't this endpoint.
+    let oversized = MeshMeasurements {
+        bbox_mm: [10.0, 10.0, 10.0],
+        triangle_count: 3_000_000_000,
+        surface_area_mm2: 100.0,
+        volume_mm3: Some(50.0),
+        is_watertight: true,
+    };
+    let err = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Implausible mesh",
+            blob: &blob_row(0x71),
+            measurements: &oversized,
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"webp",
+        })
+        .await
+        .expect_err("a triangle count this large must be rejected, not wrapped");
+    match err {
+        DbError::TriangleCountTooLarge { column, value } => {
+            assert_eq!(column, "revision.triangle_count");
+            assert_eq!(value, 3_000_000_000);
+        }
+        other => panic!("expected TriangleCountTooLarge, got {other:?}"),
+    }
+
+    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        parts, 0,
+        "a rejected triangle count must leave no partial part/revision row behind"
     );
 }

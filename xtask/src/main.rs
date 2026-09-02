@@ -5,6 +5,7 @@ mod layers;
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::Command;
 
 fn main() -> Result<()> {
@@ -217,19 +218,63 @@ fn check_layers() -> Result<()> {
 /// the database: every `#[sqlx::test]` integration test in the workspace is named for what
 /// it tests, never for exporting bindings, so `--workspace` picks up none of them — this
 /// runs with no `DATABASE_URL` needed and no risk of failing for want of a live Postgres.
+///
+/// One more failure mode, found in review: `cargo test` exits 0 when its filter matches
+/// zero tests — there is nothing to fail. Before this function cleared
+/// `web/src/bindings/`, ran the (matched-nothing) export, and printed "bindings written
+/// to ..." over an empty directory: a filter matching nothing looked identical to
+/// success, and every committed binding was gone. Reachable with no code edit here at
+/// all — any ts-rs upgrade that changes the generated test-name prefix (today's is
+/// `export_bindings_<type>`) triggers it. So this now asks `cargo test` to *list* what
+/// the filter matches, with `--list`, before touching anything on disk: if that list is
+/// empty, it stops right there and the committed bindings are never cleared. After the
+/// real run, it also counts the `.ts` files actually written and compares that count to
+/// how many tests the list step predicted, so a type whose test passed but which failed
+/// to write its file for some other reason is caught too, not just the all-or-nothing
+/// case.
 fn export_bindings() -> Result<()> {
     let root = workspace_root()?;
     let out = root.join("web/src/bindings");
+    export_bindings_into(&out)
+}
+
+/// The real logic, taking the output directory as a parameter rather than hardcoding
+/// `web/src/bindings` so the bail paths below can be exercised against a scratch
+/// directory in tests instead of the committed one.
+fn export_bindings_into(out: &Path) -> Result<()> {
+    // Ask cargo how many tests the filter matches *before* touching anything on disk —
+    // see this function's doc for why a successful run alone cannot be trusted to mean
+    // "something was exported".
+    let list = Command::new(env!("CARGO"))
+        .args(["test", "--workspace", "export_bindings", "--", "--list"])
+        .output()
+        .context("Could not list the ts-rs export tests")?;
+    if !list.status.success() {
+        bail!(
+            "Could not list the ts-rs export tests: {}",
+            String::from_utf8_lossy(&list.stderr)
+        );
+    }
+    let expected = count_listed_tests(&String::from_utf8_lossy(&list.stdout));
+    if expected == 0 {
+        bail!(
+            "`cargo test --workspace export_bindings` matches zero tests, so nothing would              be exported. This usually means a ts-rs upgrade changed the generated              `export_bindings_<type>` test name pattern. Nothing on disk was touched — fix              the filter (or ts-rs's generated name) before running this again."
+        );
+    }
 
     // ts-rs writes on test run; clear first so removed types do not linger.
     if out.exists() {
-        std::fs::remove_dir_all(&out).context("Could not clear web/src/bindings")?;
+        std::fs::remove_dir_all(out).context(
+            "Could not clear web/src/bindings. If it was partially cleared, run `git              checkout -- web/src/bindings` to restore the committed files.",
+        )?;
     }
-    std::fs::create_dir_all(&out).context("Could not create web/src/bindings")?;
+    std::fs::create_dir_all(out).context(
+        "Could not create web/src/bindings. Run `git checkout -- web/src/bindings` to          restore the committed files if the directory was already cleared.",
+    )?;
 
     let status = Command::new(env!("CARGO"))
         .args(["test", "--workspace", "export_bindings"])
-        .env("TS_RS_EXPORT_DIR", &out)
+        .env("TS_RS_EXPORT_DIR", out)
         .status()
         .context("Could not run the ts-rs export tests")?;
 
@@ -238,13 +283,114 @@ fn export_bindings() -> Result<()> {
         // gone from the working tree. Say so — the user needs the recovery step, not just
         // the diagnosis.
         bail!(
-            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so \
-             the committed bindings are missing from your working tree. Run `git checkout -- \
-             web/src/bindings` to restore them, then `cargo test --workspace export_bindings` \
-             to see which type could not be exported."
+            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so              the committed bindings are missing from your working tree. Run `git checkout --              web/src/bindings` to restore them, then `cargo test --workspace export_bindings`              to see which type could not be exported."
         );
     }
 
-    println!("bindings written to {}", out.display());
+    let written = count_ts_files(out)?;
+    if written == 0 {
+        bail!(
+            "The export tests reported success but wrote no bindings, and web/src/bindings/              was cleared before the attempt, so nothing was written back. Run `git checkout              -- web/src/bindings` to restore the committed files, then run `cargo test              --workspace export_bindings` directly to see what happened."
+        );
+    }
+    if written != expected {
+        bail!(
+            "Expected {expected} binding(s) — one per matching export test — but found              {written} file(s) in web/src/bindings/ after a successful run. Some type did              not write its file. Run `git checkout -- web/src/bindings` to restore the              committed files, then run `cargo test --workspace export_bindings` directly to              see which type is missing."
+        );
+    }
+
+    println!("bindings written to {} ({written} file(s))", out.display());
     Ok(())
+}
+
+/// How many individual tests `cargo test ... -- --list` reports as matched, summed
+/// across every test binary section in its stdout. Each matching test is printed as its
+/// own `<name>: test` line; each binary's non-matching count is summarised as `N tests,
+/// 0 benchmarks` and contributes nothing here.
+fn count_listed_tests(list_stdout: &str) -> usize {
+    list_stdout
+        .lines()
+        .filter(|line| line.trim_end().ends_with(": test"))
+        .count()
+}
+
+/// Counts `.ts` files directly inside `dir` — ts-rs writes one flat file per exported
+/// type, no subdirectories.
+fn count_ts_files(dir: &Path) -> Result<usize> {
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir).context("Could not read the bindings output directory")? {
+        let entry = entry.context("Could not read an entry in the bindings output directory")?;
+        if entry.path().extension().is_some_and(|ext| ext == "ts") {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod export_bindings_tests {
+    use super::{count_listed_tests, count_ts_files};
+
+    #[test]
+    fn counts_zero_when_every_section_matches_nothing() {
+        // The exact shape `cargo test <bogus-filter> -- --list` produces: every binary
+        // section reports its summary line, no test-name lines anywhere. This is the
+        // real-world shape reproduced against a filter matching no test in the
+        // workspace — see the fix report for the literal command output.
+        let listing = "     Running unittests src/lib.rs (target/debug/deps/lapidary_core-abc123)
+0 tests, 0 benchmarks
+     Running unittests src/lib.rs (target/debug/deps/lapidary_api-def456)
+0 tests, 0 benchmarks
+";
+        assert_eq!(count_listed_tests(listing), 0);
+    }
+
+    #[test]
+    fn sums_matched_tests_across_every_binary_section() {
+        // Mirrors the real two-crate shape today: lapidary-core's 9 export tests and
+        // lapidary-api's 2, interleaved with other binaries that match nothing.
+        let listing = "     Running unittests src/lib.rs (target/debug/deps/lapidary_api-abc123)
+parts::export_bindings_partcard: test
+parts::export_bindings_partspage: test
+
+2 tests, 0 benchmarks
+     Running unittests src/lib.rs (target/debug/deps/lapidary_cad-def456)
+0 tests, 0 benchmarks
+     Running unittests src/lib.rs (target/debug/deps/lapidary_core-ghi789)
+ids::export_bindings_blobhash: test
+ids::export_bindings_libraryid: test
+ids::export_bindings_partid: test
+ids::export_bindings_revisionid: test
+measurement::export_bindings_meshmeasurements: test
+measurement::export_bindings_provenance: test
+approximate::export_bindings_approximate: test
+part::export_bindings_librarymode: test
+part::export_bindings_partsummary: test
+
+9 tests, 0 benchmarks
+";
+        assert_eq!(count_listed_tests(listing), 11);
+    }
+
+    #[test]
+    fn counts_ts_files_and_ignores_everything_else() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("PartCard.ts"), "export type PartCard = {};")
+            .expect("write");
+        std::fs::write(
+            dir.path().join("PartsPage.ts"),
+            "export type PartsPage = {};",
+        )
+        .expect("write");
+        // A non-.ts file in the same directory must not be counted — this is what
+        // distinguishes "count .ts files" from "count directory entries".
+        std::fs::write(dir.path().join("README.md"), "not a binding").expect("write");
+        assert_eq!(count_ts_files(dir.path()).expect("count"), 2);
+    }
+
+    #[test]
+    fn counts_zero_ts_files_in_an_empty_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(count_ts_files(dir.path()).expect("count"), 0);
+    }
 }
