@@ -97,7 +97,10 @@ or on L3. If two L2 crates need to share something, it moves to `lapidary-core`.
 — `lapidary-api` included — may never depend on `Enterprise`. That edge is forbidden
 structurally, not just by review, because it would make the free application depend on
 the enterprise crate, breaking the rule that the app is free and complete with no gated
-features. This is what keeps the monolith from congealing.
+features. This is what keeps the monolith from congealing. `lapidary-api -> lapidary-cad`
+is forbidden the same way, and every workspace member must carry `publish = false`; both
+are named-pair and per-crate checks in `FORBIDDEN_PAIRS` and `check_publish`
+(`xtask/src/layers.rs`) rather than restated here.
 
 ## The kernel simplification
 
