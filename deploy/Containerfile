@@ -7,6 +7,22 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY bin ./bin
 COPY xtask ./xtask
+# The base image tag above is pinned by digest, and rust-toolchain.toml (copied above)
+# pins the same version by channel string — they agree today only because both pins point
+# at the same release. Once rust-toolchain.toml is on disk, invoking rustc/cargo from
+# inside /src makes rustup honor it as a directory override and silently fetch a matching
+# toolchain over the network if the image's installed rustc has drifted — exactly the
+# hermetic-build-turns-network-dependent failure we're guarding against, and it would mask
+# a mismatch instead of surfacing one. So this checks the image's actual installed rustc
+# from outside /src, where no override file is in scope. If this fires: bump
+# rust-toolchain.toml and the image digest together, to the same release.
+RUN set -eu; \
+    expected="$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')"; \
+    actual="$(cd / && rustc --version | awk '{print $2}')"; \
+    if [ "$actual" != "$expected" ]; then \
+        echo "rustc $actual in the base image does not match the rust-toolchain.toml pin $expected — bump rust-toolchain.toml and the image digest together." >&2; \
+        exit 1; \
+    fi
 RUN cargo build --release --locked -p lapidary-server --features mock-kernel
 
 FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
