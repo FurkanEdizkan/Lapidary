@@ -106,14 +106,16 @@ function Card({ part }: { part: PartCard }) {
  * means *any* figure on this part is mesh-derived — not that this count is.
  */
 function Measurements({ part }: { part: PartCard }) {
-  if (!part.approximate && part.triangleCount === null) {
+  // Narrowed with typeof rather than compared to null: the binding says `number | null`,
+  // but the response is cast rather than validated, so a field that disappears upstream
+  // arrives here as undefined and would reach .toLocaleString() as one.
+  const count = typeof part.triangleCount === 'number' ? part.triangleCount : null
+  if (!part.approximate && count === null) {
     return null
   }
   return (
     <p className="mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
-      {part.triangleCount === null ? null : (
-        <span>{strings.parts.triangles(part.triangleCount)}</span>
-      )}
+      {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
       <span
         title={strings.parts.approximateDetail}
         className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[0.65rem] tracking-wider uppercase"

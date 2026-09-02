@@ -262,6 +262,40 @@ test('labels a triangle count even when the wire claims the part is not approxim
   expect(within(card).getByText('Approximate')).toBeDefined()
 })
 
+// strings.parts.triangles has a singular branch, and nothing exercised it: every fixture
+// carried a plural count, so inlining the formatter as
+// `{n.toLocaleString('en-US')} triangles` would render "1 triangles" to a user with all
+// tests green. A single-facet mesh is what a conformance probe looks like in a real
+// library, so the fixture is not contrived.
+test('renders the singular form for a one-triangle mesh', async () => {
+  const singleFacet: PartCard = {
+    ...MOTOR_MOUNT,
+    id: '01931b6e-0000-7000-8000-0000000a0005',
+    name: 'STL conformance probe, single facet',
+    partNumber: 'LP-0001-T',
+    triangleCount: 1,
+  }
+  stubFetch({ parts: ok(page([singleFacet])) })
+  renderIndex()
+  const card = await screen.findByRole('article', { name: singleFacet.name })
+  expect(within(card).getByText('1 triangle')).toBeDefined()
+  expect(within(card).queryByText('1 triangles')).toBeNull()
+  expect(within(card).getByText('Approximate')).toBeDefined()
+})
+
+// The binding says `number | null`, but fetchParts casts the response rather than
+// validating it, so a field the server stops sending arrives as undefined and reaches
+// the formatter. The card must degrade to "no count" rather than throwing the whole grid
+// away; the cast here is the point of the test, not an oversight.
+test('survives a triangle count the server stopped sending', async () => {
+  const drifted = { ...MOTOR_MOUNT, triangleCount: undefined } as unknown as PartCard
+  stubFetch({ parts: ok(page([drifted])) })
+  renderIndex()
+  const card = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(within(card).queryByText(/triangle/)).toBeNull()
+  expect(within(card).getByText('Approximate')).toBeDefined()
+})
+
 // The flag means "any figure on this part is mesh-derived", so a part can be approximate
 // with no count on the card at all. Both fixtures here withhold the count, which is what
 // distinguishes the two mistakes: keying the label to triangleCount alone would drop it
