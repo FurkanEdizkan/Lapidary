@@ -1112,7 +1112,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "lapidary-build",
- "lapidary-cad",
  "lapidary-core",
  "lapidary-db",
  "lapidary-index",
@@ -1208,6 +1207,7 @@ dependencies = [
  "axum",
  "figment",
  "lapidary-api",
+ "lapidary-cad",
  "lapidary-db",
  "serde",
  "tokio",

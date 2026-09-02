@@ -78,7 +78,9 @@ crates/
 ├── lapidary-vcs/         L2  revisions, lineage DAG, locks, geometric diff
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
-├── lapidary-api/         L3          axum Router. Depends on all L2. A LIBRARY.
+├── lapidary-api/         L3          axum Router. Depends on the L2 crates it uses —
+│                                     not lapidary-cad; the open path lives here and must
+│                                     never invoke the kernel. A LIBRARY.
 └── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
 ├── lapidary-server/          container entrypoint: api + optionally in-process worker

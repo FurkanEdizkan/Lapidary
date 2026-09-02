@@ -6,9 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Compiles in the mock CAD kernel and reports it at startup. This is what the `worker`
+# compose service builds with in Phase 0a — the real OCCT kernel is Phase 0b.
+mock-kernel = ["lapidary-cad/mock-kernel"]
+
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
+# Optional, off by default: only the mock-kernel feature pulls this in. lapidary-api
+# never depends on lapidary-cad — the open path lives there and must never invoke the
+# kernel — so the worker reaches it directly, through this binary.
+lapidary-cad = { workspace = true, optional = true }
 anyhow.workspace = true
 # This binary owns the listener, so it calls axum::serve directly. lapidary-api builds
 # the Router and does not re-export axum. Both resolve to the one version pinned in

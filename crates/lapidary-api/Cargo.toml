@@ -15,7 +15,6 @@ lapidary-index.workspace = true
 lapidary-vcs.workspace = true
 lapidary-build.workspace = true
 lapidary-targets.workspace = true
-lapidary-cad.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true

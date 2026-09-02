@@ -17,6 +17,21 @@ fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
 }
 
+/// Human-readable kernel description for the startup log. The `mock-kernel` feature is
+/// what the `worker` compose service builds with in Phase 0a — this line is the only way
+/// an operator can tell from `podman logs` whether that feature chain actually held.
+#[cfg(feature = "mock-kernel")]
+fn kernel_description() -> String {
+    use lapidary_cad::Kernel;
+    let version = lapidary_cad::MockKernel::new().version();
+    format!("{} {}", version.implementation, version.version)
+}
+
+#[cfg(not(feature = "mock-kernel"))]
+fn kernel_description() -> String {
+    "none (build with --features mock-kernel to compile one in)".to_owned()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -59,9 +74,24 @@ async fn main() -> Result<()> {
         })?;
 
     tracing::info!(bind = %config.bind, "lapidary-server listening");
+    tracing::info!(kernel = %kernel_description(), "CAD kernel");
     axum::serve(listener, router(AppState { db }))
         .await
         .context("The HTTP server stopped unexpectedly")?;
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "mock-kernel"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kernel_description_reports_the_mock_implementation_when_the_feature_is_on() {
+        assert!(
+            kernel_description().starts_with("mock "),
+            "expected the mock implementation name, got: {}",
+            kernel_description()
+        );
+    }
 }
