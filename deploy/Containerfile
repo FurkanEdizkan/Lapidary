@@ -2,6 +2,11 @@
 # Rust workspace -> lapidary-server. OCCT is Phase 0b and is deliberately absent.
 
 FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
+# Feature list for the lapidary-server build, threaded in by deploy/compose.yaml. Declared
+# here, inside the stage — an ARG before the first FROM lives in a different scope and is
+# not visible to the RUN below. Empty by default so the api image never links the CAD
+# kernel; deploy/compose.yaml sets this to `mock-kernel` only for the worker service.
+ARG SERVER_FEATURES=
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
@@ -35,7 +40,10 @@ RUN set -eu; \
         echo "rustc $actual in the base image does not match the rust-toolchain.toml pin $expected — bump rust-toolchain.toml and the image digest together." >&2; \
         exit 1; \
     fi
-RUN cargo build --release --locked -p lapidary-server --features mock-kernel
+# ${SERVER_FEATURES:+...} adds no --features flag at all when the arg is empty. A plain
+# --features "" is not equivalent and would need cargo to tolerate an empty feature list —
+# this form never asks it to.
+RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features "$SERVER_FEATURES"}
 
 FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
 RUN apt-get update \
@@ -44,8 +52,9 @@ RUN apt-get update \
 RUN useradd --system --uid 10001 --create-home lapidary
 COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
 USER lapidary
-# One image, two compose services on different ports (deploy/compose.yaml): api binds
-# 8080, worker binds 8081. Document both rather than naming only the one that's wrong for
-# half the deployments.
+# This Containerfile now produces two different images via SERVER_FEATURES — api without
+# the CAD kernel, worker with it — bound to different ports in deploy/compose.yaml: api
+# 8080, worker 8081. EXPOSE documents both regardless of which image is built, rather than
+# naming only the port that's wrong for the other one.
 EXPOSE 8080 8081
 ENTRYPOINT ["/usr/local/bin/lapidary-server"]

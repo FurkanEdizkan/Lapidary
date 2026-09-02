@@ -9,10 +9,10 @@ publish = false
 
 [features]
 default = []
-# Compiles in the mock CAD kernel and reports it at startup. `deploy/Containerfile` builds
-# with this feature on, and deploy/compose.yaml's `api` and `worker` services both build
-# from that one Containerfile — so both compose services get it, not just `worker`. The
-# real OCCT kernel is Phase 0b.
+# Compiles in the mock CAD kernel and reports it at startup. `deploy/Containerfile` takes
+# this as a build arg (SERVER_FEATURES), empty by default, instead of hardcoding it — and
+# deploy/compose.yaml only sets that arg for the `worker` service, so `api` builds without
+# linking lapidary-cad at all. The real OCCT kernel is Phase 0b.
 mock-kernel = ["dep:lapidary-cad", "lapidary-cad/mock-kernel"]
 
 [dependencies]
