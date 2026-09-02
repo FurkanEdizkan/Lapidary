@@ -78,8 +78,8 @@ crates/
 ├── lapidary-vcs/         L2  revisions, lineage DAG, locks, geometric diff
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
-├── lapidary-api/         L3  axum Router. Depends on all L2. A LIBRARY.
-└── lapidary-enterprise/  L3  licence verify, auth, RBAC, audit, worker fleet
+├── lapidary-api/         L3          axum Router. Depends on all L2. A LIBRARY.
+└── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
 ├── lapidary-server/          container entrypoint: api + optionally in-process worker
 └── lapidary/                 desktop binary: agent | worker | up
@@ -89,8 +89,13 @@ deploy/                       Containerfile, compose, quadlet, install.sh, insta
 ```
 
 **Layering rule, CI-enforced:** L2 crates may depend on L0 and L1 and never on each other
-or on L3. If two L2 crates need to share something, it moves to `lapidary-core`. This is
-what keeps the monolith from congealing.
+or on L3. If two L2 crates need to share something, it moves to `lapidary-core`.
+`lapidary-enterprise` sits in a wrapper tier, `Enterprise`, above L3: it may depend on
+`lapidary-api`, since enterprise wraps auth, RBAC and audit around the API, but L3 crates
+— `lapidary-api` included — may never depend on `Enterprise`. That edge is forbidden
+structurally, not just by review, because it would make the free application depend on
+the enterprise crate, breaking the rule that the app is free and complete with no gated
+features. This is what keeps the monolith from congealing.
 
 ## The kernel simplification
 

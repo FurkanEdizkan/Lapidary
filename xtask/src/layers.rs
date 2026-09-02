@@ -2,17 +2,18 @@
 //!
 //! L0 depends on no workspace crate. L1 depends only on L0. L2 depends only on L0 and
 //! L1 — never on another L2, never on L3. L3 may depend on L0, L1, L2, and other L3
-//! crates, but never on a binary.
+//! crates, but never on Enterprise and never on a binary.
 //!
 //! If two L2 crates need to share something, it moves to lapidary-core.
 //!
-//! Note the gap this leaves. Permitting L3→L3 is deliberate: `lapidary-enterprise`
-//! wraps auth, RBAC and audit around `lapidary-api`, so `lapidary-enterprise →
-//! lapidary-api` must be allowed. The cost is that the reverse edge, `lapidary-api →
-//! lapidary-enterprise`, is also permitted by this rule — and that one would make the
-//! free application depend on the enterprise crate, breaking the project rule that the
-//! application is free and complete with no gated features. Until either crate has
-//! content, that direction is enforced by code review, not by this check.
+//! `Enterprise` is a wrapper tier above L3, not a fifth peer of L0-L3: it holds only
+//! `lapidary-enterprise`, which wraps auth, RBAC and audit around `lapidary-api`. So
+//! `lapidary-enterprise → lapidary-api` must be allowed — that's L3→L3 via the
+//! `lapidary-api` edge, permitted below. The reverse edge, `lapidary-api →
+//! lapidary-enterprise`, would make the free application depend on the enterprise crate,
+//! breaking the project rule that the application is free and complete with no gated
+//! features. That edge is now forbidden structurally, by `edge_allowed` giving L3 no
+//! path to `Enterprise` — not by code review.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +23,10 @@ pub enum Layer {
     L1,
     L2,
     L3,
+    /// Wraps L3, not a peer of it. Holds `lapidary-enterprise` alone: licence
+    /// verification, auth, RBAC, audit. Exists for one product reason — see the
+    /// module doc — so it's named for that reason, not slotted in as `L4`.
+    Enterprise,
     /// Binaries and xtask. Outside the rule; may depend on anything.
     Bin,
 }
@@ -34,7 +39,8 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "lapidary-db" | "lapidary-storage" => Layer::L1,
         "lapidary-cad" | "lapidary-jobs" | "lapidary-index" | "lapidary-vcs" | "lapidary-build"
         | "lapidary-targets" => Layer::L2,
-        "lapidary-api" | "lapidary-enterprise" => Layer::L3,
+        "lapidary-api" => Layer::L3,
+        "lapidary-enterprise" => Layer::Enterprise,
         "lapidary-server" | "lapidary" | "xtask" => Layer::Bin,
         _ => return None,
     })
@@ -64,6 +70,19 @@ impl std::fmt::Display for Violation {
                 from_layer,
                 to,
                 to_layer,
+            } if *from_layer == Layer::L3 && *to_layer == Layer::Enterprise => write!(
+                f,
+                "{from} ({from_layer:?}) -> {to} ({to_layer:?}) is forbidden. The \
+                 application is free and complete — no gated features. {from} may not \
+                 depend on {to}; that edge would make the free application depend on the \
+                 enterprise crate. lapidary-enterprise may depend on lapidary-api, never \
+                 the reverse."
+            ),
+            Violation::ForbiddenEdge {
+                from,
+                from_layer,
+                to,
+                to_layer,
             } => write!(
                 f,
                 "{from} ({from_layer:?}) -> {to} ({to_layer:?}) is forbidden. \
@@ -85,7 +104,8 @@ fn edge_allowed(from: Layer, to: Layer) -> bool {
         Layer::L0 => false,
         Layer::L1 => to == Layer::L0,
         Layer::L2 => to == Layer::L0 || to == Layer::L1,
-        Layer::L3 => to != Layer::Bin,
+        Layer::L3 => to == Layer::L0 || to == Layer::L1 || to == Layer::L2 || to == Layer::L3,
+        Layer::Enterprise => to != Layer::Bin,
         Layer::Bin => true,
     }
 }
@@ -164,7 +184,7 @@ mod tests {
 
     #[test]
     fn rejects_l2_depending_on_l3() {
-        let g = graph(&[("lapidary-jobs", &["lapidary-enterprise"])]);
+        let g = graph(&[("lapidary-jobs", &["lapidary-api"])]);
         let violations = check(&g).expect_err("L2 -> L3 must be rejected");
         assert_eq!(violations.len(), 1);
     }
@@ -214,13 +234,61 @@ mod tests {
     fn allows_l3_to_depend_on_another_l3_so_enterprise_can_wrap_the_api() {
         // lapidary-enterprise wraps auth/RBAC/audit around lapidary-api, so
         // lapidary-enterprise → lapidary-api must be permitted.
-        // The reverse edge, lapidary-api → lapidary-enterprise, is permitted by the rule too
-        // and is the one that would break "free and complete"; see the module comment.
+        // The reverse edge, lapidary-api → lapidary-enterprise, is now forbidden
+        // structurally — see rejects_api_depending_on_enterprise below.
         let g = graph(&[
             ("lapidary-api", &[]),
             ("lapidary-enterprise", &["lapidary-api"]),
         ]);
         assert!(check(&g).is_ok());
+    }
+
+    #[test]
+    fn rejects_api_depending_on_enterprise() {
+        let g = graph(&[("lapidary-api", &["lapidary-enterprise"])]);
+        let violations =
+            check(&g).expect_err("lapidary-api -> lapidary-enterprise must be rejected");
+        assert_eq!(
+            violations,
+            vec![Violation::ForbiddenEdge {
+                from: "lapidary-api".to_owned(),
+                from_layer: Layer::L3,
+                to: "lapidary-enterprise".to_owned(),
+                to_layer: Layer::Enterprise,
+            }]
+        );
+    }
+
+    #[test]
+    fn violation_message_for_api_to_enterprise_names_the_edge_and_the_remedy() {
+        let v = Violation::ForbiddenEdge {
+            from: "lapidary-api".to_owned(),
+            from_layer: Layer::L3,
+            to: "lapidary-enterprise".to_owned(),
+            to_layer: Layer::Enterprise,
+        };
+        let msg = v.to_string();
+        assert!(msg.contains("lapidary-api"));
+        assert!(msg.contains("lapidary-enterprise"));
+        assert!(
+            msg.contains("free and complete"),
+            "message must state the remedy: the app is free and complete"
+        );
+    }
+
+    #[test]
+    fn rejects_enterprise_depending_on_a_binary() {
+        let g = graph(&[("lapidary-enterprise", &["lapidary-server"])]);
+        let violations = check(&g).expect_err("Enterprise -> Bin must be rejected");
+        assert_eq!(violations.len(), 1);
+        match &violations[0] {
+            Violation::ForbiddenEdge {
+                from_layer: Layer::Enterprise,
+                to_layer: Layer::Bin,
+                ..
+            } => {}
+            other => panic!("expected Enterprise->Bin violation, got {other:?}"),
+        }
     }
 
     #[test]
