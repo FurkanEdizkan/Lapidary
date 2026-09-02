@@ -240,9 +240,11 @@ accidental `cargo publish` of an AGPL app crate.
 sources), `cargo build --workspace` succeeds, and `Cargo.lock` is unchanged or its diff is
 explained. Paste the `cargo deny check` output.
 
-**Prove the guard works:** temporarily restore `wildcards = "deny"` without
-`allow-wildcard-paths` and confirm `cargo deny check bans` fails, then revert — this gate
-had never been executed before Phase 0a's Task 11, so demonstrate it runs.
+**Prove the guard works.** `wildcards = "deny"` stays; `allow-wildcard-paths = true` is
+what you add. So: after making all three changes, temporarily comment out the new
+`allow-wildcard-paths` line and confirm `cargo deny check bans` **fails** naming the
+internal path dependencies, then restore it and confirm it passes. Paste both outputs.
+This gate had never been executed before Phase 0a's Task 11 — demonstrate it still bites.
 
 ---
 
