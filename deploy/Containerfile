@@ -16,9 +16,21 @@ COPY xtask ./xtask
 # a mismatch instead of surfacing one. So this checks the image's actual installed rustc
 # from outside /src, where no override file is in scope. If this fires: bump
 # rust-toolchain.toml and the image digest together, to the same release.
+#
+# Both captured values are checked for emptiness before comparing: a shell pipeline's exit
+# status is only its last stage's, so a broken grep/sed (e.g. the channel line's format
+# changes) or a broken awk (e.g. rustc's output shape changes) degrades silently to an
+# empty string rather than failing the RUN — and two empty strings compare equal, which
+# would make this check pass having verified nothing. That failure mode gets its own
+# message, distinct from a genuine mismatch, because the fix is different: update this
+# check's parsing, not the pins.
 RUN set -eu; \
     expected="$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')"; \
     actual="$(cd / && rustc --version | awk '{print $2}')"; \
+    if [ -z "$expected" ] || [ -z "$actual" ]; then \
+        echo "Could not parse a toolchain version to compare (rust-toolchain.toml channel='$expected', rustc --version='$actual') — this check's parsing is stale, not the pins; update the grep/sed or awk above to match the current file/output shape." >&2; \
+        exit 1; \
+    fi; \
     if [ "$actual" != "$expected" ]; then \
         echo "rustc $actual in the base image does not match the rust-toolchain.toml pin $expected — bump rust-toolchain.toml and the image digest together." >&2; \
         exit 1; \
