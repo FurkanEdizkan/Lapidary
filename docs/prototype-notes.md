@@ -33,18 +33,23 @@ replaces this with `tsvector` + `pg_trgm` and the 10k exact-count threshold from
 
 ## Ingest pipeline: ordering, idempotency, and failure modes
 
-`assetPipeline.service.ts`'s `ingestMesh(modelId, originalName, buffer)` was the only ingest
-entry point, called from `libraryScan.service.ts` per file. It ran two stages, strictly in
-order, with a third tier deferred entirely:
+`assetPipeline.service.ts`'s `ingestMesh(modelId, originalName, buffer)` is the ingest
+primitive, called from **two** places: `libraryScan.service.ts:62` (bulk folder scan, one call
+per file) and `routes/api.ts:93` (the multipart branch of `POST /api/models`, the direct upload
+route). Confirmed with `git grep -n ingestMesh origin/main -- server/src`, which returns exactly
+these two call sites plus the definition and the import in each caller — no others. The two
+callers share the primitive but diverge afterward in ways covered below. `ingestMesh` itself ran
+two stages, strictly in order, with a third tier deferred entirely:
 
 1. **Tier 3 (original), always first, unguarded.** `compress()` picks `zstd` when the
    running Node's `zlib` exposes `zstdCompressSync`, else falls back to `gzip`, and writes
-   the result to `${modelId}${ext}.zst` (or `.gz`) in `config.modelsDir` — e.g. an ingested
-   `bracket.stl` becomes `u<nanoid>.stl.zst`. This write (`fs.writeFileSync(originalPath,
-   data)`) has no try/catch around it: if it throws, `ingestMesh` throws immediately and no
-   DB row is ever created.
+   the result to `${modelId}${baseExt}${ext}` (`baseExt` is the uploaded file's own extension,
+   e.g. `.stl`; `ext` is the compression suffix, `.zst` or `.gz`) in `config.modelsDir` — e.g.
+   an ingested `bracket.stl` becomes `u<nanoid>.stl.zst`. This write (`fs.writeFileSync(
+   originalPath, data)`) has no try/catch around it: if it throws, `ingestMesh` throws
+   immediately and no DB row is ever created.
 2. **Tier 2 (LOD + metrics), via the external sidecar.** The raw buffer is written to a
-   temp file in `lodDir` (`${modelId}.raw${ext}`), handed to `analyzeMesh()`
+   temp file in `lodDir` (`${modelId}.raw${baseExt}`), handed to `analyzeMesh()`
    (`meshSidecar.service.ts`), which shells out to the optional `rust-mesh` binary
    (`execFile`, 60s timeout, `--lod <path> --json`) and parses its JSON stdout for `bbox`
    and `triangles`. The temp raw file is deleted in a `finally` block regardless of outcome.
@@ -53,44 +58,97 @@ order, with a third tier deferred entirely:
    route (`POST /api/models/:id/thumbnail` in `routes/api.ts`, calling `updateModel(id, {
    thumbnailPath })`), never through `ingestMesh`.
 
-The caller (`libraryScan.service.ts`) then does two more writes in order: `createModel()`
-inserts the row (without `triangle_count` — that column isn't in the INSERT list), and only
-afterward, if `ingest.triangleCount` is truthy, a follow-up `UPDATE models SET
-triangle_count = ? WHERE id = ?`. So a fully-succeeded ingest is four sequential writes:
-blob, (optional) LOD file, INSERT, conditional UPDATE.
+**The two callers diverge after `ingestMesh` returns, and the divergence is not cosmetic:**
+
+- **`libraryScan.service.ts` (bulk scan):** `createModel()` inserts the row (without
+  `triangle_count` — that column isn't in the INSERT list), and only afterward, if
+  `ingest.triangleCount` is truthy, a follow-up raw `UPDATE models SET triangle_count = ?
+  WHERE id = ?`. A fully-succeeded scan-path ingest is four sequential writes: blob, (optional)
+  LOD file, INSERT, conditional raw `UPDATE`. This path wraps the whole thing (`ingestMesh` +
+  `createModel` + the follow-up update) in a `try`/`catch` that increments `skipped` on any
+  failure — see partial-failure note below.
+- **`routes/api.ts`'s upload route (multipart `POST /api/models`):** calls `createModel(...)`
+  (passing `ingest.triangleCount` nowhere in that call), then, only if `ingest.triangleCount` is
+  truthy, `updateModel(id, { triangleCount: ingest.triangleCount })` — the same service-layer
+  helper the PATCH route uses, not a raw `UPDATE`. Same two-write shape as the scan path (INSERT,
+  conditional follow-up) but through a different mechanism. **There is no `try`/`catch` around
+  any of this.** A `createModel` failure here both orphans the Tier-3 blob `ingestMesh` already
+  wrote (the leak described below) and propagates as an unhandled rejection — a 500 to the
+  client, not a caught-and-counted failure the way the scan path handles it.
+
+**Dedup is a scan-path behavior, not a property of `ingestMesh` or of ingest as a whole.**
+`scanFolder` dedups by filename stem before ever calling `ingestMesh` (see the library-scan
+section below); the upload route has **no dedup of any kind** — every multipart POST mints a new
+`modelId` and creates a new row unconditionally, so re-uploading the same file, or two
+differently-folder'd files sharing a name, just produces two models. "The only reason a rescan
+doesn't re-import everything is the filename-stem dedup living in the caller" is true of the
+scan caller only; the upload caller has no such guard and the notes previously implied all
+callers did.
+
+**Measured-vs-typed dimensions are written to the same columns with no provenance marker — the
+divergence that matters most.** `routes/api.ts`'s upload route:
+
+```ts
+size: ingest.size ?? [
+  Number(fields.sx) || 0, Number(fields.sy) || 0, Number(fields.sz) || 0,
+],
+```
+
+When the sidecar returns no bounding box (`ingest.size` is `null` — an ordinary outcome; see
+partial failure below), the route falls back to `sx`/`sy`/`sz` multipart form fields —
+**user-typed numbers** — and writes them into the exact same `bbox_x/y/z` columns a
+sidecar-measured box would occupy. Nothing downstream (no column, no flag, no separate field)
+can distinguish a measured value from a typed one after that write. `libraryScan.service.ts`'s
+path has no equivalent fallback: its `size: ingest.size ?? [0, 0, 0]` degrades to a literal zero,
+never a user-supplied value, so it cannot be mistaken for a measurement (a silent `[0, 0, 0]` is
+its own, smaller, honesty problem).
+
+This is a direct instance of Lapidary's rule violation, not a stylistic nit: **measurement must
+not lie** — analytic values from B-rep entities where available, mesh-derived values labelled
+"approximate", always. A hand-typed dimension is neither of those, and the schema currently has
+no way to say so. **Discard, do not port:** this fallback must not reach Phase 1 in this shape.
+Either persist a provenance tag alongside every dimension triple (`measured` / `approximate` /
+`user-entered`) so the UI can render the distinction honestly, or refuse to let a user-typed
+dimension land in the same columns as a measured one at all — a separate, clearly-labelled
+optional field, never silently merged into `bbox_x/y/z`.
 
 **Hash: there wasn't one.** Grepping `assetPipeline.service.ts`, `meshSidecar.service.ts`,
 `libraryScan.service.ts` and `model.service.ts` for `hash|blake|sha256|checksum` returns
 nothing. The prototype never computed a content hash anywhere in ingest — this is a direct
 divergence from Lapidary's "hash first, always" rule, not a variant of it. Duplicate
-detection instead happened one layer up, by filename (see the library-scan section below).
+detection instead happened one layer up, by filename, and only on the scan path (see the
+library-scan section below) — the upload path had no duplicate detection at all.
 
-**Idempotency / resumability: effectively none, by design accident rather than intent.**
-`modelId` is a freshly minted `nanoid` per call (`u${nanoid(10)}` in
-`libraryScan.service.ts`), never derived from the file's content, so `ingestMesh` has no way
-to recognize "I've already ingested this exact file." Re-running ingest for the same bytes
-after a failure produces a new `modelId`, new blob paths, and (if it gets that far) a new DB
-row. Nothing inside `ingestMesh` is resumable; the only reason a rescan doesn't re-import
-everything is the filename-stem dedup living in the caller.
+**Idempotency / resumability: effectively none, by design accident rather than intent, for
+either caller.** `modelId` is a freshly minted `nanoid` per call (`u${nanoid(10)}`, in both
+`libraryScan.service.ts` and `routes/api.ts`), never derived from the file's content, so
+`ingestMesh` has no way to recognize "I've already ingested this exact file." Re-running ingest
+for the same bytes after a failure produces a new `modelId`, new blob paths, and (if it gets
+that far) a new DB row. Nothing inside `ingestMesh` is resumable; the scan path's rescan-safety
+comes entirely from the filename-stem dedup in `scanFolder`, and the upload path has no
+rescan-safety at all.
 
 **Partial failure:** Tier 2 degrades gracefully — `analyzeMesh` internally catches every
 error (bad binary, timeout, malformed JSON) and returns `null` rather than throwing, so a
 sidecar failure just yields `size: null`, `triangleCount: 0`, `lodPath: null` while Tier 3
-stays intact. There is no equivalent guard around the handoff to the database: if
-`ingestMesh` succeeds (Tier 3 blob written, possibly Tier 2 too) but the subsequent
-`createModel()` call throws — a DB constraint, a lock — `libraryScan.service.ts`'s catch
-block only increments `skipped`; it never unlinks the blob it just wrote. That is an
-orphaned-blob leak on every DB-side ingest failure, and there was no compaction or GC job in
-the prototype to reap it.
+stays intact. There is no equivalent guard around the handoff to the database on either path.
+On the scan path: if `ingestMesh` succeeds (Tier 3 blob written, possibly Tier 2 too) but the
+subsequent `createModel()` call throws — a DB constraint, a lock — `libraryScan.service.ts`'s
+catch block only increments `skipped`; it never unlinks the blob it just wrote. On the upload
+path, there is no catch block at all, so the same orphaned-blob leak happens *and* the request
+500s instead of failing gracefully. Neither path had a compaction or GC job to reap orphaned
+blobs.
 
 **Keep:** graceful LOD-stage degradation (a sidecar failure shouldn't fail the whole
 ingest) is worth preserving as a behavior, if the same shape holds in Rust. **Discard/fix:**
 identity must come from the content hash, not a random id, so a retried or resumed ingest is
-naturally recognized rather than accidentally re-run; and blob writes need to be reconciled
+naturally recognized rather than accidentally re-run; blob writes need to be reconciled
 with the DB write (staged blob + transactional commit, or an explicit reaper) so a DB
 failure after a successful write can't leak storage silently — silent leaks are exactly what
 "we never delete user data implicitly" was written against, but the inverse failure (never
-*reclaiming* orphaned data) is just as much a problem to design out.
+*reclaiming* orphaned data) is just as much a problem to design out; and — emphatically — the
+upload route's user-typed-dimensions-into-measured-columns fallback must not survive into
+Phase 1 in any form, per the provenance discussion above.
 
 ## LOD approach
 
@@ -120,12 +178,18 @@ excluded.
 **Dedup — and the divergence from hashing:** before importing, `scanFolder` loads every
 existing model name (`SELECT name FROM models`) into a `Set`. For each file, `name =
 path.basename(file, ext)`; if that name is already in the set, the file is counted as
-`skipped` and never read. The set is updated (`existingNames.add(name)`) synchronously
-*before* the async ingest starts, so two files with the same stem within one scan can't both
-import — but this means dedup is by filename stem alone, not path, not content, not hash.
-Two identically-named files in different subfolders will race under the bounded concurrency
-below: whichever task claims the name first wins the import; the other is silently treated as
-a duplicate and dropped.
+`skipped` and never read. The `has`/`add` pair on `existingNames` is synchronous and runs to
+completion — before the task's first `await` (`await ingestMesh(...)`) — so two files with the
+same stem within one scan can't both import. But this means dedup is by filename stem alone,
+not path, not content, not hash. **This is not a race in the concurrent-nondeterminism sense**:
+because the check-and-claim on `existingNames` happens synchronously before any `await` yields
+control, and JS is single-threaded and run-to-completion, the winner between two identically-
+stemmed files in different subfolders is decided deterministically by `files`' iteration order —
+which is `collect()`'s depth-first, *unsorted* `readdirSync` walk order — not by which
+`pLimit`-scheduled task happens to finish first. The user-visible outcome (one file is silently
+dropped) is real; describing it as racing under bounded concurrency overstates the mechanism —
+serializing ingest (dropping the concurrency) would change nothing, since the walk order, not
+the scheduling, decides the winner.
 
 **Concurrency:** bounded to 3 concurrent ingest tasks via `p-limit`, with the comment "bounded
 concurrency so a large library cannot exhaust memory." This reorders execution relative to
@@ -133,10 +197,10 @@ walk order — files are *discovered* depth-first but *ingested* out of order as
 free up.
 
 **Debounce / filesystem events: there was none to speak of.** Neither `libraryScan.service.ts`
-nor its only caller contains `fs.watch`, `chokidar`, or any change-event handling —
-confirmed by grepping the whole `server/src` tree for `watch|debounce|chokidar`, which
-matched nothing outside this file's own name. There was no background watcher, no polling
-loop, no scheduled rescan, and therefore no coalescing window to record: **scanning was
+nor its only caller contains `fs.watch`, `chokidar`, or any change-event handling — confirmed by
+`git grep -nE "watch|debounce|chokidar" origin/main -- server/src`, which matches **nothing at
+all**, not even inside this file despite its own name. There was no background watcher, no
+polling loop, no scheduled rescan, and therefore no coalescing window to record: **scanning was
 purely on-demand, one HTTP POST triggering exactly one pass.** This is thinner than the task
 brief implied — there is no debounce behavior to carry forward or discard, because none was
 ever built.
@@ -152,7 +216,7 @@ per-file ingest error.
 carry forward as-is. The on-demand-scan-as-an-explicit-action shape is also worth keeping —
 it matches "nothing happens implicitly." **Discard/redesign:** dedup must move from
 filename-stem matching to content hash, so same-named files in different folders don't
-silently lose one to a race; directory-walk errors (permission denied, symlink loops) should
+silently lose one depending on unsorted walk order; directory-walk errors (permission denied, symlink loops) should
 surface as diagnosable warnings instead of vanishing; and if Phase 1 wants filesystem-watch
 behavior at all (debounce window, event coalescing), that is new design work — there is
 nothing proven here to port, only the absence of it.
@@ -235,7 +299,11 @@ fresh `ord` sequence and `profilePath` recorded per row. So `source` (`'manual'`
 previously-imported rows, never rows a person typed in by hand. `raw` (every key found,
 curated or not) is returned from `parseProfile` but the route only persists `rows` (the
 curated/fallback subset) — the rest of `raw` is discarded after the request, not retained
-anywhere.
+anywhere, **despite there being a column reserved for exactly that.** `database.ts` defines
+`printer_settings.raw_json TEXT`, and `profileImport.service.ts`'s own doc comment says "the
+rest is kept in raw_json" — but `replaceSettings()`'s INSERT never populates `raw_json`, so the
+column is always `NULL` at runtime. The doc comment describes intent that was never wired up;
+the discard is real, the column and the comment are vestigial.
 
 **`printerType.service.ts` is unrelated to parsing** — twelve lines, a flat `printer_types`
 name list (`INSERT OR IGNORE`) used for compatibility toggles. Its only relevance here is
