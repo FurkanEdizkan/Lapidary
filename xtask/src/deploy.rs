@@ -76,6 +76,9 @@ pub enum Violation {
     /// Parse-stale: no `ARG SERVER_FEATURES` declaration at all in
     /// `deploy/Containerfile`.
     ContainerfileMissingArgDeclaration,
+    /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
+    /// (`lapidary-api`) must never touch a source file — only derivatives.
+    OpenPathNamesSourceStore { path: String },
 }
 
 impl std::fmt::Display for Violation {
@@ -154,6 +157,12 @@ impl std::fmt::Display for Violation {
                  recognizes. This check's parsing is stale, not the config — update \
                  check_containerfile in xtask/src/deploy.rs to find it, whatever form it now \
                  takes."
+            ),
+            Violation::OpenPathNamesSourceStore { path } => write!(
+                f,
+                "{path} names SourceStore. lapidary-api serves the open path, which must \
+                 never touch a source file — it reads metadata and derivatives only. Use \
+                 DerivativeStore, or move the work into the worker."
             ),
         }
     }
@@ -422,6 +431,23 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     }
 
     violations
+}
+
+/// Rule 4: `lapidary-api` must never name `SourceStore`. The type needs a `WorkerRole`
+/// token to construct, so the compiler already prevents obtaining one — this catches the
+/// earlier mistake of importing it at all, which is the first move someone makes before
+/// discovering they cannot build one, and the point at which to stop them.
+///
+/// A dependency-graph rule cannot express this: `lapidary-api` legitimately depends on
+/// `lapidary-storage` for `DerivativeStore`, so the boundary is *which type*, not whether
+/// the crates may connect. `main.rs` walks `crates/lapidary-api/src/**/*.rs` and passes
+/// `(path, contents)` pairs here.
+pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
+    api_sources
+        .iter()
+        .filter(|(_, body)| body.contains("SourceStore"))
+        .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() })
+        .collect()
 }
 
 /// Run every rule over both files and collect the violations, in the order `main.rs`
@@ -784,5 +810,36 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         let msg = check_compose(no_services)[0].to_string();
         assert!(msg.contains("This check's parsing is stale, not the config"));
         assert!(msg.contains("deploy.rs"));
+    }
+
+    #[test]
+    fn a_file_naming_source_store_fails_and_names_the_file() {
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/handlers/open.rs".to_owned(),
+                "use lapidary_storage::SourceStore;\n".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/handlers/thumbnail.rs".to_owned(),
+                "use lapidary_storage::DerivativeStore;\n".to_owned(),
+            ),
+        ];
+        let violations = check_open_path_boundary(&sources);
+        assert_eq!(
+            violations,
+            vec![Violation::OpenPathNamesSourceStore {
+                path: "crates/lapidary-api/src/handlers/open.rs".to_owned()
+            }]
+        );
+        assert!(violations[0].to_string().contains("handlers/open.rs"));
+    }
+
+    #[test]
+    fn files_naming_only_derivative_store_pass() {
+        let sources = vec![(
+            "crates/lapidary-api/src/handlers/thumbnail.rs".to_owned(),
+            "use lapidary_storage::DerivativeStore;\n".to_owned(),
+        )];
+        assert_eq!(check_open_path_boundary(&sources), vec![]);
     }
 }

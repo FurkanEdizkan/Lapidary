@@ -52,12 +52,17 @@ fn check_deploy() -> Result<()> {
     let containerfile = std::fs::read_to_string(&containerfile_path)
         .with_context(|| format!("Could not read {}", containerfile_path.display()))?;
 
-    let violations = deploy::check(&compose, &containerfile);
+    let mut violations = deploy::check(&compose, &containerfile);
+
+    let api_sources = collect_api_sources(&root)?;
+    violations.extend(deploy::check_open_path_boundary(&api_sources));
 
     if violations.is_empty() {
         println!(
             "deploy check OK — deploy/compose.yaml and deploy/Containerfile agree on which \
-             services link the CAD kernel (static check: configuration only, not built images)"
+             services link the CAD kernel (static check: configuration only, not built images), \
+             and lapidary-api never names SourceStore ({} source file(s) checked)",
+            api_sources.len()
         );
         Ok(())
     } else {
@@ -72,10 +77,38 @@ fn check_deploy() -> Result<()> {
             "\nThis check is static — it verifies deploy/compose.yaml and \
              deploy/Containerfile, not a built image. The open path (lapidary-api) must \
              never invoke the CAD kernel; only services in KERNEL_LINKED_SERVICES \
-             (xtask/src/deploy.rs) may set SERVER_FEATURES."
+             (xtask/src/deploy.rs) may set SERVER_FEATURES. The open path also never \
+             touches a source file — lapidary-api must never name SourceStore."
         );
         bail!("deploy check failed")
     }
+}
+
+/// Walk `crates/lapidary-api/src/**/*.rs` and read each file, for
+/// `deploy::check_open_path_boundary`. Recursive: handler modules can nest in
+/// subdirectories.
+fn collect_api_sources(root: &std::path::Path) -> Result<Vec<(String, String)>> {
+    let api_src = root.join("crates/lapidary-api/src");
+    let mut out = Vec::new();
+    collect_rs_files(&api_src, &mut out)?;
+    Ok(out)
+}
+
+fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<(String, String)>) -> Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("Could not read directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("Could not read entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("Could not read {}", path.display()))?;
+            out.push((path.display().to_string(), contents));
+        }
+    }
+    Ok(())
 }
 
 /// Read the workspace graph from `cargo metadata` and apply the layering rule.
