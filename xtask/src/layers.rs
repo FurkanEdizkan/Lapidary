@@ -50,6 +50,26 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
 /// Workspace crate name -> the workspace crates it depends on.
 pub type Graph = BTreeMap<String, Vec<String>>;
 
+/// Named-pair prohibitions a tier rule cannot express, because they forbid one specific
+/// edge rather than a layer relation. `lapidary-api` (L3) legitimately depends on most L2
+/// crates — `lapidary-db`, `lapidary-index`, `lapidary-vcs` and friends — so L3→L2 stays
+/// permitted in `edge_allowed`. `lapidary-cad` is the one L2 crate it may never reach: the
+/// open path (opening a part for viewing) lives in `lapidary-api`, and a non-negotiable
+/// product rule says the open path never invokes the CAD kernel. Keep the reason next to
+/// the rule, in the third field, rather than in a `Violation::Display` match arm far away —
+/// `check` copies it onto the `Violation` it raises.
+///
+/// This is a forbidden-pairs list, not an allow-list of `lapidary-api`'s permitted L2
+/// deps: an allow-list would need editing every time `lapidary-api` legitimately gains an
+/// L2 dependency, and a list you must edit to permit ordinary work gets widened carelessly.
+/// This list is edited only to add another prohibition.
+const FORBIDDEN_PAIRS: &[(&str, &str, &str)] = &[(
+    "lapidary-api",
+    "lapidary-cad",
+    "the open path lives in lapidary-api and must never invoke the CAD kernel — opening a \
+     part for viewing reads metadata and derivatives only, never a source file",
+)];
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
     /// A dependency edge the layering rule forbids.
@@ -61,6 +81,14 @@ pub enum Violation {
     },
     /// A workspace member with no entry in `layer_of`.
     UnknownCrate { name: String },
+    /// A dependency edge forbidden by name rather than by tier — see `FORBIDDEN_PAIRS`.
+    ForbiddenPair {
+        from: String,
+        to: String,
+        why: String,
+    },
+    /// A workspace member whose manifest is missing `publish = false`.
+    Publishable { name: String },
 }
 
 impl std::fmt::Display for Violation {
@@ -108,6 +136,21 @@ impl std::fmt::Display for Violation {
                 "{name} is a workspace member but has no layer. Add it to layer_of() in \
                  xtask/src/layers.rs, choosing its layer from docs/ARCHITECTURE.md."
             ),
+            Violation::ForbiddenPair { from, to, why } => write!(
+                f,
+                "{from} -> {to} is forbidden: {why}. This is a named-pair prohibition, not \
+                 a tier rule — see FORBIDDEN_PAIRS in xtask/src/layers.rs."
+            ),
+            Violation::Publishable { name } => write!(
+                f,
+                "{name} is missing `publish = false` in its [package] section. Add it. \
+                 deny.toml's `allow-wildcard-paths = true` is workspace-wide and is only \
+                 sound because every workspace member is unpublishable — a wildcard path \
+                 dependency is only a problem for crates.io consumers, and these crates \
+                 must never reach crates.io. A member missing this line silently inherits \
+                 that exemption while remaining publishable, which is exactly the gap \
+                 allow-wildcard-paths assumes cannot happen."
+            ),
         }
     }
 }
@@ -149,6 +192,16 @@ pub fn check(graph: &Graph) -> Result<(), Vec<Violation>> {
                     to_layer,
                 });
             }
+            if let Some(&(_, _, why)) = FORBIDDEN_PAIRS
+                .iter()
+                .find(|(from, to, _)| from == name && to == dep)
+            {
+                violations.push(Violation::ForbiddenPair {
+                    from: name.clone(),
+                    to: dep.clone(),
+                    why: why.to_owned(),
+                });
+            }
         }
     }
 
@@ -156,6 +209,24 @@ pub fn check(graph: &Graph) -> Result<(), Vec<Violation>> {
         Ok(())
     } else {
         Err(violations)
+    }
+}
+
+/// True when a workspace member's manifest is missing `publish = false` — i.e. `cargo
+/// metadata`'s `publish` field for it is `null` rather than `[]`. Pure and unit-testable
+/// without invoking cargo; `main.rs` extracts the field from the `cargo metadata` JSON it
+/// already parses and calls this once per member.
+///
+/// `deny.toml`'s `allow-wildcard-paths = true` is workspace-wide and is only sound because
+/// every member is unpublishable — see the comment above that setting in deny.toml. A new
+/// crate added without `publish = false` would silently inherit the exemption.
+pub fn check_publish(name: &str, publish_field_is_null: bool) -> Option<Violation> {
+    if publish_field_is_null {
+        Some(Violation::Publishable {
+            name: name.to_owned(),
+        })
+    } else {
+        None
     }
 }
 
@@ -436,5 +507,80 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn rejects_api_depending_on_cad() {
+        // The open path lives in lapidary-api and must never invoke the CAD kernel. L3->L2
+        // is legal in general (see the next test), so this can only be caught by the
+        // named-pair list, not by edge_allowed.
+        let g = graph(&[("lapidary-api", &["lapidary-cad"])]);
+        let violations = check(&g).expect_err("lapidary-api -> lapidary-cad must be rejected");
+        assert_eq!(violations.len(), 1);
+        let msg = violations[0].to_string();
+        assert!(msg.contains("lapidary-api"));
+        assert!(msg.contains("lapidary-cad"));
+        assert!(
+            msg.contains("open path") && msg.contains("kernel"),
+            "message must state the product rule: the open path never invokes the CAD \
+             kernel — got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn allows_a_different_l3_to_l2_edge() {
+        // lapidary-api -> lapidary-index is a legitimate L3->L2 edge. The lapidary-cad
+        // prohibition is a named pair, not a blanket L3->L2 ban — this must still pass.
+        let g = graph(&[("lapidary-api", &["lapidary-index"])]);
+        assert!(check(&g).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_member_missing_publish_false() {
+        let v = check_publish("lapidary-mystery", true);
+        let v = v.expect("a null publish field must be rejected");
+        assert_eq!(
+            v,
+            Violation::Publishable {
+                name: "lapidary-mystery".to_owned()
+            }
+        );
+        let msg = v.to_string();
+        assert!(msg.contains("lapidary-mystery"));
+        assert!(msg.contains("publish = false"));
+        assert!(
+            msg.contains("allow-wildcard-paths"),
+            "message must state why it matters: deny.toml's allow-wildcard-paths depends \
+             on every member being unpublishable — got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_all_current_members_as_publishable_false() {
+        // Mirrors the fact verified against a live `cargo metadata` run: all 14 workspace
+        // members report `publish` as `[]` (not null).
+        let members = [
+            "lapidary-core",
+            "lapidary-db",
+            "lapidary-storage",
+            "lapidary-cad",
+            "lapidary-jobs",
+            "lapidary-index",
+            "lapidary-vcs",
+            "lapidary-build",
+            "lapidary-targets",
+            "lapidary-api",
+            "lapidary-enterprise",
+            "lapidary-server",
+            "lapidary",
+            "xtask",
+        ];
+        for name in members {
+            assert_eq!(
+                check_publish(name, false),
+                None,
+                "{name} has publish = false and must not be flagged"
+            );
+        }
     }
 }

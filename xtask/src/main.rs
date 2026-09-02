@@ -42,6 +42,10 @@ fn check_layers() -> Result<()> {
         .collect();
 
     let mut graph: layers::Graph = BTreeMap::new();
+    // Workspace member name -> whether cargo metadata reports its `publish` field as `null`
+    // (missing `publish = false`, i.e. publishable). Kept separate from `graph`: `Graph`
+    // means "the dependency graph" and publishability is not an edge.
+    let mut publish_is_null: BTreeMap<String, bool> = BTreeMap::new();
     for pkg in packages {
         let Some(name) = pkg["name"].as_str() else {
             continue;
@@ -58,30 +62,42 @@ fn check_layers() -> Result<()> {
             })
             .unwrap_or_default();
         graph.insert(name.to_owned(), deps);
+        publish_is_null.insert(name.to_owned(), pkg["publish"].is_null());
     }
 
-    match layers::check(&graph) {
-        Ok(()) => {
-            println!("layering OK — {} workspace crates checked", graph.len());
-            Ok(())
+    let mut violations = layers::check(&graph).err().unwrap_or_default();
+    for (name, &is_null) in &publish_is_null {
+        if let Some(v) = layers::check_publish(name, is_null) {
+            violations.push(v);
         }
-        Err(violations) => {
-            eprintln!(
-                "Layering rule violated ({} problem(s)):\n",
-                violations.len()
-            );
-            for v in &violations {
-                eprintln!("  {v}");
-            }
-            eprintln!(
-                "\nThe rule is in docs/ARCHITECTURE.md: L2 crates may depend on L0 and L1, \
-                 never on each other or on L3; L3 may depend on L0-L3 but never on \
-                 Enterprise, the wrapper tier that holds lapidary-enterprise; and nothing — \
-                 not even Enterprise — may depend on a binary (lapidary-server, lapidary, \
-                 xtask), which sits outside the tier rule and depends on everything instead."
-            );
-            bail!("layering check failed")
+    }
+
+    if violations.is_empty() {
+        println!("layering OK — {} workspace crates checked", graph.len());
+        Ok(())
+    } else {
+        eprintln!(
+            "Layering rule violated ({} problem(s)):\n",
+            violations.len()
+        );
+        for v in &violations {
+            eprintln!("  {v}");
         }
+        eprintln!(
+            "\nThe tier rule is in docs/ARCHITECTURE.md: L2 crates may depend on L0 and L1, \
+             never on each other or on L3; L3 may depend on L0-L3 but never on \
+             Enterprise, the wrapper tier that holds lapidary-enterprise; and nothing — \
+             not even Enterprise — may depend on a binary (lapidary-server, lapidary, \
+             xtask), which sits outside the tier rule and depends on everything instead. \
+             Beyond the tier rule, a small set of specific edges are forbidden by name even \
+             where their tiers would otherwise permit them — see FORBIDDEN_PAIRS in \
+             xtask/src/layers.rs; today that list forbids lapidary-api -> lapidary-cad \
+             because the open path lives in lapidary-api and must never invoke the CAD \
+             kernel. And every workspace member must set `publish = false`: deny.toml's \
+             `allow-wildcard-paths = true` is workspace-wide and is only sound because \
+             every member is unpublishable."
+        );
+        bail!("layering check failed")
     }
 }
 
