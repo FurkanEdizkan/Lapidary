@@ -252,15 +252,45 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
 /// `cargo build` line with the expansion on the continuation would make
 /// `BuildLineMissingArgExpansion` fire on a perfectly correct file, because the substring
 /// search would only ever see the first physical line.
+///
+/// Comments get deliberate, separate handling, because Docker treats them specially with
+/// respect to continuation and a uniform join breaks the comment exclusion the search
+/// functions below rely on:
+///
+/// - **A comment line never continues, even if it ends in `\`.** A trailing backslash in
+///   a comment is just text. Joining it into the next line anyway would let a `\`-
+///   terminated comment directly above `RUN cargo build` or `ARG SERVER_FEATURES=` absorb
+///   that instruction into one `#`-prefixed logical line — which the comment-excluding
+///   searches below then skip entirely, misreporting a parse-stale violation ("no ARG /
+///   no cargo build line") on a file that is completely valid.
+/// - **A comment line inside an already-open continuation is skipped, not spliced in and
+///   not treated as ending the continuation.** This matches BuildKit's own behavior — `RUN
+///   foo && \` / `# explains the next line` / `    bar` is one `RUN` command with the
+///   comment ignored, not two instructions and not a comment containing `bar`. Ending the
+///   continuation at the comment instead would truncate a real multi-line instruction
+///   right where someone added an explanation, which is the opposite of what a comment is
+///   for.
 fn logical_lines(contents: &str) -> Vec<String> {
     let mut logical = Vec::new();
     let mut buffer = String::new();
     let mut continuing = false;
 
     for raw in contents.lines() {
+        let is_comment = raw.trim_start().starts_with('#');
+
         if continuing {
+            if is_comment {
+                // Skip: a comment inside an open continuation is neither part of the
+                // instruction text nor the end of it — see the module doc above.
+                continue;
+            }
             buffer.push(' ');
             buffer.push_str(raw.trim_start());
+        } else if is_comment {
+            // Comments never continue, regardless of a trailing backslash — always their
+            // own logical line.
+            logical.push(raw.to_owned());
+            continue;
         } else {
             buffer.push_str(raw);
         }
@@ -312,7 +342,12 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
 
     // Anchored on `RUN cargo build`, not the bare substring "cargo build": a comment
     // mentioning "cargo build" above the real RUN line must not be mistaken for it. Excludes
-    // comment lines the same way parse_services does for deploy/compose.yaml.
+    // comment lines the same way parse_services does for deploy/compose.yaml. Uses the
+    // first match: deploy/Containerfile has exactly one `cargo build` invocation today, so
+    // there is nothing to disambiguate. A second RUN cargo build line appearing in the
+    // future is a sign this check needs a design update, not a case whose first match is
+    // authoritative — no such fixture exists here and none should be added to paper over
+    // it.
     let build_line = lines.iter().enumerate().find(|(_, l)| {
         let trimmed = l.trim_start();
         !trimmed.starts_with('#') && trimmed.starts_with("RUN cargo build")
@@ -531,6 +566,47 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             1,
         );
         assert_eq!(check_containerfile(&wrapped), vec![]);
+    }
+
+    #[test]
+    fn backslash_terminated_comment_above_the_run_line_does_not_absorb_it() {
+        // A comment ending in `\` is still just a comment — Docker does not extend
+        // comments across a trailing backslash. Joining it into the RUN line below would
+        // make the whole thing one `#`-prefixed logical line, which the comment-excluding
+        // search then skips, misreporting ContainerfileMissingBuildLine on a valid file.
+        let with_comment = CORRECT_CONTAINERFILE.replacen(
+            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            "# feature list comes from the SERVER_FEATURES build arg \\\nRUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            1,
+        );
+        assert_eq!(check_containerfile(&with_comment), vec![]);
+    }
+
+    #[test]
+    fn backslash_terminated_comment_above_the_arg_declaration_does_not_absorb_it() {
+        // Symmetric case: a `\`-terminated comment directly above ARG SERVER_FEATURES=
+        // must not swallow it into a comment line either, or the check would misreport
+        // ContainerfileMissingArgDeclaration on a file that declares the arg correctly.
+        let with_comment = CORRECT_CONTAINERFILE.replacen(
+            "ARG SERVER_FEATURES=\n",
+            "# threaded in by deploy/compose.yaml \\\nARG SERVER_FEATURES=\n",
+            1,
+        );
+        assert_eq!(check_containerfile(&with_comment), vec![]);
+    }
+
+    #[test]
+    fn comment_inside_an_open_continuation_is_skipped_not_spliced_in() {
+        // Pins the deliberate choice documented on logical_lines: a comment appearing
+        // between two backslash-continued physical lines is dropped from the joined
+        // content (matching BuildKit, which ignores it) rather than ending the
+        // continuation early or being spliced into the instruction text.
+        let with_mid_comment = CORRECT_CONTAINERFILE.replacen(
+            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            "RUN cargo build --release --locked -p lapidary-server \\\n    # SERVER_FEATURES flows through the ARG above\n    ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            1,
+        );
+        assert_eq!(check_containerfile(&with_mid_comment), vec![]);
     }
 
     #[test]
