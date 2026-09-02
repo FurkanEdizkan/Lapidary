@@ -98,6 +98,12 @@ pub fn render_thumbnail(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
 
     // Over budget: retry smaller. Failing loudly beats writing a row that quietly
     // breaks the inline-storage contract every grid query depends on.
+    //
+    // Track the size and byte count of the last attempt made, not the first (512 px)
+    // one — the terminal error below names whichever attempt actually ran out of
+    // fallbacks, so an operator reading it sees the real number for the real size,
+    // not the original encode's byte count mislabelled with the smallest size tried.
+    let mut last = (THUMB_PX, bytes.len());
     for px in FALLBACK_PX {
         let smaller = image::imageops::resize(&img, px, px, image::imageops::FilterType::Triangle);
         let mut buf = std::io::Cursor::new(Vec::new());
@@ -107,6 +113,7 @@ pub fn render_thumbnail(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
                 detail: format!("WebP encoding failed: {e}"),
             })?;
         let candidate = buf.into_inner();
+        last = (px, candidate.len());
         if candidate.len() <= MAX_THUMB_BYTES {
             return Ok(candidate);
         }
@@ -115,8 +122,7 @@ pub fn render_thumbnail(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
     Err(CadError::Unrenderable {
         detail: format!(
             "the thumbnail is {} bytes even at {}px, over the {MAX_THUMB_BYTES}-byte inline limit",
-            bytes.len(),
-            FALLBACK_PX[FALLBACK_PX.len() - 1]
+            last.1, last.0
         ),
     })
 }
@@ -234,6 +240,74 @@ mod tests {
             .expect("fixture parses")
     }
 
+    /// A synthetic "terrain" mesh built solely to defeat lossless WebP compression, so
+    /// the 384px/256px fallback in `render_thumbnail` has something it actually must
+    /// downscale. Real part renders never come close to the 64 KB budget — the bracket
+    /// golden image above is 2.8 KB — because a part is a handful of large, similarly
+    /// lit flat faces, which is exactly the kind of image lossless compression is good
+    /// at. To force the retry path we instead need per-pixel noise: this builds a
+    /// dense grid of tiny triangles whose height (and so whose lit-face normal) is
+    /// derived from a cheap integer hash of its grid position, so neighbouring facets
+    /// tilt unpredictably and neighbouring pixels get uncorrelated shades. It is not
+    /// meant to look like anything and should not be simplified toward one — an
+    /// adversarial input for a size guard is supposed to look ugly.
+    ///
+    /// Vertices are built directly in the camera's own (right, up, view) basis rather
+    /// than in some arbitrary world frame, so the projected footprint fills the frame
+    /// by construction instead of by trial and error — this stays correct even if the
+    /// fixed camera constants above ever change.
+    fn adversarial_high_frequency_mesh() -> crate::Mesh {
+        let (right, up) = basis();
+        // Vertices per axis. High enough that triangles land at roughly one screen
+        // pixel apiece at THUMB_PX — coarser grids leave flat multi-pixel patches that
+        // WebP's prediction compresses away, defeating the point.
+        const V: i32 = 400;
+        // World-unit height swing per hash step. Tuned, not arbitrary: enough tilt
+        // that the 512px and 384px encodes both land safely over MAX_THUMB_BYTES
+        // (this value: ~283 KB and ~135 KB) while the 256px encode lands safely under
+        // it (~56 KB) — comfortable margin on both sides of the budget line rather
+        // than a value that happens to graze it. A larger amplitude pushes every
+        // stage further over budget and can defeat the fallback entirely; a much
+        // smaller one stops forcing the retry at all. If this ever needs retuning,
+        // rerun the three encode sizes and keep both margins comfortable.
+        const AMPLITUDE: f64 = 0.45;
+
+        // Deterministic bit-mixing hash (no RNG): same input always produces the same
+        // mesh, matching the determinism every other fixture in this file relies on.
+        fn hash(i: i32, j: i32) -> f64 {
+            let mut x =
+                (i as u32).wrapping_mul(2_654_435_761) ^ (j as u32).wrapping_mul(2_246_822_519);
+            x ^= x >> 13;
+            x = x.wrapping_mul(3_266_489_917);
+            x ^= x >> 16;
+            f64::from(x) / f64::from(u32::MAX)
+        }
+
+        let vertex = |i: i32, j: i32| -> [f32; 3] {
+            let a = f64::from(i - V / 2);
+            let b = f64::from(j - V / 2);
+            let z = hash(i, j) * AMPLITUDE;
+            [
+                (a * right[0] + b * up[0] + z * VIEW_DIR[0]) as f32,
+                (a * right[1] + b * up[1] + z * VIEW_DIR[1]) as f32,
+                (a * right[2] + b * up[2] + z * VIEW_DIR[2]) as f32,
+            ]
+        };
+
+        let mut triangles = Vec::with_capacity(((V - 1) * (V - 1) * 2) as usize);
+        for j in 0..V - 1 {
+            for i in 0..V - 1 {
+                let p00 = vertex(i, j);
+                let p10 = vertex(i + 1, j);
+                let p01 = vertex(i, j + 1);
+                let p11 = vertex(i + 1, j + 1);
+                triangles.push([p00, p10, p11]);
+                triangles.push([p00, p11, p01]);
+            }
+        }
+        crate::Mesh { triangles }
+    }
+
     #[test]
     fn rendering_the_same_mesh_twice_produces_identical_bytes() {
         // The whole reason this is a CPU rasterizer: derivatives must be deterministically
@@ -271,10 +345,32 @@ mod tests {
     fn an_oversized_render_is_downscaled_rather_than_written_oversized() {
         // DATA.md §1.5 only stores thumbnails inline under 64 KB. WebP here is lossless,
         // so there is no quality knob to turn — the retry reduces dimensions instead.
-        // The guard must exist even though the fixture lands far under, because a row
-        // written oversized is a silent violation of the inline-storage contract.
-        let bytes = render_thumbnail(&bracket()).expect("renders");
-        assert!(bytes.len() <= MAX_THUMB_BYTES);
+        // Ordinary part renders never approach the budget (the bracket golden image is
+        // 2.8 KB), so asserting this against `bracket()` would pass regardless of
+        // whether the fallback loop works at all. `adversarial_high_frequency_mesh`
+        // exists precisely to force the 512px encode over budget, so this exercises the
+        // retry loop for real rather than merely restating the budget assertion above.
+        let mesh = adversarial_high_frequency_mesh();
+        let bytes = render_thumbnail(&mesh).expect("renders");
+        assert!(
+            bytes.len() <= MAX_THUMB_BYTES,
+            "still over budget even after the fallback loop: {} bytes",
+            bytes.len()
+        );
+
+        // The assertion that actually proves the fallback fired: decode the result and
+        // confirm it is smaller than THUMB_PX. Without this, a mesh that happened to
+        // already fit at 512px would pass the byte-count assertion above without the
+        // retry loop having run at all.
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::WebP)
+            .expect("decodes as WebP");
+        assert!(
+            img.width() < THUMB_PX,
+            "expected the retry to downscale below {THUMB_PX}px, got {}px — \
+             adversarial_high_frequency_mesh may no longer be pathological enough to \
+             exceed the budget at full size",
+            img.width()
+        );
     }
 
     #[test]
