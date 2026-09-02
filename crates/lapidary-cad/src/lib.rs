@@ -3,6 +3,7 @@
 
 mod kernel;
 mod measure;
+mod mesh_kernel;
 #[cfg(feature = "mock-kernel")]
 mod mock;
 mod raster;
@@ -10,6 +11,7 @@ mod stl;
 
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
+pub use mesh_kernel::{MeshKernel, MeshOutput};
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
