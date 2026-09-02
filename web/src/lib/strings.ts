@@ -11,6 +11,6 @@ export const strings = {
   },
   emptyLibrary: {
     title: 'No parts yet',
-    body: "There's no way to add them yet.",
+    body: 'Parts will appear here as your library grows.',
   },
 } as const
