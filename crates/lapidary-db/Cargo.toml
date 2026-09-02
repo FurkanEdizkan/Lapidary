@@ -13,5 +13,8 @@ async-trait.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+uuid.workspace = true
+
 [lints]
 workspace = true
