@@ -170,6 +170,11 @@ async fn main() -> Result<()> {
 #[cfg(all(test, feature = "mock-kernel"))]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
     #[test]
     fn kernel_description_reports_the_mock_implementation_when_the_feature_is_on() {
@@ -178,5 +183,71 @@ mod tests {
             "expected the mock implementation name, got: {}",
             kernel_description()
         );
+    }
+
+    // worker_router is what actually runs in the worker container, and it's the thing
+    // fix round 1 introduced: lapidary-api's router (health only) merged with
+    // lapidary-ingest's (scan). Each half already has its own unit tests in its own
+    // crate; this is the one place the *merge* itself is exercised, so a route added to
+    // one side that silently collides with, or fails to reach, the other stops being
+    // provable "by inspection" and starts being caught here.
+    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+    async fn the_worker_router_serves_both_health_and_scan(pool: sqlx::PgPool) {
+        let ingest_dir = tempfile::tempdir().expect("temp dir");
+        let blob_root = tempfile::tempdir().expect("temp dir");
+        let app = worker_router(
+            pool,
+            Some(ingest_dir.path().to_path_buf()),
+            Some(blob_root.path().to_path_buf()),
+        )
+        .expect("worker router builds");
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/healthz")
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let scan = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/libraries/{SEEDED_LIBRARY}/scan"))
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        // An empty ingest_dir scans cleanly — 200, not merely "not 404" — which is a
+        // stronger proof the merge actually wired the route through to a working
+        // handler, not just to something that answers.
+        assert_eq!(scan.status(), StatusCode::OK);
+    }
+
+    // The other half of the same regression this fix round is closing: the api role's
+    // router (no merge at all) must still never serve /scan. lapidary-api's own test
+    // suite already proves this crate has no route reaching ingest under any role; this
+    // pins it at the composition site in this file too, where a future edit could
+    // accidentally merge lapidary-ingest's router into the Api arm as well.
+    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+    async fn the_api_role_router_does_not_serve_scan(pool: sqlx::PgPool) {
+        let app = router(AppState { db: pool }, Role::Api);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/libraries/{SEEDED_LIBRARY}/scan"))
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

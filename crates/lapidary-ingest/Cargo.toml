@@ -20,6 +20,9 @@ axum.workspace = true
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The one place this pipeline knowingly leaves bytes behind (a reap that itself fails)
+# logs it — see the record() error arm in scan.rs.
+tracing.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true

@@ -46,5 +46,13 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+# Only for #[sqlx::test] against the merged worker router (main.rs's worker_router) and
+# the api role's router — see deny.toml's sqlx wrapper allow-list, which lists this crate
+# for exactly this reason. No real SQL lives here; lapidary-db still owns all of it.
+sqlx.workspace = true
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
+
 [lints]
 workspace = true

@@ -1244,6 +1244,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -1268,7 +1269,10 @@ dependencies = [
  "lapidary-db",
  "lapidary-ingest",
  "serde",
+ "sqlx",
+ "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
