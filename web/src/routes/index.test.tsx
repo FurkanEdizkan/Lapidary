@@ -17,9 +17,9 @@ beforeEach(() => {
   vi.restoreAllMocks()
 })
 
-// The expected text is written out literally rather than read from strings.ts. Asserting
-// against the same constant the component renders from would pass even if the string were
-// corrupted, because both sides would move together.
+// For these health-check states, the expected text is written out literally rather than
+// read from strings.ts. Asserting against the same constant the component renders from
+// would pass even if the string were corrupted, because both sides would move together.
 test('renders the connected state from a healthy response', async () => {
   const fetchMock = vi.fn().mockResolvedValue({
     ok: true,
@@ -48,9 +48,10 @@ test('renders an actionable message when the server is unreachable', async () =>
   ).toBeDefined()
 })
 
-// Asserted against the strings.ts constant, not a literal, so this test breaks only if the
-// component stops rendering strings.emptyLibrary.body at all — e.g. it gets hardcoded or
-// dropped — not whenever the copy itself is edited.
+// Asserted against the strings.ts constant, not a literal: React Testing Library compares
+// rendered text, not import provenance, so this still passes if the component is hardcoded
+// to today's copy. It catches the component drifting from strings.ts later, when the copy
+// next changes and the component does not follow — a wiring test, not a content pin.
 test('renders the empty-library copy from strings.ts', () => {
   vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
   renderIndex()
