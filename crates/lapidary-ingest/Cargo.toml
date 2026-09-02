@@ -1,5 +1,5 @@
 [package]
-name = "lapidary-api"
+name = "lapidary-ingest"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,20 +11,19 @@ publish = false
 lapidary-core.workspace = true
 lapidary-db.workspace = true
 lapidary-storage.workspace = true
-lapidary-jobs.workspace = true
-lapidary-index.workspace = true
-lapidary-vcs.workspace = true
-lapidary-build.workspace = true
-lapidary-targets.workspace = true
+# The whole reason this is a separate crate from lapidary-api: the open path must never
+# depend on lapidary-cad, and the scan handler below genuinely needs MeshKernel.
+lapidary-cad.workspace = true
 axum.workspace = true
+# Hash first, always: scan.rs computes BLAKE3 over each file's bytes before doing
+# anything else with them.
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-tower-http.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 

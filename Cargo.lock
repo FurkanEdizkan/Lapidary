@@ -1146,9 +1146,7 @@ name = "lapidary-api"
 version = "0.1.0"
 dependencies = [
  "axum",
- "blake3",
  "lapidary-build",
- "lapidary-cad",
  "lapidary-core",
  "lapidary-db",
  "lapidary-index",
@@ -1159,7 +1157,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "tempfile",
  "thiserror",
  "tokio",
  "tower",
@@ -1232,6 +1229,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "lapidary-ingest"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "lapidary-cad",
+ "lapidary-core",
+ "lapidary-db",
+ "lapidary-storage",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "lapidary-jobs"
 version = "0.1.0"
 dependencies = [
@@ -1251,6 +1266,7 @@ dependencies = [
  "lapidary-api",
  "lapidary-cad",
  "lapidary-db",
+ "lapidary-ingest",
  "serde",
  "tokio",
  "tracing",

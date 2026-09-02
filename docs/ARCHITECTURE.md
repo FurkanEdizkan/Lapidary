@@ -78,12 +78,14 @@ crates/
 ├── lapidary-vcs/         L2  revisions, lineage DAG, locks, geometric diff
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
-├── lapidary-api/         L3          axum Router. Depends on the L2 crates it uses,
-│                                     lapidary-cad included since Task 9's worker-only
-│                                     scan handler; the open path (the routes mounted
-│                                     under Role::Api) still never invokes the kernel — a
-│                                     runtime role split, not a dependency-graph ban,
-│                                     enforces that now. A LIBRARY.
+├── lapidary-api/         L3          axum Router: the open path (grid, health). Depends
+│                                     on the L2 crates it uses — never lapidary-cad or
+│                                     lapidary-storage's SourceStore. A LIBRARY.
+├── lapidary-ingest/      L3          axum Router: the worker-only scan route. The one
+│                                     crate allowed to depend on lapidary-cad and to hold
+│                                     a SourceStore — see its module doc for why this is a
+│                                     separate crate from lapidary-api rather than a role
+│                                     check inside it. A LIBRARY.
 └── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
 ├── lapidary-server/          container entrypoint: api + optionally in-process worker
@@ -100,21 +102,24 @@ or on L3. If two L2 crates need to share something, it moves to `lapidary-core`.
 — `lapidary-api` included — may never depend on `Enterprise`. That edge is forbidden
 structurally, not just by review, because it would make the free application depend on
 the enterprise crate, breaking the rule that the app is free and complete with no gated
-features. This is what keeps the monolith from congealing. That edge, and every
-workspace member's `publish = false`, are checks in `edge_allowed` and `check_publish`
+features. This is what keeps the monolith from congealing. `lapidary-api -> lapidary-cad`
+is forbidden the same way, and every workspace member must carry `publish = false`; both
+are named-pair and per-crate checks in `FORBIDDEN_PAIRS` and `check_publish`
 (`xtask/src/layers.rs`) rather than restated here.
 
-`lapidary-api -> lapidary-cad` used to be a second named-pair prohibition in
-`FORBIDDEN_PAIRS`, on the reasoning that the open path (opening a part for viewing) lives
-in `lapidary-api` and must never invoke the CAD kernel. It no longer is: the role split
-(`Role::Api` / `Role::Worker`, `crates/lapidary-api/src/lib.rs`) put the open-path grid
-route and the worker-only ingest scan route in one crate, and the scan handler
-(`crates/lapidary-api/src/scan.rs`) genuinely needs `lapidary-cad::MeshKernel` — a
-crate-level ban can no longer express a rule about *which route*, only about the whole
-crate. The product rule is unchanged (`docs/DATA.md` §2); what changed is the mechanism:
-`Role::Api` simply never mounts `scan::scan`, and `xtask/src/deploy.rs`'s
-`check_open_path_boundary` keeps `SourceStore` — the type that actually reaches a source
-file — out of every file in the crate except `scan.rs`.
+**Why ingest is its own crate, not a role inside `lapidary-api`.** An earlier pass on
+this branch put the scan handler in `lapidary-api` behind a runtime `Role::Worker` check,
+reasoning that the open path never *mounting* the route was enough. It is not: the `api`
+and `worker` container images are also split at build time by `deploy/Containerfile`'s
+`SERVER_FEATURES` arg, specifically so the `api` image never *links* the kernel — and
+`lapidary-api` depending on `lapidary-cad` at all, even for a route `Role::Api` never
+mounts, makes the `api` image link it regardless. `cargo tree -p lapidary-server -e
+normal | grep lapidary-cad` is what caught it. `lapidary-ingest` exists so
+`FORBIDDEN_PAIRS` can forbid `lapidary-api -> lapidary-cad` unconditionally again, with
+the actual kernel-touching code sitting in a crate that may depend on it freely.
+`bin/lapidary-server` links `lapidary-ingest` only behind the same `mock-kernel` Cargo
+feature that already gated `lapidary-cad`'s mock implementation, and merges its router
+into the process's router only when running as the worker.
 
 ## The kernel simplification
 

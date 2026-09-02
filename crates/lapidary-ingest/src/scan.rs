@@ -1,15 +1,8 @@
 //! Kicking off a library scan (ingest): walk the read-only mounted ingest directory,
 //! hash each `.stl`, and either link an already-known blob or parse, rasterize and
-//! record a new one. `router()` (`lib.rs`) mounts this only under `Role::Worker`.
-//!
-//! This is the one file in `lapidary-api` allowed to name `SourceStore` and the one place
-//! that depends on `MeshKernel` — `xtask/src/deploy.rs`'s `check_open_path_boundary`
-//! exempts it by name (`OPEN_PATH_BOUNDARY_EXEMPTIONS`), and `xtask/src/layers.rs` no
-//! longer forbids `lapidary-api -> lapidary-cad` as a blanket dependency-graph edge (see
-//! the doc comments on `FORBIDDEN_PAIRS` there for why the role split made a crate-level
-//! ban the wrong granularity). The product rule — the open path never touches a source
-//! file and never invokes the kernel — is enforced by `Role::Api` never mounting this
-//! route at all, not by keeping the crate ignorant of these types.
+//! record a new one. `router()` (`lib.rs`) always mounts this — see that module's doc
+//! for why this crate, rather than a role check inside `lapidary-api`, is what keeps the
+//! open path from linking the CAD kernel.
 //!
 //! # Ordering
 //!

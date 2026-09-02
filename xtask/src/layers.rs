@@ -40,7 +40,10 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "lapidary-db" | "lapidary-storage" => Layer::L1,
         "lapidary-cad" | "lapidary-jobs" | "lapidary-index" | "lapidary-vcs" | "lapidary-build"
         | "lapidary-targets" => Layer::L2,
-        "lapidary-api" => Layer::L3,
+        // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
+        // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
+        // exists as its own crate rather than a module inside lapidary-api.
+        "lapidary-api" | "lapidary-ingest" => Layer::L3,
         "lapidary-enterprise" => Layer::Enterprise,
         "lapidary-server" | "lapidary" | "xtask" => Layer::Bin,
         _ => return None,
@@ -52,31 +55,23 @@ pub type Graph = BTreeMap<String, Vec<String>>;
 
 /// Named-pair prohibitions a tier rule cannot express, because they forbid one specific
 /// edge rather than a layer relation. `lapidary-api` (L3) legitimately depends on most L2
-/// crates — `lapidary-db`, `lapidary-index`, `lapidary-vcs`, and, since Task 9, `lapidary-cad`
-/// too — so L3→L2 stays permitted in `edge_allowed` with no per-crate exception.
+/// crates — `lapidary-db`, `lapidary-index`, `lapidary-vcs` and friends — so L3→L2 stays
+/// permitted in `edge_allowed`. `lapidary-cad` is the one L2 crate it may never reach: the
+/// open path (opening a part for viewing) lives in `lapidary-api`, and a non-negotiable
+/// product rule says the open path never invokes the CAD kernel. Keep the reason next to
+/// the rule, in the third field, rather than in a `Violation::Display` match arm far away —
+/// `check` copies it onto the `Violation` it raises.
 ///
-/// `lapidary-api -> lapidary-cad` used to be listed here. It no longer is, deliberately:
-/// Task 8's role split put the open-path grid route and the worker-only scan route in one
-/// crate, selected at runtime by `Role`, and Task 9's scan handler (`crates/lapidary-api/
-/// src/scan.rs`) legitimately names `MeshKernel` — there is no way to give that handler
-/// the kernel without this crate depending on `lapidary-cad`. A blanket dependency-graph
-/// ban can no longer express "the open path never invokes the kernel", because the crate
-/// that must never invoke it and the crate that must is now the same crate. The product
-/// rule (`CLAUDE.md`, `docs/DATA.md` §2) still holds — it is enforced by `Role::Api` never
-/// mounting `scan::scan` (see `router` in `lib.rs`) plus the file-scoped check in
-/// `xtask/src/deploy.rs::check_open_path_boundary`, which allows `SourceStore` (the type
-/// that actually reaches a source file) only in `scan.rs`, the one handler file mounted
-/// under `Role::Worker`. See `allows_api_depending_on_cad_now_that_ingest_lives_here`
-/// below for the pinned edge, and `crates/lapidary-storage/src/lib.rs`'s module doc for
-/// the parallel `SourceStore` boundary.
-///
-/// What remains here is the mechanism for a *future* named-pair prohibition a tier rule
-/// cannot express — kept as a forbidden-pairs list, not an allow-list of `lapidary-api`'s
-/// permitted L2 deps: an allow-list would need editing every time `lapidary-api`
-/// legitimately gains an L2 dependency, and a list you must edit to permit ordinary work
-/// gets widened carelessly. Add a prohibition here only when a specific edge, not a tier,
-/// must be forbidden.
-const FORBIDDEN_PAIRS: &[(&str, &str, &str)] = &[];
+/// This is a forbidden-pairs list, not an allow-list of `lapidary-api`'s permitted L2
+/// deps: an allow-list would need editing every time `lapidary-api` legitimately gains an
+/// L2 dependency, and a list you must edit to permit ordinary work gets widened carelessly.
+/// This list is edited only to add another prohibition.
+const FORBIDDEN_PAIRS: &[(&str, &str, &str)] = &[(
+    "lapidary-api",
+    "lapidary-cad",
+    "the open path lives in lapidary-api and must never invoke the CAD kernel — opening a \
+     part for viewing reads metadata and derivatives only, never a source file",
+)];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -330,25 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_pair_violation_names_the_edge_and_the_reason() {
-        // FORBIDDEN_PAIRS is empty today (see its doc comment: the lapidary-cad entry
-        // that used to live there was removed in Task 9), so `check()` cannot currently
-        // produce one of these. Constructing the variant directly keeps its Display arm
-        // — the mechanism a future named-pair prohibition would rely on — pinned
-        // independently of whether the list happens to have an entry right now.
-        let v = Violation::ForbiddenPair {
-            from: "lapidary-api".to_owned(),
-            to: "lapidary-enterprise".to_owned(),
-            why: "the application is free and complete".to_owned(),
-        };
-        let msg = v.to_string();
-        assert!(msg.contains("lapidary-api"));
-        assert!(msg.contains("lapidary-enterprise"));
-        assert!(msg.contains("the application is free and complete"));
-        assert!(msg.contains("FORBIDDEN_PAIRS"));
-    }
-
-    #[test]
     fn allows_enterprise_to_depend_on_l3_so_enterprise_can_wrap_the_api() {
         // lapidary-enterprise wraps auth/RBAC/audit around lapidary-api, so
         // lapidary-enterprise → lapidary-api (Enterprise→L3) must be permitted.
@@ -539,22 +515,44 @@ mod tests {
     }
 
     #[test]
-    fn allows_api_depending_on_cad_now_that_ingest_lives_here() {
-        // Pinned the other way from before Task 9: lapidary-api -> lapidary-cad used to
-        // be a named-pair rejection (see the FORBIDDEN_PAIRS doc comment for why that
-        // stopped being the right check once the scan handler landed in this crate). If
-        // this edge is ever rejected again, either the handler was moved back out of
-        // lapidary-api or FORBIDDEN_PAIRS grew an entry it should not have.
+    fn rejects_api_depending_on_cad() {
+        // The open path lives in lapidary-api and must never invoke the CAD kernel. L3->L2
+        // is legal in general (see the next test), so this can only be caught by the
+        // named-pair list, not by edge_allowed.
         let g = graph(&[("lapidary-api", &["lapidary-cad"])]);
-        assert!(check(&g).is_ok());
+        let violations = check(&g).expect_err("lapidary-api -> lapidary-cad must be rejected");
+        assert_eq!(violations.len(), 1);
+        let msg = violations[0].to_string();
+        assert!(msg.contains("lapidary-api"));
+        assert!(msg.contains("lapidary-cad"));
+        assert!(
+            msg.contains("open path") && msg.contains("kernel"),
+            "message must state the product rule: the open path never invokes the CAD \
+             kernel — got {msg:?}"
+        );
+        assert!(
+            msg.contains("lapidary-db"),
+            "message must state the remedy — read the derivatives lapidary-db already \
+             stores instead of invoking the kernel — got {msg:?}"
+        );
     }
 
     #[test]
     fn allows_a_different_l3_to_l2_edge() {
-        // lapidary-api -> lapidary-index is a legitimate L3->L2 edge, same as
-        // lapidary-api -> lapidary-cad above — L3->L2 is permitted in general, and
-        // FORBIDDEN_PAIRS currently names no exception to it.
+        // lapidary-api -> lapidary-index is a legitimate L3->L2 edge. The lapidary-cad
+        // prohibition is a named pair, not a blanket L3->L2 ban — this must still pass.
         let g = graph(&[("lapidary-api", &["lapidary-index"])]);
+        assert!(check(&g).is_ok());
+    }
+
+    #[test]
+    fn allows_ingest_depending_on_cad_and_storage() {
+        // The whole reason lapidary-ingest exists: it is the crate allowed to depend on
+        // lapidary-cad (for MeshKernel) and lapidary-storage (for SourceStore).
+        // FORBIDDEN_PAIRS names no prohibition for lapidary-ingest, so this is an
+        // ordinary, permitted L3->L2 edge — same shape as the lapidary-api rejection
+        // above, opposite crate.
+        let g = graph(&[("lapidary-ingest", &["lapidary-cad", "lapidary-storage"])]);
         assert!(check(&g).is_ok());
     }
 
@@ -585,7 +583,7 @@ mod tests {
         // without `publish = false` would not turn this test red, only leave the hardcoded
         // list stale. The real protection is `main.rs`, which walks live `cargo metadata`
         // on every CI run and calls `check_publish` per actual member, so an inverted or
-        // missing `publish = false` on any of the 14 crates below turns CI red immediately
+        // missing `publish = false` on any of the 15 crates below turns CI red immediately
         // regardless of what this list says.
         let members = [
             "lapidary-core",
@@ -598,6 +596,7 @@ mod tests {
             "lapidary-build",
             "lapidary-targets",
             "lapidary-api",
+            "lapidary-ingest",
             "lapidary-enterprise",
             "lapidary-server",
             "lapidary",

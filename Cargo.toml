@@ -16,6 +16,7 @@ members = [
     "crates/lapidary-build",
     "crates/lapidary-targets",
     "crates/lapidary-api",
+    "crates/lapidary-ingest",
     "crates/lapidary-enterprise",
     "bin/lapidary-server",
     "bin/lapidary",
@@ -44,6 +45,7 @@ lapidary-vcs = { path = "crates/lapidary-vcs" }
 lapidary-build = { path = "crates/lapidary-build" }
 lapidary-targets = { path = "crates/lapidary-targets" }
 lapidary-api = { path = "crates/lapidary-api" }
+lapidary-ingest = { path = "crates/lapidary-ingest" }
 lapidary-enterprise = { path = "crates/lapidary-enterprise" }
 
 anyhow = "1.0.104"

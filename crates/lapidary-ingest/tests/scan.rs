@@ -1,11 +1,12 @@
-//! Task 9: the scan endpoint. Exercises the whole pipeline end to end — walking a
-//! `TempDir` standing in for the read-only ingest mount, and a `TempDir` blob root
-//! standing in for the real volume Task 12 wires up — against a live, migrated Postgres
-//! (via `sqlx::test`), through `router(..., Role::Worker)`.
+//! Task 9: the scan endpoint, now living in its own crate (fix round 1 — see
+//! crates/lapidary-ingest/src/lib.rs's module doc for why). Exercises the whole
+//! pipeline end to end — walking a `TempDir` standing in for the read-only ingest
+//! mount, and a `TempDir` blob root standing in for the real volume Task 12 wires up —
+//! against a live, migrated Postgres (via `sqlx::test`), through this crate's router.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+use lapidary_ingest::{AppState, router};
 use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
@@ -20,10 +21,10 @@ fn state(pool: sqlx::PgPool, ingest_dir: &Path, blob_root: &Path) -> AppState {
     }
 }
 
-/// POSTs `/api/libraries/{library}/scan` under `Role::Worker` and returns the response
-/// status alongside the decoded `ScanReport` JSON.
+/// POSTs `/api/libraries/{library}/scan` and returns the response status alongside
+/// the decoded `ScanReport` JSON.
 async fn scan(app_state: AppState, library: &str) -> (StatusCode, serde_json::Value) {
-    let app = router(app_state, Role::Worker);
+    let app = router(app_state);
     let response = app
         .oneshot(
             Request::builder()

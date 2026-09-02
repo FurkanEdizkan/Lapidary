@@ -5,13 +5,15 @@
 //! `WorkerRole` token to construct.
 //!
 //! This is the API-level half of "the open path never touches a source file". The
-//! dependency-graph half cannot express it: `lapidary-api` legitimately depends on this
-//! crate for derivatives, so the distinction is *which bytes*, not whether the crates may
-//! be connected. `cargo xtask check-deploy` asserts no file in `lapidary-api` names
-//! `SourceStore` except the worker-only ingest handler
-//! (`crates/lapidary-api/src/scan.rs`, listed in `deploy::OPEN_PATH_BOUNDARY_EXEMPTIONS`)
-//! — the one file `router()` mounts only under `Role::Worker`, so a `WorkerRole` obtained
-//! there is never reachable from the open path.
+//! dependency-graph half cannot express it on its own — `lapidary-api` legitimately
+//! depends on this crate for `DerivativeStore`, so the distinction is *which type*, not
+//! whether the crates may be connected — so `cargo xtask check-deploy` asserts
+//! `lapidary-api` never names `SourceStore` as a textual backstop against the mistake of
+//! importing it there. The crate that actually needs `SourceStore` is `lapidary-ingest`,
+//! not `lapidary-api`: ingest was tried as a role-gated route inside `lapidary-api`
+//! first, and moved out once it became clear that `lapidary-api` depending on
+//! `lapidary-cad` at all — regardless of which routes ever ran — made the `api`
+//! container image link the kernel again. See `docs/ARCHITECTURE.md`'s crate graph.
 
 use lapidary_core::BlobHash;
 use std::path::{Path, PathBuf};
@@ -40,13 +42,13 @@ pub enum StorageError {
 pub struct WorkerRole(());
 
 impl WorkerRole {
-    /// Called once `LAPIDARY_ROLE` (or, in tests, the caller) has established the worker
-    /// role. Today that is `crates/lapidary-api/src/scan.rs`, per request, inside the one
-    /// handler `router()` mounts only under `Role::Worker` — `bin/lapidary-server` decides
-    /// the role before `router()` ever runs, and this is the type-level echo of that
-    /// decision at the one call site allowed to reach a source file. Nothing checks the
-    /// process's actual role at the call site itself: the proof is that this code is
-    /// reachable at all, which `Role::Api` structurally prevents.
+    /// Called from `lapidary-ingest`'s scan handler, once per request — the only code in
+    /// the workspace that runs solely under `LAPIDARY_ROLE=worker` and is allowed to
+    /// reach a source file at all. Nothing checks the process's actual role at the call
+    /// site itself: the proof is that this code is reachable, which is true only because
+    /// `lapidary-api` (the open path) cannot depend on `lapidary-cad` or construct a
+    /// `SourceStore` — `xtask/src/layers.rs`'s `FORBIDDEN_PAIRS` and
+    /// `xtask/src/deploy.rs`'s `check_open_path_boundary` enforce that structurally.
     pub fn assume() -> Self {
         WorkerRole(())
     }

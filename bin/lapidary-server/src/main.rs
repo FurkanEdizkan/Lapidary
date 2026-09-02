@@ -24,15 +24,14 @@ struct Config {
     // matching CI-side guard lives in xtask/src/deploy.rs, which fails `check-deploy` if
     // deploy/compose.yaml ever stops setting this for a service that runs lapidary-server.
     role: Option<String>,
-    // No default and no container path hardcoded here either, for the same reason as
-    // `role`: only the worker's `scan` route reads these, but both roles build one
-    // `AppState`, so both must set them. Task 12 wires the real values —
-    // `LAPIDARY_INGEST_DIR` to a `/ingest:ro` bind mount, `LAPIDARY_BLOB_ROOT` to the
-    // `lapidary-blobs` volume — into `deploy/compose.yaml`. Until then, starting either
-    // container without them fails here rather than starting a worker that silently 500s
-    // on the first scan.
-    ingest_dir: PathBuf,
-    blob_root: PathBuf,
+    // Same reasoning as `role`, and `Option` rather than required for the same reason:
+    // only the worker role reads these, so requiring them unconditionally would make the
+    // `api` service's config incomplete for no reason it would ever hit. Checked by hand
+    // in `worker_router` below when `role` turns out to be `Role::Worker`. No hardcoded
+    // container path either way: tests build `lapidary_ingest::AppState` directly, and
+    // `deploy/compose.yaml` (Task 12) supplies the real `/ingest` mount.
+    ingest_dir: Option<PathBuf>,
+    blob_root: Option<PathBuf>,
 }
 
 fn default_bind() -> String {
@@ -54,6 +53,47 @@ fn kernel_description() -> String {
 #[cfg(not(feature = "mock-kernel"))]
 fn kernel_description() -> String {
     "none (build with --features mock-kernel to compile one in)".to_owned()
+}
+
+/// Builds the worker process's router: `lapidary-api`'s (health only — `Role::Worker`
+/// mounts nothing else) merged with `lapidary-ingest`'s (the scan route). Only this
+/// build's feature gates whether that merge is even possible — see
+/// `Cargo.toml`'s `mock-kernel` feature doc.
+#[cfg(feature = "mock-kernel")]
+fn worker_router(
+    db: lapidary_db::PgPool,
+    ingest_dir: Option<PathBuf>,
+    blob_root: Option<PathBuf>,
+) -> Result<axum::Router> {
+    let ingest_dir =
+        ingest_dir.context("Could not start as worker: LAPIDARY_INGEST_DIR is not set.")?;
+    let blob_root =
+        blob_root.context("Could not start as worker: LAPIDARY_BLOB_ROOT is not set.")?;
+    let api = router(AppState { db: db.clone() }, Role::Worker);
+    let ingest = lapidary_ingest::router(lapidary_ingest::AppState {
+        db,
+        ingest_dir,
+        blob_root,
+    });
+    Ok(api.merge(ingest))
+}
+
+/// This build was not compiled with the feature that pulls `lapidary-ingest` in at all
+/// (see `Cargo.toml`) — fail loudly rather than silently start a worker with no scan
+/// route. `deploy/compose.yaml` always builds the worker image with the feature, so this
+/// only fires when someone runs a default-featured binary manually with
+/// `LAPIDARY_ROLE=worker`.
+#[cfg(not(feature = "mock-kernel"))]
+fn worker_router(
+    _db: lapidary_db::PgPool,
+    _ingest_dir: Option<PathBuf>,
+    _blob_root: Option<PathBuf>,
+) -> Result<axum::Router> {
+    bail!(
+        "Could not start as worker: this binary was built without ingest support. Rebuild \
+         with `--features mock-kernel` — deploy/compose.yaml does this automatically for \
+         the worker service."
+    );
 }
 
 #[tokio::main]
@@ -78,7 +118,7 @@ async fn main() -> Result<()> {
         .merge(Env::raw().only(&["DATABASE_URL"]))
         .merge(Env::prefixed("LAPIDARY_"))
         .extract()
-        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL, plus LAPIDARY_INGEST_DIR and LAPIDARY_BLOB_ROOT; see deploy/.env.example.")?;
+        .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
     let Some(role_str) = config.role.as_deref() else {
         bail!(
@@ -116,19 +156,13 @@ async fn main() -> Result<()> {
     // logs` tell an operator which one a given container actually took.
     tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
-    axum::serve(
-        listener,
-        router(
-            AppState {
-                db,
-                ingest_dir: config.ingest_dir,
-                blob_root: config.blob_root,
-            },
-            role,
-        ),
-    )
-    .await
-    .context("The HTTP server stopped unexpectedly")?;
+    let app_router = match role {
+        Role::Api => router(AppState { db }, Role::Api),
+        Role::Worker => worker_router(db, config.ingest_dir, config.blob_root)?,
+    };
+    axum::serve(listener, app_router)
+        .await
+        .context("The HTTP server stopped unexpectedly")?;
 
     Ok(())
 }

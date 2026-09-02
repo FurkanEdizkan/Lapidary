@@ -61,9 +61,8 @@ fn check_deploy() -> Result<()> {
         println!(
             "deploy check OK — deploy/compose.yaml and deploy/Containerfile agree on which \
              services link the CAD kernel (static check: configuration only, not built images), \
-             every service that runs lapidary-server sets LAPIDARY_ROLE, and no lapidary-api \
-             source file names SourceStore outside deploy::OPEN_PATH_BOUNDARY_EXEMPTIONS \
-             ({} source file(s) checked)",
+             every service that runs lapidary-server sets LAPIDARY_ROLE, and lapidary-api \
+             never names SourceStore ({} source file(s) checked)",
             api_sources.len()
         );
         Ok(())
@@ -83,8 +82,7 @@ fn check_deploy() -> Result<()> {
              deploy/Containerfile (i.e. runs lapidary-server) must set LAPIDARY_ROLE \
              explicitly — it has no default, so a compose file that loses it would start a \
              worker container that silently never mounts /scan. The open path also never \
-             touches a source file — no lapidary-api source file may name SourceStore \
-             except the worker-only handler(s) named in OPEN_PATH_BOUNDARY_EXEMPTIONS."
+             touches a source file — lapidary-api must never name SourceStore."
         );
         bail!("deploy check failed")
     }
