@@ -8,12 +8,13 @@
 //!
 //! `Enterprise` is a wrapper tier above L3, not a fifth peer of L0-L3: it holds only
 //! `lapidary-enterprise`, which wraps auth, RBAC and audit around `lapidary-api`. So
-//! `lapidary-enterprise → lapidary-api` must be allowed — that's L3→L3 via the
-//! `lapidary-api` edge, permitted below. The reverse edge, `lapidary-api →
-//! lapidary-enterprise`, would make the free application depend on the enterprise crate,
-//! breaking the project rule that the application is free and complete with no gated
-//! features. That edge is now forbidden structurally, by `edge_allowed` giving L3 no
-//! path to `Enterprise` — not by code review.
+//! `lapidary-enterprise → lapidary-api` must be allowed — that's Enterprise→L3, permitted
+//! below by the `Layer::Enterprise => to != Layer::Bin` arm (Enterprise may depend on
+//! anything except a binary). The reverse edge, `lapidary-api → lapidary-enterprise`,
+//! would make the free application depend on the enterprise crate, breaking the project
+//! rule that the application is free and complete with no gated features. That edge is
+//! now forbidden structurally, by `edge_allowed` giving L3 no path to `Enterprise` — not
+//! by code review.
 
 use std::collections::BTreeMap;
 
@@ -83,6 +84,19 @@ impl std::fmt::Display for Violation {
                 from_layer,
                 to,
                 to_layer,
+            } if *to_layer == Layer::Bin => write!(
+                f,
+                "{from} ({from_layer:?}) -> {to} ({to_layer:?}) is forbidden. Binaries and \
+                 xtask sit outside the layering rule and may depend on anything, but nothing \
+                 may depend on a binary — that would make a library crate reach back into an \
+                 entrypoint. Move whatever {from} needs from {to} into a library crate at the \
+                 appropriate layer instead."
+            ),
+            Violation::ForbiddenEdge {
+                from,
+                from_layer,
+                to,
+                to_layer,
             } => write!(
                 f,
                 "{from} ({from_layer:?}) -> {to} ({to_layer:?}) is forbidden. \
@@ -104,6 +118,10 @@ fn edge_allowed(from: Layer, to: Layer) -> bool {
         Layer::L0 => false,
         Layer::L1 => to == Layer::L0,
         Layer::L2 => to == Layer::L0 || to == Layer::L1,
+        // `to == Layer::L3` (L3 may depend on another L3) is deliberately kept for future L3
+        // crates, but it is presently unreachable: `layer_of` maps only `lapidary-api` to
+        // `Layer::L3`, so no graph today can exercise an L3→L3 edge. Nothing tests this arm —
+        // do not manufacture a second L3 crate just to cover it.
         Layer::L3 => to == Layer::L0 || to == Layer::L1 || to == Layer::L2 || to == Layer::L3,
         Layer::Enterprise => to != Layer::Bin,
         Layer::Bin => true,
@@ -231,11 +249,16 @@ mod tests {
     }
 
     #[test]
-    fn allows_l3_to_depend_on_another_l3_so_enterprise_can_wrap_the_api() {
+    fn allows_enterprise_to_depend_on_l3_so_enterprise_can_wrap_the_api() {
         // lapidary-enterprise wraps auth/RBAC/audit around lapidary-api, so
-        // lapidary-enterprise → lapidary-api must be permitted.
+        // lapidary-enterprise → lapidary-api (Enterprise→L3) must be permitted.
         // The reverse edge, lapidary-api → lapidary-enterprise, is now forbidden
         // structurally — see rejects_api_depending_on_enterprise below.
+        //
+        // This is Enterprise→L3, not L3→L3: `layer_of` maps `lapidary-enterprise` to
+        // `Layer::Enterprise` and `lapidary-api` to `Layer::L3`. The `Layer::L3 => to ==
+        // Layer::L3` arm in `edge_allowed` (true L3→L3) is untested — see the comment
+        // beside it.
         let g = graph(&[
             ("lapidary-api", &[]),
             ("lapidary-enterprise", &["lapidary-api"]),
@@ -288,6 +311,35 @@ mod tests {
                 ..
             } => {}
             other => panic!("expected Enterprise->Bin violation, got {other:?}"),
+        }
+        let msg = violations[0].to_string();
+        assert!(msg.contains("lapidary-enterprise"));
+        assert!(msg.contains("lapidary-server"));
+        assert!(
+            !msg.contains("L2 crates may depend only on L0 and L1"),
+            "message must not reuse the L2 remedy for a binary-dependency violation"
+        );
+        assert!(
+            msg.contains("nothing may depend on a binary") || msg.contains("depend on a binary"),
+            "message must state the actual rule broken: nothing may depend on a binary"
+        );
+    }
+
+    #[test]
+    fn rejects_l2_depending_on_enterprise() {
+        // edge_allowed(L2, Enterprise) is already false; this is coverage for existing
+        // correct behaviour, closing a gap left when rejects_l2_depending_on_l3 was
+        // repointed from lapidary-enterprise to lapidary-api.
+        let g = graph(&[("lapidary-jobs", &["lapidary-enterprise"])]);
+        let violations = check(&g).expect_err("L2 -> Enterprise must be rejected");
+        assert_eq!(violations.len(), 1);
+        match &violations[0] {
+            Violation::ForbiddenEdge {
+                from_layer: Layer::L2,
+                to_layer: Layer::Enterprise,
+                ..
+            } => {}
+            other => panic!("expected L2->Enterprise violation, got {other:?}"),
         }
     }
 
