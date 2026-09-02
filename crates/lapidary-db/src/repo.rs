@@ -3,18 +3,29 @@ use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId, PartSummary, 
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// A grid row paired with its thumbnail bytes. Not `PartSummary` on its own:
+/// `PartSummary.thumbnail` is a content hash for a future hash-addressed thumbnail
+/// endpoint, and slice 1 has no such endpoint — it stores the WebP inline as `bytea`
+/// and the grid renders it directly. `PgParts::page` already fetches that column (it
+/// is a `LEFT JOIN` away from every row it reads regardless), so the bytes ride along
+/// here rather than being fetched and thrown away.
+pub struct PartRow {
+    pub summary: PartSummary,
+    pub thumbnail_webp: Option<Vec<u8>>,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
 pub trait PartRepository: Send + Sync {
     /// One keyset page of grid rows, newest first. `after` is the previous page's last
-    /// id. Implementation lands in Phase 1.
+    /// id.
     async fn page(
         &self,
         library: LibraryId,
         after: Option<lapidary_core::PartId>,
         limit: u16,
-    ) -> Result<Vec<PartSummary>, DbError>;
+    ) -> Result<Vec<PartRow>, DbError>;
 }
 
 /// Mirrors `lapidary_storage::StoredBlob`. Not imported: both crates are L1, and
@@ -162,7 +173,7 @@ impl PartRepository for PgParts {
         library: LibraryId,
         after: Option<PartId>,
         limit: u16,
-    ) -> Result<Vec<PartSummary>, DbError> {
+    ) -> Result<Vec<PartRow>, DbError> {
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
         //
@@ -186,7 +197,7 @@ impl PartRepository for PgParts {
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
-             JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC LIMIT 1) r ON true \
+             JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN derivative d ON d.revision_id = r.id AND d.kind = 'thumbnail' \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
@@ -205,36 +216,39 @@ impl PartRepository for PgParts {
                     lib,
                     name,
                     part_number,
-                    _thumb,
+                    thumb_bytes,
                     triangles,
                     _watertight,
                     created_us,
                     updated_us,
                 )| {
-                    Ok(PartSummary {
-                        id: PartId::from_uuid(id),
-                        library: LibraryId::from_uuid(lib),
-                        name,
-                        part_number,
-                        // The hash is not carried in slice 1: thumbnails arrive inline and
-                        // the grid renders them directly. A hash-addressed thumbnail
-                        // endpoint arrives with the viewer.
-                        thumbnail: None,
-                        triangle_count: triangles.map(|t| t as u32),
-                        // Every figure on a mesh part is tessellated, so any is all.
-                        approximate: true,
-                        created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
-                            |_| DbError::TimestampOutOfRange {
-                                column: "part.created_at",
-                                value: created_us,
-                            },
-                        )?,
-                        updated_at: jiff::Timestamp::from_microsecond(updated_us).map_err(
-                            |_| DbError::TimestampOutOfRange {
-                                column: "part.updated_at",
-                                value: updated_us,
-                            },
-                        )?,
+                    Ok(PartRow {
+                        summary: PartSummary {
+                            id: PartId::from_uuid(id),
+                            library: LibraryId::from_uuid(lib),
+                            name,
+                            part_number,
+                            // The hash is not carried in slice 1: thumbnails arrive inline
+                            // and the grid renders them directly. A hash-addressed
+                            // thumbnail endpoint arrives with the viewer.
+                            thumbnail: None,
+                            triangle_count: triangles.map(|t| t as u32),
+                            // Every figure on a mesh part is tessellated, so any is all.
+                            approximate: true,
+                            created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
+                                |_| DbError::TimestampOutOfRange {
+                                    column: "part.created_at",
+                                    value: created_us,
+                                },
+                            )?,
+                            updated_at: jiff::Timestamp::from_microsecond(updated_us).map_err(
+                                |_| DbError::TimestampOutOfRange {
+                                    column: "part.updated_at",
+                                    value: updated_us,
+                                },
+                            )?,
+                        },
+                        thumbnail_webp: thumb_bytes,
                     })
                 },
             )

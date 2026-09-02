@@ -3,7 +3,7 @@
 
 mod repo;
 
-pub use repo::{IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, StoredBlobRow};
+pub use repo::{IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 pub use sqlx::PgPool;
 
 use thiserror::Error;

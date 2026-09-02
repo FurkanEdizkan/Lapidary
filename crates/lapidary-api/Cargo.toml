@@ -17,11 +17,14 @@ lapidary-vcs.workspace = true
 lapidary-build.workspace = true
 lapidary-targets.workspace = true
 axum.workspace = true
+base64.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+ts-rs.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true

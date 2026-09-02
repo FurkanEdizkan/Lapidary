@@ -1146,6 +1146,8 @@ name = "lapidary-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
+ "jiff",
  "lapidary-build",
  "lapidary-core",
  "lapidary-db",
@@ -1162,6 +1164,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "ts-rs",
 ]
 
 [[package]]

@@ -144,9 +144,11 @@ async fn the_worker_role_does_not_serve_the_grid(pool: sqlx::PgPool) {
 // the_worker_role_does_not_serve_the_grid proves the worker role does NOT serve the
 // grid, but a 404 because the route is missing from *both* roles would satisfy that just
 // as well as a 404 because it's missing from *this* role. This is the other half: it
-// pins that the grid genuinely IS mounted in the role that owns it (returning the
-// placeholder's 501, not axum's fallback 404), so the pair together proves 404 means
-// "wrong role", not "no such route anywhere".
+// pins that the grid genuinely IS mounted in the role that owns it (returning a real
+// 200 with a page body, not axum's fallback 404), so the pair together proves 404 means
+// "wrong role", not "no such route anywhere". Task 10 replaced the 501 placeholder this
+// test used to pin with the real handler — the seeded library has no parts in this
+// freshly migrated pool, so an empty page is the correct response, not an error.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
     let app = router(AppState { db: pool }, Role::Api);
@@ -159,10 +161,14 @@ async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
         )
         .await
         .expect("responds");
-    // Pin the exact placeholder status, not merely "not 404" — assert_ne! here would also
-    // pass if the stub handler panicked into a 500. Task 10 replaces this handler and
-    // must update this assertion to whatever it actually returns.
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body reads");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("body is JSON");
+    assert_eq!(json["parts"], serde_json::json!([]));
+    assert!(json["next"].is_null());
 }
 
 #[test]

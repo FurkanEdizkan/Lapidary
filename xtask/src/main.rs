@@ -197,7 +197,19 @@ fn check_layers() -> Result<()> {
     }
 }
 
-/// Regenerate the TypeScript bindings from #[ts(export)] types in lapidary-core.
+/// Every crate holding a `#[ts(export)]` type. `lapidary-core` is the domain-type home
+/// and has carried every such type through Phase 1 slice 1 so far; Task 10 adds the
+/// first one to live outside it (`PartCard`, `PartsPage` — wire shapes for the grid
+/// endpoint, deliberately not domain types, so they belong in `lapidary-api`, not here).
+/// A crate gaining its own `#[ts(export)]` type and not appearing in this list is a
+/// silent gap: `cargo test -p <crate> export_bindings` would never run, so its bindings
+/// would never be written, and CI's staleness gate would have nothing to compare against
+/// (a missing binding, not a stale one, so `git status --porcelain` would report a diff
+/// only running the export for real would explain).
+const CRATES_WITH_TS_EXPORTS: &[&str] = &["lapidary-core", "lapidary-api"];
+
+/// Regenerate the TypeScript bindings from every `#[ts(export)]` type in
+/// `CRATES_WITH_TS_EXPORTS`.
 fn export_bindings() -> Result<()> {
     let root = workspace_root()?;
     let out = root.join("web/src/bindings");
@@ -208,22 +220,24 @@ fn export_bindings() -> Result<()> {
     }
     std::fs::create_dir_all(&out).context("Could not create web/src/bindings")?;
 
-    let status = Command::new(env!("CARGO"))
-        .args(["test", "-p", "lapidary-core", "export_bindings"])
-        .env("TS_RS_EXPORT_DIR", &out)
-        .status()
-        .context("Could not run the ts-rs export tests")?;
+    for krate in CRATES_WITH_TS_EXPORTS {
+        let status = Command::new(env!("CARGO"))
+            .args(["test", "-p", krate, "export_bindings"])
+            .env("TS_RS_EXPORT_DIR", &out)
+            .status()
+            .with_context(|| format!("Could not run the ts-rs export tests for {krate}"))?;
 
-    if !status.success() {
-        // The output directory was cleared above, so the previously committed bindings are
-        // gone from the working tree. Say so — the user needs the recovery step, not just
-        // the diagnosis.
-        bail!(
-            "ts-rs export failed, and web/src/bindings/ was cleared before the attempt, so \
-             the committed bindings are missing from your working tree. Run `git checkout -- \
-             web/src/bindings` to restore them, then `cargo test -p lapidary-core` to see \
-             which type could not be exported."
-        );
+        if !status.success() {
+            // The output directory was cleared above, so the previously committed bindings
+            // are gone from the working tree. Say so — the user needs the recovery step,
+            // not just the diagnosis.
+            bail!(
+                "ts-rs export failed for {krate}, and web/src/bindings/ was cleared before \
+                 the attempt, so the committed bindings are missing from your working tree. \
+                 Run `git checkout -- web/src/bindings` to restore them, then `cargo test -p \
+                 {krate}` to see which type could not be exported."
+            );
+        }
     }
 
     println!("bindings written to {}", out.display());

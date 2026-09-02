@@ -6,6 +6,7 @@ mod health;
 mod parts;
 
 pub use error::ApiError;
+pub use parts::{PartCard, PartsPage};
 
 use axum::Router;
 use axum::routing::get;

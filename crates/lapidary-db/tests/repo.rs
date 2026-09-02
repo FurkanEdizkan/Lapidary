@@ -203,15 +203,23 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
         .await
         .expect("page");
     assert_eq!(page.len(), 2, "limit is honoured");
-    assert_eq!(page[0].name, "Cable clip, LP-3300-01", "newest first");
+    assert_eq!(
+        page[0].summary.name, "Cable clip, LP-3300-01",
+        "newest first"
+    );
     assert!(
-        page[0].approximate,
+        page[0].summary.approximate,
         "every mesh-derived part is approximate"
     );
-    assert_eq!(page[0].triangle_count, Some(48_112));
+    assert_eq!(page[0].summary.triangle_count, Some(48_112));
+    assert_eq!(
+        page[0].thumbnail_webp.as_deref(),
+        Some(b"webp".as_slice()),
+        "the inline thumbnail bytes travel with the row, not just a hash"
+    );
 
     let next = PgParts(pool.clone())
-        .page(library(), Some(page[1].id), 2)
+        .page(library(), Some(page[1].summary.id), 2)
         .await
         .expect("second page");
     assert_eq!(
@@ -219,7 +227,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
         1,
         "keyset pagination continues after the last id"
     );
-    assert_eq!(next[0].name, "Bracket, LP-1042-03");
+    assert_eq!(next[0].summary.name, "Bracket, LP-1042-03");
 }
 
 #[sqlx::test(migrations = "./migrations")]
