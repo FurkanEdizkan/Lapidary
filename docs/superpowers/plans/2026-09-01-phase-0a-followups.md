@@ -1,7 +1,8 @@
 # Phase 0a — follow-ups
 
-**Status:** open — partially closed. Seven of the items below were executed on 2026-09-02;
-see the execution note below and the item markers throughout.
+**Status:** open — partially closed. Two execution passes on 2026-09-02 have closed most of
+what was self-contained and verifiable; see the two execution notes below and the item markers
+throughout for what remains.
 **Date:** 2026-09-01
 **Source:** the Phase 0a whole-branch review, plus findings deferred during execution.
 **Phase 0a itself is complete** — 8 of 8 exit criteria verified from a clean clone; see
@@ -15,23 +16,39 @@ verifiable subset of this list —
 `docs/superpowers/plans/2026-09-02-phase-0a-followups-execution.md` has the task-by-task
 detail, and `git log` on `rust-rewrite` (commits `c656dc4`..`ae49f39`) has the actual
 diffs. Items it closed are marked **Closed** below with the task and commit that did it.
-Everything else — including both owner decisions and the whole Phase 0b section — is
-untouched and still open.
+
+**2026-09-02 second execution pass.** A four-task plan then ran against the push decision
+plus three more self-contained items from this list —
+`docs/superpowers/plans/2026-09-02-phase-0a-followups-round-2.md` has the task-by-task
+detail and its "Scope rulings" section explains what it deliberately left out and why;
+`git log` on `rust-rewrite` (commits `f4c89d9`..`0095d1b`) has the actual diffs. Items it
+closed are marked **Closed** below with the task and commit that did it.
+
+Everything not marked **Closed** — including the remaining owner decision, the whole
+Phase 0b section, and every item both passes left untouched — is still open.
 
 ---
 
 ## Decisions waiting on the owner
 
 ### Push the branch, and let CI run for the first time
-**Still open.** Still unanswered by the owner, and still the reason `.github/workflows/ci.yml`
-and `containers.yml` have never executed. Not in scope for the 2026-09-02 execution pass —
-pushing is outward-facing and the controller does not decide it.
+**Closed, 2026-09-02.** The owner answered and authorised the push. `origin/rust-rewrite` moved
+`16b60b3..15494c3` — a clean fast-forward of 63 commits, confirmed with
+`git merge-base --is-ancestor 16b60b3 15494c3`. CI ran for the first time in the project's
+history: run `33608501887`
+(`https://github.com/FurkanEdizkan/Lapidary/actions/runs/33608501887`), triggered by that push,
+all four jobs green — `rust`, `deny`, `web`, `bindings`.
 
-The branch has never been pushed, and its lead over `origin/rust-rewrite` keeps growing with
-every commit, so a fixed count here goes stale immediately. Recompute with
-`git rev-list --count origin/rust-rewrite..HEAD`; it was 56 as of 2026-09-02. Pushing still sends
-the commit deleting the Node prototype (64 files) and starts consuming Actions minutes on every
-subsequent push.
+**The half that is still true: `containers.yml` has still never run.** It triggers only on
+`workflow_dispatch` and on `push: tags: ["v*"]` (see the file itself), and a branch push is
+neither, so this push did not exercise it. That is by design, not a defect — but it means "CI is
+proven" would overstate what happened. What ran: `ci.yml`, on the push, green. What has not:
+`containers.yml`, which needs either a manual dispatch or a `v*` tag push to run for the first
+time.
+
+Was previously the reason `.github/workflows/ci.yml` and `containers.yml` had never executed;
+the branch had never been pushed, and its lead over `origin/rust-rewrite` kept growing with
+every commit.
 
 ### Whether `lapidary-enterprise` should be structurally prevented from being a dependency of `lapidary-api`
 **Closed — Task 1 (`f3a252b`, `733edad`), 2026-09-02.** `lapidary-enterprise` was promoted out
@@ -120,9 +137,20 @@ inherently mesh-derived number — is unwrapped. Defensible for a grid row that 
 but its first real use in Phase 3 will decide whether it gets used at all.
 
 ### 7. The empty-state copy promises an interaction that does not exist
-`strings.emptyLibrary.body` reads "Drop a folder of STL or STEP files to begin." Nothing
-implements dropping a folder. This becomes true exactly when Phase 1 ships ingest — so make it
-a Phase 1 acceptance item: implement the drop affordance, or change the copy.
+**Copy half closed — round-2 Task 3 (`db02e85`, `0095d1b`), 2026-09-02.**
+`strings.emptyLibrary.body` no longer says "Drop a folder of STL or STEP files to begin." It
+now
+reads "Parts will appear here as your library grows." — true today, and it promises no
+interaction the app does not implement. `web/src/routes/index.test.tsx` gained a regression test
+asserting the component renders `strings.emptyLibrary.body`, so the string cannot drift silently.
+
+**The ingest half is still open.** The copy no longer lies, but the app still cannot ingest
+anything — there is no drop target, file picker, or ingest path. Phase 1 shipping ingest and
+restoring a truthful call to action remains an acceptance item: implement the drop affordance
+(or whatever Phase 1 lands on), and update the copy to match.
+
+Previously: `strings.emptyLibrary.body` read "Drop a folder of STL or STEP files to begin."
+Nothing implemented dropping a folder.
 
 ### 8. Prototype knowledge that was not captured before deletion
 **Closed — Task 7 (`ae49f39`), 2026-09-02.** All three missing areas are now in
@@ -143,31 +171,43 @@ All recoverable from `main`, which is why this was not urgent. Slicer `.ini`/`.j
 hard-won and headed for `lapidary-targets`; it was captured before that work starts.
 
 ### 12. `lapidary-api → lapidary-cad` is still permitted by `edge_allowed` (L3→L2)
-**Still open.** Item 5 above (closed) removed the actual dependency edge and left a comment in
-`bin/lapidary-server/Cargo.toml` asserting the invariant ("lapidary-api never depends on
-lapidary-cad — the open path lives there and must never invoke the kernel"), but nothing
-structural stops the edge coming back: `edge_allowed(Layer::L3, Layer::L2)` in
-`xtask/src/layers.rs` returns `true` unconditionally for any L3→L2 pair, `lapidary-cad` included.
-A future contributor who adds `lapidary-cad.workspace = true` back to `crates/lapidary-api/
-Cargo.toml` passes `cargo xtask check-layers` cleanly.
+**Closed — round-2 Task 1 (`132a349`, `adaa7f3`), 2026-09-02.** `xtask/src/layers.rs` gained a
+`FORBIDDEN_PAIRS` constant — a list of `(from, to, why)` triples, checked in `check()` alongside
+the existing tier rule — with one entry today: `("lapidary-api", "lapidary-cad", …)`, naming the
+open-path rule in its `why`. `lapidary-api -> lapidary-cad` now fails `cargo xtask check-layers`
+structurally, with a `Violation` variant whose `Display` names both crates and states the rule;
+a different L3→L2 edge (`lapidary-api -> lapidary-index`) is still allowed, so this is a named
+pair, not a blanket L3→L2 ban. Proven to bite: adding `lapidary-cad.workspace = true` back to
+`crates/lapidary-api/Cargo.toml` was confirmed to fail the check before being reverted.
+`adaa7f3` trimmed `xtask/src/main.rs`'s footer to stay generic rather than naming today's one
+`FORBIDDEN_PAIRS` entry, so it does not go stale when a second pair is added. **This is the
+mechanism for adding another named-pair prohibition in future — extend `FORBIDDEN_PAIRS` in
+`xtask/src/layers.rs`, not `edge_allowed`, which still operates on `Layer` tiers and cannot
+express a single-pair exception.**
 
-The same argument that justified item 1 above ("enforced today only by review — and I am not
-always the reviewer") applies here, and this rule has a non-negotiable product statement behind
-it: "the open path never touches a source file and never invokes the CAD kernel." A tier rule
-can't express it, because it is a named-pair exception (this one L3 crate, this one L2 crate),
-not a layer relation — `edge_allowed` operates on `Layer`, not on crate names. It needs a
-different mechanism: an explicit forbidden-pairs list checked alongside the tier rule, or an
-allow-list of the specific L2 crates `lapidary-api` may depend on.
+Previously: item 5 (closed, above) removed the actual dependency edge and left only a comment in
+`bin/lapidary-server/Cargo.toml` asserting the invariant; nothing structural stopped the edge
+coming back, because `edge_allowed(Layer::L3, Layer::L2)` returned `true` unconditionally for
+any L3→L2 pair, `lapidary-cad` included.
 
 ### 13. The `api` container links `lapidary-cad`
-**Still open.** Because both compose services (`api`, `worker`) build from the same
-`deploy/Containerfile` with `--features mock-kernel` (item 3 above, closed), the single binary
-that serves the open path links the kernel crate even though `lapidary-api` itself does not
-depend on it (item 5 above, closed, keeps that edge out of the crate graph). Harmless in 0a
-while nothing in the `api` role calls into `lapidary-cad` — but it means the open-path binary
-and the worker binary are, today, literally the same artifact. Worth separating the images, or
-splitting the binary by role (see item 4 above), before Phase 1 puts real code behind the
-open-path/kernel boundary.
+**Images half closed — round-2 Task 2 (`664279c`), 2026-09-02.** `deploy/Containerfile` now
+takes the feature list as a build arg, `SERVER_FEATURES`, defaulting to empty and declared
+inside the build stage (a bare `ARG` before `FROM` would have been the wrong scope). Only
+`deploy/compose.yaml`'s **worker** service sets it, to `mock-kernel`; **api** passes nothing and
+builds without `lapidary-cad` linked at all. Verified by running both images and reading their
+startup kernel line: `api` logs `kernel=none`, `worker` logs `kernel=mock 0a`.
+
+**Not the same as splitting the binary by role — item 4 stays open and is still the real fix.**
+Separating the images removes the kernel from the artifact that serves the open path today, but
+`api` and `worker` are still the same binary run with different flags, not a role-aware process;
+item 4's `LAPIDARY_ROLE` switch (or a subcommand) is the change that actually gives the worker
+its own identity, and it stays blocked on job leasing existing first.
+
+Previously: because both compose services built from the same `deploy/Containerfile` with
+`--features mock-kernel` hardcoded (item 3 above, closed), the single binary that serves the
+open path linked the kernel crate even though `lapidary-api` itself did not depend on it (item 5
+above, closed, kept that edge out of the crate graph).
 
 ---
 
@@ -223,16 +263,19 @@ external manager when the fleet story lands.
   out of scope for the 2026-09-02 pass: there was nothing wrong to fix yet.
 
 ### 14. The `publish = false` / `allow-wildcard-paths` pair is enforced by comment only
-**Still open.** Item 9 above (closed) set `publish = false` on all 13 internal manifests and
-added `allow-wildcard-paths = true` to `deny.toml`, with a comment tying the two together —
-`allow-wildcard-paths` is workspace-wide, and it is only safe because every member that could be
-reached by a wildcard path dependency also carries `publish = false`. But that pairing is
-enforced by the comment alone: a new crate added to the workspace without `publish = false`
-silently inherits the wildcard-path exemption, and nothing fails to tell you.
-`cargo xtask check-layers` already fails on a workspace member missing from `layer_of`, so it is
-a natural place to also assert `publish = false` on every member it walks. Low risk today — one
-person adding crates, reviewing their own PRs — but this repo's stated style is "enforced here
-rather than by review," and this is exactly the kind of invariant that erodes silently.
+**Closed — round-2 Task 1 (`132a349`), 2026-09-02.** `xtask/src/layers.rs` gained
+`check_publish`, a pure function over member-name and whether `cargo metadata`'s `publish` field
+is `null` (unpublishable crates report `[]`; the 14 current members were verified to all report
+`[]`), called from `main.rs` for every workspace member `check-layers` walks. A member missing
+`publish = false` now fails the check, with a `Violation::Publishable` whose message
+says what to add and why — that `deny.toml`'s `allow-wildcard-paths` depends on every member
+being unpublishable. Proven to bite: temporarily removing `publish = false` from one manifest
+was confirmed to fail the check, naming that crate, before being reverted.
+
+Previously: item 9 (closed, above) set `publish = false` on all 13 internal manifests and added
+`allow-wildcard-paths = true` to `deny.toml`, with only a comment tying the two together — a new
+crate added to the workspace without `publish = false` would have silently inherited the
+wildcard-path exemption, with nothing failing to tell you.
 
 ---
 
