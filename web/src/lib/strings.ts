@@ -11,6 +11,6 @@ export const strings = {
   },
   emptyLibrary: {
     title: 'No parts yet',
-    body: 'Drop a folder of STL or STEP files to begin.',
+    body: "There's no way to add them yet.",
   },
 } as const

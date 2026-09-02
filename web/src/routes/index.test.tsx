@@ -47,3 +47,13 @@ test('renders an actionable message when the server is unreachable', async () =>
     await screen.findByText('Could not reach the server. Check that the api and db services are running.'),
   ).toBeDefined()
 })
+
+// Asserted against the strings.ts constant, not a literal, so this test breaks only if the
+// component stops rendering strings.emptyLibrary.body at all — e.g. it gets hardcoded or
+// dropped — not whenever the copy itself is edited.
+test('renders the empty-library copy from strings.ts', () => {
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  renderIndex()
+  expect(screen.getByText(strings.emptyLibrary.title)).toBeDefined()
+  expect(screen.getByText(strings.emptyLibrary.body)).toBeDefined()
+})
