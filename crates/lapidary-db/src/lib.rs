@@ -3,7 +3,7 @@
 
 mod repo;
 
-pub use repo::PartRepository;
+pub use repo::{IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 pub use sqlx::PgPool;
 
 use thiserror::Error;
@@ -37,6 +37,11 @@ pub enum DbError {
         "Could not bring the database schema up to date: {0}. If the database is at a newer schema version than this binary, check that the api and worker images are the same version."
     )]
     Migrate(#[from] sqlx::migrate::MigrateError),
+
+    #[error(
+        "`{column}` holds {value} microseconds since the epoch, which is not a representable timestamp. The row is corrupt — it was probably written by something other than lapidary-db."
+    )]
+    TimestampOutOfRange { column: &'static str, value: i64 },
 }
 
 /// Strip credentials from a connection URL so it is safe to put in an error or a log.

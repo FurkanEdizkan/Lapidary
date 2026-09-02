@@ -1202,7 +1202,9 @@ name = "lapidary-db"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "jiff",
  "lapidary-core",
+ "serde_json",
  "sqlx",
  "thiserror",
  "uuid",
