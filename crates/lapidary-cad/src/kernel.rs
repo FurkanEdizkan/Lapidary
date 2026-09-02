@@ -40,6 +40,11 @@ pub enum CadError {
         "The CAD kernel did not respond within {seconds}s while processing {path}. The file may be unusually large; raise LAPIDARY_KERNEL_TIMEOUT or split the assembly."
     )]
     Timeout { path: String, seconds: u64 },
+
+    #[error(
+        "Could not read this STL — {detail}. Re-export it from your CAD or slicing tool and retry; if it came from a download, the transfer may have been cut short."
+    )]
+    MalformedStl { detail: String },
 }
 
 /// One shipped implementation. The trait exists so tests have a double.
