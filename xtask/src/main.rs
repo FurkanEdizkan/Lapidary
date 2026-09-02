@@ -74,7 +74,9 @@ fn check_layers() -> Result<()> {
                 eprintln!("  {v}");
             }
             eprintln!(
-                "\nThe rule is in docs/ARCHITECTURE.md: L2 crates may depend on L0 and L1, never on each other or on L3."
+                "\nThe rule is in docs/ARCHITECTURE.md: L2 crates may depend on L0 and L1, \
+                 never on each other or on L3; L3 may depend on L0-L3 but never on \
+                 Enterprise, the wrapper tier that holds lapidary-enterprise."
             );
             bail!("layering check failed")
         }
