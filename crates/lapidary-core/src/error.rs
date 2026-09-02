@@ -17,4 +17,9 @@ pub enum CoreError {
         "\"{got}\" is not a valid id — ids are UUIDs. Copy the id from the part, library, or revision it identifies rather than retyping it."
     )]
     IdParse { got: String },
+
+    #[error(
+        "`{got}` is not a measurement provenance. Expected `analytic` (read from a B-rep entity) or `tessellated` (derived from mesh geometry). A row written outside lapidary-db may have used a different vocabulary."
+    )]
+    ProvenanceUnknown { got: String },
 }

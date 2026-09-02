@@ -3,11 +3,13 @@
 mod approximate;
 mod error;
 mod ids;
+mod measurement;
 mod part;
 
 pub use approximate::Approximate;
 pub use error::CoreError;
 pub use ids::{BlobHash, LibraryId, PartId, RevisionId};
+pub use measurement::{MeshMeasurements, Provenance};
 pub use part::{LibraryMode, PartSummary};
 
 #[cfg(test)]
@@ -116,5 +118,49 @@ mod tests {
         assert!(!from_brep.is_approximate());
         assert!(from_mesh.is_approximate());
         assert_eq!(*from_mesh.value(), 19.987);
+    }
+
+    #[test]
+    fn an_open_mesh_reports_no_volume_at_all() {
+        // Signed-volume integration over a non-watertight mesh returns a number that
+        // means nothing. "Measurement must not lie" includes refusing to answer.
+        let m = MeshMeasurements {
+            bbox_mm: [88.0, 34.0, 12.0],
+            triangle_count: 12_940,
+            surface_area_mm2: 15_320.5,
+            volume_mm3: None,
+            is_watertight: false,
+        };
+        assert!(m.volume_approximate().is_none());
+    }
+
+    #[test]
+    fn a_closed_mesh_reports_volume_as_tessellated_never_analytic() {
+        let m = MeshMeasurements {
+            bbox_mm: [61.0, 42.0, 18.5],
+            triangle_count: 48_112,
+            surface_area_mm2: 9_804.25,
+            volume_mm3: Some(21_478.5),
+            is_watertight: true,
+        };
+        let v = m
+            .volume_approximate()
+            .expect("watertight mesh has a volume");
+        assert!(
+            v.is_approximate(),
+            "a mesh-derived volume is never analytic"
+        );
+        assert_eq!(*v.value(), 21_478.5);
+    }
+
+    #[test]
+    fn provenance_round_trips_through_its_wire_form() {
+        assert_eq!(Provenance::Tessellated.as_str(), "tessellated");
+        assert_eq!(Provenance::Analytic.as_str(), "analytic");
+        assert_eq!(
+            "tessellated".parse::<Provenance>().expect("parses"),
+            Provenance::Tessellated
+        );
+        assert!("guessed".parse::<Provenance>().is_err());
     }
 }
