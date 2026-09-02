@@ -158,4 +158,88 @@ mod tests {
         // 11 of 12 unit-cube triangles, each of area 0.5.
         assert!((m.surface_area_mm2 - 5.5).abs() < 1e-4);
     }
+
+    #[test]
+    fn a_cube_whose_shared_corners_differ_in_the_last_float_bit_is_still_closed() {
+        // STL stores every vertex independently per facet — there is no shared vertex
+        // list on disk. So the same physical corner routinely arrives as several
+        // different bit patterns depending on which facet last computed it: a real
+        // slicer or CAD export can legitimately write one corner as `1.0` from one
+        // triangle and `0.99999994` or `1.0000001` (its immediate f32 neighbours) from
+        // another. `unit_cube()` above sidesteps this entirely by reading every corner
+        // from one shared array, so it cannot tell us whether quantisation is doing
+        // anything. This test builds the same cube without that shortcut.
+        let one_lo = f32::from_bits(1.0f32.to_bits() - 1); // 0.99999994
+        let one_hi = f32::from_bits(1.0f32.to_bits() + 1); // 1.0000001
+
+        // Three encodings of the same 8 corners, each corner's `1.0` components drawn
+        // from a different neighbour of 1.0f32 — the "same" corner, three bit patterns.
+        let variants: [[[f32; 3]; 8]; 3] = [
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
+            [
+                [0.0, 0.0, 0.0],
+                [one_lo, 0.0, 0.0],
+                [one_lo, one_lo, 0.0],
+                [0.0, one_lo, 0.0],
+                [0.0, 0.0, one_lo],
+                [one_lo, 0.0, one_lo],
+                [one_lo, one_lo, one_lo],
+                [0.0, one_lo, one_lo],
+            ],
+            [
+                [0.0, 0.0, 0.0],
+                [one_hi, 0.0, 0.0],
+                [one_hi, one_hi, 0.0],
+                [0.0, one_hi, 0.0],
+                [0.0, 0.0, one_hi],
+                [one_hi, 0.0, one_hi],
+                [one_hi, one_hi, one_hi],
+                [0.0, one_hi, one_hi],
+            ],
+        ];
+        let faces = [
+            [0, 2, 1],
+            [0, 3, 2], // bottom
+            [4, 5, 6],
+            [4, 6, 7], // top
+            [0, 1, 5],
+            [0, 5, 4],
+            [1, 2, 6],
+            [1, 6, 5],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+        ];
+        // Each face draws its 3 corners from a different variant array — exactly as
+        // each facet in a real STL independently stores its own vertex coordinates —
+        // so two triangles sharing a physical corner almost never see the same bits.
+        let mesh = Mesh {
+            triangles: faces
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let v = &variants[i % variants.len()];
+                    [v[f[0]], v[f[1]], v[f[2]]]
+                })
+                .collect(),
+        };
+
+        let m = measure(&mesh);
+        assert!(
+            m.is_watertight,
+            "a cube is closed regardless of which f32 neighbour of each corner a facet happened to store"
+        );
+        let volume = m.volume_mm3.expect("a closed mesh has a volume");
+        assert!((volume - 1.0).abs() < 1e-3, "unit cube volume was {volume}");
+    }
 }
