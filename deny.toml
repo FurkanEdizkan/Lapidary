@@ -16,6 +16,14 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Every internal lapidary-* path dependency is unversioned (see root Cargo.toml's
+# [workspace.dependencies]), which cargo records as `*` and wildcards = "deny" would
+# otherwise reject. That's sound here only because every internal crate carries
+# publish = false: a wildcard path dependency is only broken for crates.io consumers,
+# and these crates can never reach crates.io. These two settings are a pair — do not
+# flip this to true without publish = false on every workspace member, and do not add
+# publish = true anywhere without reverting this back to false.
+allow-wildcard-paths = true
 
 # No SQL outside lapidary-db. Enforced here rather than by review.
 [[bans.deny]]
