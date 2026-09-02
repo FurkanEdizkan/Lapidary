@@ -12,6 +12,7 @@
 
 use lapidary_core::BlobHash;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -60,6 +61,11 @@ fn blob_path(root: &Path, hash: &BlobHash) -> PathBuf {
         .join(&hex)
 }
 
+/// Disambiguates temp file names within one process. A `put` never blocks on another —
+/// each attempt gets its own counter value, so two writers racing to store the same blob
+/// never collide on the temp file, only (harmlessly) on which one's rename wins.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, StorageError> {
     let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
     let path = blob_path(root, &hash);
@@ -68,6 +74,36 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         path: parent.display().to_string(),
         source,
     })?;
+
+    // Content addressing means the bytes at `path` are already correct if it exists — the
+    // hash is a function of the content, so writing again would be pure waste. It would
+    // also be actively unsafe: two workers ingesting the same file compute the same hash
+    // and race to write the same path. `std::fs::write` truncates before writing, so one
+    // writer's truncate landing between another's writes leaves a zero-filled hole, and a
+    // concurrent read can observe the file mid-truncation. Slice 2's job queue runs
+    // multiple workers by design, and two overlapping scans can race today — so this is
+    // reachable, not theoretical. Returning here, before doing any compression or I/O,
+    // closes that hazard for the common case; the temp-file-then-rename below closes it
+    // for the race on first write.
+    match std::fs::metadata(&path) {
+        Ok(existing) => {
+            return Ok(StoredBlob {
+                hash,
+                size_bytes: bytes.len() as u64,
+                // The on-disk size, not a freshly recomputed compressed length — nothing
+                // was written on this call, so there is no fresh length to report.
+                stored_bytes: existing.len(),
+                zstd_level: if compress { INGEST_LEVEL as i16 } else { 0 },
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    }
 
     let payload = if compress {
         zstd::encode_all(bytes, INGEST_LEVEL).map_err(|source| StorageError::Io {
@@ -78,12 +114,32 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         bytes.to_vec()
     };
 
-    // Content addressing makes rewriting an existing blob pointless — the bytes are the
-    // same by definition — but writing anyway keeps the code one path instead of two.
-    std::fs::write(&path, &payload).map_err(|source| StorageError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
+    // Write to a uniquely-named temp file in the *same* directory as the final path, then
+    // rename into place. A same-directory rename is atomic on POSIX filesystems — readers
+    // see either the old state (nothing, since this is a new blob) or the complete new
+    // file, never a partial write. A temp file in a different directory (e.g. the system
+    // temp dir) could sit on a different filesystem, where rename degrades to a copy and
+    // loses that guarantee.
+    let tmp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        hash.to_hex(),
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(source) = std::fs::write(&tmp_path, &payload) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(StorageError::Io {
+            path: tmp_path.display().to_string(),
+            source,
+        });
+    }
+    if let Err(source) = std::fs::rename(&tmp_path, &path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        });
+    }
 
     Ok(StoredBlob {
         hash,
@@ -93,11 +149,30 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
     })
 }
 
+/// Distinguish "no blob at this path" from every other I/O failure. Collapsing every
+/// failure into `NotFound` sends whoever hits a permissions error, a bad mount, or a file
+/// caught mid-rewrite off to hunt for a blob that is sitting right there with the wrong
+/// mode bits. `lapidary-db` made exactly this mistake once — every `connect()` failure
+/// mapped to `Unreachable`, so a wrong password read as an unreachable database — and now
+/// classifies by SQLSTATE instead. Same fix, applied here: only a real `NotFound` from the
+/// OS becomes `StorageError::NotFound`; everything else is `StorageError::Io`, which
+/// already carries the path and the underlying error.
+fn classify_read_error(source: std::io::Error, hash: &BlobHash, path: &Path) -> StorageError {
+    if source.kind() == std::io::ErrorKind::NotFound {
+        StorageError::NotFound {
+            hash_prefix: hash.to_hex()[..8].to_owned(),
+        }
+    } else {
+        StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        }
+    }
+}
+
 fn read_blob(root: &Path, hash: &BlobHash, compressed: bool) -> Result<Vec<u8>, StorageError> {
     let path = blob_path(root, hash);
-    let raw = std::fs::read(&path).map_err(|_| StorageError::NotFound {
-        hash_prefix: hash.to_hex()[..8].to_owned(),
-    })?;
+    let raw = std::fs::read(&path).map_err(|source| classify_read_error(source, hash, &path))?;
     if compressed {
         zstd::decode_all(raw.as_slice()).map_err(|source| StorageError::Io {
             path: path.display().to_string(),
@@ -269,6 +344,67 @@ mod tests {
             s.put(b"another").is_ok(),
             "the store still works after a removal"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_second_put_of_identical_bytes_does_not_rewrite_the_file() {
+        // Two concurrent writers of the same blob must not race a truncate+write on the
+        // same path. This pins the fix on this process alone: a second `put` of bytes
+        // already on disk must not touch the file at all. Comparing inode numbers, not
+        // just contents, is the point — a rewrite-in-place, or an unlink-then-recreate,
+        // both leave the *content* unchanged but would show up here as a new inode
+        // (rename onto an existing path replaces the inode; the early-return path this
+        // test is pinning never runs rename at all).
+        use std::os::unix::fs::MetadataExt;
+        let (_dir, s) = store();
+        let first = s.put(b"idempotent").expect("first put");
+        let path = blob_path(&s.root, &first.hash);
+        let before = std::fs::metadata(&path).expect("stat before").ino();
+
+        let second = s.put(b"idempotent").expect("second put");
+
+        let after = std::fs::metadata(&path).expect("stat after").ino();
+        assert_eq!(
+            before, after,
+            "a second put of identical bytes must not rewrite the file"
+        );
+        assert_eq!(second.stored_bytes, first.stored_bytes);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_permission_denied_read_surfaces_as_io_not_not_found() {
+        // A permissions error, a bad mount, or a file caught mid-rewrite must not be
+        // reported as NotFound — that sends whoever is debugging it to hunt for a file
+        // that is sitting right there with the wrong mode bits. Denies read access on the
+        // blob itself (not just its directory) so `std::fs::read` fails with
+        // PermissionDenied, not NotFound, and asserts the store reports it as such.
+        //
+        // Assumes the test process is not root — root bypasses file mode entirely, which
+        // would make this assertion vacuous. Verified non-root in CI and in this
+        // environment; if that ever stops holding, this test starts failing loudly
+        // (`result` becomes `Ok`, which the match below rejects) rather than passing
+        // having proven nothing.
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, s) = store();
+        let stored = s.put(b"guarded").expect("put");
+        let path = blob_path(&s.root, &stored.hash);
+        let original_mode = std::fs::metadata(&path).expect("stat").permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        let result = s.get(&stored.hash);
+
+        // Restore permissions unconditionally, before asserting, so a failed assertion
+        // still leaves the temp directory removable by its own Drop.
+        std::fs::set_permissions(&path, original_mode).expect("restore permissions");
+
+        match result {
+            Err(StorageError::Io { .. }) => {}
+            other => {
+                panic!("a permission-denied read must surface as StorageError::Io, not {other:?}")
+            }
+        }
     }
 
     #[test]

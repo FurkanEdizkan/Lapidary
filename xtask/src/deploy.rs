@@ -442,6 +442,15 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
 /// `lapidary-storage` for `DerivativeStore`, so the boundary is *which type*, not whether
 /// the crates may connect. `main.rs` walks `crates/lapidary-api/src/**/*.rs` and passes
 /// `(path, contents)` pairs here.
+///
+/// This is a lint against accidental misuse, not a security boundary: it scans literal
+/// source text for the string `SourceStore`, so a third crate re-exporting it under another
+/// name — `pub use lapidary_storage::SourceStore as BlobStore` from somewhere `lapidary-api`
+/// then imports — would slip past. That is an acceptable trade for a cheap static check
+/// against the mistake this actually catches (importing the type directly, the first thing
+/// someone does before discovering the compiler won't let them build one); a future reader
+/// should not treat a green run here as proof no source bytes are reachable, only as proof
+/// nothing named `SourceStore` directly.
 pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
     api_sources
         .iter()
