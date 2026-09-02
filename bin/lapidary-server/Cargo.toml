@@ -10,7 +10,7 @@ repository.workspace = true
 default = []
 # Compiles in the mock CAD kernel and reports it at startup. This is what the `worker`
 # compose service builds with in Phase 0a — the real OCCT kernel is Phase 0b.
-mock-kernel = ["lapidary-cad/mock-kernel"]
+mock-kernel = ["dep:lapidary-cad", "lapidary-cad/mock-kernel"]
 
 [dependencies]
 lapidary-api.workspace = true
