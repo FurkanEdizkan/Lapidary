@@ -1,5 +1,6 @@
 //! Workspace automation. Run via the `cargo xtask` alias in .cargo/config.toml.
 
+mod deploy;
 mod layers;
 
 use anyhow::{Context, Result, bail};
@@ -9,9 +10,71 @@ use std::process::Command;
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("check-layers") => check_layers(),
+        Some("check-deploy") => check_deploy(),
         Some("export-bindings") => export_bindings(),
-        Some(other) => bail!("Unknown xtask '{other}'. Available: check-layers, export-bindings"),
-        None => bail!("Usage: cargo xtask <check-layers|export-bindings>"),
+        Some(other) => {
+            bail!("Unknown xtask '{other}'. Available: check-layers, check-deploy, export-bindings")
+        }
+        None => bail!("Usage: cargo xtask <check-layers|check-deploy|export-bindings>"),
+    }
+}
+
+/// Locate the workspace root from xtask's own manifest directory — xtask must stay one
+/// level below the root for this to hold. Shared by `check_deploy` and `export_bindings`.
+fn workspace_root() -> Result<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live one level below the workspace root")?
+        .to_path_buf();
+    if !root.join("Cargo.toml").exists() {
+        bail!(
+            "Expected the workspace manifest at {}. xtask derives the workspace root from its \
+             own location, so it must stay one level below the root; move it back, or update \
+             this path.",
+            root.join("Cargo.toml").display()
+        );
+    }
+    Ok(root)
+}
+
+/// Static checks over `deploy/compose.yaml` and `deploy/Containerfile` — see
+/// `xtask/src/deploy.rs` for the rules. This check is static: it verifies the
+/// configuration text, not the images actually built from it. A green result means the
+/// files are internally consistent with each other, not that the last-built `api` image
+/// lacks the CAD kernel.
+fn check_deploy() -> Result<()> {
+    let root = workspace_root()?;
+    let compose_path = root.join("deploy/compose.yaml");
+    let containerfile_path = root.join("deploy/Containerfile");
+
+    let compose = std::fs::read_to_string(&compose_path)
+        .with_context(|| format!("Could not read {}", compose_path.display()))?;
+    let containerfile = std::fs::read_to_string(&containerfile_path)
+        .with_context(|| format!("Could not read {}", containerfile_path.display()))?;
+
+    let violations = deploy::check(&compose, &containerfile);
+
+    if violations.is_empty() {
+        println!(
+            "deploy check OK — deploy/compose.yaml and deploy/Containerfile agree on which \
+             services link the CAD kernel (static check: configuration only, not built images)"
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "Deploy configuration check failed ({} problem(s)):\n",
+            violations.len()
+        );
+        for v in &violations {
+            eprintln!("  {v}");
+        }
+        eprintln!(
+            "\nThis check is static — it verifies deploy/compose.yaml and \
+             deploy/Containerfile, not a built image. The open path (lapidary-api) must \
+             never invoke the CAD kernel; only services in KERNEL_LINKED_SERVICES \
+             (xtask/src/deploy.rs) may set SERVER_FEATURES."
+        );
+        bail!("deploy check failed")
     }
 }
 

@@ -31,6 +31,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo xtask check-layers
+      - run: cargo xtask check-deploy
       - run: cargo test --workspace --all-features
 
   bindings:
