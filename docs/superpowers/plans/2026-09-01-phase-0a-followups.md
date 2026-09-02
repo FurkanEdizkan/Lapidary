@@ -138,11 +138,11 @@ but its first real use in Phase 3 will decide whether it gets used at all.
 
 ### 7. The empty-state copy promises an interaction that does not exist
 **Copy half closed — round-2 Task 3 (`db02e85`, `0095d1b`), 2026-09-02.**
-`strings.emptyLibrary.body` no longer says "Drop a folder of STL or STEP files to begin." It
-now
+`strings.emptyLibrary.body` no longer says "Drop a folder of STL or STEP files to begin." It now
 reads "Parts will appear here as your library grows." — true today, and it promises no
 interaction the app does not implement. `web/src/routes/index.test.tsx` gained a regression test
-asserting the component renders `strings.emptyLibrary.body`, so the string cannot drift silently.
+asserting the component renders `strings.emptyLibrary.body`, so the component's *use* of the
+string cannot drift silently.
 
 **The ingest half is still open.** The copy no longer lies, but the app still cannot ingest
 anything — there is no drop target, file picker, or ingest path. Phase 1 shipping ingest and
@@ -208,6 +208,41 @@ Previously: because both compose services built from the same `deploy/Containerf
 `--features mock-kernel` hardcoded (item 3 above, closed), the single binary that serves the
 open path linked the kernel crate even though `lapidary-api` itself did not depend on it (item 5
 above, closed, kept that edge out of the crate graph).
+
+### 15. The `worker`-only-links-kernel invariant is enforced by comment, not by CI
+Item 12 converted an invariant from comment-enforced to check-enforced: `lapidary-api ->
+lapidary-cad` now fails `cargo xtask check-layers`, which runs in `ci.yml` on every push, so
+that rule bites continuously. Item 13 created a sibling invariant — that only the `worker` image
+links the kernel — and left it enforced by a comment in `deploy/Containerfile` and nothing in
+CI. Nothing in CI builds the images, so setting `SERVER_FEATURES: mock-kernel` on the `api`
+service in `deploy/compose.yaml`, or re-hardcoding `--features` in `deploy/Containerfile`, would
+fail no check.
+
+`.github/workflows/containers.yml` is already the first divergence: it runs
+`docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .` with no build arg.
+Before item 13 that produced an image with the mock kernel; now it produces only the
+kernel-free variant, and no build anywhere in CI exercises the `SERVER_FEATURES=mock-kernel`
+path. Harm today is zero — that workflow has never run, pushes to no registry, and
+`cargo test --workspace --all-features` compiles the kernel regardless of what any image build
+arg says.
+
+The fuller fix — a second `docker build --build-arg SERVER_FEATURES=mock-kernel` step in
+`containers.yml` — starts to pre-empt item 4 (the `worker`/`api` role split) and may be better
+left until that is decided.
+
+### 16. The open-path rule's other half — never touches a source file — is unenforced
+Item 12 closed the kernel half of "the open path never touches a source file and never invokes
+the CAD kernel" — twice over, given item 13. The source-file half is untouched: `lapidary-api`
+still depends on `lapidary-storage`, so nothing structural stops an open-path handler from
+reading source bytes instead of derivatives.
+
+A `FORBIDDEN_PAIRS` entry cannot express this one. `lapidary-api` legitimately needs
+`lapidary-storage` for derivatives — thumbnails, tessellations — so the crates must stay
+connected; the distinction is *which bytes* a handler reads, not whether the crates may be
+connected at all, and a dependency-graph check only sees the latter. This likely needs an
+API-level boundary rather than a dependency-level one — something like a derivatives-only handle
+into `lapidary-storage` that open-path handlers can hold and a source-reading one they cannot —
+and is Phase 1 design work.
 
 ---
 
