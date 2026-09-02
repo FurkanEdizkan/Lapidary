@@ -179,8 +179,16 @@ fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
 
     for line in &lines[start + 1..] {
         // A non-blank, unindented line ends the services: block (e.g. a top-level
-        // `volumes:` key).
+        // `volumes:` key) — unless it's a comment. A column-0 comment (a section banner
+        // like `# ---- application services ----`) is ordinary YAML style *inside* a
+        // mapping and must not be mistaken for the next top-level key, or every service
+        // below the banner — kernel-linked or not — becomes invisible to this parser
+        // without raising ComposeNoServicesParsed, because the services found above the
+        // banner are still enough to make the file parse as "some services found".
         if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
             break;
         }
 
@@ -206,8 +214,19 @@ fn parse_services(contents: &str) -> Result<Vec<(String, bool)>, Violation> {
 
         if let Some((_, sets_features)) = current.as_mut() {
             let trimmed = line.trim_start();
-            if !trimmed.starts_with('#') && trimmed.starts_with("SERVER_FEATURES:") {
-                *sets_features = true;
+            if !trimmed.starts_with('#') {
+                // Mapping form (`SERVER_FEATURES: mock-kernel`, the form deploy/compose.yaml
+                // actually uses) and list form (`- SERVER_FEATURES=mock-kernel`, equally
+                // valid Compose syntax for `args:`) both count. Recognizing only the mapping
+                // form would make a list-form worker report MissingKernelLink — telling the
+                // reader their image ships kernel-less when it would not.
+                let list_item = trimmed
+                    .strip_prefix('-')
+                    .map(str::trim_start)
+                    .is_some_and(|rest| rest.starts_with("SERVER_FEATURES="));
+                if trimmed.starts_with("SERVER_FEATURES:") || list_item {
+                    *sets_features = true;
+                }
             }
         }
     }
@@ -242,6 +261,20 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
             _ => {}
         }
     }
+
+    // The loop above only walks services the parser actually found, so a
+    // KERNEL_LINKED_SERVICES entry that never parsed at all — the service block was
+    // deleted, renamed, or hidden below a banner comment this parser used to choke on —
+    // raises nothing there. Check the reverse direction too: every name this module
+    // expects to exist must have been found among the parsed services.
+    for &expected in KERNEL_LINKED_SERVICES {
+        if !services.iter().any(|(name, _)| name == expected) {
+            violations.push(Violation::MissingKernelLink {
+                service: expected.to_owned(),
+            });
+        }
+    }
+
     violations
 }
 
@@ -326,10 +359,21 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     let lines = logical_lines(contents);
     let mut violations = Vec::new();
 
+    // Case-insensitive: Dockerfile instructions are case-insensitive, and a lowercase
+    // `from` between the ARG and the build line would hide a stage boundary from a
+    // case-sensitive match — the exact silent-pass failure mode this module exists to
+    // avoid, just less likely than the compose one. (`ARG`/`RUN` don't need the same
+    // treatment: a lowercase `arg` or `run` just fails to match at all, which degrades
+    // loudly to a parse-stale violation rather than passing silently.)
     let from_indices: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.trim_start().starts_with("FROM "))
+        .filter(|(_, l)| {
+            let trimmed = l.trim_start();
+            trimmed
+                .get(..5)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("from "))
+        })
         .map(|(i, _)| i)
         .collect();
 
@@ -490,6 +534,61 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
     }
 
     #[test]
+    fn column_zero_comment_banner_does_not_hide_services_below_it() {
+        // The bug this replaced: a section banner comment at column 0 (ordinary YAML style
+        // inside a mapping — today's file merely happens to indent its comments) satisfied
+        // the old "non-blank, unindented line ends the block" terminator, so every service
+        // below it — api included — became invisible and its kernel-linked SERVER_FEATURES
+        // raised nothing.
+        let bad = CORRECT_COMPOSE.replacen(
+            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
+            "# ---- application services ----\n  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: mock-kernel\n",
+            1,
+        );
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![Violation::UnexpectedKernelLink {
+                service: "api".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn kernel_linked_service_absent_from_the_file_entirely_fails_and_names_it() {
+        // Deleting the worker service outright used to give a green run: check_compose only
+        // ever walked the services the parser found, so a KERNEL_LINKED_SERVICES entry that
+        // never parsed at all raised nothing. This pins the reverse check.
+        let bad = CORRECT_COMPOSE.replacen(
+            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n\n",
+            "",
+            1,
+        );
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![Violation::MissingKernelLink {
+                service: "worker".to_owned()
+            }]
+        );
+        assert!(violations[0].to_string().contains("worker"));
+    }
+
+    #[test]
+    fn list_form_args_setting_server_features_is_recognized() {
+        // Compose accepts `args:` as a list (`- SERVER_FEATURES=mock-kernel`) as well as a
+        // mapping. Recognizing only the mapping form would make this fixture report
+        // MissingKernelLink — telling the reader their worker ships kernel-less when it
+        // would not, since the arg genuinely reaches the build either way.
+        let list_form = CORRECT_COMPOSE.replacen(
+            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n",
+            "      args:\n        - SERVER_FEATURES=mock-kernel\n",
+            1,
+        );
+        assert_eq!(check_compose(&list_form), vec![]);
+    }
+
+    #[test]
     fn hardcoded_features_flag_in_build_line_fails() {
         let bad = CORRECT_CONTAINERFILE.replace(
             "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
@@ -501,6 +600,15 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
 
     #[test]
     fn arg_before_first_from_fails() {
+        // Pins the first-ARG-wins semantics of `arg_decl = lines.iter().position(...)`:
+        // this fixture prepends an invalid top-level ARG in front of CORRECT_CONTAINERFILE,
+        // which still carries its own correctly-placed `ARG SERVER_FEATURES=` inside the
+        // build stage. A real `docker build` would see the in-stage re-declaration and
+        // succeed — but `.position()` locks onto the *first* occurrence (the prepended,
+        // invalid one) and flags a violation anyway. That's over-flagging a file that would
+        // actually build fine, not under-flagging a broken one — the safe direction for a
+        // static check — so it's left as-is rather than taught to consider every ARG
+        // occurrence. A future fixer: this is intended behavior, not a bug this test missed.
         let bad = format!("ARG SERVER_FEATURES=\n{CORRECT_CONTAINERFILE}");
         let violations = check_containerfile(&bad);
         assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
@@ -622,7 +730,7 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
     fn containerfile_with_no_cargo_build_line_fails_as_parse_stale() {
         let no_build = "FROM docker.io/library/rust:1.95-trixie AS build\nARG SERVER_FEATURES=\nWORKDIR /src\n";
         let violations = check_containerfile(no_build);
-        assert!(violations.contains(&Violation::ContainerfileMissingBuildLine));
+        assert_eq!(violations, vec![Violation::ContainerfileMissingBuildLine]);
     }
 
     #[test]

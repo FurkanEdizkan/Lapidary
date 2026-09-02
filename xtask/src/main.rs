@@ -162,21 +162,7 @@ fn check_layers() -> Result<()> {
 
 /// Regenerate the TypeScript bindings from #[ts(export)] types in lapidary-core.
 fn export_bindings() -> Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("xtask must live one level below the workspace root")?
-        .to_path_buf();
-    // The line above only fires if CARGO_MANIFEST_DIR is the filesystem root, which never
-    // happens. Moving xtask deeper — to tools/xtask, say — would silently resolve `root` to
-    // the wrong directory and write bindings somewhere nothing reads. Fail loudly instead.
-    if !root.join("Cargo.toml").exists() {
-        bail!(
-            "Expected the workspace manifest at {}. xtask derives the workspace root from its \
-             own location, so it must stay one level below the root; move it back, or update \
-             this path.",
-            root.join("Cargo.toml").display()
-        );
-    }
+    let root = workspace_root()?;
     let out = root.join("web/src/bindings");
 
     // ts-rs writes on test run; clear first so removed types do not linger.
