@@ -56,9 +56,13 @@ async fn main() -> Result<()> {
         .extract()
         .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
-    let db = lapidary_db::connect(&config.database_url).await.context(
-        "Could not start: the database is unreachable. Check that the `db` service is running.",
-    )?;
+    // `lapidary_db::connect()` now classifies *why* the connection failed
+    // (unreachable, wrong credentials, missing database) and that message is
+    // actionable on its own — this outer line must only name the startup stage, not
+    // guess a cause the classified error below it might contradict.
+    let db = lapidary_db::connect(&config.database_url)
+        .await
+        .context("Could not start: connecting to the database failed.")?;
 
     lapidary_db::migrate(&db)
         .await
