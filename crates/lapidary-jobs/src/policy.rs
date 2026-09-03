@@ -49,19 +49,22 @@ mod tests {
     fn a_permanent_failure_is_terminal_on_the_first_attempt() {
         // The bytes are content-addressed and immutable: attempt two would parse the
         // same bytes and produce the same error, so there is no attempt two.
+        let message = "Could not read this STL - it declares 24 facets but the file ends \
+                       after 11. Re-export from your CAD tool and retry."
+            .to_owned();
         let next = next_state(
             Err(HandlerError::Permanent {
-                message: "Could not read this STL - it declares 24 facets but the file \
-                          ends after 11. Re-export from your CAD tool and retry."
-                    .to_owned(),
+                message: message.clone(),
             }),
             1,
             3,
         );
-        assert!(
-            matches!(next, Next::Fail { .. }),
-            "a permanent failure must not be retried, got {next:?}"
-        );
+        // Asserting the full value, not just the variant: a `Next::Fail` with the
+        // message dropped or replaced would still match `matches!(next, Next::Fail
+        // { .. })`, but `JobFailure.reason` is this exact string reaching a person
+        // through the batch status API -- CLAUDE.md requires errors to say what broke
+        // and what to do, so a regression that mangles the message must fail this test.
+        assert_eq!(next, Next::Fail { reason: message });
     }
 
     #[test]

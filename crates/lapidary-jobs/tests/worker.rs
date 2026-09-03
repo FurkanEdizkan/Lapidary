@@ -29,7 +29,7 @@ impl JobHandler for CountingHandler {
     }
 }
 
-async fn drain(pool: PgPool, config: WorkerConfig, expect: usize) -> usize {
+async fn drain(pool: PgPool, config: WorkerConfig) -> usize {
     let handler = Arc::new(CountingHandler {
         seen: AtomicUsize::new(0),
     });
@@ -41,10 +41,21 @@ async fn drain(pool: PgPool, config: WorkerConfig, expect: usize) -> usize {
         shutdown.clone(),
     ));
 
-    // Poll for completion rather than sleeping a fixed amount: a fixed sleep makes this
-    // test's pass/fail depend on how loaded the machine is.
+    // Poll the database for what "drained" actually means -- no job left pending or
+    // running -- rather than for the handler's call count. The exhausted-job case
+    // never calls the handler at all, so waiting on `handler.seen` cannot tell "not
+    // drained yet" apart from "will never be called": with a target of zero calls, a
+    // count-based wait is satisfied before the worker gets a chance to run, which is
+    // exactly the race that made this loop's own shutdown check look broken. Waiting
+    // on state gets every case right, including that one. Bounded so a genuine hang
+    // still fails the test instead of spinning forever.
     for _ in 0..200 {
-        if handler.seen.load(Ordering::SeqCst) >= expect {
+        let outstanding: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM job WHERE state IN ('pending', 'running')")
+                .fetch_one(&pool)
+                .await
+                .expect("counts outstanding jobs");
+        if outstanding == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -84,7 +95,7 @@ async fn the_queue_drains_with_the_listener_disabled(pool: PgPool) {
     };
 
     assert_eq!(
-        drain(pool, config, 2).await,
+        drain(pool, config).await,
         2,
         "polling alone must drain the queue"
     );
@@ -110,7 +121,7 @@ async fn a_job_past_its_attempt_cap_is_abandoned_without_running_the_handler(poo
         concurrency: 1,
         listen: false,
     };
-    let handled = drain(pool.clone(), config, 0).await;
+    let handled = drain(pool.clone(), config).await;
     assert_eq!(handled, 0, "an exhausted job must never reach the handler");
 
     let (state, reason): (String, Option<String>) =
@@ -143,7 +154,7 @@ async fn shutting_down_hands_back_what_the_worker_still_holds(pool: PgPool) {
         concurrency: 1,
         listen: false,
     };
-    drain(pool.clone(), config, 1).await;
+    drain(pool.clone(), config).await;
 
     let state: String = sqlx::query_scalar("SELECT state FROM job")
         .fetch_one(&pool)

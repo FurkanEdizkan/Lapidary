@@ -65,6 +65,10 @@ pub async fn run<H: JobHandler>(
     let jobs = Arc::new(jobs);
 
     loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+
         // The permit is acquired BEFORE the dequeue, never after. Leasing a job we have
         // no capacity to start would burn lease time while it waits its turn, and a
         // lease that expires in a queue is indistinguishable from a crashed worker --
@@ -115,12 +119,16 @@ pub async fn run<H: JobHandler>(
             }
             Ok(None) => {
                 drop(permit);
-                // The queue is empty *right now* -- this is the only point where honoring
-                // shutdown is correct. Checking the flag any earlier (e.g. before this
-                // dequeue) would race a shutdown fired the instant this loop starts
-                // against work already sitting in the queue, and could abandon it
-                // untouched instead of draining it. Checking here means shutdown only
-                // ever cuts off the search for work that is not yet visible.
+                // Checked again here, not only at the top of the loop: without this, a
+                // shutdown that arrives while we are asleep in `wait_for_work` would sit
+                // unnoticed until the next poll tick or NOTIFY wakes us, which could be
+                // the full `poll_interval` away. This is purely a prompt-exit nicety --
+                // the top-of-loop check is what actually stops new dequeues, and that one
+                // must not move: spec S4.4 says shutdown stops dequeuing and lets only
+                // in-flight work finish, and a worker that keeps draining a backlog after
+                // SIGTERM will hit SIGKILL before finishing, skipping release_leases
+                // entirely and degrading the graceful path into the crash path it exists
+                // to avoid.
                 wait_for_work(&mut listener, config.poll_interval, &shutdown).await;
                 if shutdown.is_cancelled() {
                     break;

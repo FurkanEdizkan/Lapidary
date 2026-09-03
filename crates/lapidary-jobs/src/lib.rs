@@ -19,7 +19,7 @@ pub use worker::{WorkerConfig, run};
 #[derive(Debug, Error)]
 pub enum JobsError {
     #[error(
-        "The lease on job {job_id} expired before it was renewed. Another worker may have already picked it up; if this worker is still alive, check that it is heartbeating and not stalled."
+        "The lease on job {job_id} elapsed before this worker finished it. Leases are not renewed yet (see this crate's module docs), so any job that runs longer than its lease trips this — another worker may have already reclaimed and finished it. Check whether this worker stalled or was simply slower than the lease; if jobs are legitimately outliving their lease, that is what `renew_lease` in Phase 2 is for."
     )]
     LeaseExpired { job_id: String },
 
