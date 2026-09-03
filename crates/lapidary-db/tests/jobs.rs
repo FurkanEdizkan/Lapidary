@@ -86,6 +86,18 @@ async fn two_workers_racing_one_job_produce_exactly_one_winner(pool: PgPool) {
     // Both dequeues run concurrently against a queue holding exactly one job. This is
     // the property FOR UPDATE SKIP LOCKED exists for; without the row lock both
     // transactions read the same row and both claim it.
+    //
+    // This is a scenario test, not a proof: it races two real connections for the same
+    // narrow window (the gap between the unlocked candidate read and the row lock being
+    // taken) rather than forcing that window open. Verified experimentally while writing
+    // it: with FOR UPDATE SKIP LOCKED deleted, this test still passed 15/15 plain runs
+    // and only failed 1 time in 40 -- against a local, low-latency Postgres the window is
+    // rarely hit. A green run here is NOT evidence the row lock is present; that
+    // deterministic guarantee lives in
+    // `a_job_locked_by_another_transaction_is_skipped_not_claimed_or_blocked` below,
+    // which holds the lock open explicitly instead of racing for it. This test stays
+    // because it is still the realistic path (two workers actually contending), and its
+    // assertion is correct when it does fire -- it just cannot be trusted alone.
     let a = PgJobs(pool.clone());
     let b = PgJobs(pool.clone());
     let (first, second) = tokio::join!(a.dequeue("worker-a", LEASE), b.dequeue("worker-b", LEASE));
@@ -95,6 +107,65 @@ async fn two_workers_racing_one_job_produce_exactly_one_winner(pool: PgPool) {
         .flatten()
         .count();
     assert_eq!(claimed, 1, "exactly one worker may hold a lease on one job");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_job_locked_by_another_transaction_is_skipped_not_claimed_or_blocked(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+
+    // Hold a row lock on the only job from a separate, still-open transaction -- standing
+    // in for a concurrent claim that is mid-flight, but deterministically rather than by
+    // racing for the same narrow window `two_workers_racing_one_job_produce_exactly_one_
+    // winner` depends on. Two outcomes are reachable by mutating the query's locking
+    // clause, and both are checked for:
+    //   - Ok(None) promptly:  FOR UPDATE SKIP LOCKED saw the lock and skipped the row.
+    //                         This is the only correct outcome.
+    //   - times out:          FOR UPDATE is present without SKIP LOCKED, or is missing
+    //                         entirely -- either way the query's target `UPDATE` still
+    //                         has to take the row's lock to write it, and Postgres makes
+    //                         that block on a lock already held elsewhere rather than
+    //                         silently proceeding. Verified: dropping SKIP LOCKED and
+    //                         dropping the whole FOR UPDATE clause both land here, 5/5
+    //                         runs each -- Postgres's own UPDATE machinery, not this
+    //                         clause, is what makes the "claims a locked row" outcome
+    //                         below structurally unreachable for a single-statement
+    //                         UPDATE like this one.
+    //   - Ok(Some(_)):        included as a defensive check, not because a mutation of
+    //                         this query reaches it: it would mean the code claimed the
+    //                         held row without ever contending for its lock at all, which
+    //                         would only happen if `dequeue` stopped being one atomic
+    //                         UPDATE (e.g. a separate SELECT feeding an UPDATE run
+    //                         outside the same lock chain).
+    let mut locker = pool.begin().await.expect("opens a holding transaction");
+    sqlx::query("SELECT id FROM job WHERE state = 'pending' FOR UPDATE")
+        .execute(&mut *locker)
+        .await
+        .expect("locks the only pending row");
+
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(2), jobs.dequeue("worker-a", LEASE)).await;
+
+    // Release the lock before asserting, so a panic here never leaves the pool's next
+    // test holding a stray lock on a connection sqlx will reuse.
+    locker.rollback().await.expect("releases the held lock");
+
+    match outcome {
+        Ok(Ok(None)) => {}
+        Ok(Ok(Some(job))) => panic!(
+            "dequeue claimed job {:?} while another transaction held its row lock -- \
+             FOR UPDATE SKIP LOCKED is missing from the query (or no lock is being taken \
+             at all)",
+            job.id
+        ),
+        Ok(Err(e)) => panic!("dequeue returned an error instead of skipping the locked row: {e}"),
+        Err(_) => panic!(
+            "dequeue timed out waiting on the locked row -- FOR UPDATE is present without \
+             SKIP LOCKED, so it blocked instead of skipping past the locked row"
+        ),
+    }
 }
 
 #[sqlx::test(migrations = "./migrations")]

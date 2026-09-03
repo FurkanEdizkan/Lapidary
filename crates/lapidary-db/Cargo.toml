@@ -18,9 +18,10 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-# Only the dequeue race test needs a real runtime primitive: tokio::join! is how it
-# proves two dequeues actually overlap rather than running sequentially.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# tokio::join! is how the race test proves two dequeues actually overlap rather than
+# running sequentially; tokio::time::timeout is how the deterministic locked-row test
+# turns "blocked forever" into a bounded, observable outcome instead of a hung test.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true
