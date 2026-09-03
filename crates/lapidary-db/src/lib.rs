@@ -1,8 +1,10 @@
 //! Every SQL statement in Lapidary lives in this crate. Other crates go through the
 //! repository traits below.
 
+mod jobs;
 mod repo;
 
+pub use jobs::{JOB_CHANNEL, PgJobs};
 pub use repo::{IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 pub use sqlx::PgPool;
 
