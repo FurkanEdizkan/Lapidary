@@ -237,13 +237,15 @@ impl PartRepository for PgParts {
         // Both LATERALs below pick one row deterministically out of a set that could
         // hold more than one, newest (`created_at DESC, id DESC`) first: the revision
         // LATERAL because a part could in principle carry more than one revision (only
-        // Phase 2 will actually write a second one), and the derivative LATERAL for the
-        // same reason on `derivative` — `(revision_id, kind)` has no unique constraint,
-        // so nothing stops a second `kind = 'thumbnail'` row for one revision the
-        // moment anything regenerates a thumbnail. A plain (non-LATERAL) LEFT JOIN on
-        // that second one would fan out: two thumbnail rows for one revision means two
-        // identical grid cards for one part, and a page of `limit` rows holding fewer
-        // than `limit` distinct parts, silently under-reporting `next`.
+        // Phase 2 will actually write a second one), and the derivative LATERAL because a
+        // revision legitimately carries several derivatives of *different* kinds — the
+        // LOD ladder slice 3 adds writes exactly that. `derivative_kind_unique_per_revision`
+        // (migration 0003) forbids a second row of the *same* kind, so two thumbnail rows
+        // for one revision cannot happen — but nothing stops `lod0`, `lod1`, thumbnail all
+        // coexisting on one revision, and a plain (non-LATERAL) LEFT JOIN would fan out on
+        // those: several derivative rows for one revision means several identical grid
+        // cards for one part, and a page of `limit` rows holding fewer than `limit` distinct
+        // parts, silently under-reporting `next`.
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
             Uuid,

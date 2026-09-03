@@ -381,13 +381,13 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn two_thumbnail_derivatives_on_one_revision_do_not_duplicate_the_part(pool: sqlx::PgPool) {
-    // F6: `derivative` has no unique constraint on (revision_id, kind) — a plain
-    // (non-LATERAL) `LEFT JOIN derivative ... AND kind = 'thumbnail'` fans out on a
-    // second thumbnail row for the same revision, turning one part into two identical
-    // grid cards and silently under-reporting `next`. Nothing writes a second
-    // thumbnail today (insert_part_chain writes exactly one derivative per call), so
-    // this is seeded directly — reachable the moment anything regenerates one.
+async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx::PgPool) {
+    // F6, superseded: this used to seed a second `kind = 'thumbnail'` row directly to
+    // prove the grid query's LATERAL join wouldn't fan out on it. Migration 0003 (slice
+    // 1 ledger item S3) closed that hole a layer earlier: `derivative_kind_unique_per_revision`
+    // now makes a second row of the same kind on one revision unrepresentable at all, so
+    // the old fixture can no longer be constructed — the INSERT itself is refused before
+    // the grid query ever runs. What's left to assert is that refusal.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
             library: library(),
@@ -400,25 +400,63 @@ async fn two_thumbnail_derivatives_on_one_revision_do_not_duplicate_the_part(poo
         .await
         .expect("records");
 
-    sqlx::query(
+    let err = sqlx::query(
         "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'thumbnail', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
     )
     .bind(id.as_uuid())
     .bind(b"second-thumbnail".as_slice())
     .execute(&pool)
     .await
-    .expect("insert a second thumbnail derivative for the same revision");
+    .expect_err("a second thumbnail derivative for the same revision must be refused");
+
+    assert!(
+        err.to_string()
+            .contains("derivative_kind_unique_per_revision"),
+        "expected the named constraint to be what refused it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: sqlx::PgPool) {
+    // Fan-out pin: `derivative_kind_unique_per_revision` is scoped to (revision_id,
+    // kind), not to revision_id alone — `kind` is a plain `text` column with no CHECK,
+    // so nothing stops a revision from legitimately carrying several derivatives of
+    // *different* kinds. Slice 3's LOD ladder does exactly that. `PgParts::page`'s
+    // derivative LATERAL is what keeps that from fanning the grid out into duplicate
+    // cards; this seeds a second kind and pins that it still doesn't, independent of
+    // the unique constraint (a different kind never touches it) and independent of the
+    // WHERE kind = 'thumbnail' filter inside the LATERAL not regressing later.
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0x61),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"the-thumbnail",
+        })
+        .await
+        .expect("records");
+
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'lod0', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
+    )
+    .bind(id.as_uuid())
+    .bind(b"lod0-mesh-bytes".as_slice())
+    .execute(&pool)
+    .await
+    .expect("insert a same-revision derivative of a different kind");
 
     let page = PgParts(pool).page(library(), None, 10).await.expect("page");
     assert_eq!(
         page.len(),
         1,
-        "one part must still be one grid row, however many thumbnail derivatives its latest revision has"
+        "one part must still be one grid row, however many derivative kinds its latest revision has"
     );
     assert_eq!(
         page[0].thumbnail_webp.as_deref(),
-        Some(b"second-thumbnail".as_slice()),
-        "the newer derivative wins, the same deterministic tie-break as the revision pick above it"
+        Some(b"the-thumbnail".as_slice()),
+        "the thumbnail derivative, not the lod0 one, is what the grid card shows"
     );
 }
 
