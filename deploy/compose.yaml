@@ -89,7 +89,19 @@ services:
       # default is this repository's `example/parts`, so a first run with no .env edits
       # still lands six real parts in the grid; point LAPIDARY_INGEST_DIR at your own
       # folder to scan that instead.
-      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro
+      #
+      # `z`, lowercase, not `Z`. This is the one BIND mount in the file — the two named
+      # volumes above are ours and carry `:Z` — and on an SELinux-enforcing host
+      # (Fedora, RHEL, the platform the README recommends Podman for) a bind mount with
+      # no label gets the worker EACCES on every file, so the documented first-run curl
+      # answers 500 with a directory the operator can read perfectly well themselves.
+      # The difference between the two flags matters here and only here: `Z` relabels
+      # the directory with a private, per-container label, and this directory belongs to
+      # the *user* — it is their parts folder, possibly their whole CAD library, and
+      # possibly shared with other containers. Taking exclusive ownership of it to read
+      # it once would be a worse bug than the one being fixed. `z` applies a shared
+      # label, which is what a read-only source directory wants.
+      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
       - lapidary-blobs:/var/lib/lapidary:Z
 
   web:
