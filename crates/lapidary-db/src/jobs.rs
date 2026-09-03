@@ -316,9 +316,9 @@ impl PgJobs {
             // `min(created_at)` over a non-empty set cannot be NULL. `unwrap_or_default`
             // (not `unwrap()` -- CLAUDE.md bans that outside tests) documents that this
             // is an invariant, not a real fallback.
-            started_at: to_timestamp("started_at", started.unwrap_or_default())?,
+            started_at: to_timestamp("job.created_at", started.unwrap_or_default())?,
             finished_at: finished
-                .map(|us| to_timestamp("finished_at", us))
+                .map(|us| to_timestamp("job.updated_at", us))
                 .transpose()?,
         }))
     }

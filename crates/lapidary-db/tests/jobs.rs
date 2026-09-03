@@ -495,6 +495,27 @@ async fn a_batch_is_unfinished_while_any_job_is_pending(pool: PgPool) {
         .await
         .expect("dequeues")
         .expect("a job");
+
+    // The batch has zero pending jobs and one genuinely `running` job right now --
+    // the case the `finished_at` guard's `state IN ('pending','running')` filter
+    // exists for, and which nothing before this queried: the rest of this test only
+    // ever asks while a job is `pending` or after everything has reached a terminal
+    // state, so a mutation dropping `'running'` from that list would have passed
+    // every other assertion here. Task 13's grid stops polling once `finished_at` is
+    // set, so reporting "finished" while a job is still in flight would freeze a
+    // scan on screen with no error anywhere.
+    let running = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    assert_eq!(running.pending, 0);
+    assert_eq!(running.running, 1, "the second job is leased and in flight");
+    assert!(
+        running.finished_at.is_none(),
+        "a job still running is not finished, even with nothing left pending"
+    );
+
     jobs.fail(
         last.id,
         "Could not read this STL - the file ends mid-facet.",
