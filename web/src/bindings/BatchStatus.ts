@@ -16,7 +16,7 @@ export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: numbe
  */
 failed: Array<JobFailure>, 
 /**
- * RFC 3339 on the wire, exactly like `PartCard.created_at` -- ts-rs renders a
+ * RFC 3339 on the wire, exactly like `PartCard.created_at` — ts-rs renders a
  * `jiff::Timestamp` as `string`. The microsecond hop is a *database-read* workaround
  * (sqlx 0.9 ships `chrono` and `time`, not `jiff`), never a wire format:
  * `lapidary-db` selects microseconds and rebuilds with `Timestamp::from_microsecond`

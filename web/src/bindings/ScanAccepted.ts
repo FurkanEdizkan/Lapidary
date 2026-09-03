@@ -6,7 +6,7 @@ import type { BatchId } from "./BatchId";
  */
 export type ScanAccepted = { batchId: BatchId, 
 /**
- * How many `*.stl` candidates were enqueued. Zero is a success, not an error --
+ * How many `*.stl` candidates were enqueued. Zero is a success, not an error —
  * and a batch with zero jobs has no status resource, so the client must not poll.
  */
 queued: number, };

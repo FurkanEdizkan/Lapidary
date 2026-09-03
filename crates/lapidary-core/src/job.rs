@@ -56,7 +56,7 @@ pub struct BatchStatus {
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
     pub failed: Vec<JobFailure>,
-    /// RFC 3339 on the wire, exactly like `PartCard.created_at` -- ts-rs renders a
+    /// RFC 3339 on the wire, exactly like `PartCard.created_at` — ts-rs renders a
     /// `jiff::Timestamp` as `string`. The microsecond hop is a *database-read* workaround
     /// (sqlx 0.9 ships `chrono` and `time`, not `jiff`), never a wire format:
     /// `lapidary-db` selects microseconds and rebuilds with `Timestamp::from_microsecond`
@@ -72,7 +72,7 @@ pub struct BatchStatus {
 #[ts(export)]
 pub struct ScanAccepted {
     pub batch_id: BatchId,
-    /// How many `*.stl` candidates were enqueued. Zero is a success, not an error --
+    /// How many `*.stl` candidates were enqueued. Zero is a success, not an error —
     /// and a batch with zero jobs has no status resource, so the client must not poll.
     pub queued: u32,
 }
@@ -87,9 +87,10 @@ mod tests {
         assert_eq!(json, "\"running\"");
     }
 
-    #[test]
-    fn a_batch_status_round_trips() {
-        let status = BatchStatus {
+    /// One sample `BatchStatus`, shared by the round-trip test and the wire-shape test
+    /// below so neither drifts from the other's fixture.
+    fn sample_status() -> BatchStatus {
+        BatchStatus {
             batch_id: BatchId::new(),
             library_id: LibraryId::new(),
             total: 6,
@@ -107,10 +108,71 @@ mod tests {
             }],
             started_at: "2026-09-03T12:00:00Z".parse().expect("a valid timestamp"),
             finished_at: Some("2026-09-03T12:00:04Z".parse().expect("a valid timestamp")),
-        };
+        }
+    }
+
+    #[test]
+    fn a_batch_status_round_trips() {
+        let status = sample_status();
 
         let json = serde_json::to_string(&status).expect("serialises");
         let back: BatchStatus = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(status, back);
     }
+
+    /// A round trip cannot catch a wrong or missing `rename_all`: serialising and
+    /// deserialising consult the same attribute, so they agree with each other even
+    /// when both disagree with the wire contract. The wire contract is the KEY NAMES,
+    /// so those are what this asserts directly.
+    #[test]
+    fn batch_status_serialises_camel_case_keys_so_the_generated_type_matches() {
+        let json: serde_json::Value = serde_json::to_value(sample_status()).expect("serialises");
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            keys.contains(&"batchId"),
+            "expected camelCase keys, got: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"failedTotal"),
+            "expected camelCase keys, got: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"startedAt"),
+            "expected camelCase keys, got: {keys:?}"
+        );
+    }
+
+    /// Same rationale as `batch_status_serialises_camel_case_keys...`: a round trip
+    /// cannot distinguish a correct `rename_all` from a missing one.
+    #[test]
+    fn scan_accepted_serialises_camel_case_keys_so_the_generated_type_matches() {
+        let accepted = ScanAccepted {
+            batch_id: BatchId::new(),
+            queued: 3,
+        };
+        let json: serde_json::Value = serde_json::to_value(accepted).expect("serialises");
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            keys.contains(&"batchId"),
+            "expected camelCase keys, got: {keys:?}"
+        );
+    }
+
+    // `JobFailure` has no wire-shape key test: its fields (`path`, `reason`,
+    // `attempts`) are all single words, so `camelCase` and the default renaming
+    // coincide for every one of them. A key-name assertion here could not fail if
+    // `#[serde(rename_all = "camelCase")]` were wrong or absent, so it would be a
+    // test that cannot test anything — skipped rather than faked. `Outcome` and
+    // `JobState` are skipped for the same reason: their variants are single words,
+    // so `JobState`'s existing literal-match test above is already sufficient.
 }
