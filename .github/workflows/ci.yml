@@ -32,6 +32,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo xtask check-layers
       - run: cargo xtask check-deploy
+      # Mangled line-continuations inside string literals are invisible to fmt, clippy
+      # and every test — fmt does not inspect literal CONTENTS — and they reach operators
+      # as runtime error messages. That class has recurred twice here; this gate exists
+      # to close it, and a gate that runs nowhere closes nothing.
+      - run: cargo xtask check-strings
       - run: cargo test --workspace --all-features
 
   bindings:
