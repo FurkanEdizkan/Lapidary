@@ -282,9 +282,15 @@ async fn a_job_that_claims_failed_without_a_reason_is_refused(pool: PgPool) {
 
 ```sh
 cargo test -p lapidary-db --test migrations; echo "exit=$?"
+# A new unique constraint can break a fixture anywhere in the workspace. `part` rows are
+# inserted in exactly one place (`insert_part_chain`, repo.rs:156) and every existing test
+# reaches it with distinct file names, so a collision is unlikely -- but it must surface in
+# the task that adds the constraint, not three tasks later.
+cargo test --workspace --all-features; echo "exit=$?"
 ```
 
-Expected: all three PASS. If `two_parts_with_one_name_in_one_library_are_refused` fails
+Expected: all three PASS, and the workspace suite stays at its slice-1 count of 192 passed,
+0 failed. If `two_parts_with_one_name_in_one_library_are_refused` fails
 because the *first* insert was refused, an existing seeded row already uses that name —
 pick a different plausible part number rather than weakening the test.
 
@@ -345,6 +351,7 @@ Create `crates/lapidary-core/src/job.rs`:
 //! never stored, so it cannot disagree with the rows it summarises.
 
 use crate::{BatchId, LibraryId};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -398,13 +405,14 @@ pub struct BatchStatus {
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
     pub failed: Vec<JobFailure>,
-    /// Microseconds since the epoch, reconstructed with `jiff::Timestamp`. sqlx 0.9 has
-    /// no `jiff` feature -- it ships `chrono` and `time` -- so every timestamp in this
-    /// workspace crosses the database boundary as microseconds. Slice 1's grid query
-    /// already does this; it cost a plan revision there and costs nothing here.
-    pub started_at: i64,
+    /// RFC 3339 on the wire, exactly like `PartCard.created_at` -- ts-rs renders a
+    /// `jiff::Timestamp` as `string`. The microsecond hop is a *database-read* workaround
+    /// (sqlx 0.9 ships `chrono` and `time`, not `jiff`), never a wire format:
+    /// `lapidary-db` selects microseconds and rebuilds with `Timestamp::from_microsecond`
+    /// before this type is ever constructed, which is what `PgParts::page` already does.
+    pub started_at: Timestamp,
     /// Set only once no job in the batch is pending or running.
-    pub finished_at: Option<i64>,
+    pub finished_at: Option<Timestamp>,
 }
 
 /// The scan route's response. The work has been accepted, not done.
@@ -463,8 +471,8 @@ mod tests {
                     .to_owned(),
                 attempts: 1,
             }],
-            started_at: 1_756_857_600_000_000,
-            finished_at: Some(1_756_857_604_000_000),
+            started_at: "2026-09-03T12:00:00Z".parse().expect("a valid timestamp"),
+            finished_at: Some("2026-09-03T12:00:04Z".parse().expect("a valid timestamp")),
         };
 
         let json = serde_json::to_string(&status).expect("serialises");
@@ -1229,6 +1237,14 @@ Add to `crates/lapidary-db/src/jobs.rs`:
 ```rust
 use lapidary_core::{BatchStatus, JobFailure};
 
+/// Rebuild a `jiff::Timestamp` from the microseconds the query selected. sqlx 0.9 has no
+/// `jiff` feature, so every timestamp in this workspace crosses the boundary this way;
+/// `PgParts::page` does the same, including reporting a corrupt row rather than clamping.
+fn to_timestamp(column: &'static str, micros: i64) -> Result<Timestamp, DbError> {
+    Timestamp::from_microsecond(micros)
+        .map_err(|_| DbError::TimestampOutOfRange { column, value: micros })
+}
+
 /// The most failures one status response carries. A thousand-file disaster must return a
 /// readable payload, and `failed_total` still reports the real number.
 const FAILED_SAMPLE: i64 = 100;
@@ -1298,8 +1314,10 @@ impl PgJobs {
                     attempts: attempts.max(0) as u32,
                 })
                 .collect(),
-            started_at: started.unwrap_or_default(),
-            finished_at: finished,
+            // Microseconds in, jiff out -- the conversion belongs here, at the database
+            // boundary, so no wire type ever carries a raw epoch integer.
+            started_at: to_timestamp("started_at", started.unwrap_or_default())?,
+            finished_at: finished.map(|us| to_timestamp("finished_at", us)).transpose()?,
         }))
     }
 }
@@ -2231,6 +2249,10 @@ git commit -m "feat(ingest): run one file's ingest as a job handler"
 
 **Files:**
 - Modify: `crates/lapidary-ingest/src/scan.rs`, `crates/lapidary-ingest/src/lib.rs`
+- Modify: `bin/lapidary-server/src/main.rs` — `the_worker_router_serves_both_health_and_scan`
+  asserts `StatusCode::OK` for the scan route and must become `StatusCode::ACCEPTED`.
+  Leaving it is a red workspace. The test's value is unchanged: it proves the merge wires
+  the route through to a working handler, and 202 proves that exactly as well as 200 did.
 - Test: `crates/lapidary-ingest/tests/scan.rs` (modify)
 
 **Interfaces:**
