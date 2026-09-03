@@ -462,7 +462,14 @@ pub struct BatchStatus {
     pub ingested: u32,
     pub skipped: u32,
     pub failed_total: u32,
-    /// Capped at 100. A thousand-file disaster returns a readable payload.
+    /// Capped at 100, ordered by `(created_at, id)`. The `id` tiebreaker is
+    /// load-bearing, not decoration: `enqueue_scan` writes a whole batch in one
+    /// statement and Postgres's `now()` is constant per transaction, so every job in a
+    /// batch shares an identical `created_at` and ordering by it alone discriminates
+    /// nothing. `JobId` is uuidv7 generated in insertion order, so the tiebreaker
+    /// reproduces enqueue order — which, since the scan sorts paths first, is the
+    /// alphabetical order a reader expects. Without it the list would reshuffle between
+    /// polls under whatever scan order the planner happened to pick.
     pub failed: Vec<JobFailure>,
     pub started_at: Timestamp,
     /// Set once no job in the batch is pending or running.
@@ -478,8 +485,10 @@ pub struct JobFailure {
 
 `started_at` is `min(created_at)` over the batch and `finished_at` is `max(updated_at)`,
 set only once no job in the batch is `pending` or `running`. `failed` is the first 100
-failures **ordered by `created_at`**, so the list is stable across polls rather than
-reshuffling under the reader.
+failures **ordered by `(created_at, id)`** — see the type's own comment for why the
+tiebreaker is required rather than defensive. An earlier draft of this spec claimed
+`created_at` alone made the list stable across polls; it does not, because a batch is
+inserted in one transaction and therefore shares one timestamp.
 
 One inherited trap: **sqlx 0.9 has no `jiff` feature** — it ships `chrono` and `time`. The
 slice-1 grid query already selects microseconds and reconstructs with
