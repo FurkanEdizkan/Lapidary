@@ -32,6 +32,23 @@ fn to_timestamp(column: &'static str, micros: i64) -> Result<Timestamp, DbError>
 /// readable payload, and `failed_total` still reports the real number.
 const FAILED_SAMPLE: i64 = 100;
 
+/// `complete`/`fail`/`reschedule` all guard their `UPDATE` with `AND state = 'running'`
+/// (see `complete`'s doc comment for why), so zero rows affected is not an error -- it
+/// means a second worker already reclaimed and finished this job before this call
+/// landed. That is a correct, expected outcome of the design, but it is also a race that
+/// is otherwise invisible: nothing else records that it happened. This turns it into
+/// something an operator going looking for stalled-worker symptoms can actually find.
+fn log_if_stale(id: JobId, verb: &str, rows_affected: u64) {
+    if rows_affected == 0 {
+        tracing::debug!(
+            job = %id,
+            verb,
+            "job was no longer running when this write landed -- another worker had \
+             already reclaimed and finished it; this write was a no-op"
+        );
+    }
+}
+
 /// One claimed job, as `dequeue` hands it to the worker loop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobRow {
@@ -147,19 +164,20 @@ impl PgJobs {
     /// not lie" (CLAUDE.md) -- a part that ingested must never be reported failed because
     /// a second, abandoned attempt finished after it.
     pub async fn complete(&self, id: JobId, outcome: Outcome) -> Result<(), DbError> {
-        let outcome = match outcome {
+        let outcome_str = match outcome {
             Outcome::Ingested => "ingested",
             Outcome::Skipped => "skipped",
         };
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
              WHERE id = $1 AND state = 'running'",
         )
         .bind(id.as_uuid())
-        .bind(outcome)
+        .bind(outcome_str)
         .execute(&self.0)
         .await?;
+        log_if_stale(id, "complete", result.rows_affected());
         Ok(())
     }
 
@@ -169,7 +187,7 @@ impl PgJobs {
     /// stale-writer guard, so a worker that stalled past its lease and is only now
     /// reporting failure cannot overwrite a row another worker already finished.
     pub async fn fail(&self, id: JobId, reason: &str) -> Result<(), DbError> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE job SET state = 'failed', last_error = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
              WHERE id = $1 AND state = 'running'",
@@ -178,6 +196,7 @@ impl PgJobs {
         .bind(reason)
         .execute(&self.0)
         .await?;
+        log_if_stale(id, "fail", result.rows_affected());
         Ok(())
     }
 
@@ -195,7 +214,7 @@ impl PgJobs {
         reason: &str,
         backoff: Duration,
     ) -> Result<(), DbError> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE job SET state = 'pending', \
                             run_after = now() + make_interval(secs => $3), \
                             last_error = $2, leased_by = NULL, \
@@ -207,6 +226,7 @@ impl PgJobs {
         .bind(backoff.as_secs_f64())
         .execute(&self.0)
         .await?;
+        log_if_stale(id, "reschedule", result.rows_affected());
         Ok(())
     }
 

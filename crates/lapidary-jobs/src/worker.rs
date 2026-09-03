@@ -12,6 +12,17 @@ use tokio_util::sync::CancellationToken;
 const ABANDONED: &str = "This file was claimed three times and never finished. The worker holding it stopped \
      responding each time. Check the worker's logs for a crash, then scan again.";
 
+/// How long shutdown waits for in-flight handlers to finish before releasing this
+/// worker's leases regardless. An orchestrator's SIGTERM-to-SIGKILL window is finite
+/// (Podman and Kubernetes both default to something in the 10-30s range), so waiting
+/// forever here would just mean the process gets killed mid-wait instead of mid-work --
+/// no better, and it would also delay `release_leases` past the point where it can still
+/// run. If this expires, the still-running task's eventual `complete`/`fail`/
+/// `reschedule` call is a stale write: `AND state = 'running'` (see lapidary-db)
+/// makes it a silent no-op rather than a corruption, because by then another worker may
+/// already have reclaimed and finished the same job.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+
 pub struct WorkerConfig {
     pub worker_id: String,
     pub lease: Duration,
@@ -142,6 +153,34 @@ pub async fn run<H: JobHandler>(
                     break;
                 }
             }
+        }
+    }
+
+    // Await in-flight work -- spec S4.4's middle step, between "stop dequeuing" (the
+    // loop above) and "release their leases" (below). Every spawned handler task holds
+    // its permit until it has recorded a real outcome, so reacquiring every permit this
+    // worker started with can only succeed once none of them are still in flight. Get
+    // this wrong and `release_leases` runs while a handler is still mid-parse: the job
+    // goes back to `pending` and a second worker starts the same file while the first
+    // one is still holding it, and when the first worker's `complete` finally lands,
+    // `AND state = 'running'` (rightly) treats it as a stale write and drops the real
+    // outcome on the floor.
+    match tokio::time::timeout(
+        SHUTDOWN_GRACE,
+        Arc::clone(&permits).acquire_many_owned(config.concurrency as u32),
+    )
+    .await
+    {
+        Ok(Ok(_all_permits)) => {}
+        // The semaphore is only ever closed by a bug in this function -- nothing calls
+        // `close()` -- but a closed semaphore has nothing left in flight to wait for.
+        Ok(Err(_)) => {}
+        Err(_) => {
+            tracing::warn!(
+                grace_secs = SHUTDOWN_GRACE.as_secs(),
+                "in-flight jobs did not finish within the shutdown grace period; \
+                 releasing this worker's leases anyway"
+            );
         }
     }
 
