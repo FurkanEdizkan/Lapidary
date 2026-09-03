@@ -1,8 +1,18 @@
 //! The job queue: PostgreSQL `FOR UPDATE SKIP LOCKED` plus `LISTEN`/`NOTIFY`, deliberately
-//! with no Redis and no message broker. Workers take leases on jobs and heartbeat them.
-//! Implementation lands in Phase 1; see docs/DATA.md.
+//! with no Redis and no message broker. Workers take leases on jobs.
+//!
+//! Leases are NOT heartbeated yet. A single-file mesh ingest measures roughly 200 ms
+//! against a 60-second lease, so a renewal task would be ceremony that still has to be
+//! tested and can still be wrong. `renew_lease` arrives when a job can realistically
+//! outlive its lease -- STEP ingest through the OCCT sidecar in Phase 2.
 
 use thiserror::Error;
+
+mod handler;
+mod policy;
+
+pub use handler::{HandlerError, JobHandler};
+pub use policy::{BACKOFF, Next, next_state};
 
 #[derive(Debug, Error)]
 pub enum JobsError {
