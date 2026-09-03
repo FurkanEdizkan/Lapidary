@@ -4,13 +4,18 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, PartCard, PartsPage } from '../lib/types'
 
-function renderIndex() {
+/**
+ * `Index` takes the batch as a prop rather than reading the search param itself, which is
+ * what lets these tests render it with no router in scope. The route component does the
+ * `useSearch()` half; see `index.tsx`.
+ */
+function renderIndex(props: { batch?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <Index />
+      <Index batch={props.batch} />
     </QueryClientProvider>,
   )
 }
@@ -33,15 +38,36 @@ const ok = (body: unknown) => async (): Promise<StubResponse> => ({ ok: true, js
 function stubFetch(routes: {
   healthz?: () => Promise<StubResponse>
   parts?: () => Promise<StubResponse>
+  batch?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
     if (url.includes('/parts')) return (routes.parts ?? pending)()
+    if (url.includes('/jobs/')) return (routes.batch ?? pending)()
     return Promise.reject(new Error(`unstubbed request: ${url}`))
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
+
+/** A batch id shaped like the uuid v7 `enqueue_scan` issues. */
+const BATCH_ID = '01a0699a-9ece-7073-a74b-c977ee7335ff'
+
+/** A `BatchStatus` as the API sends it, with the counters a test cares about overridden. */
+const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
+  batchId: BATCH_ID,
+  libraryId: DEFAULT_LIBRARY_ID,
+  total: 6,
+  pending: 6,
+  running: 0,
+  ingested: 0,
+  skipped: 0,
+  failedTotal: 0,
+  failed: [],
+  startedAt: '2026-09-03T23:28:56.014618Z',
+  finishedAt: null,
+  ...over,
+})
 
 /**
  * Two real lossless WebPs — 2x2 blue and 4x2 orange — base64'd exactly as
@@ -381,4 +407,99 @@ test('does not count parts before the page has arrived, or when there are none',
   renderIndex()
   await screen.findByText(strings.emptyLibrary.title)
   expect(screen.queryByText(/^Showing/)).toBeNull()
+})
+
+const HEALTHY = { status: 'ok', database: { major: 18, reachable: true } }
+
+test('shows how far a running scan has got', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(batchStatus({ total: 6, pending: 3, running: 1, ingested: 2 })),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // Two of six settled, so that is what the line says — `total` comes from the batch, not
+  // from the grid, which is still empty at this point precisely because the scan is why.
+  expect(await screen.findByText(strings.scan.running(2, 6))).toBeTruthy()
+  expect(fetchMock).toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}`,
+  )
+})
+
+test('reports files that could not be read alongside the progress', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 6,
+        pending: 0,
+        ingested: 5,
+        failedTotal: 1,
+        failed: [{ path: 'truncated-lp-9999-00.stl', reason: 'truncated', attempts: 1 }],
+        finishedAt: '2026-09-03T23:28:56.086374Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // The count belongs on screen; the per-file reason is the failed-file drawer, Phase 2.
+  expect(await screen.findByText(strings.scan.failed(1))).toBeTruthy()
+})
+
+test('stops polling once the batch reports it finished', async () => {
+  // Mutation guard for spec §11's last risk. With `refetchInterval` left as a constant
+  // instead of returning false on `finishedAt`, the count keeps climbing after the batch
+  // is done and a backgrounded tab asks about a completed scan forever.
+  let calls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      calls += 1
+      return {
+        ok: true,
+        json: async () =>
+          calls === 1
+            ? batchStatus({ pending: 4, ingested: 2 })
+            : batchStatus({
+                pending: 0,
+                ingested: 6,
+                finishedAt: '2026-09-03T23:28:56.086374Z',
+              }),
+      }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // Testing Library's default findBy timeout is 1000ms, exactly the poll interval, so the
+  // second poll and the timeout race each other. Give it headroom rather than shortening
+  // the interval, which is the thing under test.
+  await screen.findByText(strings.scan.finished(6, 0), undefined, { timeout: 4000 })
+  const afterFinish = calls
+
+  // Longer than the 1000ms poll interval, so a poll that never stopped would show up here.
+  await new Promise((resolve) => setTimeout(resolve, 1400))
+  expect(calls).toBe(afterFinish)
+})
+
+test('does not ask about a batch when the URL names none', async () => {
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])) })
+  renderIndex()
+
+  await screen.findByText(strings.emptyLibrary.title)
+  const asked = fetchMock.mock.calls.some(([url]) => url.includes('/jobs/'))
+  expect(asked).toBe(false)
+})
+
+test('says so when the batch in the URL is not one this library can show', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => ({ ok: false, status: 404 }),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.scan.unknown)).toBeTruthy()
 })

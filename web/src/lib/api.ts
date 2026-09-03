@@ -1,4 +1,4 @@
-import type { LibraryId, PartsPage } from './types'
+import type { BatchId, BatchStatus, LibraryId, PartsPage } from './types'
 
 export interface Health {
   status: string
@@ -32,4 +32,29 @@ export async function fetchParts(library: LibraryId): Promise<PartsPage> {
     throw new Error(`parts returned ${response.status}`)
   }
   return (await response.json()) as PartsPage
+}
+
+/**
+ * `GET /api/libraries/{library}/jobs/{batch}` — how a scan is going.
+ *
+ * A scan is started against the worker (`POST /api/libraries/{id}/scan` on port 8081),
+ * not from this page: the scan route is mounted under the worker role only, and the web
+ * proxy deliberately forwards `/api/*` to the api service. So the batch id arrives here
+ * in the URL — `/?batch=<id>` — rather than from a mutation this page issued. A scan the
+ * browser can start belongs with the upload path, which is a later slice.
+ *
+ * A 404 is a real answer, not only a failure: it is what an id from another library, an
+ * id that was never issued, and a scan that queued nothing all look like.
+ */
+export async function fetchBatchStatus(
+  library: LibraryId,
+  batch: BatchId,
+): Promise<BatchStatus> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}`,
+  )
+  if (!response.ok) {
+    throw new Error(`batch status returned ${response.status}`)
+  }
+  return (await response.json()) as BatchStatus
 }

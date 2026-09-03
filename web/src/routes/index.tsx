@@ -1,20 +1,80 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { DEFAULT_LIBRARY_ID, fetchHealth, fetchParts } from '../lib/api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { DEFAULT_LIBRARY_ID, fetchBatchStatus, fetchHealth, fetchParts } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, PartCard, PartsPage } from '../lib/types'
 
-export const Route = createFileRoute('/')({ component: Index })
+export const Route = createFileRoute('/')({
+  component: RouteComponent,
+  /**
+   * `?batch=<id>` — the batch a scan returned, so this page can watch it drain.
+   *
+   * The id arrives in the URL rather than from a mutation this page issued, because this
+   * page cannot start a scan: `POST /api/libraries/{id}/scan` is mounted under the worker
+   * role only (port 8081), while `deploy/web/Caddyfile` and vite's dev proxy both forward
+   * `/api/*` to the api service. Proxying the worker to the browser instead would put the
+   * public web surface inside the boundary the api/worker split exists to hold. So the
+   * operator who ran the scan opens `/?batch=<id>`. A scan the browser can start belongs
+   * with the upload path, which is a later slice.
+   *
+   * Without `validateSearch` the search params are not typed at all and `useSearch()`
+   * hands back nothing, so the poll below would simply never enable — silently, and
+   * identically to there being no scan.
+   */
+  validateSearch: (search: Record<string, unknown>): { batch?: string } => {
+    const batch = search.batch
+    return typeof batch === 'string' && batch.length > 0 ? { batch } : {}
+  },
+})
 
-export function Index() {
+/**
+ * Reads the search param and hands it to `Index` as a prop. `Index` takes the batch
+ * rather than calling `useSearch` itself so it stays renderable without a router — which
+ * is how `index.test.tsx` renders it.
+ */
+function RouteComponent() {
+  const { batch } = Route.useSearch()
+  return <Index batch={batch} />
+}
+
+/** Files the worker is finished with, however it finished with them. */
+function filesSettled(status: BatchStatus): number {
+  return status.ingested + status.skipped + status.failedTotal
+}
+
+export function Index({ batch }: { batch?: string }) {
+  const queryClient = useQueryClient()
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
   const parts = useQuery({
     queryKey: ['parts', DEFAULT_LIBRARY_ID],
     queryFn: () => fetchParts(DEFAULT_LIBRARY_ID),
   })
+  const scan = useQuery({
+    queryKey: ['batch', DEFAULT_LIBRARY_ID, batch],
+    queryFn: () => fetchBatchStatus(DEFAULT_LIBRARY_ID, batch as string),
+    enabled: batch !== undefined,
+    // The poll stops itself. A batch that finishes while the tab is backgrounded must not
+    // leave a closed laptop asking about a completed scan forever — spec §11's last risk,
+    // which is easy to forget and so has its own test.
+    refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
+  })
+
+  // The grid is a separate query with its own cache, and nothing else would tell it the
+  // library changed underneath it while the worker commits parts. Keyed on files settled
+  // rather than on the poll tick, so a second in which nothing finished costs no refetch.
+  const settled = scan.data === undefined ? 0 : filesSettled(scan.data)
+  useEffect(() => {
+    if (settled > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+    }
+  }, [settled, queryClient])
 
   return (
     <section>
+      {batch === undefined ? null : (
+        <ScanProgress status={scan.data} isError={scan.isError} />
+      )}
       {parts.isPending ? (
         <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
       ) : parts.isError ? (
@@ -37,6 +97,32 @@ export function Index() {
             : strings.health.ok(health.data.database.major)}
       </p>
     </section>
+  )
+}
+
+/**
+ * The scan line: how far a batch has got, and how it ended.
+ *
+ * Nothing renders while the first poll is in flight. A batch whose status has not
+ * arrived yet is not a fact about the library, and the grid below is the page — a
+ * placeholder here would push it down for one tick and then move it back.
+ */
+function ScanProgress({ status, isError }: { status?: BatchStatus; isError: boolean }) {
+  if (isError) {
+    return <p className="mb-4 max-w-prose text-[var(--color-muted)]">{strings.scan.unknown}</p>
+  }
+  if (status === undefined) {
+    return null
+  }
+  return (
+    <p className="mb-4 flex max-w-prose flex-wrap gap-2 text-[var(--color-muted)]">
+      <span>
+        {status.finishedAt === null
+          ? strings.scan.running(filesSettled(status), status.total)
+          : strings.scan.finished(status.ingested, status.skipped)}
+      </span>
+      {status.failedTotal === 0 ? null : <span>{strings.scan.failed(status.failedTotal)}</span>}
+    </p>
   )
 }
 

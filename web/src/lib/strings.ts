@@ -41,6 +41,34 @@ export const strings = {
     showingFirstPage: (count: number) =>
       `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },
+  scan: {
+    /**
+     * Shown while a batch is draining. `done` counts every file the worker has finished
+     * with, however it finished — ingested, skipped and failed alike — because what this
+     * line answers is "how much is left", and a file that failed is not still pending.
+     */
+    running: (done: number, total: number) =>
+      `Scanning — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
+    finished: (ingested: number, skipped: number) =>
+      skipped === 0
+        ? `Scan complete — ${ingested.toLocaleString('en-US')} added.`
+        : `Scan complete — ${ingested.toLocaleString('en-US')} added, ${skipped.toLocaleString('en-US')} already here.`,
+    /**
+     * A file that will never appear. The count is what belongs on screen; the reason per
+     * file is the failed-file drawer, which arrives in Phase 2.
+     */
+    failed: (count: number) =>
+      count === 1
+        ? '1 file could not be read. It will not appear in the grid.'
+        : `${count.toLocaleString('en-US')} files could not be read. They will not appear in the grid.`,
+    /**
+     * The batch id in the URL matched nothing this library can show. Deliberately does
+     * not distinguish "never issued" from "belongs to another library" — the API does not
+     * either, because telling them apart would confirm a batch exists somewhere.
+     */
+    unknown:
+      'No scan with that id has run in this library. It may belong to another library, or have found no files to queue.',
+  },
   emptyLibrary: {
     title: 'Nothing scanned yet',
     body:
