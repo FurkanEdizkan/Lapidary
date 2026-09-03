@@ -2,7 +2,8 @@
 //! no SQL at all -- CLAUDE.md: no SQL outside this crate.
 
 use crate::DbError;
-use lapidary_core::{BatchId, JobId, LibraryId, Outcome};
+use jiff::Timestamp;
+use lapidary_core::{BatchId, BatchStatus, JobFailure, JobId, LibraryId, Outcome};
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -15,6 +16,20 @@ use uuid::Uuid;
 pub const JOB_CHANNEL: &str = "lapidary_jobs";
 
 pub struct PgJobs(pub PgPool);
+
+/// Rebuild a `jiff::Timestamp` from the microseconds the query selected. sqlx 0.9 has no
+/// `jiff` feature, so every timestamp in this workspace crosses the boundary this way;
+/// `PgParts::page` does the same, including reporting a corrupt row rather than clamping.
+fn to_timestamp(column: &'static str, micros: i64) -> Result<Timestamp, DbError> {
+    Timestamp::from_microsecond(micros).map_err(|_| DbError::TimestampOutOfRange {
+        column,
+        value: micros,
+    })
+}
+
+/// The most failures one status response carries. A thousand-file disaster must return a
+/// readable payload, and `failed_total` still reports the real number.
+const FAILED_SAMPLE: i64 = 100;
 
 /// One claimed job, as `dequeue` hands it to the worker loop.
 #[derive(Debug, Clone, PartialEq)]
@@ -192,5 +207,93 @@ impl PgJobs {
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    /// What a scan turned into. `None` when the batch has no jobs -- an id never issued
+    /// and a scan that enqueued nothing are indistinguishable, and both mean "no status
+    /// resource" (Task 11 turns this into a 404).
+    pub async fn batch_status(
+        &self,
+        library: LibraryId,
+        batch: BatchId,
+    ) -> Result<Option<BatchStatus>, DbError> {
+        // `library_id = $2` is the ownership check, not a performance filter: it is what
+        // stops a batch id alone from being a capability -- content addressing is not
+        // authorization (CLAUDE.md).
+        // `min(created_at)` is itself an aggregate, so it is just as capable of coming
+        // back NULL over zero rows as the counts are -- decoding it as a bare i64
+        // panics on the empty-batch case instead of falling into the `total == 0`
+        // guard below. Both aggregate timestamp columns are `Option<i64>` for exactly
+        // this reason.
+        #[allow(clippy::type_complexity)]
+        let counts: Option<(i64, i64, i64, i64, i64, i64, Option<i64>, Option<i64>)> =
+            sqlx::query_as(
+                "SELECT count(*), \
+                    count(*) FILTER (WHERE state = 'pending'), \
+                    count(*) FILTER (WHERE state = 'running'), \
+                    count(*) FILTER (WHERE outcome = 'ingested'), \
+                    count(*) FILTER (WHERE outcome = 'skipped'), \
+                    count(*) FILTER (WHERE state = 'failed'), \
+                    (extract(epoch FROM min(created_at)) * 1000000)::bigint, \
+                    CASE WHEN count(*) FILTER (WHERE state IN ('pending','running')) = 0 \
+                         THEN (extract(epoch FROM max(updated_at)) * 1000000)::bigint \
+                    END \
+             FROM job WHERE batch_id = $1 AND library_id = $2",
+            )
+            .bind(batch.as_uuid())
+            .bind(library.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
+
+        // An aggregate over zero rows still returns one row, with count 0 -- so "no
+        // jobs" is detected on the count, not on fetch_optional returning None.
+        let Some((total, pending, running, ingested, skipped, failed_total, started, finished)) =
+            counts
+        else {
+            return Ok(None);
+        };
+        if total == 0 {
+            return Ok(None);
+        }
+
+        let failures: Vec<(String, String, i32)> = sqlx::query_as(
+            "SELECT payload->>'path', last_error, attempts \
+             FROM job WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
+             ORDER BY created_at LIMIT $3",
+        )
+        .bind(batch.as_uuid())
+        .bind(library.as_uuid())
+        .bind(FAILED_SAMPLE)
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(Some(BatchStatus {
+            batch_id: batch,
+            library_id: library,
+            total: total as u32,
+            pending: pending as u32,
+            running: running as u32,
+            ingested: ingested as u32,
+            skipped: skipped as u32,
+            failed_total: failed_total as u32,
+            failed: failures
+                .into_iter()
+                .map(|(path, reason, attempts)| JobFailure {
+                    path,
+                    reason,
+                    attempts: attempts.max(0) as u32,
+                })
+                .collect(),
+            // Microseconds in, jiff out -- the conversion belongs here, at the database
+            // boundary, so no wire type ever carries a raw epoch integer. `started` is
+            // provably `Some` here: `total != 0` means at least one row exists, and
+            // `min(created_at)` over a non-empty set cannot be NULL. `unwrap_or_default`
+            // (not `unwrap()` -- CLAUDE.md bans that outside tests) documents that this
+            // is an invariant, not a real fallback.
+            started_at: to_timestamp("started_at", started.unwrap_or_default())?,
+            finished_at: finished
+                .map(|us| to_timestamp("finished_at", us))
+                .transpose()?,
+        }))
     }
 }
