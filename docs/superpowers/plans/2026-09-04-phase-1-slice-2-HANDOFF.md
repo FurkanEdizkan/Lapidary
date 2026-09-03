@@ -1,5 +1,24 @@
 # Phase 1 slice 2 — handoff
 
+> ## ✅ SLICE COMPLETE — 2026-09-04
+>
+> All 14 tasks are landed on `main`, plus the two tests task 8 owed. The bar is
+> **248 passed / 0 failed** with `fmt`, `clippy` (both feature configurations),
+> `check-layers`, `check-deploy`, `check-strings` and `export-bindings` at exit 0,
+> and web at **32 passed** with typecheck and build at exit 0.
+>
+> The spec's §10 exit criterion has been run live end to end against
+> `docker compose`, including the `kill -9` clause — see **What the exit run
+> actually showed** below.
+>
+> Everything from here down is the mid-slice state as it stood when execution
+> stopped after task 9. It is kept because the rulings, the environment notes and
+> the reachability war story are all still true and still useful. The task table
+> immediately below is the part that is now historical.
+>
+> **Next:** slice 3 — the LOD ladder (L0/L1/L2), 3MF/OBJ, and settling
+> `KernelOutput`'s shape. It has no spec yet.
+
 **Written:** 2026-09-04, with tasks 1–9 of 14 landed and the tree clean.
 **Branch:** `rust-rewrite`, HEAD `e806231` — tasks 1–9's 22 commits were pushed to
 `origin/rust-rewrite` alongside this document, so CI has seen them.
@@ -184,6 +203,46 @@ with Phase 2's STEP ingest.
 Closed by this slice: **S3** (unique `derivative(revision_id, kind)`), in task 1.
 
 ---
+
+## What the exit run actually showed
+
+Run on 2026-09-04 with `docker compose`, against 150 real STLs staged from a live
+parts library rather than the six repository fixtures — the fixtures drain in about
+70 ms, which is not long enough to kill a worker mid-scan with any reliability.
+
+| Claim (spec §10) | Result |
+|---|---|
+| 202 well under a second, with a batch id | **13.9 ms** for 150 files |
+| The grid fills as the worker commits | 150 ingested in **2.0 s**, ~74 files/s at concurrency 4 |
+| `kill -9` mid-scan, then restart, and the batch completes | SIGKILL at 52 done / **4 running** / 94 pending → after restart **150 ingested, 0 failed** |
+| No part duplicated | **0** duplicate `(library_id, name)` pairs |
+| Every part has a thumbnail | **150 / 150** |
+| Re-scanning the same directory | new batch drains to **skipped 6** (six-fixture run) |
+| A truncated STL | **failedTotal 1 at attempts 1**, not 3, with a message naming the byte counts |
+| Zero WARN lines on a cold start | **0** in both `api` and `worker` |
+| Grid page, warm | **8.9 ms**, 50 cards, all with real thumbnails |
+
+The four jobs in flight at SIGKILL came back as `ingested`, not `skipped`, which
+says they died before committing their parts. `crates/lapidary-jobs/tests/resumption.rs`
+covers the harder case deterministically: a worker killed *after* its part row
+commits and before its outcome is recorded.
+
+## Two things this slice's execution corrected in the plan
+
+**Task 10's mutation check does not bite with the fixture the plan gives it.** An
+unparseable file produces no part whether the walk enqueues or ingests, so
+`part_count == 0` holds either way. The test stages a genuinely ingestable fixture
+alongside it, which is what makes restoring the synchronous call fail.
+
+**Task 14's second mutation does not bite at all, and that is correct.** Dropping
+`part_name_unique_per_library` leaves the resumption test green, because the
+reclaiming worker's redo hits `library_holds(library, name, hash)` and returns
+`Skipped` before reaching the insert. The constraint guards the *concurrent* race —
+two live workers on one file — which is
+`losing_the_race_for_a_file_is_a_skip_rather_than_a_failure` in
+`crates/lapidary-ingest/tests/handler.rs`. The plan reads a non-biting mutation here
+as evidence the worker was not really aborted mid-job; it was, and the test's
+intermediate assertions pin that.
 
 ## After the slice
 
