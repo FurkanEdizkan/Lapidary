@@ -1237,6 +1237,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "blake3",
+ "image",
  "lapidary-cad",
  "lapidary-core",
  "lapidary-db",

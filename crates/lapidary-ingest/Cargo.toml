@@ -25,6 +25,10 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# tests/scan.rs decodes the stored thumbnail rather than checking its byte length: a
+# zeroed or empty WebP has a length too, and only a decode proves the bytes that reached
+# `derivative.thumb_bytes` are the image the kernel actually rendered.
+image.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
