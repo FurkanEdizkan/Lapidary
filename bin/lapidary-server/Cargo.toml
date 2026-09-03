@@ -1,0 +1,58 @@
+[package]
+name = "lapidary-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+# Compiles in the mock CAD kernel and reports it at startup, AND compiles in
+# lapidary-ingest — the crate holding the real scan handler (see its module doc for why
+# ingest is a separate crate rather than a route inside lapidary-api). One feature now
+# gates two things, which is a slight misnomer (this isn't just about the mock kernel any
+# more); kept as one name because deploy/compose.yaml already toggles exactly this value
+# per service (`worker` sets SERVER_FEATURES: mock-kernel, `api` does not) and splitting
+# it into two feature names would mean touching deploy/compose.yaml, deploy/Containerfile
+# and xtask/src/deploy.rs's tests for no behavioural gain. `deploy/Containerfile` takes
+# the value as a build arg (SERVER_FEATURES), empty by default, so `api` builds without
+# linking lapidary-cad, lapidary-ingest, or anything reachable through either. The real
+# OCCT kernel is Phase 0b; expect it gated the same way.
+mock-kernel = ["dep:lapidary-cad", "dep:lapidary-ingest", "lapidary-cad/mock-kernel"]
+
+[dependencies]
+lapidary-api.workspace = true
+lapidary-db.workspace = true
+# Optional, off by default: only the mock-kernel feature pulls this in. lapidary-api
+# never depends on lapidary-cad — the open path lives there and must never invoke the
+# kernel — so the worker reaches it directly, through this binary.
+lapidary-cad = { workspace = true, optional = true }
+# The worker-only ingest router. Gated the same way as lapidary-cad above (see the
+# mock-kernel feature doc) — a binary built without this feature has no
+# lapidary_ingest::router at all; main.rs fails fast at startup if LAPIDARY_ROLE=worker
+# is requested against such a build, rather than silently serving a worker with no scan
+# route.
+lapidary-ingest = { workspace = true, optional = true }
+anyhow.workspace = true
+# This binary owns the listener, so it calls axum::serve directly. lapidary-api builds
+# the Router and does not re-export axum. Both resolve to the one version pinned in
+# [workspace.dependencies], so there is no skew between the Router's axum and this one.
+axum.workspace = true
+figment.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Only for #[sqlx::test] against the merged worker router (main.rs's worker_router) and
+# the api role's router — see deny.toml's sqlx wrapper allow-list, which lists this crate
+# for exactly this reason. No real SQL lives here; lapidary-db still owns all of it.
+sqlx.workspace = true
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

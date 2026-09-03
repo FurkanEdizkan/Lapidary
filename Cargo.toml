@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+# Every member listed here MUST already exist on disk — cargo errors with
+# "failed to load manifest for workspace member" otherwise. Each task below adds
+# its own crates to this list. Unused [workspace.dependencies] path entries
+# pointing at not-yet-created directories are tolerated, so that block is
+# complete from the start.
+members = [
+    "crates/lapidary-core",
+    "crates/lapidary-db",
+    "crates/lapidary-storage",
+    "crates/lapidary-cad",
+    "crates/lapidary-jobs",
+    "crates/lapidary-index",
+    "crates/lapidary-vcs",
+    "crates/lapidary-build",
+    "crates/lapidary-targets",
+    "crates/lapidary-api",
+    "crates/lapidary-ingest",
+    "crates/lapidary-enterprise",
+    "bin/lapidary-server",
+    "bin/lapidary",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-only"
+repository = "https://github.com/FurkanEdizkan/Lapidary"
+
+# Every internal crate is `publish = false` (see each crate's [package] section), which
+# is what makes deny.toml's `allow-wildcard-paths = true` safe for these path
+# dependencies — see the comment there. Do not add `version =` back here without also
+# reverting that deny.toml setting.
+[workspace.dependencies]
+lapidary-core = { path = "crates/lapidary-core" }
+lapidary-db = { path = "crates/lapidary-db" }
+lapidary-storage = { path = "crates/lapidary-storage" }
+lapidary-cad = { path = "crates/lapidary-cad" }
+lapidary-jobs = { path = "crates/lapidary-jobs" }
+lapidary-index = { path = "crates/lapidary-index" }
+lapidary-vcs = { path = "crates/lapidary-vcs" }
+lapidary-build = { path = "crates/lapidary-build" }
+lapidary-targets = { path = "crates/lapidary-targets" }
+lapidary-api = { path = "crates/lapidary-api" }
+lapidary-ingest = { path = "crates/lapidary-ingest" }
+lapidary-enterprise = { path = "crates/lapidary-enterprise" }
+
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = "0.8.9"
+base64 = "0.22.1"
+blake3 = "1.8.7"
+clap = { version = "4.6.6", features = ["derive"] }
+figment = { version = "0.10.19", features = ["env", "toml"] }
+image = { version = "0.25.10", default-features = false, features = ["webp"] }
+jiff = { version = "0.2.35", features = ["serde"] }
+# Only lapidary-db, and only to name log::LevelFilter for sqlx's ConnectOptions — sqlx
+# takes that type and re-exports nothing equivalent. Already in the tree via sqlx; this
+# declares what is already there rather than adding anything to build.
+log = "0.4.34"
+object_store = "0.14.1"
+# span-locations: gives Literal::span().start() a real line/column outside a proc-macro
+# context (stable, no nightly needed) — xtask/src/strings.rs uses it to report which
+# line a mangled string literal is on.
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "macros", "migrate", "uuid"] }
+tempfile = "3.23.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = "0.7.17"
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["trace", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# uuid-impl and jiff-impl are not optional extras. Without them ts-rs has no TS impl
+# for Uuid or jiff::Timestamp, and lapidary-core derives TS on types built from both —
+# the crate does not compile.
+ts-rs = { version = "12.0.1", features = ["uuid-impl", "jiff-impl"] }
+uuid = { version = "1.26.0", features = ["v7", "serde"] }
+zstd = "0.13.3"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

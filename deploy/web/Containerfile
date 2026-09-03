@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/node:24-trixie@sha256:499ac30d42645e5c2227c0f8ff2439499da08b8893326a991f192dfe8e6b1d98 AS build
+WORKDIR /src
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
+FROM docker.io/library/caddy:2-alpine@sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a3411ad798f7a423a
+COPY deploy/web/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /src/dist /srv
+EXPOSE 8080

@@ -1,9 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
 node_modules/
-dist/
-data/
-*.log
-.DS_Store
-.env
-rust-mesh/target/
 web/dist/
-server/dist/
+.vite/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Containers
+.lapidary-data/
+volumes/
+
+# Generated
+sidecar/occt-bridge/build/
+crates/*/bindings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+*.swp
+.vscode/*
+!.vscode/extensions.json
+
+# Third-party model archives. A 156 MB .rar was once swept into a docs commit by a broad
+# `git add` and made the repository unpushable — GitHub rejects any file over 100 MB.
+# Keep such archives outside the repo entirely.
+*.rar

@@ -1,18 +1,24 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-const API_TARGET = process.env.API_TARGET || 'http://localhost:5174';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { tanstackRouter } from '@tanstack/router-plugin/vite'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    tanstackRouter({
+      target: 'react',
+      autoCodeSplitting: true,
+      // index.test.tsx sits beside the route it tests. Without this the plugin scans it
+      // as a route file and warns "does not export a Route" on every single build, CI
+      // included. The pattern excludes any test file next to a route, not just this one.
+      routeFileIgnorePattern: '\\.test\\.tsx?$',
+    }),
+    react(),
+    tailwindcss(),
+  ],
   server: {
-    port: 5173,
     proxy: {
-      '/api': { target: API_TARGET, changeOrigin: true },
+      '/api': { target: 'http://localhost:8080', changeOrigin: true },
     },
   },
-  build: {
-    outDir: 'dist',
-    chunkSizeWarningLimit: 1500,
-  },
-});
+})

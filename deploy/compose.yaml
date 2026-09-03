@@ -1,0 +1,124 @@
+name: lapidary
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: db/Containerfile
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lapidary}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-lapidary}
+    volumes:
+      # Mount the PARENT, not .../data. From PostgreSQL 18 the official image stores data in
+      # a major-version-scoped subdirectory (PGDATA defaults to /var/lib/postgresql/18/docker),
+      # and mounting at the old /var/lib/postgresql/data makes the entrypoint hard-fail with
+      # "in 18+, these Docker images are configured to store database data in a format which
+      # is compatible with pg_ctlcluster". Mounting the parent is what upstream recommends,
+      # and it is what allows `pg_upgrade --link` across a future major version without mount
+      # boundary issues. Note the consequence: moving to a PG19 image is a pg_upgrade job, not
+      # a tag change — a bare tag bump would start an empty 19/docker beside the 18 data.
+      - lapidary-db:/var/lib/postgresql:Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lapidary} -d ${POSTGRES_DB:-lapidary}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
+      LAPIDARY_BIND: 0.0.0.0:8080
+      LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Serves the grid and the open path. Never the scan route — this image deliberately
+      # does not link the CAD kernel (no SERVER_FEATURES build arg below).
+      LAPIDARY_ROLE: api
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      # The same blob store the worker writes, mounted read-write rather than :ro.
+      #
+      # Slice 1's grid does not actually read this yet — thumbnails are small enough to
+      # live inline in Postgres as `derivative.thumbnail_webp` (DATA.md §1.5), so a page
+      # of cards costs one query and no per-card round trip. The mount is here because
+      # the open path's next step is derivatives too large to inline (glTF for the
+      # viewer), and those are read from, and cached into, this store.
+      #
+      # Read-write is deliberate and is not a hole in "the open path never touches a
+      # source file". That boundary is a type, not a mount flag: `lapidary-storage`
+      # exposes source bytes only through `SourceStore::open`, which demands a
+      # `WorkerRole` token, and `DerivativeStore` — all `lapidary-api` can construct —
+      # cannot reach them. A read-only mount would break the derivative cache writes the
+      # api legitimately needs while adding nothing that boundary does not already give.
+      - lapidary-blobs:/var/lib/lapidary:Z
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      args:
+        # Only the worker links the CAD kernel — the open path (api) never invokes it.
+        SERVER_FEATURES: mock-kernel
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
+      LAPIDARY_BIND: 0.0.0.0:8081
+      LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Runs ingest. Must never be "api" — see lapidary-api::Role and ApiError::UnknownRole.
+      LAPIDARY_ROLE: worker
+      # Both are required for LAPIDARY_ROLE=worker and have no default in the binary —
+      # bin/lapidary-server refuses to start without them rather than guessing a path.
+      # They name the two mounts below.
+      LAPIDARY_INGEST_DIR: /ingest
+      LAPIDARY_BLOB_ROOT: /var/lib/lapidary
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # The scan route lives here, not on api:8080. Published so the documented
+      # `curl -X POST localhost:8081/api/libraries/<id>/scan` works from the host.
+      - "8081:8081"
+    volumes:
+      # The directory of parts to ingest, read-only: ingest hashes and copies bytes into
+      # the blob store, and must never be able to modify what it was pointed at. The
+      # default is this repository's `example/parts`, so a first run with no .env edits
+      # still lands six real parts in the grid; point LAPIDARY_INGEST_DIR at your own
+      # folder to scan that instead.
+      #
+      # `z`, lowercase, not `Z`. This is the one BIND mount in the file — the two named
+      # volumes above are ours and carry `:Z` — and on an SELinux-enforcing host
+      # (Fedora, RHEL, the platform the README recommends Podman for) a bind mount with
+      # no label gets the worker EACCES on every file, so the documented first-run curl
+      # answers 500 with a directory the operator can read perfectly well themselves.
+      # The difference between the two flags matters here and only here: `Z` relabels
+      # the directory with a private, per-container label, and this directory belongs to
+      # the *user* — it is their parts folder, possibly their whole CAD library, and
+      # possibly shared with other containers. Taking exclusive ownership of it to read
+      # it once would be a worse bug than the one being fixed. `z` applies a shared
+      # label, which is what a read-only source directory wants.
+      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
+      - lapidary-blobs:/var/lib/lapidary:Z
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web/Containerfile
+    depends_on:
+      - api
+    ports:
+      - "3000:8080"
+
+volumes:
+  lapidary-db:
+  # Content-addressed blobs and derivatives, shared by worker (writes source bytes) and
+  # api (reads and caches derivatives). Named, not a bind mount: these are our data, not
+  # the user's files, and deleting the compose project must not take a host directory
+  # with it. deploy/Containerfile creates /var/lib/lapidary owned by the `lapidary` user
+  # so a freshly created volume inherits that ownership instead of coming up root-owned
+  # and unwritable to a container that does not run as root.
+  lapidary-blobs:

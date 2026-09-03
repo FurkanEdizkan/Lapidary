@@ -1,0 +1,43 @@
+[package]
+name = "lapidary-ingest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+lapidary-core.workspace = true
+lapidary-db.workspace = true
+lapidary-storage.workspace = true
+# The whole reason this is a separate crate from lapidary-api: the open path must never
+# depend on lapidary-cad, and the handler below genuinely needs MeshKernel.
+lapidary-cad.workspace = true
+# The seam handler.rs implements: JobHandler and HandlerError. L3 -> L2, allowed.
+lapidary-jobs.workspace = true
+axum.workspace = true
+# Hash first, always: handler.rs computes BLAKE3 over each file's bytes before doing
+# anything else with them.
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# handler.rs's classify_write matches sqlx::Error::Database to read the constraint name
+# off a unique violation -- see its doc.
+sqlx.workspace = true
+# The one place this pipeline knowingly leaves bytes behind (a reap that itself fails)
+# logs it — see the record() error arm in handler.rs.
+tracing.workspace = true
+
+[dev-dependencies]
+# tests/scan.rs decodes the stored thumbnail rather than checking its byte length: a
+# zeroed or empty WebP has a length too, and only a decode proves the bytes that reached
+# `derivative.thumb_bytes` are the image the kernel actually rendered.
+image.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

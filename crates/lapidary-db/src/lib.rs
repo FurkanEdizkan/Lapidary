@@ -1,0 +1,540 @@
+//! Every SQL statement in Lapidary lives in this crate. Other crates go through the
+//! repository traits below.
+
+mod jobs;
+mod repo;
+
+pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
+pub use repo::{IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow};
+pub use sqlx::PgPool;
+// Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
+// its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
+// on sqlx at all, not only about not writing queries.
+pub use sqlx::postgres::PgListener;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum DbError {
+    #[error(
+        "Could not reach the database at {target}. Check that the `db` service is running and that DATABASE_URL in your .env matches it."
+    )]
+    Unreachable { target: String },
+
+    #[error(
+        "The database at {target} rejected the credentials. Check POSTGRES_PASSWORD and DATABASE_URL in your .env — the service is reachable, so this is not a connectivity problem."
+    )]
+    AuthenticationFailed { target: String },
+
+    #[error(
+        "The database `{database}` does not exist at {target}. Check DATABASE_URL in your .env, or create the database before starting Lapidary."
+    )]
+    DatabaseMissing { target: String, database: String },
+
+    #[error(
+        "The database is PostgreSQL {found}, but Lapidary requires 18 or newer. Generated columns must be STORED, which earlier versions do not support."
+    )]
+    UnsupportedVersion { found: String },
+
+    #[error("A database query failed: {0}")]
+    Query(#[from] sqlx::Error),
+
+    #[error(
+        "Could not bring the database schema up to date: {0}. If the database is at a newer schema version than this binary, check that the api and worker images are the same version."
+    )]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+
+    #[error(
+        "`{column}` holds {value} microseconds since the epoch, which is not a representable timestamp. The row is corrupt — it was probably written by something other than lapidary-db."
+    )]
+    TimestampOutOfRange { column: &'static str, value: i64 },
+
+    #[error(
+        "`{column}` holds {value}, which is negative and cannot be a triangle count. The row is corrupt — it was probably written by something other than lapidary-db."
+    )]
+    NegativeTriangleCount { column: &'static str, value: i32 },
+
+    #[error(
+        "A triangle count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the mesh kernel reported — a real mesh should never have this many triangles."
+    )]
+    TriangleCountTooLarge { column: &'static str, value: u32 },
+}
+
+impl DbError {
+    /// The message safe to hand back in a client-visible error body.
+    ///
+    /// Every variant already carries actionable, operator-facing text via `Display` —
+    /// but two of them wrap an upstream error this crate did not compose itself
+    /// (`Query`'s `sqlx::Error`, `Migrate`'s `sqlx::migrate::MigrateError`), and neither
+    /// has been audited the way `redact_credentials` audits the three connection-
+    /// classification variants below (their `target` field is built *only* through
+    /// `redact_credentials`, at construction time, so their `Display` text is already
+    /// safe to show a caller). An un-audited upstream `Display` could in principle
+    /// surface anything — this is deliberately an exhaustive match, not a wildcard
+    /// fallthrough, so a new `DbError` variant forces a decision here at compile time
+    /// instead of silently inheriting "safe to show" by default.
+    pub fn client_message(&self) -> String {
+        match self {
+            DbError::Query(_) => {
+                "A database query failed. Check the server logs for detail.".to_owned()
+            }
+            DbError::Migrate(_) => {
+                "Could not bring the database schema up to date. Check the server logs for detail."
+                    .to_owned()
+            }
+            DbError::Unreachable { .. }
+            | DbError::AuthenticationFailed { .. }
+            | DbError::DatabaseMissing { .. }
+            | DbError::UnsupportedVersion { .. }
+            | DbError::TimestampOutOfRange { .. }
+            | DbError::NegativeTriangleCount { .. }
+            | DbError::TriangleCountTooLarge { .. } => self.to_string(),
+        }
+    }
+}
+
+/// Strip credentials from a connection URL so it is safe to put in an error or a log.
+/// `postgres://user:pw@host:5432/db` becomes `postgres://host:5432/db`.
+///
+/// This matters because `main` returns `anyhow::Result`, and anyhow prints the whole
+/// source chain on exit. Without redaction the connection string — password included —
+/// lands in `podman logs` the first time a container cannot reach its database.
+/// Splits on the LAST `@` so a password that itself contains `@` is still removed.
+pub(crate) fn redact_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "the configured database".to_owned();
+    };
+    // The authority ends at the first '/', '?' or '#'. RFC 3986 requires userinfo to
+    // percent-encode all three, so in a well-formed URL the credentials are entirely
+    // inside `authority`.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+
+    match authority.rsplit_once('@') {
+        // Well-formed: strip the userinfo, keep host and path. Drop query and fragment —
+        // libpq URIs accept `?password=...`, so keeping them would leak by another route.
+        Some((_credentials, host)) => {
+            let path = tail.split(['?', '#']).next().unwrap_or("");
+            format!("{scheme}://{host}{path}")
+        }
+        // No '@' in the authority, but one appears later. Either it is a harmless '@' in a
+        // query string, or the userinfo contains an unencoded '/', '?' or '#' and the real
+        // credentials are sitting in `tail`. We cannot tell which without a full parser, so
+        // fail closed: an operator losing the hostname from one error message is a far
+        // cheaper mistake than printing a password.
+        None if tail.contains('@') => format!("{scheme}://<redacted>"),
+        // No credentials anywhere.
+        None => {
+            let path = tail.split(['?', '#']).next().unwrap_or("");
+            format!("{scheme}://{authority}{path}")
+        }
+    }
+}
+
+/// Turn a failed connection attempt into the right `DbError` variant, based on the
+/// SQLSTATE PostgreSQL reports rather than by guessing from `Display` text. Kept as a
+/// free function taking `&sqlx::Error` (rather than living inline in `connect()`'s
+/// `.map_err`) so it can be unit-tested with a synthetic error and no live server.
+///
+/// `url` is the *only* thing here allowed to be a raw connection string, and it never
+/// leaves this function except through `redact_credentials`. Every returned variant
+/// carries `target`, not `url` — see the credential-leak tests below.
+fn classify_connect_error(err: &sqlx::Error, url: &str) -> DbError {
+    let target = redact_credentials(url);
+
+    let sqlx::Error::Database(db_err) = err else {
+        // Not a structured database error at all — IO, DNS, TLS, or a pool timeout.
+        // The server never got far enough to reject anything, so this is a
+        // connectivity problem by elimination.
+        return DbError::Unreachable { target };
+    };
+
+    match db_err.code().as_deref() {
+        // invalid_password / invalid_authorization_specification: the server spoke
+        // the wire protocol and answered — it just did not like who we claimed to be.
+        Some("28P01" | "28000") => DbError::AuthenticationFailed { target },
+        // invalid_catalog_name: the server accepted the credentials, but the database
+        // named in the connection string is not there.
+        Some("3D000") => DbError::DatabaseMissing {
+            // PostgreSQL's own message already names the database, e.g.
+            // `database "widgets" does not exist` — reuse that instead of re-deriving
+            // it from `url`, so this path never has to reason about redaction at all.
+            database: quoted_name(db_err.message())
+                .unwrap_or("the configured database")
+                .to_owned(),
+            target,
+        },
+        // Any other SQLSTATE (or none) — stay with the fallback rather than invent a
+        // variant for a code we have not actually seen in practice.
+        _ => DbError::Unreachable { target },
+    }
+}
+
+/// Pull the first double-quoted substring out of a PostgreSQL error message, e.g.
+/// `database "widgets" does not exist` -> `Some("widgets")`. The message is
+/// server-supplied text, never client input, so this never touches the connection URL.
+fn quoted_name(message: &str) -> Option<&str> {
+    let start = message.find('"')? + 1;
+    let end = start + message[start..].find('"')?;
+    Some(&message[start..end])
+}
+
+/// Connect and verify the server is PostgreSQL 18 or newer.
+pub async fn connect(url: &str) -> Result<PgPool, DbError> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(8)
+        .connect(url)
+        .await
+        .map_err(|e| classify_connect_error(&e, url))?;
+
+    let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
+        .fetch_one(&pool)
+        .await?;
+
+    if version < 180_000 {
+        return Err(DbError::UnsupportedVersion {
+            found: (version / 10_000).to_string(),
+        });
+    }
+
+    Ok(pool)
+}
+
+/// How long a statement may run on the migration pool before sqlx logs it as slow.
+///
+/// sqlx's default is 1 s, and a healthy cold start beats it twice over: `0002_parts.sql`
+/// takes ~1.4 s to create eight tables with their indexes and a generated `tsvector`
+/// column, and the migrator's `pg_advisory_lock` waits ~2.1 s while the other container
+/// holds it. Both are the system working — the DDL is one statement doing real work, and
+/// the lock wait is exactly the serialization that stops two containers migrating at
+/// once — but sqlx reports each as a WARN carrying the whole 107-line DDL as
+/// `db.statement`, so a first run opened with two warnings before its first INFO. An
+/// operator reads that as a failure, and a log that cries wolf on a healthy start is one
+/// nobody reads on an unhealthy one.
+///
+/// Raised here rather than globally, and on a pool used only for migrations: an ordinary
+/// query taking over a second is still a real problem and still gets its warning. A
+/// migration that takes over a minute is a real problem too, and still gets one.
+const MIGRATION_SLOW_STATEMENT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Apply every migration in `crates/lapidary-db/migrations`. `sqlx::migrate!` embeds them
+/// at compile time, so an image carries its own schema and an air-gapped operator needs no
+/// migration tooling on the host.
+///
+/// Takes the URL rather than the application pool, because the point is a *separate*
+/// pool: one connection, its own slow-statement threshold, closed when the migration is
+/// done, leaving the pool the app actually serves from untouched.
+pub async fn migrate(url: &str) -> Result<(), DbError> {
+    let options: sqlx::postgres::PgConnectOptions =
+        url.parse().map_err(|e| classify_connect_error(&e, url))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::ConnectOptions::log_slow_statements(
+            options,
+            log::LevelFilter::Warn,
+            MIGRATION_SLOW_STATEMENT,
+        ))
+        .await
+        .map_err(|e| classify_connect_error(&e, url))?;
+
+    // Closed on the failure path too: a migration that fails still has to give its
+    // connection back, or a retrying supervisor accumulates them.
+    let result = sqlx::migrate!("./migrations").run(&pool).await;
+    pool.close().await;
+    result?;
+    Ok(())
+}
+
+/// The PostgreSQL `server_version_num` (e.g. 180002). Lives here because no SQL may
+/// appear outside this crate.
+pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
+    let num = sqlx::query_scalar("SELECT current_setting('server_version_num')::int")
+        .fetch_one(pool)
+        .await?;
+    Ok(num)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DbError, classify_connect_error, redact_credentials};
+
+    #[test]
+    fn client_message_passes_through_a_curated_variants_own_text_verbatim() {
+        let err = DbError::TimestampOutOfRange {
+            column: "part.created_at",
+            value: 123,
+        };
+        assert_eq!(err.client_message(), err.to_string());
+    }
+
+    #[test]
+    fn client_message_scrubs_an_opaque_query_error_instead_of_the_wrapped_sqlx_text() {
+        // sqlx::Error::PoolClosed needs no live connection to construct — its Display
+        // text ("attempted to acquire a connection on a closed pool") is harmless here,
+        // but DbError::Query wraps whatever sqlx::Error the query call produced, and
+        // that is not audited the way the three connection-classification variants'
+        // `target` field is (see `redact_credentials`) — so this must never depend on
+        // which sqlx::Error happens to be inside.
+        let err = DbError::Query(sqlx::Error::PoolClosed);
+        assert_eq!(
+            err.client_message(),
+            "A database query failed. Check the server logs for detail."
+        );
+        assert!(
+            !err.client_message().contains("pool"),
+            "must not leak the wrapped sqlx::Error's own text"
+        );
+    }
+
+    #[test]
+    fn redaction_removes_the_password() {
+        let out = redact_credentials("postgres://lapidary:sup3rs3cret@db:5432/lapidary");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+        assert!(!out.contains("sup3rs3cret"));
+    }
+
+    #[test]
+    fn redaction_handles_a_password_containing_an_at_sign() {
+        let out = redact_credentials("postgres://lapidary:p@ss@db:5432/lapidary");
+        assert!(!out.contains("p@ss"), "must split on the last @, got {out}");
+        assert_eq!(out, "postgres://db:5432/lapidary");
+    }
+
+    #[test]
+    fn redaction_is_scoped_to_the_authority_not_the_query_string() {
+        // The last '@' here is inside the query string. Splitting on it would report the
+        // host as "bar".
+        let out = redact_credentials("postgres://user:pass@host:5432/db?options=foo@bar");
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_drops_a_password_carried_in_the_query_string() {
+        // libpq URIs accept ?password=... . Keeping the query would leak it even though
+        // the authority had no credentials to strip.
+        let out = redact_credentials("postgres://host:5432/db?password=hunter2");
+        assert!(
+            !out.contains("hunter2"),
+            "query-string password must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_keeps_a_bracketed_ipv6_host() {
+        assert_eq!(
+            redact_credentials("postgres://user:pw@[::1]:5432/db"),
+            "postgres://[::1]:5432/db"
+        );
+    }
+
+    #[test]
+    fn redaction_passes_through_a_url_with_no_credentials() {
+        assert_eq!(
+            redact_credentials("postgres://db:5432/lapidary"),
+            "postgres://db:5432/lapidary"
+        );
+    }
+
+    /// An unencoded '/' in the password truncates the authority before the real '@'.
+    /// A previous version of this function returned the URL completely unredacted here.
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_slash_in_the_password() {
+        let out = redact_credentials("postgres://user:p/ssw0rd@host:5432/db");
+        assert!(
+            !out.contains("ssw0rd"),
+            "password must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://<redacted>");
+    }
+
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_question_mark_or_hash_in_the_password() {
+        for url in [
+            "postgres://user:p?ss@host:5432/db",
+            "postgres://user:p#ss@host:5432/db",
+        ] {
+            let out = redact_credentials(url);
+            assert_eq!(out, "postgres://<redacted>", "input {url}");
+        }
+    }
+
+    #[test]
+    fn redaction_fails_closed_on_an_unencoded_slash_in_the_username() {
+        let out = redact_credentials("postgres://ab/cd:secret@host:5432/db");
+        assert!(
+            !out.contains("secret"),
+            "password must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://<redacted>");
+    }
+
+    /// Fragments are dropped on the well-formed path too, not only on the fail-closed one.
+    /// Without this test, changing `tail.split(['?', '#'])` to `tail.split(['?'])` passes the
+    /// whole suite while leaking whatever follows a '#'.
+    #[test]
+    fn redaction_drops_a_fragment_on_a_well_formed_url() {
+        let out = redact_credentials("postgres://user:pw@host:5432/db#secretfragment");
+        assert!(
+            !out.contains("secretfragment"),
+            "fragment must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    #[test]
+    fn redaction_drops_a_fragment_when_there_are_no_credentials() {
+        let out = redact_credentials("postgres://host:5432/db#secretfragment");
+        assert!(
+            !out.contains("secretfragment"),
+            "fragment must not survive, got {out}"
+        );
+        assert_eq!(out, "postgres://host:5432/db");
+    }
+
+    // --- classify_connect_error ------------------------------------------------
+    //
+    // `sqlx::Error::Database` holds a `Box<dyn sqlx::error::DatabaseError>`, and there
+    // is no way to construct sqlx's own implementation of that trait without a live
+    // connection to misconfigure. The trait is public and unsealed
+    // (`sqlx-core-0.9.0/src/error.rs`), so a minimal test-only double stands in.
+
+    use sqlx::error::{DatabaseError, ErrorKind};
+    use std::borrow::Cow;
+    use std::error::Error as StdError;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct FakeDbError {
+        code: Option<&'static str>,
+        message: String,
+    }
+
+    impl fmt::Display for FakeDbError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+
+    impl StdError for FakeDbError {}
+
+    impl DatabaseError for FakeDbError {
+        fn message(&self) -> &str {
+            &self.message
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            self.code.map(Cow::Borrowed)
+        }
+
+        fn kind(&self) -> ErrorKind {
+            // None of the classifier's decisions depend on `kind()` — it dispatches on
+            // SQLSTATE — so `Other` is a fine stand-in for every test case here.
+            ErrorKind::Other
+        }
+
+        fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    fn database_error(code: &'static str, message: &str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(FakeDbError {
+            code: Some(code),
+            message: message.to_owned(),
+        }))
+    }
+
+    /// A connection string carrying a real-looking password, reused by every
+    /// credential-leak test below. Matches the URL in the Phase 0a incident report.
+    const URL_WITH_PASSWORD: &str = "postgres://lapidary:sup3rs3cret@db:5432/lapidary";
+
+    #[test]
+    fn invalid_password_classifies_as_authentication_failed() {
+        let err = database_error(
+            "28P01",
+            "password authentication failed for user \"lapidary\"",
+        );
+        let classified = classify_connect_error(&err, URL_WITH_PASSWORD);
+
+        assert!(matches!(classified, DbError::AuthenticationFailed { .. }));
+        let message = classified.to_string();
+        assert!(
+            message.contains("credentials") || message.contains("POSTGRES_PASSWORD"),
+            "message should point at credentials, got: {message}"
+        );
+        assert!(
+            !message.contains("service is running"),
+            "authentication failures must not send the operator to check the service, got: {message}"
+        );
+    }
+
+    #[test]
+    fn invalid_authorization_specification_also_classifies_as_authentication_failed() {
+        let err = database_error("28000", "invalid authorization specification");
+        let classified = classify_connect_error(&err, URL_WITH_PASSWORD);
+        assert!(matches!(classified, DbError::AuthenticationFailed { .. }));
+    }
+
+    #[test]
+    fn invalid_catalog_name_classifies_as_database_missing_and_names_the_database() {
+        let err = database_error("3D000", "database \"widgets\" does not exist");
+        let classified = classify_connect_error(&err, URL_WITH_PASSWORD);
+
+        match &classified {
+            DbError::DatabaseMissing { database, .. } => assert_eq!(database, "widgets"),
+            other => panic!("expected DatabaseMissing, got {other:?}"),
+        }
+        assert!(classified.to_string().contains("widgets"));
+    }
+
+    #[test]
+    fn an_unrecognised_sqlstate_falls_back_to_unreachable() {
+        let err = database_error("55000", "some database error we do not classify");
+        let classified = classify_connect_error(&err, URL_WITH_PASSWORD);
+        assert!(matches!(classified, DbError::Unreachable { .. }));
+    }
+
+    #[test]
+    fn a_non_database_error_falls_back_to_unreachable() {
+        let classified = classify_connect_error(&sqlx::Error::PoolTimedOut, URL_WITH_PASSWORD);
+        assert!(matches!(classified, DbError::Unreachable { .. }));
+    }
+
+    /// Regression test for the Phase 0a credential leak: `DbError::Unreachable` once
+    /// carried the raw connection URL, and because `main` returns `anyhow::Result`
+    /// (which prints the whole source chain), the password reached `podman logs` the
+    /// first time a container could not reach its database. Every variant
+    /// `classify_connect_error` can produce must be covered here, not only the ones
+    /// that existed at the time of that incident.
+    #[test]
+    fn no_classified_variant_ever_renders_the_password() {
+        let cases: Vec<sqlx::Error> = vec![
+            database_error(
+                "28P01",
+                "password authentication failed for user \"lapidary\"",
+            ),
+            database_error("28000", "invalid authorization specification"),
+            database_error("3D000", "database \"lapidary\" does not exist"),
+            database_error("55000", "some database error we do not classify"),
+            sqlx::Error::PoolTimedOut,
+        ];
+
+        for err in cases {
+            let classified = classify_connect_error(&err, URL_WITH_PASSWORD);
+            let rendered = classified.to_string();
+            assert!(
+                !rendered.contains("sup3rs3cret"),
+                "variant {classified:?} leaked the password: {rendered}"
+            );
+        }
+    }
+}

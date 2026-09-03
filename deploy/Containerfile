@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+# Rust workspace -> lapidary-server. OCCT is Phase 0b and is deliberately absent.
+
+FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
+# Feature list for the lapidary-server build, threaded in by deploy/compose.yaml. Declared
+# here, inside the stage — an ARG before the first FROM lives in a different scope and is
+# not visible to the RUN below. Empty by default so the api image never links the CAD
+# kernel; deploy/compose.yaml sets this to `mock-kernel` only for the worker service.
+ARG SERVER_FEATURES=
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+COPY bin ./bin
+COPY xtask ./xtask
+# The base image tag above is pinned by digest, and rust-toolchain.toml (copied above)
+# pins the same version by channel string — they agree today only because both pins point
+# at the same release. Once rust-toolchain.toml is on disk, invoking rustc/cargo from
+# inside /src makes rustup honor it as a directory override and silently fetch a matching
+# toolchain over the network if the image's installed rustc has drifted — exactly the
+# hermetic-build-turns-network-dependent failure we're guarding against, and it would mask
+# a mismatch instead of surfacing one. So this checks the image's actual installed rustc
+# from outside /src, where no override file is in scope. If this fires: bump
+# rust-toolchain.toml and the image digest together, to the same release.
+#
+# Both captured values are checked for emptiness before comparing: a shell pipeline's exit
+# status is only its last stage's, so a broken grep/sed (e.g. the channel line's format
+# changes) or a broken awk (e.g. rustc's output shape changes) degrades silently to an
+# empty string rather than failing the RUN — and two empty strings compare equal, which
+# would make this check pass having verified nothing. That failure mode gets its own
+# message, distinct from a genuine mismatch, because the fix is different: update this
+# check's parsing, not the pins.
+RUN set -eu; \
+    expected="$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')"; \
+    actual="$(cd / && rustc --version | awk '{print $2}')"; \
+    if [ -z "$expected" ] || [ -z "$actual" ]; then \
+        echo "Could not parse a toolchain version to compare (rust-toolchain.toml channel='$expected', rustc --version='$actual') — this check's parsing is stale, not the pins; update the grep/sed or awk above to match the current file/output shape." >&2; \
+        exit 1; \
+    fi; \
+    if [ "$actual" != "$expected" ]; then \
+        echo "rustc $actual in the base image does not match the rust-toolchain.toml pin $expected — bump rust-toolchain.toml and the image digest together." >&2; \
+        exit 1; \
+    fi
+# ${SERVER_FEATURES:+...} adds no --features flag at all when the arg is empty. A plain
+# --features "" is not equivalent and would need cargo to tolerate an empty feature list —
+# this form never asks it to.
+RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features "$SERVER_FEATURES"}
+
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --uid 10001 --create-home lapidary
+# The blob store's mount point, created in the image and owned by the runtime user. Both
+# Docker and Podman seed a freshly created named volume from whatever the image has at
+# the mount point, ownership included; with no directory here the volume comes up owned
+# by root and this container, which does not run as root, cannot write a single blob.
+RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary
+COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
+USER lapidary
+# This Containerfile now produces two different images via SERVER_FEATURES — api without
+# the CAD kernel, worker with it — bound to different ports in deploy/compose.yaml: api
+# 8080, worker 8081. EXPOSE documents both regardless of which image is built, rather than
+# naming only the port that's wrong for the other one.
+EXPOSE 8080 8081
+ENTRYPOINT ["/usr/local/bin/lapidary-server"]
