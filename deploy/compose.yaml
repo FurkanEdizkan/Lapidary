@@ -41,6 +41,22 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
+    volumes:
+      # The same blob store the worker writes, mounted read-write rather than :ro.
+      #
+      # Slice 1's grid does not actually read this yet — thumbnails are small enough to
+      # live inline in Postgres as `derivative.thumbnail_webp` (DATA.md §1.5), so a page
+      # of cards costs one query and no per-card round trip. The mount is here because
+      # the open path's next step is derivatives too large to inline (glTF for the
+      # viewer), and those are read from, and cached into, this store.
+      #
+      # Read-write is deliberate and is not a hole in "the open path never touches a
+      # source file". That boundary is a type, not a mount flag: `lapidary-storage`
+      # exposes source bytes only through `SourceStore::open`, which demands a
+      # `WorkerRole` token, and `DerivativeStore` — all `lapidary-api` can construct —
+      # cannot reach them. A read-only mount would break the derivative cache writes the
+      # api legitimately needs while adding nothing that boundary does not already give.
+      - lapidary-blobs:/var/lib/lapidary:Z
 
   worker:
     build:
@@ -55,9 +71,26 @@ services:
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
       # Runs ingest. Must never be "api" — see lapidary-api::Role and ApiError::UnknownRole.
       LAPIDARY_ROLE: worker
+      # Both are required for LAPIDARY_ROLE=worker and have no default in the binary —
+      # bin/lapidary-server refuses to start without them rather than guessing a path.
+      # They name the two mounts below.
+      LAPIDARY_INGEST_DIR: /ingest
+      LAPIDARY_BLOB_ROOT: /var/lib/lapidary
     depends_on:
       db:
         condition: service_healthy
+    ports:
+      # The scan route lives here, not on api:8080. Published so the documented
+      # `curl -X POST localhost:8081/api/libraries/<id>/scan` works from the host.
+      - "8081:8081"
+    volumes:
+      # The directory of parts to ingest, read-only: ingest hashes and copies bytes into
+      # the blob store, and must never be able to modify what it was pointed at. The
+      # default is this repository's `example/parts`, so a first run with no .env edits
+      # still lands six real parts in the grid; point LAPIDARY_INGEST_DIR at your own
+      # folder to scan that instead.
+      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro
+      - lapidary-blobs:/var/lib/lapidary:Z
 
   web:
     build:
@@ -70,3 +103,10 @@ services:
 
 volumes:
   lapidary-db:
+  # Content-addressed blobs and derivatives, shared by worker (writes source bytes) and
+  # api (reads and caches derivatives). Named, not a bind mount: these are our data, not
+  # the user's files, and deleting the compose project must not take a host directory
+  # with it. deploy/Containerfile creates /var/lib/lapidary owned by the `lapidary` user
+  # so a freshly created volume inherits that ownership instead of coming up root-owned
+  # and unwritable to a container that does not run as root.
+  lapidary-blobs:

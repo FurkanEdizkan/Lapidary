@@ -5,4 +5,8 @@ web/dist/
 docs/
 design/
 fixtures/
+# The sample part library is a runtime bind mount (deploy/compose.yaml mounts it at
+# /ingest), never a COPY — and it sits next to a 163 MB archive. Sending it as build
+# context would cost every image build that much for nothing.
+example/
 deploy/.env
