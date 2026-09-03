@@ -8,6 +8,13 @@
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
 | [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, `lapidary-index` search, or `lapidary-cad` LOD |
+| [`superpowers/specs/`](superpowers/specs) | Per-slice design specs: the decisions, data flow, schema and testing plan for one slice | Working on a slice — the spec for it is the closest thing to a contract for what it does |
+| [`superpowers/plans/`](superpowers/plans) | The execution plans those specs were built from, and historical handoffs | Tracing why something was built the way it was; not a description of the current system |
+
+The docs above describe the system. `superpowers/` describes particular pieces of work
+on it, so a spec is authoritative for its own slice and silent about everything else,
+and a plan is a record of intent at a moment rather than of what shipped. Where a spec
+and the code disagree, one of them is a defect — say which, in the spec.
 
 ## Fast answers
 

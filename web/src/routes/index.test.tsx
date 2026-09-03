@@ -337,3 +337,48 @@ test('renders an actionable message when the parts request fails', async () => {
     ),
   ).toBeDefined()
 })
+
+// The grid asks for one page and the server caps it at 50, so a user who scans 200 STLs
+// sees 50 cards. Nothing on the page said so: they scroll to the bottom, do not find the
+// part they came for, and conclude it was never ingested. Literals, not the constants —
+// this copy exists to state a specific fact, and reading it back from strings.ts would
+// pass just as happily against wording that no longer states it.
+test('says how much of the library is on screen when the whole of it fits', async () => {
+  stubFetch({ parts: ok(page([MOTOR_MOUNT, HEX_NUT])) })
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(screen.getByText('Showing all 2 parts.')).toBeDefined()
+})
+
+test('says the grid is truncated when the server hands back another cursor', async () => {
+  // `next` non-null is the server's own "there is more behind this page" — a full page
+  // hands back a cursor, a short one hands back null.
+  const truncated: PartsPage = {
+    parts: [MOTOR_MOUNT, HEX_NUT],
+    next: '01931b6e-0000-7000-8000-0000000a0002',
+  }
+  stubFetch({ parts: ok(truncated) })
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(
+    screen.getByText(
+      'Showing the first 2 parts. This library has more — paging through them arrives with the virtualized grid.',
+    ),
+  ).toBeDefined()
+  // And it must not also claim to be showing all of them.
+  expect(screen.queryByText('Showing all 2 parts.')).toBeNull()
+})
+
+test('does not count parts before the page has arrived, or when there are none', async () => {
+  // A count rendered against a pending or empty page is a claim about a library nothing
+  // has looked at yet. The empty state already says what is true there.
+  stubFetch({})
+  const pendingRender = renderIndex()
+  expect(screen.queryByText(/^Showing/)).toBeNull()
+  pendingRender.unmount()
+
+  stubFetch({ parts: ok(page([])) })
+  renderIndex()
+  await screen.findByText(strings.emptyLibrary.title)
+  expect(screen.queryByText(/^Showing/)).toBeNull()
+})

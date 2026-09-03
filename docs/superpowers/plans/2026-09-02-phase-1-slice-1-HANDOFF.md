@@ -1,3 +1,16 @@
+> **SUPERSEDED — this document describes a state that no longer exists.**
+>
+> It was written mid-plan, when execution had stopped after task 4 of 12. All twelve
+> tasks are complete, and the slice went on through several review rounds and a final
+> fix wave; nothing below about "where execution stopped", "what to do next" or the
+> unpushed-commit count is true any more.
+>
+> It is kept, rather than deleted, for the one thing it is still the only committed
+> record of: the reasoning and review findings for tasks 1-4, reproduced here because
+> the live ledger lives in the gitignored `.superpowers/sdd/`. Read it as history.
+> For what the slice actually does, read
+> `docs/superpowers/specs/2026-09-02-phase-1-slice-1-ingest-design.md`.
+
 # Phase 1 slice 1 — handoff
 
 **Written:** 2026-09-02, at the end of a session that ran out of time mid-plan.

@@ -26,6 +26,20 @@ export const strings = {
     approximate: 'Approximate',
     approximateDetail:
       'At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.',
+    /**
+     * The whole library fitted in one page, so the count is the count.
+     */
+    showingAll: (count: number) =>
+      count === 1 ? 'Showing 1 part.' : `Showing all ${count.toLocaleString('en-US')} parts.`,
+    /**
+     * The server capped the page and there is more behind it. The grid asks for one
+     * page and renders it — paging and virtualization are a later slice — so a library
+     * larger than a page is genuinely truncated on screen, and saying so is the whole
+     * point of this string. A grid that silently shows the first 50 of 200 parts is a
+     * measurement that lies by omission.
+     */
+    showingFirstPage: (count: number) =>
+      `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },
   emptyLibrary: {
     title: 'Nothing scanned yet',

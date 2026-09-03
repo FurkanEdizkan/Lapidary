@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { DEFAULT_LIBRARY_ID, fetchHealth, fetchParts } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { PartCard } from '../lib/types'
+import type { PartCard, PartsPage } from '../lib/types'
 
 export const Route = createFileRoute('/')({ component: Index })
 
@@ -24,7 +24,10 @@ export function Index() {
         // that came back empty gets the empty state.
         <EmptyLibrary />
       ) : (
-        <Grid parts={parts.data.parts} />
+        <>
+          <Grid parts={parts.data.parts} />
+          <PageExtent page={parts.data} />
+        </>
       )}
       <p className="mt-6 text-sm text-[var(--color-muted)]">
         {health.isPending
@@ -43,6 +46,29 @@ function EmptyLibrary() {
       <h2 className="text-lg">{strings.emptyLibrary.title}</h2>
       <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.body}</p>
     </div>
+  )
+}
+
+/**
+ * How much of the library is actually on screen.
+ *
+ * `fetchParts` asks for one page and renders it; the server caps a page at 50 parts by
+ * default. So a library of 200 shows 50 cards, and without this line nothing on the page
+ * says so — a user scans the grid, does not find the part they came for, and concludes it
+ * was never ingested. Virtualized scrolling is a later slice; being honest about the
+ * truncation is not something to defer along with it.
+ *
+ * `next` is the server's own answer to "is there more", not a length comparison against a
+ * limit this component would otherwise have to know: a full page hands back a cursor, a
+ * short one hands back null.
+ */
+function PageExtent({ page }: { page: PartsPage }) {
+  return (
+    <p className="mt-4 max-w-prose text-xs text-[var(--color-muted)]">
+      {page.next === null
+        ? strings.parts.showingAll(page.parts.length)
+        : strings.parts.showingFirstPage(page.parts.length)}
+    </p>
   )
 }
 

@@ -24,8 +24,9 @@ and non-recursive.
 
 ## What it does
 
-- **Ingest** — drop a folder of STL, 3MF, OBJ, STEP or IGES. Content-addressed,
-  deduplicated, non-blocking, crash-resumable.
+- **Ingest** — drop a folder of STL, 3MF, OBJ, STEP or IGES. Content-addressed and
+  deduplicated. Today the scan is a synchronous request; the queue that makes it
+  non-blocking and crash-resumable is slice 2.
 - **Triage** — a fast virtualized grid with real thumbnails, full-text and part-number
   search, faceted filters.
 - **Inspect** — a 3D viewer with measurement that snaps to analytic B-rep entities, so

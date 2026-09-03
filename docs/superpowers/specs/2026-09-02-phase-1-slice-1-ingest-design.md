@@ -114,8 +114,18 @@ tessellated triangle count **on the same row**, and any single row-level flag mu
 about one of them. Fixing that later is a migration plus every consumer, after the UI
 already renders a badge.
 
-This is also the first real consumer of `Approximate<T>` (`lapidary-core`), which open
-follow-up item 6 records as exported and unused.
+This slice was expected to be the first real consumer of `Approximate<T>`
+(`lapidary-core`), which open follow-up item 6 records as exported and unused. **It is
+not**, and the claim is corrected here rather than left to read as a fact:
+`MeshMeasurements::volume_approximate()` has no caller outside `lapidary-core`'s own
+tests. What shipped instead is the wire-level `PartCard.approximate` flag, which the grid
+renders as an unconditional badge beside any mesh-derived figure — the non-negotiable
+holds, but through a boolean on the card rather than through the wrapper type.
+
+`Approximate<T>` stays exported and unconsumed, and follow-up item 6 stays open. Its
+first real consumer is the slice that shows a *volume* — the measurement whose value is
+meaningless without its provenance travelling attached to it. Recorded as an open
+follow-up in the ledger with that trigger point.
 
 The prototype made precisely this mistake in the other direction: `routes/api.ts` wrote
 user-**typed** dimensions into the same `bbox_x/y/z` columns as sidecar-**measured** ones
