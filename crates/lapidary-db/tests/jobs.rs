@@ -1,4 +1,4 @@
-use lapidary_core::LibraryId;
+use lapidary_core::{LibraryId, Outcome};
 use lapidary_db::{JobRow, PgJobs};
 use sqlx::PgPool;
 use std::time::Duration;
@@ -225,5 +225,94 @@ async fn an_empty_queue_yields_nothing_rather_than_blocking(pool: PgPool) {
             .await
             .expect("dequeues")
             .is_none()
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn completing_a_job_records_how_it_finished(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    jobs.complete(job.id, Outcome::Skipped)
+        .await
+        .expect("completes");
+
+    let (state, outcome): (String, Option<String>) =
+        sqlx::query_as("SELECT state, outcome FROM job WHERE id = $1")
+            .bind(job.id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("reads back");
+    assert_eq!(state, "done");
+    assert_eq!(outcome.as_deref(), Some("skipped"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn rescheduling_pushes_the_job_into_the_future_and_keeps_the_reason(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    jobs.reschedule(
+        job.id,
+        "the database was unreachable",
+        Duration::from_secs(8),
+    )
+    .await
+    .expect("reschedules");
+
+    let (state, in_future, reason): (String, bool, Option<String>) =
+        sqlx::query_as("SELECT state, run_after > now(), last_error FROM job WHERE id = $1")
+            .bind(job.id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("reads back");
+
+    assert_eq!(
+        state, "pending",
+        "a rescheduled job is queued again, not failed"
+    );
+    assert!(in_future, "backoff must actually delay the next attempt");
+    assert_eq!(reason.as_deref(), Some("the database was unreachable"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn releasing_a_workers_leases_makes_its_jobs_immediately_available(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    jobs.dequeue("worker-shutting-down", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    let released = jobs
+        .release_leases("worker-shutting-down")
+        .await
+        .expect("releases");
+    assert_eq!(released, 1);
+
+    // A planned restart resumes instantly instead of waiting out a 60-second lease.
+    let picked_up = jobs
+        .dequeue("worker-restarted", LEASE)
+        .await
+        .expect("dequeues");
+    assert!(
+        picked_up.is_some(),
+        "a released job must be available at once"
     );
 }

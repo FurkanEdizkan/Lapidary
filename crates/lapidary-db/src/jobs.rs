@@ -2,7 +2,7 @@
 //! no SQL at all -- CLAUDE.md: no SQL outside this crate.
 
 use crate::DbError;
-use lapidary_core::{BatchId, JobId, LibraryId};
+use lapidary_core::{BatchId, JobId, LibraryId, Outcome};
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -115,5 +115,82 @@ impl PgJobs {
                 max_attempts,
             },
         ))
+    }
+
+    /// Terminal, successful. `last_error` is deliberately left as-is: a job that failed
+    /// transiently, retried and then succeeded keeps the reason it retried. That is
+    /// diagnostically useful, invisible to users (`BatchStatus` only reports `last_error`
+    /// for rows in state `failed`), and `attempts` alone tells you it retried but not why.
+    pub async fn complete(&self, id: JobId, outcome: Outcome) -> Result<(), DbError> {
+        let outcome = match outcome {
+            Outcome::Ingested => "ingested",
+            Outcome::Skipped => "skipped",
+        };
+        sqlx::query(
+            "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
+                            lease_expires_at = NULL, updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(outcome)
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
+    /// Terminal. `reason` is the handler's own message and is shown to a person.
+    pub async fn fail(&self, id: JobId, reason: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE job SET state = 'failed', last_error = $2, leased_by = NULL, \
+                            lease_expires_at = NULL, updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(reason)
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
+    /// Back to the queue behind a backoff. `last_error` is kept -- not cleared -- so a job
+    /// that is still retrying can say what went wrong last time. This is only legal
+    /// because `job_failed_has_reason` is an implication (`state <> 'failed' or last_error
+    /// is not null`), not a biconditional: a `pending` row carrying a `last_error` violates
+    /// nothing.
+    pub async fn reschedule(
+        &self,
+        id: JobId,
+        reason: &str,
+        backoff: Duration,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE job SET state = 'pending', \
+                            run_after = now() + make_interval(secs => $3), \
+                            last_error = $2, leased_by = NULL, \
+                            lease_expires_at = NULL, updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(reason)
+        .bind(backoff.as_secs_f64())
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
+    /// Graceful shutdown: hand back whatever this worker still holds so a restart
+    /// resumes at once rather than waiting out every lease. A crash does not get this,
+    /// which is what lease expiry is for -- the two paths are separate because only one
+    /// of them can run cleanup code.
+    pub async fn release_leases(&self, worker_id: &str) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "UPDATE job SET state = 'pending', run_after = now(), leased_by = NULL, \
+                            lease_expires_at = NULL, updated_at = now() \
+             WHERE leased_by = $1 AND state = 'running'",
+        )
+        .bind(worker_id)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
