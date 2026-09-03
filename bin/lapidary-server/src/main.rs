@@ -73,6 +73,13 @@ struct Config {
 /// The same problem, with the same fix, is documented at `empty_str_as_none` in
 /// `crates/lapidary-api/src/parts.rs`, where it was a query string rather than an
 /// environment variable that turned a documented URL shape into a 400.
+/// Accepts a number as readily as a string, which is not optional here: figment types
+/// environment values as it reads them, so `LAPIDARY_JOB_LEASE_SECS=10` arrives as an
+/// unsigned int and `LAPIDARY_JOB_LEASE_SECS=` arrives as a string. Demanding one of the
+/// two rejects the other — the first version of this function asked for a `String` and
+/// took the worker down with
+/// `invalid type: found unsigned int 10, expected a string for key "JOB_LEASE_SECS"`,
+/// which is the opposite of the failure it was written to prevent.
 #[cfg(feature = "mock-kernel")]
 fn empty_str_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -80,13 +87,42 @@ where
     T: std::str::FromStr,
     T::Err: std::fmt::Display,
 {
-    let raw = String::deserialize(deserializer)?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        trimmed.parse().map(Some).map_err(serde::de::Error::custom)
+    struct Knob<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T> serde::de::Visitor<'de> for Knob<T>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        type Value = Option<T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a worker setting, or an empty value meaning \"use the default\"")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            trimmed.parse().map(Some).map_err(E::custom)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+            self.visit_str(&value.to_string())
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+            self.visit_str(&value.to_string())
+        }
+
+        /// An explicitly null value is as good as an absent one.
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
     }
+
+    deserializer.deserialize_any(Knob(std::marker::PhantomData))
 }
 
 fn default_bind() -> String {
@@ -391,18 +427,34 @@ mod tests {
         // directly rather than through figment keeps this off the process environment,
         // which the rest of the suite shares.
         use serde::de::IntoDeserializer;
-        use serde::de::value::{Error as ValueError, StrDeserializer};
+        use serde::de::value::{Error as ValueError, StrDeserializer, U64Deserializer};
 
-        fn parse(raw: &str) -> Result<Option<usize>, ValueError> {
+        fn from_text(raw: &str) -> Result<Option<usize>, ValueError> {
             let deserializer: StrDeserializer<ValueError> = raw.into_deserializer();
             empty_str_as_none(deserializer)
         }
 
-        assert_eq!(parse("").expect("an empty value is not an error"), None);
-        assert_eq!(parse("  ").expect("nor is whitespace"), None);
-        assert_eq!(parse("8").expect("a real value still parses"), Some(8));
-        parse("not-a-number").expect_err(
+        fn from_number(raw: u64) -> Result<Option<usize>, ValueError> {
+            let deserializer: U64Deserializer<ValueError> = raw.into_deserializer();
+            empty_str_as_none(deserializer)
+        }
+
+        assert_eq!(from_text("").expect("an empty value is not an error"), None);
+        assert_eq!(from_text("  ").expect("nor is whitespace"), None);
+        assert_eq!(from_text("8").expect("a real value still parses"), Some(8));
+        from_text("not-a-number").expect_err(
             "a genuinely wrong value must still be rejected rather than silently defaulted",
+        );
+
+        // Both halves matter, and only testing the first is how the empty case got fixed
+        // while the set case broke. figment types environment values as it reads them, so
+        // a number in the environment does NOT arrive as a string: the first version of
+        // this helper asked for a String, and `LAPIDARY_JOB_LEASE_SECS=10` took the worker
+        // down at startup with "invalid type: found unsigned int 10, expected a string".
+        // Caught by running the stack, not by this file — hence this line.
+        assert_eq!(
+            from_number(10).expect("a number from the environment parses too"),
+            Some(10)
         );
     }
 
