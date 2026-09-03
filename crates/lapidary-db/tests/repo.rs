@@ -213,6 +213,32 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn the_same_part_name_in_two_libraries_is_not_refused(pool: sqlx::PgPool) {
+    // Negative control for `part_name_unique_per_library`
+    // (tests/migrations.rs::two_parts_with_one_name_in_one_library_are_refused). That
+    // test alone can't tell a correctly-scoped `UNIQUE (library_id, name)` from an
+    // accidentally-global `UNIQUE (name)` — it never inserts into a second library, and
+    // being scoped per library is the entire point (spec §3.5). This is the other half:
+    // the same name in a *different* library must succeed, not just the same name in
+    // the same library must fail.
+    let other = second_library(&pool).await;
+
+    sqlx::query("INSERT INTO part (id, library_id, name) VALUES (gen_random_uuid(), $1, $2)")
+        .bind(library().as_uuid())
+        .bind("bracket-lp-1042-03")
+        .execute(&pool)
+        .await
+        .expect("the first library's part inserts");
+
+    sqlx::query("INSERT INTO part (id, library_id, name) VALUES (gen_random_uuid(), $1, $2)")
+        .bind(other.as_uuid())
+        .bind("bracket-lp-1042-03")
+        .execute(&pool)
+        .await
+        .expect("the same name in a different library must not be refused");
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(pool: sqlx::PgPool) {
     let blob = blob_row(0x22);
     let ingest = PgIngest(pool.clone());

@@ -22,12 +22,17 @@ create table job (
         check (state in ('pending', 'running', 'done', 'failed')),
     constraint job_outcome_known
         check (outcome is null or outcome in ('ingested', 'skipped')),
-    -- A finished job says how it finished; a failed one says why. Neither is optional,
-    -- because a row that says 'done' and nothing else is a row that lies about its work.
+    -- A finished job says how it finished, and only a finished job may: an outcome on a
+    -- non-terminal row is incoherent either way, so both directions of this one are
+    -- meaningful.
     constraint job_done_has_outcome
         check ((state = 'done') = (outcome is not null)),
+    -- A failed job says why. This is an implication, not an equivalence, on purpose: a
+    -- job that is retrying after a transient failure keeps its last error, so an operator
+    -- can see why a batch is slow without waiting for it to exhaust its attempts. Only
+    -- the 'failed' direction is mandatory.
     constraint job_failed_has_reason
-        check ((state = 'failed') = (last_error is not null))
+        check (state <> 'failed' or last_error is not null)
 );
 
 -- The dequeue index. Partial: only pending rows are ever ordered by run_after, and this
