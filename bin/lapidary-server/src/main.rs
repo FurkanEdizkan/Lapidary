@@ -32,6 +32,61 @@ struct Config {
     // `deploy/compose.yaml` (Task 12) supplies the real `/ingest` mount.
     ingest_dir: Option<PathBuf>,
     blob_root: Option<PathBuf>,
+    // Only the worker role reads these four, and each is `Option` for the same reason as
+    // the two above. Their defaults live in `lapidary_jobs::WorkerConfig`'s `Default` impl
+    // rather than here, so one place decides them: a second set of numbers in this file
+    // would be free to drift from the ones the crate's own tests exercise. Unset is the
+    // normal case — deploy/compose.yaml sets none of them, because the defaults are what
+    // a single-machine worker wants.
+    //
+    // Gated, unlike `ingest_dir` and `blob_root`, because only `spawn_worker` reads them
+    // and only this feature compiles it: left ungated they are dead code in the `api`
+    // image, which `deploy/Containerfile` builds with no features at all. Figment ignores
+    // environment variables that match no field, so setting one of these against an `api`
+    // build is inert either way — and an `api` process has no worker for them to configure.
+    #[cfg(feature = "mock-kernel")]
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    worker_concurrency: Option<usize>,
+    #[cfg(feature = "mock-kernel")]
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    job_lease_secs: Option<u64>,
+    #[cfg(feature = "mock-kernel")]
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    job_poll_secs: Option<u64>,
+    #[cfg(feature = "mock-kernel")]
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    worker_id: Option<String>,
+}
+
+/// Treats an environment variable that is present but empty the same as one that is
+/// absent, which is what `deploy/compose.yaml` needs to be able to write
+/// `LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-}` and have an operator
+/// who never sets it get the default rather than a refusal to start.
+///
+/// `#[serde(default)]` alone does not cover it: that handles the key being missing
+/// entirely, but compose's `:-` substitution produces a key that is *present* and empty,
+/// and the empty string reaches this field's deserializer. Verified by hand before this
+/// was written — without it, an empty value fails startup with
+/// `invalid type: found string "", expected usize for key "WORKER_CONCURRENCY"`, so a
+/// worker whose operator copied `.env.example` and changed nothing would not boot.
+///
+/// The same problem, with the same fix, is documented at `empty_str_as_none` in
+/// `crates/lapidary-api/src/parts.rs`, where it was a query string rather than an
+/// environment variable that turned a documented URL shape into a 400.
+#[cfg(feature = "mock-kernel")]
+fn empty_str_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = String::deserialize(deserializer)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        trimmed.parse().map(Some).map_err(serde::de::Error::custom)
+    }
 }
 
 fn default_bind() -> String {
@@ -96,6 +151,129 @@ fn worker_router(
     );
 }
 
+/// Spawns the job worker that drains what `/scan` enqueued. Gated by the same feature as
+/// `worker_router` and for the same reason: without it there is no `lapidary-ingest`, and
+/// therefore no `JobHandler` to hand the loop.
+///
+/// Returns the loop's `JoinHandle` so `main` can wait for it. That wait is not optional —
+/// `lapidary_jobs::run` releases this worker's leases as its last act, and a process that
+/// exits without letting it get there leaves every in-flight job leased until it expires.
+#[cfg(feature = "mock-kernel")]
+fn spawn_worker(
+    db: lapidary_db::PgPool,
+    config: &Config,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<tokio::task::JoinHandle<()>> {
+    use std::time::Duration;
+
+    let ingest_dir = config
+        .ingest_dir
+        .clone()
+        .context("Could not start the worker loop: LAPIDARY_INGEST_DIR is not set.")?;
+    let blob_root = config
+        .blob_root
+        .clone()
+        .context("Could not start the worker loop: LAPIDARY_BLOB_ROOT is not set.")?;
+
+    let defaults = lapidary_jobs::WorkerConfig::default();
+    let worker_config = lapidary_jobs::WorkerConfig {
+        worker_id: config.worker_id.clone().unwrap_or(defaults.worker_id),
+        lease: config
+            .job_lease_secs
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.lease),
+        poll_interval: config
+            .job_poll_secs
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.poll_interval),
+        concurrency: config.worker_concurrency.unwrap_or(defaults.concurrency),
+        listen: true,
+    };
+
+    // The counterpart to the `role` and `kernel` lines above: an operator reading
+    // container logs can see the worker started and with what, without attaching a
+    // debugger to find out whether the loop is running at all.
+    tracing::info!(
+        worker = %worker_config.worker_id,
+        concurrency = worker_config.concurrency,
+        lease_secs = worker_config.lease.as_secs(),
+        poll_secs = worker_config.poll_interval.as_secs(),
+        "job worker starting"
+    );
+
+    let handler = std::sync::Arc::new(lapidary_ingest::IngestHandler {
+        db: db.clone(),
+        ingest_dir,
+        blob_root,
+    });
+    Ok(tokio::spawn(async move {
+        if let Err(error) =
+            lapidary_jobs::run(lapidary_db::PgJobs(db), handler, worker_config, shutdown).await
+        {
+            tracing::error!(%error, "the job worker stopped");
+        }
+    }))
+}
+
+/// Unreachable in practice — `worker_router` bails on this same build before `main` gets
+/// here — but it must compile, and if it ever does run it says the same thing that one
+/// does rather than starting a worker that would drain nothing.
+#[cfg(not(feature = "mock-kernel"))]
+fn spawn_worker(
+    _db: lapidary_db::PgPool,
+    _config: &Config,
+    _shutdown: tokio_util::sync::CancellationToken,
+) -> Result<tokio::task::JoinHandle<()>> {
+    bail!(
+        "Could not start the worker loop: this binary was built without ingest support. \
+         Rebuild with `--features mock-kernel` — deploy/compose.yaml does this \
+         automatically for the worker service."
+    );
+}
+
+/// Resolves on SIGTERM or Ctrl-C, then cancels `token` so the job worker stops dequeuing
+/// at the same moment the HTTP server stops accepting. A container restart must release
+/// leases rather than orphan them for a lease period.
+///
+/// Neither branch panics if its handler cannot be installed: it logs and then never
+/// resolves, leaving the other branch to decide. A server that refuses to start because
+/// it could not register a signal handler would be a worse outcome than one that can only
+/// be stopped by the other signal.
+async fn shutdown_signal(token: tokio_util::sync::CancellationToken) {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(error) => {
+                tracing::warn!(%error, "could not listen for Ctrl-C; relying on SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not listen for SIGTERM; relying on Ctrl-C");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+
+    tracing::info!("shutdown signal received; draining");
+    token.cancel();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -156,13 +334,41 @@ async fn main() -> Result<()> {
     // logs` tell an operator which one a given container actually took.
     tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
-    let app_router = match role {
-        Role::Api => router(AppState { db }, Role::Api),
-        Role::Worker => worker_router(db, config.ingest_dir, config.blob_root)?,
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let (app_router, worker) = match role {
+        Role::Api => (router(AppState { db }, Role::Api), None),
+        Role::Worker => {
+            // worker_router is built first on purpose: on a build without ingest support
+            // it bails, and that is the error an operator should see, rather than one
+            // about the loop that was only ever a consequence of the same missing feature.
+            let app = worker_router(
+                db.clone(),
+                config.ingest_dir.clone(),
+                config.blob_root.clone(),
+            )?;
+            let handle = spawn_worker(db, &config, shutdown.clone())?;
+            (app, Some(handle))
+        }
     };
+
     axum::serve(listener, app_router)
+        .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
         .await
         .context("The HTTP server stopped unexpectedly")?;
+
+    // The listener is closed; the worker may still be finishing a file. Cancelling here
+    // as well as in `shutdown_signal` covers the case where `serve` returned for some
+    // other reason, so this is never reached with a worker that was never told to stop.
+    shutdown.cancel();
+    if let Some(worker) = worker {
+        // Waiting is the point. `lapidary_jobs::run` awaits in-flight handlers and then
+        // releases this worker's leases; returning from main before it gets there is the
+        // crash path, not the graceful one, and would leave every job it held leased for
+        // a full lease period after a deliberate restart.
+        worker
+            .await
+            .context("The job worker did not shut down cleanly")?;
+    }
 
     Ok(())
 }
@@ -175,6 +381,30 @@ mod tests {
     use tower::ServiceExt;
 
     const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
+
+    #[test]
+    fn an_empty_worker_variable_is_treated_as_unset_rather_than_as_a_bad_value() {
+        // deploy/compose.yaml writes `${LAPIDARY_WORKER_CONCURRENCY:-}`, which produces a
+        // key that is present and empty for every operator who never set one. Without
+        // empty_str_as_none that is a startup failure, so a worker whose .env came
+        // straight from .env.example would refuse to boot. Deserializing the field
+        // directly rather than through figment keeps this off the process environment,
+        // which the rest of the suite shares.
+        use serde::de::IntoDeserializer;
+        use serde::de::value::{Error as ValueError, StrDeserializer};
+
+        fn parse(raw: &str) -> Result<Option<usize>, ValueError> {
+            let deserializer: StrDeserializer<ValueError> = raw.into_deserializer();
+            empty_str_as_none(deserializer)
+        }
+
+        assert_eq!(parse("").expect("an empty value is not an error"), None);
+        assert_eq!(parse("  ").expect("nor is whitespace"), None);
+        assert_eq!(parse("8").expect("a real value still parses"), Some(8));
+        parse("not-a-number").expect_err(
+            "a genuinely wrong value must still be rejected rather than silently defaulted",
+        );
+    }
 
     #[test]
     fn kernel_description_reports_the_mock_implementation_when_the_feature_is_on() {

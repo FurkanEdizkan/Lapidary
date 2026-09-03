@@ -76,6 +76,21 @@ services:
       # They name the two mounts below.
       LAPIDARY_INGEST_DIR: /ingest
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
+      # Job worker knobs, worker-only — the api service has no worker to configure.
+      # Passed through empty when unset, which bin/lapidary-server reads as "use the
+      # default": the defaults live in lapidary_jobs::WorkerConfig so exactly one place
+      # decides them, and restating the numbers here would let the two drift apart.
+      #
+      # Empty is load-bearing, not sloppiness. `${VAR:-}` yields a variable that is
+      # present and empty for every operator who never set one, and an empty string is
+      # not a usize — see empty_str_as_none in bin/lapidary-server/src/main.rs, which
+      # exists so that case starts the worker instead of refusing to boot.
+      #
+      # deploy/.env.example documents what each knob does and what it defaults to.
+      LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-}
+      LAPIDARY_JOB_LEASE_SECS: ${LAPIDARY_JOB_LEASE_SECS:-}
+      LAPIDARY_JOB_POLL_SECS: ${LAPIDARY_JOB_POLL_SECS:-}
+      LAPIDARY_WORKER_ID: ${LAPIDARY_WORKER_ID:-}
     depends_on:
       db:
         condition: service_healthy

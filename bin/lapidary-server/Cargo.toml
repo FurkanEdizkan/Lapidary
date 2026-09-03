@@ -20,7 +20,12 @@ default = []
 # the value as a build arg (SERVER_FEATURES), empty by default, so `api` builds without
 # linking lapidary-cad, lapidary-ingest, or anything reachable through either. The real
 # OCCT kernel is Phase 0b; expect it gated the same way.
-mock-kernel = ["dep:lapidary-cad", "dep:lapidary-ingest", "lapidary-cad/mock-kernel"]
+mock-kernel = [
+    "dep:lapidary-cad",
+    "dep:lapidary-ingest",
+    "dep:lapidary-jobs",
+    "lapidary-cad/mock-kernel",
+]
 
 [dependencies]
 lapidary-api.workspace = true
@@ -35,6 +40,12 @@ lapidary-cad = { workspace = true, optional = true }
 # is requested against such a build, rather than silently serving a worker with no scan
 # route.
 lapidary-ingest = { workspace = true, optional = true }
+# The worker loop this binary spawns under LAPIDARY_ROLE=worker. Gated the same way as
+# the two above, for the same reason: only the worker image runs it, and only that image
+# has a JobHandler (lapidary-ingest's) to hand it. lapidary-jobs itself is L2 and never
+# reaches the kernel — that is what the JobHandler seam is for — so this gating is about
+# keeping the api image to what it actually uses, not about the open-path boundary.
+lapidary-jobs = { workspace = true, optional = true }
 anyhow.workspace = true
 # This binary owns the listener, so it calls axum::serve directly. lapidary-api builds
 # the Router and does not re-export axum. Both resolve to the one version pinned in
@@ -43,6 +54,9 @@ axum.workspace = true
 figment.workspace = true
 serde.workspace = true
 tokio.workspace = true
+# CancellationToken. Not optional: main() creates one for both roles so that the
+# graceful-shutdown path is one code path rather than two, only one of which is compiled.
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
