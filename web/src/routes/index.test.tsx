@@ -503,3 +503,41 @@ test('says so when the batch in the URL is not one this library can show', async
 
   expect(await screen.findByText(strings.scan.unknown)).toBeTruthy()
 })
+
+test('refetches the grid as the worker commits parts', async () => {
+  // "The grid fills in as the worker commits parts" (spec §10) is a claim about two
+  // queries, not one: the batch poll sees progress, and the parts query — a separate
+  // cache entry that nothing else would invalidate — has to be told the library changed
+  // underneath it. Without that, a scan finishes and the grid still says empty until the
+  // user reloads.
+  let partsCalls = 0
+  let batchCalls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: async () => {
+      partsCalls += 1
+      return { ok: true, json: async () => (partsCalls === 1 ? page([]) : page([MOTOR_MOUNT])) }
+    },
+    batch: async () => {
+      batchCalls += 1
+      return {
+        ok: true,
+        json: async () =>
+          batchCalls === 1
+            ? batchStatus({ pending: 6, ingested: 0 })
+            : batchStatus({ pending: 4, ingested: 2 }),
+      }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // Nothing has settled on the first poll, so the grid is left alone and stays empty.
+  await screen.findByText(strings.emptyLibrary.title)
+  expect(partsCalls).toBe(1)
+
+  // The second poll reports two files in, and the card arrives without a reload.
+  expect(
+    await screen.findByRole('article', { name: MOTOR_MOUNT.name }, { timeout: 4000 }),
+  ).toBeTruthy()
+  expect(partsCalls).toBeGreaterThan(1)
+})
