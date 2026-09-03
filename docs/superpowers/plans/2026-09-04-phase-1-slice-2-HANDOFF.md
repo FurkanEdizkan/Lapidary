@@ -82,16 +82,33 @@ for n in $(seq 10 14); do "$S/scripts/task-brief" "$P" $n; done
 
 ## Environment needed to resume
 
-Tests require a live PostgreSQL 18:
+Tests require a live PostgreSQL 18. Either runtime works — `CLAUDE.md` says Podman **and**
+Docker, and nothing in the workspace can tell the difference: `cargo xtask check-deploy`
+parses `deploy/compose.yaml` structurally rather than invoking a runtime.
 
 ```sh
+# Podman
 podman run -d --rm --name lapidary-test-db \
   -e POSTGRES_PASSWORD=localdev -e POSTGRES_USER=lapidary -e POSTGRES_DB=lapidary \
-  -p 55432:5432 docker.io/library/lapidary-db:latest
+  -p 55432:5432 docker.io/library/postgres:18
+
+# Docker — same image, same ports
+docker run -d --rm --name lapidary-test-db \
+  -e POSTGRES_PASSWORD=localdev -e POSTGRES_USER=lapidary -e POSTGRES_DB=lapidary \
+  -p 55432:5432 docker.io/library/postgres:18
+
 export DATABASE_URL="postgres://lapidary:localdev@localhost:55432/lapidary"
 ```
 
-`podman compose` needs the socket first: `systemctl --user start podman.socket`.
+**Plain `postgres:18`, not the `lapidary-db` image.** An earlier draft of this document
+said `docker.io/library/lapidary-db:latest`, which does not exist on any registry —
+`lapidary-db` is built locally from `deploy/db/Containerfile`. It is not needed here
+either: `ci.yml`'s rust job runs the whole suite against stock `postgres:18`, and nothing
+under `#[sqlx::test]` touches `pgvector` or the Turkish text-search config. The custom
+image is only for the compose stack, where task 12 step 5's live check needs it.
+
+`podman compose` needs the socket first: `systemctl --user start podman.socket`. `docker
+compose` needs nothing equivalent.
 
 The verification bar, which is exactly what `ci.yml` runs:
 
@@ -113,7 +130,8 @@ container reported accepting connections. `ss -ltn` showed nothing listening on 
 internally. Zero leftover `_sqlx_test` databases and 9 connections against
 `max_connections=100` ruled out pool exhaustion, which is what pointed at the network path.
 
-**Use a host-side TCP connect, not `podman ps` and not in-container `pg_isready`:**
+The story below is Podman's, but the check is not: `docker ps` and an in-container
+`pg_isready` answer the same wrong question. **Use a host-side TCP connect:**
 
 ```sh
 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/55432' && echo reachable

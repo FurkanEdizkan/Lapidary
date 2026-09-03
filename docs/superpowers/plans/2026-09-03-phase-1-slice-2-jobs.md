@@ -69,7 +69,8 @@ cargo deny check
 cd web && npm test && npm run typecheck && npm run build
 ```
 
-Tests need a live PostgreSQL 18:
+Tests need a live PostgreSQL 18. Either runtime works — swap `podman` for `docker` and
+everything below is unchanged, including the image:
 
 ```sh
 podman run -d --rm --name lapidary-test-db \
@@ -78,7 +79,8 @@ podman run -d --rm --name lapidary-test-db \
 export DATABASE_URL="postgres://lapidary:localdev@localhost:55432/lapidary"
 ```
 
-`podman compose` needs the socket first: `systemctl --user start podman.socket`.
+`podman compose` needs the socket first: `systemctl --user start podman.socket`. `docker
+compose` needs nothing equivalent.
 
 ## File structure
 
