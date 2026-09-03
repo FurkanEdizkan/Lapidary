@@ -10,9 +10,11 @@ use thiserror::Error;
 
 mod handler;
 mod policy;
+mod worker;
 
 pub use handler::{HandlerError, JobHandler};
 pub use policy::{BACKOFF, Next, next_state};
+pub use worker::{WorkerConfig, run};
 
 #[derive(Debug, Error)]
 pub enum JobsError {

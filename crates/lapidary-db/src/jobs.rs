@@ -5,6 +5,7 @@ use crate::DbError;
 use jiff::Timestamp;
 use lapidary_core::{BatchId, BatchStatus, JobFailure, JobId, LibraryId, Outcome};
 use sqlx::PgPool;
+use sqlx::postgres::PgListener;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -321,5 +322,13 @@ impl PgJobs {
                 .map(|us| to_timestamp("job.updated_at", us))
                 .transpose()?,
         }))
+    }
+
+    /// A dedicated connection listening for enqueue notifications. Outside the pool by
+    /// necessity: a LISTEN occupies its connection for as long as it is listening.
+    pub async fn listener(&self) -> Result<PgListener, DbError> {
+        let mut listener = PgListener::connect_with(&self.0).await?;
+        listener.listen(JOB_CHANNEL).await?;
+        Ok(listener)
     }
 }

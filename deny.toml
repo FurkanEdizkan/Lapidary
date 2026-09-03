@@ -28,11 +28,11 @@ allow-wildcard-paths = true
 # No SQL outside lapidary-db. Enforced here rather than by review.
 [[bans.deny]]
 name = "sqlx"
-# lapidary-api, lapidary-ingest and lapidary-server appear only because #[sqlx::test] is
-# a dev-dependency for their own integration tests; none of them must ever gain a normal
-# sqlx dependency. All real SQL stays in lapidary-db. If this list grows any further, SQL
-# has leaked.
-wrappers = ["lapidary-db", "lapidary-api", "lapidary-ingest", "lapidary-server"]
+# lapidary-api, lapidary-ingest, lapidary-server and lapidary-jobs appear only because
+# #[sqlx::test] is a dev-dependency for their own integration tests; none of them must
+# ever gain a normal sqlx dependency. All real SQL stays in lapidary-db. If this list
+# grows any further, SQL has leaked.
+wrappers = ["lapidary-db", "lapidary-api", "lapidary-ingest", "lapidary-server", "lapidary-jobs"]
 
 [sources]
 unknown-registry = "deny"

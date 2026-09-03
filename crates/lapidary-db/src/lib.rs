@@ -7,6 +7,10 @@ mod repo;
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 pub use sqlx::PgPool;
+// Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
+// its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
+// on sqlx at all, not only about not writing queries.
+pub use sqlx::postgres::PgListener;
 
 use thiserror::Error;
 
