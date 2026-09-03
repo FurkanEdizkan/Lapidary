@@ -3,12 +3,14 @@
 mod approximate;
 mod error;
 mod ids;
+mod job;
 mod measurement;
 mod part;
 
 pub use approximate::Approximate;
 pub use error::CoreError;
-pub use ids::{BlobHash, LibraryId, PartId, RevisionId};
+pub use ids::{BatchId, BlobHash, JobId, LibraryId, PartId, RevisionId};
+pub use job::{BatchStatus, JobFailure, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeshMeasurements, Provenance};
 pub use part::{LibraryMode, PartSummary};
 

@@ -58,6 +58,12 @@ uuid_newtype!(
 );
 uuid_newtype!(PartId, "Identifies a part across all of its revisions.");
 uuid_newtype!(RevisionId, "Identifies one immutable revision of a part.");
+uuid_newtype!(JobId, "Identifies one unit of queued work.");
+uuid_newtype!(
+    BatchId,
+    "Groups the jobs one scan created. A grouping column, not an entity: nothing is \
+     stored under this id, so nothing under it can go stale."
+);
 
 /// A BLAKE3 content hash. Content addressing is not authorization — holding one of
 /// these never implies the right to read the blob it names.
