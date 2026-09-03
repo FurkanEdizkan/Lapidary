@@ -366,14 +366,33 @@ fn export_bindings_into(out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// How many individual tests `cargo test ... -- --list` reports as matched, summed
+/// The prefix ts-rs gives every test it generates for a `#[ts(export)]` type:
+/// `export_bindings_<lowercased type name>`. One such test writes exactly one `.ts` file,
+/// which is what makes the count comparison below meaningful.
+const TS_RS_TEST_PREFIX: &str = "export_bindings_";
+
+/// How many ts-rs export tests `cargo test ... -- --list` reports as matched, summed
 /// across every test binary section in its stdout. Each matching test is printed as its
-/// own `<name>: test` line; each binary's non-matching count is summarised as `N tests,
-/// 0 benchmarks` and contributes nothing here.
+/// own `<module path>::<name>: test` line; each binary's non-matching count is summarised
+/// as `N tests, 0 benchmarks` and contributes nothing here.
+///
+/// Only the *last* path segment is checked against `TS_RS_TEST_PREFIX`, and that is the
+/// whole point rather than a detail. `cargo test export_bindings` filters on a substring
+/// of the full path, so a test in a MODULE named `export_bindings_something` matches the
+/// filter too — this file's own tests used to live in `mod export_bindings_tests`, and
+/// their four names inflated the prediction from 11 to 15. The comparison then failed on
+/// a correct export, which is how a gate gets deleted. The module is renamed below so it
+/// no longer matches at all; this rule is the second, independent guard, and it is the
+/// one that holds for a module nobody thought to rename.
 fn count_listed_tests(list_stdout: &str) -> usize {
     list_stdout
         .lines()
-        .filter(|line| line.trim_end().ends_with(": test"))
+        .filter_map(|line| line.trim_end().strip_suffix(": test"))
+        .filter(|name| {
+            name.rsplit("::")
+                .next()
+                .is_some_and(|last| last.starts_with(TS_RS_TEST_PREFIX))
+        })
         .count()
 }
 
@@ -391,7 +410,13 @@ fn count_ts_files(dir: &Path) -> Result<usize> {
 }
 
 #[cfg(test)]
-mod export_bindings_tests {
+// NOT named `export_bindings_*`: `cargo test --workspace export_bindings` filters on a
+// substring of the full test path, so a module whose own name contains the filter makes
+// its tests match too. That is exactly what happened — these four inflated the predicted
+// binding count from 11 to 15, and `cargo xtask export-bindings` failed on a perfectly
+// correct export, leaving CI's staleness gate red for a reason that had nothing to do
+// with the bindings.
+mod bindings_command_tests {
     use super::{count_listed_tests, count_ts_files};
 
     #[test]
@@ -433,6 +458,27 @@ part::export_bindings_partsummary: test
 9 tests, 0 benchmarks
 ";
         assert_eq!(count_listed_tests(listing), 11);
+    }
+
+    #[test]
+    fn a_test_matching_only_by_its_module_name_is_not_counted_as_a_binding() {
+        // The regression this closes, in its real shape: xtask's own tests lived in
+        // `mod export_bindings_tests`, so `cargo test --workspace export_bindings`
+        // matched all four. The predicted count went 11 -> 15, the comparison against 11
+        // written files failed, and `cargo xtask export-bindings` exited 1 on a correct
+        // export — leaving CI's bindings staleness gate red for a reason that had
+        // nothing to do with the bindings. Only the LAST path segment counts.
+        let listing = "     Running unittests src/lib.rs (target/debug/deps/lapidary_api-abc123)
+parts::export_bindings_partcard: test
+
+1 test, 0 benchmarks
+     Running unittests src/main.rs (target/debug/deps/xtask-def456)
+export_bindings_tests::counts_zero_ts_files_in_an_empty_directory: test
+export_bindings_tests::sums_matched_tests_across_every_binary_section: test
+
+2 tests, 0 benchmarks
+";
+        assert_eq!(count_listed_tests(listing), 1);
     }
 
     #[test]

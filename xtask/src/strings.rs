@@ -146,47 +146,52 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "xtask/src/strings.rs",
-        328,
+        333,
         "this module's own test data: a correctly continued inner literal, escaped so its cooked runtime value is what gets tokenized by check_source; the escaping itself unavoidably contains a space run in this file's own raw source text",
     ),
     (
         "xtask/src/strings.rs",
-        341,
+        346,
         "this module's own test data: the mangled-continuation shape under test, by design",
     ),
     (
         "xtask/src/strings.rs",
-        350,
+        355,
         "this module's own test data: a comment containing a space run, proving comments are never flagged",
     ),
     (
         "xtask/src/strings.rs",
-        357,
+        362,
         "this module's own test data: the byte-string form of the mangled shape under test",
     ),
     (
         "xtask/src/strings.rs",
-        367,
+        372,
         "this module's own test data: the raw-string form of the mangled shape under test",
     ),
     (
         "xtask/src/strings.rs",
-        394,
+        399,
         "this module's own test data: leading spaces at a literal's very start, proving that shape is not flagged",
     ),
     (
         "xtask/src/strings.rs",
-        401,
+        406,
         "this module's own test data: two mangled lines, proving EXEMPT filters one without hiding the other",
     ),
     (
         "xtask/src/main.rs",
-        403,
+        428,
         "a synthetic cargo test -- --list transcript reproducing real cargo output (see export_bindings_tests); the leading spaces before Running are cargo's own formatting, not ours",
     ),
     (
         "xtask/src/main.rs",
-        415,
+        471,
+        "a synthetic cargo test -- --list transcript pinning that a test matching only by its MODULE name is not counted, same reason as line 428",
+    ),
+    (
+        "xtask/src/main.rs",
+        440,
         "a synthetic cargo test -- --list transcript, same reason as line 400",
     ),
 ];
