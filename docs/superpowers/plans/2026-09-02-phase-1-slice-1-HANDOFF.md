@@ -169,9 +169,12 @@ Two more defects were caught before execution, by verifying rather than assuming
 - **7 commits unpushed.** Last push was `3c6a0ea`; CI run 33625184925 was green.
 - A Phase 0a compose stack may still be running (`lapidary-{db,api,worker,web}-1`) holding host
   ports 3000 and 8080. Unrelated to slice 1's work; Task 12 rebuilds it.
-- `example/` holds an untracked 163 MB `.rar`. It is **not** ingestible — slice 1 handles
-  `.stl` only, and archive extraction is on no phase's roadmap. Worth a `.gitignore` entry so
-  a careless `git add -A` does not commit it.
+- ~~`example/` holds an untracked 163 MB `.rar`.~~ **This was wrong when written.** The archive
+  was already *tracked* — swept into `3fcd43f` ("docs(spec): define the scan response counters")
+  by a broad `git add`, two commits before this handoff. At 156 MB it exceeded GitHub's 100 MB
+  per-file limit and made the branch unpushable. It has since been purged from history, moved
+  outside the repository, and `*.rar` is now in `.gitignore`. The warning about `git add -A`
+  was correct; it simply arrived after the fact.
 - `fixtures/` now holds `bracket-lp-1042-03.stl` (binary, watertight, 20 triangles),
   `spacer-lp-2001-00.stl` (ASCII), `bracket-lp-1042-03.thumb.webp` (the golden image, 2,844
   bytes — an L-section bracket in three-quarter isometric), and the pre-existing `cube.stl`.

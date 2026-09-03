@@ -31,3 +31,8 @@ Thumbs.db
 *.swp
 .vscode/*
 !.vscode/extensions.json
+
+# Third-party model archives. A 156 MB .rar was once swept into a docs commit by a broad
+# `git add` and made the repository unpushable — GitHub rejects any file over 100 MB.
+# Keep such archives outside the repo entirely.
+*.rar
