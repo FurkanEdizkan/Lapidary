@@ -21,8 +21,10 @@
 //! either: this crate has exactly one router, always fully mounted, and the caller
 //! decides whether to include it at all.
 
+mod handler;
 mod scan;
 
+pub use handler::IngestHandler;
 pub use scan::{ScanFailure, ScanReport};
 
 use axum::Router;

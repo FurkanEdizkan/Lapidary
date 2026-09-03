@@ -55,14 +55,13 @@
 //! mode to have in the meantime, against a silent one.
 
 use crate::AppState;
+use crate::handler::IngestHandler;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_cad::MeshKernel;
-use lapidary_core::{BlobHash, LibraryId};
-use lapidary_db::{IngestRequest, PgBlobs, PgIngest, StoredBlobRow};
-use lapidary_storage::{SourceStore, WorkerRole};
+use lapidary_core::{LibraryId, Outcome};
+use lapidary_jobs::HandlerError;
 use serde::Serialize;
 use std::path::Path as FsPath;
 
@@ -88,15 +87,6 @@ pub struct ScanFailure {
     pub reason: String,
 }
 
-/// What happened to one candidate file. `Ingested` and `Skipped` map straight onto
-/// `ScanReport`'s disjoint counters; a failure carries its own reason and is handled by
-/// the caller rather than folded in here, so `ingest_one`'s `Err` type stays a plain
-/// `String` describing what broke.
-enum FileOutcome {
-    Ingested,
-    Skipped,
-}
-
 /// Walks `state.ingest_dir` non-recursively, ingesting every `.stl` (case-insensitive)
 /// into `library`. One file's failure is recorded in `failed` and the walk continues — a
 /// scan is not transactional across files, so a malformed STL must not abort the ones
@@ -107,12 +97,11 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
         Err(source) => return ingest_dir_unreadable(&state.ingest_dir, &source),
     };
 
-    let kernel = MeshKernel;
-    let version = kernel.version();
-    let kernel_version = format!("{} {}", version.implementation, version.version);
-    let source = SourceStore::open(&state.blob_root, &WorkerRole::assume());
-    let blobs = PgBlobs(state.db.clone());
-    let ingest = PgIngest(state.db.clone());
+    let handler = IngestHandler {
+        db: state.db.clone(),
+        ingest_dir: state.ingest_dir.clone(),
+        blob_root: state.blob_root.clone(),
+    };
 
     let mut report = ScanReport::default();
 
@@ -144,24 +133,15 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
 
-        match ingest_one(
-            &path,
-            &file_name,
-            library,
-            &kernel,
-            &kernel_version,
-            &source,
-            &blobs,
-            &ingest,
-        )
-        .await
-        {
-            Ok(FileOutcome::Ingested) => report.ingested += 1,
-            Ok(FileOutcome::Skipped) => report.skipped += 1,
-            Err(reason) => report.failed.push(ScanFailure {
-                file: file_name,
-                reason,
-            }),
+        match handler.ingest_one(library, &file_name).await {
+            Ok(Outcome::Ingested) => report.ingested += 1,
+            Ok(Outcome::Skipped) => report.skipped += 1,
+            Err(HandlerError::Permanent { message } | HandlerError::Transient { message }) => {
+                report.failed.push(ScanFailure {
+                    file: file_name,
+                    reason: message,
+                })
+            }
         }
     }
 
@@ -222,129 +202,6 @@ fn entry_read_failure(dir: &FsPath, source: &std::io::Error) -> ScanFailure {
              removed a file while the scan was running.",
             dir.display()
         ),
-    }
-}
-
-/// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
-/// so the file's stem (its name without the `.stl` extension) is the whole story; falls
-/// back to the full file name on the pathological case where a candidate file (already
-/// proven to have a `.stl` extension by `is_stl_candidate`) somehow has no stem.
-fn part_name(file_name: &str) -> &str {
-    FsPath::new(file_name)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(file_name)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn ingest_one(
-    path: &FsPath,
-    file_name: &str,
-    library: LibraryId,
-    kernel: &MeshKernel,
-    kernel_version: &str,
-    source: &SourceStore,
-    blobs: &PgBlobs,
-    ingest: &PgIngest,
-) -> Result<FileOutcome, String> {
-    // 1. Read bytes.
-    let bytes = std::fs::read(path).map_err(|e| format!("Could not read {file_name}: {e}"))?;
-
-    // 2. BLAKE3 — hash first, always. Everything below branches on this.
-    let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-    let name = part_name(file_name);
-
-    // 3. The same file, seen again — same library, same name, same bytes — short-circuits
-    // parse, raster and every write entirely. Scoped to the library on purpose: a hash
-    // this library has never seen is a part it does not have, whatever some other library
-    // holds. See the module doc.
-    if blobs
-        .library_holds(library, name, &hash)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        return Ok(FileOutcome::Skipped);
-    }
-
-    // 4. Parse + measure + rasterize. Nothing has been written yet, so a failure here
-    // needs no cleanup. This runs even when the bytes are already in the blob store,
-    // because the new part needs its own measurements and its own thumbnail; only the
-    // bytes are shared, and they are already in memory from step 1.
-    let output = kernel.ingest(&bytes).map_err(|e| e.to_string())?;
-
-    // 5a. Some library already holds these bytes. Reuse them exactly as they are: no
-    // second copy on disk, no second `blob` row, and — the part that matters — no reap
-    // on failure, because those bytes are referenced by a part this scan did not create.
-    if blobs.exists(&hash).await.map_err(|e| e.to_string())? {
-        let blob = StoredBlobRow {
-            hash,
-            // `link_existing` reads only `hash` and `size_bytes` (the `file` row); the
-            // `blob` row, and with it the stored size and compression level, already
-            // exists and is not rewritten.
-            size_bytes: bytes.len() as u64,
-            stored_bytes: bytes.len() as u64,
-            zstd_level: 0,
-        };
-        return ingest
-            .link_existing(IngestRequest {
-                library,
-                name,
-                blob: &blob,
-                measurements: &output.measurements,
-                thumbnail_webp: &output.thumbnail_webp,
-                kernel_version,
-            })
-            .await
-            .map(|_| FileOutcome::Ingested)
-            .map_err(|e| e.to_string());
-    }
-
-    // 5b. New bytes. The blob is written before the transaction. `stored.hash` is
-    // recomputed from `bytes` inside `put` and is definitionally the same as `hash`
-    // above; `hash` is used below rather than `stored.hash` so there is exactly one hash
-    // variable in scope.
-    let stored = source.put(&bytes).map_err(|e| e.to_string())?;
-    let blob = StoredBlobRow {
-        hash,
-        size_bytes: stored.size_bytes,
-        stored_bytes: stored.stored_bytes,
-        zstd_level: stored.zstd_level,
-    };
-
-    // 6. One transaction. On failure, reap the blob `put` just wrote — nothing
-    // references it, and nothing else ever will, so it must not be left on disk. The
-    // Node prototype's exact miss (docs/prototype-notes.md): a successful blob write
-    // followed by a failed DB insert, with no cleanup.
-    match ingest
-        .record(IngestRequest {
-            library,
-            name,
-            blob: &blob,
-            measurements: &output.measurements,
-            thumbnail_webp: &output.thumbnail_webp,
-            kernel_version,
-        })
-        .await
-    {
-        Ok(_) => Ok(FileOutcome::Ingested),
-        Err(db_err) => {
-            // Best-effort: the DB error is the one worth reporting to the caller either
-            // way, and a failed reap does not change what they need to know about this
-            // file. But a failed reap is not nothing — it leaves bytes behind that
-            // nothing will ever reference and nothing will ever collect, which is
-            // exactly the leak this whole reap exists to close. `SourceStore::remove`
-            // already treats a missing file as success, so this only fires on a real
-            // I/O problem with the store itself — the one place in the pipeline that
-            // knowingly leaves bytes behind, so it is the one place that says so.
-            if let Err(reap_err) = source.remove(&hash) {
-                tracing::warn!(
-                    hash = %hash.to_hex(),
-                    error = %reap_err,
-                    "failed to reap a blob after a failed ingest write; it may now be an orphan on disk"
-                );
-            }
-            Err(db_err.to_string())
-        }
     }
 }
 
