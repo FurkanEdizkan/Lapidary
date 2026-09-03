@@ -1,6 +1,55 @@
 //! One file's worth of ingest, as a job. The pipeline below is slice 1's, moved rather
-//! than rewritten: read, BLAKE3, library_holds, kernel, link-or-put. That ordering is the
-//! design and its reasoning lives in `scan.rs`'s module doc.
+//! than rewritten: read, BLAKE3, library_holds, kernel, link-or-put.
+//!
+//! # Ordering
+//!
+//! Per file, in this order — the order is the design:
+//!
+//! 1. read bytes
+//! 2. BLAKE3 — hash first, always
+//! 3. `blobs.library_holds(library, name, hash)`? yes -> `Skipped`, no further work at
+//!    all: not a parse, not a raster, not a query beyond this one
+//! 4. `kernel.ingest(bytes)` — parse + measure + rasterize
+//! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
+//!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
+//!      library gets its own part pointing at it. No write, so nothing to reap.
+//!    - no  -> `source.put(bytes)` writes the blob *before* the transaction, then
+//!      `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
+//!      written and the failure is returned
+//!
+//! Step 5's reap is not optional. The Node prototype wrote its blob and then failed the
+//! insert with no cleanup, leaving bytes on disk that nothing referenced and nothing
+//! would ever collect — `docs/prototype-notes.md` records it. It is equally not optional
+//! that the reap runs only on the branch that *wrote* something: reaping a blob another
+//! library's part references would be silent data loss, which is why the two branches
+//! are separate rather than one call with a flag.
+//!
+//! # Why the short-circuit is scoped to the library, and to the name
+//!
+//! It was not, and the consequence was live: `PgBlobs::exists` is keyed on the hash
+//! alone, so scanning six real STLs into a brand-new empty library answered
+//! `{"ingested":0,"skipped":6,"failed":[]}` and left the library empty. Three things
+//! were wrong at once — a content hash decided a per-library write (CLAUDE.md: content
+//! addressing is not authorization), the counter said a file row had been linked when
+//! none had, and the user got an empty grid with no error anywhere to explain it.
+//!
+//! `blobs.library_holds(library, name, hash)` is the question this handler actually
+//! needs: *is this the same file, seen again?* The bytes are still reused — that is the
+//! whole point of content addressing, and step 5 reuses them without a second write —
+//! but a library that does not have this part gets one.
+//!
+//! Keying on the part name as well as the hash settles the other half, which the earlier
+//! rounds recorded as an open question: two differently-named files with identical bytes
+//! are two parts sharing one blob (`ref_count` 2), not one part and one silent omission.
+//! A directory of files is a set of files, and a scan that quietly indexes only the first
+//! of two is the same shape of lie as the empty second library. Only "same library, same
+//! name, same bytes" is a re-scan.
+//!
+//! Known limitation, scheduled rather than guessed at: nothing here records the *path* a
+//! part came from, so renaming a file and re-scanning yields a new part beside the old
+//! one rather than a rename. Closing that needs a source-path column and the slice that
+//! owns incremental directory sync; a duplicate the user can see is the right failure
+//! mode to have in the meantime, against a silent one.
 //!
 //! # Error classification
 //!
@@ -43,8 +92,8 @@ impl JobHandler for IngestHandler {
 }
 
 impl IngestHandler {
-    /// One file, start to finish. See this module's doc for the ordering and why each
-    /// step is where it is; see `scan.rs`'s module doc for the design's full reasoning.
+    /// One file, start to finish. See this module's doc for the ordering, why each step
+    /// is where it is, and the full reasoning behind the library-and-name short-circuit.
     pub(crate) async fn ingest_one(
         &self,
         library: LibraryId,

@@ -25,7 +25,6 @@ mod handler;
 mod scan;
 
 pub use handler::IngestHandler;
-pub use scan::{ScanFailure, ScanReport};
 
 use axum::Router;
 use axum::routing::post;

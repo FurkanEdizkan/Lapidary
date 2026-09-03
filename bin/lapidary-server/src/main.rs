@@ -224,10 +224,12 @@ mod tests {
             )
             .await
             .expect("responds");
-        // An empty ingest_dir scans cleanly — 200, not merely "not 404" — which is a
+        // An empty ingest_dir scans cleanly — 202, not merely "not 404" — which is a
         // stronger proof the merge actually wired the route through to a working
-        // handler, not just to something that answers.
-        assert_eq!(scan.status(), StatusCode::OK);
+        // handler, not just to something that answers. 202 proves it exactly as well as
+        // the 200 this asserted before task 10: reaching ACCEPTED means the walk ran and
+        // the batch was written, so both the ingest router and the database are wired.
+        assert_eq!(scan.status(), StatusCode::ACCEPTED);
     }
 
     // The other half of the same regression this fix round is closing: the api role's
