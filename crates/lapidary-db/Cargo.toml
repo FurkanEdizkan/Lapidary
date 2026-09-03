@@ -17,5 +17,10 @@ sqlx.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+# Only the dequeue race test needs a real runtime primitive: tokio::join! is how it
+# proves two dequeues actually overlap rather than running sequentially.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

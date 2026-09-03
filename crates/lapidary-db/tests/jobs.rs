@@ -1,7 +1,10 @@
 use lapidary_core::LibraryId;
-use lapidary_db::PgJobs;
+use lapidary_db::{JobRow, PgJobs};
 use sqlx::PgPool;
+use std::time::Duration;
 use uuid::Uuid;
+
+const LEASE: Duration = Duration::from_secs(60);
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -71,4 +74,85 @@ async fn enqueueing_nothing_issues_a_batch_id_and_writes_no_rows(pool: PgPool) {
         .await
         .expect("counts");
     assert_eq!(count, 0, "an empty scan must not invent a job");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_workers_racing_one_job_produce_exactly_one_winner(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+
+    // Both dequeues run concurrently against a queue holding exactly one job. This is
+    // the property FOR UPDATE SKIP LOCKED exists for; without the row lock both
+    // transactions read the same row and both claim it.
+    let a = PgJobs(pool.clone());
+    let b = PgJobs(pool.clone());
+    let (first, second) = tokio::join!(a.dequeue("worker-a", LEASE), b.dequeue("worker-b", LEASE));
+
+    let claimed = [first.expect("a dequeues"), second.expect("b dequeues")]
+        .into_iter()
+        .flatten()
+        .count();
+    assert_eq!(claimed, 1, "exactly one worker may hold a lease on one job");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_job_whose_lease_expired_is_reclaimed_and_its_attempts_counted(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+
+    let first = jobs
+        .dequeue("worker-that-will-die", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job is available");
+    assert_eq!(first.attempts, 1);
+
+    // Simulate the worker dying: the row stays 'running', and its lease lapses.
+    sqlx::query("UPDATE job SET lease_expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(first.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("expires the lease");
+
+    let reclaimed = jobs
+        .dequeue("worker-that-survives", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("an expired lease must be reclaimable");
+
+    assert_eq!(reclaimed.id, first.id, "the same job comes back");
+    assert_eq!(
+        reclaimed.attempts, 2,
+        "reclaiming counts as an attempt, which is what caps the poison-pill case"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_job_still_in_backoff_is_not_dequeued(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    sqlx::query("UPDATE job SET run_after = now() + interval '1 hour'")
+        .execute(&pool)
+        .await
+        .expect("pushes it into the future");
+
+    let claimed: Option<JobRow> = jobs.dequeue("worker-a", LEASE).await.expect("dequeues");
+    assert!(claimed.is_none(), "backoff must actually withhold the job");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_empty_queue_yields_nothing_rather_than_blocking(pool: PgPool) {
+    let jobs = PgJobs(pool);
+    assert!(
+        jobs.dequeue("worker-a", LEASE)
+            .await
+            .expect("dequeues")
+            .is_none()
+    );
 }

@@ -4,6 +4,7 @@
 use crate::DbError;
 use lapidary_core::{BatchId, JobId, LibraryId};
 use sqlx::PgPool;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// The `LISTEN`/`NOTIFY` channel. A wake-up only: the payload is empty and nothing reads
@@ -14,6 +15,18 @@ use uuid::Uuid;
 pub const JOB_CHANNEL: &str = "lapidary_jobs";
 
 pub struct PgJobs(pub PgPool);
+
+/// One claimed job, as `dequeue` hands it to the worker loop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobRow {
+    pub id: JobId,
+    pub batch_id: BatchId,
+    pub library_id: LibraryId,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub attempts: i32,
+    pub max_attempts: i32,
+}
 
 impl PgJobs {
     /// Enqueue one job per path under a fresh batch. One statement regardless of N: a
@@ -51,5 +64,56 @@ impl PgJobs {
             .await?;
 
         Ok((batch, paths.len() as u32))
+    }
+
+    /// Claim one job, or reclaim one whose lease expired.
+    ///
+    /// Reclamation is folded in here rather than given to a sweeper, so there is no
+    /// sweeper process to be the thing that died. `attempts` increments on reclamation
+    /// exactly as it does on retry, which is what caps the poison-pill case: a file that
+    /// panics the worker before it can record anything is tried `max_attempts` times and
+    /// then abandoned by the caller, rather than re-leased forever.
+    ///
+    /// Exhausted rows are deliberately NOT excluded here. Filtering them out in SQL would
+    /// leave them 'running' with a dead lease, invisible to this query and to any cleanup
+    /// -- which is how this table would grow a permanent population of zombies. The
+    /// caller claims them and fails them (see `lapidary_jobs::worker`).
+    pub async fn dequeue(
+        &self,
+        worker_id: &str,
+        lease: Duration,
+    ) -> Result<Option<JobRow>, DbError> {
+        let row: Option<(Uuid, Uuid, Uuid, String, serde_json::Value, i32, i32)> = sqlx::query_as(
+            "UPDATE job SET state = 'running', \
+                                attempts = attempts + 1, \
+                                leased_by = $1, \
+                                lease_expires_at = now() + make_interval(secs => $2), \
+                                updated_at = now() \
+                 WHERE id = ( \
+                     SELECT id FROM job \
+                     WHERE (state = 'pending' AND run_after <= now()) \
+                        OR (state = 'running' AND lease_expires_at < now()) \
+                     ORDER BY run_after \
+                     FOR UPDATE SKIP LOCKED \
+                     LIMIT 1 \
+                 ) \
+                 RETURNING id, batch_id, library_id, kind, payload, attempts, max_attempts",
+        )
+        .bind(worker_id)
+        .bind(lease.as_secs_f64())
+        .fetch_optional(&self.0)
+        .await?;
+
+        Ok(row.map(
+            |(id, batch_id, library_id, kind, payload, attempts, max_attempts)| JobRow {
+                id: JobId::from_uuid(id),
+                batch_id: BatchId::from_uuid(batch_id),
+                library_id: LibraryId::from_uuid(library_id),
+                kind,
+                payload,
+                attempts,
+                max_attempts,
+            },
+        ))
     }
 }

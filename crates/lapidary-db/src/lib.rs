@@ -4,7 +4,7 @@
 mod jobs;
 mod repo;
 
-pub use jobs::{JOB_CHANNEL, PgJobs};
+pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 pub use sqlx::PgPool;
 
