@@ -400,8 +400,15 @@ create table job (
     -- because a row that says 'done' and nothing else is a row that lies about its work.
     constraint job_done_has_outcome
         check ((state = 'done') = (outcome is not null)),
+    -- An implication, not an equivalence, and the asymmetry with the constraint above
+    -- is deliberate. A failed job must say why. But a job that is RETRYING after a
+    -- transient failure keeps its last error too, so an operator can see why a batch is
+    -- slow without waiting for it to exhaust its attempts -- and §3.3's retry path sets
+    -- state='pending' while holding last_error, which an equivalence would refuse.
+    -- `job_done_has_outcome` stays an equivalence because an outcome on a non-terminal
+    -- row genuinely is incoherent; a last error on one is not.
     constraint job_failed_has_reason
-        check ((state = 'failed') = (last_error is not null))
+        check (state <> 'failed' or last_error is not null)
 );
 
 -- The dequeue index. Partial: only pending rows are ever selected by run_after, and the
