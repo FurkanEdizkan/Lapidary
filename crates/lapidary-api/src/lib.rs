@@ -3,6 +3,7 @@
 
 mod error;
 mod health;
+mod jobs;
 mod parts;
 
 pub use error::ApiError;
@@ -62,7 +63,12 @@ impl Role {
 pub fn router(state: AppState, role: Role) -> Router {
     let shared = Router::new().route("/api/healthz", get(health::healthz));
     let by_role = match role {
-        Role::Api => Router::new().route("/api/libraries/{id}/parts", get(parts::page)),
+        Role::Api => Router::new()
+            .route("/api/libraries/{id}/parts", get(parts::page))
+            .route(
+                "/api/libraries/{library}/jobs/{batch}",
+                get(jobs::batch_status),
+            ),
         Role::Worker => Router::new(),
     };
     shared.merge(by_role).with_state(state)
