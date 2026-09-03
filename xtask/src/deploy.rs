@@ -51,6 +51,11 @@ const KERNEL_LINKED_SERVICES: &[&str] = &["worker"];
 /// anyone remembering to add its name anywhere.
 const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
 
+/// The `LAPIDARY_ROLE` value that runs ingest. `bin/lapidary-server/src/main.rs` parses
+/// the same string; kept here so the rule below asserts the value and not merely that the
+/// key is present.
+const WORKER_ROLE: &str = "worker";
+
 /// The exact expansion `deploy/Containerfile`'s `cargo build` line must contain so the
 /// `SERVER_FEATURES` arg actually reaches the build. Kept as one constant so the check and
 /// its own doc comment can't drift apart.
@@ -66,6 +71,14 @@ pub enum Violation {
     /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` (i.e. runs
     /// `lapidary-server`) but does not set `LAPIDARY_ROLE`.
     MissingRole { service: String },
+    /// A service in `KERNEL_LINKED_SERVICES` sets `LAPIDARY_ROLE` to something other than
+    /// `worker`. Presence is not enough: a kernel-linked container running the `api` role
+    /// serves the grid out of the image that links the CAD kernel, and mounts `/scan`
+    /// nowhere at all.
+    KernelLinkedServiceWrongRole { service: String, role: String },
+    /// No service anywhere in `deploy/compose.yaml` sets `LAPIDARY_ROLE: worker`, so the
+    /// deployment has nothing that mounts the ingest routes.
+    NoWorkerService,
     /// `deploy/Containerfile`'s `cargo build` line does not contain the
     /// `${SERVER_FEATURES:+...}` expansion.
     BuildLineMissingArgExpansion,
@@ -77,6 +90,10 @@ pub enum Violation {
     /// between the `ARG` and the `RUN cargo build` line, and `ARG` scope does not cross a
     /// `FROM`).
     ArgNotVisibleToBuildLine,
+    /// Parse-stale: a service declares `build:` in the short form (`build: .`), which
+    /// names a context and leaves the dockerfile implicit, so this parser cannot tell
+    /// what the service builds.
+    ComposeUnreadableBuildSpec { service: String },
     /// Parse-stale: `deploy/compose.yaml` has no top-level `services:` key this parser
     /// recognizes.
     ComposeMissingServicesKey,
@@ -123,6 +140,36 @@ impl std::fmt::Display for Violation {
                  healthcheck, but never mounts /scan). Add `LAPIDARY_ROLE: api` (serves the \
                  grid and the open path) or `LAPIDARY_ROLE: worker` (runs ingest) under \
                  {service}'s environment: block in deploy/compose.yaml."
+            ),
+            Violation::KernelLinkedServiceWrongRole { service, role } => write!(
+                f,
+                "deploy/compose.yaml service '{service}' is listed in \
+                 KERNEL_LINKED_SERVICES (xtask/src/deploy.rs) but sets LAPIDARY_ROLE to \
+                 `{role}`, not `worker`. The whole point of that list is that this service \
+                 runs ingest in the image that links the CAD kernel; any other role gives \
+                 you a kernel-linked container serving the open path with /scan mounted \
+                 nowhere — the exact failure this rule exists to prevent, and it starts, \
+                 binds and passes its healthcheck while doing it. Set `LAPIDARY_ROLE: \
+                 worker` under {service} in deploy/compose.yaml, or remove {service} from \
+                 KERNEL_LINKED_SERVICES if it no longer runs ingest."
+            ),
+            Violation::NoWorkerService => write!(
+                f,
+                "no service in deploy/compose.yaml sets `LAPIDARY_ROLE: worker`, so \
+                 nothing in this deployment mounts the ingest routes — POST \
+                 /api/libraries/{{id}}/scan would 404 everywhere and no part could ever \
+                 enter a library. Give the ingest service `LAPIDARY_ROLE: worker` under \
+                 its environment: block in deploy/compose.yaml."
+            ),
+            Violation::ComposeUnreadableBuildSpec { service } => write!(
+                f,
+                "deploy/compose.yaml service '{service}' declares `build:` in the short \
+                 form (`build: <context>`), which leaves the dockerfile implicit, so this \
+                 parser cannot tell whether the service runs lapidary-server and the \
+                 LAPIDARY_ROLE rules would silently not apply to it. This check's parsing \
+                 is stale, not necessarily the config — either write {service}'s build as \
+                 the long form with an explicit `dockerfile:` key, or teach parse_services \
+                 in xtask/src/deploy.rs to resolve the short form's implicit dockerfile."
             ),
             Violation::BuildLineMissingArgExpansion => write!(
                 f,
@@ -199,8 +246,32 @@ struct ServiceBlock {
     /// builds `deploy/Containerfile` and therefore runs `lapidary-server`, without having
     /// to name every such service (`api`, `worker`, and any future one) in a list.
     dockerfile: Option<String>,
-    /// Does the service set `LAPIDARY_ROLE` (any nesting depth)?
-    sets_role: bool,
+    /// The `LAPIDARY_ROLE` value, if the service sets it (any nesting depth). The *value*
+    /// and not merely a `bool`: presence alone let `LAPIDARY_ROLE: worker` be changed to
+    /// `api` on the kernel-linked service and still report OK.
+    role: Option<String>,
+    /// Did the service declare `build:` in the short form (`build: .`)? The dockerfile is
+    /// then implicit and this parser cannot resolve it, which is a parse-stale condition
+    /// rather than a pass.
+    build_short_form: bool,
+}
+
+/// Strip one layer of matching YAML quotes from a scalar, plus surrounding whitespace.
+/// `dockerfile: "deploy/Containerfile"` is the same value as the unquoted form to every
+/// Compose implementation, and it must be the same value here — quoting both `dockerfile:`
+/// values and deleting `LAPIDARY_ROLE` used to report OK, because the exact-string match
+/// failed and `runs_lapidary_server` silently became false. That reproduces the very
+/// silent-failure shape these rules exist to close, moved into the parser.
+fn scalar(value: &str) -> String {
+    let trimmed = value.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = trimmed.strip_prefix(quote)
+            && let Some(inner) = inner.strip_suffix(quote)
+        {
+            return inner.to_owned();
+        }
+    }
+    trimmed.to_owned()
 }
 
 /// Parse `deploy/compose.yaml`'s `services:` block into one [`ServiceBlock`] per service.
@@ -256,7 +327,8 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                     name: name.to_owned(),
                     sets_features: false,
                     dockerfile: None,
-                    sets_role: false,
+                    role: None,
+                    build_short_form: false,
                 });
                 continue;
             }
@@ -274,16 +346,31 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                     trimmed
                         .strip_prefix('-')
                         .map(str::trim_start)
-                        .is_some_and(|rest| rest.starts_with(key))
+                        .and_then(|rest| rest.strip_prefix(key))
                 };
-                if trimmed.starts_with("SERVER_FEATURES:") || list_item("SERVER_FEATURES=") {
+                if trimmed.starts_with("SERVER_FEATURES:")
+                    || list_item("SERVER_FEATURES=").is_some()
+                {
                     block.sets_features = true;
                 }
-                if trimmed.starts_with("LAPIDARY_ROLE:") || list_item("LAPIDARY_ROLE=") {
-                    block.sets_role = true;
+                if let Some(value) = trimmed
+                    .strip_prefix("LAPIDARY_ROLE:")
+                    .or_else(|| list_item("LAPIDARY_ROLE="))
+                {
+                    block.role = Some(scalar(value));
                 }
                 if let Some(value) = trimmed.strip_prefix("dockerfile:") {
-                    block.dockerfile = Some(value.trim().to_owned());
+                    block.dockerfile = Some(scalar(value));
+                }
+                // `build:` with a value on the same line is Compose's short form — the
+                // context only, with the dockerfile left implicit. The long form
+                // (`build:` alone, `dockerfile:` on a deeper line) is what the rules
+                // below can read; the short form is recorded so it can be reported as
+                // unreadable rather than pass as "not a lapidary-server service".
+                if let Some(value) = trimmed.strip_prefix("build:")
+                    && !scalar(value).is_empty()
+                {
+                    block.build_short_form = true;
                 }
             }
         }
@@ -308,6 +395,15 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
 /// value fails silently (the container starts, binds, passes its healthcheck, and never
 /// mounts `/scan`). This rule is the CI-time half of closing that hole: it catches
 /// `deploy/compose.yaml` losing the variable before anyone runs the container.
+///
+/// Rule 6: every `KERNEL_LINKED_SERVICES` member sets `LAPIDARY_ROLE` to `worker`.
+/// Rule 5 checked only that the key was *present*, so flipping the worker's value to
+/// `api` reported OK and produced verbatim the failure rule 5 exists to prevent: a
+/// container that links the CAD kernel, serves the grid, and mounts `/scan` nowhere.
+///
+/// Rule 7: some service sets `LAPIDARY_ROLE: worker`. Rule 6 says nothing if
+/// `KERNEL_LINKED_SERVICES` is ever emptied, and a compose file with no worker at all is
+/// a deployment into which no part can ever be ingested.
 pub fn check_compose(contents: &str) -> Vec<Violation> {
     let services = match parse_services(contents) {
         Ok(services) => services,
@@ -327,13 +423,45 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
             _ => {}
         }
 
+        // A short-form `build:` leaves the dockerfile implicit, so `runs_lapidary_server`
+        // below would read false and the role rules would quietly not apply. Report it as
+        // parse-stale rather than let a service opt out of the checks by changing syntax.
+        if service.build_short_form && service.dockerfile.is_none() {
+            violations.push(Violation::ComposeUnreadableBuildSpec {
+                service: service.name.clone(),
+            });
+        }
+
         let runs_lapidary_server =
             service.dockerfile.as_deref() == Some(LAPIDARY_SERVER_DOCKERFILE);
-        if runs_lapidary_server && !service.sets_role {
+        if runs_lapidary_server && service.role.is_none() {
             violations.push(Violation::MissingRole {
                 service: service.name.clone(),
             });
         }
+
+        // Rule 6: the role's VALUE, not its presence. `LAPIDARY_ROLE: worker` -> `api` on
+        // the kernel-linked service used to report OK, giving a container that links the
+        // CAD kernel, serves the grid, and mounts /scan nowhere.
+        if is_kernel_linked
+            && let Some(role) = service.role.as_deref()
+            && role != WORKER_ROLE
+        {
+            violations.push(Violation::KernelLinkedServiceWrongRole {
+                service: service.name.clone(),
+                role: role.to_owned(),
+            });
+        }
+    }
+
+    // Rule 7: and somebody has to be the worker. Independent of the loop above, which is
+    // silent if KERNEL_LINKED_SERVICES is ever emptied — a compose file where no service
+    // runs ingest is a deployment where no part can enter a library.
+    if !services
+        .iter()
+        .any(|s| s.role.as_deref() == Some(WORKER_ROLE))
+    {
+        violations.push(Violation::NoWorkerService);
     }
 
     // The loop above only walks services the parser actually found, so a
@@ -669,11 +797,17 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         let violations = check_compose(&bad);
         assert_eq!(
             violations,
-            vec![Violation::MissingKernelLink {
-                service: "worker".to_owned()
-            }]
+            vec![
+                // Deleting the worker also deletes the only `LAPIDARY_ROLE: worker` in
+                // the file, which rule 7 reports independently of the list — and before
+                // the reverse-direction "expected service never parsed" sweep runs.
+                Violation::NoWorkerService,
+                Violation::MissingKernelLink {
+                    service: "worker".to_owned()
+                },
+            ]
         );
-        assert!(violations[0].to_string().contains("worker"));
+        assert!(violations[1].to_string().contains("worker"));
     }
 
     #[test]
@@ -699,9 +833,12 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         let violations = check_compose(&bad);
         assert_eq!(
             violations,
-            vec![Violation::MissingRole {
-                service: "worker".to_owned()
-            }]
+            vec![
+                Violation::MissingRole {
+                    service: "worker".to_owned()
+                },
+                Violation::NoWorkerService,
+            ]
         );
         assert!(violations[0].to_string().contains("worker"));
         assert!(violations[0].to_string().contains("LAPIDARY_ROLE"));
@@ -720,6 +857,100 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             }]
         );
         assert!(violations[0].to_string().contains("api"));
+    }
+
+    #[test]
+    fn the_worker_running_the_api_role_fails_even_though_the_key_is_present() {
+        // Rule 5 checked presence, so this reported OK: a container built WITH the CAD
+        // kernel, serving the grid, with /scan mounted nowhere — verbatim the failure the
+        // rule exists to prevent, reached by editing one word.
+        let bad = CORRECT_COMPOSE.replacen(
+            "      LAPIDARY_ROLE: worker\n",
+            "      LAPIDARY_ROLE: api\n",
+            1,
+        );
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![
+                Violation::KernelLinkedServiceWrongRole {
+                    service: "worker".to_owned(),
+                    role: "api".to_owned(),
+                },
+                Violation::NoWorkerService,
+            ]
+        );
+        assert!(violations[0].to_string().contains("worker"));
+        assert!(violations[0].to_string().contains("/scan"));
+    }
+
+    #[test]
+    fn quoted_scalars_are_read_as_the_values_they_are() {
+        // Quoting is a no-op to every Compose implementation and must be one here. It was
+        // not: quoting both `dockerfile:` values made runs_lapidary_server false for
+        // BOTH lapidary-server services, so deleting LAPIDARY_ROLE outright still
+        // reported OK — the silent-failure shape these rules exist to close, relocated
+        // into the parser.
+        let quoted = CORRECT_COMPOSE
+            .replace(
+                "dockerfile: deploy/Containerfile",
+                "dockerfile: \"deploy/Containerfile\"",
+            )
+            .replace("LAPIDARY_ROLE: worker", "LAPIDARY_ROLE: 'worker'");
+        assert_eq!(check_compose(&quoted), vec![]);
+
+        let quoted_and_role_deleted = quoted.replacen("      LAPIDARY_ROLE: 'worker'\n", "", 1);
+        assert_eq!(
+            check_compose(&quoted_and_role_deleted),
+            vec![
+                Violation::MissingRole {
+                    service: "worker".to_owned()
+                },
+                Violation::NoWorkerService,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_build_short_form_is_reported_as_unreadable_not_silently_skipped() {
+        // `build: .` names a context and leaves the dockerfile implicit. The parser
+        // cannot resolve it, and the old code's answer was "then it is not a
+        // lapidary-server service" — so a worker rewritten this way opted out of every
+        // role rule by changing syntax. It now says it cannot read the spec.
+        let short_form = CORRECT_COMPOSE.replacen(
+            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
+            "  worker:\n    build: ..\n",
+            1,
+        );
+        let violations = check_compose(&short_form);
+        assert!(
+            violations.contains(&Violation::ComposeUnreadableBuildSpec {
+                service: "worker".to_owned()
+            }),
+            "the short form must be reported, got {violations:?}"
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.to_string().contains("parse_services")),
+            "the message must say the parser is stale and name what to update"
+        );
+    }
+
+    #[test]
+    fn a_compose_file_with_no_worker_at_all_fails() {
+        // Independent of KERNEL_LINKED_SERVICES: even if that list were emptied, a
+        // deployment with no worker is one no part can ever be ingested into.
+        let bad = CORRECT_COMPOSE.replacen(
+            "      LAPIDARY_ROLE: worker\n",
+            "      LAPIDARY_ROLE: api\n",
+            1,
+        );
+        assert!(check_compose(&bad).contains(&Violation::NoWorkerService));
+        assert!(
+            Violation::NoWorkerService.to_string().contains("scan"),
+            "the message must name what stops working"
+        );
     }
 
     #[test]
