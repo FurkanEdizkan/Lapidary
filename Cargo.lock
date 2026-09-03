@@ -1207,6 +1207,7 @@ dependencies = [
  "async-trait",
  "jiff",
  "lapidary-core",
+ "log",
  "serde_json",
  "sqlx",
  "thiserror",

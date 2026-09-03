@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         .await
         .context("Could not start: connecting to the database failed.")?;
 
-    lapidary_db::migrate(&db)
+    lapidary_db::migrate(&config.database_url)
         .await
         .context("Could not start: the database schema could not be brought up to date.")?;
 

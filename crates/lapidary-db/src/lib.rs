@@ -194,11 +194,48 @@ pub async fn connect(url: &str) -> Result<PgPool, DbError> {
     Ok(pool)
 }
 
+/// How long a statement may run on the migration pool before sqlx logs it as slow.
+///
+/// sqlx's default is 1 s, and a healthy cold start beats it twice over: `0002_parts.sql`
+/// takes ~1.4 s to create eight tables with their indexes and a generated `tsvector`
+/// column, and the migrator's `pg_advisory_lock` waits ~2.1 s while the other container
+/// holds it. Both are the system working — the DDL is one statement doing real work, and
+/// the lock wait is exactly the serialization that stops two containers migrating at
+/// once — but sqlx reports each as a WARN carrying the whole 107-line DDL as
+/// `db.statement`, so a first run opened with two warnings before its first INFO. An
+/// operator reads that as a failure, and a log that cries wolf on a healthy start is one
+/// nobody reads on an unhealthy one.
+///
+/// Raised here rather than globally, and on a pool used only for migrations: an ordinary
+/// query taking over a second is still a real problem and still gets its warning. A
+/// migration that takes over a minute is a real problem too, and still gets one.
+const MIGRATION_SLOW_STATEMENT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Apply every migration in `crates/lapidary-db/migrations`. `sqlx::migrate!` embeds them
 /// at compile time, so an image carries its own schema and an air-gapped operator needs no
 /// migration tooling on the host.
-pub async fn migrate(pool: &PgPool) -> Result<(), DbError> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+///
+/// Takes the URL rather than the application pool, because the point is a *separate*
+/// pool: one connection, its own slow-statement threshold, closed when the migration is
+/// done, leaving the pool the app actually serves from untouched.
+pub async fn migrate(url: &str) -> Result<(), DbError> {
+    let options: sqlx::postgres::PgConnectOptions =
+        url.parse().map_err(|e| classify_connect_error(&e, url))?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::ConnectOptions::log_slow_statements(
+            options,
+            log::LevelFilter::Warn,
+            MIGRATION_SLOW_STATEMENT,
+        ))
+        .await
+        .map_err(|e| classify_connect_error(&e, url))?;
+
+    // Closed on the failure path too: a migration that fails still has to give its
+    // connection back, or a retrying supervisor accumulates them.
+    let result = sqlx::migrate!("./migrations").run(&pool).await;
+    pool.close().await;
+    result?;
     Ok(())
 }
 

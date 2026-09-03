@@ -57,6 +57,10 @@ clap = { version = "4.6.6", features = ["derive"] }
 figment = { version = "0.10.19", features = ["env", "toml"] }
 image = { version = "0.25.10", default-features = false, features = ["webp"] }
 jiff = { version = "0.2.35", features = ["serde"] }
+# Only lapidary-db, and only to name log::LevelFilter for sqlx's ConnectOptions — sqlx
+# takes that type and re-exports nothing equivalent. Already in the tree via sqlx; this
+# declares what is already there rather than adding anything to build.
+log = "0.4.34"
 object_store = "0.14.1"
 # span-locations: gives Literal::span().start() a real line/column outside a proc-macro
 # context (stable, no nightly needed) — xtask/src/strings.rs uses it to report which
