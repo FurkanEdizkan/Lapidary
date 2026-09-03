@@ -19,6 +19,14 @@ tracing.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# tests/resumption.rs only. An L2 crate must never depend on an L3 one, and this does not:
+# `cargo xtask check-layers` builds its graph from normal dependencies alone and exempts
+# dev-dependencies deliberately, precisely so an L2 crate can use a real L3 implementation
+# as a test fixture. The claim under test — a dying worker loses only the files it held —
+# is about what reaches the `part` table, so proving it needs an ingest that really writes
+# one. A counting stub would only prove the loop re-delivers a row.
+lapidary-ingest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -1262,7 +1262,9 @@ version = "0.1.0"
 dependencies = [
  "lapidary-core",
  "lapidary-db",
+ "lapidary-ingest",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
