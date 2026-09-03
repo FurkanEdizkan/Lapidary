@@ -145,8 +145,9 @@ describes — that arrives in slice 2.
 | `lapidary-db` | L1 | schema migration, `PartRepository` impl, blob and revision repositories |
 | `lapidary-storage` | L1 | blob CAS; the source/derivative handle split (§4.3) |
 | `lapidary-cad` | L2 | `MeshKernel` — STL parse + thumbnail raster, beside `MockKernel` |
-| `lapidary-api` | L3 | scan route (worker role), grid route (api role), role selection |
-| `bin/lapidary-server` | bin | reads `LAPIDARY_ROLE`; already links `lapidary-cad` under `mock-kernel` |
+| `lapidary-api` | L3 | grid route (api role), role selection |
+| `lapidary-ingest` | L3 | scan route (worker role) — the crate that may link `lapidary-cad` |
+| `bin/lapidary-server` | bin | reads `LAPIDARY_ROLE` and composes the two routers; already links `lapidary-cad` under `mock-kernel` |
 | `web` | — | grid page consuming the parts endpoint |
 
 **Mesh work belongs in `lapidary-cad`.** STL parsing and rasterization are geometry, and
@@ -154,6 +155,13 @@ placing them behind the kernel boundary preserves the product rule exactly as wr
 ingest invokes the kernel, opening a part never does. `MeshKernel` sits beside
 `MockKernel` under the existing `Kernel` trait; the worker links the crate, the `api`
 image structurally cannot (enforced by `FORBIDDEN_PAIRS` and `check-deploy`).
+
+**The scan route does not live in `lapidary-api`** (this table originally said it did).
+`lapidary-api` serves the open path, and a handler there that needs `MeshKernel` forces
+`lapidary-api -> lapidary-cad`, which puts the CAD kernel back in the api image — the
+exact property the previous phase's image split established. It lives in its own L3
+crate, `lapidary-ingest`, and `bin/lapidary-server` merges the two routers per role, so
+the boundary is a dependency edge rather than a runtime `if`.
 
 `KernelOutput` will need fields this slice does not have (`DATA.md` §2.1's LOD paths).
 Follow-up item 2 already records that it must change and that `sidecar/occt-bridge/README.md`
@@ -198,19 +206,23 @@ POST /api/libraries/{id}/scan                                    (worker role on
 │
 └─ per file:
    ├─ BLAKE3 over the bytes                                      ← hash first, always
-   ├─ blob row exists?
-   │    yes → link a new file row to the existing blob,
-   │          bump ref_count, skip parse and raster               ← short-circuit
+   ├─ does THIS library already hold a part with this name and these bytes?
+   │    yes → nothing: no parse, no raster, no write               ← short-circuit
    │    no  ↓
    ├─ parse mesh    → bbox, triangle_count, volume, is_watertight
    ├─ rasterize     → 512 px WebP, assert ≤ 64 KB
-   ├─ write blob    → zstd -3, blobs/ab/cd/<hash>, ref_count = 1
+   ├─ does any library already hold these bytes (blob row exists)?
+   │    yes → link: the blob is untouched, this library gets its own
+   │          part row and file row, ref_count += 1               ← bytes reused
+   │    no  → write blob → zstd -3, blobs/ab/cd/<hash>
    └─ one transaction:
         INSERT part → revision (measurements + *_source) → file → derivative(thumbnail)
 │
 └─ 200 { ingested, skipped, failed: [{ file, reason }] }
-        ingested — parsed, rasterized, rows written
-        skipped  — hash already known; a file row was linked, no work done
+        ingested — a part row was created in this library; its bytes may have been
+                   reused from a blob another library already held
+        skipped  — this library already holds a part with this name and these exact
+                   bytes; nothing was done
         failed   — could not be ingested; each with an actionable reason
 
    The three are disjoint and sum to the number of candidate files walked. A file that
@@ -224,7 +236,23 @@ GET /api/libraries/{id}/parts?after=&limit=                      (api role only)
 Ordering note: the blob is written **before** the transaction, and a failed transaction
 reaps it. The prototype's ordering leaked an orphaned blob on exactly this path — a
 successful Tier-3 write followed by a failed DB insert, with no cleanup — recorded in
-`docs/prototype-notes.md`. A test pins the reaping.
+`docs/prototype-notes.md`. A test pins the reaping. The reap runs **only** on the branch
+that wrote bytes: reaping a blob another library's part references would be silent data
+loss, so the two branches are separate calls rather than one call with a flag.
+
+Scoping note (revised after the first implementation shipped it unscoped). The
+short-circuit is keyed on **library + part name + hash**, not on the hash alone. Keying
+it on the hash alone let a content address decide a per-library write — the thing
+`CLAUDE.md` forbids in as many words — and scanning six real STLs into a brand-new empty
+library answered `{"ingested":0,"skipped":6,"failed":[]}` with the library still empty.
+The name is in the key for the same reason: two differently-named files with identical
+bytes are two parts sharing one blob, not one part and one silent omission. Only "same
+library, same name, same bytes" is a re-scan.
+
+Known limitation, deliberately not closed here: nothing records the *path* a part came
+from, so renaming a file and re-scanning produces a new part beside the old one rather
+than a rename. That needs a source-path column and belongs to the slice that owns
+incremental directory sync; a visible duplicate is the better failure mode meanwhile.
 
 ---
 

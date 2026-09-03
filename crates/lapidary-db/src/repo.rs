@@ -52,11 +52,52 @@ pub struct PgBlobs(pub PgPool);
 impl PgBlobs {
     /// Content addressing is not authorization: this only tells the caller whether the
     /// bytes are already held, never whether the caller may read them.
+    ///
+    /// It is therefore a *global* question, and must never on its own decide a
+    /// per-library write. Ingest uses it for exactly one thing — whether the bytes still
+    /// have to be written to the blob store — and asks [`PgBlobs::library_holds`] for
+    /// anything about a particular library.
     pub async fn exists(&self, hash: &BlobHash) -> Result<bool, DbError> {
         let found: Option<String> = sqlx::query_scalar("SELECT blake3 FROM blob WHERE blake3 = $1")
             .bind(hash.to_hex())
             .fetch_optional(&self.0)
             .await?;
+        Ok(found.is_some())
+    }
+
+    /// Does `library` already hold a part called `part_name` whose source file is
+    /// exactly these bytes? In other words: is this the same file, seen again?
+    ///
+    /// This is the scoped counterpart to [`PgBlobs::exists`], and the two answer
+    /// genuinely different questions. Ingest short-circuits on *this* one, because a
+    /// file whose bytes some other library happens to hold is still a part this library
+    /// does not have — short-circuiting on the global answer meant scanning a directory
+    /// into a second library ingested nothing and reported success.
+    ///
+    /// Keyed on the name as well as the hash: two differently-named files with identical
+    /// bytes are two parts, and only "same library, same name, same bytes" is a re-scan.
+    ///
+    /// Deliberately does *not* filter `part.deleted_at`. A part the user deleted stays
+    /// deleted — re-scanning the directory it came from must not resurrect it, and
+    /// delete is the one action in this product that is always explicit.
+    pub async fn library_holds(
+        &self,
+        library: LibraryId,
+        part_name: &str,
+        hash: &BlobHash,
+    ) -> Result<bool, DbError> {
+        let found: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = $1 AND p.name = $2 AND f.blake3 = $3 AND f.role = 'source' \
+             LIMIT 1",
+        )
+        .bind(library.as_uuid())
+        .bind(part_name)
+        .bind(hash.to_hex())
+        .fetch_optional(&self.0)
+        .await?;
         Ok(found.is_some())
     }
 }

@@ -10,44 +10,49 @@
 //!
 //! 1. read bytes
 //! 2. BLAKE3 — hash first, always
-//! 3. `blobs.exists(hash)`? yes -> count it `skipped`, no further work (see below)
+//! 3. `blobs.library_holds(library, name, hash)`? yes -> count it `skipped`, no further
+//!    work at all: not a parse, not a raster, not a query beyond this one
 //! 4. `kernel.ingest(bytes)` — parse + measure + rasterize
-//! 5. `source.put(bytes)` — the blob is written *before* the transaction
-//! 6. `ingest.record(...)` — one transaction; on error, `source.remove(hash)` reaps the
-//!    blob just written, then the failure is recorded
+//! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
+//!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
+//!      library gets its own part pointing at it. No write, so nothing to reap.
+//!    - no  -> `source.put(bytes)` writes the blob *before* the transaction, then
+//!      `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
+//!      written and the failure is recorded
 //!
-//! Step 6's reap is not optional. The Node prototype wrote its blob and then failed the
+//! Step 5's reap is not optional. The Node prototype wrote its blob and then failed the
 //! insert with no cleanup, leaving bytes on disk that nothing referenced and nothing
-//! would ever collect — `docs/prototype-notes.md` records it.
+//! would ever collect — `docs/prototype-notes.md` records it. It is equally not optional
+//! that the reap runs only on the branch that *wrote* something: reaping a blob another
+//! library's part references would be silent data loss, which is why the two branches
+//! are separate rather than one call with a flag.
 //!
-//! # Deviation from the plan's outline: the short-circuit never calls `link_existing`
+//! # Why the short-circuit is scoped to the library, and to the name
 //!
-//! The plan's outline (and `docs/superpowers/specs/2026-09-02-phase-1-slice-1-ingest-
-//! design.md` §5) has step 3 call `PgIngest::link_existing` on a known hash: "link a new
-//! file row to the existing blob, bump ref_count". That cannot satisfy this task's own
-//! acceptance test — re-scanning an unchanged directory must still leave exactly one
-//! part — because `insert_part_chain` (shared by `record` and `link_existing`, landed in
-//! Task 7 and out of this task's scope to change) always inserts a brand-new `part` row
-//! with a fresh id; nothing in the schema or repository layer deduplicates by hash or by
-//! path. Calling `link_existing` on every hash hit, including a verbatim re-scan, would
-//! create a second part every time the same folder is scanned twice — worse, an
-//! unbounded number of duplicate parts on every repeat scan, which is a real workflow
-//! (add one file, scan again) for a product whose whole point is "hundreds of parts,
-//! browsable". Task 7's own test (`linking_an_existing_blob_adds_a_part_without_touching_
-//! ref_count_twice`, `crates/lapidary-db/tests/repo.rs`) models `link_existing` for a
-//! *different* physical part that happens to share byte-identical content ("Bracket
-//! copy, LP-1042-03"), not for the same file re-seen — that reading is consistent with
-//! treating a known hash here as a true no-op instead.
+//! It was not, and the consequence was live: `PgBlobs::exists` is keyed on the hash
+//! alone, so scanning six real STLs into a brand-new empty library answered
+//! `{"ingested":0,"skipped":6,"failed":[]}` and left the library empty. Three things
+//! were wrong at once — a content hash decided a per-library write (CLAUDE.md: content
+//! addressing is not authorization), the counter said a file row had been linked when
+//! none had, and the user got an empty grid with no error anywhere to explain it.
 //!
-//! Consequence: a known hash here does zero database work, and `PgIngest::link_existing`
-//! is not called from this handler. It stays correct and tested in `lapidary-db` for a
-//! caller that can tell "the same file, again" apart from "a different file, same
-//! bytes" — this handler cannot, since `PgBlobs::exists` is not scoped to a library or a
-//! path, only a hash, and adding that distinction is out of this task's declared scope
-//! (`crates/lapidary-db` is not in its file list). One known limitation follows: two
-//! genuinely distinct files that happen to be byte-identical are indistinguishable from a
-//! re-scan here, so only the first is ever ingested as a part. No enumerated test in this
-//! task's brief exercises that case; flagging it rather than guessing further.
+//! `blobs.library_holds(library, name, hash)` is the question this handler actually
+//! needs: *is this the same file, seen again?* The bytes are still reused — that is the
+//! whole point of content addressing, and step 5 reuses them without a second write —
+//! but a library that does not have this part gets one.
+//!
+//! Keying on the part name as well as the hash settles the other half, which the earlier
+//! rounds recorded as an open question: two differently-named files with identical bytes
+//! are two parts sharing one blob (`ref_count` 2), not one part and one silent omission.
+//! A directory of files is a set of files, and a scan that quietly indexes only the first
+//! of two is the same shape of lie as the empty second library. Only "same library, same
+//! name, same bytes" is a re-scan.
+//!
+//! Known limitation, scheduled rather than guessed at: nothing here records the *path* a
+//! part came from, so renaming a file and re-scanning yields a new part beside the old
+//! one rather than a rename. Closing that needs a source-path column and the slice that
+//! owns incremental directory sync; a duplicate the user can see is the right failure
+//! mode to have in the meantime, against a silent one.
 
 use crate::AppState;
 use axum::Json;
@@ -61,10 +66,17 @@ use lapidary_storage::{SourceStore, WorkerRole};
 use serde::Serialize;
 use std::path::Path as FsPath;
 
+/// The three counters are disjoint and sum to the number of `*.stl` candidates walked.
 #[derive(Debug, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanReport {
+    /// A part row was created for this file in this library. Its bytes may have been
+    /// reused from a blob another library already held — reuse is invisible here,
+    /// because from this library's point of view a part appeared either way.
     pub ingested: u32,
+    /// This library already holds a part with this name and these exact bytes, so
+    /// nothing was done. Never reachable for a library that does not hold the file:
+    /// answering `skipped` while a library stays empty is the failure this counter had.
     pub skipped: u32,
     pub failed: Vec<ScanFailure>,
 }
@@ -240,20 +252,57 @@ async fn ingest_one(
 
     // 2. BLAKE3 — hash first, always. Everything below branches on this.
     let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+    let name = part_name(file_name);
 
-    // 3. A known hash short-circuits parse, raster and the blob write entirely — see the
-    // module doc for why this is a true no-op rather than a call to `link_existing`.
-    if blobs.exists(&hash).await.map_err(|e| e.to_string())? {
+    // 3. The same file, seen again — same library, same name, same bytes — short-circuits
+    // parse, raster and every write entirely. Scoped to the library on purpose: a hash
+    // this library has never seen is a part it does not have, whatever some other library
+    // holds. See the module doc.
+    if blobs
+        .library_holds(library, name, &hash)
+        .await
+        .map_err(|e| e.to_string())?
+    {
         return Ok(FileOutcome::Skipped);
     }
 
     // 4. Parse + measure + rasterize. Nothing has been written yet, so a failure here
-    // needs no cleanup.
+    // needs no cleanup. This runs even when the bytes are already in the blob store,
+    // because the new part needs its own measurements and its own thumbnail; only the
+    // bytes are shared, and they are already in memory from step 1.
     let output = kernel.ingest(&bytes).map_err(|e| e.to_string())?;
 
-    // 5. The blob is written before the transaction. `stored.hash` is recomputed from
-    // `bytes` inside `put` and is definitionally the same as `hash` above; `hash` is used
-    // below rather than `stored.hash` so there is exactly one hash variable in scope.
+    // 5a. Some library already holds these bytes. Reuse them exactly as they are: no
+    // second copy on disk, no second `blob` row, and — the part that matters — no reap
+    // on failure, because those bytes are referenced by a part this scan did not create.
+    if blobs.exists(&hash).await.map_err(|e| e.to_string())? {
+        let blob = StoredBlobRow {
+            hash,
+            // `link_existing` reads only `hash` and `size_bytes` (the `file` row); the
+            // `blob` row, and with it the stored size and compression level, already
+            // exists and is not rewritten.
+            size_bytes: bytes.len() as u64,
+            stored_bytes: bytes.len() as u64,
+            zstd_level: 0,
+        };
+        return ingest
+            .link_existing(IngestRequest {
+                library,
+                name,
+                blob: &blob,
+                measurements: &output.measurements,
+                thumbnail_webp: &output.thumbnail_webp,
+                kernel_version,
+            })
+            .await
+            .map(|_| FileOutcome::Ingested)
+            .map_err(|e| e.to_string());
+    }
+
+    // 5b. New bytes. The blob is written before the transaction. `stored.hash` is
+    // recomputed from `bytes` inside `put` and is definitionally the same as `hash`
+    // above; `hash` is used below rather than `stored.hash` so there is exactly one hash
+    // variable in scope.
     let stored = source.put(&bytes).map_err(|e| e.to_string())?;
     let blob = StoredBlobRow {
         hash,
@@ -266,7 +315,6 @@ async fn ingest_one(
     // references it, and nothing else ever will, so it must not be left on disk. The
     // Node prototype's exact miss (docs/prototype-notes.md): a successful blob write
     // followed by a failed DB insert, with no cleanup.
-    let name = part_name(file_name);
     match ingest
         .record(IngestRequest {
             library,

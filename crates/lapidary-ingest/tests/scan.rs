@@ -76,6 +76,42 @@ async fn part_count(pool: &sqlx::PgPool) -> i64 {
         .expect("count query")
 }
 
+async fn parts_in(pool: &sqlx::PgPool, library: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM part WHERE library_id = $1::uuid")
+        .bind(library)
+        .fetch_one(pool)
+        .await
+        .expect("count query")
+}
+
+async fn blob_rows(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(pool)
+        .await
+        .expect("count query")
+}
+
+/// The `ref_count` on the one blob these tests store. Summed rather than fetched so the
+/// query still says something if a second blob row ever appears.
+async fn ref_count(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(sum(ref_count), 0)::bigint FROM blob")
+        .fetch_one(pool)
+        .await
+        .expect("sum query")
+}
+
+/// A second library to scan the same directory into. Migration `0002_parts.sql` seeds
+/// one, and slice 1 has no library-creation route, so the row is inserted directly.
+async fn second_library(pool: &sqlx::PgPool) -> String {
+    const ID: &str = "01931b6e-0000-7000-8000-0000000000a2";
+    sqlx::query("INSERT INTO library (id, name) VALUES ($1::uuid, 'Fixture jigs')")
+        .bind(ID)
+        .execute(pool)
+        .await
+        .expect("seeds a second library");
+    ID.to_owned()
+}
+
 /// One part as the database holds it after a scan — the far side of the kernel -> DB
 /// seam. Every field here is something the CAD kernel computed and `PgIngest::record`
 /// bound; nothing in it can be produced by the counters in `ScanReport`.
@@ -317,6 +353,114 @@ async fn rescanning_an_unchanged_directory_short_circuits_without_duplicating_th
         1,
         "a re-scan of an unchanged directory must not duplicate the part"
     );
+}
+
+/// The seam the spec named as "the one to watch", and it was live: `PgBlobs::exists` is
+/// keyed on the hash alone, so the second library's scan short-circuited on the first
+/// library's bytes. Six real STLs into a brand-new library answered
+/// `{"ingested":0,"skipped":6,"failed":[]}` and left the grid empty.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn scanning_the_same_directory_into_a_second_library_gives_it_its_own_parts(
+    pool: sqlx::PgPool,
+) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        ingest_dir.path().join("bracket-lp-1042-03.stl"),
+        BRACKET_FIXTURE,
+    )
+    .expect("write fixture");
+    let second = second_library(&pool).await;
+
+    let (first_status, first) = scan(
+        state(pool.clone(), ingest_dir.path(), blob_root.path()),
+        SEEDED_LIBRARY,
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(first["ingested"], 1);
+
+    let (second_status, second_report) = scan(
+        state(pool.clone(), ingest_dir.path(), blob_root.path()),
+        &second,
+    )
+    .await;
+
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(
+        second_report["ingested"], 1,
+        "a library that does not hold this part must get one"
+    );
+    assert_eq!(
+        second_report["skipped"], 0,
+        "`skipped` must be unreachable for a library with no file row for this hash"
+    );
+    assert_eq!(second_report["failed"], serde_json::json!([]));
+
+    // Both libraries show the part — this is what the user sees, and what was empty.
+    assert_eq!(parts_in(&pool, SEEDED_LIBRARY).await, 1);
+    assert_eq!(parts_in(&pool, &second).await, 1);
+
+    // And the bytes are stored exactly once: reuse is the point of content addressing,
+    // and it is what makes the second library cost a row rather than a copy.
+    assert_eq!(blob_rows(&pool).await, 1, "one blob row, not two");
+    assert_eq!(
+        ref_count(&pool).await,
+        2,
+        "one reference per file row, and there are now two"
+    );
+    assert_eq!(
+        all_files(&blob_root.path().join("blobs")).len(),
+        1,
+        "one copy of the bytes on disk"
+    );
+
+    // A third scan of either library is a genuine re-scan and does nothing.
+    let (_, again) = scan(
+        state(pool.clone(), ingest_dir.path(), blob_root.path()),
+        &second,
+    )
+    .await;
+    assert_eq!(again["ingested"], 0);
+    assert_eq!(again["skipped"], 1);
+    assert_eq!(part_count(&pool).await, 2);
+}
+
+/// The sibling question the earlier rounds left open, settled: a directory holding two
+/// differently-named copies of the same geometry is a directory holding two files, and a
+/// scan that indexes one of them is the same silent omission as the empty second
+/// library. They share the blob; they do not share the part.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn two_differently_named_files_with_identical_bytes_are_two_parts_sharing_one_blob(
+    pool: sqlx::PgPool,
+) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        ingest_dir.path().join("bracket-lp-1042-03.stl"),
+        BRACKET_FIXTURE,
+    )
+    .expect("write fixture");
+    std::fs::write(
+        ingest_dir.path().join("bracket-lp-1042-03-mirrored.stl"),
+        BRACKET_FIXTURE,
+    )
+    .expect("write second fixture");
+
+    let (status, json) = scan(
+        state(pool.clone(), ingest_dir.path(), blob_root.path()),
+        SEEDED_LIBRARY,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["ingested"], 2, "two files in the folder, two cards");
+    assert_eq!(json["skipped"], 0);
+    assert_eq!(json["failed"], serde_json::json!([]));
+    assert_eq!(part_count(&pool).await, 2);
+    assert_eq!(blob_rows(&pool).await, 1);
+    assert_eq!(ref_count(&pool).await, 2);
+    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 1);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

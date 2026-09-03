@@ -143,6 +143,75 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
     assert!(blobs.exists(&blob.hash).await.expect("query"));
 }
 
+/// A second library to scan the same bytes into. Migration `0002_parts.sql` seeds only
+/// one, and slice 1 has no library-creation route, so the row is inserted directly.
+async fn second_library(pool: &sqlx::PgPool) -> LibraryId {
+    let id: uuid::Uuid = "01931b6e-0000-7000-8000-0000000000a2"
+        .parse()
+        .expect("valid uuid");
+    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture jigs')")
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("seeds a second library");
+    LibraryId::from_uuid(id)
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool) {
+    // The distinction `PgBlobs::exists` cannot make, and the reason ingest must not
+    // short-circuit on it: knowing the bytes is not the same as holding the part.
+    // Scanning into an empty second library used to report six files skipped and leave
+    // the library empty, because these two questions were answered by one query.
+    let blob = blob_row(0x33);
+    let blobs = PgBlobs(pool.clone());
+    let other = second_library(&pool).await;
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Vee block, LP-3072-02",
+            blob: &blob,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"webp",
+        })
+        .await
+        .expect("records");
+
+    assert!(
+        blobs.exists(&blob.hash).await.expect("query"),
+        "the bytes are held — globally"
+    );
+    assert!(
+        blobs
+            .library_holds(library(), "Vee block, LP-3072-02", &blob.hash)
+            .await
+            .expect("query"),
+        "the library that was scanned into holds the part"
+    );
+    assert!(
+        !blobs
+            .library_holds(other, "Vee block, LP-3072-02", &blob.hash)
+            .await
+            .expect("query"),
+        "a different library does not hold it, however well known the hash is"
+    );
+    assert!(
+        !blobs
+            .library_holds(library(), "Vee block copy, LP-3072-02", &blob.hash)
+            .await
+            .expect("query"),
+        "a different name is a different part, even byte for byte"
+    );
+    assert!(
+        !blobs
+            .library_holds(library(), "Vee block, LP-3072-02", &blob_row(0x44).hash)
+            .await
+            .expect("query"),
+        "a hash nothing has ingested is held by no library"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(pool: sqlx::PgPool) {
     let blob = blob_row(0x22);
