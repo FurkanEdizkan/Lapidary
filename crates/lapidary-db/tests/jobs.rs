@@ -1,4 +1,4 @@
-use lapidary_core::{LibraryId, Outcome};
+use lapidary_core::{JobId, LibraryId, Outcome};
 use lapidary_db::{JobRow, PgJobs};
 use sqlx::PgPool;
 use std::time::Duration;
@@ -254,6 +254,111 @@ async fn completing_a_job_records_how_it_finished(pool: PgPool) {
     assert_eq!(outcome.as_deref(), Some("skipped"));
 }
 
+/// Direct coverage for `fail` -- the brief that supplied `complete`, `reschedule` and
+/// `release_leases`'s tests never exercised it, so until now it shipped verified by
+/// nothing but the compiler.
+#[sqlx::test(migrations = "./migrations")]
+async fn failing_a_job_records_the_reason_and_clears_the_lease(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    jobs.fail(
+        job.id,
+        "Could not read this STL - it declares 24 facets but the file ends after 11. \
+         Re-export from your CAD tool and retry.",
+    )
+    .await
+    .expect("fails");
+
+    let (state, last_error, leased_by_cleared, lease_expiry_cleared): (
+        String,
+        Option<String>,
+        bool,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT state, last_error, leased_by IS NULL, lease_expires_at IS NULL \
+         FROM job WHERE id = $1",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("reads back");
+
+    assert_eq!(state, "failed");
+    assert_eq!(
+        last_error.as_deref(),
+        Some(
+            "Could not read this STL - it declares 24 facets but the file ends after 11. \
+             Re-export from your CAD tool and retry."
+        )
+    );
+    assert!(
+        leased_by_cleared,
+        "a terminal row must not still claim a worker"
+    );
+    assert!(
+        lease_expiry_cleared,
+        "a terminal row must not still carry a lease"
+    );
+}
+
+/// spec §3.2's own acknowledged scenario: worker A's lease lapses (it stalled, but is
+/// still alive), worker B reclaims and ingests the file successfully, and only then
+/// does A's stale attempt finish and call `fail`. Without `AND state = 'running'` on
+/// `fail`'s `WHERE` clause, A's write would clobber B's -- a part that landed in the
+/// grid would be reported failed, which is exactly the "measurement must not lie"
+/// non-negotiable from CLAUDE.md.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_stale_workers_fail_does_not_overwrite_a_result_another_worker_already_recorded(
+    pool: PgPool,
+) {
+    let jobs = PgJobs(pool.clone());
+    jobs.enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueues");
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    // Stand in for worker B reclaiming after A's lease lapsed and finishing the job:
+    // the row is `done` before A's own call ever lands.
+    jobs.complete(job.id, Outcome::Ingested)
+        .await
+        .expect("completes");
+
+    // A's stale attempt reports failure on the same id, after the fact.
+    jobs.fail(job.id, "the database was unreachable")
+        .await
+        .expect("fail is not an error even when it changes nothing");
+
+    let (state, outcome, last_error): (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT state, outcome, last_error FROM job WHERE id = $1")
+            .bind(job.id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("reads back");
+
+    assert_eq!(state, "done", "the reclaiming worker's result must stand");
+    assert_eq!(
+        outcome.as_deref(),
+        Some("ingested"),
+        "a part that landed must not be reported failed"
+    );
+    assert!(
+        last_error.is_none(),
+        "the stale fail must not have written anything at all"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn rescheduling_pushes_the_job_into_the_future_and_keeps_the_reason(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
@@ -493,10 +598,19 @@ async fn failed_jobs_are_ordered_by_creation_not_by_which_failed_first(pool: PgP
         .expect("backdates created_at");
     }
 
+    // `fail` now requires `state = 'running'` (the stale-writer guard -- see
+    // `complete`'s doc comment), so every row needs to pass through that state before
+    // it can be failed. Set all three at once directly rather than through `dequeue`,
+    // whose own ordering among three still-tied `run_after` rows would be exactly as
+    // arbitrary as the thing this test is trying to pin.
+    sqlx::query("UPDATE job SET state = 'running' WHERE batch_id = $1")
+        .bind(batch.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("marks all three running");
+
     // Fail them in the reverse of that order: vee-block (newest) first, bracket
-    // (oldest) last. `dequeue`'s own ordering can't be trusted to pick a specific one
-    // of three still-tied `run_after` rows, so each job's id is looked up by path and
-    // failed directly -- `fail` has no state precondition to satisfy first. If the
+    // (oldest) last. Each job's id is looked up by path and failed directly. If the
     // status query sorted by this fail order instead of `created_at`, the assertion
     // below would see it reversed.
     for path in [
@@ -512,7 +626,7 @@ async fn failed_jobs_are_ordered_by_creation_not_by_which_failed_first(pool: PgP
                 .await
                 .expect("finds the job by path");
         jobs.fail(
-            lapidary_core::JobId::from_uuid(id),
+            JobId::from_uuid(id),
             "Could not read this STL - the file ends mid-facet.",
         )
         .await
@@ -533,6 +647,97 @@ async fn failed_jobs_are_ordered_by_creation_not_by_which_failed_first(pool: PgP
             "vee-block-lp-3072-02.stl",
         ],
         "the failed sample must be oldest-created first, not fail-completion order"
+    );
+}
+
+/// The test above pins the `ORDER BY created_at` clause itself, but by forcing
+/// distinct `created_at` values it exercises a scenario production never produces:
+/// every job in a real batch enters through one `enqueue_scan` statement, and
+/// Postgres's `now()` is constant for the whole transaction, so real same-batch
+/// failures always tie on `created_at`. This test is the real situation -- it never
+/// touches `created_at` at all -- and checks that the `, id` tiebreaker alone still
+/// produces a deterministic, enqueue-matching order, which is what makes spec §7's
+/// "stable across polls, not reshuffling" promise actually true rather than true only
+/// when an operator happens to backdate rows.
+#[sqlx::test(migrations = "./migrations")]
+async fn failed_jobs_sharing_one_created_at_still_come_back_in_enqueue_order(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let (batch, _) = jobs
+        .enqueue_scan(
+            seeded(),
+            &[
+                "bracket-lp-1042-03.stl".to_owned(),
+                "spacer-lp-2001-00.stl".to_owned(),
+                "vee-block-lp-3072-02.stl".to_owned(),
+            ],
+        )
+        .await
+        .expect("enqueues");
+
+    // Confirm the premise before trusting the assertion below: this batch really
+    // does tie on created_at, so any ordering observed here can only be coming from
+    // the id tiebreaker, not from created_at doing any work.
+    let distinct_created_at: i64 =
+        sqlx::query_scalar("SELECT count(DISTINCT created_at) FROM job WHERE batch_id = $1")
+            .bind(batch.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("counts distinct created_at values");
+    assert_eq!(
+        distinct_created_at, 1,
+        "this test is only meaningful if enqueue_scan really does tie every row's \
+         created_at within one batch -- if enqueue_scan changes to insert rows across \
+         several statements, this premise (and the reason this test exists) no longer \
+         holds"
+    );
+
+    // `fail` requires `state = 'running'`; mark all three at once rather than
+    // through `dequeue`, whose ordering among tied `run_after` rows is exactly the
+    // same kind of arbitrary this test exists to rule out for the *read* path.
+    sqlx::query("UPDATE job SET state = 'running' WHERE batch_id = $1")
+        .bind(batch.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("marks all three running");
+
+    // Fail in the reverse of enqueue order -- if the sample came back in fail order
+    // instead of enqueue order, this would still (accidentally) look sorted, so the
+    // assertion below checks the specific enqueue order, not just "some order".
+    for path in [
+        "vee-block-lp-3072-02.stl",
+        "spacer-lp-2001-00.stl",
+        "bracket-lp-1042-03.stl",
+    ] {
+        let id: Uuid =
+            sqlx::query_scalar("SELECT id FROM job WHERE batch_id = $1 AND payload->>'path' = $2")
+                .bind(batch.as_uuid())
+                .bind(path)
+                .fetch_one(&pool)
+                .await
+                .expect("finds the job by path");
+        jobs.fail(
+            JobId::from_uuid(id),
+            "Could not read this STL - the file ends mid-facet.",
+        )
+        .await
+        .expect("fails");
+    }
+
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    let paths: Vec<&str> = status.failed.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            "bracket-lp-1042-03.stl",
+            "spacer-lp-2001-00.stl",
+            "vee-block-lp-3072-02.stl",
+        ],
+        "same-created_at failures must still come back in enqueue order, via the id \
+         tiebreaker"
     );
 }
 

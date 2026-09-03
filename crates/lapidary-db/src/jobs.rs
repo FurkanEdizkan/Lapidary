@@ -136,6 +136,15 @@ impl PgJobs {
     /// transiently, retried and then succeeded keeps the reason it retried. That is
     /// diagnostically useful, invisible to users (`BatchStatus` only reports `last_error`
     /// for rows in state `failed`), and `attempts` alone tells you it retried but not why.
+    ///
+    /// `AND state = 'running'` guards against the scenario spec §3.2 itself calls out: a
+    /// worker stalls past its lease, a second worker reclaims and finishes the same job,
+    /// and the first worker -- still alive, just slow -- eventually calls back in. Without
+    /// this guard the stale write clobbers whatever the reclaiming worker recorded; with
+    /// it, the row is no longer `running` by the time the stale caller arrives, so the
+    /// `UPDATE` matches zero rows instead of overwriting a real result. "Measurement must
+    /// not lie" (CLAUDE.md) -- a part that ingested must never be reported failed because
+    /// a second, abandoned attempt finished after it.
     pub async fn complete(&self, id: JobId, outcome: Outcome) -> Result<(), DbError> {
         let outcome = match outcome {
             Outcome::Ingested => "ingested",
@@ -144,7 +153,7 @@ impl PgJobs {
         sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
-             WHERE id = $1",
+             WHERE id = $1 AND state = 'running'",
         )
         .bind(id.as_uuid())
         .bind(outcome)
@@ -154,11 +163,15 @@ impl PgJobs {
     }
 
     /// Terminal. `reason` is the handler's own message and is shown to a person.
+    ///
+    /// `AND state = 'running'` -- see `complete`'s doc comment for why: this is the same
+    /// stale-writer guard, so a worker that stalled past its lease and is only now
+    /// reporting failure cannot overwrite a row another worker already finished.
     pub async fn fail(&self, id: JobId, reason: &str) -> Result<(), DbError> {
         sqlx::query(
             "UPDATE job SET state = 'failed', last_error = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
-             WHERE id = $1",
+             WHERE id = $1 AND state = 'running'",
         )
         .bind(id.as_uuid())
         .bind(reason)
@@ -172,6 +185,9 @@ impl PgJobs {
     /// because `job_failed_has_reason` is an implication (`state <> 'failed' or last_error
     /// is not null`), not a biconditional: a `pending` row carrying a `last_error` violates
     /// nothing.
+    ///
+    /// `AND state = 'running'` -- see `complete`'s doc comment for why: the same
+    /// stale-writer guard applies here too.
     pub async fn reschedule(
         &self,
         id: JobId,
@@ -183,7 +199,7 @@ impl PgJobs {
                             run_after = now() + make_interval(secs => $3), \
                             last_error = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
-             WHERE id = $1",
+             WHERE id = $1 AND state = 'running'",
         )
         .bind(id.as_uuid())
         .bind(reason)
@@ -256,10 +272,20 @@ impl PgJobs {
             return Ok(None);
         }
 
+        // `, id` is load-bearing, not decoration: `enqueue_scan` inserts a whole batch
+        // in one statement, and Postgres's `now()` is constant for the duration of a
+        // transaction, so every job in a real batch shares the exact same
+        // `created_at` -- `ORDER BY created_at` alone never actually discriminates
+        // between same-batch failures and the list would reshuffle under a polling
+        // reader from one request to the next (spec §7 promises it does not). `JobId`
+        // is uuidv7 and `enqueue_scan` generates ids in insertion order, so ordering
+        // by `id` as the tiebreaker reproduces enqueue order, which -- since Task 10
+        // sorts paths before enqueueing -- is the alphabetical order a person expects.
+        // Do not simplify this back to `ORDER BY created_at`.
         let failures: Vec<(String, String, i32)> = sqlx::query_as(
             "SELECT payload->>'path', last_error, attempts \
              FROM job WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
-             ORDER BY created_at LIMIT $3",
+             ORDER BY created_at, id LIMIT $3",
         )
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
