@@ -20,6 +20,13 @@ pub(crate) struct Caps {
     pub(crate) max_decompressed: u64,
     pub(crate) max_entries: usize,
     pub(crate) max_ratio: u64,
+    /// A ceiling on triangles across an object's own mesh *and* everything its
+    /// `<components>` recurse into. `MAX_DEPTH` bounds recursion depth, not breadth: an
+    /// object can hold many components, each one recursing, so emitted triangles grow as
+    /// branching^depth rather than depth alone. This is not one of the three archive
+    /// caps `DATA.md` §5.4 requires -- it bounds amplification after decompression, not
+    /// the ZIP itself.
+    pub(crate) max_triangles: usize,
 }
 
 impl Caps {
@@ -30,6 +37,13 @@ impl Caps {
         max_decompressed: 2 << 30,
         max_entries: 1024,
         max_ratio: 200,
+        // A triangle is `[[f32; 3]; 3]` = 36 bytes, so 8 million is ~288 MB of `Vec`.
+        // `deploy/compose.yaml` runs the worker at `LAPIDARY_WORKER_CONCURRENCY: 2`
+        // against a 2 GiB ceiling, so two jobs at this budget at once is ~576 MB -- room
+        // to spare. It is also roughly 200x the largest part in the project's test
+        // corpus (35,774 triangles, per the slice-3 handoff doc), so it refuses bombs
+        // without refusing real work.
+        max_triangles: 8_000_000,
     };
 }
 
@@ -39,7 +53,11 @@ impl Caps {
 /// reason to exist: `Read::take(cap + 1)` means a hostile entry costs `cap + 1` bytes of
 /// memory regardless of what it claims to expand to. Reading first and measuring second
 /// is the bomb working exactly as designed.
-pub(crate) fn read_capped<R: Read>(reader: R, cap: u64) -> Result<Vec<u8>, CadError> {
+///
+/// `reason` names which bound `cap` came from (e.g. "expands past the 4096-byte limit" or
+/// "compresses more than 20:1") so the refusal names a number that exists in
+/// configuration, rather than a derived value the caller computed and threw away.
+pub(crate) fn read_capped<R: Read>(reader: R, cap: u64, reason: &str) -> Result<Vec<u8>, CadError> {
     let mut out = Vec::new();
     // cap + 1: reading exactly `cap` cannot distinguish "ended at the cap" from
     // "continues past it", and a file of exactly the documented maximum size is legal.
@@ -53,7 +71,7 @@ pub(crate) fn read_capped<R: Read>(reader: R, cap: u64) -> Result<Vec<u8>, CadEr
     if out.len() as u64 > cap {
         return Err(CadError::ArchiveRefused {
             format: FORMAT.to_owned(),
-            detail: format!("one entry expands past the {cap}-byte limit"),
+            detail: format!("one entry {reason}"),
         });
     }
     Ok(out)
@@ -123,11 +141,23 @@ pub(crate) fn entry(
         .map_err(|_| malformed(format!("the package has no {name} part")))?;
     let compressed = file.compressed_size().max(1);
     // The ratio bound and the absolute bound, whichever is tighter. Ratio catches the
-    // classic bomb: a few kilobytes claiming to be gigabytes.
-    let cap = caps
-        .max_decompressed
-        .min(compressed.saturating_mul(caps.max_ratio));
-    read_capped(file, cap)
+    // classic bomb: a few kilobytes claiming to be gigabytes. Naming which one fired
+    // matters: the ratio bound is derived from this entry's compressed size and appears
+    // nowhere in configuration, so a message that just quoted the number would leave an
+    // operator unable to find it anywhere.
+    let ratio_cap = compressed.saturating_mul(caps.max_ratio);
+    let (cap, reason) = if caps.max_decompressed <= ratio_cap {
+        (
+            caps.max_decompressed,
+            format!("expands past the {}-byte limit", caps.max_decompressed),
+        )
+    } else {
+        (
+            ratio_cap,
+            format!("compresses more than {}:1", caps.max_ratio),
+        )
+    };
+    read_capped(file, cap, &reason)
 }
 
 /// The StartPart target from `_rels/.rels`, normalised to an archive entry name.
@@ -211,11 +241,15 @@ pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
     let mut archive = open_archive(bytes, &caps)?;
     let rels = entry(&mut archive, "_rels/.rels", &caps)?;
     let model_name = model_part_name(&rels)?;
+    // `rels` and the model part are never needed together, and the model entry's own cap
+    // allows up to 2 GiB -- against the worker's 2 GiB ceiling, holding both live at once
+    // is the difference between headroom and none.
+    drop(rels);
     let model = entry(&mut archive, &model_name, &caps)?;
     let (objects, build, scale) = read_model(&model)?;
     let mut triangles = Vec::new();
     for (id, transform) in &build {
-        emit(&objects, id, *transform, scale, 0, &mut triangles)?;
+        emit(&objects, id, *transform, scale, 0, &caps, &mut triangles)?;
     }
     finish(FORMAT, triangles)
 }
@@ -409,6 +443,7 @@ fn emit(
     transform: [f64; 12],
     scale: f64,
     depth: u32,
+    caps: &Caps,
     out: &mut Vec<[[f32; 3]; 3]>,
 ) -> Result<(), CadError> {
     if depth > MAX_DEPTH {
@@ -421,6 +456,18 @@ fn emit(
             "a build item names object {id}, which does not exist"
         ))
     })?;
+
+    // Checked before the batch is pushed, not after: `MAX_DEPTH` bounds recursion depth,
+    // but nothing bounds how many `<components>` one object holds, so triangles can grow
+    // as branching^depth. Measuring `out.len()` after emitting the bomb is the bomb
+    // working exactly as designed -- same principle as `read_capped`.
+    if out.len() + object.triangles.len() > caps.max_triangles {
+        return Err(refused(format!(
+            "its components would emit more than {} triangles, past the amount this \
+             reader allows",
+            caps.max_triangles
+        )));
+    }
 
     for t in &object.triangles {
         // Transform first in the file's own units, then scale to millimetres: the
@@ -444,6 +491,7 @@ fn emit(
             compose(transform, *child_transform),
             scale,
             depth + 1,
+            caps,
             out,
         )?;
     }
@@ -493,7 +541,8 @@ mod tests {
             remaining: 64 * 1024,
             pulled: &pulled,
         };
-        let err = read_capped(source, 1024).expect_err("must refuse");
+        let err =
+            read_capped(source, 1024, "expands past the 1024-byte limit").expect_err("must refuse");
         assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
         assert!(
             pulled.get() <= 1024 + 4096,
@@ -505,7 +554,8 @@ mod tests {
 
     #[test]
     fn a_stream_inside_the_cap_is_returned_whole() {
-        let bytes = read_capped(&b"3MF"[..], 1024).expect("reads");
+        let bytes =
+            read_capped(&b"3MF"[..], 1024, "expands past the 1024-byte limit").expect("reads");
         assert_eq!(bytes, b"3MF");
     }
 
@@ -514,7 +564,8 @@ mod tests {
         // Off-by-one guard: the cap is a maximum, not a strict bound. A 1024-byte entry
         // under a 1024-byte cap is legal, and a parser that refused it would reject
         // files for being exactly the documented size.
-        let bytes = read_capped(&[7u8; 1024][..], 1024).expect("reads");
+        let bytes =
+            read_capped(&[7u8; 1024][..], 1024, "expands past the 1024-byte limit").expect("reads");
         assert_eq!(bytes.len(), 1024);
     }
 
@@ -524,6 +575,7 @@ mod tests {
         assert_eq!(Caps::DEFAULT.max_decompressed, 2 << 30);
         assert_eq!(Caps::DEFAULT.max_entries, 1024);
         assert_eq!(Caps::DEFAULT.max_ratio, 200);
+        assert_eq!(Caps::DEFAULT.max_triangles, 8_000_000);
     }
 
     use std::io::Write as _;
@@ -546,6 +598,9 @@ mod tests {
             max_decompressed: 4096,
             max_entries: 4,
             max_ratio: 20,
+            // Irrelevant to what these tests exercise -- they never reach `emit` -- so
+            // left wide open rather than picking a number that would look meaningful.
+            max_triangles: usize::MAX,
         }
     }
 
@@ -564,11 +619,42 @@ mod tests {
 
     #[test]
     fn an_entry_past_the_size_cap_is_refused() {
-        let big = vec![b'A'; 8192];
-        let bytes = zip_of(&[("3D/3dmodel.model", &big)]);
+        // `vec![b'A'; 8192]` deflates to about 26 bytes, so
+        // `caps.max_decompressed.min(compressed * caps.max_ratio)` computes
+        // `min(4096, 520) = 520` -- the RATIO bound fires, and `max_decompressed` is
+        // never exercised. Deflate cannot compress a good pseudo-random stream, which
+        // pins the absolute cap as the one under test. (Not a dependency: xorshift32,
+        // a small deterministic PRNG -- a multiplicative hash of the index was tried
+        // first and still deflated to 952 bytes, well past what the ratio cap allows.)
+        let mut state: u32 = 0x2545_f491;
+        let incompressible: Vec<u8> = (0..8192)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        let bytes = zip_of(&[("3D/3dmodel.model", &incompressible)]);
         let mut a = open_archive(&bytes, &tiny_caps()).expect("opens");
+        let compressed = a
+            .by_name("3D/3dmodel.model")
+            .expect("entry exists")
+            .compressed_size();
+        assert!(
+            compressed > 8000,
+            "compressed size {compressed} is not close to the original 8192 bytes -- the \
+             fixture is not incompressible enough for the absolute cap to be the tighter \
+             bound"
+        );
         let err = entry(&mut a, "3D/3dmodel.model", &tiny_caps()).expect_err("must refuse");
-        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+        let CadError::ArchiveRefused { detail, .. } = &err else {
+            panic!("wrong variant: {err}")
+        };
+        assert!(
+            detail.contains("4096-byte limit"),
+            "expected the absolute cap's message, got: {detail}"
+        );
     }
 
     #[test]
@@ -582,10 +668,17 @@ mod tests {
             max_decompressed: 1 << 20,
             max_entries: 4,
             max_ratio: 20,
+            max_triangles: usize::MAX,
         };
         let mut a = open_archive(&bytes, &caps).expect("opens");
         let err = entry(&mut a, "3D/3dmodel.model", &caps).expect_err("must refuse");
-        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+        let CadError::ArchiveRefused { detail, .. } = &err else {
+            panic!("wrong variant: {err}")
+        };
+        assert!(
+            detail.contains("20:1"),
+            "expected the ratio cap's message, got: {detail}"
+        );
     }
 
     #[test]
@@ -824,6 +917,69 @@ mod tests {
         ))
         .expect_err("must fail");
         assert!(err.to_string().contains("nested"), "{err}");
+    }
+
+    #[test]
+    fn a_component_fan_out_bomb_is_refused() {
+        // `MAX_DEPTH` bounds recursion depth, not breadth: an object can hold many
+        // <components>, each one recursing, so emitted triangles grow as branching^depth
+        // rather than depth alone. Branching factor 4 over 8 levels is 4^8 = 65,536
+        // triangles (2.2 MiB) -- enough to prove the budget fires, small and fast enough
+        // to build safely. Do NOT raise this branching factor: higher ones are exactly
+        // how this machine has already OOM-killed itself twice this session (8^8 is 16.7
+        // million triangles; 12^8 is roughly 155 GB).
+        const BRANCHING: usize = 4;
+        const LEVELS: usize = 8;
+        let mut resources = String::from(
+            r#"<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>"#,
+        );
+        for level in 2..=(LEVELS + 1) {
+            let components: String = (0..BRANCHING)
+                .map(|_| format!(r#"<component objectid="{}"/>"#, level - 1))
+                .collect();
+            resources.push_str(&format!(
+                r#"<object id="{level}"><components>{components}</components></object>"#
+            ));
+        }
+        let top = LEVELS + 1;
+        let model = format!(
+            r#"<model unit="millimeter"><resources>{resources}</resources>
+<build><item objectid="{top}"/></build></model>"#
+        );
+
+        // A small injected budget: the test proves the mechanism without needing a
+        // package that actually reaches the real 8,000,000-triangle default.
+        let caps = Caps {
+            max_triangles: 1000,
+            ..Caps::DEFAULT
+        };
+        let bytes = package(&model);
+        let mut archive = open_archive(&bytes, &caps).expect("opens");
+        let rels = entry(&mut archive, "_rels/.rels", &caps).expect("reads rels");
+        let model_name = model_part_name(&rels).expect("resolves model part");
+        drop(rels);
+        let model_bytes = entry(&mut archive, &model_name, &caps).expect("reads model");
+        let (objects, build, scale) = read_model(&model_bytes).expect("model parses");
+
+        let mut triangles = Vec::new();
+        let err = build
+            .iter()
+            .try_for_each(|(id, transform)| {
+                emit(&objects, id, *transform, scale, 0, &caps, &mut triangles)
+            })
+            .expect_err("must refuse");
+        let CadError::ArchiveRefused { detail, .. } = &err else {
+            panic!("wrong variant: {err}")
+        };
+        assert!(detail.contains("1000"), "{detail}");
+        assert!(
+            triangles.len() <= 1000,
+            "the budget must stop growth as it accumulates, not after emitting the whole \
+             bomb: got {} triangles",
+            triangles.len()
+        );
     }
 
     #[test]

@@ -13,8 +13,8 @@
 //! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
 //!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
 //!      library gets its own part pointing at it. No write, so nothing to reap.
-//!    - no  -> `source.put(bytes)` writes the blob *before* the transaction, then
-//!      `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
+//!    - no  -> `source.put(bytes, compression)` writes the blob *before* the transaction,
+//!      then `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
 //!      written and the failure is returned
 //!
 //! Step 5's reap is not optional. The Node prototype wrote its blob and then failed the
