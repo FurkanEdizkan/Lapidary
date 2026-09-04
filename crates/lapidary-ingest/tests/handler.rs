@@ -543,3 +543,147 @@ async fn a_real_stl_writes_three_tessellation_blobs_and_rows(pool: PgPool) {
         assert_eq!(&bytes[0..4], b"glTF", "a rung is a glTF binary file");
     }
 }
+
+const IDLER_OBJ: &str = "idler-bracket-lp-2210-01.obj";
+const IDLER_OBJ_FIXTURE: &[u8] = include_bytes!("../../../fixtures/idler-bracket-lp-2210-01.obj");
+const GEAR: &str = "spur-gear-m2-20t-lp-5140-00.stl";
+const GEAR_FIXTURE: &[u8] =
+    include_bytes!("../../../example/parts/spur-gear-m2-20t-lp-5140-00.stl");
+
+/// Kind and hash for every derivative in the database, ordered by kind.
+async fn derivatives(pool: &PgPool) -> Vec<(String, Option<String>)> {
+    sqlx::query_as("SELECT kind, blake3 FROM derivative ORDER BY kind")
+        .fetch_all(pool)
+        .await
+        .expect("derivative rows")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_real_obj_yields_the_same_with_its_format_recorded(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(IDLER_OBJ), IDLER_OBJ_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(IDLER_OBJ)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let kinds: Vec<String> = derivatives(&pool)
+        .await
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "tessellation_l0",
+            "tessellation_l1",
+            "tessellation_l2",
+            "thumbnail"
+        ],
+        "an OBJ produces the same four derivatives an STL does"
+    );
+
+    let format: String = sqlx::query_scalar("SELECT format FROM file")
+        .fetch_one(&pool)
+        .await
+        .expect("format");
+    assert_eq!(format, "obj", "the row must not still say 'stl'");
+
+    // The part name is the stem, so the extension must not survive into it.
+    let name: String = sqlx::query_scalar("SELECT name FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("name");
+    assert_eq!(name, "idler-bracket-lp-2210-01");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write stl");
+    std::fs::write(ingest_dir.path().join(IDLER_OBJ), IDLER_OBJ_FIXTURE).expect("write obj");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("stl");
+    handler.handle(&job_for(IDLER_OBJ)).await.expect("obj");
+
+    let versions: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT kernel_version FROM derivative ORDER BY kernel_version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("versions");
+    // Two parsers, two versions. A single value here means an OBJ-derived derivative is
+    // indistinguishable from an STL-derived one, which is the thing the column exists to
+    // prevent -- and it would still pass every row-count assertion above.
+    assert_eq!(
+        versions,
+        vec!["mesh obj-1+glb-1+cpu-1", "mesh stl-1+glb-1+cpu-1"]
+    );
+}
+
+/// Triangle count read out of a stored `.glb`, by a reader that shares nothing with the
+/// writer. Task 4 gives the reason: a self-consistent writer passes a reader built from
+/// its own arithmetic every time.
+fn triangles_in_glb(bytes: &[u8]) -> u64 {
+    let u32_at = |at: usize| {
+        let mut four = [0u8; 4];
+        four.copy_from_slice(&bytes[at..at + 4]);
+        u32::from_le_bytes(four)
+    };
+    assert_eq!(&bytes[0..4], b"glTF", "magic");
+    assert_eq!(u32_at(4), 2, "glTF 2.0");
+    assert_eq!(
+        u32_at(8) as usize,
+        bytes.len(),
+        "the declared length is the real length"
+    );
+    let json_len = u32_at(12) as usize;
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes[20..20 + json_len]).expect("the JSON chunk parses");
+    // Accessor 1 is the index accessor; three indices per triangle.
+    json["accessors"][1]["count"].as_u64().expect("count") / 3
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn each_rung_is_valid_gltf_and_l0_is_smaller_than_l2(pool: PgPool) {
+    // Deliberately not the bracket: at 20 triangles it is coarser than L0's grid and
+    // clusters to itself, so its rungs are identical by design (spec §3.6). Proving the
+    // ladder actually ladders needs a mesh dense enough to decimate.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(GEAR)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    let mut counts = Vec::new();
+    for (kind, blake3) in derivatives(&pool).await {
+        let Some(hex) = blake3 else {
+            assert_eq!(kind, "thumbnail", "only the thumbnail is stored inline");
+            continue;
+        };
+        let hash = BlobHash::parse_hex(&hex).expect("a stored hash parses");
+        let bytes = store.get(&hash).expect("the rung's bytes are on disk");
+        counts.push((kind, triangles_in_glb(&bytes)));
+    }
+
+    assert_eq!(counts.len(), 3);
+    let count = |k: &str| counts.iter().find(|(kind, _)| kind == k).expect("rung").1;
+    assert!(
+        count("tessellation_l0") < count("tessellation_l2"),
+        "L0 {} must be coarser than L2 {} -- a ladder wired up but not laddered passes \
+         every row count above and still ships three copies of the full mesh",
+        count("tessellation_l0"),
+        count("tessellation_l2")
+    );
+    assert!(
+        count("tessellation_l1") <= count("tessellation_l2"),
+        "L1 must never exceed L2"
+    );
+}
