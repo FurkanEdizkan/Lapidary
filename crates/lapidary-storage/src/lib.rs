@@ -214,6 +214,14 @@ impl DerivativeStore {
     pub fn get(&self, hash: &BlobHash) -> Result<Vec<u8>, StorageError> {
         read_blob(&self.root, hash, false)
     }
+
+    /// Reap a derivative written for a transaction that then failed, exactly as
+    /// [`SourceStore::remove`] does for source bytes. The caller is responsible for only
+    /// calling it on bytes this job created: a rung shared with another revision is bytes
+    /// somebody else is still serving.
+    pub fn remove(&self, hash: &BlobHash) -> Result<(), StorageError> {
+        remove_blob(&self.root, hash)
+    }
 }
 
 /// Source bytes: compressed hard, never deleted while referenced, and reachable only
@@ -242,15 +250,21 @@ impl SourceStore {
     /// member could see: it exists only to clean up after a failed ingest write, not to
     /// remove content anyone has stored.
     pub fn remove(&self, hash: &BlobHash) -> Result<(), StorageError> {
-        let path = blob_path(&self.root, hash);
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(StorageError::Io {
-                path: path.display().to_string(),
-                source,
-            }),
-        }
+        remove_blob(&self.root, hash)
+    }
+}
+
+/// A missing file is success: the reap's job is that the bytes are not on disk
+/// afterwards, and a `put` that failed before its rename leaves nothing to remove.
+fn remove_blob(root: &Path, hash: &BlobHash) -> Result<(), StorageError> {
+    let path = blob_path(root, hash);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        }),
     }
 }
 
