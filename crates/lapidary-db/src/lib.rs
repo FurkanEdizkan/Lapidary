@@ -6,8 +6,8 @@ mod repo;
 
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
-    IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow,
-    TessellationRow,
+    DerivativeBytes, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts,
+    StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -61,6 +61,11 @@ pub enum DbError {
         "A triangle count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the mesh kernel reported — a real mesh should never have this many triangles."
     )]
     TriangleCountTooLarge { column: &'static str, value: u32 },
+
+    #[error(
+        "`{column}` holds `{value}`, which is not a BLAKE3 digest. The row is corrupt — it was probably written by something other than lapidary-db."
+    )]
+    CorruptBlobHash { column: &'static str, value: String },
 }
 
 impl DbError {
@@ -91,7 +96,8 @@ impl DbError {
             | DbError::UnsupportedVersion { .. }
             | DbError::TimestampOutOfRange { .. }
             | DbError::NegativeTriangleCount { .. }
-            | DbError::TriangleCountTooLarge { .. } => self.to_string(),
+            | DbError::TriangleCountTooLarge { .. }
+            | DbError::CorruptBlobHash { .. } => self.to_string(),
         }
     }
 }

@@ -61,7 +61,7 @@ async fn seed_part(
             name,
             blob: &blob,
             measurements: &measurements(),
-            thumbnail_webp,
+            thumbnail_webp: Some(thumbnail_webp),
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
             tessellations: &[],

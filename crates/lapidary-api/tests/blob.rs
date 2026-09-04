@@ -46,7 +46,7 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
                 zstd_level: 3,
             },
             measurements: &measurements(),
-            thumbnail_webp: b"the-thumbnail",
+            thumbnail_webp: Some(b"the-thumbnail"),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
             tessellations: &[TessellationRow {

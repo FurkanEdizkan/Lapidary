@@ -310,7 +310,7 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             name: "notes",
             blob: &blob,
             measurements: &measurements,
-            thumbnail_webp: &[0x52, 0x49, 0x46, 0x46],
+            thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
             tessellations: &[],
