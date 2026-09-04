@@ -603,6 +603,13 @@ git commit -m "feat(cad): cap archive reads as the bytes arrive"
 
 **Read first:** spec §3.5 and §3.6.
 
+**Use `attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)`, not `unescape_value()`.**
+quick-xml 0.41 deprecates the latter, and this workspace builds clippy with `-D warnings`,
+so the deprecation is an error. They are the same call: `unescape_value` is
+`normalized_value_with(XmlVersion::Implicit1_0, 1, resolve_predefined_entity)` and
+`normalized_value(v)` is `normalized_value_with(v, 1, resolve_predefined_entity)` —
+verified against the 0.41 source, same version, same depth, same resolver.
+
 **Interfaces:**
 - Consumes: `Caps`, `read_capped`, `CadError::ArchiveRefused` (task 3).
 - Produces: `open_archive(bytes: &[u8], caps: &Caps) -> Result<Archive<'_>, CadError>` where
@@ -782,7 +789,9 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                     let mut target = None;
                     let mut is_model = false;
                     for attr in e.attributes().flatten() {
-                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        let value = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            .unwrap_or_default()
+                            .into_owned();
                         match attr.key.local_name().as_ref() {
                             b"Target" => target = Some(value),
                             b"Type" => is_model = value == MODEL_REL_TYPE,
@@ -991,7 +1000,11 @@ fn attr(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == want)
-        .map(|a| a.unescape_value().unwrap_or_default().into_owned())
+        .map(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .unwrap_or_default()
+                .into_owned()
+        })
 }
 
 fn number(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Result<f64, CadError> {
@@ -1560,7 +1573,14 @@ git commit -m "test(cad): add a real 3MF fixture with two build items"
 - Consumes: `parse_3mf` (tasks 5–7).
 - Produces: `.3mf` files reaching `parse_3mf` through the ordinary pipeline.
 
-- [ ] **Step 1: Export and dispatch**
+- [ ] **Step 1: Export and dispatch, and drop the dead-code allow**
+
+`tmf.rs` carries `#![allow(dead_code)]` from task 3. **Remove it in this task** — this is
+the task that makes the module reachable, so this is the first point at which the
+attribute is no longer load-bearing. Removing it earlier fails `clippy -D warnings`,
+because `mod tmf;` is private and nothing outside the module's own tests reaches any of it
+until the `pub use` below exists. After removing it, clippy must still exit 0; if anything
+is still reported dead, that is a finding, not a reason to put the attribute back.
 
 In `crates/lapidary-cad/src/lib.rs`, beside the other re-exports:
 
