@@ -4,11 +4,6 @@
 //! security boundary — zip64, data descriptors, local-versus-central header mismatch —
 //! and a bug here is a vulnerability rather than a wrong mesh. See spec §3.2.
 
-// Removed in task 8, which adds `pub use tmf::parse_3mf` and so makes this module
-// reachable from outside its own tests. Until then `mod tmf;` is private and every item
-// here is dead to `clippy -D warnings`, however many callers it has internally.
-#![allow(dead_code)]
-
 use crate::kernel::CadError;
 use crate::stl::{Mesh, finish};
 use std::io::Read;
@@ -106,7 +101,12 @@ pub(crate) fn open_archive<'a>(bytes: &'a [u8], caps: &Caps) -> Result<Archive<'
 /// in this module writes an extracted file anywhere.
 fn is_unsafe_name(name: &str) -> bool {
     name.starts_with('/')
-        || name.starts_with('\\')
+        // APPNOTE 4.4.17 requires forward slashes as the only path separator in a ZIP
+        // entry name, so any backslash makes the name malformed regardless of what it is
+        // trying to do. This also closes the gap a `..` check alone leaves on Unix:
+        // `Path::components()` only splits on `/` there, so `..\..\secret.txt` parses as
+        // one ordinary component and never yields a `ParentDir`.
+        || name.contains('\\')
         || name.contains(':')
         || std::path::Path::new(name)
             .components()
@@ -593,6 +593,17 @@ mod tests {
         // Defence in depth: nothing here extracts to disk, so this is not a live vector
         // in this design. See spec §3.5 -- the rule should not depend on that staying so.
         let bytes = zip_of(&[("../../etc/passwd", b"root:x:0:0")]);
+        let err = open_archive(&bytes, &Caps::DEFAULT).expect_err("must refuse");
+        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_backslash_delimited_traversal_is_rejected() {
+        // On Unix, Path::components() only splits on '/', so "..\..\etc\passwd" parses as
+        // one ordinary component and never yields a ParentDir -- the `..` check alone
+        // misses it. The ZIP spec (APPNOTE 4.4.17) says entry names use forward slashes
+        // only, so any backslash is malformed regardless of what it is trying to do.
+        let bytes = zip_of(&[("..\\..\\etc\\passwd", b"root:x:0:0")]);
         let err = open_archive(&bytes, &Caps::DEFAULT).expect_err("must refuse");
         assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
     }

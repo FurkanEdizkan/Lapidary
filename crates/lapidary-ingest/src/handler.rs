@@ -312,8 +312,8 @@ pub(crate) fn part_name(file_name: &str) -> &str {
 
 /// The source format, lowercase and without a dot, taken from the file name the scan
 /// selected. An extension the kernel has no parser for reaches `process` and comes back as
-/// a per-file `Permanent` failure naming the format -- the scan admits only `stl` and
-/// `obj`, so that path is reachable today only by enqueueing a job by hand.
+/// a per-file `Permanent` failure naming the format -- the scan admits only `stl`, `obj`
+/// and `3mf`, so that path is reachable today only by enqueueing a job by hand.
 pub(crate) fn source_format(file_name: &str) -> String {
     FsPath::new(file_name)
         .extension()

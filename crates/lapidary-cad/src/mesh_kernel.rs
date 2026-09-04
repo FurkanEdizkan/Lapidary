@@ -5,7 +5,7 @@ use crate::cluster::ladder;
 use crate::glb::GLB_VERSION;
 use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 use crate::stl::Mesh;
-use crate::{RASTER_VERSION, measure, parse_obj, parse_stl, render_thumbnail};
+use crate::{RASTER_VERSION, measure, parse_3mf, parse_obj, parse_stl, render_thumbnail};
 
 pub struct MeshKernel;
 
@@ -18,7 +18,8 @@ fn parse(bytes: &[u8], format: &str) -> Result<Mesh, CadError> {
     match format.to_ascii_lowercase().as_str() {
         "stl" => parse_stl(bytes),
         "obj" => parse_obj(bytes),
-        // Unreachable through the scan, which admits only the two above. It is an error
+        "3mf" => parse_3mf(bytes),
+        // Unreachable through the scan, which admits only the three above. It is an error
         // rather than a panic because the alternative to a per-file `Permanent` failure
         // is a worker that dies on one misrouted job.
         other => Err(CadError::UnsupportedFormat {
@@ -141,9 +142,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_3mf_file_is_parsed_by_the_3mf_parser() {
+        let bytes = include_bytes!("../../../fixtures/planetary-carrier-lp-3480-02.3mf");
+        let out = MeshKernel
+            .process(bytes, &params("3mf"))
+            .await
+            .expect("ingests");
+        assert!(out.measurements.triangle_count > 0);
+        assert!(!out.thumbnail_webp.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_three_formats_report_three_versions() {
+        // slice 3 §3.7's correctness rule, now with a third parser: a derivative's
+        // kernel_version must say which parser produced it.
+        let versions = [
+            MeshKernel.version(&params("stl")).version,
+            MeshKernel.version(&params("obj")).version,
+            MeshKernel.version(&params("3mf")).version,
+        ];
+        assert_eq!(
+            versions[2],
+            format!("3mf-1+{GLB_VERSION}+{}", crate::RASTER_VERSION)
+        );
+        let unique: std::collections::BTreeSet<&String> = versions.iter().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "each parser needs its own version: {versions:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_format_with_no_parser_is_an_error_rather_than_a_panic() {
+        // "step" stands in for any format the scan cannot yet route here: 3MF gained a
+        // parser this task, so it can no longer serve as the unsupported case.
         let err = MeshKernel
-            .process(b"PK\x03\x04", &params("3mf"))
+            .process(b"anything", &params("step"))
             .await
             .expect_err("must fail");
         assert!(matches!(err, CadError::UnsupportedFormat { .. }));
