@@ -156,9 +156,19 @@ the last step. And `derivative_kind_unique_per_revision` (`0003_jobs.sql:62`) me
 write is an upsert keyed on `(revision_id, kind)`, so the discriminator *is* the derivative
 kind. Two job kinds would need a second mapping between them.
 
-`job.payload` becomes a `#[serde(tag = "kind")]` enum in `lapidary-core`, which closes a
-ledger item slice 2 opened with precisely this trigger: *"`payload` is untyped `jsonb` |
-**The second job kind.**"*
+`job.payload` becomes a typed enum in `lapidary-core`, which closes a ledger item slice 2
+opened with precisely this trigger: *"`payload` is untyped `jsonb` | **The second job
+kind.**"*
+
+**That ledger item said `#[serde(tag = "kind")]`, and it is wrong.** Every job row written
+so far holds a bare `{"path": …}` with no `kind` key, because `kind` is a separate
+*column*. An internally-tagged enum fails on all of them with `missing field 'kind'` —
+tested against a real row before this was written — so on upgrade every pending job would
+become undeserialisable and the queue would stop draining.
+
+The **column stays the discriminator**. The payload carries only the variant's fields, and
+`to_json` for `IngestFile` emits exactly what `enqueue_scan` has always written, so old and
+new rows are indistinguishable and no migration is needed.
 
 ### 3.7 The payload names a revision, not a part
 
@@ -313,12 +323,16 @@ comment is therefore amended by slice 5, not this one.
 pub enum DerivativeKind { Thumbnail, TessellationL0, TessellationL1, TessellationL2 }
 impl DerivativeKind { pub fn as_str(&self) -> &'static str; }   // the strings derivative.kind already holds
 
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// The `job.kind` COLUMN is the discriminator, not a key inside the payload — see §3.6.
 pub enum JobPayload {
     IngestFile { path: String },
     Derive { revision: RevisionId, produce: DerivativeKind },
 }
-impl JobPayload { pub fn kind(&self) -> &'static str; }
+impl JobPayload {
+    pub fn kind(&self) -> &'static str;                 // the column's value
+    pub fn to_json(&self) -> serde_json::Value;         // the payload column's value
+    pub fn from_row(kind: &str, payload: &serde_json::Value) -> Result<Self, CoreError>;
+}
 
 pub enum Outcome { Ingested, Skipped, Rendered }
 
