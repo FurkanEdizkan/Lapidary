@@ -408,13 +408,46 @@ Create `crates/lapidary-cad/src/tmf.rs` with only the tests for now:
 mod tests {
     use super::*;
 
+    /// A bounded source that records how many bytes were actually pulled from it.
+    ///
+    /// Bounded on purpose. An infinite reader proves the same point more elegantly, but
+    /// the naive implementation this test exists to catch calls `read_to_end` on it and
+    /// allocates until the machine dies — an OOM kill, not a test failure. A finite
+    /// source plus a byte counter gives a deterministic red test for 64 KiB.
+    ///
+    /// Also deliberately not `std::io::repeat`: std specialises `Repeat::read_to_end` to
+    /// fail with `OutOfMemory` immediately, so the naive version would return an error
+    /// too and the test would pass against the exact bug it exists to catch.
+    struct Counted<'a> {
+        remaining: usize,
+        pulled: &'a std::cell::Cell<usize>,
+    }
+
+    impl Read for Counted<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(0);
+            self.remaining -= n;
+            self.pulled.set(self.pulled.get() + n);
+            Ok(n)
+        }
+    }
+
     #[test]
     fn reading_stops_at_the_cap_rather_than_after_it() {
-        // An INFINITE reader. This is the whole point: an implementation that inflates
-        // the entry and then measures it never returns, while one that caps as bytes
-        // arrive returns an error immediately. No timing assertion, no huge fixture.
-        let err = read_capped(std::io::repeat(0u8), 1024).expect_err("must refuse");
+        // `DATA.md` §5.4 says abort "on breach, not after", and the byte count is what
+        // tells those two apart. Both implementations return an error, so asserting on
+        // the error alone would certify nothing.
+        let pulled = std::cell::Cell::new(0);
+        let source = Counted { remaining: 64 * 1024, pulled: &pulled };
+        let err = read_capped(source, 1024).expect_err("must refuse");
         assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+        assert!(
+            pulled.get() <= 1024 + 4096,
+            "pulled {} bytes for a 1024-byte cap: the cap must bound the read, not just \
+             the result",
+            pulled.get()
+        );
     }
 
     #[test]
@@ -528,7 +561,8 @@ Expected: 4 new tests pass. Workspace total 343.
 
 - [ ] **Step 6: Verify the mutation bites**
 
-Replace the body of `read_capped` with the naive version:
+Replace the body of `read_capped` with the naive version (note `mut reader: R` — without
+`.take()` the receiver must be mutable):
 
 ```rust
     let mut out = Vec::new();
@@ -539,16 +573,19 @@ Replace the body of `read_capped` with the naive version:
     if out.len() as u64 > cap { /* … same error … */ }
 ```
 
-Run with a timeout, because the expected failure is a **hang**, not a red test:
-
 ```sh
-timeout 20 cargo test -p lapidary-cad --all-features reading_stops_at_the_cap; echo "exit=$?"
+cargo test -p lapidary-cad --all-features reading_stops_at_the_cap; echo "exit=$?"
 ```
 
-Expected: exit 124 (timeout). `std::io::repeat` never ends, so an implementation that
-reads before measuring never returns — which is precisely the difference between aborting
-during and aborting after. **Revert byte-identically** and confirm the test passes in
-milliseconds.
+Expected: a normal FAILED, on the byte-count assertion — "pulled 65536 bytes for a
+1024-byte cap". The error assertion still passes, which is the point: both versions
+refuse the stream, and only the byte count distinguishes aborting *during* from aborting
+*after*.
+
+**Do not "improve" this test by making the source infinite.** An earlier draft of this
+plan did exactly that, and the naive implementation then allocated until the kernel's OOM
+killer fired — 13 GB on a 15 GB machine, twice, taking the editor down with it. A hang
+that eats all memory is not a test failure. **Revert byte-identically** afterwards.
 
 - [ ] **Step 7: Commit**
 
@@ -1335,8 +1372,15 @@ Two, run separately.
 `two_build_items_of_one_object_become_one_merged_mesh` and
 `a_component_composes_its_transform_with_the_items` FAIL on coordinates.
 
-**Mutation B — remove the depth cap.** Delete the `if depth > MAX_DEPTH` block. Run under
-a timeout, because the expected result is a crash or a hang rather than a red test:
+**Mutation B — remove the depth cap.** Delete the `if depth > MAX_DEPTH` block. The
+expected result is a fast stack overflow, not a red test.
+
+This is safe **only because the cycle fixture's objects carry `<components>` and no
+`<mesh>`**: nothing is pushed to `out`, so the recursion consumes stack (bounded, aborts
+in milliseconds) rather than heap. Do not add geometry to those two objects. If you do,
+every recursion level appends triangles and the mutation becomes an unbounded allocation
+that the kernel's OOM killer ends — which happened twice during task 3 of this slice,
+taking the editor down with it. Run it under a timeout anyway:
 
 ```sh
 timeout 20 cargo test -p lapidary-cad --all-features a_component_cycle; echo "exit=$?"
