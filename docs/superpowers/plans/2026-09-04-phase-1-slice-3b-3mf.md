@@ -1241,6 +1241,27 @@ row-major, then a translation in the last three.
     }
 
     #[test]
+    fn a_translation_is_scaled_by_the_unit_too() {
+        // The ONE test that distinguishes transform-then-scale from scale-then-transform.
+        // A pure scale matrix commutes with the unit scalar and a translation in a
+        // millimetre file has scale 1, so neither of the other transform tests can tell
+        // the two orderings apart -- both give the same answer. A translation in a
+        // centimetre file cannot: correct is (v + t) * 10, wrong is v * 10 + t.
+        let mesh = parse_3mf(&package(r#"<model unit="centimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 10 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles,
+            vec![[[100.0, 0.0, 0.0], [110.0, 0.0, 0.0], [100.0, 10.0, 0.0]]],
+            "scaling before transforming would give 10/20/10 -- the translation must be \
+             scaled with the geometry, because it is expressed in the same units"
+        );
+    }
+
+    #[test]
     fn a_component_cycle_terminates_instead_of_hanging() {
         // Object 1 contains object 2 contains object 1. Without a depth cap this
         // recurses until the stack dies.
@@ -1378,12 +1399,20 @@ Expected: 5 new tests pass. Workspace total 360.
 
 - [ ] **Step 5: Verify the mutations bite**
 
-Two, run separately.
+Three, run separately.
 
 **Mutation A — ignore the transform.** In `emit`, replace `apply(transform, …)` with
 `object.vertices[i]`. Expected: `a_build_items_transform_moves_the_geometry`,
-`two_build_items_of_one_object_become_one_merged_mesh` and
-`a_component_composes_its_transform_with_the_items` FAIL on coordinates.
+`two_build_items_of_one_object_become_one_merged_mesh`,
+`a_component_composes_its_transform_with_the_items` and
+`a_translation_is_scaled_by_the_unit_too` FAIL on coordinates.
+
+**Mutation C — scale before transforming.** In `emit`, scale each vertex first and then
+apply the matrix. Expected: **only** `a_translation_is_scaled_by_the_unit_too` fails, at
+10/20/10 against the expected 100/110/100. Every other transform test still passes, which
+is exactly why that test had to be added: a pure scale matrix commutes with the unit
+scalar, and a translation in a millimetre file has scale 1, so nothing else can tell the
+two orderings apart.
 
 **Mutation B — remove the depth cap.** Delete the `if depth > MAX_DEPTH` block. The
 expected result is a fast stack overflow, not a red test.
