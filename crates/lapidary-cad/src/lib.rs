@@ -8,6 +8,7 @@ mod measure;
 mod mesh_kernel;
 #[cfg(feature = "mock-kernel")]
 mod mock;
+mod obj;
 mod raster;
 mod stl;
 
@@ -18,6 +19,7 @@ pub use measure::measure;
 pub use mesh_kernel::MeshKernel;
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
+pub use obj::parse_obj;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
 pub use stl::{Mesh, parse_stl};
 

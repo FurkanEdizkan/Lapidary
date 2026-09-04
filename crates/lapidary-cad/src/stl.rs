@@ -98,7 +98,7 @@ fn parse_binary(bytes: &[u8], count: usize) -> Result<Mesh, CadError> {
         at += 2; // attribute byte count
         triangles.push(tri);
     }
-    finish(triangles)
+    finish("STL", triangles)
 }
 
 fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
@@ -226,13 +226,13 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
         });
     }
 
-    finish(triangles)
+    finish("STL", triangles)
 }
 
-fn finish(triangles: Vec<[[f32; 3]; 3]>) -> Result<Mesh, CadError> {
+pub(crate) fn finish(format: &str, triangles: Vec<[[f32; 3]; 3]>) -> Result<Mesh, CadError> {
     if triangles.is_empty() {
         return Err(CadError::MalformedMesh {
-            format: "STL".to_owned(),
+            format: format.to_owned(),
             detail: "the file parsed but contains no triangles".to_owned(),
         });
     }
