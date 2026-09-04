@@ -14,7 +14,7 @@ reads are capped as bytes arrive. `SourceStore` learns a compression policy so 3
 stored as-is.
 
 **Tech Stack:** Rust 1.95.0 edition 2024. Two new dependencies — `zip` 2 (deflate, pure
-Rust) and `quick-xml` 0.37 — and nothing else changes.
+Rust) and `quick-xml` 0.41 — and nothing else changes.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-phase-1-slice-3b-3mf-design.md` — read it
 first. Every "why" below is argued there; this plan is the "how".
@@ -129,7 +129,7 @@ without reading a parser.
 In `Cargo.toml`'s `[workspace.dependencies]`, keeping alphabetical order:
 
 ```toml
-quick-xml = "0.37.5"
+quick-xml = "0.41"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 ```
 
@@ -154,9 +154,17 @@ cargo fetch; echo "exit=$?"
 git diff --stat Cargo.lock
 ```
 
-Expected: exactly seven new packages — `zip`, `flate2`, `miniz_oxide`, `adler2`,
-`simd-adler32`, `crc32fast`, `zopfli` — plus `quick-xml`. If anything else appears,
-`default-features = false` did not take; stop and re-read step 1.
+Expected: **eight new packages that compile** — `zip`, `flate2`, `miniz_oxide`, `adler2`,
+`simd-adler32`, `crc32fast`, `zopfli`, `quick-xml`.
+
+`Cargo.lock` will gain two more lines than that: `arbitrary` and `derive_arbitrary`. They
+are correct and expected. zip declares them under
+`[target."cfg(fuzzing)".dependencies]`, so the lockfile records them while a normal build
+never compiles them — `cargo tree -i arbitrary` reports "nothing to print", which is the
+proof. Do not try to remove them.
+
+If anything *else* appears, `default-features = false` did not take; stop and re-read
+step 1.
 
 - [ ] **Step 4: Audit the licences for real**
 
@@ -173,6 +181,12 @@ that is a finding about the spec, not a line to add.
 
 `multiple-versions = "warn"` may report two `miniz_oxide` majors. A warning is not a
 failure; note it in the commit message and move on.
+
+**`quick-xml` must be 0.41 or later.** 0.37 carries RUSTSEC-2026-0194 and
+RUSTSEC-2026-0195 — a quadratic-time parse and an unbounded-allocation memory-exhaustion
+DoS, both in the component that reads attacker-controlled XML. `cargo deny check` fails on
+them. The API this plan uses is unchanged across the bump; it was compiled against 0.41
+before this line was written.
 
 - [ ] **Step 5: Verify**
 

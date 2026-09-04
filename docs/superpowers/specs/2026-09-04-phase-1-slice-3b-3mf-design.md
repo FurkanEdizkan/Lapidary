@@ -85,11 +85,19 @@ review:
 | Crate | New crates in our lock | Licence | Why |
 |---|---|---|---|
 | `zip` 2, `default-features = false`, `features = ["deflate"]` | 7: `zip`, `flate2`, `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast`, `zopfli` | MIT (deps MIT/Apache-2.0/Zlib/0BSD) | ZIP is a security-sensitive container — zip64, data descriptors, local-versus-central header mismatch, encryption flags. The hand-rolled parsers in this crate are *geometry* parsers, where a bug is a wrong mesh; a hand-rolled archive reader's bugs are vulnerabilities |
-| `quick-xml` 0.37 | 1: `quick-xml` (`memchr` already present) | MIT | Streaming pull parser. A 3MF's model XML is the mesh in text form and can reach hundreds of megabytes; a DOM parser such as `roxmltree` would hold all of it at once |
+| `quick-xml` 0.41 | 1: `quick-xml` (`memchr` already present) | MIT | Streaming pull parser. A 3MF's model XML is the mesh in text form and can reach hundreds of megabytes; a DOM parser such as `roxmltree` would hold all of it at once |
 
 Both are pure Rust, so no C toolchain enters the worker image and `cargo vendor` still
 builds offline — the same constraint that decided slice 3 §3.2 against meshopt. Every
 licence is permissive and compatible with AGPL-3.0-only.
+
+**`quick-xml` is pinned at 0.41 or later, and that is a security floor rather than a
+preference.** 0.37 carries RUSTSEC-2026-0194 (quadratic time checking a start tag for
+duplicate attribute names) and RUSTSEC-2026-0195 (unbounded namespace-declaration
+allocation in `NsReader`, a memory-exhaustion denial of service). Both are exactly the
+threat this slice's caps exist to stop, on the one component that reads attacker-controlled
+XML — shipping them would undercut §3.4 entirely. `cargo deny check` fails on both, which is
+how they were found.
 
 Two costs are accepted knowingly. `zopfli` is a *compressor* we never call: it arrives
 because zip 2.4.2's `deflate-flate2` feature is broken — it gates code that needs
