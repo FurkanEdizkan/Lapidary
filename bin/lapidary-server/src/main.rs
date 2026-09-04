@@ -168,7 +168,13 @@ fn worker_router(
         ingest_dir.context("Could not start as worker: LAPIDARY_INGEST_DIR is not set.")?;
     let blob_root =
         blob_root.context("Could not start as worker: LAPIDARY_BLOB_ROOT is not set.")?;
-    let api = router(AppState { db: db.clone() }, Role::Worker);
+    let api = router(
+        AppState {
+            db: db.clone(),
+            blob_root: blob_root.clone(),
+        },
+        Role::Worker,
+    );
     let ingest = lapidary_ingest::router(lapidary_ingest::AppState {
         db,
         ingest_dir,
@@ -380,7 +386,15 @@ async fn main() -> Result<()> {
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
     let shutdown = tokio_util::sync::CancellationToken::new();
     let (app_router, worker) = match role {
-        Role::Api => (router(AppState { db }, Role::Api), None),
+        Role::Api => {
+            // As required here as it is for the worker now that the api role serves
+            // derivative bytes -- see deploy/compose.yaml's api service.
+            let blob_root = config
+                .blob_root
+                .clone()
+                .context("Could not start as api: LAPIDARY_BLOB_ROOT is not set.")?;
+            (router(AppState { db, blob_root }, Role::Api), None)
+        }
         Role::Worker => {
             // worker_router is built first on purpose: on a build without ingest support
             // it bails, and that is the error an operator should see, rather than one
@@ -529,7 +543,14 @@ mod tests {
     // accidentally merge lapidary-ingest's router into the Api arm as well.
     #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
     async fn the_api_role_router_does_not_serve_scan(pool: sqlx::PgPool) {
-        let app = router(AppState { db: pool }, Role::Api);
+        let app = router(
+            AppState {
+                db: pool,
+                // This test asks only which routes mount; it never reaches the store.
+                blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
+            },
+            Role::Api,
+        );
         let response = app
             .oneshot(
                 Request::builder()

@@ -12,6 +12,12 @@ use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
 use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow};
 use tower::ServiceExt;
 
+/// These tests never read a blob; the field is required to build the state, and a path
+/// that does not exist is the honest value for a test that must not reach the store.
+fn blob_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/nonexistent-blob-root")
+}
+
 /// Seeded by `crates/lapidary-db/migrations/0002_parts.sql` — nothing in slice 1
 /// creates a library through the API, so every test either uses this one or inserts a
 /// second directly, same as `crates/lapidary-db/tests/repo.rs`.
@@ -72,7 +78,13 @@ async fn get_page(
     library: &str,
     query: &str,
 ) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState { db: pool }, Role::Api);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Api,
+    );
     let uri = if query.is_empty() {
         format!("/api/libraries/{library}/parts")
     } else {

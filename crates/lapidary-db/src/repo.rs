@@ -85,6 +85,32 @@ impl PgBlobs {
         Ok(found.is_some())
     }
 
+    /// Is this derivative reachable — does any part in any library that exists point at
+    /// these bytes?
+    ///
+    /// The open path's authorization check, and it is a product rule rather than a
+    /// nicety: content addressing is not authorization, so holding a hash must not by
+    /// itself grant the bytes. There is no principal in Phase 1, so "the caller may read
+    /// it" reduces to "some library reaches it"; the join is written now, while it is one
+    /// query, rather than retrofitted in Phase 8 when it would be a security fix.
+    ///
+    /// Deliberately unable to distinguish "no such hash" from "on disk but unreferenced".
+    /// The caller turns both into the same 404, because a different answer for the second
+    /// confirms the bytes exist, which is exactly the capability a hash must not confer.
+    pub async fn derivative_is_reachable(&self, hash: &BlobHash) -> Result<bool, DbError> {
+        let found: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             JOIN library l ON l.id = p.library_id \
+             WHERE d.blake3 = $1 LIMIT 1",
+        )
+        .bind(hash.to_hex())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(found.is_some())
+    }
+
     /// Does `library` already hold a part called `part_name` whose source file is
     /// exactly these bytes? In other words: is this the same file, seen again?
     ///
