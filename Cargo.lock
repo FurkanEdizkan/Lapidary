@@ -1184,6 +1184,7 @@ dependencies = [
  "image",
  "lapidary-core",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

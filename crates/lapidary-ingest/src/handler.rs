@@ -9,7 +9,7 @@
 //! 2. BLAKE3 — hash first, always
 //! 3. `blobs.library_holds(library, name, hash)`? yes -> `Skipped`, no further work at
 //!    all: not a parse, not a raster, not a query beyond this one
-//! 4. `kernel.ingest(bytes)` — parse + measure + rasterize
+//! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
 //! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
 //!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
 //!      library gets its own part pointing at it. No write, so nothing to reap.
@@ -60,7 +60,7 @@
 //! When genuinely unsure, this module chooses `Transient`: a retried permanent failure
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
-use lapidary_cad::MeshKernel;
+use lapidary_cad::{Kernel, KernelParams, MeshKernel};
 use lapidary_core::{BlobHash, LibraryId, Outcome};
 use lapidary_db::{DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow};
 use lapidary_jobs::{HandlerError, JobHandler};
@@ -135,9 +135,22 @@ impl IngestHandler {
         // because the new part needs its own measurements and its own thumbnail; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
         // immutable, so this error is the final answer about them.
-        let output = kernel.ingest(&bytes).map_err(|e| HandlerError::Permanent {
-            message: e.to_string(),
-        })?;
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            // Task 7 derives this from the file name. Every file reaching here today came
+            // through a walk that filtered on `.stl`, so this is not yet a guess.
+            format: "stl".to_owned(),
+        };
+        let output =
+            kernel
+                .process(&bytes, &params)
+                .await
+                .map_err(|e| HandlerError::Permanent {
+                    message: e.to_string(),
+                })?;
+        // `output.tessellations` is carried no further yet -- tasks 8 and 9 persist the
+        // rungs. Dropping them here is deliberate, not an oversight: the schema change
+        // that gives them somewhere to live is a separate commit.
 
         // 5a. Some library already holds these bytes. Reuse them exactly as they are: no
         // second copy on disk, no second `blob` row, and -- the part that matters -- no

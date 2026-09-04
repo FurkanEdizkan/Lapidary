@@ -15,7 +15,7 @@ pub use cluster::{Lod, Tessellation, cluster, ladder};
 pub use glb::GLB_VERSION;
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
-pub use mesh_kernel::{MeshKernel, MeshOutput};
+pub use mesh_kernel::MeshKernel;
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
