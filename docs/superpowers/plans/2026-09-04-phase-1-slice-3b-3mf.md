@@ -1262,6 +1262,42 @@ row-major, then a translation in the last three.
     }
 
     #[test]
+    fn a_components_rotation_composes_in_the_right_order() {
+        // The 3x3 half of composition, which
+        // `a_component_composes_its_transform_with_the_items` cannot pin: both of its
+        // transforms have identity 3x3 blocks, so a transposed product gives the same
+        // answer. Here the component rotates 90 degrees about z and the build item scales
+        // x by two. Rotating first sends (1,0,0) to (0,1,0), which the scale leaves alone;
+        // the other order gives (0,2,0).
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="1" y="0" z="0"/><vertex x="0" y="0" z="0"/><vertex x="0" y="0" z="1"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2"><components><component objectid="1" transform="0 1 0 -1 0 0 0 0 1 0 0 0"/></components></object>
+</resources>
+<build><item objectid="2" transform="2 0 0 0 1 0 0 0 1 0 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles[0][0],
+            [0.0, 1.0, 0.0],
+            "the component's rotation must apply before the build item's scale"
+        );
+    }
+
+    #[test]
+    fn a_transform_with_too_many_numbers_is_rejected() {
+        // `zip` stops at the shorter side, so counting inside the loop accepts thirteen
+        // numbers by truncating to twelve while correctly rejecting eleven.
+        let err = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0 99"/></build></model>"#))
+            .expect_err("must fail");
+        assert!(err.to_string().contains("13 numbers"), "{err}");
+    }
+
+    #[test]
     fn a_component_cycle_terminates_instead_of_hanging() {
         // Object 1 contains object 2 contains object 1. Without a depth cap this
         // recurses until the stack dies.
@@ -1309,7 +1345,16 @@ const MAX_DEPTH: u32 = 8;
 fn matrix(raw: Option<&str>) -> Result<[f64; 12], CadError> {
     let Some(raw) = raw else { return Ok(IDENTITY) };
     let mut m = IDENTITY;
-    let mut seen = 0;
+    // Counted up front rather than inferred from the loop. `zip` stops at the shorter
+    // side, so a loop that counts as it goes rejects a transform with too FEW numbers and
+    // silently truncates one with too many -- an asymmetric hole in exactly the input
+    // validation CLAUDE.md says never to simplify away, on an untrusted file.
+    let count = raw.split_whitespace().count();
+    if count != 12 {
+        return Err(malformed(format!(
+            "a transform has {count} numbers, and a 3MF transform has exactly twelve"
+        )));
+    }
     for (slot, token) in m.iter_mut().zip(raw.split_whitespace()) {
         *slot = token
             .parse()
@@ -1317,12 +1362,6 @@ fn matrix(raw: Option<&str>) -> Result<[f64; 12], CadError> {
         if !slot.is_finite() {
             return Err(malformed(format!("a transform holds {token:?}, which is not finite")));
         }
-        seen += 1;
-    }
-    if seen != 12 {
-        return Err(malformed(format!(
-            "a transform has {seen} numbers, and a 3MF transform has twelve"
-        )));
     }
     Ok(m)
 }
@@ -1481,7 +1520,11 @@ def prism(cx, cy, r, z0, z1, seg):
     verts.append((cx, cy, z0)); verts.append((cx, cy, z1))
     for i in range(seg):
         b0, b1 = base + 2 * i, base + 2 * ((i + 1) % seg)
-        tris += [(b0, b1, b1 + 1), (b0, b1 + 1, b0 + 1)]      # wall
+        # .extend, not `tris += [...]`: augmented assignment rebinds the name, so
+        # Python treats `tris` as local to this function and the read raises
+        # UnboundLocalError. `verts.append` and `tris.append` below are method calls
+        # and are fine.
+        tris.extend([(b0, b1, b1 + 1), (b0, b1 + 1, b0 + 1)])  # wall
         tris.append((cb, b1, b0))                              # bottom cap
         tris.append((ct, b0 + 1, b1 + 1))                      # top cap
 
