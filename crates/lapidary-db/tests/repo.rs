@@ -1323,3 +1323,34 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
          orderings must never be able to disagree"
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn touching_a_blob_leaves_every_other_blob_alone(pool: sqlx::PgPool) {
+    let read = blob_row(0x51);
+    let never_read = blob_row(0x52);
+    for blob in [&read, &never_read] {
+        sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, $2, $3)")
+            .bind(blob.hash.to_hex())
+            .bind(blob.size_bytes as i64)
+            .bind(blob.stored_bytes as i64)
+            .execute(&pool)
+            .await
+            .expect("inserts a blob row");
+    }
+
+    PgBlobs(pool.clone()).touch_blob(&read.hash).await;
+
+    // Which rows, not how many: an UPDATE that lost its WHERE clause would mark the whole
+    // table recently used, and every age-based decision downstream reads this column to
+    // tell blobs apart. A touch that cannot discriminate is worse than no touch at all.
+    let touched: Vec<String> =
+        sqlx::query_scalar("SELECT blake3 FROM blob WHERE last_accessed_at IS NOT NULL")
+            .fetch_all(&pool)
+            .await
+            .expect("queries the touched rows");
+    assert_eq!(
+        touched,
+        vec![read.hash.to_hex()],
+        "exactly the blob that was read carries a timestamp"
+    );
+}

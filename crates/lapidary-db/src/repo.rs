@@ -156,6 +156,41 @@ impl PgBlobs {
         Ok(found.is_some())
     }
 
+    /// Record that these bytes were just handed to somebody, for the age-based storage
+    /// features `docs/superpowers/specs/2026-09-04-phase-1-slice-4-derivatives-design.md`
+    /// §3.10 describes — nothing has written `last_accessed_at` since the column was
+    /// added, and a column nobody has ever populated is worth nothing at the moment you
+    /// first want it.
+    ///
+    /// Fire-and-forget, and that is why it returns `()` rather than a `Result` a call
+    /// site could be tempted to `?`: the caller is midway through serving a read, and a
+    /// timestamp that failed to move is not a reason to fail the read. `debug`, not
+    /// `warn` — a missed touch costs one blob its place in an eviction ordering and
+    /// nothing else, so it is not an incident.
+    ///
+    /// Deliberately its own statement, hence its own implicit transaction. `now()` is
+    /// transaction-*start* time, so folding this into a surrounding transaction to save
+    /// a round trip would make two touches of one blob report the same instant and
+    /// destroy the ordering an eviction sweep reads.
+    ///
+    /// Only a deliberate read belongs here. Ingest's reads are the system writing and
+    /// regenerating rather than somebody looking at data; counting them would mark every
+    /// blob recently used the moment a sweep ran, which is the signal this column exists
+    /// to carry.
+    pub async fn touch_blob(&self, hash: &BlobHash) {
+        if let Err(err) = sqlx::query("UPDATE blob SET last_accessed_at = now() WHERE blake3 = $1")
+            .bind(hash.to_hex())
+            .execute(&self.0)
+            .await
+        {
+            tracing::debug!(
+                hash = %hash.to_hex(),
+                error = %err,
+                "could not record that a blob was read"
+            );
+        }
+    }
+
     /// Does `library` already hold a part called `part_name` whose source file is
     /// exactly these bytes? In other words: is this the same file, seen again?
     ///

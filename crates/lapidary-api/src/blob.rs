@@ -30,23 +30,35 @@ pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) ->
         return not_found();
     };
 
-    match PgBlobs(state.db).derivative_is_reachable(&hash).await {
+    // Moves `state.db` out of `state`, which leaves `state.blob_root` borrowable below
+    // and saves cloning a pool twice. One handle serves both the reachability check and
+    // the touch that follows it.
+    let blobs = PgBlobs(state.db);
+    match blobs.derivative_is_reachable(&hash).await {
         Ok(false) => return not_found(),
         Err(err) => return internal_error(&err),
         Ok(true) => {}
     }
 
     match DerivativeStore::open(&state.blob_root).get(&hash) {
-        Ok(bytes) => (
-            [
-                (header::CACHE_CONTROL, IMMUTABLE.to_owned()),
-                // Quoted per RFC 9110. Strong, not weak: these are exact bytes.
-                (header::ETAG, format!("\"{}\"", hash.to_hex())),
-                (header::CONTENT_TYPE, "model/gltf-binary".to_owned()),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => {
+            // After the bytes are in hand, never before: a 404 -- unreachable, or
+            // referenced but absent from disk -- is not somebody reading this blob, and
+            // recording it as one would let a caller move any timestamp by guessing a
+            // hash. Awaited and discarded rather than spawned, because a task racing the
+            // response is a timestamp nothing can assert.
+            blobs.touch_blob(&hash).await;
+            (
+                [
+                    (header::CACHE_CONTROL, IMMUTABLE.to_owned()),
+                    // Quoted per RFC 9110. Strong, not weak: these are exact bytes.
+                    (header::ETAG, format!("\"{}\"", hash.to_hex())),
+                    (header::CONTENT_TYPE, "model/gltf-binary".to_owned()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
         // Referenced but missing. A derivative is evictable by design, so this is a
         // regeneration job rather than a corruption -- but nothing regenerates yet, and
         // an operator needs to see it, which is why it logs rather than 404ing quietly.
