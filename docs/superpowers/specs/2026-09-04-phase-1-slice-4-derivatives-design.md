@@ -46,14 +46,15 @@ anything generated.
 - Ingest stores **L0 only**; L1 and L2 are built on demand
 - `library.auto_thumbnail`, default true — a library may ingest without rendering
 - On-demand derivation: one part, or a per-library sweep over everything missing one
-- `part_image` — an uploaded image, bounded and re-encoded, taking precedence over any
-  generated thumbnail
 - A `derive` job kind, and the generic enqueue the job queue has never had
+- `blob.last_accessed_at` starts being written — the column exists (`0002_parts.sql:25`)
+  and nothing has ever written it
 
 **Out, with the trigger that brings each back:**
 
 | Deferred | Trigger |
 |---|---|
+| **`part_image` upload** | Slice 5, alongside the rest of the image UI. The decisions are made here (§3.3, §3.4) because they were worked out here; the execution belongs beside the detail view and the upload control rather than in a slice that otherwise touches no UI |
 | **Image by URL** | Its own slice. `DATA.md` §3.5 states the build order — "1. **User uploads a file.** Always works. 2. **User pastes an image URL.**" — `FEATURES.md:91-94` schedules URL plus SSRF controls at Phase 5, and there is no HTTP client in the workspace (`grep -c '^name = "reqwest"' Cargo.lock` → 0). Adding one touches `deny.toml`'s source allow-list and the air-gapped build claim, and deserves the review slice 3b got. The `origin` and `source_url` columns land now, so that slice is purely additive |
 | Reclaiming L1/L2 rows already written | The render-cache eviction slice. An existing rung is not stale — it is a correct cache of a revision that still exists. Removing it is a space action, which `DATA.md` §1.5 already specifies with its own wording rules and its own quarantine machinery |
 | A route listing a revision's derivatives | Phase 3. The viewer needs it regardless of this slice, and there is no viewer to test its shape against |
@@ -101,6 +102,8 @@ library where the render cost is not worth paying up front.
 
 ### 3.3 A user image is stored as bounded inline WebP, not by hash
 
+*Decided here, executed in slice 5 — see §2.*
+
 A user's photograph is never re-derivable, which puts it in `DATA.md` §1.1's **Source**
 class. Source bytes live in `SourceStore`, which requires `WorkerRole::assume()` — and the
 worker is unreachable from the browser (§3.5). `DerivativeStore` is not an escape hatch
@@ -121,6 +124,8 @@ TypeScript bindings do not change at all.
 something at the boundary, and saying so, is not implicit deletion.
 
 ### 3.4 The URL is provenance, never a fetch target
+
+*Decided here, executed in slice 5 — see §2.*
 
 `DATA.md` §3.5 is explicit: *"User pastes an image URL. **Fetch once, store as a blob.
 Never hotlink** — hosts rotate URLs and hotlinking leaks a referrer on every grid scroll."*
@@ -185,6 +190,32 @@ quarantine machinery that does not exist.
 What this slice does is make that action *safe to write*: slice 3's ledger records "a
 referenced derivative missing from disk logs but has no regeneration path". This slice
 builds the regeneration path.
+
+### 3.10 Access is tracked; the cold tier is not built
+
+`blob.last_accessed_at` has existed since `0002_parts.sql:25` and nothing writes it. Every
+age-based storage feature depends on it — the render-cache eviction `DATA.md` §1.5
+promises, and the cold-compression tier §1.2 specifies. It starts being written here
+because this is the slice that touches the read path anyway, and because a column that has
+never been populated is worth nothing at the moment you first want it.
+
+**The cold tier itself is deliberately not built.** `DATA.md` §1.2 says "zstd -3 at ingest
+→ -19 when cold". Measured on 143 MB of the project's real STL corpus:
+
+| Level | Compress | Size | Saved | Decompress |
+|---|---|---|---|---|
+| `-3` (today) | 0.72 s | 70.0 MB | 51% | 0.11 s |
+| `-19` | 27.7 s | 64.0 MB | 55% | 0.14 s |
+
+Thirty-eight times the compression CPU for four percentage points. §1.2's 6–10× figure is
+for STEP, which is text; its own binary-STL estimate of ~2–2.5× is what the measurement
+confirms (2.05× at -3, 2.24× at -19). Nearly all of the available win is already taken at
+ingest. The tier waits for Phase 2's STEP ingest, where it may pay.
+
+The measurement also settles a UX question before it is asked: **decompression is
+level-independent and effectively free.** 143 MB in 0.11 s means a single 1 MB part
+decompresses in about a millisecond, so opening a compressed part is indistinguishable
+from opening a stored one and no "decompressing…" affordance is needed.
 
 ---
 
@@ -259,26 +290,16 @@ Three related facts, one migration, following `0004`'s precedent.
 ```sql
 alter table library add column auto_thumbnail boolean not null default true;
 
-create table part_image (
-  id          uuid primary key,
-  part_id     uuid not null references part(id),
-  image_webp  bytea not null,        -- bounded and re-encoded; DATA.md §1.5's inline rule
-  origin      text not null,         -- 'uploaded' | 'url_supplied'
-  source_url  text,                  -- provenance only; never fetched at render time
-  created_at  timestamptz not null default now(),
-  constraint part_image_one_per_part unique (part_id),
-  constraint part_image_url_origin_has_url
-      check (origin <> 'url_supplied' or source_url is not null)
-);
-
 -- PostgreSQL cannot modify a CHECK in place.
 alter table job drop constraint job_outcome_known;
 alter table job add constraint job_outcome_known
     check (outcome is null or outcome in ('ingested', 'skipped', 'rendered'));
 ```
 
-`0001_init.sql`'s header comment says `part_image` is "Phase 2 and deliberately absent".
-That comment is amended in the same commit rather than left contradicting the schema.
+**`part_image` is not created here.** Its shape is decided in §3.3, but the table lands in
+slice 5's migration alongside the routes that write it — a migration should arrive with its
+use, not four tasks ahead of it. `0001_init.sql`'s "Phase 2 and deliberately absent"
+comment is therefore amended by slice 5, not this one.
 
 **No row is deleted.** A test asserts that a database carrying pre-existing
 `tessellation_l1`/`l2` rows still has them after `0005`.
@@ -349,12 +370,8 @@ occurred or that a value came back.
 - Ingest writes exactly **one** tessellation row, and it is `tessellation_l0`
 - A `derive` job then writes the missing thumbnail and returns `Outcome::Rendered`
 - Upserting twice with different bytes leaves **one** row carrying the second bytes
-- A part with both a user image and a generated thumbnail returns the **image** bytes —
-  this fixture must exist, or swapping the `COALESCE` arguments passes
-- `revisions_missing` returns exactly the revisions lacking a generated thumbnail, and
-  deliberately does not consult `part_image`
-- A 20 MB upload is rejected without being read into memory
-- A small PNG declaring enormous dimensions returns 4xx rather than killing the process
+- `revisions_missing` returns exactly the revisions lacking a generated thumbnail
+- Reading a blob updates `last_accessed_at`; reading it again moves the timestamp forward
 - The trigger routes are **absent** under `Role::Worker`
 - A sweep whose jobs all return `rendered` triggers exactly one grid refetch
 
@@ -373,9 +390,6 @@ reload.
 An on-demand L2 for one part produces a rung a third-party glTF validator accepts, and it
 is byte-identical to one built at ingest — a lazily-built rung must not differ from an
 eager one.
-
-Upload a photograph: it outranks the generated thumbnail on the card. `DELETE` it: the
-generated one returns.
 
 Ingest throughput is **measured and recorded**, not asserted. It should improve — two
 clustering passes, two glTF writes and one render per file are gone — but the slice-3b
