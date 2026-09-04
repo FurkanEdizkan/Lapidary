@@ -3,7 +3,7 @@
 
 use crate::DbError;
 use jiff::Timestamp;
-use lapidary_core::{BatchId, BatchStatus, JobFailure, JobId, LibraryId, Outcome};
+use lapidary_core::{BatchId, BatchStatus, JobFailure, JobId, JobPayload, LibraryId, Outcome};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::time::Duration;
@@ -62,32 +62,40 @@ pub struct JobRow {
 }
 
 impl PgJobs {
-    /// Enqueue one job per path under a fresh batch. One statement regardless of N: a
-    /// thousand files is one insert, because this runs inside the HTTP request.
-    pub async fn enqueue_scan(
+    /// Enqueue any mix of job kinds under one fresh batch. One statement regardless of N:
+    /// a thousand files is one insert, because this runs inside the HTTP request.
+    ///
+    /// The `kind` and `payload` columns both come from the same `JobPayload` --
+    /// `kind()` for the column, `to_json()` for the payload -- so the two cannot
+    /// disagree by construction. A signature that took `kind` and `payloads` apart would
+    /// let a caller pass a kind that mismatched its own payloads.
+    pub async fn enqueue(
         &self,
         library: LibraryId,
-        paths: &[String],
+        jobs: &[JobPayload],
     ) -> Result<(BatchId, u32), DbError> {
         let batch = BatchId::new();
 
-        if paths.is_empty() {
+        if jobs.is_empty() {
             // No rows, and deliberately no NOTIFY: waking every worker to find nothing
             // is the one case where the optimization is pure cost.
             return Ok((batch, 0));
         }
 
-        let ids: Vec<Uuid> = (0..paths.len()).map(|_| JobId::new().as_uuid()).collect();
+        let ids: Vec<Uuid> = (0..jobs.len()).map(|_| JobId::new().as_uuid()).collect();
+        let kinds: Vec<&'static str> = jobs.iter().map(JobPayload::kind).collect();
+        let payloads: Vec<serde_json::Value> = jobs.iter().map(JobPayload::to_json).collect();
 
         sqlx::query(
             "INSERT INTO job (id, batch_id, library_id, kind, payload) \
-             SELECT id, $2, $3, 'ingest_file', jsonb_build_object('path', path) \
-             FROM unnest($1::uuid[], $4::text[]) AS t(id, path)",
+             SELECT id, $2, $3, kind, payload \
+             FROM unnest($1::uuid[], $4::text[], $5::jsonb[]) AS t(id, kind, payload)",
         )
         .bind(&ids)
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
-        .bind(paths)
+        .bind(&kinds)
+        .bind(&payloads)
         .execute(&self.0)
         .await?;
 
@@ -96,7 +104,23 @@ impl PgJobs {
             .execute(&self.0)
             .await?;
 
-        Ok((batch, paths.len() as u32))
+        Ok((batch, jobs.len() as u32))
+    }
+
+    /// Enqueue one `ingest_file` job per path under a fresh batch. A thin wrapper over
+    /// `enqueue`, kept as its own method because every scan caller wants exactly this
+    /// shape.
+    pub async fn enqueue_scan(
+        &self,
+        library: LibraryId,
+        paths: &[String],
+    ) -> Result<(BatchId, u32), DbError> {
+        let jobs: Vec<JobPayload> = paths
+            .iter()
+            .cloned()
+            .map(|path| JobPayload::IngestFile { path })
+            .collect();
+        self.enqueue(library, &jobs).await
     }
 
     /// Claim one job, or reclaim one whose lease expired.
@@ -264,13 +288,14 @@ impl PgJobs {
         // guard below. Both aggregate timestamp columns are `Option<i64>` for exactly
         // this reason.
         #[allow(clippy::type_complexity)]
-        let counts: Option<(i64, i64, i64, i64, i64, i64, Option<i64>, Option<i64>)> =
+        let counts: Option<(i64, i64, i64, i64, i64, i64, i64, Option<i64>, Option<i64>)> =
             sqlx::query_as(
                 "SELECT count(*), \
                     count(*) FILTER (WHERE state = 'pending'), \
                     count(*) FILTER (WHERE state = 'running'), \
                     count(*) FILTER (WHERE outcome = 'ingested'), \
                     count(*) FILTER (WHERE outcome = 'skipped'), \
+                    count(*) FILTER (WHERE outcome = 'rendered'), \
                     count(*) FILTER (WHERE state = 'failed'), \
                     (extract(epoch FROM min(created_at)) * 1000000)::bigint, \
                     CASE WHEN count(*) FILTER (WHERE state IN ('pending','running')) = 0 \
@@ -285,8 +310,17 @@ impl PgJobs {
 
         // An aggregate over zero rows still returns one row, with count 0 -- so "no
         // jobs" is detected on the count, not on fetch_optional returning None.
-        let Some((total, pending, running, ingested, skipped, failed_total, started, finished)) =
-            counts
+        let Some((
+            total,
+            pending,
+            running,
+            ingested,
+            skipped,
+            rendered,
+            failed_total,
+            started,
+            finished,
+        )) = counts
         else {
             return Ok(None);
         };
@@ -294,20 +328,41 @@ impl PgJobs {
             return Ok(None);
         }
 
-        // `, id` is load-bearing, not decoration: `enqueue_scan` inserts a whole batch
+        // `, id` is load-bearing, not decoration: `enqueue` inserts a whole batch
         // in one statement, and Postgres's `now()` is constant for the duration of a
         // transaction, so every job in a real batch shares the exact same
         // `created_at` -- `ORDER BY created_at` alone never actually discriminates
         // between same-batch failures and the list would reshuffle under a polling
         // reader from one request to the next (spec §7 promises it does not). `JobId`
-        // is uuidv7 and `enqueue_scan` generates ids in insertion order, so ordering
+        // is uuidv7 and `enqueue` generates ids in insertion order, so ordering
         // by `id` as the tiebreaker reproduces enqueue order, which -- since Task 10
         // sorts paths before enqueueing -- is the alphabetical order a person expects.
         // Do not simplify this back to `ORDER BY created_at`.
-        let failures: Vec<(String, String, i32)> = sqlx::query_as(
-            "SELECT payload->>'path', last_error, attempts \
-             FROM job WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
-             ORDER BY created_at, id LIMIT $3",
+        //
+        // An `ingest_file` failure names its own path; a `derive` failure has none, so it
+        // falls through to the part its revision belongs to. Decoding the path column as
+        // `Option<String>` -- even though `COALESCE`'s final `''` means it can never
+        // actually come back SQL NULL -- is what stops a row this join fails to match
+        // from ever becoming a decode error again: that decode error is exactly the 500
+        // a `derive` job with no matching `path` key used to trigger.
+        //
+        // `p.library_id = j.library_id` is the same reachability check `batch_status`
+        // itself is scoped by (`library_id = $2` above), pushed down into this join
+        // rather than left for a caller to remember: content addressing is not
+        // authorization (CLAUDE.md), and a `derive` payload's `revision` is a uuid a
+        // caller might hold from anywhere. A `derive` job naming another library's
+        // revision still shows up as a failure -- the job did fail -- but the join
+        // misses and `COALESCE` falls through to `''`, so the response never leaks what
+        // that other library calls its own part.
+        let failures: Vec<(Option<String>, String, i32)> = sqlx::query_as(
+            "SELECT COALESCE(j.payload->>'path', p.name, ''), j.last_error, j.attempts \
+             FROM job j \
+             LEFT JOIN revision rv \
+                    ON rv.id = CASE WHEN j.kind = 'derive' \
+                                     THEN (j.payload->>'revision')::uuid END \
+             LEFT JOIN part p ON p.id = rv.part_id AND p.library_id = j.library_id \
+             WHERE j.batch_id = $1 AND j.library_id = $2 AND j.state = 'failed' \
+             ORDER BY j.created_at, j.id LIMIT $3",
         )
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
@@ -323,15 +378,12 @@ impl PgJobs {
             running: running as u32,
             ingested: ingested as u32,
             skipped: skipped as u32,
-            // No `derive` job can be enqueued yet -- `enqueue` and its `outcome =
-            // 'rendered'` aggregate arrive with the generic enqueue path -- so every
-            // batch this query can see today really did render zero.
-            rendered: 0,
+            rendered: rendered as u32,
             failed_total: failed_total as u32,
             failed: failures
                 .into_iter()
                 .map(|(path, reason, attempts)| JobFailure {
-                    path,
+                    path: path.unwrap_or_default(),
                     reason,
                     attempts: attempts.max(0) as u32,
                 })

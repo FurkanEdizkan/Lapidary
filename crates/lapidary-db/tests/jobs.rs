@@ -1,4 +1,4 @@
-use lapidary_core::{JobId, LibraryId, Outcome};
+use lapidary_core::{BatchId, DerivativeKind, JobId, JobPayload, LibraryId, Outcome, RevisionId};
 use lapidary_db::{JobRow, PgJobs};
 use sqlx::PgPool;
 use std::time::Duration;
@@ -789,5 +789,252 @@ async fn a_batch_with_no_jobs_has_no_status(pool: PgPool) {
             .expect("reads")
             .is_none(),
         "an empty batch is indistinguishable from an id never issued, and both 404"
+    );
+}
+
+/// Before this slice, `batch_status`'s failures query selected `payload->>'path'` into a
+/// non-`Option<String>`. A `derive` payload has no `path` key, so this call used to fail
+/// with a decode error -- a 500 for the whole batch -- rather than returning a status.
+/// The fix falls back to the failed job's part name, so this also pins that a person
+/// reading a failed derive job's status sees something they recognise, not an empty
+/// string.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_derive_job_reports_the_parts_name_not_a_missing_path(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+
+    let part_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+        .bind(part_id)
+        .bind(seeded().as_uuid())
+        .bind("spacer-lp-2001-00")
+        .execute(&pool)
+        .await
+        .expect("inserts the part");
+
+    let revision = RevisionId::new();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision.as_uuid())
+    .bind(part_id)
+    .execute(&pool)
+    .await
+    .expect("inserts the revision");
+
+    let (batch, queued) = jobs
+        .enqueue(
+            seeded(),
+            &[JobPayload::Derive {
+                revision,
+                produce: DerivativeKind::TessellationL2,
+            }],
+        )
+        .await
+        .expect("enqueues");
+    assert_eq!(queued, 1);
+
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    assert_eq!(job.kind, "derive");
+
+    jobs.fail(
+        job.id,
+        "Could not tessellate this revision - the kernel returned no output.",
+    )
+    .await
+    .expect("fails");
+
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads -- this is the call that used to 500 on the payload->>'path' decode")
+        .expect("exists");
+
+    assert_eq!(status.failed_total, 1);
+    assert_eq!(status.failed.len(), 1);
+    assert_eq!(
+        status.failed[0].path, "spacer-lp-2001-00",
+        "a derive failure has no file path, so it falls back to its revision's part name"
+    );
+}
+
+/// `rendered` was a hardcoded `0` until this slice wired up the real `FILTER` aggregate.
+/// A batch with exactly one job in every state -- pending, running, and each of the
+/// three terminal outcomes -- is what catches that placeholder coming back: if `rendered`
+/// silently reverts to `0`, `total` no longer equals the sum of the per-state counts.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_mixed_batchs_total_is_the_sum_of_its_per_state_counts(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+
+    let payloads = vec![
+        JobPayload::IngestFile {
+            path: "bracket-lp-1042-03.stl".to_owned(),
+        },
+        JobPayload::IngestFile {
+            path: "spacer-lp-2001-00.stl".to_owned(),
+        },
+        JobPayload::IngestFile {
+            path: "vee-block-lp-3072-02.stl".to_owned(),
+        },
+        JobPayload::Derive {
+            revision: RevisionId::new(),
+            produce: DerivativeKind::Thumbnail,
+        },
+        JobPayload::Derive {
+            revision: RevisionId::new(),
+            produce: DerivativeKind::TessellationL0,
+        },
+        JobPayload::Derive {
+            revision: RevisionId::new(),
+            produce: DerivativeKind::TessellationL1,
+        },
+    ];
+    let (batch, queued) = jobs.enqueue(seeded(), &payloads).await.expect("enqueues");
+    assert_eq!(queued, 6);
+
+    let ingested = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    jobs.complete(ingested.id, Outcome::Ingested)
+        .await
+        .expect("completes");
+
+    let skipped = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    jobs.complete(skipped.id, Outcome::Skipped)
+        .await
+        .expect("completes");
+
+    let rendered = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    jobs.complete(rendered.id, Outcome::Rendered)
+        .await
+        .expect("completes");
+
+    let failed = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    jobs.fail(
+        failed.id,
+        "Could not read this STL - the file ends mid-facet.",
+    )
+    .await
+    .expect("fails");
+
+    // Leased but never completed: this one stays `running`. The sixth job is never
+    // dequeued at all, so it stays `pending`.
+    jobs.dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+
+    assert_eq!(status.pending, 1);
+    assert_eq!(status.running, 1);
+    assert_eq!(status.ingested, 1);
+    assert_eq!(status.skipped, 1);
+    assert_eq!(status.rendered, 1);
+    assert_eq!(status.failed_total, 1);
+    assert_eq!(
+        status.total,
+        status.pending
+            + status.running
+            + status.ingested
+            + status.skipped
+            + status.rendered
+            + status.failed_total,
+        "total must equal the sum of every per-state count -- a `rendered` count stuck \
+         at 0 is exactly what would break this"
+    );
+    assert_eq!(status.total, 6);
+}
+
+/// A `derive` payload carries a bare revision uuid, which is exactly the kind of value
+/// content addressing warns about (CLAUDE.md: "content addressing is not authorization").
+/// Nothing today can enqueue a `derive` job whose revision belongs to a different
+/// library, so this reaches past `enqueue` and inserts the row by hand -- the shape a
+/// future caller could produce if the reachability check that is supposed to run before
+/// enqueueing were ever skipped or buggy.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derive_job_naming_another_librarys_revision_does_not_leak_its_name(pool: PgPool) {
+    let other = LibraryId::new();
+    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture jigs')")
+        .bind(other.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("seeds a second library");
+
+    let other_part_name = "vee-block-lp-3072-02";
+    let part_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+        .bind(part_id)
+        .bind(other.as_uuid())
+        .bind(other_part_name)
+        .execute(&pool)
+        .await
+        .expect("inserts the other library's part");
+
+    let revision = RevisionId::new();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision.as_uuid())
+    .bind(part_id)
+    .execute(&pool)
+    .await
+    .expect("inserts the other library's revision");
+
+    let payload = JobPayload::Derive {
+        revision,
+        produce: DerivativeKind::Thumbnail,
+    };
+    let batch = BatchId::new();
+    sqlx::query(
+        "INSERT INTO job (id, batch_id, library_id, kind, payload, state, last_error) \
+         VALUES ($1, $2, $3, 'derive', $4, 'failed', $5)",
+    )
+    .bind(JobId::new().as_uuid())
+    .bind(batch.as_uuid())
+    .bind(seeded().as_uuid())
+    .bind(payload.to_json())
+    .bind("Could not tessellate this revision - the kernel returned no output.")
+    .execute(&pool)
+    .await
+    .expect("inserts a failed derive job naming another library's revision");
+
+    let jobs = PgJobs(pool.clone());
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+
+    assert_eq!(status.failed.len(), 1);
+    assert_eq!(
+        status.failed[0].path, "",
+        "a revision belonging to another library must not resolve to that library's part"
+    );
+    assert!(
+        !status.failed[0].path.contains(other_part_name),
+        "must never leak another library's part name: {}",
+        status.failed[0].path
     );
 }
