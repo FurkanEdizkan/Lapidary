@@ -13,7 +13,7 @@ mod raster;
 mod stl;
 mod tmf;
 
-pub use cluster::{Lod, Tessellation, cluster, ladder};
+pub use cluster::{Lod, Tessellation, cluster};
 pub use glb::GLB_VERSION;
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
@@ -31,8 +31,9 @@ mod tests {
 
     fn params(format: &str) -> KernelParams {
         KernelParams {
+            linear_deflection_mm: None,
             format: format.to_owned(),
-            ..Default::default()
+            produce: lapidary_core::DerivativeKind::ALL.to_vec(),
         }
     }
 
@@ -110,5 +111,71 @@ mod tests {
             counts[0] < counts[1] && counts[1] < counts[2],
             "rungs must ascend in detail, got {counts:?}"
         );
+    }
+
+    /// The double honours `produce` too. `MockKernel` is unreachable from the ingest path
+    /// today — `handler.rs` names `MeshKernel` directly — so this is not a live bug, but a
+    /// double whose contract has drifted from the trait's is how a future test of
+    /// selectivity passes without proving anything.
+    #[tokio::test]
+    async fn the_mock_produces_only_the_rungs_it_was_asked_for() {
+        let kernel = MockKernel::new();
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: "stl".to_owned(),
+            produce: vec![lapidary_core::DerivativeKind::TessellationL1],
+        };
+        let out = kernel
+            .process(b"ignored by the double", &params)
+            .await
+            .expect("processes");
+        assert_eq!(out.tessellations.len(), 1);
+        assert_eq!(out.tessellations[0].lod, Lod::L1);
+        assert!(out.thumbnail_webp.is_none());
+        // Measurements are unconditional, here as in `MeshKernel`.
+        assert_eq!(out.measurements.triangle_count, 12_940);
+    }
+
+    /// Request order, not ladder order — `KernelOutput.tessellations` promises "in the
+    /// order requested", and a double that sorted its output would quietly disagree with
+    /// `MeshKernel` for any caller that asks out of order.
+    #[tokio::test]
+    async fn the_mock_returns_the_rungs_in_the_order_they_were_asked_for() {
+        let kernel = MockKernel::new();
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: "stl".to_owned(),
+            produce: vec![
+                lapidary_core::DerivativeKind::TessellationL2,
+                lapidary_core::DerivativeKind::TessellationL0,
+            ],
+        };
+        let out = kernel
+            .process(b"ignored by the double", &params)
+            .await
+            .expect("processes");
+        assert_eq!(
+            out.tessellations.iter().map(|t| t.lod).collect::<Vec<_>>(),
+            vec![Lod::L2, Lod::L0]
+        );
+    }
+
+    /// Empty `produce` is legal and means measurements only — the same contract
+    /// `mesh_kernel.rs` pins for the real thing.
+    #[tokio::test]
+    async fn the_mock_asked_for_nothing_still_measures() {
+        let kernel = MockKernel::new();
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: "stl".to_owned(),
+            produce: Vec::new(),
+        };
+        let out = kernel
+            .process(b"ignored by the double", &params)
+            .await
+            .expect("processes");
+        assert!(out.tessellations.is_empty());
+        assert!(out.thumbnail_webp.is_none());
+        assert_eq!(out.measurements.triangle_count, 12_940);
     }
 }

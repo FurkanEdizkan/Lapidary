@@ -1,5 +1,5 @@
 use crate::cluster::Tessellation;
-use lapidary_core::MeshMeasurements;
+use lapidary_core::{DerivativeKind, MeshMeasurements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -11,7 +11,11 @@ pub struct KernelVersion {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// No `Default`, deliberately. A default `produce` is either "everything" — silently
+/// expensive — or "nothing" — silently produces no derivatives. Removing `Default` turns
+/// every construction site into a compile error that forces the decision; do not add it
+/// back to make the compiler quieter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KernelParams {
     /// Linear deflection in mm for tessellation. None means the kernel's default.
     pub linear_deflection_mm: Option<f64>,
@@ -23,6 +27,10 @@ pub struct KernelParams {
     /// the kernel should be told. It also names the format in the error a person reads
     /// when a file will not parse.
     pub format: String,
+    /// What this call should produce. Empty is legal and means measurements only — every
+    /// kernel call measures unconditionally, since measurement is what ingest needs to
+    /// decide anything at all.
+    pub produce: Vec<DerivativeKind>,
 }
 
 /// Analytic B-rep entities — axes, radii, normals — that measurement snaps to.
@@ -48,10 +56,13 @@ pub enum Entity {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelOutput {
     pub measurements: MeshMeasurements,
-    pub thumbnail_webp: Vec<u8>,
-    /// L0, L1, L2 in ascending detail. Always three — a small mesh clusters to itself at
-    /// every grid and is written anyway, so consumers never branch on how many there are.
-    pub tessellations: [Tessellation; 3],
+    /// `None` when `params.produce` did not ask for `DerivativeKind::Thumbnail`.
+    pub thumbnail_webp: Option<Vec<u8>>,
+    /// One entry per tessellation rung `params.produce` asked for, in the order requested.
+    /// No longer always three: slice 3 typed this `[Tessellation; 3]` so consumers could
+    /// index rather than search, but that guarantee is spent the moment a call may ask for
+    /// one rung. Consumers search by `.lod` now.
+    pub tessellations: Vec<Tessellation>,
     pub entities: Vec<Entity>,
 }
 

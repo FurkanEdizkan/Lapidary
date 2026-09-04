@@ -61,7 +61,7 @@
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-use lapidary_core::{BlobHash, LibraryId, Outcome};
+use lapidary_core::{BlobHash, DerivativeKind, LibraryId, Outcome};
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow, TessellationRow,
 };
@@ -106,6 +106,9 @@ impl IngestHandler {
         let params = KernelParams {
             linear_deflection_mm: None,
             format: source_format(file_name),
+            // Behaviour-preserving: task 7 makes this selective. Until then, ingest keeps
+            // producing everything it always has.
+            produce: DerivativeKind::ALL.to_vec(),
         };
         let version = kernel.version(&params);
         let kernel_version = format!("{} {}", version.implementation, version.version);
@@ -207,7 +210,7 @@ impl IngestHandler {
                     name,
                     blob: &blob,
                     measurements: &output.measurements,
-                    thumbnail_webp: &output.thumbnail_webp,
+                    thumbnail_webp: output.thumbnail_webp.as_deref().unwrap_or(&[]),
                     kernel_version: &kernel_version,
                     format: &params.format,
                     tessellations: &rungs,
@@ -250,7 +253,7 @@ impl IngestHandler {
                 name,
                 blob: &blob,
                 measurements: &output.measurements,
-                thumbnail_webp: &output.thumbnail_webp,
+                thumbnail_webp: output.thumbnail_webp.as_deref().unwrap_or(&[]),
                 kernel_version: &kernel_version,
                 format: &params.format,
                 tessellations: &rungs,

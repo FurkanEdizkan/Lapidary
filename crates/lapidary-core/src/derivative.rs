@@ -13,6 +13,14 @@ pub enum DerivativeKind {
 }
 
 impl DerivativeKind {
+    /// Every kind, ascending — for a caller that genuinely wants all four.
+    pub const ALL: [DerivativeKind; 4] = [
+        DerivativeKind::Thumbnail,
+        DerivativeKind::TessellationL0,
+        DerivativeKind::TessellationL1,
+        DerivativeKind::TessellationL2,
+    ];
+
     /// Exactly the strings already in `derivative.kind`. Changing one orphans every row
     /// written before the change.
     pub fn as_str(self) -> &'static str {
@@ -36,5 +44,31 @@ mod tests {
         assert_eq!(DerivativeKind::TessellationL0.as_str(), "tessellation_l0");
         assert_eq!(DerivativeKind::TessellationL1.as_str(), "tessellation_l1");
         assert_eq!(DerivativeKind::TessellationL2.as_str(), "tessellation_l2");
+    }
+
+    #[test]
+    fn all_is_every_kind_in_ladder_order() {
+        // Ingest asks for `ALL` and relies on it meaning everything, in the order the
+        // deleted `ladder()` used: thumbnail first, then rungs ascending. Pinning the
+        // contents rather than the length is what catches a reorder or a removal.
+        //
+        // It does not catch an *addition*: a fifth variant leaves `[DerivativeKind; 4]`
+        // four elements long and this assertion still passes. The compile errors that
+        // point a person here are `as_str` above and `MeshKernel::process`, both
+        // exhaustive. Making the omission itself a compile error needs a variant count
+        // the language will not give us on stable — `std::mem::variant_count` is
+        // nightly, `strum` is a new dependency, and a `macro_rules!` enum would have to
+        // carry `serde`, `ts_rs::TS` and `#[ts(export)]` through the macro, putting
+        // `cargo xtask export-bindings` in the blast radius of a four-variant enum. Not
+        // worth it; add the variant here when you add it above.
+        assert_eq!(
+            DerivativeKind::ALL,
+            [
+                DerivativeKind::Thumbnail,
+                DerivativeKind::TessellationL0,
+                DerivativeKind::TessellationL1,
+                DerivativeKind::TessellationL2,
+            ]
+        );
     }
 }

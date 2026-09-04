@@ -503,13 +503,3 @@ pub fn cluster(mesh: &Mesh, lod: Lod) -> Result<Tessellation, CadError> {
         glb: write_glb(&indexed)?,
     })
 }
-
-/// All three rungs, ascending. The array shape is what makes a two-rung kernel a compile
-/// error rather than a runtime surprise.
-pub fn ladder(mesh: &Mesh) -> Result<[Tessellation; 3], CadError> {
-    Ok([
-        cluster(mesh, Lod::L0)?,
-        cluster(mesh, Lod::L1)?,
-        cluster(mesh, Lod::L2)?,
-    ])
-}
