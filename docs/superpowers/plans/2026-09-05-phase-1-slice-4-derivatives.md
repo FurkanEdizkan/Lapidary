@@ -191,6 +191,24 @@ impl JobPayload {
 `Derive`'s arm needs a `#[derive(Deserialize)]` helper struct or `Deserialize` on a
 `{revision, produce}` shape — either is fine; keep it boring.
 
+- [ ] **Step 2b: The two `CoreError` variants this needs, which do not exist yet**
+
+`CoreError` (`crates/lapidary-core/src/error.rs:5`) has only `BlobHashLength`,
+`BlobHashHex` and `IdParse`. Add two, in the style of their neighbours — a full sentence
+that tells an operator what to do:
+
+```rust
+    #[error(
+        "A {kind} job's payload is not the shape that kind requires — {detail}. It was not written by Lapidary; check whether something else is inserting into the job table."
+    )]
+    MalformedJobPayload { kind: String, detail: String },
+
+    #[error(
+        "\"{kind}\" is not a job kind this build knows. A newer Lapidary may have written it; check that every worker and api container is running the same version."
+    )]
+    UnknownJobKind { kind: String },
+```
+
 - [ ] **Step 3: `Outcome::Rendered` and `BatchStatus.rendered`**
 
 Add the variant and the field. `BatchStatus` is `#[serde(rename_all = "camelCase")]` and
@@ -460,8 +478,22 @@ upsert over a row stored the other way leaves both set and trips
 The column has existed since `0002_parts.sql:25` and nothing has ever written it.
 
 - [ ] `touch_blob(hash)` — `UPDATE blob SET last_accessed_at = now() WHERE blake3 = $1`.
-  Called where a blob is actually read. **Fire-and-forget**: a failed touch must never fail
-  the read it accompanies, and it is not worth a transaction.
+  **Fire-and-forget**: a failed touch must never fail the read it accompanies, and it is not
+  worth a transaction. Log at debug, not warn — a missed timestamp is not an incident.
+
+- [ ] **The call site is `crates/lapidary-api/src/blob.rs:39`**, after a successful
+  `DerivativeStore::get`, and **only** there.
+
+  Not the ingest handler's reads (`handler.rs:112`, `:116`): those are the system writing
+  and regenerating, not somebody looking at data, and counting them would mark every blob
+  "recently used" the moment a sweep ran — destroying the signal the column exists to carry.
+
+  **Be aware the signal is thin until slice 5.** The grid serves thumbnails inline from
+  `bytea` and reads no blob at all, and nothing in the UI calls the blob route yet, so today
+  this fires only for a deliberate fetch. It becomes meaningful when slice 5 adds
+  `variant=original` download and the detail view. The plumbing lands now because the read
+  path is already open here and because a column nobody has ever written is worth nothing at
+  the moment you first want it.
 
 - [ ] **Tests:** reading a blob sets `last_accessed_at`; reading it again moves the
   timestamp forward; a blob never read has it `NULL`.
@@ -512,7 +544,13 @@ The column has existed since `0002_parts.sql:25` and nothing has ever written it
 **Read first:** spec §3.5 — these are on `Role::Api` out of necessity, because the browser
 cannot reach the worker at all.
 
-- [ ] `PATCH /api/libraries/{id}` `{ autoThumbnail }` → 200
+- [ ] **`lapidary-db` needs a library write method, and has none.** `repo.rs` has
+  `library_holds` and nothing else that touches `library`. Add
+  `PgLibraries::set_auto_thumbnail(library, bool) -> Result<bool, DbError>` returning
+  whether a row matched, so the route can answer 404 for a library that does not exist
+  rather than 200 for a write that hit nothing.
+
+- [ ] `PATCH /api/libraries/{id}` `{ autoThumbnail }` → 200, or 404 when no row matched
 - [ ] `POST /api/parts/{id}/thumbnail` → 202 `ScanAccepted`, a batch of one
 - [ ] `POST /api/libraries/{id}/thumbnails` → 202, `queued: 0` is a success
 
