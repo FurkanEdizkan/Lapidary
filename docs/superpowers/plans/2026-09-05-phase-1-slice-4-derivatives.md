@@ -61,7 +61,11 @@ Postgres on 55432; the rest of the stack is stopped and not needed until task 10
 export DATABASE_URL="postgres://lapidary:localdev@localhost:55432/lapidary"
 ```
 
-Baseline: **372 Rust tests, 33 web tests.**
+Baseline at the start of this slice: **372 Rust tests, 33 web tests.** The Rust count
+moves as the slice lands — 385 after task 1, 386 after task 4, 391 after its fix round,
+397 after task 5. Check `cargo test --workspace --all-features` for the current figure
+rather than trusting this line; a stale baseline is how a task convinces itself it broke
+nothing.
 
 ## File structure
 
