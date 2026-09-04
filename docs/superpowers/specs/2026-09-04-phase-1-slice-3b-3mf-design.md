@@ -84,14 +84,14 @@ review:
 
 | Crate | New crates in our lock | Licence | Why |
 |---|---|---|---|
-| `zip` 2, `default-features = false`, `features = ["deflate"]` | 7: `zip`, `flate2`, `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast`, `zopfli` | MIT (deps MIT/Apache-2.0/Zlib/0BSD) | ZIP is a security-sensitive container — zip64, data descriptors, local-versus-central header mismatch, encryption flags. The hand-rolled parsers in this crate are *geometry* parsers, where a bug is a wrong mesh; a hand-rolled archive reader's bugs are vulnerabilities |
+| `zip` 2, `default-features = false`, `features = ["deflate"]` | 9 in the lock, 7 that compile: `zip`, `flate2`, `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast`, `zopfli` — plus `arbitrary` and `derive_arbitrary`, which zip declares under `[target."cfg(fuzzing)".dependencies]` and a normal build never compiles | MIT (deps MIT/Apache-2.0/Zlib/0BSD) | ZIP is a security-sensitive container — zip64, data descriptors, local-versus-central header mismatch, encryption flags. The hand-rolled parsers in this crate are *geometry* parsers, where a bug is a wrong mesh; a hand-rolled archive reader's bugs are vulnerabilities |
 | `quick-xml` 0.41 | 1: `quick-xml` (`memchr` already present) | MIT | Streaming pull parser. A 3MF's model XML is the mesh in text form and can reach hundreds of megabytes; a DOM parser such as `roxmltree` would hold all of it at once |
 
 Both are pure Rust, so no C toolchain enters the worker image and `cargo vendor` still
 builds offline — the same constraint that decided slice 3 §3.2 against meshopt. Every
 licence is permissive and compatible with AGPL-3.0-only.
 
-**`quick-xml` is pinned at 0.41 or later, and that is a security floor rather than a
+**`quick-xml` is pinned at 0.41, and that is a security floor rather than a
 preference.** 0.37 carries RUSTSEC-2026-0194 (quadratic time checking a start tag for
 duplicate attribute names) and RUSTSEC-2026-0195 (unbounded namespace-declaration
 allocation in `NsReader`, a memory-exhaustion denial of service). Both are exactly the
