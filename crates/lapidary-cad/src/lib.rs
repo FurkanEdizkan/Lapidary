@@ -11,6 +11,7 @@ mod mock;
 mod obj;
 mod raster;
 mod stl;
+mod tmf;
 
 pub use cluster::{Lod, Tessellation, cluster, ladder};
 pub use glb::GLB_VERSION;
