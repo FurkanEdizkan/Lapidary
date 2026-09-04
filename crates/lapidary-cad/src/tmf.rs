@@ -341,30 +341,93 @@ fn read_model(xml: &[u8]) -> Result<Model, CadError> {
     Ok((objects, build, scale))
 }
 
-/// Task 6 replaces this with real transform parsing.
-fn matrix(_raw: Option<&str>) -> Result<[f64; 12], CadError> {
-    Ok(IDENTITY)
-}
-
 const IDENTITY: [f64; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 
-/// Task 6 adds component recursion and the depth cap.
+/// Deep enough for any real assembly, shallow enough that a cycle ends quickly. A 3MF
+/// nested eight levels is already pathological; a 3MF that references itself is hostile.
+const MAX_DEPTH: u32 = 8;
+
+/// 3MF's `transform`: nine numbers of a row-major 3×3, then a translation.
+fn matrix(raw: Option<&str>) -> Result<[f64; 12], CadError> {
+    let Some(raw) = raw else { return Ok(IDENTITY) };
+    let mut m = IDENTITY;
+    // Counted up front rather than inferred from the loop. `zip` stops at the shorter
+    // side, so a loop that counts as it goes rejects a transform with too FEW numbers and
+    // silently truncates one with too many -- an asymmetric hole in exactly the input
+    // validation CLAUDE.md says never to simplify away, on an untrusted file.
+    let count = raw.split_whitespace().count();
+    if count != 12 {
+        return Err(malformed(format!(
+            "a transform has {count} numbers, and a 3MF transform has exactly twelve"
+        )));
+    }
+    for (slot, token) in m.iter_mut().zip(raw.split_whitespace()) {
+        *slot = token.parse().map_err(|_| {
+            malformed(format!(
+                "a transform holds {token:?}, which is not a number"
+            ))
+        })?;
+        if !slot.is_finite() {
+            return Err(malformed(format!(
+                "a transform holds {token:?}, which is not finite"
+            )));
+        }
+    }
+    Ok(m)
+}
+
+/// `outer` applied after `inner` — the order a component nested in an item needs.
+fn compose(outer: [f64; 12], inner: [f64; 12]) -> [f64; 12] {
+    let mut out = [0.0; 12];
+    for row in 0..3 {
+        for col in 0..3 {
+            out[row * 3 + col] = (0..3)
+                .map(|k| inner[row * 3 + k] * outer[k * 3 + col])
+                .sum();
+        }
+    }
+    for col in 0..3 {
+        out[9 + col] = (0..3)
+            .map(|k| inner[9 + k] * outer[k * 3 + col])
+            .sum::<f64>()
+            + outer[9 + col];
+    }
+    out
+}
+
+fn apply(m: [f64; 12], v: [f64; 3]) -> [f64; 3] {
+    [
+        v[0] * m[0] + v[1] * m[3] + v[2] * m[6] + m[9],
+        v[0] * m[1] + v[1] * m[4] + v[2] * m[7] + m[10],
+        v[0] * m[2] + v[1] * m[5] + v[2] * m[8] + m[11],
+    ]
+}
+
 fn emit(
     objects: &std::collections::BTreeMap<String, Object>,
     id: &str,
-    _transform: [f64; 12],
+    transform: [f64; 12],
     scale: f64,
-    _depth: u32,
+    depth: u32,
     out: &mut Vec<[[f32; 3]; 3]>,
 ) -> Result<(), CadError> {
+    if depth > MAX_DEPTH {
+        return Err(malformed(format!(
+            "its objects are nested more than {MAX_DEPTH} deep, or reference each other in a cycle"
+        )));
+    }
     let object = objects.get(id).ok_or_else(|| {
         malformed(format!(
             "a build item names object {id}, which does not exist"
         ))
     })?;
+
     for t in &object.triangles {
+        // Transform first in the file's own units, then scale to millimetres: the
+        // transform's numbers are expressed in those units too, so scaling first would
+        // apply the unit twice to the translation.
         let corner = |i: usize| {
-            let v = object.vertices[i];
+            let v = apply(transform, object.vertices[i]);
             [
                 (v[0] * scale) as f32,
                 (v[1] * scale) as f32,
@@ -372,6 +435,17 @@ fn emit(
             ]
         };
         out.push([corner(t[0]), corner(t[1]), corner(t[2])]);
+    }
+
+    for (child, child_transform) in &object.components {
+        emit(
+            objects,
+            child,
+            compose(transform, *child_transform),
+            scale,
+            depth + 1,
+            out,
+        )?;
     }
     Ok(())
 }
@@ -619,5 +693,138 @@ mod tests {
         ))
         .expect_err("must fail");
         assert!(err.to_string().contains("vertex"), "{err}");
+    }
+
+    #[test]
+    fn a_build_items_transform_moves_the_geometry() {
+        // Translation only: (10, 20, 30). The triangle is at the origin, so every
+        // coordinate must shift by exactly that.
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 10 20 30"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles,
+            vec![[[10.0, 20.0, 30.0], [11.0, 20.0, 30.0], [10.0, 21.0, 30.0]]]
+        );
+    }
+
+    #[test]
+    fn two_build_items_of_one_object_become_one_merged_mesh() {
+        // Spec §3.1: one file is one part. Two placements of the same object produce two
+        // triangles in one mesh, at different positions.
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build>
+<item objectid="1"/>
+<item objectid="1" transform="1 0 0 0 1 0 0 0 1 100 0 0"/>
+</build></model>"#)).expect("parses");
+        assert_eq!(mesh.triangles.len(), 2);
+        assert_eq!(mesh.triangles[1][0], [100.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_component_composes_its_transform_with_the_items() {
+        // Object 2 holds object 1 shifted by x+5; the build item shifts object 2 by
+        // x+100. The composed result is x+105 -- a parser that applied only one of the
+        // two transforms would land on 5 or 100 and this asserts the composition.
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2"><components><component objectid="1" transform="1 0 0 0 1 0 0 0 1 5 0 0"/></components></object>
+</resources>
+<build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 100 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(mesh.triangles[0][0], [105.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_translation_is_scaled_by_the_unit_too() {
+        // The ONE test that distinguishes transform-then-scale from scale-then-transform.
+        // A pure scale matrix commutes with the unit scalar and a translation in a
+        // millimetre file has scale 1, so neither of the other transform tests can tell
+        // the two orderings apart -- both give the same answer. A translation in a
+        // centimetre file cannot: correct is (v + t) * 10, wrong is v * 10 + t.
+        let mesh = parse_3mf(&package(r#"<model unit="centimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 10 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles,
+            vec![[[100.0, 0.0, 0.0], [110.0, 0.0, 0.0], [100.0, 10.0, 0.0]]],
+            "scaling before transforming would give 10/20/10 -- the translation must be \
+             scaled with the geometry, because it is expressed in the same units"
+        );
+    }
+
+    #[test]
+    fn a_components_rotation_composes_in_the_right_order() {
+        // The 3x3 half of composition, which
+        // `a_component_composes_its_transform_with_the_items` cannot pin: both of its
+        // transforms have identity 3x3 blocks, so a transposed product gives the same
+        // answer. Here the component rotates 90 degrees about z and the build item scales
+        // x by two. Rotating first sends (1,0,0) to (0,1,0), which the scale leaves alone;
+        // the other order gives (0,2,0).
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="1" y="0" z="0"/><vertex x="0" y="0" z="0"/><vertex x="0" y="0" z="1"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2"><components><component objectid="1" transform="0 1 0 -1 0 0 0 0 1 0 0 0"/></components></object>
+</resources>
+<build><item objectid="2" transform="2 0 0 0 1 0 0 0 1 0 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles[0][0],
+            [0.0, 1.0, 0.0],
+            "the component's rotation must apply before the build item's scale"
+        );
+    }
+
+    #[test]
+    fn a_transform_with_too_many_numbers_is_rejected() {
+        // `zip` stops at the shorter side, so counting inside the loop accepts thirteen
+        // numbers by truncating to twelve while correctly rejecting eleven.
+        let err = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0 99"/></build></model>"#))
+            .expect_err("must fail");
+        assert!(err.to_string().contains("13 numbers"), "{err}");
+    }
+
+    #[test]
+    fn a_component_cycle_terminates_instead_of_hanging() {
+        // Object 1 contains object 2 contains object 1. Without a depth cap this
+        // recurses until the stack dies.
+        let err = parse_3mf(&package(
+            r#"<model unit="millimeter"><resources>
+<object id="1"><components><component objectid="2"/></components></object>
+<object id="2"><components><component objectid="1"/></components></object>
+</resources>
+<build><item objectid="1"/></build></model>"#,
+        ))
+        .expect_err("must fail");
+        assert!(err.to_string().contains("nested"), "{err}");
+    }
+
+    #[test]
+    fn a_scale_in_the_transform_is_applied_with_the_unit() {
+        // 2x scale in a centimetre file: 1 -> 2 cm -> 20 mm. Order matters, and getting
+        // it backwards still produces a plausible number, so this pins it.
+        let mesh = parse_3mf(&package(r#"<model unit="centimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="2 0 0 0 2 0 0 0 2 0 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(mesh.triangles[0][1], [20.0, 0.0, 0.0]);
     }
 }
