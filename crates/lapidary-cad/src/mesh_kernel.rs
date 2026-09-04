@@ -57,6 +57,6 @@ mod tests {
         let err = MeshKernel
             .ingest(b"not an stl at all")
             .expect_err("must fail");
-        assert!(matches!(err, CadError::MalformedStl { .. }));
+        assert!(matches!(err, CadError::MalformedMesh { .. }));
     }
 }

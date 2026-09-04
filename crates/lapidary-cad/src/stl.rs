@@ -18,7 +18,8 @@ const TRIANGLE: usize = 50;
 
 pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
     if bytes.is_empty() {
-        return Err(CadError::MalformedStl {
+        return Err(CadError::MalformedMesh {
+            format: "STL".to_owned(),
             detail: "the file is 0 bytes".to_owned(),
         });
     }
@@ -36,7 +37,8 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
         // The length says binary but does not add up. If it also does not look like
         // text, report the binary shape — that is the more useful diagnosis.
         if !looks_like_ascii(bytes) {
-            return Err(CadError::MalformedStl {
+            return Err(CadError::MalformedMesh {
+                format: "STL".to_owned(),
                 detail: format!(
                     "the header claims {claimed} triangles, which needs {} bytes, but the file is {} — it looks truncated or incomplete",
                     HEADER + COUNT + claimed * TRIANGLE,
@@ -79,7 +81,8 @@ fn parse_binary(bytes: &[u8], count: usize) -> Result<Mesh, CadError> {
                 // drop NaN operands, so it vanishes from the bounding box while area
                 // and volume downstream turn into NaN with no visible cause.
                 if !value.is_finite() {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "triangle {} has a non-finite {} coordinate on vertex {} — the file is likely corrupt",
                             i + 1,
@@ -99,7 +102,8 @@ fn parse_binary(bytes: &[u8], count: usize) -> Result<Mesh, CadError> {
 }
 
 fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| CadError::MalformedStl {
+    let text = std::str::from_utf8(bytes).map_err(|_| CadError::MalformedMesh {
+        format: "STL".to_owned(),
         detail: "the file is neither a valid binary STL nor valid UTF-8 text".to_owned(),
     })?;
 
@@ -123,7 +127,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
         match keyword {
             "facet" => {
                 if facet_open {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} opens a facet before the previous one was closed with `endfacet` — the file's facet structure is corrupt"
                         ),
@@ -133,7 +138,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
             }
             "endfacet" => {
                 if loop_open {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} closes a facet whose loop was never closed with `endloop` — the file's facet structure is corrupt"
                         ),
@@ -143,7 +149,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
             }
             "outer" => {
                 if loop_open {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} opens a loop before the previous one was closed with `endloop` — the file's facet structure is corrupt"
                         ),
@@ -154,14 +161,16 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
             }
             "endloop" => {
                 if !loop_open {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} closes a loop that was never opened with `outer loop` — the file's facet structure is corrupt"
                         ),
                     });
                 }
                 if current.len() != 3 {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} closes a facet with {} vertices, expected 3 — the file's facet structure is corrupt",
                             current.len()
@@ -174,7 +183,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
             }
             "vertex" => {
                 if !loop_open {
-                    return Err(CadError::MalformedStl {
+                    return Err(CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!(
                             "line {line_no} has a `vertex` outside an `outer loop` — the file's facet structure is corrupt"
                         ),
@@ -182,17 +192,20 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
                 }
                 let mut vertex = [0.0f32; 3];
                 for (i, slot) in vertex.iter_mut().enumerate() {
-                    let token = parts.next().ok_or_else(|| CadError::MalformedStl {
+                    let token = parts.next().ok_or_else(|| CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!("line {line_no} has {i} coordinates, expected 3"),
                     })?;
-                    *slot = token.parse().map_err(|_| CadError::MalformedStl {
+                    *slot = token.parse().map_err(|_| CadError::MalformedMesh {
+                        format: "STL".to_owned(),
                         detail: format!("line {line_no} has `{token}` where a number was expected"),
                     })?;
                     // Same reasoning as the binary path: a NaN or infinite vertex is
                     // not a coordinate anything downstream can use, and Rust's f32
                     // parser accepts "nan" / "inf" / "infinity" without complaint.
                     if !slot.is_finite() {
-                        return Err(CadError::MalformedStl {
+                        return Err(CadError::MalformedMesh {
+                            format: "STL".to_owned(),
                             detail: format!(
                                 "line {line_no} has `{token}`, which is not a finite number — the file is likely corrupt"
                             ),
@@ -206,7 +219,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
     }
 
     if facet_open || loop_open {
-        return Err(CadError::MalformedStl {
+        return Err(CadError::MalformedMesh {
+            format: "STL".to_owned(),
             detail: "the file ends with a facet still open — the file's facet structure is corrupt"
                 .to_owned(),
         });
@@ -217,7 +231,8 @@ fn parse_ascii(bytes: &[u8]) -> Result<Mesh, CadError> {
 
 fn finish(triangles: Vec<[[f32; 3]; 3]>) -> Result<Mesh, CadError> {
     if triangles.is_empty() {
-        return Err(CadError::MalformedStl {
+        return Err(CadError::MalformedMesh {
+            format: "STL".to_owned(),
             detail: "the file parsed but contains no triangles".to_owned(),
         });
     }

@@ -51,23 +51,23 @@ impl std::fmt::Display for Violation {
 pub const EXEMPT: &[(&str, usize, &str)] = &[
     (
         "crates/lapidary-cad/src/stl.rs",
-        259,
+        274,
         "ASCII STL fixture text: real STL syntax, conventionally indented by facet/loop nesting depth",
     ),
     (
         "crates/lapidary-cad/src/stl.rs",
-        339,
-        "ASCII STL fixture text, same reason as line 259",
+        354,
+        "ASCII STL fixture text, same reason as line 274",
     ),
     (
         "crates/lapidary-cad/src/stl.rs",
-        363,
-        "ASCII STL fixture text, same reason as line 259",
+        378,
+        "ASCII STL fixture text, same reason as line 274",
     ),
     (
         "crates/lapidary-cad/src/stl.rs",
-        389,
-        "ASCII STL fixture text, same reason as line 259",
+        404,
+        "ASCII STL fixture text, same reason as line 274",
     ),
     (
         "crates/lapidary-db/tests/repo.rs",

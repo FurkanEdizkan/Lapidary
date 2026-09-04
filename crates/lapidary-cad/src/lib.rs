@@ -24,7 +24,13 @@ pub use stl::{Mesh, parse_stl};
 #[cfg(all(test, feature = "mock-kernel"))]
 mod tests {
     use super::*;
-    use std::path::Path;
+
+    fn params(format: &str) -> KernelParams {
+        KernelParams {
+            format: format.to_owned(),
+            ..Default::default()
+        }
+    }
 
     #[tokio::test]
     async fn mock_kernel_reports_a_pinned_version() {
@@ -33,62 +39,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_kernel_returns_fixture_output_for_a_known_part() {
+    async fn mock_kernel_returns_fixture_output_for_a_known_format() {
         let kernel = MockKernel::new();
         let out = kernel
-            .process(
-                Path::new("bearing-block-608zz.step"),
-                &KernelParams::default(),
-            )
+            .process(b"ignored by the double", &params("step"))
             .await
-            .expect("mock kernel processes the known fixture");
-        assert_eq!(out.triangle_count, 48_112);
-        assert_eq!(out.bbox_mm, [61.0, 42.0, 18.5]);
-        assert!(
-            !out.entities.is_empty(),
-            "STEP input must yield B-rep entities"
-        );
+            .expect("mock kernel processes a known format");
+        assert_eq!(out.measurements.triangle_count, 48_112);
+        assert_eq!(out.measurements.bbox_mm, [61.0, 42.0, 18.5]);
     }
 
     #[tokio::test]
-    async fn mock_kernel_reports_an_actionable_error_for_unknown_input() {
+    async fn mock_kernel_reports_an_actionable_error_for_an_unknown_format() {
         let kernel = MockKernel::new();
         let err = kernel
-            .process(Path::new("nonexistent.step"), &KernelParams::default())
+            .process(b"anything", &params("iges"))
             .await
-            .expect_err("unknown fixture must fail");
+            .expect_err("an unregistered format must fail");
         let msg = err.to_string();
-        assert!(msg.contains("nonexistent.step"));
+        assert!(msg.contains("iges"));
         // Assert the remedy clause, not just the word "fixture" — deleting the advice and
-        // leaving "No fixture is registered for {path}." must fail this test.
+        // leaving "No fixture is registered for the {format} format." must fail this test.
         assert!(
             msg.contains("add an arm"),
             "error must say what to do, not just what broke"
         );
     }
 
-    /// The measurement invariant, locked. `CLAUDE.md` requires that mesh-derived values
-    /// are labelled approximate, always — which downstream code decides by asking whether
-    /// the kernel returned any analytic entities. If this ever returns a non-empty vec for
-    /// mesh input, tessellated numbers start being presented as exact.
+    /// The measurement invariant, now held by the type system rather than by this test.
+    ///
+    /// `CLAUDE.md` requires that mesh-derived values are labelled approximate, always —
+    /// which downstream code decides by asking whether the kernel returned any analytic
+    /// entities. Slice 3 made `Entity` an uninhabited enum, so `Vec<Entity>` is provably
+    /// empty for every input, not just for mesh input. That is a stronger guarantee than
+    /// this test was: it cannot be broken by a careless kernel, only by giving `Entity` a
+    /// variant.
+    ///
+    /// **Phase 2 must restore the contrast.** The moment STEP ingest adds a variant, this
+    /// test stops proving anything on its own and needs its old shape back: a B-rep input
+    /// yielding entities beside a mesh input yielding none.
     #[tokio::test]
     async fn mesh_input_yields_no_analytic_entities() {
         let kernel = MockKernel::new();
-        // A fictional name — the mock's job is to answer for files that need not exist
-        // on disk. It must never share a name with a real fixture: `bracket-lp-1042-03.stl`
-        // exists for real under `fixtures/` (Task 3) with a real, different mesh, and a
-        // mock entry under that same name would just be a second, driftable answer for
-        // one part.
         let out = kernel
-            .process(Path::new("flange-lp-4400-02.stl"), &KernelParams::default())
+            .process(b"ignored by the double", &params("stl"))
             .await
-            .expect("mock kernel processes the known mesh fixture");
-        assert_eq!(out.triangle_count, 12_940);
-        assert_eq!(out.bbox_mm, [88.0, 34.0, 12.0]);
+            .expect("mock kernel processes a mesh format");
         assert!(
             out.entities.is_empty(),
             "mesh input must yield no analytic entities — every measurement taken from it \
              is approximate, and an entity list is what tells callers otherwise"
+        );
+    }
+
+    /// The ladder is always three rungs, and they are not the same rung three times.
+    #[tokio::test]
+    async fn the_ladder_is_three_distinguishable_rungs() {
+        let kernel = MockKernel::new();
+        let out = kernel
+            .process(b"ignored by the double", &params("stl"))
+            .await
+            .expect("processes");
+        let counts: Vec<u32> = out.tessellations.iter().map(|t| t.triangle_count).collect();
+        assert_eq!(counts.len(), 3);
+        assert!(
+            counts[0] < counts[1] && counts[1] < counts[2],
+            "rungs must ascend in detail, got {counts:?}"
         );
     }
 }
