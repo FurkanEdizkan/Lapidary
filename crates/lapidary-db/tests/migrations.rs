@@ -93,6 +93,133 @@ async fn a_pending_job_that_carries_its_last_error_is_accepted(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn a_done_job_that_claims_it_rendered_something_is_accepted(pool: PgPool) {
+    // The positive case for 0005's re-added job_outcome_known: without this, a CHECK
+    // written inverted would pass every negative case below and still be wrong.
+    sqlx::query(
+        "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome) \
+         VALUES ($1, $2, $3, 'render_thumbnail', '{}'::jsonb, 'done', 'rendered')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
+    .execute(&pool)
+    .await
+    .expect("a done job may report that it rendered something");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_pending_job_that_claims_it_rendered_something_is_refused(pool: PgPool) {
+    let err = sqlx::query(
+        "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome) \
+         VALUES ($1, $2, $3, 'render_thumbnail', '{}'::jsonb, 'pending', 'rendered')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
+    .execute(&pool)
+    .await
+    .expect_err("an outcome on a non-terminal row must be refused");
+
+    assert!(
+        err.to_string().contains("job_done_has_outcome"),
+        "expected job_done_has_outcome to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_job_claiming_an_unknown_outcome_is_still_refused(pool: PgPool) {
+    let err = sqlx::query(
+        "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome) \
+         VALUES ($1, $2, $3, 'render_thumbnail', '{}'::jsonb, 'done', 'polished')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
+    .execute(&pool)
+    .await
+    .expect_err("an outcome outside the known set must be refused");
+
+    assert!(
+        err.to_string().contains("job_outcome_known"),
+        "expected job_outcome_known to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn pre_existing_tessellation_rungs_survive_the_auto_thumbnail_migration(pool: PgPool) {
+    // 0005 touches `library` and `job`, not `derivative` -- this is "we never delete user
+    // data implicitly" made testable for the LOD ladder slice 3 wrote. Migrations are run
+    // by hand here rather than via the attribute, so the rows genuinely pre-exist 0005
+    // rather than being inserted into an already-migrated database.
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(4, &pool)
+        .await
+        .expect("migrations up to 0004 apply");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+
+    let part = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+        .bind(part)
+        .bind(library)
+        .bind("bracket-lp-1042-04")
+        .execute(&pool)
+        .await
+        .expect("part inserts");
+
+    let revision = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision)
+    .bind(part)
+    .execute(&pool)
+    .await
+    .expect("revision inserts");
+
+    for kind in ["tessellation_l1", "tessellation_l2"] {
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+             VALUES ($1, $2, $3, $4, 'mesh stl-1+cpu-1', '{}')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(revision)
+        .bind(kind)
+        .bind(b"lod-rung".as_slice())
+        .execute(&pool)
+        .await
+        .expect("tessellation rung inserts");
+    }
+
+    migrator.run(&pool).await.expect("0005 applies");
+
+    let has_column: bool = sqlx::query_scalar(
+        "SELECT exists (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'library' AND column_name = 'auto_thumbnail')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("column check runs");
+    assert!(has_column, "0005 must actually have run");
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM derivative WHERE revision_id = $1 \
+         AND kind IN ('tessellation_l1', 'tessellation_l2')",
+    )
+    .bind(revision)
+    .fetch_one(&pool)
+    .await
+    .expect("count runs");
+
+    assert_eq!(
+        count, 2,
+        "pre-existing tessellation rungs must survive migration 0005"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn a_pending_job_that_claims_an_outcome_is_refused(pool: PgPool) {
     // The converse of `a_job_that_claims_done_without_an_outcome_is_refused`:
     // job_done_has_outcome is a genuine biconditional, so an outcome on a row that
