@@ -181,18 +181,18 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "xtask/src/main.rs",
-        428,
-        "a synthetic cargo test -- --list transcript reproducing real cargo output (see export_bindings_tests); the leading spaces before Running are cargo's own formatting, not ours",
+        735,
+        "a synthetic cargo test -- --list transcript reproducing real cargo output (see bindings_command_tests); the leading spaces before Running are cargo's own formatting, not ours",
     ),
     (
         "xtask/src/main.rs",
-        471,
-        "a synthetic cargo test -- --list transcript pinning that a test matching only by its MODULE name is not counted, same reason as line 428",
+        778,
+        "a synthetic cargo test -- --list transcript pinning that a test matching only by its MODULE name is not counted, same reason as line 735",
     ),
     (
         "xtask/src/main.rs",
-        440,
-        "a synthetic cargo test -- --list transcript, same reason as line 400",
+        747,
+        "a synthetic cargo test -- --list transcript, same reason as line 735",
     ),
 ];
 

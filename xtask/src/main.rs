@@ -1,7 +1,9 @@
 //! Workspace automation. Run via the `cargo xtask` alias in .cargo/config.toml.
 
+mod commit;
 mod deploy;
 mod layers;
+mod setup;
 mod strings;
 
 use anyhow::{Context, Result, bail};
@@ -14,12 +16,17 @@ fn main() -> Result<()> {
         Some("check-layers") => check_layers(),
         Some("check-deploy") => check_deploy(),
         Some("check-strings") => check_strings(),
+        Some("check-commit-msg") => check_commit_msg(),
         Some("export-bindings") => export_bindings(),
+        Some("export-agents-md") => export_agents_md(),
+        Some("setup") => run_setup(),
         Some(other) => bail!(
-            "Unknown xtask '{other}'. Available: check-layers, check-deploy, check-strings, export-bindings"
+            "Unknown xtask '{other}'. Available: check-layers, check-deploy, check-strings, check-commit-msg, export-bindings, export-agents-md, setup"
         ),
         None => {
-            bail!("Usage: cargo xtask <check-layers|check-deploy|check-strings|export-bindings>")
+            bail!(
+                "Usage: cargo xtask <check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
+            )
         }
     }
 }
@@ -40,6 +47,306 @@ fn workspace_root() -> Result<std::path::PathBuf> {
         );
     }
     Ok(root)
+}
+
+/// Make a fresh clone workable: install the commit hook, reconcile the plugins
+/// `.claude/settings.json` declares, and materialize the project's skills for agents that
+/// cannot install a Claude Code plugin. Idempotent — every run reports what was already
+/// correct, so "already fine" is distinguishable from "did not look".
+///
+/// See `xtask/src/setup.rs` for what gets decided and why; this function only executes.
+fn run_setup() -> Result<()> {
+    let root = workspace_root()?;
+
+    // 1. The commit hook. core.hooksPath is local to .git/config and cannot be committed,
+    //    which is the entire reason this command exists rather than the hook just working.
+    let hooks = root.join(".githooks");
+    if !hooks.is_dir() {
+        bail!("Expected the hook directory at {}", hooks.display());
+    }
+    run(&root, "git", &["config", "core.hooksPath", ".githooks"])?;
+    println!("  {:<8} core.hooksPath -> .githooks", "hooks");
+
+    // 2. What the project declares.
+    let settings_path = root.join(".claude/settings.json");
+    let settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
+        Ok(text) => serde_json::from_str(&text)
+            .with_context(|| format!("{} is not valid JSON", settings_path.display()))?,
+        Err(_) => {
+            println!(
+                "  {:<8} no .claude/settings.json; nothing declared",
+                "plugins"
+            );
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+    };
+
+    // 3. What the machine has. A missing Claude CLI is not fatal: the hook is installed
+    //    and the skills below come from git, so a machine whose agent is not Claude Code
+    //    still gets everything it can use.
+    let markets = claude_marketplaces();
+    let plugins = claude_plugins();
+    let claude_available = markets.is_some() && plugins.is_some();
+    if !claude_available {
+        println!(
+            "  {:<8} the `claude` CLI is not on PATH; skipping plugin reconcile",
+            "plugins"
+        );
+    }
+
+    // 4. and 5. Decide, then do.
+    let actions = setup::plan_actions(
+        &settings,
+        &markets.unwrap_or_default(),
+        &plugins.unwrap_or_default(),
+    );
+    for action in &actions {
+        match action {
+            setup::Action::AddMarketplace { name, repo } if claude_available => {
+                run(&root, "claude", &["plugin", "marketplace", "add", repo])?;
+                println!("  {:<8} registered marketplace {name}", "plugins");
+            }
+            setup::Action::InstallPlugin { id } if claude_available => {
+                run(&root, "claude", &["plugin", "install", id, "--yes"])?;
+                println!("  {:<8} installed {id}", "plugins");
+            }
+            setup::Action::EnablePlugin { id } if claude_available => {
+                run(&root, "claude", &["plugin", "enable", id])?;
+                println!("  {:<8} enabled {id}", "plugins");
+            }
+            setup::Action::MaterializeSkills { name, repo } => {
+                let count = materialize_skills(&root, name, repo)?;
+                println!(
+                    "  {:<8} .agents/skills/{name}/ <- {repo} ({count} skill(s))",
+                    "skills"
+                );
+            }
+            // Reports, and anything needing a CLI that is not here.
+            other => println!("  {:<8} {other}", "note"),
+        }
+    }
+
+    println!("\nSetup complete. Re-run it any time; it changes only what is not already correct.");
+    Ok(())
+}
+
+/// Run a command in `root`, failing with its stderr rather than a bare exit code.
+fn run(root: &Path, program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("Could not run `{program}`. Is it installed and on PATH?"))?;
+    if !output.status.success() {
+        bail!(
+            "`{program} {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `claude plugin marketplace list --json`, or `None` when the CLI is absent or unhappy.
+fn claude_marketplaces() -> Option<Vec<setup::Marketplace>> {
+    let output = Command::new("claude")
+        .args(["plugin", "marketplace", "list", "--json"])
+        .output()
+        .ok()?;
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(
+        parsed
+            .as_array()?
+            .iter()
+            .map(|m| setup::Marketplace {
+                name: m["name"].as_str().unwrap_or_default().to_owned(),
+                repo: m["repo"].as_str().unwrap_or_default().to_owned(),
+            })
+            .collect(),
+    )
+}
+
+/// `claude plugin list --json`, or `None` when the CLI is absent or unhappy.
+fn claude_plugins() -> Option<Vec<setup::Plugin>> {
+    let output = Command::new("claude")
+        .args(["plugin", "list", "--json"])
+        .output()
+        .ok()?;
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(
+        parsed
+            .as_array()?
+            .iter()
+            .map(|p| setup::Plugin {
+                id: p["id"].as_str().unwrap_or_default().to_owned(),
+                enabled: p["enabled"].as_bool().unwrap_or(false),
+            })
+            .collect(),
+    )
+}
+
+/// Clone (or refresh) a marketplace repository and copy its `skills/` into
+/// `.agents/skills/<name>/`, so an agent that cannot install a Claude Code plugin can
+/// still read them. Plain git on purpose: no vendor CLI is involved.
+///
+/// Both directories are gitignored. This is a materialized cache of another repository,
+/// not a copy this one owns — committing it would fork the skills, which is exactly what
+/// removing them from `.claude/skills/` was meant to stop.
+fn materialize_skills(root: &Path, name: &str, repo: &str) -> Result<usize> {
+    let cache = root.join(".agents/.cache").join(name);
+    let url = format!("https://github.com/{repo}.git");
+    if cache.join(".git").exists() {
+        run(&cache, "git", &["fetch", "--depth", "1", "origin"])?;
+        run(&cache, "git", &["reset", "--hard", "FETCH_HEAD"])?;
+    } else {
+        if let Some(parent) = cache.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let cache_arg = cache.to_string_lossy().into_owned();
+        run(
+            root,
+            "git",
+            &["clone", "--depth", "1", "--quiet", &url, &cache_arg],
+        )?;
+    }
+
+    let source = cache.join("skills");
+    let destination = root.join(".agents/skills").join(name);
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination)?;
+    }
+    if !source.is_dir() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(&destination)?;
+
+    let mut count = 0;
+    for entry in std::fs::read_dir(&source)? {
+        let entry = entry?;
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &destination.join(entry.file_name()))?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Recursive directory copy. Hand-rolled because this workspace adds no dependency it can
+/// avoid, and the tree being copied is a handful of markdown files.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// The generated wrapper around `CLAUDE.md`. Pure so it can be tested without writing to
+/// the repository, and deterministic so the CI staleness gate compares like with like.
+///
+/// `CLAUDE.md` stays the source because Claude Code loads it automatically, and its
+/// content needs no rewriting for other tools: it names no vendor anywhere in its 3.8 KB.
+/// Only the filename was ever Claude-specific.
+fn render_agents_md(claude_md: &str) -> String {
+    format!(
+        "<!-- Generated from CLAUDE.md by `cargo xtask export-agents-md`. Edit CLAUDE.md, \
+         not this file — CI fails when the two disagree. -->\n\
+         \n\
+         {}\n\
+         \n\
+         ---\n\
+         \n\
+         ## For agents other than Claude Code\n\
+         \n\
+         The rules above are this project's, not any one tool's. Claude Code reads them \
+         from `CLAUDE.md`; everything else reads them here.\n\
+         \n\
+         This project's skills — its commit and branch conventions, and its \
+         module-structure guidance — are deliberately not committed to this repository. \
+         They live in their own repository so a single copy stays current everywhere. Run \
+         `cargo xtask setup` to materialize them into `.agents/skills/`; it uses plain git \
+         and needs no vendor CLI.\n",
+        claude_md.trim_end()
+    )
+}
+
+/// Write `AGENTS.md` from `CLAUDE.md`, so agents that do not read `CLAUDE.md` still find
+/// the project's rules. Committed and gated in CI, exactly like `web/src/bindings` — a
+/// generated file that is not checked is a file that silently goes stale.
+fn export_agents_md() -> Result<()> {
+    let root = workspace_root()?;
+    let source = root.join("CLAUDE.md");
+    let claude_md = std::fs::read_to_string(&source)
+        .with_context(|| format!("Could not read {}", source.display()))?;
+
+    let out = root.join("AGENTS.md");
+    let rendered = render_agents_md(&claude_md);
+    std::fs::write(&out, &rendered)
+        .with_context(|| format!("Could not write {}", out.display()))?;
+
+    println!(
+        "AGENTS.md written from CLAUDE.md ({} bytes)",
+        rendered.len()
+    );
+    Ok(())
+}
+
+/// Validate one commit message file — the whole body of the `commit-msg` hook, and what
+/// CI runs per commit. See `xtask/src/commit.rs` for the rules.
+///
+/// The only subcommand that takes arguments, because git names a different temporary file
+/// each time. `--structure-only` drops the AI-attribution rule; it exists so the structure
+/// claim can be checked against this repository's entire history, 148 commits of which
+/// predate the attribution rule and carry the trailers it rejects.
+fn check_commit_msg() -> Result<()> {
+    const USAGE: &str = "Usage: cargo xtask check-commit-msg [--structure-only] <file>";
+
+    let mut structure_only = false;
+    let mut path = None;
+    for arg in std::env::args().skip(2) {
+        match arg.as_str() {
+            "--structure-only" => structure_only = true,
+            other if other.starts_with('-') => bail!("Unknown option '{other}'. {USAGE}"),
+            other => path = Some(other.to_owned()),
+        }
+    }
+    let Some(path) = path else {
+        bail!("{USAGE}. Git passes the message file to the commit-msg hook as $1.")
+    };
+
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("Could not read the commit message file {path}"))?;
+    let violations = commit::check(&raw, structure_only);
+
+    if violations.is_empty() {
+        let checked = if structure_only {
+            "subject shape and a known type"
+        } else {
+            "subject shape, a known type, a blank line before the body, and no AI attribution trailer"
+        };
+        println!("commit message OK — {checked}");
+        return Ok(());
+    }
+
+    eprintln!(
+        "Commit message rejected ({} problem(s)):\n",
+        violations.len()
+    );
+    for violation in &violations {
+        eprintln!("  {violation}");
+    }
+    eprintln!(
+        "\nThe rules live in xtask/src/commit.rs, and CI applies the same ones to the \
+         commits in each push, so `git commit --no-verify` postpones this rather than \
+         avoiding it. Run `cargo xtask setup` on a new machine to install the hook."
+    );
+    bail!("commit message check failed")
 }
 
 /// Static checks over `deploy/compose.yaml` and `deploy/Containerfile` — see

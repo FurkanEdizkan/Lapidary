@@ -55,6 +55,70 @@ jobs:
             git status --porcelain -- web/src/bindings
             exit 1
           fi
+      - run: cargo xtask export-agents-md
+      - name: AGENTS.md must be committed and current
+        run: |
+          # AGENTS.md is CLAUDE.md's content under the filename every other agent reads.
+          # Generated rather than symlinked so a Windows checkout without symlink support
+          # gets the rules instead of a 9-byte text file; gated here for the same reason
+          # the bindings are, because a generated file nobody checks goes stale silently.
+          if git status --porcelain -- AGENTS.md | grep -q .; then
+            echo "::error::AGENTS.md is stale. Run 'cargo xtask export-agents-md' and commit the result."
+            git status --porcelain -- AGENTS.md
+            exit 1
+          fi
+
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The range below needs both endpoints and everything between them.
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Commit messages in this change must follow the convention
+        run: |
+          # The local commit-msg hook is bypassable with --no-verify and absent on a
+          # machine where `cargo xtask setup` was never run; this is the backstop.
+          #
+          # It checks only the commits this push or PR ADDS. 148 of this repository's
+          # commits predate the AI-attribution rule and carry the trailers it rejects, so
+          # a job that walked history would fail permanently and teach everyone to ignore
+          # it. Where the range cannot be determined, the job skips and says so rather
+          # than guessing — the same rule the other gates follow.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "::notice::branch creation, no previous tip to diff against — skipping"
+            exit 0
+          elif ! git merge-base --is-ancestor "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null; then
+            echo "::notice::history was rewritten, so the pushed range is not resolvable — skipping"
+            exit 0
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+
+          commits=$(git rev-list --no-merges "$range")
+          count=$(echo "$commits" | grep -c . || true)
+
+          # A push that lands a merge sets `before` to the previous tip, so the range
+          # swallows the whole merged branch — merging rust-rewrite would have fed this
+          # 146 commits, every one carrying a trailer. Those are not new work being
+          # reviewed, and failing on them says nothing useful.
+          if [ "$count" -gt 20 ]; then
+            echo "::notice::$count commits in range, which is a merge or a batch import rather than new work — skipping"
+            exit 0
+          fi
+
+          failed=0
+          for sha in $commits; do
+            git log -1 --format=%B "$sha" > /tmp/commit-msg
+            if ! cargo xtask check-commit-msg /tmp/commit-msg; then
+              echo "::error::$sha ($(git log -1 --format=%s "$sha"))"
+              failed=1
+            fi
+          done
+          exit $failed
 
   deny:
     runs-on: ubuntu-latest

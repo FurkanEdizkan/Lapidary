@@ -1,0 +1,9 @@
+#!/bin/sh
+# Commit message gate. The rules, and the reasoning behind them, live in
+# xtask/src/commit.rs; this file stays a two-line shim so there is exactly one
+# implementation and the hook cannot drift from what CI enforces.
+#
+# Activated per machine by `cargo xtask setup`, which sets core.hooksPath to this
+# directory. That is local to .git/config and cannot be committed, which is why setup
+# exists at all.
+exec cargo xtask check-commit-msg "$1"

@@ -36,3 +36,8 @@ Thumbs.db
 # `git add` and made the repository unpushable — GitHub rejects any file over 100 MB.
 # Keep such archives outside the repo entirely.
 *.rar
+
+# Materialized by `cargo xtask setup` from the marketplaces .claude/settings.json
+# declares. A cache of another repository, never a copy this one owns.
+/.agents/skills/
+/.agents/.cache/
