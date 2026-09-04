@@ -4,8 +4,9 @@
 //! security boundary — zip64, data descriptors, local-versus-central header mismatch —
 //! and a bug here is a vulnerability rather than a wrong mesh. See spec §3.2.
 
-// Not called outside this module's tests yet: task 4 wires `read_capped`/`Caps` into
-// the archive reader. Delete this line then.
+// Removed in task 8, which adds `pub use tmf::parse_3mf` and so makes this module
+// reachable from outside its own tests. Until then `mod tmf;` is private and every item
+// here is dead to `clippy -D warnings`, however many callers it has internally.
 #![allow(dead_code)]
 
 use crate::kernel::CadError;
@@ -60,6 +61,122 @@ pub(crate) fn read_capped<R: Read>(reader: R, cap: u64) -> Result<Vec<u8>, CadEr
         });
     }
     Ok(out)
+}
+
+pub(crate) type Archive<'a> = zip::ZipArchive<std::io::Cursor<&'a [u8]>>;
+
+/// The 3MF core specification's relationship type for the model part.
+const MODEL_REL_TYPE: &str = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
+
+fn refused(detail: String) -> CadError {
+    CadError::ArchiveRefused {
+        format: FORMAT.to_owned(),
+        detail,
+    }
+}
+
+fn malformed(detail: String) -> CadError {
+    CadError::MalformedMesh {
+        format: FORMAT.to_owned(),
+        detail,
+    }
+}
+
+pub(crate) fn open_archive<'a>(bytes: &'a [u8], caps: &Caps) -> Result<Archive<'a>, CadError> {
+    let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|source| malformed(format!("it is not a readable ZIP package: {source}")))?;
+    if archive.len() > caps.max_entries {
+        return Err(refused(format!(
+            "it holds {} entries, past the {} allowed",
+            archive.len(),
+            caps.max_entries
+        )));
+    }
+    // Names are checked once, up front, so no later lookup can reach a rejected one.
+    for name in archive.file_names() {
+        if is_unsafe_name(name) {
+            return Err(refused(format!("it holds an unsafe entry path: {name}")));
+        }
+    }
+    Ok(archive)
+}
+
+/// Absolute paths and `..` segments. Defence in depth here — spec §3.5 — because nothing
+/// in this module writes an extracted file anywhere.
+fn is_unsafe_name(name: &str) -> bool {
+    name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains(':')
+        || std::path::Path::new(name)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+pub(crate) fn entry(
+    archive: &mut Archive<'_>,
+    name: &str,
+    caps: &Caps,
+) -> Result<Vec<u8>, CadError> {
+    let file = archive
+        .by_name(name)
+        .map_err(|_| malformed(format!("the package has no {name} part")))?;
+    let compressed = file.compressed_size().max(1);
+    // The ratio bound and the absolute bound, whichever is tighter. Ratio catches the
+    // classic bomb: a few kilobytes claiming to be gigabytes.
+    let cap = caps
+        .max_decompressed
+        .min(compressed.saturating_mul(caps.max_ratio));
+    read_capped(file, cap)
+}
+
+/// The StartPart target from `_rels/.rels`, normalised to an archive entry name.
+///
+/// Spec §3.6: read the relationships rather than assuming `3D/3dmodel.model`. The cost is
+/// one small parse; the benefit is that a legal package that moved its model still opens.
+pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
+    let mut reader = quick_xml::Reader::from_reader(rels_xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(quick_xml::events::Event::Start(e)) | Ok(quick_xml::events::Event::Empty(e))
+                if e.local_name().as_ref() == b"Relationship" =>
+            {
+                let mut target = None;
+                let mut is_model = false;
+                for attr in e.attributes().flatten() {
+                    let value = attr
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .unwrap_or_default()
+                        .into_owned();
+                    match attr.key.local_name().as_ref() {
+                        b"Target" => target = Some(value),
+                        b"Type" => is_model = value == MODEL_REL_TYPE,
+                        _ => {}
+                    }
+                }
+                if is_model {
+                    let t = target.ok_or_else(|| {
+                        malformed("its model relationship names no target".to_owned())
+                    })?;
+                    // Relationship targets are package-absolute (`/3D/x.model`); ZIP
+                    // entry names are not.
+                    return Ok(t.trim_start_matches('/').to_owned());
+                }
+            }
+            Err(source) => {
+                return Err(malformed(format!(
+                    "its relationships are not valid XML: {source}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Err(malformed(
+        "it declares no 3D model relationship, so there is nothing to read".to_owned(),
+    ))
 }
 
 #[cfg(test)]
@@ -136,5 +253,94 @@ mod tests {
         assert_eq!(Caps::DEFAULT.max_decompressed, 2 << 30);
         assert_eq!(Caps::DEFAULT.max_entries, 1024);
         assert_eq!(Caps::DEFAULT.max_ratio, 200);
+    }
+
+    use std::io::Write as _;
+    use zip::write::SimpleFileOptions;
+
+    /// Builds a ZIP in memory. `(name, contents)` pairs, deflated.
+    fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, body) in entries {
+            w.start_file(*name, opts).expect("start");
+            w.write_all(body).expect("write");
+        }
+        w.finish().expect("finish").into_inner()
+    }
+
+    fn tiny_caps() -> Caps {
+        Caps {
+            max_decompressed: 4096,
+            max_entries: 4,
+            max_ratio: 20,
+        }
+    }
+
+    #[test]
+    fn too_many_entries_is_refused_before_anything_is_read() {
+        let many: Vec<(String, Vec<u8>)> = (0..9)
+            .map(|i| (format!("f{i}.txt"), b"x".to_vec()))
+            .collect();
+        let refs: Vec<(&str, &[u8])> = many
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect();
+        let err = open_archive(&zip_of(&refs), &tiny_caps()).expect_err("must refuse");
+        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+    }
+
+    #[test]
+    fn an_entry_past_the_size_cap_is_refused() {
+        let big = vec![b'A'; 8192];
+        let bytes = zip_of(&[("3D/3dmodel.model", &big)]);
+        let mut a = open_archive(&bytes, &tiny_caps()).expect("opens");
+        let err = entry(&mut a, "3D/3dmodel.model", &tiny_caps()).expect_err("must refuse");
+        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+    }
+
+    #[test]
+    fn an_entry_past_the_ratio_cap_is_refused() {
+        // 4000 zero bytes deflate to far less than 4000/20, so this breaches the ratio
+        // while staying inside max_decompressed -- the two caps are independent and this
+        // proves the ratio one fires on its own.
+        let squishy = vec![0u8; 4000];
+        let bytes = zip_of(&[("3D/3dmodel.model", &squishy)]);
+        let caps = Caps {
+            max_decompressed: 1 << 20,
+            max_entries: 4,
+            max_ratio: 20,
+        };
+        let mut a = open_archive(&bytes, &caps).expect("opens");
+        let err = entry(&mut a, "3D/3dmodel.model", &caps).expect_err("must refuse");
+        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_traversing_entry_name_is_rejected() {
+        // Defence in depth: nothing here extracts to disk, so this is not a live vector
+        // in this design. See spec §3.5 -- the rule should not depend on that staying so.
+        let bytes = zip_of(&[("../../etc/passwd", b"root:x:0:0")]);
+        let err = open_archive(&bytes, &Caps::DEFAULT).expect_err("must refuse");
+        assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_model_part_is_found_through_the_relationships() {
+        // Deliberately NOT the conventional 3D/3dmodel.model path: reading that directly
+        // would pass a test that used it, and fail on a legal file that moved it.
+        let rels = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+        assert_eq!(model_part_name(rels).expect("resolves"), "3D/carrier.model");
+    }
+
+    #[test]
+    fn a_package_with_no_model_relationship_says_so() {
+        let rels = br#"<Relationships><Relationship Id="r" Target="/docProps/thumbnail.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#;
+        let err = model_part_name(rels).expect_err("must fail");
+        assert!(matches!(err, CadError::MalformedMesh { .. }), "{err}");
     }
 }

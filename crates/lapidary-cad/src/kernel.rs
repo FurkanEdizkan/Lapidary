@@ -88,7 +88,7 @@ pub enum CadError {
     UnsupportedFormat { format: String },
 
     #[error(
-        "Refused this {format} — {detail}. The file may be corrupt or deliberately crafted; if it is genuinely this large, split it into separate parts."
+        "Refused this {format} — {detail}. The file may be corrupt or deliberately crafted; re-export it from a trusted tool and retry."
     )]
     ArchiveRefused { format: String, detail: String },
 }
