@@ -66,7 +66,7 @@ use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow, TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
-use lapidary_storage::{DerivativeStore, SourceStore, WorkerRole};
+use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
 use std::path::{Path as FsPath, PathBuf};
 
 pub struct IngestHandler {
@@ -228,9 +228,11 @@ impl IngestHandler {
         // recomputed from `bytes` inside `put` and is definitionally the same as `hash`
         // above; `hash` is used below rather than `stored.hash` so there is exactly one
         // hash variable in scope.
-        let stored = source.put(&bytes).map_err(|e| HandlerError::Transient {
-            message: e.to_string(),
-        })?;
+        let stored = source
+            .put(&bytes, Compression::for_source_format(&params.format))
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })?;
         let blob = StoredBlobRow {
             hash,
             size_bytes: stored.size_bytes,
