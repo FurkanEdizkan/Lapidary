@@ -392,9 +392,37 @@ graph is fixed upstream, `deflate-flate2` plus an explicit `flate2` drops it —
 recheck at the next `zip` major, not worth a fork now.
 
 **A 2 GiB decompressed cap still permits a 2 GiB allocation.** The caps bound the damage,
-they do not make it free. This is the same exposure the existing pipeline already has —
-`std::fs::read` on a 2 GB STL — so it is not new, and streaming the parse rather than
-buffering it is a Phase 2 concern for every format at once, not a 3MF one.
+they do not make it free. Buffering the source is the same exposure the existing pipeline
+already has — `std::fs::read` on a 2 GB STL — so streaming the parse is a Phase 2 concern
+for every format at once, not a 3MF one.
+
+**But amplification after decompression is NOT the same exposure, and an earlier draft of
+this section wrongly said it was.** The three `DATA.md` §5.4 caps bound what comes *out of
+the ZIP*. They say nothing about what the model then generates. A 3MF object may hold
+`<components>` referencing other objects, so geometry grows as branching^depth — and the
+depth cap alone bounds only one of those two dimensions. The whole-branch review found this
+and measured it; reproduced independently against this slice's own parser:
+
+| Package | Emitted | Amplification |
+|---|---|---|
+| 722 bytes | 65,536 triangles (2.2 MiB) | 3,267× |
+| 723 bytes | 1,679,616 triangles (57.7 MiB) | 83,632× |
+| 604 bytes | 16,777,216 triangles (~592 MB RSS) | ~10⁶× |
+
+For an STL the exposure really is bounded by file size. For a 3MF it was not bounded at
+all: a sub-kilobyte file would exhaust a worker limited to 2 GiB by
+`deploy/compose.yaml`, and killing the process is worse than refusing the file — the job's
+lease drops and the retry feeds it back in.
+
+`Caps::max_triangles` (8,000,000) closes it, checked as triangles accumulate rather than
+after. Measured after the fix: the 725-byte branching-8 package is refused in 7.7 s with a
+peak RSS of **278 MB**, against the 288 MB the budget's arithmetic predicts. Bounded, and
+survivable at concurrency 2 under a 2 GiB ceiling.
+
+The 7.7 s is a known ceiling, not a hidden one: refusing at the budget means doing the work
+up to the budget. It is bounded, the failure is `Permanent` so nothing retries it, and
+reaching it requires write access to the ingest mount. A lower budget would cut it
+proportionally, at the cost of refusing very large legitimate assemblies.
 
 ---
 

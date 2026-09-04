@@ -104,6 +104,46 @@ Each was caught by an implementer or reviewer refusing to accept a comment, and 
 was the same shape: assert the specific number or the specific message, never merely that
 an error occurred or a value came back. A bare `expect_err` is how this keeps happening.
 
+## The final review found a Critical that ten per-task reviews missed
+
+Every task passed its own review with spec compliance ✅. The whole-branch review then
+found that **component fan-out was unbounded**, and measured it. Reproduced independently
+against this branch's own parser:
+
+| Package | Emitted | Amplification |
+|---|---|---|
+| 722 bytes | 65,536 triangles (2.2 MiB) | 3,267× |
+| 723 bytes | 1,679,616 triangles (57.7 MiB) | 83,632× |
+| 604 bytes | 16,777,216 triangles (~592 MB RSS) | ~10⁶× |
+
+`MAX_DEPTH = 8` bounds recursion *depth*; nothing bounded *breadth*, and the work is
+branching^depth. A sub-kilobyte file would kill a worker limited to 2 GiB — worse than
+refusing it, because the process dies, the lease drops, and the retry feeds the same file
+back in.
+
+`Caps::max_triangles = 8_000_000` closes it, checked as triangles accumulate. After the
+fix, the 725-byte branching-8 package is refused in 7.7 s at a peak RSS of **278 MB**,
+against the 288 MB its arithmetic predicts. The 7.7 s is a known ceiling recorded in spec
+§11: refusing *at* the budget means doing the work up to it.
+
+Why the per-task reviews could not see it: each was asked "does this code match its
+brief?", and it did — the depth cap was in the brief. The defect was in the plan, and only
+a reviewer looking at the whole path with permission to be adversarial had the standing to
+find it.
+
+The same review found a **fifth** test that could not fail for its stated reason:
+`an_entry_past_the_size_cap_is_refused` filled its entry with 8,192 identical bytes, which
+deflate to ~26 — so the *ratio* bound fired at 520, not the 4,096 size cap. The absolute
+cap was untested anywhere in the archive path. It hid because both breaches shared one
+error message; the fix makes the message name which bound fired, which fixes the message
+and the test together.
+
+One more worth recording, because it is a habit worth keeping: the fix agent was told to
+prove the default cap refuses a 723-byte package. That was arithmetically impossible —
+1.68M triangles is under an 8M budget. It could have lowered the budget to satisfy the
+instruction. It kept 8,000,000 as specified, proved the mechanism with an injected small
+cap, and reported that the instruction was wrong.
+
 ## Rulings made during execution
 
 Recorded in full, with what each costs if wrong, in
