@@ -90,6 +90,7 @@ Baseline at the start of this slice: **287 passed / 0 failed**, web 33 passed.
 | `crates/lapidary-db/migrations/0004_derivative_storage.sql` | **Create.** The storage-exclusivity CHECK and the missing blob foreign key. |
 | `crates/lapidary-cad/src/cluster.rs` | **Create.** `Lod`, `Tessellation`, `cluster` — one indexing function, three grids. |
 | `crates/lapidary-cad/src/glb.rs` | **Create.** `write_glb` — glTF 2.0 binary, uncompressed. |
+| `crates/lapidary-cad/Cargo.toml` | **Modify.** Adds `serde_json`, already a workspace dependency used by four crates — nothing new enters `Cargo.lock` or the licence audit. See task 4. |
 | `crates/lapidary-cad/src/obj.rs` | **Create.** `parse_obj`, sharing `stl.rs`'s `finish` gate. |
 | `crates/lapidary-cad/src/kernel.rs` | **Modify.** `KernelOutput` reshaped, `Entity` added, `process` takes bytes, `MalformedStl` → `MalformedMesh`. |
 | `crates/lapidary-cad/src/mesh_kernel.rs` | **Modify.** `MeshOutput` deleted; `MeshKernel` implements `Kernel`, dispatches on format, produces the ladder. |
@@ -276,94 +277,435 @@ generalises.
 Pure geometry, no IO, fully unit-testable. This is the slice's core and the task most worth
 getting right before anything depends on it.
 
-- [ ] **Step 1: The types**
+**One refinement of the spec.** Spec §7 declares `Tessellation::grid` as `u32`. Make it
+`Option<u32>`: `L2` has no cell count — it quantises at a fixed 1e-4 mm — and writing `0`
+there would put `{"grid": 0}` into `params_json`, which is a lie about how the derivative
+was made. `None` is the honest value and `params_json` gets `null`.
+
+- [ ] **Step 1: The module doc and the types**
 
 ```rust
+//! Vertex clustering: one indexing function at three grid sizes.
+//!
+//! `measure.rs` already quantises vertices and hashes them, to rebuild the adjacency that
+//! STL's per-facet vertex duplication destroys. Clustering is that same idea at a coarser
+//! grid, and the ladder falls out of one function:
+//!
+//! | Rung | Cell size            | Effect                                    |
+//! |------|----------------------|-------------------------------------------|
+//! | `L2` | 1e-4 mm              | lossless de-duplication; nothing dropped  |
+//! | `L1` | bounding box / 96    | lossy                                     |
+//! | `L0` | bounding box / 32    | lossy                                     |
+//!
+//! The input is `Mesh`, an unindexed triangle soup. That is not a limitation here:
+//! clustering does not need indexed input, it *produces* it, and an indexed mesh is what
+//! glTF wants. Nothing about `Mesh` changes.
+//!
+//! Cell size is a fraction of the bounding box rather than an absolute length, so a 5 mm
+//! screw and a 2 m gantry get comparable triangle counts. `docs/prototype-notes.md`
+//! records that the deleted prototype clustered on a 48³ grid and that "the 48 constant
+//! was tuned by eye and should become an L0/L1/L2 ladder".
+
+use crate::glb::write_glb;
+use crate::kernel::CadError;
+use crate::stl::Mesh;
+use std::collections::HashMap;
+
+/// The finest cell this module will use, and the grid `L2` always uses. Matches
+/// `measure.rs`'s quantisation: finer than any real mesh tolerance, coarse enough to
+/// collapse the f32 representation noise at a shared corner.
+const FINEST_MM: f64 = 1e-4;
+
+/// How many times the budget retry may halve the grid before giving up and accepting an
+/// over-budget rung. Two, like `raster.rs`'s two `FALLBACK_PX` steps: a third pass costs
+/// another full clustering for a mesh that is already telling us it will not fit.
+const MAX_RETRIES: u32 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lod { L0, L1, L2 }
+pub enum Lod {
+    L0,
+    L1,
+    L2,
+}
 
 impl Lod {
-    /// Cells per axis across the bounding box. Relative rather than absolute so a 5 mm
-    /// screw and a 2 m gantry get comparable triangle counts — `prototype-notes.md`
-    /// records that the prototype's 48 was tuned by eye on one corpus.
-    ///
-    /// `L2` is the sentinel for "quantise at 1e-4 mm", the same grid `measure.rs` already
-    /// uses to rebuild adjacency: lossless de-duplication rather than decimation.
+    /// Ascending detail. The array shape is deliberate: `KernelOutput.tessellations` is
+    /// `[Tessellation; 3]`, so a kernel that produced two rungs would not compile.
+    pub const ALL: [Lod; 3] = [Lod::L0, Lod::L1, Lod::L2];
+
+    /// Cells per axis across the bounding box. `None` means the fixed `FINEST_MM` grid.
     fn cells(self) -> Option<u32> {
-        match self { Lod::L0 => Some(32), Lod::L1 => Some(96), Lod::L2 => None }
+        match self {
+            Lod::L0 => Some(32),
+            Lod::L1 => Some(96),
+            Lod::L2 => None,
+        }
     }
 
-    /// Triangle budget from DATA.md 2.1. Approximate by design: the retry below keeps
-    /// them approximately true across a corpus, which a fixed grid does not.
+    /// Triangle budget from `DATA.md` §2.1. Approximate by design — the retry below is
+    /// what keeps them approximately true across a corpus, which a fixed grid does not.
     fn budget(self) -> Option<u32> {
-        match self { Lod::L0 => Some(5_000), Lod::L1 => Some(50_000), Lod::L2 => None }
+        match self {
+            Lod::L0 => Some(5_000),
+            Lod::L1 => Some(50_000),
+            Lod::L2 => None,
+        }
+    }
+
+    pub fn as_kind(self) -> &'static str {
+        match self {
+            Lod::L0 => "tessellation_l0",
+            Lod::L1 => "tessellation_l1",
+            Lod::L2 => "tessellation_l2",
+        }
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tessellation {
     pub lod: Lod,
+    /// glTF 2.0 binary, uncompressed — see the design doc, section 3.2.
     pub glb: Vec<u8>,
     pub triangle_count: u32,
-    pub grid: u32,
+    /// The grid actually used, after any budget retry, so `params_json` can say how the
+    /// derivative was made. `None` for `L2`, which has no cell count.
+    pub grid: Option<u32>,
 }
-```
 
-- [ ] **Step 2: The indexed intermediate**
-
-`cluster` produces an indexed mesh, which `glb.rs` then writes. Keep them separate: the
-clustering is testable without a glTF parser, and the writer is testable without a mesh.
-
-```rust
+/// An indexed mesh: shared positions plus a triangle index buffer. `glb.rs` writes one of
+/// these; keeping it separate is what lets clustering be tested without a glTF parser and
+/// the writer be tested without a mesh.
 pub(crate) struct Indexed {
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
 }
+
+/// A vertex's cell. Signed because a coordinate may sit below the bounding-box minimum by
+/// a rounding step.
+type Cell = (i64, i64, i64);
 ```
 
-- [ ] **Step 3: The algorithm**
-
-One pass. For each vertex compute its cell; keep the first vertex seen in each cell as the
-representative; rewrite each triangle's three corners to their cells' representative
-indices; **drop the triangle if two or more corners landed in the same cell**, because a
-triangle with a repeated corner has zero area and is a degenerate the viewer must never see.
-
-At `Lod::L2` the cell size is 1e-4 mm, so nothing collapses that was not already the same
-point, and no triangle is dropped.
-
-- [ ] **Step 4: The budget retry**
-
-If `triangle_count` exceeds the rung's budget, halve `cells` and cluster again, at most
-twice. Record the grid actually used in `Tessellation::grid`. This mirrors `raster.rs`'s
-`FALLBACK_PX` retry against `MAX_THUMB_BYTES` — the same problem, the same shape of answer.
-
-Do **not** retry upward when a mesh comes in under budget: a small part clustering to itself
-is correct, and refining toward a budget would make a 12-triangle bracket produce a
-12-triangle L0 with extra passes to prove it.
-
-- [ ] **Step 5: Tests**
+- [ ] **Step 2: Bounds and cell size**
 
 ```rust
-#[test] fn l2_of_a_cube_keeps_every_triangle_and_deduplicates_to_eight_vertices()
-#[test] fn l0_of_the_bracket_has_strictly_fewer_triangles_than_l2()
-#[test] fn a_mesh_under_the_budget_still_produces_all_three_rungs()
-#[test] fn every_index_points_at_a_vertex_that_exists()
-#[test] fn a_triangle_whose_corners_share_a_cell_is_dropped()
-#[test] fn exceeding_the_budget_halves_the_grid_and_records_the_grid_it_used()
-#[test] fn clustering_is_deterministic_for_the_same_input()
+fn bounds(mesh: &Mesh) -> ([f32; 3], [f32; 3]) {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for tri in &mesh.triangles {
+        for v in tri {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(v[axis]);
+                max[axis] = max[axis].max(v[axis]);
+            }
+        }
+    }
+    (min, max)
+}
+
+/// Cell size per axis. Two guards, both reachable with real parts:
+///
+/// A **zero extent** — a flat plate, or a part whose bounding box is degenerate on one
+/// axis — would divide by zero and produce a NaN cell index. Such an axis gets
+/// `FINEST_MM`, which collapses nothing because every vertex is already at the same
+/// coordinate.
+///
+/// A **cell finer than `FINEST_MM`** is pointless: it distinguishes vertices that
+/// `measure.rs` already treats as the same corner, and a very fine cell over a large part
+/// risks overflowing the `i64` cell index. Clamped.
+fn cell_size(min: [f32; 3], max: [f32; 3], cells: Option<u32>) -> [f64; 3] {
+    let Some(n) = cells else {
+        return [FINEST_MM; 3];
+    };
+    std::array::from_fn(|axis| {
+        let span = f64::from(max[axis]) - f64::from(min[axis]);
+        if span <= 0.0 {
+            FINEST_MM
+        } else {
+            (span / f64::from(n)).max(FINEST_MM)
+        }
+    })
+}
+
+fn cell_of(v: [f32; 3], min: [f32; 3], size: [f64; 3]) -> Cell {
+    let q = |axis: usize| (((f64::from(v[axis]) - f64::from(min[axis])) / size[axis]).floor() as i64);
+    (q(0), q(1), q(2))
+}
 ```
 
-The last matters more than it looks: `kernel_version` + `params_json` are supposed to make
-regeneration deterministic, and a `HashMap` iteration order leaking into the representative
-choice would quietly break that.
+- [ ] **Step 3: The indexing pass**
 
-- [ ] **Step 6: Verify**
+Two passes, and the reason for two rather than one is worth keeping in the code: a
+one-pass version assigns a representative index the first time it sees a cell, including
+for triangles that are then dropped, leaving positions in the buffer that no index
+references. Deciding which triangles survive *first* means every position emitted is
+referenced.
 
-Remove the degenerate-triangle drop; `a_triangle_whose_corners_share_a_cell_is_dropped`
-must fail. Then change `Lod::L2`'s cells from `None` to `Some(1024)`;
-`l2_of_a_cube_keeps_every_triangle...` must fail on the triangle count, not merely on the
-vertex count. Revert both.
+```rust
+/// Index a mesh at a given cell size, dropping degenerate triangles.
+///
+/// A triangle whose corners fall into fewer than three distinct cells has collapsed to a
+/// line or a point. Dropping it is the point of clustering rather than a loss: a zero-area
+/// triangle contributes nothing to render and makes some viewers emit NaN normals.
+///
+/// Deterministic: the representative for a cell is the first surviving triangle's vertex
+/// in that cell, in `mesh.triangles` order. The `HashMap`s are only ever looked up, never
+/// iterated, so their ordering cannot leak into the output — which matters because
+/// `kernel_version` + `params_json` are supposed to make regeneration reproduce the bytes.
+fn index_at(mesh: &Mesh, min: [f32; 3], size: [f64; 3]) -> Indexed {
+    // Pass 1: which triangles survive, keeping each one's cells and its vertices.
+    let mut surviving: Vec<([Cell; 3], [[f32; 3]; 3])> = Vec::new();
+    for tri in &mesh.triangles {
+        let cells = [
+            cell_of(tri[0], min, size),
+            cell_of(tri[1], min, size),
+            cell_of(tri[2], min, size),
+        ];
+        if cells[0] != cells[1] && cells[1] != cells[2] && cells[0] != cells[2] {
+            surviving.push((cells, *tri));
+        }
+    }
 
-- [ ] **Step 7: Commit**
+    // Pass 2: assign indices in first-referenced order.
+    let mut index_of: HashMap<Cell, u32> = HashMap::new();
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(surviving.len() * 3);
+    for (cells, vertices) in &surviving {
+        for (cell, vertex) in cells.iter().zip(vertices) {
+            let index = *index_of.entry(*cell).or_insert_with(|| {
+                positions.push(*vertex);
+                // The cast is safe for any mesh that fits in memory: one position per
+                // cell, and a u32 index buffer caps a rung at 4 billion vertices anyway.
+                (positions.len() - 1) as u32
+            });
+            indices.push(index);
+        }
+    }
+
+    Indexed { positions, indices }
+}
+```
+
+- [ ] **Step 4: The public entry point and the budget retry**
+
+```rust
+/// One rung. Clusters, writes glTF, and retries at a coarser grid if the rung came out
+/// over its triangle budget.
+///
+/// The retry mirrors `raster.rs`, which halves the thumbnail's pixel size when the encode
+/// exceeds `MAX_THUMB_BYTES` — the same problem, the same shape of answer.
+///
+/// There is deliberately no retry in the other direction. A mesh that comes in under
+/// budget has clustered to itself, which is correct; refining toward the budget would
+/// make a 12-triangle bracket run extra passes to produce 12 triangles.
+pub fn cluster(mesh: &Mesh, lod: Lod) -> Result<Tessellation, CadError> {
+    let (min, max) = bounds(mesh);
+    let mut cells = lod.cells();
+
+    for attempt in 0..=MAX_RETRIES {
+        let size = cell_size(min, max, cells);
+        let indexed = index_at(mesh, min, size);
+        let triangle_count = (indexed.indices.len() / 3) as u32;
+
+        let over_budget = lod.budget().is_some_and(|budget| triangle_count > budget);
+        let can_retry = cells.is_some() && attempt < MAX_RETRIES;
+        if !over_budget || !can_retry {
+            return Ok(Tessellation {
+                lod,
+                glb: write_glb(&indexed)?,
+                triangle_count,
+                grid: cells,
+            });
+        }
+        // `max(1)` rather than allowing 0: a zero grid divides by zero in cell_size, and
+        // one cell per axis is the coarsest meaningful clustering.
+        cells = cells.map(|c| (c / 2).max(1));
+    }
+
+    // The loop always returns: `can_retry` is false on the final iteration.
+    unreachable!("the budget retry loop returns on its last iteration")
+}
+
+/// All three rungs, ascending. The array shape is what makes a two-rung kernel a compile
+/// error rather than a runtime surprise.
+pub fn ladder(mesh: &Mesh) -> Result<[Tessellation; 3], CadError> {
+    Ok([
+        cluster(mesh, Lod::L0)?,
+        cluster(mesh, Lod::L1)?,
+        cluster(mesh, Lod::L2)?,
+    ])
+}
+```
+
+`unreachable!` is not an `unwrap` and does not trip the workspace lint, but it is still a
+panic path — if the reviewer prefers, restructure as a `loop` with the final iteration
+outside it. Either is acceptable; do not silence it with a default `Tessellation`.
+
+- [ ] **Step 5: The tests**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unit cube as a triangle soup: 12 triangles, 36 vertices, 8 distinct corners.
+    /// Written out rather than generated so the expected counts below are readable.
+    fn cube() -> Mesh {
+        let c = [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
+        ];
+        let faces = [
+            [0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6],
+            [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2],
+            [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0],
+        ];
+        Mesh {
+            triangles: faces.iter().map(|f| [c[f[0]], c[f[1]], c[f[2]]]).collect(),
+        }
+    }
+
+    fn bracket() -> Mesh {
+        crate::parse_stl(include_bytes!("../../../fixtures/bracket-lp-1042-03.stl"))
+            .expect("the fixture parses")
+    }
+
+    #[test]
+    fn l2_keeps_every_triangle_and_deduplicates_to_eight_corners() {
+        let t = cluster(&cube(), Lod::L2).expect("clusters");
+        assert_eq!(t.triangle_count, 12, "L2 is lossless — nothing may be dropped");
+        assert_eq!(t.grid, None, "L2 has no cell count, and must not claim one");
+        // 36 soup vertices collapse to the cube's 8 real corners.
+        let indexed = index_at(&cube(), bounds(&cube()).0, [FINEST_MM; 3]);
+        assert_eq!(indexed.positions.len(), 8);
+    }
+
+    #[test]
+    fn l0_of_a_real_part_has_strictly_fewer_triangles_than_l2() {
+        let mesh = bracket();
+        let l0 = cluster(&mesh, Lod::L0).expect("clusters");
+        let l2 = cluster(&mesh, Lod::L2).expect("clusters");
+        assert!(
+            l0.triangle_count < l2.triangle_count,
+            "L0 {} should be coarser than L2 {}",
+            l0.triangle_count,
+            l2.triangle_count
+        );
+    }
+
+    #[test]
+    fn a_mesh_under_the_budget_still_produces_all_three_rungs() {
+        // Spec 3.6: a small part clusters to itself at every grid and is written anyway.
+        // Content addressing makes three identical rungs one blob with ref_count 3.
+        let rungs = ladder(&cube()).expect("ladder");
+        assert_eq!(rungs.len(), 3);
+        for rung in &rungs {
+            assert!(rung.triangle_count > 0, "no rung may be empty");
+        }
+    }
+
+    #[test]
+    fn every_index_points_at_a_vertex_that_exists() {
+        let mesh = bracket();
+        for lod in Lod::ALL {
+            let (min, max) = bounds(&mesh);
+            let indexed = index_at(&mesh, min, cell_size(min, max, lod.cells()));
+            assert!(
+                indexed.indices.iter().all(|i| (*i as usize) < indexed.positions.len()),
+                "{lod:?} emitted an index past the end of the position buffer"
+            );
+        }
+    }
+
+    #[test]
+    fn no_position_is_left_unreferenced() {
+        // The reason index_at is two passes. A one-pass version assigns a representative
+        // for triangles it then drops, leaving positions nothing points at — legal glTF,
+        // wasted bytes in the rung that most needs to be small.
+        let mesh = bracket();
+        let (min, max) = bounds(&mesh);
+        let indexed = index_at(&mesh, min, cell_size(min, max, Lod::L0.cells()));
+        let referenced: std::collections::HashSet<u32> = indexed.indices.iter().copied().collect();
+        assert_eq!(referenced.len(), indexed.positions.len());
+    }
+
+    #[test]
+    fn a_triangle_whose_corners_share_a_cell_is_dropped() {
+        // Three vertices well inside one coarse cell: the triangle has collapsed and must
+        // not reach the viewer, where a zero-area face yields a NaN normal.
+        let tiny = Mesh {
+            triangles: vec![[[0.0, 0.0, 0.0], [0.001, 0.0, 0.0], [0.0, 0.001, 0.0]]],
+        };
+        let (min, max) = bounds(&tiny);
+        // One cell across the whole part.
+        let indexed = index_at(&tiny, min, cell_size(min, max, Some(1)));
+        assert!(indexed.indices.is_empty());
+    }
+
+    #[test]
+    fn a_flat_part_does_not_divide_by_zero() {
+        // Every vertex at z = 0: the z extent is zero, and an unguarded cell size would
+        // be 0.0 and every cell index NaN-then-garbage.
+        let flat = Mesh {
+            triangles: vec![[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]]],
+        };
+        let t = cluster(&flat, Lod::L0).expect("a flat part still clusters");
+        assert_eq!(t.triangle_count, 1);
+    }
+
+    #[test]
+    fn exceeding_the_budget_halves_the_grid_and_records_the_grid_it_used() {
+        // A mesh dense enough that L0's 32³ grid overshoots 5 000 triangles, so the retry
+        // must fire. Generated rather than a fixture so the density is explicit.
+        let mesh = dense_sphere(20_000);
+        let t = cluster(&mesh, Lod::L0).expect("clusters");
+        assert!(
+            t.grid.is_some_and(|g| g < 32),
+            "the retry should have coarsened the grid below the starting 32, got {:?}",
+            t.grid
+        );
+    }
+
+    #[test]
+    fn clustering_is_deterministic_for_the_same_input() {
+        // kernel_version + params_json are supposed to make regeneration reproduce the
+        // bytes. A HashMap iteration order leaking into the representative choice would
+        // break that silently, and only for some meshes.
+        let mesh = bracket();
+        let a = cluster(&mesh, Lod::L0).expect("clusters");
+        let b = cluster(&mesh, Lod::L0).expect("clusters");
+        assert_eq!(a.glb, b.glb, "the same mesh must produce byte-identical output");
+    }
+}
+```
+
+`dense_sphere(n)` is a small test helper generating a triangulated sphere with roughly `n`
+triangles. Write it in the test module; it exists so the budget-retry test states its own
+density rather than depending on a fixture whose triangle count could change.
+
+- [ ] **Step 6: Run**
+
+```sh
+cargo test -p lapidary-cad; echo "exit=$?"
+cargo clippy -p lapidary-cad --all-targets --all-features -- -D warnings; echo "exit=$?"
+```
+
+- [ ] **Step 7: Verify — four mutations, each naming its test**
+
+1. Delete the degenerate-triangle condition in `index_at` (accept every triangle);
+   `a_triangle_whose_corners_share_a_cell_is_dropped` must fail.
+2. Change `Lod::L2`'s `cells()` from `None` to `Some(1024)`;
+   `l2_keeps_every_triangle_and_deduplicates_to_eight_corners` must fail **on
+   `triangle_count`**, not merely on the position count — if it fails only on positions,
+   the test is not pinning losslessness.
+3. Remove the `span <= 0.0` guard in `cell_size`; `a_flat_part_does_not_divide_by_zero`
+   must fail.
+4. Collapse `index_at` to one pass (assign representatives during the survival check);
+   `no_position_is_left_unreferenced` must fail while every other test still passes — that
+   is what shows the two-pass structure is load-bearing rather than stylistic.
+
+Revert each.
+
+- [ ] **Step 8: Commit**
 
 ```sh
 git add crates/lapidary-cad
@@ -376,47 +718,304 @@ git commit -m "feat(cad): cluster a mesh into an LOD ladder"
 
 **Files:**
 - Create: `crates/lapidary-cad/src/glb.rs`
-- Modify: `crates/lapidary-cad/src/lib.rs`
+- Modify: `crates/lapidary-cad/src/lib.rs`, `crates/lapidary-cad/Cargo.toml`
 
-**Read first:** spec §3.2. The glTF 2.0 spec's binary container section is the reference;
-the subset needed here is one buffer, one bufferView pair, two accessors, one mesh, one
+**Read first:** spec §3.2. The reference is the glTF 2.0 specification's binary-container
+section; the subset needed is one buffer, two bufferViews, two accessors, one mesh, one
 primitive, one node, one scene.
 
-- [ ] **Step 1: `write_glb(indexed: &Indexed) -> Vec<u8>`**
+**On `serde_json`.** This task adds `serde_json` to `lapidary-cad`'s manifest. That is not
+a new dependency in the sense spec §3.2 forbids: it is already in
+`[workspace.dependencies]` and already used by four crates, so nothing new enters
+`Cargo.lock` or the licence audit. Hand-formatting the JSON was considered and rejected —
+the document is fixed-shape, but `min`/`max` are f32 values and getting float-to-JSON
+formatting right (precision, `-0.0`, the fact that a non-finite value is not valid JSON at
+all) is exactly the kind of detail a `format!` string gets wrong once and silently.
 
-A 12-byte header (`glTF`, version 2, total length), then a JSON chunk padded with spaces to
-a 4-byte boundary, then a BIN chunk padded with zeros. Positions as `VEC3`/`FLOAT`, indices
-as `SCALAR`/`UNSIGNED_INT`.
-
-`POSITION` accessors **must** carry `min` and `max` — the spec requires it, and a viewer that
-computes bounds from them will frame the part wrongly if they are absent or stale.
-
-No materials, no normals. The viewer computes normals from winding, exactly as `raster.rs`
-already does, and a normal buffer would double the file for data the consumer regenerates.
-
-- [ ] **Step 2: Tests**
+- [ ] **Step 1: The module doc and the constants**
 
 ```rust
-#[test] fn the_header_says_gltf_version_two_and_the_real_length()
-#[test] fn both_chunks_are_four_byte_aligned_with_the_right_padding()
-#[test] fn the_position_accessor_carries_the_meshs_real_bounds()
-#[test] fn the_index_accessor_count_is_three_times_the_triangle_count()
-#[test] fn a_round_trip_through_an_independent_reader_recovers_the_triangles()
+//! glTF 2.0 binary output, uncompressed.
+//!
+//! `DATA.md` §2.2 chose meshopt as the codec and that stands — but its decoder is Phase 3's
+//! viewer, and the Rust binding wraps C, which would put a C toolchain into the worker
+//! image against the offline-build constraint `docs/prototype-notes.md` calls worth
+//! preserving. Derivatives are designed to be evicted and regenerated (`DATA.md` §1.5), so
+//! Phase 3 re-encodes and the cost is one pass over disposable data.
+//!
+//! What is written: one buffer, two bufferViews, two accessors, one mesh with one
+//! primitive, one node, one scene. No materials and no normals — the viewer computes
+//! normals from winding, exactly as `raster.rs` already does, and a normal buffer would
+//! double the file for data the consumer regenerates anyway.
+
+use crate::cluster::Indexed;
+use crate::kernel::CadError;
+
+/// Bumped whenever a change alters output bytes, and carried in `kernel_version` beside
+/// the parser and the rasterizer. A regenerated rung must be distinguishable from a stale
+/// one — the same rule `raster.rs`'s `RASTER_VERSION` exists for.
+pub const GLB_VERSION: &str = "glb-1";
+
+const MAGIC: u32 = 0x4654_6C67; // "glTF"
+const VERSION: u32 = 2;
+const CHUNK_JSON: u32 = 0x4E4F_534A; // "JSON"
+const CHUNK_BIN: u32 = 0x004E_4942; // "BIN\0"
+
+/// glTF component types.
+const FLOAT: u32 = 5126;
+const UNSIGNED_INT: u32 = 5125;
+
+/// glTF bufferView targets.
+const ARRAY_BUFFER: u32 = 34962;
+const ELEMENT_ARRAY_BUFFER: u32 = 34963;
 ```
 
-The last one cannot use our own writer's assumptions. Parse the bytes back with a
-hand-written reader in the test module that walks the container by the spec's rules rather
-than by ours — a self-consistent writer passes its own reader every time, which is exactly
-the failure this test exists to catch.
+- [ ] **Step 2: The writer**
 
-- [ ] **Step 3: Verify**
+```rust
+/// Round up to the next 4-byte boundary. Both chunks and both bufferViews must be aligned:
+/// the container requires it of chunks, and an accessor whose byteOffset is not a multiple
+/// of its component size is invalid even when a lenient loader accepts it.
+fn pad_to_four(n: usize) -> usize {
+    n.div_ceil(4) * 4
+}
 
-Pad the JSON chunk with zeros instead of spaces (the spec requires spaces for JSON, zeros
-for BIN); `both_chunks_are_four_byte_aligned_with_the_right_padding` must fail. Then drop
-`min`/`max` from the accessor; `the_position_accessor_carries_the_meshs_real_bounds` must
-fail. Revert both.
+pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
+    if indexed.indices.is_empty() {
+        return Err(CadError::Unrenderable {
+            detail: "the mesh has no triangles left after clustering".to_owned(),
+        });
+    }
 
-- [ ] **Step 4: Commit**
+    let positions_len = indexed.positions.len() * 12;
+    let indices_offset = pad_to_four(positions_len);
+    let indices_len = indexed.indices.len() * 4;
+    let buffer_len = indices_offset + indices_len;
+
+    let (min, max) = position_bounds(indexed);
+
+    let json = serde_json::json!({
+        "asset": { "version": "2.0", "generator": format!("lapidary-cad {GLB_VERSION}") },
+        "scene": 0,
+        "scenes": [ { "nodes": [0] } ],
+        "nodes": [ { "mesh": 0 } ],
+        "meshes": [ {
+            "primitives": [ { "attributes": { "POSITION": 0 }, "indices": 1 } ]
+        } ],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "componentType": FLOAT,
+                "count": indexed.positions.len(),
+                "type": "VEC3",
+                // Required by the spec on POSITION, and not decoration: a viewer frames
+                // the part from these, so absent or stale bounds put the camera wrong.
+                "min": min,
+                "max": max
+            },
+            {
+                "bufferView": 1,
+                "componentType": UNSIGNED_INT,
+                "count": indexed.indices.len(),
+                "type": "SCALAR"
+            }
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": positions_len,
+              "target": ARRAY_BUFFER },
+            { "buffer": 0, "byteOffset": indices_offset, "byteLength": indices_len,
+              "target": ELEMENT_ARRAY_BUFFER }
+        ],
+        "buffers": [ { "byteLength": buffer_len } ]
+    });
+
+    let mut json_chunk = serde_json::to_vec(&json).map_err(|source| CadError::Unrenderable {
+        detail: format!("could not encode the glTF document: {source}"),
+    })?;
+    // JSON pads with spaces, BIN pads with zeros. The spec is explicit, and a loader that
+    // reads the JSON chunk as a string will choke on a trailing NUL.
+    json_chunk.resize(pad_to_four(json_chunk.len()), b' ');
+
+    let mut bin_chunk = Vec::with_capacity(buffer_len);
+    for position in &indexed.positions {
+        for axis in position {
+            bin_chunk.extend_from_slice(&axis.to_le_bytes());
+        }
+    }
+    bin_chunk.resize(indices_offset, 0);
+    for index in &indexed.indices {
+        bin_chunk.extend_from_slice(&index.to_le_bytes());
+    }
+    bin_chunk.resize(pad_to_four(bin_chunk.len()), 0);
+
+    let total = 12 + 8 + json_chunk.len() + 8 + bin_chunk.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&MAGIC.to_le_bytes());
+    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json_chunk.len() as u32).to_le_bytes());
+    out.extend_from_slice(&CHUNK_JSON.to_le_bytes());
+    out.extend_from_slice(&json_chunk);
+    out.extend_from_slice(&(bin_chunk.len() as u32).to_le_bytes());
+    out.extend_from_slice(&CHUNK_BIN.to_le_bytes());
+    out.extend_from_slice(&bin_chunk);
+    Ok(out)
+}
+
+fn position_bounds(indexed: &Indexed) -> ([f32; 3], [f32; 3]) {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for position in &indexed.positions {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(position[axis]);
+            max[axis] = max[axis].max(position[axis]);
+        }
+    }
+    (min, max)
+}
+```
+
+- [ ] **Step 3: An independent reader, in the test module**
+
+This is the part that makes task 4's tests worth anything. Walk the container by the
+specification's rules, not by the writer's — a self-consistent writer passes a reader built
+from its own assumptions every time.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal GLB reader written from the specification, deliberately not sharing any
+    /// helper with the writer above. It re-derives every offset from the bytes rather than
+    /// recomputing them the way `write_glb` did.
+    struct Parsed {
+        json: serde_json::Value,
+        bin: Vec<u8>,
+    }
+
+    fn read_glb(bytes: &[u8]) -> Parsed {
+        let u32_at = |offset: usize| -> u32 {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&bytes[offset..offset + 4]);
+            u32::from_le_bytes(b)
+        };
+        assert_eq!(u32_at(0), MAGIC, "magic");
+        assert_eq!(u32_at(4), 2, "version");
+        assert_eq!(u32_at(8) as usize, bytes.len(), "declared length is the real length");
+
+        let json_len = u32_at(12) as usize;
+        assert_eq!(u32_at(16), CHUNK_JSON);
+        let json_start = 20;
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes[json_start..json_start + json_len])
+                .expect("the JSON chunk parses");
+
+        let bin_header = json_start + json_len;
+        let bin_len = u32_at(bin_header) as usize;
+        assert_eq!(u32_at(bin_header + 4), CHUNK_BIN);
+        let bin_start = bin_header + 8;
+        Parsed { json, bin: bytes[bin_start..bin_start + bin_len].to_vec() }
+    }
+
+    fn a_triangle() -> Indexed {
+        Indexed {
+            positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
+            indices: vec![0, 1, 2],
+        }
+    }
+
+    #[test]
+    fn the_header_declares_gltf_two_and_the_real_length() {
+        let bytes = write_glb(&a_triangle()).expect("writes");
+        let parsed = read_glb(&bytes); // its asserts cover magic, version and length
+        assert_eq!(parsed.json["asset"]["version"], "2.0");
+    }
+
+    #[test]
+    fn both_chunks_are_four_byte_aligned_and_padded_with_the_right_filler() {
+        let bytes = write_glb(&a_triangle()).expect("writes");
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().expect("4 bytes")) as usize;
+        assert_eq!(json_len % 4, 0, "the JSON chunk must be 4-byte aligned");
+        // JSON pads with spaces. A NUL here breaks loaders that read the chunk as a string.
+        assert_eq!(bytes[20 + json_len - 1], b' ');
+        let bin_len =
+            u32::from_le_bytes(bytes[20 + json_len..24 + json_len].try_into().expect("4 bytes"))
+                as usize;
+        assert_eq!(bin_len % 4, 0, "the BIN chunk must be 4-byte aligned");
+    }
+
+    #[test]
+    fn the_position_accessor_carries_the_meshs_real_bounds() {
+        let parsed = read_glb(&write_glb(&a_triangle()).expect("writes"));
+        let accessor = &parsed.json["accessors"][0];
+        assert_eq!(accessor["min"], serde_json::json!([0.0, 0.0, 0.0]));
+        assert_eq!(accessor["max"], serde_json::json!([2.0, 3.0, 0.0]));
+    }
+
+    #[test]
+    fn the_index_accessor_count_is_three_per_triangle() {
+        let parsed = read_glb(&write_glb(&a_triangle()).expect("writes"));
+        assert_eq!(parsed.json["accessors"][1]["count"], 3);
+        assert_eq!(parsed.json["accessors"][1]["componentType"], UNSIGNED_INT);
+    }
+
+    #[test]
+    fn the_buffer_views_do_not_overlap_and_fit_the_buffer() {
+        let parsed = read_glb(&write_glb(&a_triangle()).expect("writes"));
+        let views = parsed.json["bufferViews"].as_array().expect("two views");
+        let end = |v: &serde_json::Value| {
+            v["byteOffset"].as_u64().unwrap_or(0) + v["byteLength"].as_u64().unwrap_or(0)
+        };
+        assert!(end(&views[0]) <= views[1]["byteOffset"].as_u64().expect("offset"));
+        assert!(end(&views[1]) <= parsed.json["buffers"][0]["byteLength"].as_u64().expect("len"));
+    }
+
+    #[test]
+    fn a_round_trip_through_the_independent_reader_recovers_the_vertices() {
+        let indexed = a_triangle();
+        let parsed = read_glb(&write_glb(&indexed).expect("writes"));
+        let view = &parsed.json["bufferViews"][0];
+        let offset = view["byteOffset"].as_u64().expect("offset") as usize;
+        let recovered: Vec<f32> = parsed.bin[offset..offset + 36]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+            .collect();
+        assert_eq!(recovered, vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn an_empty_mesh_is_an_error_rather_than_an_unopenable_file() {
+        let empty = Indexed { positions: vec![], indices: vec![] };
+        write_glb(&empty).expect_err("a rung with no triangles is not a glTF file");
+    }
+}
+```
+
+- [ ] **Step 4: Run**
+
+```sh
+cargo test -p lapidary-cad; echo "exit=$?"
+```
+
+- [ ] **Step 5: Verify — four mutations**
+
+1. Pad the JSON chunk with `0` instead of `b' '`;
+   `both_chunks_are_four_byte_aligned_and_padded_with_the_right_filler` must fail.
+2. Drop `min`/`max` from the position accessor;
+   `the_position_accessor_carries_the_meshs_real_bounds` must fail.
+3. Write `total` as the buffer length rather than the whole file length; `read_glb`'s
+   length assertion must fail — this is the mutation that proves the independent reader is
+   actually independent, since the writer would still be self-consistent.
+4. Swap `ARRAY_BUFFER` and `ELEMENT_ARRAY_BUFFER`;
+   `the_buffer_views_do_not_overlap_and_fit_the_buffer` will **not** catch it. Note that
+   plainly rather than adding a test that asserts a constant against itself — the targets
+   are checked by the external validator in task 12, which is the right place for
+   "conforms to a specification we did not write".
+
+Revert each.
+
+- [ ] **Step 6: Commit**
 
 ```sh
 git add crates/lapidary-cad
@@ -843,8 +1442,20 @@ Checked against the spec, section by section:
 - §11 risks → the ledger above.
 
 Type consistency: `Lod`, `Tessellation`, `Indexed`, `Entity`, `KernelOutput`, `write_glb`,
-`cluster`, `parse_obj`, `is_mesh_candidate` are each defined in exactly one task and
-referenced by the same name everywhere after.
+`cluster`, `ladder`, `parse_obj`, `is_mesh_candidate` are each defined in exactly one task
+and referenced by the same name everywhere after.
+
+**Where this plan refines the spec.** Two places, both recorded here so a reader comparing
+the documents finds the difference stated rather than discovers it:
+
+- **`Tessellation::grid` is `Option<u32>`, not `u32`** (spec §7). `L2` has no cell count —
+  it quantises at a fixed 1e-4 mm — and writing `0` would put `{"grid": 0}` into
+  `params_json`, a lie about how the derivative was made. `None` serialises as `null`.
+- **Task 4 adds `serde_json` to `lapidary-cad`'s manifest**, which spec §3.2's "no new
+  dependencies" does not forbid: it is already in `[workspace.dependencies]` and used by
+  four crates, so nothing new enters `Cargo.lock` or the licence audit. Hand-formatting the
+  JSON was considered and rejected — `min`/`max` are f32 values, and float-to-JSON
+  formatting is exactly what a `format!` string gets wrong once and silently.
 
 **Known gap, stated rather than hidden.** Every mutation check in this plan is *specified*
 but none has been *run* — the plan is written before the code exists. Slice 2's execution
