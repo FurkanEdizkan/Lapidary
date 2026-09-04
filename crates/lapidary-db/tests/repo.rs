@@ -566,3 +566,108 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
         "a rejected triangle count must leave no partial part/revision row behind"
     );
 }
+
+/// Seeds one part and returns its id, so a test can reach the revision for a direct
+/// INSERT. The derivative constraints below are about what the *database* refuses, which
+/// `PgIngest` cannot express — it only ever writes rows that are already valid.
+async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(seed),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            thumbnail_webp: b"the-thumbnail",
+        })
+        .await
+        .expect("records")
+}
+
+/// INSERT a derivative directly, with whichever storage columns the caller wants.
+async fn insert_derivative(
+    pool: &sqlx::PgPool,
+    part: lapidary_core::PartId,
+    kind: &str,
+    blake3: Option<String>,
+    thumb_bytes: Option<&[u8]>,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, blake3, thumb_bytes, kernel_version, params_json) \
+         SELECT gen_random_uuid(), id, $2, $3, $4, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+         FROM revision WHERE part_id = $1",
+    )
+    .bind(part.as_uuid())
+    .bind(kind)
+    .bind(blake3)
+    .bind(thumb_bytes)
+    .execute(pool)
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_both_inline_and_by_hash_is_rejected(pool: sqlx::PgPool) {
+    let part = seeded_part(&pool, 0x71).await;
+    // The hash is one `record` really wrote, so the foreign key is satisfied and the
+    // exclusivity CHECK is unambiguously what refuses this.
+    let existing = blob_row(0x71).hash.to_hex();
+
+    let err = insert_derivative(
+        &pool,
+        part,
+        "tessellation_l0",
+        Some(existing),
+        Some(b"and-also-inline"),
+    )
+    .await
+    .expect_err("a derivative may not claim both storages");
+
+    assert!(
+        err.to_string().contains("derivative_storage_is_exclusive"),
+        "expected the named constraint to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_neither_way_is_rejected(pool: sqlx::PgPool) {
+    // The case that has been legal since 0002 and is the reason this constraint exists: a
+    // row describing a derivative that cannot be served, because nothing holds its bytes.
+    let part = seeded_part(&pool, 0x72).await;
+
+    let err = insert_derivative(&pool, part, "tessellation_l0", None, None)
+        .await
+        .expect_err("a derivative must be stored somewhere");
+
+    assert!(
+        err.to_string().contains("derivative_storage_is_exclusive"),
+        "expected the named constraint to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_naming_a_blob_that_does_not_exist_is_rejected(pool: sqlx::PgPool) {
+    let part = seeded_part(&pool, 0x73).await;
+    let absent = BlobHash::from_bytes([0xff; 32]).to_hex();
+
+    let err = insert_derivative(&pool, part, "tessellation_l0", Some(absent), None)
+        .await
+        .expect_err("a derivative may not reference a blob that was never stored");
+
+    assert!(
+        err.to_string()
+            .contains("derivative_blake3_references_blob"),
+        "expected the foreign key to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_by_hash_against_a_real_blob_is_accepted(pool: sqlx::PgPool) {
+    // Not filler. A CHECK written with `and` instead of `<>` refuses everything, and would
+    // pass all three negative cases above while making the LOD ladder unwritable.
+    let part = seeded_part(&pool, 0x74).await;
+    let existing = blob_row(0x74).hash.to_hex();
+
+    insert_derivative(&pool, part, "tessellation_l0", Some(existing), None)
+        .await
+        .expect("a rung stored by hash against a real blob is exactly what slice 3 writes");
+}
