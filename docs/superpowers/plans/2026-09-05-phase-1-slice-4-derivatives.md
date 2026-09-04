@@ -450,10 +450,25 @@ Both columns are set from `excluded` so exactly one stays non-null — without t
 upsert over a row stored the other way leaves both set and trips
 `derivative_storage_is_exclusive`.
 
-- [ ] `latest_revision(part) -> Option<(RevisionId, BlobHash, String)>` — the revision plus
-  its source hash and format. **Ordered identically to `PgParts::page`'s LATERAL**
-  (`repo.rs:353`, `ORDER BY created_at DESC, id DESC`). Two resolutions that disagree is
-  the bug spec §3.7 exists to prevent.
+- [ ] **Two resolvers, not one** (ruling T5-A). This bullet originally specified a single
+  `latest_revision(part) -> Option<(RevisionId, BlobHash, String)>`, and task 7 then read
+  "`latest_revision` → `SourceStore::get`". That reintroduces the bug §3.7 forbids: the
+  derive payload already *carries* a `RevisionId`, so an arm that re-resolves "latest"
+  ignores the revision it was given — enqueue against revision A, a second revision lands,
+  the job renders and upserts onto B, silently. Spec §5's data flow is the authority and
+  says "latest source **for that revision**".
+
+  - `latest_revision(part) -> Option<RevisionId>` — for task 8's enqueue routes, which need
+    to know which revision to name in the payload. **Ordered identically to
+    `PgParts::page`'s LATERAL** (`repo.rs:352-353`, `ORDER BY created_at DESC, id DESC`).
+  - `revision_source(revision) -> Option<(BlobHash, String)>` — for task 7's derive arm,
+    which needs the source hash and format for a revision it already holds. Filter
+    `role = 'source'` and pick deterministically (`ORDER BY created_at DESC, id DESC LIMIT 1`):
+    `file` has no unique constraint on `(revision_id, role)` — `0002_parts.sql:83-91` has
+    only two plain indexes — so "there is exactly one" is today's data, not the schema's
+    promise. Say that in a comment.
+
+  Neither returns a field its caller does not use.
 
 - [ ] `revisions_missing(library, kind) -> Vec<RevisionId>` for the sweep.
 
@@ -518,9 +533,22 @@ The column has existed since `0002_parts.sql:25` and nothing has ever written it
 - [ ] **Ingest arm:** read `library.auto_thumbnail`; `produce` is `[TessellationL0]`, plus
   `Thumbnail` when the flag is set.
 
-- [ ] **Derive arm:** `latest_revision` → `SourceStore::get(hash, Compression::for_source_format(format))`
+- [ ] **Derive arm:** `revision_source(payload.revision)` — **not** `latest_revision`; the
+  payload names the revision precisely so that nothing re-resolves it (§3.7, ruling T5-A) —
+  → `SourceStore::get(hash, Compression::for_source_format(format))`
   → `process` with a single-element `produce` → `upsert_derivative` → `Outcome::Rendered`.
   It does **not** need `ingest_dir`.
+
+- [ ] **Four existing tests assert the four-kind set you are shrinking, and you must decide
+  what each becomes** — they are not a surprise to solve mid-task. In
+  `crates/lapidary-ingest/tests/handler.rs`: `a_real_stl_writes_three_tessellation_blobs_and_rows`
+  (:521), `a_real_obj_yields_the_same_with_its_format_recorded` (:579),
+  `each_rung_is_valid_gltf_and_l0_is_smaller_than_l2` (:678), and
+  `a_real_3mf_yields_a_thumbnail_and_three_rungs` (:709). The first, second and fourth
+  should assert the *new* truth — one rung, and it is `tessellation_l0`. The third **loses
+  its subject entirely**: with only L0 written at ingest there is no L2 to compare against,
+  so it moves behind a `Derive` job rather than being trimmed to a tautology. Deleting it
+  is not an option; comparing L0 to itself is worse than deleting it.
 
 - [ ] **Tests:** a library with `auto_thumbnail = false` ingests and writes **zero**
   thumbnail rows, and the part still appears in the grid; ingest writes exactly **one**
