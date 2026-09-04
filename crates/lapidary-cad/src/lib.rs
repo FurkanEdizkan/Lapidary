@@ -1,6 +1,7 @@
 //! The CAD kernel boundary. One shipped implementation (OCCT, native, in the worker
 //! container) plus a test double. The open path never invokes this crate.
 
+mod cluster;
 mod kernel;
 mod measure;
 mod mesh_kernel;
@@ -9,6 +10,7 @@ mod mock;
 mod raster;
 mod stl;
 
+pub use cluster::{Indexed, Lod, index_mesh};
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
 pub use mesh_kernel::{MeshKernel, MeshOutput};
