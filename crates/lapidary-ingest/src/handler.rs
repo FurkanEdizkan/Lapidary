@@ -9,7 +9,7 @@
 //! 2. BLAKE3 — hash first, always
 //! 3. `blobs.library_holds(library, name, hash)`? yes -> `Skipped`, no further work at
 //!    all: not a parse, not a raster, not a query beyond this one
-//! 4. `kernel.ingest(bytes)` — parse + measure + rasterize
+//! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
 //! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
 //!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
 //!      library gets its own part pointing at it. No write, so nothing to reap.
@@ -60,11 +60,13 @@
 //! When genuinely unsure, this module chooses `Transient`: a retried permanent failure
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
-use lapidary_cad::MeshKernel;
+use lapidary_cad::{Kernel, KernelParams, MeshKernel};
 use lapidary_core::{BlobHash, LibraryId, Outcome};
-use lapidary_db::{DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow};
+use lapidary_db::{
+    DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow, TessellationRow,
+};
 use lapidary_jobs::{HandlerError, JobHandler};
-use lapidary_storage::{SourceStore, WorkerRole};
+use lapidary_storage::{DerivativeStore, SourceStore, WorkerRole};
 use std::path::{Path as FsPath, PathBuf};
 
 pub struct IngestHandler {
@@ -101,9 +103,17 @@ impl IngestHandler {
     ) -> Result<Outcome, HandlerError> {
         let path = self.ingest_dir.join(file_name);
         let kernel = MeshKernel;
-        let version = kernel.version();
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: source_format(file_name),
+        };
+        let version = kernel.version(&params);
         let kernel_version = format!("{} {}", version.implementation, version.version);
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
+        // First production use. No `WorkerRole` proof: derivatives are readable by both
+        // roles, which is what lets `lapidary-api` serve a rung without ever being able
+        // to name `SourceStore`.
+        let derivatives = DerivativeStore::open(&self.blob_root);
         let blobs = PgBlobs(self.db.clone());
         let ingest = PgIngest(self.db.clone());
 
@@ -135,9 +145,47 @@ impl IngestHandler {
         // because the new part needs its own measurements and its own thumbnail; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
         // immutable, so this error is the final answer about them.
-        let output = kernel.ingest(&bytes).map_err(|e| HandlerError::Permanent {
-            message: e.to_string(),
-        })?;
+        let output =
+            kernel
+                .process(&bytes, &params)
+                .await
+                .map_err(|e| HandlerError::Permanent {
+                    message: e.to_string(),
+                })?;
+        // `output.tessellations` is carried no further yet -- tasks 8 and 9 persist the
+        // rungs. Dropping them here is deliberate, not an oversight: the schema change
+        // that gives them somewhere to live is a separate commit.
+
+        // 5. The rungs go to disk before either branch's transaction, for the same reason
+        // the source blob does: a filesystem write cannot be rolled back by Postgres, so
+        // the bytes must be there before a row is allowed to point at them.
+        let mut rungs = Vec::with_capacity(output.tessellations.len());
+        let mut reapable = Vec::new();
+        for rung in &output.tessellations {
+            let stored = derivatives
+                .put(&rung.glb)
+                .map_err(|e| HandlerError::Transient {
+                    message: e.to_string(),
+                })?;
+            // Only bytes this job introduced may be reaped if the transaction fails. A
+            // rung whose bytes some revision already stores is bytes that revision is
+            // still serving -- the same rule the source blob follows above, asked of the
+            // same authority. `put` is content-addressed, so writing them again was a
+            // no-op rather than a second copy.
+            if !blobs.exists(&stored.hash).await.map_err(transient_db)? {
+                reapable.push(stored.hash);
+            }
+            rungs.push(TessellationRow {
+                kind: rung.lod.as_kind(),
+                blob: StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                },
+                grid: rung.grid,
+            });
+        }
 
         // 5a. Some library already holds these bytes. Reuse them exactly as they are: no
         // second copy on disk, no second `blob` row, and -- the part that matters -- no
@@ -161,11 +209,18 @@ impl IngestHandler {
                     measurements: &output.measurements,
                     thumbnail_webp: &output.thumbnail_webp,
                     kernel_version: &kernel_version,
+                    format: &params.format,
+                    tessellations: &rungs,
                 })
                 .await
             {
                 Ok(_) => Ok(Outcome::Ingested),
-                Err(db_err) => classify_write(db_err),
+                Err(db_err) => {
+                    // This branch wrote no source blob and must not reap one. It did
+                    // write rungs, so it reaps exactly those.
+                    reap(&derivatives, &reapable);
+                    classify_write(db_err)
+                }
             };
         }
 
@@ -195,6 +250,8 @@ impl IngestHandler {
                 measurements: &output.measurements,
                 thumbnail_webp: &output.thumbnail_webp,
                 kernel_version: &kernel_version,
+                format: &params.format,
+                tessellations: &rungs,
             })
             .await
         {
@@ -216,21 +273,51 @@ impl IngestHandler {
                         "failed to reap a blob after a failed ingest write; it may now be an orphan on disk"
                     );
                 }
+                reap(&derivatives, &reapable);
                 classify_write(db_err)
             }
         }
     }
 }
 
+/// Remove derivative bytes this job wrote for a transaction that then failed.
+///
+/// Best-effort and warn-only, exactly as the source blob's reap is: the database error is
+/// what the caller needs to hear about either way. A failed reap is still worth a line,
+/// because it is the one place in the pipeline that knowingly leaves bytes behind.
+fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
+    for hash in hashes {
+        if let Err(reap_err) = derivatives.remove(hash) {
+            tracing::warn!(
+                hash = %hash.to_hex(),
+                error = %reap_err,
+                "failed to reap a derivative blob after a failed ingest write; it may now be an orphan on disk"
+            );
+        }
+    }
+}
+
 /// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
-/// so the file's stem (its name without the `.stl` extension) is the whole story; falls
-/// back to the full file name on the pathological case where a candidate file (already
-/// proven to have a `.stl` extension by `is_stl_candidate`) somehow has no stem.
+/// so the file's stem (its name without the extension) is the whole story; falls back to
+/// the full file name on the pathological case where a candidate file (already proven by
+/// `is_mesh_candidate` to have one of the mesh extensions) somehow has no stem.
 pub(crate) fn part_name(file_name: &str) -> &str {
     FsPath::new(file_name)
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or(file_name)
+}
+
+/// The source format, lowercase and without a dot, taken from the file name the scan
+/// selected. An extension the kernel has no parser for reaches `process` and comes back as
+/// a per-file `Permanent` failure naming the format -- the scan admits only `stl` and
+/// `obj`, so that path is reachable today only by enqueueing a job by hand.
+pub(crate) fn source_format(file_name: &str) -> String {
+    FsPath::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn transient_db(error: DbError) -> HandlerError {

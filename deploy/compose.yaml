@@ -36,6 +36,10 @@ services:
       # Serves the grid and the open path. Never the scan route — this image deliberately
       # does not link the CAD kernel (no SERVER_FEATURES build arg below).
       LAPIDARY_ROLE: api
+      # Names the mount below. Required for the api role as of the LOD ladder: this is
+      # where GET /api/blob/{blake3} reads a rung from, and a router with that route and
+      # no root to read from would answer 500 for every part anyone opened.
+      LAPIDARY_BLOB_ROOT: /var/lib/lapidary
     depends_on:
       db:
         condition: service_healthy

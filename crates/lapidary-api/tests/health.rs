@@ -3,9 +3,21 @@ use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use tower::ServiceExt;
 
+/// These tests never read a blob; the field is required to build the state, and a path
+/// that does not exist is the honest value for a test that must not reach the store.
+fn blob_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/nonexistent-blob-root")
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn healthz_reports_ok_and_the_postgres_major_version(pool: sqlx::PgPool) {
-    let app = router(AppState { db: pool }, Role::Api);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Api,
+    );
 
     let response = app
         .oneshot(
@@ -35,7 +47,13 @@ async fn healthz_says_what_broke_and_what_to_do_when_the_database_is_gone(pool: 
     // hardcoded {"status":"ok","database":{"major":18}} and never touched the pool would
     // pass that one, and fail this one.
     pool.close().await;
-    let app = router(AppState { db: pool }, Role::Api);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Api,
+    );
 
     let response = app
         .oneshot(
@@ -70,7 +88,13 @@ async fn healthz_says_what_broke_and_what_to_do_when_the_database_is_gone(pool: 
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn unknown_routes_are_not_found(pool: sqlx::PgPool) {
-    let app = router(AppState { db: pool }, Role::Api);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Api,
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -86,7 +110,13 @@ async fn unknown_routes_are_not_found(pool: sqlx::PgPool) {
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn health_is_served_in_both_roles(pool: sqlx::PgPool) {
     for role in [Role::Api, Role::Worker] {
-        let app = router(AppState { db: pool.clone() }, role);
+        let app = router(
+            AppState {
+                db: pool.clone(),
+                blob_root: blob_root(),
+            },
+            role,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -111,7 +141,13 @@ async fn the_scan_route_is_unknown_to_this_crate_under_either_role(pool: sqlx::P
     // the_worker_role_does_not_serve_the_grid below, this isn't "wrong role", it's "this
     // crate has never heard of /scan".
     for role in [Role::Api, Role::Worker] {
-        let app = router(AppState { db: pool.clone() }, role);
+        let app = router(
+            AppState {
+                db: pool.clone(),
+                blob_root: blob_root(),
+            },
+            role,
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -128,7 +164,13 @@ async fn the_scan_route_is_unknown_to_this_crate_under_either_role(pool: sqlx::P
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_worker_role_does_not_serve_the_grid(pool: sqlx::PgPool) {
-    let app = router(AppState { db: pool }, Role::Worker);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Worker,
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -151,7 +193,13 @@ async fn the_worker_role_does_not_serve_the_grid(pool: sqlx::PgPool) {
 // freshly migrated pool, so an empty page is the correct response, not an error.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
-    let app = router(AppState { db: pool }, Role::Api);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        Role::Api,
+    );
     let response = app
         .oneshot(
             Request::builder()

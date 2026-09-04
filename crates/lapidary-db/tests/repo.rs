@@ -1,6 +1,7 @@
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
 use lapidary_db::{
     DbError, IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, StoredBlobRow,
+    TessellationRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -49,6 +50,8 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
             measurements: &watertight(),
             thumbnail_webp: b"webp bytes",
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
         })
         .await
         .expect("records");
@@ -76,6 +79,8 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -101,6 +106,8 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
             blob: &blob,
             measurements: &open_mesh(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -136,6 +143,8 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -173,6 +182,8 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -252,6 +263,8 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
         blob: &blob,
         measurements: &measurements,
         kernel_version: "mesh stl-1+cpu-1",
+        format: "stl",
+        tessellations: &[],
         thumbnail_webp: b"webp",
     };
     ingest
@@ -289,6 +302,8 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
                 blob: &blob_row(0x30 + i as u8),
                 measurements: &watertight(),
                 kernel_version: "mesh stl-1+cpu-1",
+                format: "stl",
+                tessellations: &[],
                 thumbnail_webp: b"webp",
             })
             .await
@@ -336,6 +351,8 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
             blob: &blob_row(0x40),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -371,6 +388,8 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
             blob: &blob_row(0x51),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"older-thumbnail",
         })
         .await
@@ -421,6 +440,8 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
             blob: &blob_row(0x60),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"first-thumbnail",
         })
         .await
@@ -459,16 +480,18 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
             blob: &blob_row(0x61),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"the-thumbnail",
         })
         .await
         .expect("records");
 
     sqlx::query(
-        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'lod0', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'tessellation_l0', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
     )
     .bind(id.as_uuid())
-    .bind(b"lod0-mesh-bytes".as_slice())
+    .bind(b"tessellation-l0-bytes".as_slice())
     .execute(&pool)
     .await
     .expect("insert a same-revision derivative of a different kind");
@@ -482,7 +505,7 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
     assert_eq!(
         page[0].thumbnail_webp.as_deref(),
         Some(b"the-thumbnail".as_slice()),
-        "the thumbnail derivative, not the lod0 one, is what the grid card shows"
+        "the thumbnail derivative, not the tessellation_l0 one, is what the grid card shows"
     );
 }
 
@@ -501,6 +524,8 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
             blob: &blob_row(0x70),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -545,6 +570,8 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
             blob: &blob_row(0x71),
             measurements: &oversized,
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
             thumbnail_webp: b"webp",
         })
         .await
@@ -565,4 +592,266 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
         parts, 0,
         "a rejected triangle count must leave no partial part/revision row behind"
     );
+}
+
+/// Seeds one part and returns its id, so a test can reach the revision for a direct
+/// INSERT. The derivative constraints below are about what the *database* refuses, which
+/// `PgIngest` cannot express — it only ever writes rows that are already valid.
+async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(seed),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: b"the-thumbnail",
+        })
+        .await
+        .expect("records")
+}
+
+/// INSERT a derivative directly, with whichever storage columns the caller wants.
+async fn insert_derivative(
+    pool: &sqlx::PgPool,
+    part: lapidary_core::PartId,
+    kind: &str,
+    blake3: Option<String>,
+    thumb_bytes: Option<&[u8]>,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, blake3, thumb_bytes, kernel_version, params_json) \
+         SELECT gen_random_uuid(), id, $2, $3, $4, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+         FROM revision WHERE part_id = $1",
+    )
+    .bind(part.as_uuid())
+    .bind(kind)
+    .bind(blake3)
+    .bind(thumb_bytes)
+    .execute(pool)
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_both_inline_and_by_hash_is_rejected(pool: sqlx::PgPool) {
+    let part = seeded_part(&pool, 0x71).await;
+    // The hash is one `record` really wrote, so the foreign key is satisfied and the
+    // exclusivity CHECK is unambiguously what refuses this.
+    let existing = blob_row(0x71).hash.to_hex();
+
+    let err = insert_derivative(
+        &pool,
+        part,
+        "tessellation_l0",
+        Some(existing),
+        Some(b"and-also-inline"),
+    )
+    .await
+    .expect_err("a derivative may not claim both storages");
+
+    assert!(
+        err.to_string().contains("derivative_storage_is_exclusive"),
+        "expected the named constraint to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_neither_way_is_rejected(pool: sqlx::PgPool) {
+    // The case that has been legal since 0002 and is the reason this constraint exists: a
+    // row describing a derivative that cannot be served, because nothing holds its bytes.
+    let part = seeded_part(&pool, 0x72).await;
+
+    let err = insert_derivative(&pool, part, "tessellation_l0", None, None)
+        .await
+        .expect_err("a derivative must be stored somewhere");
+
+    assert!(
+        err.to_string().contains("derivative_storage_is_exclusive"),
+        "expected the named constraint to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_naming_a_blob_that_does_not_exist_is_rejected(pool: sqlx::PgPool) {
+    let part = seeded_part(&pool, 0x73).await;
+    let absent = BlobHash::from_bytes([0xff; 32]).to_hex();
+
+    let err = insert_derivative(&pool, part, "tessellation_l0", Some(absent), None)
+        .await
+        .expect_err("a derivative may not reference a blob that was never stored");
+
+    assert!(
+        err.to_string()
+            .contains("derivative_blake3_references_blob"),
+        "expected the foreign key to refuse it, got: {err}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_derivative_stored_by_hash_against_a_real_blob_is_accepted(pool: sqlx::PgPool) {
+    // Not filler. A CHECK written with `and` instead of `<>` refuses everything, and would
+    // pass all three negative cases above while making the LOD ladder unwritable.
+    let part = seeded_part(&pool, 0x74).await;
+    let existing = blob_row(0x74).hash.to_hex();
+
+    insert_derivative(&pool, part, "tessellation_l0", Some(existing), None)
+        .await
+        .expect("a rung stored by hash against a real blob is exactly what slice 3 writes");
+}
+
+fn rung(kind: &str, seed: u8, grid: Option<u32>) -> TessellationRow<'_> {
+    TessellationRow {
+        kind,
+        blob: StoredBlobRow {
+            hash: BlobHash::from_bytes([seed; 32]),
+            size_bytes: 40_960,
+            // Derivatives are never compressed, so these two are equal and the level is
+            // unset. `insert_part_chain` writes them that way regardless of what is here.
+            stored_bytes: 40_960,
+            zstd_level: 0,
+        },
+        grid,
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn three_tessellations_and_a_thumbnail_coexist_on_one_revision(pool: sqlx::PgPool) {
+    let rungs = [
+        rung("tessellation_l0", 0x81, Some(32)),
+        rung("tessellation_l1", 0x82, Some(96)),
+        rung("tessellation_l2", 0x83, None),
+    ];
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0x80),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &rungs,
+            thumbnail_webp: b"the-thumbnail",
+        })
+        .await
+        .expect("records");
+
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM derivative d JOIN revision r ON r.id = d.revision_id \
+         JOIN part p ON p.id = r.part_id WHERE p.library_id = $1 ORDER BY kind",
+    )
+    .bind(library().as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("kinds");
+    assert_eq!(
+        kinds,
+        vec![
+            "tessellation_l0",
+            "tessellation_l1",
+            "tessellation_l2",
+            "thumbnail"
+        ]
+    );
+
+    // The rungs go by hash and the thumbnail inline, which is the split migration 0004's
+    // CHECK enforces. A rung large enough to need the blob store is the reason that
+    // column exists at all.
+    let by_hash: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM derivative d JOIN revision r ON r.id = d.revision_id \
+         JOIN part p ON p.id = r.part_id \
+         WHERE p.library_id = $1 AND d.blake3 IS NOT NULL AND d.thumb_bytes IS NULL",
+    )
+    .bind(library().as_uuid())
+    .fetch_all(&pool)
+    .await
+    .map(|rows: Vec<i64>| rows[0])
+    .expect("count");
+    assert_eq!(by_hash, 3);
+
+    // params_json carries the grid, so kernel_version and params_json together say how to
+    // regenerate these exact bytes -- the property that lets a derivative be evicted.
+    let grids: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT params_json FROM derivative d JOIN revision r ON r.id = d.revision_id \
+         JOIN part p ON p.id = r.part_id \
+         WHERE p.library_id = $1 AND d.kind LIKE 'tessellation%' ORDER BY d.kind",
+    )
+    .bind(library().as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("params");
+    assert_eq!(
+        grids,
+        vec![
+            serde_json::json!({ "grid": 32 }),
+            serde_json::json!({ "grid": 96 }),
+            serde_json::json!({ "grid": null }),
+        ]
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool: sqlx::PgPool) {
+    // Two different parts whose L0 clusters to identical bytes -- the ordinary case for
+    // anything under the L0 budget, where every rung is the source mesh itself.
+    let shared = 0x91;
+    for (seed, name) in [(0x90, "Bracket, LP-1042-03"), (0x92, "Spacer, LP-2001-00")] {
+        PgIngest(pool.clone())
+            .record(IngestRequest {
+                library: library(),
+                name,
+                blob: &blob_row(seed),
+                measurements: &watertight(),
+                kernel_version: "mesh stl-1+glb-1+cpu-1",
+                format: "stl",
+                tessellations: &[rung("tessellation_l0", shared, Some(32))],
+                thumbnail_webp: b"the-thumbnail",
+            })
+            .await
+            .expect("records");
+    }
+
+    let hex = BlobHash::from_bytes([shared; 32]).to_hex();
+    let (rows, ref_count): (i64, i32) =
+        sqlx::query_as("SELECT count(*), max(ref_count) FROM blob WHERE blake3 = $1")
+            .bind(&hex)
+            .fetch_one(&pool)
+            .await
+            .expect("blob");
+    assert_eq!(rows, 1, "identical rung bytes are stored once, not twice");
+    assert_eq!(
+        ref_count, 2,
+        "each derivative pointing at these bytes holds a reference, or the reap frees \
+         bytes another revision is still serving"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_file_row_records_the_format_it_was_given(pool: sqlx::PgPool) {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Idler Bracket, LP-2210-01",
+            blob: &blob_row(0xa0),
+            measurements: &open_mesh(),
+            kernel_version: "mesh obj-1+glb-1+cpu-1",
+            format: "obj",
+            tessellations: &[],
+            thumbnail_webp: b"the-thumbnail",
+        })
+        .await
+        .expect("records");
+
+    let format: String = sqlx::query_scalar(
+        "SELECT f.format FROM file f JOIN revision r ON r.id = f.revision_id \
+         JOIN part p ON p.id = r.part_id WHERE p.library_id = $1",
+    )
+    .bind(library().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("format");
+    // Was the SQL literal 'stl'. An OBJ recorded as an STL is a lie that survives into
+    // every later read of the row.
+    assert_eq!(format, "obj");
 }

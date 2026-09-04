@@ -62,20 +62,27 @@ async fn parts_in(pool: &PgPool, library: LibraryId) -> i64 {
         .expect("count query")
 }
 
+/// Blob rows for *source* bytes — the ones a `file` row points at. Slice 3's LOD ladder
+/// writes blob rows too, and every assertion below is about source bytes being stored
+/// once however many parts share them.
 async fn blob_rows(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM blob")
+    sqlx::query_scalar("SELECT count(*) FROM blob WHERE blake3 IN (SELECT blake3 FROM file)")
         .fetch_one(pool)
         .await
         .expect("count query")
 }
 
-/// The `ref_count` on the one blob these tests store. Summed rather than fetched so the
-/// query still says something if a second blob row ever appears.
+/// The `ref_count` on the source blob these tests store. Summed rather than fetched so
+/// the query still says something if a second source blob row ever appears; scoped to
+/// source bytes for the reason `blob_rows` gives.
 async fn ref_count(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT coalesce(sum(ref_count), 0)::bigint FROM blob")
-        .fetch_one(pool)
-        .await
-        .expect("sum query")
+    sqlx::query_scalar(
+        "SELECT coalesce(sum(ref_count), 0)::bigint FROM blob \
+         WHERE blake3 IN (SELECT blake3 FROM file)",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("sum query")
 }
 
 /// A second library to ingest the same file into. Migration `0002_parts.sql` seeds one,
@@ -303,6 +310,8 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             measurements: &measurements,
             thumbnail_webp: &[0x52, 0x49, 0x46, 0x46],
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
         })
         .await
         .expect("seeding the already-held part");
@@ -359,8 +368,9 @@ async fn a_second_library_gets_its_own_part_for_bytes_another_library_holds(pool
     );
     assert_eq!(
         all_files(&blob_root.path().join("blobs")).len(),
-        1,
-        "one copy of the bytes on disk"
+        2,
+        "one copy of the source bytes, plus one rung: every rung of a 20-triangle bracket \
+         clusters to the same mesh, so the ladder is one blob with three references"
     );
 
     // A third run against either library is a genuine re-scan and does nothing.
@@ -403,7 +413,9 @@ async fn two_differently_named_files_with_identical_bytes_are_two_parts_sharing_
     assert_eq!(part_count(&pool).await, 2);
     assert_eq!(blob_rows(&pool).await, 1);
     assert_eq!(ref_count(&pool).await, 2);
-    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 1);
+    // Source bytes once, plus the ladder: both parts are the same mesh, so their rungs
+    // are the same bytes too.
+    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 2);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -429,14 +441,249 @@ async fn a_failure_after_the_blob_write_leaves_no_orphan_blob_on_disk(pool: PgPo
         .await
         .expect_err("a part row against a library that does not exist cannot be written");
 
-    // The mutation this pins: delete `source.remove(&hash)` from the record() error arm
-    // and the file survives on disk, failing the next assertion. The returned error looks
-    // identical either way, which is why this checks the filesystem, not the message.
+    // The mutation this pins: delete `source.remove(&hash)`, or the `reap` beside it, from
+    // the record() error arm and a file survives on disk, failing the next assertion. The
+    // returned error looks identical either way, which is why this checks the filesystem,
+    // not the message.
+    //
+    // Slice 3 widened what "the blob" means here. Four writes now precede the failed
+    // transaction -- the source and three rungs -- and the successful path above shows
+    // they really are written, so an empty tree is the ladder being reaped as well.
     let orphans = all_files(&blob_root.path().join("blobs"));
     assert!(
         orphans.is_empty(),
-        "expected no orphaned blob under {}, found {orphans:?}",
+        "expected no orphaned blob or rung under {}, found {orphans:?}",
         blob_root.path().display()
     );
     assert_eq!(part_count(&pool).await, 0);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_failed_link_to_existing_bytes_leaves_the_first_parts_blobs_alone(pool: PgPool) {
+    // The other half of the reap, and the dangerous half. The link_existing branch writes
+    // no source blob, so it must not reap one -- and its rungs are usually bytes some
+    // earlier revision already stores, so reaping those would delete a part that ingested
+    // perfectly well. A reap keyed on "this job wrote it" rather than "this job's
+    // transaction failed" is what stops that.
+    const MIRRORED: &str = "bracket-lp-1042-03-mirrored.stl";
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    std::fs::write(ingest_dir.path().join(MIRRORED), BRACKET_FIXTURE).expect("write second");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let after_first = all_files(&blob_root.path().join("blobs"));
+    assert_eq!(
+        after_first.len(),
+        2,
+        "the source blob and the ladder's one rung"
+    );
+
+    // Same bytes, so `blobs.exists` sends this down link_existing; a library that is not
+    // a row fails the part insert after the rungs have been written.
+    let nonexistent = LibraryId::from_uuid(
+        Uuid::parse_str("01931b6e-0000-7000-8000-000000000099").expect("parses"),
+    );
+    handler
+        .handle(&job_for_library(nonexistent, MIRRORED))
+        .await
+        .expect_err("a part row against a library that does not exist cannot be written");
+
+    assert_eq!(
+        all_files(&blob_root.path().join("blobs")),
+        after_first,
+        "the failed second ingest must leave the first part's bytes exactly as they were"
+    );
+    assert_eq!(part_count(&pool).await, 1, "the first part is still there");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_real_stl_writes_three_tessellation_blobs_and_rows(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM derivative ORDER BY kind")
+        .fetch_all(&pool)
+        .await
+        .expect("kinds");
+    assert_eq!(
+        kinds,
+        vec![
+            "tessellation_l0",
+            "tessellation_l1",
+            "tessellation_l2",
+            "thumbnail"
+        ]
+    );
+
+    // Every rung row points at bytes that are really on disk, through a blob row that
+    // really exists -- the whole chain migration 0004's foreign key exists to require.
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT d.blake3 FROM derivative d JOIN blob b ON b.blake3 = d.blake3 \
+         WHERE d.kind LIKE 'tessellation%'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("hashes");
+    assert_eq!(hashes.len(), 3, "three rungs, each with a blob row");
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    for hex in &hashes {
+        let hash = BlobHash::parse_hex(hex).expect("a stored hash parses");
+        let bytes = store.get(&hash).expect("the rung's bytes are on disk");
+        assert_eq!(&bytes[0..4], b"glTF", "a rung is a glTF binary file");
+    }
+}
+
+const IDLER_OBJ: &str = "idler-bracket-lp-2210-01.obj";
+const IDLER_OBJ_FIXTURE: &[u8] = include_bytes!("../../../fixtures/idler-bracket-lp-2210-01.obj");
+const GEAR: &str = "spur-gear-m2-20t-lp-5140-00.stl";
+const GEAR_FIXTURE: &[u8] =
+    include_bytes!("../../../example/parts/spur-gear-m2-20t-lp-5140-00.stl");
+
+/// Kind and hash for every derivative in the database, ordered by kind.
+async fn derivatives(pool: &PgPool) -> Vec<(String, Option<String>)> {
+    sqlx::query_as("SELECT kind, blake3 FROM derivative ORDER BY kind")
+        .fetch_all(pool)
+        .await
+        .expect("derivative rows")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_real_obj_yields_the_same_with_its_format_recorded(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(IDLER_OBJ), IDLER_OBJ_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(IDLER_OBJ)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let kinds: Vec<String> = derivatives(&pool)
+        .await
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "tessellation_l0",
+            "tessellation_l1",
+            "tessellation_l2",
+            "thumbnail"
+        ],
+        "an OBJ produces the same four derivatives an STL does"
+    );
+
+    let format: String = sqlx::query_scalar("SELECT format FROM file")
+        .fetch_one(&pool)
+        .await
+        .expect("format");
+    assert_eq!(format, "obj", "the row must not still say 'stl'");
+
+    // The part name is the stem, so the extension must not survive into it.
+    let name: String = sqlx::query_scalar("SELECT name FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("name");
+    assert_eq!(name, "idler-bracket-lp-2210-01");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write stl");
+    std::fs::write(ingest_dir.path().join(IDLER_OBJ), IDLER_OBJ_FIXTURE).expect("write obj");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("stl");
+    handler.handle(&job_for(IDLER_OBJ)).await.expect("obj");
+
+    let versions: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT kernel_version FROM derivative ORDER BY kernel_version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("versions");
+    // Two parsers, two versions. A single value here means an OBJ-derived derivative is
+    // indistinguishable from an STL-derived one, which is the thing the column exists to
+    // prevent -- and it would still pass every row-count assertion above.
+    assert_eq!(
+        versions,
+        vec!["mesh obj-1+glb-1+cpu-1", "mesh stl-1+glb-1+cpu-1"]
+    );
+}
+
+/// Triangle count read out of a stored `.glb`, by a reader that shares nothing with the
+/// writer. Task 4 gives the reason: a self-consistent writer passes a reader built from
+/// its own arithmetic every time.
+fn triangles_in_glb(bytes: &[u8]) -> u64 {
+    let u32_at = |at: usize| {
+        let mut four = [0u8; 4];
+        four.copy_from_slice(&bytes[at..at + 4]);
+        u32::from_le_bytes(four)
+    };
+    assert_eq!(&bytes[0..4], b"glTF", "magic");
+    assert_eq!(u32_at(4), 2, "glTF 2.0");
+    assert_eq!(
+        u32_at(8) as usize,
+        bytes.len(),
+        "the declared length is the real length"
+    );
+    let json_len = u32_at(12) as usize;
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes[20..20 + json_len]).expect("the JSON chunk parses");
+    // Accessor 1 is the index accessor; three indices per triangle.
+    json["accessors"][1]["count"].as_u64().expect("count") / 3
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn each_rung_is_valid_gltf_and_l0_is_smaller_than_l2(pool: PgPool) {
+    // Deliberately not the bracket: at 20 triangles it is coarser than L0's grid and
+    // clusters to itself, so its rungs are identical by design (spec §3.6). Proving the
+    // ladder actually ladders needs a mesh dense enough to decimate.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(GEAR)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    let mut counts = Vec::new();
+    for (kind, blake3) in derivatives(&pool).await {
+        let Some(hex) = blake3 else {
+            assert_eq!(kind, "thumbnail", "only the thumbnail is stored inline");
+            continue;
+        };
+        let hash = BlobHash::parse_hex(&hex).expect("a stored hash parses");
+        let bytes = store.get(&hash).expect("the rung's bytes are on disk");
+        counts.push((kind, triangles_in_glb(&bytes)));
+    }
+
+    assert_eq!(counts.len(), 3);
+    let count = |k: &str| counts.iter().find(|(kind, _)| kind == k).expect("rung").1;
+    assert!(
+        count("tessellation_l0") < count("tessellation_l2"),
+        "L0 {} must be coarser than L2 {} -- a ladder wired up but not laddered passes \
+         every row count above and still ships three copies of the full mesh",
+        count("tessellation_l0"),
+        count("tessellation_l2")
+    );
+    assert!(
+        count("tessellation_l1") <= count("tessellation_l2"),
+        "L1 must never exceed L2"
+    );
 }

@@ -9,6 +9,12 @@ use lapidary_core::{BatchId, BatchStatus, LibraryId};
 use lapidary_db::PgJobs;
 use tower::ServiceExt;
 
+/// These tests never read a blob; the field is required to build the state, and a path
+/// that does not exist is the honest value for a test that must not reach the store.
+fn blob_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/nonexistent-blob-root")
+}
+
 /// Seeded by `crates/lapidary-db/migrations/0002_parts.sql`.
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -29,7 +35,13 @@ async fn get_status(
     library: &LibraryId,
     batch: &BatchId,
 ) -> (StatusCode, serde_json::Value) {
-    let app = router(AppState { db: pool }, role);
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        role,
+    );
     let response = app
         .oneshot(
             Request::builder()

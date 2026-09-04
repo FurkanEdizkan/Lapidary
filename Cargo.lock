@@ -1159,6 +1159,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",
@@ -1184,6 +1185,7 @@ dependencies = [
  "image",
  "lapidary-core",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

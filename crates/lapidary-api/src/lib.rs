@@ -1,6 +1,7 @@
 //! The HTTP surface. This crate is a LIBRARY that builds a Router — never a binary,
 //! and never forked per distribution.
 
+mod blob;
 mod error;
 mod health;
 mod jobs;
@@ -16,6 +17,9 @@ use lapidary_db::PgPool;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Where `DerivativeStore` looks. The same root the worker writes to; this crate can
+    /// only ever open the derivative half of it, having no `WorkerRole` proof.
+    pub blob_root: std::path::PathBuf,
 }
 
 /// Which process this is. `api` serves the open path and must never mount an ingest
@@ -68,7 +72,10 @@ pub fn router(state: AppState, role: Role) -> Router {
             .route(
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),
-            ),
+            )
+            // Not in `shared`: the worker has no business serving bytes to anyone, and a
+            // route mounted unconditionally is served by both images.
+            .route("/api/blob/{blake3}", get(blob::by_hash)),
         Role::Worker => Router::new(),
     };
     shared.merge(by_role).with_state(state)
