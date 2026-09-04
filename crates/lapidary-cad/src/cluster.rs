@@ -19,6 +19,8 @@
 //! that the deleted prototype clustered on a 48³ grid and that "the 48 constant was tuned
 //! by eye and should become an L0/L1/L2 ladder".
 
+use crate::glb::write_glb;
+use crate::kernel::CadError;
 use crate::stl::Mesh;
 use std::collections::HashMap;
 
@@ -44,6 +46,16 @@ pub enum Lod {
 impl Lod {
     /// Ascending detail.
     pub const ALL: [Lod; 3] = [Lod::L0, Lod::L1, Lod::L2];
+
+    /// The `derivative.kind` this rung is stored under. `DATA.md` §3.2 fixes the
+    /// vocabulary — `tessellation_l0|l1|l2` — so it is not this module's to invent.
+    pub fn as_kind(self) -> &'static str {
+        match self {
+            Lod::L0 => "tessellation_l0",
+            Lod::L1 => "tessellation_l1",
+            Lod::L2 => "tessellation_l2",
+        }
+    }
 
     /// Cells per axis across the bounding box. `None` means the fixed `FINEST_MM` grid,
     /// which is lossless de-duplication rather than decimation.
@@ -72,7 +84,7 @@ impl Lod {
 /// Separate from the glTF writer on purpose — clustering is testable without a glTF
 /// parser, and the writer is testable without a mesh.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Indexed {
+pub(crate) struct Indexed {
     pub positions: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     /// The grid actually used, after any budget retry, so a caller can record how the
@@ -82,7 +94,7 @@ pub struct Indexed {
 }
 
 impl Indexed {
-    pub fn triangle_count(&self) -> u32 {
+    pub(crate) fn triangle_count(&self) -> u32 {
         // Every triangle contributes exactly three indices, so this cannot be lossy.
         (self.indices.len() / 3) as u32
     }
@@ -207,7 +219,7 @@ fn index_at(
 /// There is deliberately no retry in the other direction. A mesh that comes in under
 /// budget has clustered to itself, which is correct; refining toward the budget would make
 /// a twelve-triangle bracket run extra passes to produce twelve triangles.
-pub fn index_mesh(mesh: &Mesh, lod: Lod) -> Indexed {
+pub(crate) fn index_mesh(mesh: &Mesh, lod: Lod) -> Indexed {
     let (min, max) = bounds(mesh);
     let mut cells = lod.cells();
 
@@ -467,4 +479,37 @@ mod tests {
         let mesh = bracket();
         assert_eq!(index_mesh(&mesh, Lod::L0), index_mesh(&mesh, Lod::L0));
     }
+}
+
+/// One rung, indexed and written as glTF.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tessellation {
+    pub lod: Lod,
+    /// glTF 2.0 binary, uncompressed — see the design doc, section 3.2.
+    pub glb: Vec<u8>,
+    pub triangle_count: u32,
+    /// The grid actually used, after any budget retry, so `params_json` can say how the
+    /// derivative was made. `None` for `L2`, which has no cell count.
+    pub grid: Option<u32>,
+}
+
+/// Cluster a mesh into one rung.
+pub fn cluster(mesh: &Mesh, lod: Lod) -> Result<Tessellation, CadError> {
+    let indexed = index_mesh(mesh, lod);
+    Ok(Tessellation {
+        lod,
+        triangle_count: indexed.triangle_count(),
+        grid: indexed.grid,
+        glb: write_glb(&indexed)?,
+    })
+}
+
+/// All three rungs, ascending. The array shape is what makes a two-rung kernel a compile
+/// error rather than a runtime surprise.
+pub fn ladder(mesh: &Mesh) -> Result<[Tessellation; 3], CadError> {
+    Ok([
+        cluster(mesh, Lod::L0)?,
+        cluster(mesh, Lod::L1)?,
+        cluster(mesh, Lod::L2)?,
+    ])
 }

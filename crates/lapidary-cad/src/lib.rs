@@ -2,6 +2,7 @@
 //! container) plus a test double. The open path never invokes this crate.
 
 mod cluster;
+mod glb;
 mod kernel;
 mod measure;
 mod mesh_kernel;
@@ -10,7 +11,8 @@ mod mock;
 mod raster;
 mod stl;
 
-pub use cluster::{Indexed, Lod, index_mesh};
+pub use cluster::{Lod, Tessellation, cluster, ladder};
+pub use glb::GLB_VERSION;
 pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 pub use measure::measure;
 pub use mesh_kernel::{MeshKernel, MeshOutput};
