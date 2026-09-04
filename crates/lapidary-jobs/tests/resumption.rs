@@ -9,7 +9,7 @@
 
 use lapidary_core::{LibraryId, Outcome};
 use lapidary_db::{JobRow, PgJobs};
-use lapidary_ingest::IngestHandler;
+use lapidary_ingest::WorkerHandler;
 use lapidary_jobs::{HandlerError, JobHandler, WorkerConfig, run};
 use sqlx::PgPool;
 use std::path::Path;
@@ -45,8 +45,8 @@ fn seeded() -> LibraryId {
     LibraryId::from_uuid(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
 }
 
-fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> IngestHandler {
-    IngestHandler {
+fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHandler {
+    WorkerHandler {
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
@@ -77,7 +77,7 @@ fn worker_config(id: &str) -> WorkerConfig {
 /// the part already there, which is the case that decides whether a redo is a duplicate
 /// or a skip.
 struct DiesHolding {
-    inner: IngestHandler,
+    inner: WorkerHandler,
     finished: AtomicUsize,
     /// Signalled once the doomed job has done its work and is about to be abandoned.
     stalled: Notify,

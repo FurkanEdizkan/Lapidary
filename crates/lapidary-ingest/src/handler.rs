@@ -9,6 +9,8 @@
 //! 2. BLAKE3 — hash first, always
 //! 3. `blobs.library_holds(library, name, hash)`? yes -> `Skipped`, no further work at
 //!    all: not a parse, not a raster, not a query beyond this one
+//!    3a. `parts.auto_thumbnail(library)` — what this library wants produced;
+//!    deliberately below the short-circuit, so a re-scan still costs one query
 //! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
 //! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
 //!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
@@ -61,15 +63,16 @@
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-use lapidary_core::{BlobHash, DerivativeKind, LibraryId, Outcome};
+use lapidary_core::{BlobHash, DerivativeKind, JobPayload, LibraryId, Outcome};
 use lapidary_db::{
-    DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow, TessellationRow,
+    DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgParts, PgPool, StoredBlobRow,
+    TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
 use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
 use std::path::{Path as FsPath, PathBuf};
 
-pub struct IngestHandler {
+pub struct WorkerHandler {
     pub db: PgPool,
     /// The read-only mounted ingest directory ingest_one reads its file from. Never a
     /// hardcoded container path: tests point it at a `TempDir`, and `deploy/compose.yaml`
@@ -80,20 +83,26 @@ pub struct IngestHandler {
     pub blob_root: PathBuf,
 }
 
-impl JobHandler for IngestHandler {
+impl JobHandler for WorkerHandler {
+    /// The `kind` COLUMN decides which arm runs. Both failures below are `Permanent`: a
+    /// kind this build does not know will not become known on a retry, and a payload that
+    /// does not parse holds the same bytes next time. `CoreError` names the kind in both
+    /// messages, which is the whole reason this goes through `from_row` rather than
+    /// reaching into the JSON — the previous version answered every unrecognised job with
+    /// "This job has no file path in its payload", which was false for all of them.
     async fn handle(&self, job: &JobRow) -> Result<Outcome, HandlerError> {
-        let Some(file_name) = job.payload.get("path").and_then(|p| p.as_str()) else {
-            return Err(HandlerError::Permanent {
-                message: "This job has no file path in its payload. It was not written by \
-                          Lapidary's scan endpoint."
-                    .to_owned(),
-            });
-        };
-        self.ingest_one(job.library_id, file_name).await
+        let payload =
+            JobPayload::from_row(&job.kind, &job.payload).map_err(|e| HandlerError::Permanent {
+                message: e.to_string(),
+            })?;
+        match payload {
+            JobPayload::IngestFile { path } => self.ingest_one(job.library_id, &path).await,
+            JobPayload::Derive { revision, produce } => self.derive_one(revision, produce).await,
+        }
     }
 }
 
-impl IngestHandler {
+impl WorkerHandler {
     /// One file, start to finish. See this module's doc for the ordering, why each step
     /// is where it is, and the full reasoning behind the library-and-name short-circuit.
     pub(crate) async fn ingest_one(
@@ -103,15 +112,6 @@ impl IngestHandler {
     ) -> Result<Outcome, HandlerError> {
         let path = self.ingest_dir.join(file_name);
         let kernel = MeshKernel;
-        let params = KernelParams {
-            linear_deflection_mm: None,
-            format: source_format(file_name),
-            // Behaviour-preserving: task 7 makes this selective. Until then, ingest keeps
-            // producing everything it always has.
-            produce: DerivativeKind::ALL.to_vec(),
-        };
-        let version = kernel.version(&params);
-        let kernel_version = format!("{} {}", version.implementation, version.version);
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
         // roles, which is what lets `lapidary-api` serve a rung without ever being able
@@ -143,6 +143,35 @@ impl IngestHandler {
             return Ok(Outcome::Skipped);
         }
 
+        // 3a. What this library wants made. Read *after* the short-circuit, so a re-scan
+        // still costs exactly one query -- L1 and L2 are no longer ingest's to produce
+        // (design section 3.1), and the thumbnail is the library's choice (section 3.2).
+        // A library that does not exist is Permanent: the row will not reappear, and
+        // three retries reporting a bare row-count error tell an operator nothing.
+        let auto_thumbnail = PgParts(self.db.clone())
+            .auto_thumbnail(library)
+            .await
+            .map_err(transient_db)?
+            .ok_or_else(|| HandlerError::Permanent {
+                message: format!(
+                    "There is no library {library} to ingest {file_name} into. The library \
+                     may have been removed after this job was queued; re-scan the library \
+                     you meant."
+                ),
+            })?;
+        let mut produce = Vec::with_capacity(2);
+        if auto_thumbnail {
+            produce.push(DerivativeKind::Thumbnail);
+        }
+        produce.push(DerivativeKind::TessellationL0);
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: source_format(file_name),
+            produce,
+        };
+        let version = kernel.version(&params);
+        let kernel_version = format!("{} {}", version.implementation, version.version);
+
         // 4. Parse + measure + rasterize. Nothing has been written yet, so a failure here
         // needs no cleanup. This runs even when the bytes are already in the blob store,
         // because the new part needs its own measurements and its own thumbnail; only the
@@ -155,9 +184,6 @@ impl IngestHandler {
                 .map_err(|e| HandlerError::Permanent {
                     message: e.to_string(),
                 })?;
-        // `output.tessellations` is carried no further yet -- tasks 8 and 9 persist the
-        // rungs. Dropping them here is deliberate, not an oversight: the schema change
-        // that gives them somewhere to live is a separate commit.
 
         // 5. The rungs go to disk before either branch's transaction, for the same reason
         // the source blob does: a filesystem write cannot be rolled back by Postgres, so
@@ -290,7 +316,7 @@ impl IngestHandler {
 /// Best-effort and warn-only, exactly as the source blob's reap is: the database error is
 /// what the caller needs to hear about either way. A failed reap is still worth a line,
 /// because it is the one place in the pipeline that knowingly leaves bytes behind.
-fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
+pub(crate) fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
     for hash in hashes {
         if let Err(reap_err) = derivatives.remove(hash) {
             tracing::warn!(
@@ -325,7 +351,7 @@ pub(crate) fn source_format(file_name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn transient_db(error: DbError) -> HandlerError {
+pub(crate) fn transient_db(error: DbError) -> HandlerError {
     HandlerError::Transient {
         message: error.to_string(),
     }

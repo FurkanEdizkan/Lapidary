@@ -254,7 +254,7 @@ fn spawn_worker(
         "job worker starting"
     );
 
-    let handler = std::sync::Arc::new(lapidary_ingest::IngestHandler {
+    let handler = std::sync::Arc::new(lapidary_ingest::WorkerHandler {
         db: db.clone(),
         ingest_dir,
         blob_root,

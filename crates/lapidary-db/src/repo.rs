@@ -492,6 +492,21 @@ async fn insert_part_chain(
 pub struct PgParts(pub PgPool);
 
 impl PgParts {
+    /// Whether this library wants a thumbnail rendered at ingest (migration `0005`,
+    /// default true). `None` means there is no such library.
+    ///
+    /// The caller decides what a missing library means, because only it knows what it was
+    /// about to do: a `NULL`-vs-absent distinction collapsed into `false` here would have
+    /// a job for a deleted library quietly ingest without a preview instead of saying so.
+    pub async fn auto_thumbnail(&self, library: LibraryId) -> Result<Option<bool>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT auto_thumbnail FROM library WHERE id = $1")
+                .bind(library.as_uuid())
+                .fetch_optional(&self.0)
+                .await?,
+        )
+    }
+
     /// Which revision of `part` is the current one — the question
     /// [`PartRepository::page`]'s revision LATERAL answers about every row it returns,
     /// asked on its own for one part.
