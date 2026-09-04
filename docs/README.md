@@ -16,6 +16,29 @@ on it, so a spec is authoritative for its own slice and silent about everything 
 and a plan is a record of intent at a moment rather than of what shipped. Where a spec
 and the code disagree, one of them is a defect — say which, in the spec.
 
+## Working on a new machine
+
+`.claude/settings.json` is committed and declares the plugins this repo's workflow
+assumes, plus the marketplaces they come from. Open the repo on a new machine and Claude
+Code registers those marketplaces and enables the plugins; `/plugin` shows their state and
+`/plugin update` refreshes them.
+
+| Plugin | Why the repo needs it |
+|---|---|
+| `superpowers@claude-plugins-official` | The slice plans name `superpowers:subagent-driven-development` as a required sub-skill, and the handoffs call its `scripts/` to regenerate a task ledger |
+| `my-skills@furkan-skills` | `conventional-branches`, `conventional-commits`, `modular-services` — this repo's commit and branch conventions |
+| `rust-analyzer-lsp@claude-plugins-official` | A twelve-crate Rust workspace |
+| `ponytail@ponytail` | Bias toward the smaller solution |
+
+Skills are **declared, not vendored**. The three in `my-skills` used to be copied into
+`.claude/skills/`, which forked them from `FurkanEdizkan/My-Skills` — edit one and the
+other silently stops matching, on every machine independently. Editing them upstream and
+running `/plugin update` is the supported path; a copy in this repo would shadow it.
+
+`.claude/settings.local.json` is for per-machine overrides and is gitignored, so nothing
+you put there travels. To turn one of the above off on a single machine, set it to `false`
+there — local settings win over project settings.
+
 ## Fast answers
 
 - **Which database?** PostgreSQL 18.6, official `postgres:18` image. No SQLite, no

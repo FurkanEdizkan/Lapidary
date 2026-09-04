@@ -91,7 +91,8 @@ Task 12 step 5 is the live exit check; task 14 is its automated twin. Both are r
 To regenerate the SDD workspace and the remaining briefs:
 
 ```sh
-S=~/.claude/plugins/cache/claude-plugins-official/superpowers/6.3.0/skills/subagent-driven-development
+# Newest installed superpowers, rather than a version pinned into this document.
+S=$(ls -d ~/.claude/plugins/cache/claude-plugins-official/superpowers/*/skills/subagent-driven-development | sort -V | tail -1)
 P=docs/superpowers/plans/2026-09-03-phase-1-slice-2-jobs.md
 "$S/scripts/sdd-workspace" "$P"
 for n in $(seq 10 14); do "$S/scripts/task-brief" "$P" $n; done

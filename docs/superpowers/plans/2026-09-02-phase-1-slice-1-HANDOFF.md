@@ -48,7 +48,8 @@ Then continue with Task 5 (`MeshKernel`), which is small: it wires `parse_stl` +
 To regenerate the SDD workspace and briefs:
 
 ```sh
-S=~/.claude/plugins/cache/claude-plugins-official/superpowers/6.3.0/skills/subagent-driven-development
+# Newest installed superpowers, rather than a version pinned into this document.
+S=$(ls -d ~/.claude/plugins/cache/claude-plugins-official/superpowers/*/skills/subagent-driven-development | sort -V | tail -1)
 P=docs/superpowers/plans/2026-09-02-phase-1-slice-1-ingest.md
 "$S/scripts/sdd-workspace" "$P"
 for n in $(seq 5 12); do "$S/scripts/task-brief" "$P" $n; done

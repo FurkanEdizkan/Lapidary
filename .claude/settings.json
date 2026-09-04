@@ -1,0 +1,22 @@
+{
+  "extraKnownMarketplaces": {
+    "furkan-skills": {
+      "source": {
+        "source": "github",
+        "repo": "FurkanEdizkan/My-Skills"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "my-skills@furkan-skills": true,
+    "superpowers@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "ponytail@ponytail": true
+  }
+}
