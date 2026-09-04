@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 use crate::kernel::CadError;
+use crate::stl::{Mesh, finish};
 use std::io::Read;
 
 pub(crate) const FORMAT: &str = "3MF";
@@ -179,6 +180,202 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
     ))
 }
 
+/// Millimetres per unit of the file's declared unit.
+///
+/// An absent attribute is millimetres, which the 3MF core specification states. An
+/// unrecognised one is refused rather than defaulted — spec §3.3.
+pub(crate) fn unit_scale(unit: Option<&str>) -> Result<f64, CadError> {
+    match unit.unwrap_or("millimeter") {
+        "micron" => Ok(0.001),
+        "millimeter" => Ok(1.0),
+        "centimeter" => Ok(10.0),
+        "inch" => Ok(25.4),
+        "foot" => Ok(304.8),
+        "meter" => Ok(1000.0),
+        other => Err(malformed(format!(
+            "it declares the unit {other}, and only micron, millimeter, centimeter, inch, \
+             foot and meter are understood"
+        ))),
+    }
+}
+
+#[derive(Default)]
+struct Object {
+    vertices: Vec<[f64; 3]>,
+    triangles: Vec<[usize; 3]>,
+    components: Vec<(String, [f64; 12])>,
+}
+
+pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
+    let caps = Caps::DEFAULT;
+    let mut archive = open_archive(bytes, &caps)?;
+    let rels = entry(&mut archive, "_rels/.rels", &caps)?;
+    let model_name = model_part_name(&rels)?;
+    let model = entry(&mut archive, &model_name, &caps)?;
+    let (objects, build, scale) = read_model(&model)?;
+    let mut triangles = Vec::new();
+    for (id, transform) in &build {
+        emit(&objects, id, *transform, scale, 0, &mut triangles)?;
+    }
+    finish(FORMAT, triangles)
+}
+
+fn attr(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == want)
+        .map(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .unwrap_or_default()
+                .into_owned()
+        })
+}
+
+fn number(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Result<f64, CadError> {
+    let raw = attr(e, want).ok_or_else(|| {
+        malformed(format!(
+            "a {} attribute is missing",
+            String::from_utf8_lossy(want)
+        ))
+    })?;
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| malformed(format!("{raw:?} is not a number")))?;
+    if !value.is_finite() {
+        return Err(malformed(format!("{raw:?} is not a finite number")));
+    }
+    Ok(value)
+}
+
+fn index(
+    e: &quick_xml::events::BytesStart<'_>,
+    want: &[u8],
+    count: usize,
+) -> Result<usize, CadError> {
+    let raw = attr(e, want)
+        .ok_or_else(|| malformed("a triangle is missing a vertex reference".to_owned()))?;
+    let i: usize = raw
+        .parse()
+        .map_err(|_| malformed(format!("{raw:?} is not a vertex reference")))?;
+    if i >= count {
+        return Err(malformed(format!(
+            "a triangle names vertex {i}, but its object has defined {count}"
+        )));
+    }
+    Ok(i)
+}
+
+type Model = (
+    std::collections::BTreeMap<String, Object>,
+    Vec<(String, [f64; 12])>,
+    f64,
+);
+
+fn read_model(xml: &[u8]) -> Result<Model, CadError> {
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut objects: std::collections::BTreeMap<String, Object> = Default::default();
+    let mut build = Vec::new();
+    let mut scale = 1.0;
+    let mut current: Option<String> = None;
+
+    loop {
+        let event = reader
+            .read_event_into(&mut buf)
+            .map_err(|source| malformed(format!("its model XML is not valid: {source}")))?;
+        match &event {
+            quick_xml::events::Event::Eof => break,
+            quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => {
+                match e.local_name().as_ref() {
+                    b"model" => scale = unit_scale(attr(e, b"unit").as_deref())?,
+                    b"object" => {
+                        let id = attr(e, b"id")
+                            .ok_or_else(|| malformed("an object has no id".to_owned()))?;
+                        objects.entry(id.clone()).or_default();
+                        current = Some(id);
+                    }
+                    b"vertex" => {
+                        if let Some(o) = current.as_ref().and_then(|id| objects.get_mut(id)) {
+                            o.vertices
+                                .push([number(e, b"x")?, number(e, b"y")?, number(e, b"z")?]);
+                        }
+                    }
+                    b"triangle" => {
+                        if let Some(o) = current.as_ref().and_then(|id| objects.get_mut(id)) {
+                            let n = o.vertices.len();
+                            let t = [
+                                index(e, b"v1", n)?,
+                                index(e, b"v2", n)?,
+                                index(e, b"v3", n)?,
+                            ];
+                            o.triangles.push(t);
+                        }
+                    }
+                    b"component" => {
+                        if let Some(id) = current.clone() {
+                            let target = attr(e, b"objectid").ok_or_else(|| {
+                                malformed("a component names no object".to_owned())
+                            })?;
+                            let m = matrix(attr(e, b"transform").as_deref())?;
+                            if let Some(o) = objects.get_mut(&id) {
+                                o.components.push((target, m));
+                            }
+                        }
+                    }
+                    b"item" => {
+                        let target = attr(e, b"objectid")
+                            .ok_or_else(|| malformed("a build item names no object".to_owned()))?;
+                        build.push((target, matrix(attr(e, b"transform").as_deref())?));
+                    }
+                    _ => {}
+                }
+            }
+            quick_xml::events::Event::End(e) if e.local_name().as_ref() == b"object" => {
+                current = None;
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok((objects, build, scale))
+}
+
+/// Task 6 replaces this with real transform parsing.
+fn matrix(_raw: Option<&str>) -> Result<[f64; 12], CadError> {
+    Ok(IDENTITY)
+}
+
+const IDENTITY: [f64; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+/// Task 6 adds component recursion and the depth cap.
+fn emit(
+    objects: &std::collections::BTreeMap<String, Object>,
+    id: &str,
+    _transform: [f64; 12],
+    scale: f64,
+    _depth: u32,
+    out: &mut Vec<[[f32; 3]; 3]>,
+) -> Result<(), CadError> {
+    let object = objects.get(id).ok_or_else(|| {
+        malformed(format!(
+            "a build item names object {id}, which does not exist"
+        ))
+    })?;
+    for t in &object.triangles {
+        let corner = |i: usize| {
+            let v = object.vertices[i];
+            [
+                (v[0] * scale) as f32,
+                (v[1] * scale) as f32,
+                (v[2] * scale) as f32,
+            ]
+        };
+        out.push([corner(t[0]), corner(t[1]), corner(t[2])]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +539,85 @@ mod tests {
         let rels = br#"<Relationships><Relationship Id="r" Target="/docProps/thumbnail.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#;
         let err = model_part_name(rels).expect_err("must fail");
         assert!(matches!(err, CadError::MalformedMesh { .. }), "{err}");
+    }
+
+    #[test]
+    fn every_unit_scales_to_millimetres() {
+        assert_eq!(unit_scale(Some("millimeter")).expect("mm"), 1.0);
+        assert_eq!(unit_scale(Some("micron")).expect("um"), 0.001);
+        assert_eq!(unit_scale(Some("centimeter")).expect("cm"), 10.0);
+        assert_eq!(unit_scale(Some("inch")).expect("in"), 25.4);
+        assert_eq!(unit_scale(Some("foot")).expect("ft"), 304.8);
+        assert_eq!(unit_scale(Some("meter")).expect("m"), 1000.0);
+    }
+
+    #[test]
+    fn an_absent_unit_is_millimetres() {
+        // The 3MF core specification's default. Not a guess.
+        assert_eq!(unit_scale(None).expect("default"), 1.0);
+    }
+
+    #[test]
+    fn an_unrecognised_unit_is_refused_and_named() {
+        // Defaulting here would scale an `inch` file by 25.4 and produce measurements
+        // that are wrong, plausible and silent. CLAUDE.md: measurement must not lie.
+        let err = unit_scale(Some("furlong")).expect_err("must fail");
+        assert!(err.to_string().contains("furlong"), "{err}");
+    }
+
+    /// A minimal but real OPC package around one model part, at a deliberately
+    /// unconventional path so every test also exercises §3.6's relationship lookup.
+    fn package(model_xml: &str) -> Vec<u8> {
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+        zip_of(&[
+            ("_rels/.rels", rels),
+            ("3D/carrier.model", model_xml.as_bytes()),
+        ])
+    }
+
+    #[test]
+    fn a_single_object_parses_with_its_unit_applied() {
+        let mesh = parse_3mf(&package(r#"<model unit="centimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources><object id="1" type="model"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="2" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+</mesh></object></resources>
+<build><item objectid="1"/></build>
+</model>"#)).expect("parses");
+        // 1 cm -> 10 mm, 2 cm -> 20 mm. Asserting coordinates, not just that it parsed:
+        // a parser that ignored the unit would still return one triangle.
+        assert_eq!(
+            mesh.triangles,
+            vec![[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 20.0, 0.0]]]
+        );
+    }
+
+    #[test]
+    fn a_model_with_no_triangles_fails_through_the_shared_gate() {
+        let err = parse_3mf(&package(
+            r#"<model unit="millimeter"><resources><object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/></vertices><triangles/></mesh></object></resources>
+<build><item objectid="1"/></build></model>"#,
+        ))
+        .expect_err("must fail");
+        let CadError::MalformedMesh { format, detail } = err else {
+            panic!("wrong variant")
+        };
+        assert_eq!(format, "3MF");
+        assert!(detail.contains("no triangles"), "{detail}");
+    }
+
+    #[test]
+    fn a_triangle_naming_a_missing_vertex_is_rejected() {
+        let err = parse_3mf(&package(
+            r#"<model><resources><object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/></vertices>
+<triangles><triangle v1="0" v2="7" v3="9"/></triangles></mesh></object></resources>
+<build><item objectid="1"/></build></model>"#,
+        ))
+        .expect_err("must fail");
+        assert!(err.to_string().contains("vertex"), "{err}");
     }
 }
