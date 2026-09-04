@@ -224,6 +224,34 @@ impl DerivativeStore {
     }
 }
 
+/// Whether a source blob is compressed on the way in.
+///
+/// `DATA.md` §1.2's table, in one place with its reasoning, rather than a boolean at each
+/// call site where the next reader cannot tell what `true` meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    Zstd,
+    AsIs,
+}
+
+impl Compression {
+    /// STEP, STL and OBJ compress 2–10×. 3MF is already a deflate ZIP, so re-compressing
+    /// it spends CPU on every ingest to make the file very slightly larger.
+    ///
+    /// An unrecognised format compresses: that wastes a little CPU on something already
+    /// packed, where the other default would waste disk on everything else.
+    pub fn for_source_format(format: &str) -> Self {
+        match format.to_ascii_lowercase().as_str() {
+            "3mf" => Compression::AsIs,
+            _ => Compression::Zstd,
+        }
+    }
+
+    fn compresses(self) -> bool {
+        matches!(self, Compression::Zstd)
+    }
+}
+
 /// Source bytes: compressed hard, never deleted while referenced, and reachable only
 /// from the worker role.
 pub struct SourceStore {
@@ -237,12 +265,12 @@ impl SourceStore {
         }
     }
 
-    pub fn put(&self, bytes: &[u8]) -> Result<StoredBlob, StorageError> {
-        write_blob(&self.root, bytes, true)
+    pub fn put(&self, bytes: &[u8], compression: Compression) -> Result<StoredBlob, StorageError> {
+        write_blob(&self.root, bytes, compression.compresses())
     }
 
-    pub fn get(&self, hash: &BlobHash) -> Result<Vec<u8>, StorageError> {
-        read_blob(&self.root, hash, true)
+    pub fn get(&self, hash: &BlobHash, compression: Compression) -> Result<Vec<u8>, StorageError> {
+        read_blob(&self.root, hash, compression.compresses())
     }
 
     /// Reap a blob written for a transaction that then failed. Not user-facing deletion —
@@ -281,16 +309,19 @@ mod tests {
     #[test]
     fn a_blob_round_trips_by_its_hash() {
         let (_dir, s) = store();
-        let stored = s.put(b"solid bracket\n").expect("put");
-        assert_eq!(s.get(&stored.hash).expect("get"), b"solid bracket\n");
+        let stored = s.put(b"solid bracket\n", Compression::Zstd).expect("put");
+        assert_eq!(
+            s.get(&stored.hash, Compression::Zstd).expect("get"),
+            b"solid bracket\n"
+        );
     }
 
     #[test]
     fn the_same_bytes_always_produce_the_same_hash() {
         let (_dir, s) = store();
         assert_eq!(
-            s.put(b"same").expect("a").hash,
-            s.put(b"same").expect("b").hash
+            s.put(b"same", Compression::Zstd).expect("a").hash,
+            s.put(b"same", Compression::Zstd).expect("b").hash
         );
     }
 
@@ -298,7 +329,7 @@ mod tests {
     fn blobs_are_sharded_two_levels_deep() {
         // 65,536 buckets keeps any directory under ~2k entries at a million blobs.
         let (dir, s) = store();
-        let stored = s.put(b"shard me").expect("put");
+        let stored = s.put(b"shard me", Compression::Zstd).expect("put");
         let hex = stored.hash.to_hex();
         let path = dir
             .path()
@@ -313,7 +344,7 @@ mod tests {
     fn source_bytes_are_compressed_and_the_stored_size_reflects_it() {
         let (_dir, s) = store();
         let compressible = "solid ".repeat(4096).into_bytes();
-        let stored = s.put(&compressible).expect("put");
+        let stored = s.put(&compressible, Compression::Zstd).expect("put");
         assert_eq!(stored.size_bytes, compressible.len() as u64);
         assert!(
             stored.stored_bytes < stored.size_bytes,
@@ -346,7 +377,7 @@ mod tests {
     fn getting_an_unknown_hash_says_which_hash_and_what_that_means() {
         let (_dir, s) = store();
         let missing = lapidary_core::BlobHash::from_bytes([0x11; 32]);
-        let err = s.get(&missing).expect_err("must fail");
+        let err = s.get(&missing, Compression::Zstd).expect_err("must fail");
         let msg = err.to_string();
         assert!(
             msg.contains(&missing.to_hex()[..8]),
@@ -362,11 +393,11 @@ mod tests {
     fn removing_a_blob_leaves_the_store_usable() {
         // Ingest reaps a blob when the transaction that would have referenced it fails.
         let (_dir, s) = store();
-        let stored = s.put(b"orphan").expect("put");
+        let stored = s.put(b"orphan", Compression::Zstd).expect("put");
         s.remove(&stored.hash).expect("remove");
-        assert!(s.get(&stored.hash).is_err());
+        assert!(s.get(&stored.hash, Compression::Zstd).is_err());
         assert!(
-            s.put(b"another").is_ok(),
+            s.put(b"another", Compression::Zstd).is_ok(),
             "the store still works after a removal"
         );
     }
@@ -383,11 +414,11 @@ mod tests {
         // test is pinning never runs rename at all).
         use std::os::unix::fs::MetadataExt;
         let (_dir, s) = store();
-        let first = s.put(b"idempotent").expect("first put");
+        let first = s.put(b"idempotent", Compression::Zstd).expect("first put");
         let path = blob_path(&s.root, &first.hash);
         let before = std::fs::metadata(&path).expect("stat before").ino();
 
-        let second = s.put(b"idempotent").expect("second put");
+        let second = s.put(b"idempotent", Compression::Zstd).expect("second put");
 
         let after = std::fs::metadata(&path).expect("stat after").ino();
         assert_eq!(
@@ -413,12 +444,12 @@ mod tests {
         // having proven nothing.
         use std::os::unix::fs::PermissionsExt;
         let (_dir, s) = store();
-        let stored = s.put(b"guarded").expect("put");
+        let stored = s.put(b"guarded", Compression::Zstd).expect("put");
         let path = blob_path(&s.root, &stored.hash);
         let original_mode = std::fs::metadata(&path).expect("stat").permissions();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
-        let result = s.get(&stored.hash);
+        let result = s.get(&stored.hash, Compression::Zstd);
 
         // Restore permissions unconditionally, before asserting, so a failed assertion
         // still leaves the temp directory removable by its own Drop.
@@ -439,5 +470,47 @@ mod tests {
         let d = DerivativeStore::open(dir.path());
         let hash = d.put(b"gltf bytes").expect("put").hash;
         assert_eq!(d.get(&hash).expect("get"), b"gltf bytes");
+    }
+
+    #[test]
+    fn the_compression_policy_follows_the_data_doc_table() {
+        // DATA.md §1.2: STEP, STL and OBJ compress; 3MF is already a deflate ZIP.
+        assert_eq!(Compression::for_source_format("stl"), Compression::Zstd);
+        assert_eq!(Compression::for_source_format("obj"), Compression::Zstd);
+        assert_eq!(Compression::for_source_format("step"), Compression::Zstd);
+        assert_eq!(Compression::for_source_format("3mf"), Compression::AsIs);
+        // Case is not the caller's problem: `source_format` lowercases, but a policy that
+        // silently compressed an uppercase 3MF would be a very quiet bug.
+        assert_eq!(Compression::for_source_format("3MF"), Compression::AsIs);
+        // An unknown format compresses. Spending CPU is the safe wrong answer; storing an
+        // already-packed format uncompressed costs only space.
+        assert_eq!(Compression::for_source_format("wrl"), Compression::Zstd);
+    }
+
+    #[test]
+    fn an_as_is_blob_round_trips_and_records_equal_sizes() {
+        let (_dir, s) = store();
+        // Deliberately compressible, so a stored size equal to the real size proves the
+        // policy was honoured rather than proving the bytes were incompressible.
+        let bytes = vec![0u8; 64 * 1024];
+        let stored = s.put(&bytes, Compression::AsIs).expect("stores");
+        assert_eq!(stored.stored_bytes, stored.size_bytes);
+        assert_eq!(stored.zstd_level, 0);
+        assert_eq!(
+            s.get(&stored.hash, Compression::AsIs).expect("reads"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn a_zstd_blob_still_shrinks() {
+        let (_dir, s) = store();
+        let bytes = vec![0u8; 64 * 1024];
+        let stored = s.put(&bytes, Compression::Zstd).expect("stores");
+        assert!(stored.stored_bytes < stored.size_bytes);
+        assert_eq!(
+            s.get(&stored.hash, Compression::Zstd).expect("reads"),
+            bytes
+        );
     }
 }

@@ -13,8 +13,8 @@
 //! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
 //!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
 //!      library gets its own part pointing at it. No write, so nothing to reap.
-//!    - no  -> `source.put(bytes)` writes the blob *before* the transaction, then
-//!      `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
+//!    - no  -> `source.put(bytes, compression)` writes the blob *before* the transaction,
+//!      then `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
 //!      written and the failure is returned
 //!
 //! Step 5's reap is not optional. The Node prototype wrote its blob and then failed the
@@ -66,7 +66,7 @@ use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgPool, StoredBlobRow, TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
-use lapidary_storage::{DerivativeStore, SourceStore, WorkerRole};
+use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
 use std::path::{Path as FsPath, PathBuf};
 
 pub struct IngestHandler {
@@ -228,9 +228,11 @@ impl IngestHandler {
         // recomputed from `bytes` inside `put` and is definitionally the same as `hash`
         // above; `hash` is used below rather than `stored.hash` so there is exactly one
         // hash variable in scope.
-        let stored = source.put(&bytes).map_err(|e| HandlerError::Transient {
-            message: e.to_string(),
-        })?;
+        let stored = source
+            .put(&bytes, Compression::for_source_format(&params.format))
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })?;
         let blob = StoredBlobRow {
             hash,
             size_bytes: stored.size_bytes,
@@ -310,8 +312,8 @@ pub(crate) fn part_name(file_name: &str) -> &str {
 
 /// The source format, lowercase and without a dot, taken from the file name the scan
 /// selected. An extension the kernel has no parser for reaches `process` and comes back as
-/// a per-file `Permanent` failure naming the format -- the scan admits only `stl` and
-/// `obj`, so that path is reachable today only by enqueueing a job by hand.
+/// a per-file `Permanent` failure naming the format -- the scan admits only `stl`, `obj`
+/// and `3mf`, so that path is reachable today only by enqueueing a job by hand.
 pub(crate) fn source_format(file_name: &str) -> String {
     FsPath::new(file_name)
         .extension()

@@ -84,12 +84,20 @@ review:
 
 | Crate | New crates in our lock | Licence | Why |
 |---|---|---|---|
-| `zip` 2, `default-features = false`, `features = ["deflate"]` | 7: `zip`, `flate2`, `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast`, `zopfli` | MIT (deps MIT/Apache-2.0/Zlib/0BSD) | ZIP is a security-sensitive container — zip64, data descriptors, local-versus-central header mismatch, encryption flags. The hand-rolled parsers in this crate are *geometry* parsers, where a bug is a wrong mesh; a hand-rolled archive reader's bugs are vulnerabilities |
-| `quick-xml` 0.37 | 1: `quick-xml` (`memchr` already present) | MIT | Streaming pull parser. A 3MF's model XML is the mesh in text form and can reach hundreds of megabytes; a DOM parser such as `roxmltree` would hold all of it at once |
+| `zip` 2, `default-features = false`, `features = ["deflate"]` | 9 in the lock, 7 that compile: `zip`, `flate2`, `miniz_oxide`, `adler2`, `simd-adler32`, `crc32fast`, `zopfli` — plus `arbitrary` and `derive_arbitrary`, which zip declares under `[target."cfg(fuzzing)".dependencies]` and a normal build never compiles | MIT (deps MIT/Apache-2.0/Zlib/0BSD) | ZIP is a security-sensitive container — zip64, data descriptors, local-versus-central header mismatch, encryption flags. The hand-rolled parsers in this crate are *geometry* parsers, where a bug is a wrong mesh; a hand-rolled archive reader's bugs are vulnerabilities |
+| `quick-xml` 0.41 | 1: `quick-xml` (`memchr` already present) | MIT | Streaming pull parser. A 3MF's model XML is the mesh in text form and can reach hundreds of megabytes; a DOM parser such as `roxmltree` would hold all of it at once |
 
 Both are pure Rust, so no C toolchain enters the worker image and `cargo vendor` still
 builds offline — the same constraint that decided slice 3 §3.2 against meshopt. Every
 licence is permissive and compatible with AGPL-3.0-only.
+
+**`quick-xml` is pinned at 0.41, and that is a security floor rather than a
+preference.** 0.37 carries RUSTSEC-2026-0194 (quadratic time checking a start tag for
+duplicate attribute names) and RUSTSEC-2026-0195 (unbounded namespace-declaration
+allocation in `NsReader`, a memory-exhaustion denial of service). Both are exactly the
+threat this slice's caps exist to stop, on the one component that reads attacker-controlled
+XML — shipping them would undercut §3.4 entirely. `cargo deny check` fails on both, which is
+how they were found.
 
 Two costs are accepted knowingly. `zopfli` is a *compressor* we never call: it arrives
 because zip 2.4.2's `deflate-flate2` feature is broken — it gates code that needs
@@ -384,9 +392,37 @@ graph is fixed upstream, `deflate-flate2` plus an explicit `flate2` drops it —
 recheck at the next `zip` major, not worth a fork now.
 
 **A 2 GiB decompressed cap still permits a 2 GiB allocation.** The caps bound the damage,
-they do not make it free. This is the same exposure the existing pipeline already has —
-`std::fs::read` on a 2 GB STL — so it is not new, and streaming the parse rather than
-buffering it is a Phase 2 concern for every format at once, not a 3MF one.
+they do not make it free. Buffering the source is the same exposure the existing pipeline
+already has — `std::fs::read` on a 2 GB STL — so streaming the parse is a Phase 2 concern
+for every format at once, not a 3MF one.
+
+**But amplification after decompression is NOT the same exposure, and an earlier draft of
+this section wrongly said it was.** The three `DATA.md` §5.4 caps bound what comes *out of
+the ZIP*. They say nothing about what the model then generates. A 3MF object may hold
+`<components>` referencing other objects, so geometry grows as branching^depth — and the
+depth cap alone bounds only one of those two dimensions. The whole-branch review found this
+and measured it; reproduced independently against this slice's own parser:
+
+| Package | Emitted | Amplification |
+|---|---|---|
+| 722 bytes | 65,536 triangles (2.2 MiB) | 3,267× |
+| 723 bytes | 1,679,616 triangles (57.7 MiB) | 83,632× |
+| 604 bytes | 16,777,216 triangles (~592 MB RSS) | ~10⁶× |
+
+For an STL the exposure really is bounded by file size. For a 3MF it was not bounded at
+all: a sub-kilobyte file would exhaust a worker limited to 2 GiB by
+`deploy/compose.yaml`, and killing the process is worse than refusing the file — the job's
+lease drops and the retry feeds it back in.
+
+`Caps::max_triangles` (8,000,000) closes it, checked as triangles accumulate rather than
+after. Measured after the fix: the 725-byte branching-8 package is refused in 7.7 s with a
+peak RSS of **278 MB**, against the 288 MB the budget's arithmetic predicts. Bounded, and
+survivable at concurrency 2 under a 2 GiB ceiling.
+
+The 7.7 s is a known ceiling, not a hidden one: refusing at the budget means doing the work
+up to the budget. It is bounded, the failure is `Permanent` so nothing retries it, and
+reaching it requires write access to the ingest mount. A lower budget would cut it
+proportionally, at the cost of refusing very large legitimate assemblies.
 
 ---
 

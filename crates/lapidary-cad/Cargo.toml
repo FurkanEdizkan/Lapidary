@@ -21,7 +21,9 @@ serde.workspace = true
 # considered and rejected: the accessor min/max are f32 values, and float-to-JSON
 # formatting is what a format! string gets wrong once, silently.
 serde_json.workspace = true
+quick-xml.workspace = true
 thiserror.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

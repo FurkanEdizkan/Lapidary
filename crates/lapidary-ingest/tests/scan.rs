@@ -63,7 +63,7 @@ async fn queued_paths(pool: &sqlx::PgPool) -> Vec<String> {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool) {
-    // The whole point of the slice: the request must not touch the CAD kernel. Three
+    // The whole point of the slice: the request must not touch the CAD kernel. Four
     // files, each doing a different job here.
     //
     // The valid fixture is what makes the mutation check bite. Restore a synchronous
@@ -75,6 +75,10 @@ async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool
     // came back in a `failed` list, because the walk parsed it inside the request. Now it
     // is simply accepted alongside the other, with nothing anywhere reporting on its
     // contents, because nothing has looked at them.
+    //
+    // The 3MF file proves the walk admits that extension too -- arbitrary bytes are fine
+    // here for the same reason the unparseable STL's are: the route decides by extension
+    // alone and never reads a candidate's contents.
     //
     // The README is not a candidate and is counted nowhere.
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -90,6 +94,11 @@ async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool
     )
     .expect("stages a file that is not an STL by any reading");
     std::fs::write(
+        ingest_dir.path().join("carrier-lp-3480-02.3mf"),
+        b"not a real OPC package, just bytes with the right extension",
+    )
+    .expect("stages a 3MF candidate the route must never parse");
+    std::fs::write(
         ingest_dir.path().join("README.md"),
         b"Brackets for the LP-1042 mounting series. Not a part.\n",
     )
@@ -104,13 +113,17 @@ async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool
     assert_eq!(status, StatusCode::ACCEPTED);
     let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
     assert_eq!(
-        accepted.queued, 2,
-        "both .stl files are candidates; the README is not"
+        accepted.queued, 3,
+        "the two .stl files and the .3mf file are candidates; the README is not"
     );
 
     assert_eq!(
         queued_paths(&pool).await,
-        vec!["bracket-lp-1042-03.stl".to_owned(), "notes.stl".to_owned()],
+        vec![
+            "bracket-lp-1042-03.stl".to_owned(),
+            "carrier-lp-3480-02.3mf".to_owned(),
+            "notes.stl".to_owned(),
+        ],
         "one job per candidate, each carrying the file name the worker will read"
     );
     assert_eq!(

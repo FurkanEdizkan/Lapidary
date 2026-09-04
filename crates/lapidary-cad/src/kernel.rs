@@ -86,6 +86,11 @@ pub enum CadError {
         "This build has no parser for the {format} format. The mesh kernel reads STL and OBJ; 3MF and STEP are not yet ingested."
     )]
     UnsupportedFormat { format: String },
+
+    #[error(
+        "Refused this {format} — {detail}. The file may be corrupt or deliberately crafted; re-export it from a trusted tool and retry."
+    )]
+    ArchiveRefused { format: String, detail: String },
 }
 
 /// One shipped implementation. The trait exists so tests have a double.

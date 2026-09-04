@@ -2,6 +2,14 @@ name: lapidary
 
 services:
   db:
+    # Resource ceiling. Lapidary must run on a modest workstation, not only on
+    # a machine with spare gigabytes -- Postgres is the floor of the whole stack.
+    # Compose v2 honours deploy.resources outside swarm.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
     build:
       context: .
       dockerfile: db/Containerfile
@@ -26,6 +34,14 @@ services:
       retries: 20
 
   api:
+    # Resource ceiling. Lapidary must run on a modest workstation, not only on
+    # a machine with spare gigabytes -- the open path reads rows and blobs; it never meshes.
+    # Compose v2 honours deploy.resources outside swarm.
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
     build:
       context: ..
       dockerfile: deploy/Containerfile
@@ -63,6 +79,14 @@ services:
       - lapidary-blobs:/var/lib/lapidary:Z
 
   worker:
+    # Resource ceiling. Lapidary must run on a modest workstation, not only on
+    # a machine with spare gigabytes -- the only service that parses meshes, so it gets the largest share.
+    # Compose v2 honours deploy.resources outside swarm.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
     build:
       context: ..
       dockerfile: deploy/Containerfile
@@ -91,7 +115,7 @@ services:
       # exists so that case starts the worker instead of refusing to boot.
       #
       # deploy/.env.example documents what each knob does and what it defaults to.
-      LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-}
+      LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-2}
       LAPIDARY_JOB_LEASE_SECS: ${LAPIDARY_JOB_LEASE_SECS:-}
       LAPIDARY_JOB_POLL_SECS: ${LAPIDARY_JOB_POLL_SECS:-}
       LAPIDARY_WORKER_ID: ${LAPIDARY_WORKER_ID:-}
@@ -124,6 +148,14 @@ services:
       - lapidary-blobs:/var/lib/lapidary:Z
 
   web:
+    # Resource ceiling. Lapidary must run on a modest workstation, not only on
+    # a machine with spare gigabytes -- a static bundle behind a tiny server.
+    # Compose v2 honours deploy.resources outside swarm.
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
     build:
       context: ..
       dockerfile: deploy/web/Containerfile

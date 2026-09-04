@@ -14,7 +14,7 @@ reads are capped as bytes arrive. `SourceStore` learns a compression policy so 3
 stored as-is.
 
 **Tech Stack:** Rust 1.95.0 edition 2024. Two new dependencies — `zip` 2 (deflate, pure
-Rust) and `quick-xml` 0.37 — and nothing else changes.
+Rust) and `quick-xml` 0.41 — and nothing else changes.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-phase-1-slice-3b-3mf-design.md` — read it
 first. Every "why" below is argued there; this plan is the "how".
@@ -129,7 +129,7 @@ without reading a parser.
 In `Cargo.toml`'s `[workspace.dependencies]`, keeping alphabetical order:
 
 ```toml
-quick-xml = "0.37.5"
+quick-xml = "0.41"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 ```
 
@@ -154,9 +154,17 @@ cargo fetch; echo "exit=$?"
 git diff --stat Cargo.lock
 ```
 
-Expected: exactly seven new packages — `zip`, `flate2`, `miniz_oxide`, `adler2`,
-`simd-adler32`, `crc32fast`, `zopfli` — plus `quick-xml`. If anything else appears,
-`default-features = false` did not take; stop and re-read step 1.
+Expected: **eight new packages that compile** — `zip`, `flate2`, `miniz_oxide`, `adler2`,
+`simd-adler32`, `crc32fast`, `zopfli`, `quick-xml`.
+
+`Cargo.lock` will gain two more lines than that: `arbitrary` and `derive_arbitrary`. They
+are correct and expected. zip declares them under
+`[target."cfg(fuzzing)".dependencies]`, so the lockfile records them while a normal build
+never compiles them — `cargo tree -i arbitrary` reports "nothing to print", which is the
+proof. Do not try to remove them.
+
+If anything *else* appears, `default-features = false` did not take; stop and re-read
+step 1.
 
 - [ ] **Step 4: Audit the licences for real**
 
@@ -173,6 +181,12 @@ that is a finding about the spec, not a line to add.
 
 `multiple-versions = "warn"` may report two `miniz_oxide` majors. A warning is not a
 failure; note it in the commit message and move on.
+
+**`quick-xml` must be 0.41 or later.** 0.37 carries RUSTSEC-2026-0194 and
+RUSTSEC-2026-0195 — a quadratic-time parse and an unbounded-allocation memory-exhaustion
+DoS, both in the component that reads attacker-controlled XML. `cargo deny check` fails on
+them. The API this plan uses is unchanged across the bump; it was compiled against 0.41
+before this line was written.
 
 - [ ] **Step 5: Verify**
 
@@ -394,13 +408,46 @@ Create `crates/lapidary-cad/src/tmf.rs` with only the tests for now:
 mod tests {
     use super::*;
 
+    /// A bounded source that records how many bytes were actually pulled from it.
+    ///
+    /// Bounded on purpose. An infinite reader proves the same point more elegantly, but
+    /// the naive implementation this test exists to catch calls `read_to_end` on it and
+    /// allocates until the machine dies — an OOM kill, not a test failure. A finite
+    /// source plus a byte counter gives a deterministic red test for 64 KiB.
+    ///
+    /// Also deliberately not `std::io::repeat`: std specialises `Repeat::read_to_end` to
+    /// fail with `OutOfMemory` immediately, so the naive version would return an error
+    /// too and the test would pass against the exact bug it exists to catch.
+    struct Counted<'a> {
+        remaining: usize,
+        pulled: &'a std::cell::Cell<usize>,
+    }
+
+    impl Read for Counted<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(0);
+            self.remaining -= n;
+            self.pulled.set(self.pulled.get() + n);
+            Ok(n)
+        }
+    }
+
     #[test]
     fn reading_stops_at_the_cap_rather_than_after_it() {
-        // An INFINITE reader. This is the whole point: an implementation that inflates
-        // the entry and then measures it never returns, while one that caps as bytes
-        // arrive returns an error immediately. No timing assertion, no huge fixture.
-        let err = read_capped(std::io::repeat(0u8), 1024).expect_err("must refuse");
+        // `DATA.md` §5.4 says abort "on breach, not after", and the byte count is what
+        // tells those two apart. Both implementations return an error, so asserting on
+        // the error alone would certify nothing.
+        let pulled = std::cell::Cell::new(0);
+        let source = Counted { remaining: 64 * 1024, pulled: &pulled };
+        let err = read_capped(source, 1024).expect_err("must refuse");
         assert!(matches!(err, CadError::ArchiveRefused { .. }), "{err}");
+        assert!(
+            pulled.get() <= 1024 + 4096,
+            "pulled {} bytes for a 1024-byte cap: the cap must bound the read, not just \
+             the result",
+            pulled.get()
+        );
     }
 
     #[test]
@@ -514,7 +561,8 @@ Expected: 4 new tests pass. Workspace total 343.
 
 - [ ] **Step 6: Verify the mutation bites**
 
-Replace the body of `read_capped` with the naive version:
+Replace the body of `read_capped` with the naive version (note `mut reader: R` — without
+`.take()` the receiver must be mutable):
 
 ```rust
     let mut out = Vec::new();
@@ -525,16 +573,19 @@ Replace the body of `read_capped` with the naive version:
     if out.len() as u64 > cap { /* … same error … */ }
 ```
 
-Run with a timeout, because the expected failure is a **hang**, not a red test:
-
 ```sh
-timeout 20 cargo test -p lapidary-cad --all-features reading_stops_at_the_cap; echo "exit=$?"
+cargo test -p lapidary-cad --all-features reading_stops_at_the_cap; echo "exit=$?"
 ```
 
-Expected: exit 124 (timeout). `std::io::repeat` never ends, so an implementation that
-reads before measuring never returns — which is precisely the difference between aborting
-during and aborting after. **Revert byte-identically** and confirm the test passes in
-milliseconds.
+Expected: a normal FAILED, on the byte-count assertion — "pulled 65536 bytes for a
+1024-byte cap". The error assertion still passes, which is the point: both versions
+refuse the stream, and only the byte count distinguishes aborting *during* from aborting
+*after*.
+
+**Do not "improve" this test by making the source infinite.** An earlier draft of this
+plan did exactly that, and the naive implementation then allocated until the kernel's OOM
+killer fired — 13 GB on a 15 GB machine, twice, taking the editor down with it. A hang
+that eats all memory is not a test failure. **Revert byte-identically** afterwards.
 
 - [ ] **Step 7: Commit**
 
@@ -551,6 +602,13 @@ git commit -m "feat(cad): cap archive reads as the bytes arrive"
 - Modify: `crates/lapidary-cad/src/tmf.rs`
 
 **Read first:** spec §3.5 and §3.6.
+
+**Use `attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)`, not `unescape_value()`.**
+quick-xml 0.41 deprecates the latter, and this workspace builds clippy with `-D warnings`,
+so the deprecation is an error. They are the same call: `unescape_value` is
+`normalized_value_with(XmlVersion::Implicit1_0, 1, resolve_predefined_entity)` and
+`normalized_value(v)` is `normalized_value_with(v, 1, resolve_predefined_entity)` —
+verified against the 0.41 source, same version, same depth, same resolver.
 
 **Interfaces:**
 - Consumes: `Caps`, `read_capped`, `CadError::ArchiveRefused` (task 3).
@@ -731,7 +789,9 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                     let mut target = None;
                     let mut is_model = false;
                     for attr in e.attributes().flatten() {
-                        let value = attr.unescape_value().unwrap_or_default().into_owned();
+                        let value = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            .unwrap_or_default()
+                            .into_owned();
                         match attr.key.local_name().as_ref() {
                             b"Target" => target = Some(value),
                             b"Type" => is_model = value == MODEL_REL_TYPE,
@@ -940,7 +1000,11 @@ fn attr(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == want)
-        .map(|a| a.unescape_value().unwrap_or_default().into_owned())
+        .map(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .unwrap_or_default()
+                .into_owned()
+        })
 }
 
 fn number(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Result<f64, CadError> {
@@ -1177,6 +1241,63 @@ row-major, then a translation in the last three.
     }
 
     #[test]
+    fn a_translation_is_scaled_by_the_unit_too() {
+        // The ONE test that distinguishes transform-then-scale from scale-then-transform.
+        // A pure scale matrix commutes with the unit scalar and a translation in a
+        // millimetre file has scale 1, so neither of the other transform tests can tell
+        // the two orderings apart -- both give the same answer. A translation in a
+        // centimetre file cannot: correct is (v + t) * 10, wrong is v * 10 + t.
+        let mesh = parse_3mf(&package(r#"<model unit="centimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 10 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles,
+            vec![[[100.0, 0.0, 0.0], [110.0, 0.0, 0.0], [100.0, 10.0, 0.0]]],
+            "scaling before transforming would give 10/20/10 -- the translation must be \
+             scaled with the geometry, because it is expressed in the same units"
+        );
+    }
+
+    #[test]
+    fn a_components_rotation_composes_in_the_right_order() {
+        // The 3x3 half of composition, which
+        // `a_component_composes_its_transform_with_the_items` cannot pin: both of its
+        // transforms have identity 3x3 blocks, so a transposed product gives the same
+        // answer. Here the component rotates 90 degrees about z and the build item scales
+        // x by two. Rotating first sends (1,0,0) to (0,1,0), which the scale leaves alone;
+        // the other order gives (0,2,0).
+        let mesh = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="1" y="0" z="0"/><vertex x="0" y="0" z="0"/><vertex x="0" y="0" z="1"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2"><components><component objectid="1" transform="0 1 0 -1 0 0 0 0 1 0 0 0"/></components></object>
+</resources>
+<build><item objectid="2" transform="2 0 0 0 1 0 0 0 1 0 0 0"/></build></model>"#))
+            .expect("parses");
+        assert_eq!(
+            mesh.triangles[0][0],
+            [0.0, 1.0, 0.0],
+            "the component's rotation must apply before the build item's scale"
+        );
+    }
+
+    #[test]
+    fn a_transform_with_too_many_numbers_is_rejected() {
+        // `zip` stops at the shorter side, so counting inside the loop accepts thirteen
+        // numbers by truncating to twelve while correctly rejecting eleven.
+        let err = parse_3mf(&package(r#"<model unit="millimeter"><resources>
+<object id="1"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources>
+<build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0 99"/></build></model>"#))
+            .expect_err("must fail");
+        assert!(err.to_string().contains("13 numbers"), "{err}");
+    }
+
+    #[test]
     fn a_component_cycle_terminates_instead_of_hanging() {
         // Object 1 contains object 2 contains object 1. Without a depth cap this
         // recurses until the stack dies.
@@ -1224,7 +1345,16 @@ const MAX_DEPTH: u32 = 8;
 fn matrix(raw: Option<&str>) -> Result<[f64; 12], CadError> {
     let Some(raw) = raw else { return Ok(IDENTITY) };
     let mut m = IDENTITY;
-    let mut seen = 0;
+    // Counted up front rather than inferred from the loop. `zip` stops at the shorter
+    // side, so a loop that counts as it goes rejects a transform with too FEW numbers and
+    // silently truncates one with too many -- an asymmetric hole in exactly the input
+    // validation CLAUDE.md says never to simplify away, on an untrusted file.
+    let count = raw.split_whitespace().count();
+    if count != 12 {
+        return Err(malformed(format!(
+            "a transform has {count} numbers, and a 3MF transform has exactly twelve"
+        )));
+    }
     for (slot, token) in m.iter_mut().zip(raw.split_whitespace()) {
         *slot = token
             .parse()
@@ -1232,12 +1362,6 @@ fn matrix(raw: Option<&str>) -> Result<[f64; 12], CadError> {
         if !slot.is_finite() {
             return Err(malformed(format!("a transform holds {token:?}, which is not finite")));
         }
-        seen += 1;
-    }
-    if seen != 12 {
-        return Err(malformed(format!(
-            "a transform has {seen} numbers, and a 3MF transform has twelve"
-        )));
     }
     Ok(m)
 }
@@ -1314,15 +1438,30 @@ Expected: 5 new tests pass. Workspace total 360.
 
 - [ ] **Step 5: Verify the mutations bite**
 
-Two, run separately.
+Three, run separately.
 
 **Mutation A — ignore the transform.** In `emit`, replace `apply(transform, …)` with
 `object.vertices[i]`. Expected: `a_build_items_transform_moves_the_geometry`,
-`two_build_items_of_one_object_become_one_merged_mesh` and
-`a_component_composes_its_transform_with_the_items` FAIL on coordinates.
+`two_build_items_of_one_object_become_one_merged_mesh`,
+`a_component_composes_its_transform_with_the_items` and
+`a_translation_is_scaled_by_the_unit_too` FAIL on coordinates.
 
-**Mutation B — remove the depth cap.** Delete the `if depth > MAX_DEPTH` block. Run under
-a timeout, because the expected result is a crash or a hang rather than a red test:
+**Mutation C — scale before transforming.** In `emit`, scale each vertex first and then
+apply the matrix. Expected: **only** `a_translation_is_scaled_by_the_unit_too` fails, at
+10/20/10 against the expected 100/110/100. Every other transform test still passes, which
+is exactly why that test had to be added: a pure scale matrix commutes with the unit
+scalar, and a translation in a millimetre file has scale 1, so nothing else can tell the
+two orderings apart.
+
+**Mutation B — remove the depth cap.** Delete the `if depth > MAX_DEPTH` block. The
+expected result is a fast stack overflow, not a red test.
+
+This is safe **only because the cycle fixture's objects carry `<components>` and no
+`<mesh>`**: nothing is pushed to `out`, so the recursion consumes stack (bounded, aborts
+in milliseconds) rather than heap. Do not add geometry to those two objects. If you do,
+every recursion level appends triangles and the mutation becomes an unbounded allocation
+that the kernel's OOM killer ends — which happened twice during task 3 of this slice,
+taking the editor down with it. Run it under a timeout anyway:
 
 ```sh
 timeout 20 cargo test -p lapidary-cad --all-features a_component_cycle; echo "exit=$?"
@@ -1381,7 +1520,11 @@ def prism(cx, cy, r, z0, z1, seg):
     verts.append((cx, cy, z0)); verts.append((cx, cy, z1))
     for i in range(seg):
         b0, b1 = base + 2 * i, base + 2 * ((i + 1) % seg)
-        tris += [(b0, b1, b1 + 1), (b0, b1 + 1, b0 + 1)]      # wall
+        # .extend, not `tris += [...]`: augmented assignment rebinds the name, so
+        # Python treats `tris` as local to this function and the read raises
+        # UnboundLocalError. `verts.append` and `tris.append` below are method calls
+        # and are fine.
+        tris.extend([(b0, b1, b1 + 1), (b0, b1 + 1, b0 + 1)])  # wall
         tris.append((cb, b1, b0))                              # bottom cap
         tris.append((ct, b0 + 1, b1 + 1))                      # top cap
 
@@ -1502,7 +1645,14 @@ git commit -m "test(cad): add a real 3MF fixture with two build items"
 - Consumes: `parse_3mf` (tasks 5–7).
 - Produces: `.3mf` files reaching `parse_3mf` through the ordinary pipeline.
 
-- [ ] **Step 1: Export and dispatch**
+- [ ] **Step 1: Export and dispatch, and drop the dead-code allow**
+
+`tmf.rs` carries `#![allow(dead_code)]` from task 3. **Remove it in this task** — this is
+the task that makes the module reachable, so this is the first point at which the
+attribute is no longer load-bearing. Removing it earlier fails `clippy -D warnings`,
+because `mod tmf;` is private and nothing outside the module's own tests reaches any of it
+until the `pub use` below exists. After removing it, clippy must still exit 0; if anything
+is still reported dead, that is a finding, not a reason to put the attribute back.
 
 In `crates/lapidary-cad/src/lib.rs`, beside the other re-exports:
 
@@ -1675,15 +1825,25 @@ async fn a_3mf_source_blob_is_stored_uncompressed(pool: PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_refused_3mf_leaves_no_part_and_no_blob(pool: PgPool) {
-    // A ZIP whose single entry expands far past the ratio cap. Built here rather than
+    // A ZIP whose model entry expands far past the ratio cap. Built here rather than
     // committed: a fixture that is genuinely hostile is not something to keep in a repo.
+    //
+    // The relationships part is NOT optional padding. `parse_3mf` reads `_rels/.rels`
+    // before it reads the model, so a bomb without one fails on the missing rels part and
+    // never touches the cap — the test would still pass, still prove the reap, and
+    // silently stop testing the thing it is named for.
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    w.start_file(
-        "3D/3dmodel.model",
-        zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated),
+    w.start_file("_rels/.rels", opts).expect("start");
+    std::io::Write::write_all(
+        &mut w,
+        br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#,
     )
-    .expect("start");
+    .expect("write");
+    w.start_file("3D/3dmodel.model", opts).expect("start");
     std::io::Write::write_all(&mut w, &vec![0u8; 64 * 1024 * 1024]).expect("write");
     let bomb = w.finish().expect("finish").into_inner();
 
@@ -1692,10 +1852,18 @@ async fn a_refused_3mf_leaves_no_part_and_no_blob(pool: PgPool) {
     std::fs::write(ingest_dir.path().join("bomb.3mf"), &bomb).expect("write");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
 
-    handler
+    let err = handler
         .handle(&job_for("bomb.3mf"))
         .await
         .expect_err("a refused archive is a permanent failure");
+    // Assert on WHICH refusal. Without this the test passes on any error at all, which is
+    // how it came to prove the reap while never reaching the cap.
+    // `{err:?}`, not `to_string()`: HandlerError derives Debug but not thiserror::Error,
+    // so it has no Display impl.
+    assert!(
+        format!("{err:?}").contains("Refused this 3MF"),
+        "expected the archive cap to refuse it, got: {err:?}"
+    );
     assert_eq!(part_count(&pool).await, 0);
     assert!(
         all_files(&blob_root.path().join("blobs")).is_empty(),

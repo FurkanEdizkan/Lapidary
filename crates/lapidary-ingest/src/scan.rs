@@ -92,7 +92,7 @@ fn is_mesh_candidate(path: &FsPath) -> bool {
             .is_some_and(|ext| MESH_EXTENSIONS.iter().any(|k| ext.eq_ignore_ascii_case(k)))
 }
 
-pub(crate) const MESH_EXTENSIONS: [&str; 2] = ["stl", "obj"];
+pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
 
 /// The ingest directory itself could not be walked — a missing mount, a permissions
 /// error, or (in a test) a nonexistent `TempDir` path. The whole request fails rather
@@ -189,5 +189,21 @@ mod tests {
             "must carry the underlying OS error: {}",
             failure.reason
         );
+    }
+
+    #[test]
+    fn a_3mf_is_a_mesh_candidate_and_a_readme_is_not() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for name in ["carrier.3mf", "carrier.3MF", "bracket.stl", "README.md"] {
+            std::fs::write(dir.path().join(name), b"x").expect("write");
+        }
+        let mut found: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .flatten()
+            .filter(|e| is_mesh_candidate(&e.path()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, vec!["bracket.stl", "carrier.3MF", "carrier.3mf"]);
     }
 }

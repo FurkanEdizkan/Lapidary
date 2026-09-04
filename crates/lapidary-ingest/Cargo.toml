@@ -38,6 +38,9 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 uuid.workspace = true
+# tests/handler.rs builds a hostile zip (a single deflate entry expanding past the ratio
+# cap) in memory -- a fixture that is genuinely hostile is not something to commit.
+zip.workspace = true
 
 [lints]
 workspace = true

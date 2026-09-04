@@ -11,6 +11,8 @@ use uuid::Uuid;
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 const BRACKET: &str = "bracket-lp-1042-03.stl";
 const BRACKET_FIXTURE: &[u8] = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
+const CARRIER: &str = "planetary-carrier-lp-3480-02.3mf";
+const CARRIER_FIXTURE: &[u8] = include_bytes!("../../../fixtures/planetary-carrier-lp-3480-02.3mf");
 
 fn seeded() -> LibraryId {
     LibraryId::from_uuid(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
@@ -685,5 +687,123 @@ async fn each_rung_is_valid_gltf_and_l0_is_smaller_than_l2(pool: PgPool) {
     assert!(
         count("tessellation_l1") <= count("tessellation_l2"),
         "L1 must never exceed L2"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_real_3mf_yields_a_thumbnail_and_three_rungs(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(CARRIER)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let kinds: Vec<String> = derivatives(&pool)
+        .await
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "tessellation_l0",
+            "tessellation_l1",
+            "tessellation_l2",
+            "thumbnail"
+        ],
+        "a 3MF produces the same four derivatives an STL does"
+    );
+
+    let (format, version): (String, String) = sqlx::query_as(
+        "SELECT f.format, d.kernel_version FROM file f \
+         JOIN derivative d ON d.revision_id = f.revision_id LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("row");
+    assert_eq!(format, "3mf");
+    assert_eq!(version, "mesh 3mf-1+glb-1+cpu-1");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_3mf_source_blob_is_stored_uncompressed(pool: PgPool) {
+    // DATA.md §1.2: 3MF is already a deflate ZIP. Re-compressing it spends CPU on every
+    // ingest to make the file very slightly larger.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write stl");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(CARRIER)).await.expect("3mf");
+    handler.handle(&job_for(BRACKET)).await.expect("stl");
+
+    let rows: Vec<(String, i64, i64, Option<i16>)> = sqlx::query_as(
+        "SELECT f.format, b.size_bytes, b.stored_bytes, b.zstd_level \
+         FROM blob b JOIN file f ON f.blake3 = b.blake3 ORDER BY f.format",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("rows");
+    let three_mf = rows.iter().find(|r| r.0 == "3mf").expect("the 3mf row");
+    assert_eq!(three_mf.1, three_mf.2, "a 3MF is stored at its own size");
+    // And the STL beside it still compresses, so this proves a policy rather than a
+    // pipeline that stopped compressing everything.
+    let stl = rows.iter().find(|r| r.0 == "stl").expect("the stl row");
+    assert!(
+        stl.2 < stl.1,
+        "an STL still compresses: {} vs {}",
+        stl.2,
+        stl.1
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_refused_3mf_leaves_no_part_and_no_blob(pool: PgPool) {
+    // A ZIP whose model entry expands far past the ratio cap. Built here rather than
+    // committed: a fixture that is genuinely hostile is not something to keep in a repo.
+    //
+    // The relationships part is NOT optional padding. `parse_3mf` reads `_rels/.rels`
+    // before it reads the model, so a bomb without one fails on the missing rels part and
+    // never touches the cap — the test would still pass, still prove the reap, and
+    // silently stop testing the thing it is named for.
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    w.start_file("_rels/.rels", opts).expect("start");
+    std::io::Write::write_all(
+        &mut w,
+        br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#,
+    )
+    .expect("write");
+    w.start_file("3D/3dmodel.model", opts).expect("start");
+    std::io::Write::write_all(&mut w, &vec![0u8; 64 * 1024 * 1024]).expect("write");
+    let bomb = w.finish().expect("finish").into_inner();
+
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join("bomb.3mf"), &bomb).expect("write");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    let err = handler
+        .handle(&job_for("bomb.3mf"))
+        .await
+        .expect_err("a refused archive is a permanent failure");
+    // Assert on WHICH refusal. Without this the test passes on any error at all, which is
+    // how it came to prove the reap while never reaching the cap.
+    // `HandlerError` derives `Debug` but not `Display` -- `{err:?}` rather than the
+    // brief's `err.to_string()`/`{err}`, same substring check against the same message.
+    assert!(
+        format!("{err:?}").contains("Refused this 3MF"),
+        "expected the archive cap to refuse it, got: {err:?}"
+    );
+    assert_eq!(part_count(&pool).await, 0);
+    assert!(
+        all_files(&blob_root.path().join("blobs")).is_empty(),
+        "a refused file must leave nothing behind"
     );
 }
