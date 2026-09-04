@@ -827,4 +827,32 @@ mod tests {
             .expect("parses");
         assert_eq!(mesh.triangles[0][1], [20.0, 0.0, 0.0]);
     }
+
+    #[test]
+    fn the_real_fixture_parses_with_both_of_its_placements() {
+        let bytes = include_bytes!("../../../fixtures/planetary-carrier-lp-3480-02.3mf");
+        let mesh = parse_3mf(bytes).expect("the fixture parses");
+        // Two placements of one object, so the second half must be the first half moved
+        // by exactly x+60. This is the assertion that fails if the merge drops an item,
+        // applies the wrong transform, or emits the same placement twice.
+        assert_eq!(
+            mesh.triangles.len() % 2,
+            0,
+            "two placements, so an even count"
+        );
+        let half = mesh.triangles.len() / 2;
+        for (near, far) in mesh.triangles[..half].iter().zip(&mesh.triangles[half..]) {
+            for (a, b) in near.iter().zip(far) {
+                assert!((b[0] - a[0] - 60.0).abs() < 0.001, "{a:?} vs {b:?}");
+                assert!((b[1] - a[1]).abs() < 0.001, "{a:?} vs {b:?}");
+                assert!((b[2] - a[2]).abs() < 0.001, "{a:?} vs {b:?}");
+            }
+        }
+        // The second placement is offset by x+60, so the overall bounding box is wider
+        // than one carrier: 48 mm for one, 108 mm for two.
+        let xs: Vec<f32> = mesh.triangles.iter().flatten().map(|v| v[0]).collect();
+        let width = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        assert!((width - 108.0).abs() < 0.01, "width {width}");
+    }
 }
