@@ -1,7 +1,7 @@
 //! The queue's wire shapes. `BatchStatus` is aggregated from job rows on every read and
 //! never stored, so it cannot disagree with the rows it summarises.
 
-use crate::{BatchId, LibraryId};
+use crate::{BatchId, CoreError, DerivativeKind, LibraryId, RevisionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -16,14 +16,91 @@ pub enum JobState {
     Failed,
 }
 
-/// How a job finished. Both are successes: `Skipped` means this library already held
-/// this exact file, which is slice 1's hash short-circuit doing its job.
+/// How a job finished. All three are successes: `Skipped` means this library already
+/// held this exact file, which is slice 1's hash short-circuit doing its job; `Rendered`
+/// means a `derive` job upserted the derivative it was asked to produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum Outcome {
     Ingested,
     Skipped,
+    Rendered,
+}
+
+/// What a job carries, without its kind.
+///
+/// The `job.kind` COLUMN is the discriminator, not a key inside the payload. Every row
+/// written before this slice holds a bare `{"path": …}`, so an internally-tagged enum
+/// would fail to deserialise all of them and the queue would stop draining on upgrade.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JobPayload {
+    IngestFile {
+        path: String,
+    },
+    Derive {
+        revision: RevisionId,
+        produce: DerivativeKind,
+    },
+}
+
+/// The `derive` payload's shape, deserialised as a whole rather than field by field so a
+/// malformed row reports serde's own message through `CoreError::MalformedJobPayload`.
+#[derive(Deserialize)]
+struct DerivePayload {
+    revision: RevisionId,
+    produce: DerivativeKind,
+}
+
+impl JobPayload {
+    pub const INGEST_FILE: &'static str = "ingest_file";
+    pub const DERIVE: &'static str = "derive";
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            JobPayload::IngestFile { .. } => Self::INGEST_FILE,
+            JobPayload::Derive { .. } => Self::DERIVE,
+        }
+    }
+
+    /// The `payload` column's value. `IngestFile` emits exactly what `enqueue_scan` has
+    /// always written, so old and new rows are indistinguishable.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            JobPayload::IngestFile { path } => serde_json::json!({ "path": path }),
+            JobPayload::Derive { revision, produce } => {
+                serde_json::json!({ "revision": revision, "produce": produce })
+            }
+        }
+    }
+
+    /// Rebuild from a row. `kind` comes from the column.
+    pub fn from_row(kind: &str, payload: &serde_json::Value) -> Result<Self, CoreError> {
+        match kind {
+            Self::INGEST_FILE => payload
+                .get("path")
+                .and_then(|p| p.as_str())
+                .map(|path| JobPayload::IngestFile {
+                    path: path.to_owned(),
+                })
+                .ok_or_else(|| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: "it has no file path".to_owned(),
+                }),
+            Self::DERIVE => serde_json::from_value::<DerivePayload>(payload.clone())
+                .map(|p| JobPayload::Derive {
+                    revision: p.revision,
+                    produce: p.produce,
+                })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            other => Err(CoreError::UnknownJobKind {
+                kind: other.to_owned(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -52,6 +129,7 @@ pub struct BatchStatus {
     pub running: u32,
     pub ingested: u32,
     pub skipped: u32,
+    pub rendered: u32,
     pub failed_total: u32,
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
@@ -98,6 +176,7 @@ mod tests {
             running: 0,
             ingested: 5,
             skipped: 0,
+            rendered: 0,
             failed_total: 1,
             failed: vec![JobFailure {
                 path: "spacer-lp-2001-00.stl".to_owned(),
@@ -175,4 +254,50 @@ mod tests {
     // test that cannot test anything — skipped rather than faked. `Outcome` and
     // `JobState` are skipped for the same reason: their variants are single words,
     // so `JobState`'s existing literal-match test above is already sufficient.
+
+    #[test]
+    fn an_existing_ingest_row_still_deserialises() {
+        // The exact shape every row in the database holds today: no `kind` key, because
+        // the kind is a column. This is the test that fails if someone reaches for
+        // #[serde(tag = "kind")].
+        let payload = serde_json::json!({ "path": "bracket-lp-1042-03.stl" });
+        let got = JobPayload::from_row("ingest_file", &payload).expect("parses");
+        assert_eq!(
+            got,
+            JobPayload::IngestFile {
+                path: "bracket-lp-1042-03.stl".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn an_ingest_payload_round_trips_byte_identically() {
+        let p = JobPayload::IngestFile {
+            path: "x.stl".to_owned(),
+        };
+        assert_eq!(p.to_json(), serde_json::json!({ "path": "x.stl" }));
+        assert_eq!(p.kind(), "ingest_file");
+    }
+
+    #[test]
+    fn a_derive_payload_carries_a_revision_and_one_kind() {
+        let rev = RevisionId::new();
+        let p = JobPayload::Derive {
+            revision: rev,
+            produce: DerivativeKind::TessellationL2,
+        };
+        assert_eq!(p.kind(), "derive");
+        assert_eq!(
+            JobPayload::from_row("derive", &p.to_json()).expect("round trips"),
+            p
+        );
+        assert_eq!(p.to_json()["produce"], "tessellation_l2");
+    }
+
+    #[test]
+    fn an_unknown_kind_names_itself() {
+        let err = JobPayload::from_row("polish_the_brass", &serde_json::json!({}))
+            .expect_err("must fail");
+        assert!(err.to_string().contains("polish_the_brass"), "{err}");
+    }
 }

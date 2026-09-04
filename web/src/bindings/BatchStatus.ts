@@ -9,7 +9,7 @@ import type { LibraryId } from "./LibraryId";
  * `ingested`, `skipped` and the per-file failures are slice 1's `ScanReport` counters,
  * relocated from a response body that vanished with the connection to rows that do not.
  */
-export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: number, pending: number, running: number, ingested: number, skipped: number, failedTotal: number, 
+export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: number, pending: number, running: number, ingested: number, skipped: number, rendered: number, failedTotal: number, 
 /**
  * The first 100 failures, ordered by creation, so the list is stable across polls
  * rather than reshuffling under the reader. `failed_total` is the real count.

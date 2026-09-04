@@ -167,6 +167,7 @@ impl PgJobs {
         let outcome_str = match outcome {
             Outcome::Ingested => "ingested",
             Outcome::Skipped => "skipped",
+            Outcome::Rendered => "rendered",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
@@ -322,6 +323,10 @@ impl PgJobs {
             running: running as u32,
             ingested: ingested as u32,
             skipped: skipped as u32,
+            // No `derive` job can be enqueued yet -- `enqueue` and its `outcome =
+            // 'rendered'` aggregate arrive with the generic enqueue path -- so every
+            // batch this query can see today really did render zero.
+            rendered: 0,
             failed_total: failed_total as u32,
             failed: failures
                 .into_iter()

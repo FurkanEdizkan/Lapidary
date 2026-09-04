@@ -1,6 +1,7 @@
 //! Domain types shared by every Lapidary crate. Depends on no other Lapidary crate.
 
 mod approximate;
+mod derivative;
 mod error;
 mod ids;
 mod job;
@@ -8,9 +9,10 @@ mod measurement;
 mod part;
 
 pub use approximate::Approximate;
+pub use derivative::DerivativeKind;
 pub use error::CoreError;
 pub use ids::{BatchId, BlobHash, JobId, LibraryId, PartId, RevisionId};
-pub use job::{BatchStatus, JobFailure, JobState, Outcome, ScanAccepted};
+pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeshMeasurements, Provenance};
 pub use part::{LibraryMode, PartSummary};
 
