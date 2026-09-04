@@ -37,7 +37,7 @@ mod tests {
     #[tokio::test]
     async fn mock_kernel_reports_a_pinned_version() {
         let kernel = MockKernel::new();
-        assert_eq!(kernel.version().implementation, "mock");
+        assert_eq!(kernel.version(&params("stl")).implementation, "mock");
     }
 
     #[tokio::test]

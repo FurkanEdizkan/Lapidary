@@ -47,7 +47,9 @@ fn canned_ladder() -> [Tessellation; 3] {
 
 #[async_trait::async_trait]
 impl Kernel for MockKernel {
-    fn version(&self) -> KernelVersion {
+    /// The same for every format: a double has one set of canned bytes, so nothing
+    /// about its output varies with the parser that would have run.
+    fn version(&self, _params: &KernelParams) -> KernelVersion {
         KernelVersion {
             implementation: "mock".to_owned(),
             version: "0a".to_owned(),

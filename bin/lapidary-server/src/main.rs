@@ -136,8 +136,16 @@ fn default_bind() -> String {
 /// only way an operator can tell from `podman logs` whether that feature chain actually held.
 #[cfg(feature = "mock-kernel")]
 fn kernel_description() -> String {
-    use lapidary_cad::Kernel;
-    let version = lapidary_cad::MockKernel::new().version();
+    use lapidary_cad::{Kernel, KernelParams};
+    // `version` describes one run, and this line has no file in hand -- what it answers is
+    // whether the mock kernel is linked at all, which is `implementation`. The mock's
+    // version is the same for every format, so the params here name a representative one
+    // rather than a real job's.
+    let params = KernelParams {
+        linear_deflection_mm: None,
+        format: "stl".to_owned(),
+    };
+    let version = lapidary_cad::MockKernel::new().version(&params);
     format!("{} {}", version.implementation, version.version)
 }
 

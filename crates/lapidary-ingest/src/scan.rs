@@ -1,5 +1,5 @@
 //! Kicking off a library scan: walk the read-only mounted ingest directory and enqueue
-//! one job per `.stl` candidate. Nothing here reads a file's bytes, hashes anything or
+//! one job per mesh candidate. Nothing here reads a file's bytes, hashes anything or
 //! invokes the CAD kernel — that is `handler.rs`, running later on a worker. `router()`
 //! (`lib.rs`) always mounts this; see that module's doc for why this crate, rather than a
 //! role check inside `lapidary-api`, is what keeps the open path from linking the kernel.
@@ -31,7 +31,7 @@ use lapidary_core::{LibraryId, ScanAccepted};
 use lapidary_db::{DbError, PgJobs};
 use std::path::Path as FsPath;
 
-/// Walks `state.ingest_dir` non-recursively and enqueues one `ingest_file` job per `.stl`
+/// Walks `state.ingest_dir` non-recursively and enqueues one `ingest_file` job per mesh
 /// (case-insensitive) for `library`. Returns `202` with the batch id the caller polls.
 pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
     let entries = match std::fs::read_dir(&state.ingest_dir) {
@@ -42,7 +42,7 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
     let mut paths = Vec::new();
     for entry in entries {
         match entry {
-            Ok(entry) if is_stl_candidate(&entry.path()) => {
+            Ok(entry) if is_mesh_candidate(&entry.path()) => {
                 let path = entry.path();
                 paths.push(
                     path.file_name()
@@ -51,7 +51,7 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
                 );
             }
             // Not a candidate — a README beside a library's STLs is not an error, and it
-            // is counted nowhere: `queued` is the number of `*.stl` candidates, not the
+            // is counted nowhere: `queued` is the number of mesh candidates, not the
             // number of directory entries.
             Ok(_) => {}
             // A directory entry the OS could not even name cannot be enqueued: there is
@@ -79,13 +79,20 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
     }
 }
 
-fn is_stl_candidate(path: &FsPath) -> bool {
+/// The extension is the format, and this is the only place that decides it.
+///
+/// Not a byte sniff: OBJ is plain text with no magic number, so sniffing reduces to
+/// guessing from the first non-comment line. The extension is also what an operator sees
+/// in the directory, so a file that is skipped is skipped for a reason they can see.
+fn is_mesh_candidate(path: &FsPath) -> bool {
     path.is_file()
         && path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("stl"))
+            .is_some_and(|ext| MESH_EXTENSIONS.iter().any(|k| ext.eq_ignore_ascii_case(k)))
 }
+
+pub(crate) const MESH_EXTENSIONS: [&str; 2] = ["stl", "obj"];
 
 /// The ingest directory itself could not be walked — a missing mount, a permissions
 /// error, or (in a test) a nonexistent `TempDir` path. The whole request fails rather

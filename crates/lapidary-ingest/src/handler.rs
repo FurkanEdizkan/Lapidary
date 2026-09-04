@@ -101,7 +101,11 @@ impl IngestHandler {
     ) -> Result<Outcome, HandlerError> {
         let path = self.ingest_dir.join(file_name);
         let kernel = MeshKernel;
-        let version = kernel.version();
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: source_format(file_name),
+        };
+        let version = kernel.version(&params);
         let kernel_version = format!("{} {}", version.implementation, version.version);
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         let blobs = PgBlobs(self.db.clone());
@@ -135,12 +139,6 @@ impl IngestHandler {
         // because the new part needs its own measurements and its own thumbnail; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
         // immutable, so this error is the final answer about them.
-        let params = KernelParams {
-            linear_deflection_mm: None,
-            // Task 7 derives this from the file name. Every file reaching here today came
-            // through a walk that filtered on `.stl`, so this is not yet a guess.
-            format: "stl".to_owned(),
-        };
         let output =
             kernel
                 .process(&bytes, &params)
@@ -236,14 +234,26 @@ impl IngestHandler {
 }
 
 /// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
-/// so the file's stem (its name without the `.stl` extension) is the whole story; falls
-/// back to the full file name on the pathological case where a candidate file (already
-/// proven to have a `.stl` extension by `is_stl_candidate`) somehow has no stem.
+/// so the file's stem (its name without the extension) is the whole story; falls back to
+/// the full file name on the pathological case where a candidate file (already proven by
+/// `is_mesh_candidate` to have one of the mesh extensions) somehow has no stem.
 pub(crate) fn part_name(file_name: &str) -> &str {
     FsPath::new(file_name)
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or(file_name)
+}
+
+/// The source format, lowercase and without a dot, taken from the file name the scan
+/// selected. An extension the kernel has no parser for reaches `process` and comes back as
+/// a per-file `Permanent` failure naming the format -- the scan admits only `stl` and
+/// `obj`, so that path is reachable today only by enqueueing a job by hand.
+pub(crate) fn source_format(file_name: &str) -> String {
+    FsPath::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn transient_db(error: DbError) -> HandlerError {

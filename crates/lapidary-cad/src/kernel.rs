@@ -81,12 +81,21 @@ pub enum CadError {
         "Could not render a thumbnail — {detail}. The file parsed, so the geometry itself may be degenerate; open it in your CAD tool to check."
     )]
     Unrenderable { detail: String },
+
+    #[error(
+        "This build has no parser for the {format} format. The mesh kernel reads STL and OBJ; 3MF and STEP are not yet ingested."
+    )]
+    UnsupportedFormat { format: String },
 }
 
 /// One shipped implementation. The trait exists so tests have a double.
 #[async_trait::async_trait]
 pub trait Kernel: Send + Sync {
-    fn version(&self) -> KernelVersion;
+    /// Takes the params for the same reason `process` does: the version identifies what
+    /// produced a given derivative, and for the mesh kernel that includes which parser
+    /// ran. An `obj`-derived thumbnail labelled `stl-1` is indistinguishable from a stale
+    /// one, which is the thing `kernel_version` exists to prevent.
+    fn version(&self, params: &KernelParams) -> KernelVersion;
 
     /// Bytes, not a path. Ingest has already read and hashed the file, and reading it a
     /// second time is a second chance to read something different — the hash is committed
