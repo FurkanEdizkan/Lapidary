@@ -57,6 +57,8 @@ async fn seed_part(
             measurements: &measurements(),
             thumbnail_webp,
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
         })
         .await
         .expect("seed part");

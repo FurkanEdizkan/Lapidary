@@ -172,6 +172,9 @@ impl IngestHandler {
                     measurements: &output.measurements,
                     thumbnail_webp: &output.thumbnail_webp,
                     kernel_version: &kernel_version,
+                    format: &params.format,
+                    // Task 9 writes the rung blobs and fills this in.
+                    tessellations: &[],
                 })
                 .await
             {
@@ -206,6 +209,9 @@ impl IngestHandler {
                 measurements: &output.measurements,
                 thumbnail_webp: &output.thumbnail_webp,
                 kernel_version: &kernel_version,
+                format: &params.format,
+                // Task 9 writes the rung blobs and fills this in.
+                tessellations: &[],
             })
             .await
         {

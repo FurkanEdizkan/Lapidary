@@ -38,6 +38,21 @@ pub struct StoredBlobRow {
     pub zstd_level: i16,
 }
 
+/// One LOD rung as it is stored.
+///
+/// Carries a whole `StoredBlobRow` rather than just a hash because every rung needs a
+/// `blob` row of its own before `derivative_blake3_references_blob` will accept the
+/// derivative that points at it, and that row needs the sizes.
+pub struct TessellationRow<'a> {
+    /// `derivative.kind` — `tessellation_l0`, `_l1` or `_l2`.
+    pub kind: &'a str,
+    pub blob: StoredBlobRow,
+    /// Cells per axis, or `None` for the finest grid. Persisted as `params_json` so that
+    /// `kernel_version` and `params_json` together reproduce these exact bytes, which is
+    /// what lets a derivative be evicted and regenerated rather than backed up.
+    pub grid: Option<u32>,
+}
+
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
@@ -45,6 +60,11 @@ pub struct IngestRequest<'a> {
     pub measurements: &'a MeshMeasurements,
     pub thumbnail_webp: &'a [u8],
     pub kernel_version: &'a str,
+    /// The source format, lowercase and without a dot. Was the SQL literal `'stl'`.
+    pub format: &'a str,
+    /// L0, L1 and L2. Empty is legal and means the caller wrote no rungs — the schema
+    /// does not require them, and a revision without them still shows a thumbnail.
+    pub tessellations: &'a [TessellationRow<'a>],
 }
 
 pub struct PgBlobs(pub PgPool);
@@ -185,10 +205,11 @@ async fn insert_part_chain(
 
     sqlx::query(
         "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes) \
-         VALUES ($1, $2, 'source', 'stl', $3, $4)",
+         VALUES ($1, $2, 'source', $3, $4, $5)",
     )
     .bind(Uuid::now_v7())
     .bind(revision)
+    .bind(req.format)
     .bind(req.blob.hash.to_hex())
     .bind(req.blob.size_bytes as i64)
     .execute(&mut **tx)
@@ -213,6 +234,45 @@ async fn insert_part_chain(
     .bind(serde_json::json!({ "px": 512 }))
     .execute(&mut **tx)
     .await?;
+
+    for rung in req.tessellations {
+        // The blob row first: task 1's foreign key means a derivative cannot name bytes
+        // the blob table has never heard of. `ON CONFLICT DO NOTHING` because a rung
+        // whose bytes another revision already stored is the ordinary case for anything
+        // under the L0 budget -- three identical rungs on a small part are one blob.
+        //
+        // `zstd_level` is NULL and `stored_bytes` equals `size_bytes`: derivatives are
+        // never compressed, because they are regenerated rather than kept.
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, $2, $2, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
+        )
+        .bind(rung.blob.hash.to_hex())
+        .bind(rung.blob.size_bytes as i64)
+        .execute(&mut **tx)
+        .await?;
+
+        // One derivative inserted below -> one reference, exactly as the source file's
+        // increment above works. This is what makes eviction safe: the reap only removes
+        // bytes nothing points at.
+        sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
+            .bind(rung.blob.hash.to_hex())
+            .execute(&mut **tx)
+            .await?;
+
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(revision)
+        .bind(rung.kind)
+        .bind(rung.blob.hash.to_hex())
+        .bind(req.kernel_version)
+        .bind(serde_json::json!({ "grid": rung.grid }))
+        .execute(&mut **tx)
+        .await?;
+    }
 
     Ok(part)
 }

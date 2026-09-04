@@ -303,6 +303,8 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             measurements: &measurements,
             thumbnail_webp: &[0x52, 0x49, 0x46, 0x46],
             kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
         })
         .await
         .expect("seeding the already-held part");
