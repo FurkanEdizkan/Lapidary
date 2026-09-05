@@ -2062,6 +2062,66 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn a_file_row_of_another_role_is_not_part_of_the_source_total(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(
+        &ingest,
+        library(),
+        "Flange, DN40 PN16, LP-3310-02",
+        0xf1,
+        Some(b"webp-flange"),
+    )
+    .await;
+    let revision = only_revision(&pool, id).await;
+
+    let before = PgParts(pool.clone())
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+
+    // A converted export beside the source it came from: the shape `variant=3mf` will
+    // write when format negotiation lands, and the first row this library holds whose
+    // role is not `source`. Size deliberately unlike the source's, so a total that
+    // counted it has to report a visibly different number.
+    let export = BlobHash::from_bytes([0xf2; 32]);
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($1, 8642, 4321, 3, 1)",
+    )
+    .bind(export.to_hex())
+    .execute(&pool)
+    .await
+    .expect("a blob for the export");
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at) \
+         VALUES (gen_random_uuid(), $1, 'export', '3mf', $2, 8642, now())",
+    )
+    .bind(revision.as_uuid())
+    .bind(export.to_hex())
+    .execute(&pool)
+    .await
+    .expect("an export row on the same revision");
+
+    let after = PgParts(pool.clone())
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_eq!(
+        after.source_bytes, before.source_bytes,
+        "the source total counts source rows: `page`'s own LATERAL filters `role` and \
+         these two queries have to mean the same set of rows, or a card's figures and \
+         the library total stop describing the same library"
+    );
+    assert_eq!(
+        after.source_bytes,
+        blob_row(0xf1).stored_bytes,
+        "and it is still the source blob's bytes, not zero and not the sum of both"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn an_empty_library_costs_nothing_and_an_absent_one_has_no_answer(pool: sqlx::PgPool) {
     let parts = PgParts(pool.clone());
     let empty = parts

@@ -22,6 +22,13 @@ function bytes(value: number): string {
     scaled /= 1000
     unit += 1
   }
+  // Re-check after rounding, not only before it: 999,999 B divides to 999.999 kB, which
+  // is under the threshold going in and renders `1,000 kB` coming out. The scale has to
+  // be chosen against the number that will be shown, not the one being carried.
+  if (unit < BYTE_UNITS.length - 1 && Number(scaled.toFixed(unit === 0 ? 0 : 1)) >= 1000) {
+    scaled /= 1000
+    unit += 1
+  }
   const digits = unit === 0 ? 0 : 1
   return `${scaled.toLocaleString('en-US', { maximumFractionDigits: digits })} ${BYTE_UNITS[unit]}`
 }
@@ -73,6 +80,15 @@ export const strings = {
      * find.
      */
     storedRaw: (stored: number) => `${bytes(stored)} on disk, stored uncompressed`,
+    /**
+     * Neither claim. A compressed part whose ingested size did not arrive cannot be
+     * described by either sentence above: `storedCompressed` needs the second figure,
+     * and `storedRaw` would state the opposite of what the row says. Falling back to
+     * `storedRaw` there is not the weaker claim, it is a false one — CLAUDE.md's
+     * measurement rule forbids the card asserting a compression state it does not have
+     * the numbers for.
+     */
+    storedSize: (stored: number) => `${bytes(stored)} on disk`,
     /**
      * The whole library fitted in one page, so the count is the count.
      */
@@ -244,7 +260,11 @@ export const strings = {
      * share are counted once, because that is what the volume holds.
      */
     totals: (source: number, derivative: number, ratio: number | null) =>
-      ratio === null
+      // `typeof`, not `=== null`: the response is cast rather than validated, so a field
+      // the server stops sending arrives as undefined, which `=== null` waves through
+      // into `(undefined * 100)` and renders `NaN% of source`. Same defence `SourceFile`
+      // applies to its three fields, applied to the one field this component reads.
+      typeof ratio !== 'number'
         ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
         : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
     failed:

@@ -590,14 +590,17 @@ function SourceFile({ part }: { part: PartCard }) {
       {/*
         `compressed` is `boolean | null`, and null means "no source file", never "unknown
         compression" — a card that got this far has a source row and knows which of the
-        two it is. The strict `=== true` is the same defence the narrowing above is: a
-        field that drifted to undefined reads as the uncompressed branch, which is the
-        one that claims less.
+        two it is. Three branches rather than two, because the third combination has no
+        honest sentence: a compressed part whose ingested size did not arrive cannot be
+        called uncompressed, which is what a fallback to `storedRaw` would say. That is
+        not the claim that says less, it is the claim that is wrong.
       */}
       <span>
-        {part.compressed === true && ingested !== null
-          ? strings.parts.storedCompressed(stored, ingested)
-          : strings.parts.storedRaw(stored)}
+        {part.compressed !== true
+          ? strings.parts.storedRaw(stored)
+          : ingested !== null
+            ? strings.parts.storedCompressed(stored, ingested)
+            : strings.parts.storedSize(stored)}
       </span>
     </p>
   )

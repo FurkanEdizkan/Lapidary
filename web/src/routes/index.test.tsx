@@ -1154,3 +1154,104 @@ test('the library totals report both storage classes and the ratio between them'
   ).toBeDefined()
   expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/storage`)
 })
+
+// The combination with no honest sentence: the row says compressed, and the size it was
+// compressed from did not arrive. `storedCompressed` cannot be built without the second
+// figure, and `storedRaw` would print "stored uncompressed" over a row that says the
+// opposite — a false claim, not a cautious one, against CLAUDE.md's measurement rule.
+// The card states the size and says nothing about compression.
+test('a compressed part whose ingested size is missing claims no compression state', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(
+      page([{ ...MOTOR_MOUNT, sourceBytes: null } as unknown as PartCard]),
+    ),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  // The size is still stated — a card that dropped the line entirely would satisfy the
+  // absence assertion below while telling the user less than it knows.
+  expect(within(card).getByText('197 kB on disk')).toBeDefined()
+  expect(within(card).queryByText(/stored uncompressed/)).toBeNull()
+  expect(within(card).queryByText(/compressed from/)).toBeNull()
+})
+
+// A library whose parts all lack a source row divides by nothing, so the server sends
+// `derivativeRatio: null` and the sentence has to stop after the two totals. The
+// percentage clause is not merely redundant there — collapsing the branch renders
+// `NaN% of source`, which is a figure rather than an omission and reads as a real one.
+test('a library with no source bytes reports its totals without a ratio', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ sourceBytes: 0, derivativeBytes: 40_960, derivativeRatio: null }),
+  })
+  renderIndex()
+
+  expect(await screen.findByText('Sources 0 B on disk · derivatives 41 kB.')).toBeDefined()
+  expect(screen.queryByText(/NaN/)).toBeNull()
+  expect(screen.queryByText(/% of source/)).toBeNull()
+})
+
+// The panel reads one field the response is not validated against, so the same drift
+// `SourceFile` narrows for reaches it too: `=== null` waves `undefined` through into
+// `(undefined * 100)`. Asserting the absence of `NaN` alone would pass against a panel
+// that rendered nothing at all, so the totals themselves are asserted first.
+test('a ratio the server stopped sending renders as no ratio, not as NaN', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ sourceBytes: 12_480_000, derivativeBytes: 5_718_866 }),
+  })
+  renderIndex()
+
+  expect(
+    await screen.findByText('Sources 12.5 MB on disk · derivatives 5.7 MB.'),
+  ).toBeDefined()
+  expect(screen.queryByText(/NaN/)).toBeNull()
+})
+
+// A total that cannot be read is not a total of zero, and silence is what a reader would
+// take it for. The grid still renders, because one failed panel must not take the page
+// with it — which is why the card is asserted before the message.
+test('a storage read that fails says so instead of going quiet', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: () => Promise.reject(new Error('api unreachable')),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(
+    await screen.findByText(
+      'Could not read what this library occupies. Check that the api service is running, then reload.',
+    ),
+  ).toBeDefined()
+})
+
+// The totals move when the library does. A scan that adds parts and leaves the panel
+// showing the pre-scan figures is worse than a panel that never rendered: the number is
+// there, it is wrong, and nothing about it looks stale.
+test('finishing a scan re-reads what the library occupies', async () => {
+  let storageReads = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: () => {
+      storageReads += 1
+      return ok(LIBRARY_STORAGE)()
+    },
+    scan: ok({ batchId: SCAN_BATCH_ID, queued: 1 }),
+    batch: ok(batchStatus({ batchId: SCAN_BATCH_ID, total: 1, pending: 0, ingested: 1 })),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const before = storageReads
+  fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
+
+  await waitFor(() => expect(storageReads).toBeGreaterThan(before))
+})

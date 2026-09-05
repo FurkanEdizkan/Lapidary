@@ -774,6 +774,15 @@ impl PgParts {
     /// derivatives over a library holding megabytes of previews, which is the omission
     /// `CLAUDE.md`'s measurement rule forbids.
     ///
+    /// `f.role = 'source'` is not decoration either, and it was missing until a review
+    /// measured its absence: one `role = 'export'` row moved a library's source total
+    /// from 176,543 to 180,864 while its cards did not move at all. Only `'source'` is
+    /// written today, so the divergence was dormant — but [`PartRepository::page`]'s own
+    /// source LATERAL filters that column seven lines from here, and two queries over one
+    /// table disagreeing about which rows they mean is a bug waiting for the slice that
+    /// writes the second role. The card figures and this total describe the same set, and
+    /// this clause is what keeps that true.
+    ///
     /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
     /// feeds sits over that grid, and a total counting parts the grid does not show could
     /// not be checked against it. Their bytes are still on the volume until a purge, so
@@ -789,7 +798,8 @@ impl PgParts {
             "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL)), \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL \
+             AND f.role = 'source')), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
