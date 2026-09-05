@@ -4,7 +4,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { BatchStatus, PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/types'
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
@@ -48,6 +48,7 @@ function stubFetch(routes: {
   parts?: () => Promise<StubResponse>
   batch?: () => Promise<StubResponse>
   library?: () => Promise<StubResponse>
+  storage?: () => Promise<StubResponse>
   settings?: () => Promise<StubResponse>
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
@@ -63,6 +64,8 @@ function stubFetch(routes: {
     if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
     if (url.endsWith('/parts')) return (routes.parts ?? pending)()
+    // Before the bare-library rule below, which every library route is a prefix of.
+    if (url.endsWith('/storage')) return (routes.storage ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
     // Last of the library routes, because the settings read is the bare path every one of
     // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
@@ -862,4 +865,135 @@ test('a sweep that finds nothing missing reads as success, not as an error', asy
     method: 'POST',
   })
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/jobs/'))).toHaveLength(0)
+})
+
+/**
+ * A revision whose source `file` row is gone. Not something ingest writes — it is what a
+ * half-repaired database looks like — and the part still has to appear, because its owner
+ * is the one person who needs to find it to delete or re-scan it. All four source fields
+ * are absent together, which is the shape `PartCard` documents.
+ */
+const RECOVERED_BRACKET: PartCard = {
+  ...SHAFT_COUPLER,
+  id: '01931b6e-0000-7000-8000-0000000a0006',
+  revision: '01931b6e-0000-7000-8000-0000000b0006',
+  name: 'Angle bracket, 40 x 40 x 3 mm',
+  partNumber: 'LP-1042-03',
+  sourceHash: null,
+  sourceBytes: null,
+  storedBytes: null,
+  compressed: null,
+}
+
+/**
+ * A library's totals as the API sends them. The numbers are slice 4's own measured ones —
+ * 5,718,866 bytes of inline previews over 151 parts — so the ratio on screen is a figure
+ * that was actually observed rather than one invented to round nicely.
+ */
+const LIBRARY_STORAGE: LibraryStorage = {
+  sourceBytes: 12_480_000,
+  derivativeBytes: 5_718_866,
+  derivativeRatio: 5_718_866 / 12_480_000,
+}
+
+// The download is a plain anchor on purpose: the browser reads `Content-Disposition`,
+// which is where the RFC 5987 filename lives, and a fetch into a blob URL would rename
+// every file. Two cards, and both are asserted, so a link wired to `parts[0].revision` —
+// every user downloading the same part — fails on the second.
+test('each card links to its own revision and asks for the original bytes', async () => {
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, HEX_NUT])) })
+  renderIndex()
+
+  const mount = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const nut = screen.getByRole('article', { name: HEX_NUT.name })
+
+  // `getByRole` throws when there is no link, so this cannot pass over a card that
+  // renders no download control at all — which is the shape slice 4's SET-B ruling
+  // caught, an assertion equally true of an element that is not there.
+  const mountLink = within(mount).getByRole('link', {
+    name: strings.download.originalFor(MOTOR_MOUNT.name),
+  })
+  const nutLink = within(nut).getByRole('link', {
+    name: strings.download.originalFor(HEX_NUT.name),
+  })
+
+  // The revision, never the part: a download URL names a revision, and every fixture
+  // here carries a revision id that differs from its part id so that a link built from
+  // the wrong one cannot pass.
+  expect(mountLink.getAttribute('href')).toBe(
+    `/api/revisions/${MOTOR_MOUNT.revision}/download?variant=original`,
+  )
+  expect(nutLink.getAttribute('href')).toBe(
+    `/api/revisions/${HEX_NUT.revision}/download?variant=original`,
+  )
+  // Called out on its own as well: the route 400s without `variant`, and a URL that
+  // dropped it would still carry the revision id and still look entirely plausible.
+  expect(mountLink.getAttribute('href')).toContain('variant=original')
+  // An anchor the browser treats as a download, not a navigation.
+  expect(mountLink.getAttribute('download')).not.toBeNull()
+  // And nothing fetched it. A `fetch` here would discard `Content-Disposition` and hand
+  // the user a file named after the revision id.
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/download'))).toBe(false)
+
+  // The hash beside the link is this card's own, at the length the card renders it, with
+  // the whole digest available to check the downloaded file against (DATA.md §5.1).
+  const shortHash = within(mount).getByText(MOTOR_MOUNT.sourceHash!.slice(0, 12))
+  expect(shortHash.getAttribute('title')).toBe(MOTOR_MOUNT.sourceHash)
+  expect(within(nut).getByText(HEX_NUT.sourceHash!.slice(0, 12))).toBeDefined()
+})
+
+// Literals, not the constants: this copy exists to state two specific facts — what the
+// file occupies, and whether zstd bought anything — and reading it back from strings.ts
+// would pass just as happily against wording that states neither. The pair of fixtures is
+// the point: the compressed one and the `AsIs` one take different branches.
+test('the card says what the file costs on disk and whether it was compressed', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, SHAFT_COUPLER])) })
+  renderIndex()
+
+  const mount = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const coupler = screen.getByRole('article', { name: SHAFT_COUPLER.name })
+  expect(within(mount).getByText('197 kB on disk, compressed from 624.4 kB')).toBeDefined()
+  expect(within(coupler).getByText('148.9 kB on disk, stored uncompressed')).toBeDefined()
+})
+
+// Four nulls. The card must still render, and the download must not look available.
+test('a revision with no source file keeps its card and offers no download', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([RECOVERED_BRACKET, HEX_NUT])) })
+  renderIndex()
+
+  // In this order, and all three. "There is no link on this card" is also true of a card
+  // that never rendered, so the card and its message are asserted first — otherwise this
+  // test passes over a grid that dropped the part entirely, which is the failure it
+  // exists to forbid.
+  const card = await screen.findByRole('article', { name: RECOVERED_BRACKET.name })
+  expect(within(card).getByText(strings.download.noSource)).toBeDefined()
+  expect(within(card).queryByRole('link')).toBeNull()
+  // No size line invented out of nulls either.
+  expect(within(card).queryByText(/on disk/)).toBeNull()
+
+  // And the neighbouring part still has its link, so the absence above is this card's
+  // and not the page failing to render links at all.
+  const nut = screen.getByRole('article', { name: HEX_NUT.name })
+  expect(
+    within(nut).getByRole('link', { name: strings.download.originalFor(HEX_NUT.name) }),
+  ).toBeDefined()
+})
+
+// Spec §4: source total, derivative total, and the ratio between them — the figure that
+// made slice 4's 92.5% drop legible, for a user's own library. Literal again, because the
+// direction of the ratio is the whole meaning and a line reading "273% of source" would
+// satisfy any assertion built out of the same constant.
+test('the library totals report both storage classes and the ratio between them', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(
+    await screen.findByText('Sources 12.5 MB on disk · derivatives 5.7 MB, 45.8% of source.'),
+  ).toBeDefined()
+  expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/storage`)
 })

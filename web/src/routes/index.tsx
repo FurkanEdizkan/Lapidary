@@ -3,9 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
+  downloadUrl,
   fetchBatchStatus,
   fetchHealth,
   fetchLibrarySettings,
+  fetchLibraryStorage,
   fetchParts,
   renderLibraryThumbnails,
   renderPartThumbnail,
@@ -15,6 +17,7 @@ import { strings } from '../lib/strings'
 import type {
   BatchId,
   BatchStatus,
+  LibraryStorage,
   PartCard,
   PartId,
   PartsPage,
@@ -134,6 +137,15 @@ export function Index({ batch }: { batch?: string }) {
     queryKey: ['library', DEFAULT_LIBRARY_ID],
     queryFn: () => fetchLibrarySettings(DEFAULT_LIBRARY_ID),
   })
+  /**
+   * What this library occupies. Its own query for the reason the settings read is one:
+   * it answers a different question from the grid's page, and it answers it about the
+   * whole library rather than about the 50 parts a page holds.
+   */
+  const storage = useQuery({
+    queryKey: ['storage', DEFAULT_LIBRARY_ID],
+    queryFn: () => fetchLibraryStorage(DEFAULT_LIBRARY_ID),
+  })
   const settings = useMutation({
     mutationFn: (on: boolean) => setAutoThumbnail(DEFAULT_LIBRARY_ID, on),
   })
@@ -165,6 +177,10 @@ export function Index({ batch }: { batch?: string }) {
   useEffect(() => {
     if (settled > 0) {
       void queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+      // The totals move with the grid, and nothing else would tell them so. A scan that
+      // ingests 151 parts under a line still reporting the pre-scan figure is a
+      // measurement contradicted by the cards directly above it.
+      void queryClient.invalidateQueries({ queryKey: ['storage', DEFAULT_LIBRARY_ID] })
     }
   }, [settled, queryClient])
 
@@ -225,6 +241,7 @@ export function Index({ batch }: { batch?: string }) {
             busyPart={renderPart.isPending ? renderPart.variables : undefined}
           />
           <PageExtent page={parts.data} />
+          <StorageTotals storage={storage.data} isError={storage.isError} />
         </>
       )}
       <p className="mt-6 text-sm text-[var(--color-muted)]">
@@ -376,6 +393,31 @@ function PageExtent({ page }: { page: PartsPage }) {
   )
 }
 
+/**
+ * What the whole library occupies, under the page that shows part of it.
+ *
+ * Rendered only where the grid has cards: a line of zeroes over an empty library says
+ * nothing the empty state has not already said better. Both totals are bytes on disk
+ * after compression and deduplicated — `PgParts::storage_totals` is where that
+ * accounting is written down — and the ratio arrives computed rather than divided here,
+ * so a second reader cannot report the same library the other way up.
+ */
+function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError: boolean }) {
+  if (isError) {
+    return <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.storage.failed}</p>
+  }
+  // Nothing at all while the first read is in flight: a total is a claim about the
+  // library, and there is no honest placeholder for a claim.
+  if (storage === undefined) {
+    return null
+  }
+  return (
+    <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+      {strings.storage.totals(storage.sourceBytes, storage.derivativeBytes, storage.derivativeRatio)}
+    </p>
+  )
+}
+
 function Grid({
   parts,
   onRender,
@@ -432,6 +474,7 @@ function Card({
           <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
         )}
         <Measurements part={part} />
+        <SourceFile part={part} />
         {/*
           Every card carries it, not only the ones showing "No preview yet": re-rendering
           a stale preview is the same request, and a control that appears and disappears
@@ -449,6 +492,62 @@ function Card({
         </button>
       </div>
     </article>
+  )
+}
+
+/**
+ * The download control, the hash to check what arrives against, and what the file costs
+ * on disk.
+ *
+ * A plain `<a href download>`, never a fetch. The browser is what reads
+ * `Content-Disposition`, and the route works to get the RFC 5987 `filename*` right so
+ * that a Turkish part name survives the save dialog; pulling the bytes through `fetch`
+ * into a blob URL would discard that header and name every download after the revision
+ * id. It also costs no JavaScript, no request until it is clicked, and nothing at all
+ * when it is middle-clicked into a background tab.
+ *
+ * The four source fields are absent together (`PartCard.sourceHash`), so a revision with
+ * no source row renders a sentence in place of the whole line rather than a link that
+ * would 404. Deliberately not a disabled-looking link either: clicking it again would
+ * not help, and a control that cannot work must not look like one that can.
+ */
+function SourceFile({ part }: { part: PartCard }) {
+  // Narrowed with typeof for the reason `Measurements` narrows: the response is cast
+  // rather than validated, so a field the server stops sending arrives here as undefined
+  // and would reach a formatter as one.
+  const hash = typeof part.sourceHash === 'string' ? part.sourceHash : null
+  const stored = typeof part.storedBytes === 'number' ? part.storedBytes : null
+  const ingested = typeof part.sourceBytes === 'number' ? part.sourceBytes : null
+  if (hash === null || stored === null) {
+    return <p className="mt-2 text-xs text-[var(--color-muted)]">{strings.download.noSource}</p>
+  }
+  return (
+    <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
+      <a
+        href={downloadUrl(part.revision)}
+        download
+        aria-label={strings.download.originalFor(part.name)}
+        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.download.original}
+      </a>
+      {/* The head of the digest on screen, the whole of it on the title — DATA.md §5.1. */}
+      <span className="font-mono" title={hash}>
+        {strings.parts.shortHash(hash)}
+      </span>
+      {/*
+        `compressed` is `boolean | null`, and null means "no source file", never "unknown
+        compression" — a card that got this far has a source row and knows which of the
+        two it is. The strict `=== true` is the same defence the narrowing above is: a
+        field that drifted to undefined reads as the uncompressed branch, which is the
+        one that claims less.
+      */}
+      <span>
+        {part.compressed === true && ingested !== null
+          ? strings.parts.storedCompressed(stored, ingested)
+          : strings.parts.storedRaw(stored)}
+      </span>
+    </p>
   )
 }
 

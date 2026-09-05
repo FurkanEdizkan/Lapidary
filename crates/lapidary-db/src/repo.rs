@@ -50,6 +50,17 @@ pub struct DownloadSource {
     pub zstd_level: Option<i16>,
 }
 
+/// What one library occupies, by storage class. Bytes on disk, not ingested sizes — see
+/// [`PgParts::storage_totals`], which is the only thing that builds one.
+///
+/// No ratio here: it is one division over these two numbers, and a third field carrying
+/// it would be a second place for the same fact to be computed differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageTotals {
+    pub source_bytes: u64,
+    pub derivative_bytes: u64,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
@@ -544,6 +555,12 @@ async fn insert_part_chain(
     Ok(part)
 }
 
+/// A `bigint` byte column as `u64`. Never `as u64`: that turns a negative row into 18
+/// exabytes on a card instead of saying the row is wrong.
+fn bytes_column(column: &'static str, value: i64) -> Result<u64, DbError> {
+    u64::try_from(value).map_err(|_| DbError::NegativeByteCount { column, value })
+}
+
 pub struct PgParts(pub PgPool);
 
 impl PgParts {
@@ -738,6 +755,63 @@ impl PgParts {
         }))
     }
 
+    /// What this library occupies, split the way `DATA.md` §1.1 splits storage classes.
+    /// `None` means there is no such library, so a route can 404 rather than report zero
+    /// bytes for an id that names nothing — the same distinction
+    /// [`PgParts::auto_thumbnail`] draws, and for the same reason.
+    ///
+    /// Both blob totals are `stored_bytes`, never `size_bytes`: the question is what is
+    /// on the volume, and spec §4 wants a figure Phase D's tiering work can be judged
+    /// against. They are summed over `blob` rows selected by `IN (subquery)`, so a blob
+    /// two parts share is counted once — which is what `ref_count` exists for and what
+    /// `du` would report. Summing over `file` rows instead would count identical STLs
+    /// twice and inflate a deduplicated library.
+    ///
+    /// Inline thumbnails are added to the derivative total from `octet_length`, because
+    /// they are derivative bytes this library costs whatever holds them — `DATA.md` §1.5
+    /// makes Postgres their deliberate exception to "blobs never live in Postgres", not
+    /// an exemption from being counted. Leaving them out would report `0 B` of
+    /// derivatives over a library holding megabytes of previews, which is the omission
+    /// `CLAUDE.md`'s measurement rule forbids.
+    ///
+    /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
+    /// feeds sits over that grid, and a total counting parts the grid does not show could
+    /// not be checked against it. Their bytes are still on the volume until a purge, so
+    /// whichever slice adds delete owns telling an operator about the difference — today
+    /// nothing writes `deleted_at`, so the two answers are the same answer.
+    pub async fn storage_totals(
+        &self,
+        library: LibraryId,
+    ) -> Result<Option<StorageTotals>, DbError> {
+        // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
+        // i64 — hence the `::bigint` casts, not decoration.
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
+             JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL)), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL)) \
+             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
+             FROM derivative d JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+             FROM library l WHERE l.id = $1",
+        )
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((source, derivative)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(StorageTotals {
+            source_bytes: bytes_column("blob.stored_bytes", source)?,
+            derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+        }))
+    }
+
     /// Every revision in `library` with no generated derivative of `kind` — the set a
     /// sweep enqueues a `derive` job for.
     ///
@@ -861,15 +935,11 @@ impl PartRepository for PgParts {
         .fetch_all(&self.0)
         .await?;
 
-        // `blob`'s size columns are `bigint`, so sqlx hands them back signed. `as u64`
-        // on a negative one would put 18 exabytes on a card instead of saying the row
-        // is wrong — the same silent wraparound the triangle count below refuses.
+        // `blob`'s size columns are `bigint`, so sqlx hands them back signed, and
+        // `bytes_column` refuses a negative one rather than wrapping it — the same
+        // silent wraparound the triangle count below refuses.
         fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
-            value
-                .map(|v| {
-                    u64::try_from(v).map_err(|_| DbError::NegativeByteCount { column, value: v })
-                })
-                .transpose()
+            value.map(|v| bytes_column(column, v)).transpose()
         }
 
         rows.into_iter()

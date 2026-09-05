@@ -6,6 +6,10 @@
 //! and how it was stored — and reading a row about a file is not opening one; nothing
 //! here ever asks the blob store for bytes.
 //!
+//! `GET /api/libraries/{id}/storage` is the same figures summed over the library, and it
+//! lives here rather than in `derive.rs` because it is the per-card storage line's total,
+//! not a trigger or a setting. It reads rows too, and no bytes.
+//!
 //! `after=` with nothing after the `=` is not a client bug: it is the literal shape of
 //! `` `…/parts?after=${cursor ?? ''}&limit=${n}` ``, the natural way to build this URL
 //! before a cursor exists, and this handler treats it the same as `after` being absent
@@ -93,6 +97,30 @@ pub struct PartsPage {
     pub next: Option<PartId>,
 }
 
+/// What a library costs, the library-level half of the figures on every card.
+///
+/// Both totals are bytes on disk after compression, deduplicated — see
+/// `PgParts::storage_totals`, which is where the accounting is written down. `number`,
+/// not `bigint`: serde puts a JSON number on the wire, and ts-rs 12 would otherwise
+/// promise the frontend something `JSON.parse` never produces.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LibraryStorage {
+    #[ts(type = "number")]
+    pub source_bytes: u64,
+    #[ts(type = "number")]
+    pub derivative_bytes: u64,
+    /// Derivative bytes ÷ source bytes. `None` for a library holding no source bytes,
+    /// where the division has no answer — a library with nothing in it, and a `0` there
+    /// would read as "derivatives cost nothing", which is a different claim.
+    ///
+    /// Sent rather than left to the client because the direction is the whole meaning:
+    /// this is the figure that made slice 4's 92.5% drop legible (spec §4), and a second
+    /// consumer dividing the other way would report the same library twice, differently.
+    pub derivative_ratio: Option<f64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
     /// The previous page's last id, or absent/empty for the first page.
@@ -161,8 +189,43 @@ pub async fn page(
             let parts = rows.into_iter().map(to_card).collect();
             Json(PartsPage { parts, next }).into_response()
         }
-        Err(err) => internal_error(&err),
+        Err(err) => internal_error(&err, "grid page query failed"),
     }
+}
+
+/// `GET /api/libraries/{id}/storage` — source total, derivative total, and the ratio.
+///
+/// A library that does not exist is a `404`, as it is on every other library route. The
+/// grid deliberately answers an unknown id with an empty page — an empty library and an
+/// id that names nothing look alike to someone browsing — but a storage panel reporting
+/// `0 B` for a mistyped id is a number a person would believe.
+pub async fn storage(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
+    match PgParts(state.db).storage_totals(library).await {
+        Ok(Some(totals)) => Json(LibraryStorage {
+            source_bytes: totals.source_bytes,
+            derivative_bytes: totals.derivative_bytes,
+            // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
+            // library; a ratio is a display figure and does not need more than that.
+            derivative_ratio: (totals.source_bytes > 0)
+                .then(|| totals.derivative_bytes as f64 / totals.source_bytes as f64),
+        })
+        .into_response(),
+        Ok(None) => no_such_library(),
+        Err(err) => internal_error(&err, "library storage query failed"),
+    }
+}
+
+/// The storage route's `404`. Its own message rather than `derive.rs`'s: that one tells a
+/// writer nothing was changed, which is an answer to a question a reader did not ask.
+fn no_such_library() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "message": "No library with that id exists, so there is nothing stored under \
+                        it. Check the id against the library list."
+        })),
+    )
+        .into_response()
 }
 
 /// The query string failed to parse — a malformed (non-empty) `after` or a `limit`
@@ -191,8 +254,8 @@ fn bad_query(rejection: &QueryRejection) -> Response {
 /// the real detail still reaches the operator, through the log line below rather than
 /// the response body — the same asymmetry `health::healthz` already keeps by never
 /// putting a live error's text in its response at all.
-fn internal_error(err: &DbError) -> Response {
-    tracing::error!(error = %err, "grid page query failed");
+fn internal_error(err: &DbError, what: &'static str) -> Response {
+    tracing::error!(error = %err, "{what}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

@@ -7,7 +7,7 @@ mod repo;
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
     DerivativeBytes, DownloadSource, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest,
-    PgParts, StoredBlobRow, TessellationRow,
+    PgParts, StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as

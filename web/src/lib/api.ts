@@ -3,8 +3,10 @@ import type {
   BatchStatus,
   LibraryId,
   LibrarySettings,
+  LibraryStorage,
   PartId,
   PartsPage,
+  RevisionId,
   ScanAccepted,
 } from './types'
 
@@ -40,6 +42,44 @@ export async function fetchParts(library: LibraryId): Promise<PartsPage> {
     throw new Error(`parts returned ${response.status}`)
   }
   return (await response.json()) as PartsPage
+}
+
+/**
+ * `GET /api/revisions/{id}/download?variant=original` — the exact bytes that were
+ * ingested.
+ *
+ * A URL, not a fetch. The card renders it as `<a href download>` and the browser is what
+ * reads `Content-Disposition`, including the RFC 5987 `filename*` the route works to get
+ * right so that a part named `Gövde plakası` keeps its name in the save dialog. Pulling
+ * the bytes through `fetch` into a blob URL would discard that header and name every
+ * download after the revision id instead.
+ *
+ * `variant` is spelled out and never defaults. The route answers 400 without it on
+ * purpose (`DATA.md` §5.1): a download that quietly returns something other than what
+ * was asked for is the failure that section exists to forbid, and a client omitting the
+ * parameter is asking for exactly that.
+ */
+export function downloadUrl(revision: RevisionId): string {
+  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`
+}
+
+/**
+ * `GET /api/libraries/{id}/storage` — what this library occupies on disk, by storage
+ * class, and the ratio between the two.
+ *
+ * Its own query rather than a field on the grid's page, for the reason the settings read
+ * is its own: the totals cover the whole library while a page covers 50 parts, so
+ * summing the cards on screen would report a library of 200 as a quarter of its size.
+ *
+ * A 404 is a real answer: no library with that id. Deliberately not softened into zeroes
+ * here — `0 B` for an id that names nothing is a number a person would believe.
+ */
+export async function fetchLibraryStorage(library: LibraryId): Promise<LibraryStorage> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/storage`)
+  if (!response.ok) {
+    throw new Error(`library storage returned ${response.status}`)
+  }
+  return (await response.json()) as LibraryStorage
 }
 
 /**

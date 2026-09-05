@@ -1763,3 +1763,120 @@ async fn a_source_hash_that_is_not_a_digest_is_reported_with_what_to_do(pool: sq
          verbatim rather than being sent to the server logs"
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(pool: sqlx::PgPool) {
+    // Three things this fixture is built to catch, and no single-part library shows any
+    // of them: bytes two parts share counted twice, inline previews left out of the
+    // derivative total entirely, and another library's bytes swept into this one's.
+    let shared = StoredBlobRow {
+        hash: BlobHash::from_bytes([0xd1; 32]),
+        size_bytes: 204_800,
+        stored_bytes: 91_204,
+        zstd_level: 3,
+    };
+    let ingest = PgIngest(pool.clone());
+    let rungs = [rung("tessellation_l0", 0xd5, Some(32))];
+    ingest
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &shared,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &rungs,
+            thumbnail_webp: Some(b"webp-bracket"),
+        })
+        .await
+        .expect("records the first part");
+    // The same bytes under a second part — a duplicate STL scanned from another folder,
+    // which is the ordinary case `link_existing` exists for. One file on disk.
+    ingest
+        .link_existing(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03 (spare)",
+            blob: &shared,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp-spare"),
+        })
+        .await
+        .expect("links the shared blob to a second part");
+    // Another tenant, whose bytes must not appear in this library's total.
+    let other = second_library(&pool).await;
+    ingest
+        .record(IngestRequest {
+            library: other,
+            name: "Impeller, LP-5501-02",
+            blob: &blob_row(0xd9),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "3mf",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp-impeller"),
+        })
+        .await
+        .expect("records another library's part");
+
+    let totals = PgParts(pool.clone())
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_eq!(
+        totals.source_bytes, 91_204,
+        "one blob, two parts: the bytes are on disk once, and summing `file` rows \
+         instead of `blob` rows would report 182,408 for a library holding 91,204"
+    );
+    let inline = i64::try_from("webp-bracket".len() + "webp-spare".len()).expect("fits");
+    assert_eq!(
+        totals.derivative_bytes,
+        40_960 + u64::try_from(inline).expect("fits"),
+        "the rung on disk plus both inline previews: thumbnails live in Postgres by \
+         DATA.md §1.5's deliberate exception, which is where they are stored and not an \
+         exemption from being counted"
+    );
+    assert!(
+        totals.derivative_bytes > 0,
+        "a derivative total that omitted the inline half would read 0 for a library \
+         whose every part has a preview"
+    );
+
+    // And the other tenant's own total, read back the same way, is the proof the filter
+    // is a filter rather than a coincidence of ordering.
+    let theirs = PgParts(pool.clone())
+        .storage_totals(other)
+        .await
+        .expect("totals")
+        .expect("the second library exists");
+    assert_eq!(theirs.source_bytes, blob_row(0xd9).stored_bytes);
+    assert_eq!(
+        theirs.derivative_bytes,
+        u64::try_from("webp-impeller".len()).expect("fits")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_empty_library_costs_nothing_and_an_absent_one_has_no_answer(pool: sqlx::PgPool) {
+    let parts = PgParts(pool.clone());
+    let empty = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists even with nothing in it");
+    assert_eq!((empty.source_bytes, empty.derivative_bytes), (0, 0));
+
+    // `None`, not zeroes. A library that does not exist and one holding nothing are
+    // different facts, and only the caller knows what to do about the first — the same
+    // distinction `auto_thumbnail` draws, and the reason the route can answer 404.
+    assert!(
+        parts
+            .storage_totals(LibraryId::new())
+            .await
+            .expect("totals")
+            .is_none()
+    );
+}

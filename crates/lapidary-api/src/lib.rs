@@ -10,7 +10,7 @@ mod jobs;
 mod parts;
 
 pub use error::ApiError;
-pub use parts::{PartCard, PartsPage};
+pub use parts::{LibraryStorage, PartCard, PartsPage};
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -77,6 +77,9 @@ pub fn router(state: AppState, role: Role) -> Router {
     let by_role = match role {
         Role::Api => Router::new()
             .route("/api/libraries/{id}/parts", get(parts::page))
+            // What that page of cards costs, summed. `Role::Api` with the grid it totals
+            // — see `parts.rs`.
+            .route("/api/libraries/{id}/storage", get(parts::storage))
             .route(
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),

@@ -2,6 +2,30 @@
  * Every user-facing string. English only; Turkish is the planned second locale, which
  * is why nothing is inlined in a component.
  */
+/**
+ * Decimal, not binary: 1 kB is 1000 B here, which is what `du --si` prints and the unit
+ * every figure in the slice handoffs was recorded in. A card reading 91.2 kB beside a
+ * shell reporting 89 KiB is a disagreement nobody can resolve without first knowing
+ * which convention each side picked.
+ */
+const BYTE_UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const
+
+/**
+ * A byte count as a person reads it. Whole bytes stay whole — a count is a count — and
+ * anything scaled carries at most one decimal, which is the precision at which two of
+ * these are worth comparing.
+ */
+function bytes(value: number): string {
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1000 && unit < BYTE_UNITS.length - 1) {
+    scaled /= 1000
+    unit += 1
+  }
+  const digits = unit === 0 ? 0 : 1
+  return `${scaled.toLocaleString('en-US', { maximumFractionDigits: digits })} ${BYTE_UNITS[unit]}`
+}
+
 export const strings = {
   appName: 'Lapidary',
   health: {
@@ -26,6 +50,29 @@ export const strings = {
     approximate: 'Approximate',
     approximateDetail:
       'At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.',
+    /**
+     * The leading hex of the source blob's BLAKE3, rendered beside the download link.
+     * `DATA.md` §5.1 requires the hash be on screen so a user can check what they got
+     * against what the card claimed. Twelve characters is enough to compare against the
+     * head of `b3sum`'s output by eye, and the whole digest is on the element's title
+     * for anyone who wants to check all of it.
+     */
+    shortHash: (hash: string) => hash.slice(0, 12),
+    /**
+     * What the file costs on disk, and what it cost before compression. Both figures,
+     * because the pair is the point: one number alone cannot say whether zstd bought
+     * anything on this part.
+     */
+    storedCompressed: (stored: number, ingested: number) =>
+      `${bytes(stored)} on disk, compressed from ${bytes(ingested)}`,
+    /**
+     * The other half. A 3MF is a deflate zip already, so the ingest policy stores it
+     * as-is and the two figures would agree — this says so in words rather than showing
+     * the same number twice. In words, and not in a tooltip: whether a part is
+     * compressed is something the card states, not something a user has to hover to
+     * find.
+     */
+    storedRaw: (stored: number) => `${bytes(stored)} on disk, stored uncompressed`,
     /**
      * The whole library fitted in one page, so the count is the count.
      */
@@ -126,6 +173,46 @@ export const strings = {
      */
     unknown:
       'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
+  },
+  /**
+   * The per-card download control. Its own group rather than a field on `parts`: this is
+   * the one thing on this page that hands a user their own bytes back, and `DATA.md`
+   * §5.1 is the section it answers to.
+   */
+  download: {
+    original: 'Download',
+    /**
+     * The accessible name, because the visible label is identical on every card and
+     * "Download" alone does not say what of. Same shape as `render.partFor`.
+     */
+    originalFor: (name: string) => `Download the original file for ${name}`,
+    /**
+     * The revision has no source `file` row, so there are no bytes to hand over and no
+     * link to render. Not a disabled control: pressing it again would not help, and
+     * something that cannot work must not look like something that can. Says what does
+     * help instead, because a re-scan is what re-attaches a source to a part in this
+     * state.
+     */
+    noSource:
+      'No source file on this revision, so there is nothing to download. Re-scan the library to attach one.',
+  },
+  /**
+   * What the library occupies, split by the storage classes `DATA.md` §1.1 splits it
+   * into. Sources are the bytes nothing can regenerate; derivatives and previews are the
+   * bytes something can, which is why the ratio between them is the figure worth showing
+   * and neither total is worth showing alone.
+   */
+  storage: {
+    /**
+     * Both totals are bytes on disk after compression, deduplicated — bytes two parts
+     * share are counted once, because that is what the volume holds.
+     */
+    totals: (source: number, derivative: number, ratio: number | null) =>
+      ratio === null
+        ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
+        : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
+    failed:
+      'Could not read what this library occupies. Check that the api service is running, then reload.',
   },
   emptyLibrary: {
     title: 'Nothing scanned yet',
