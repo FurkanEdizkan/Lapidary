@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
@@ -11,13 +11,21 @@ import type { BatchStatus, PartCard, PartsPage } from '../lib/types'
  * what lets these tests render it with no router in scope. The route component does the
  * `useSearch()` half; see `index.tsx`.
  */
-function renderIndex(props: { batch?: string } = {}) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderIndex(props: { batch?: string; client?: QueryClient } = {}) {
+  const client = props.client ?? newClient()
   return render(
     <QueryClientProvider client={client}>
       <Index batch={props.batch} />
     </QueryClientProvider>,
   )
+}
+
+/**
+ * Taken as a parameter so a test can spy on the client's `invalidateQueries` *before* the
+ * component mounts, rather than racing the first effect.
+ */
+function newClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
 /** The subset of `Response` these tests hand back. */
@@ -39,11 +47,27 @@ function stubFetch(routes: {
   healthz?: () => Promise<StubResponse>
   parts?: () => Promise<StubResponse>
   batch?: () => Promise<StubResponse>
+  library?: () => Promise<StubResponse>
+  settings?: () => Promise<StubResponse>
+  sweep?: () => Promise<StubResponse>
+  partThumbnail?: () => Promise<StubResponse>
 }) {
-  const fetchMock = vi.fn((url: string) => {
+  const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
-    if (url.includes('/parts')) return (routes.parts ?? pending)()
+    // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
+    // is a prefix of every other library route.
+    if (init?.method === 'PATCH') return (routes.settings ?? pending)()
+    // Order matters twice over. `/thumbnails` is a suffix of nothing else but `/thumbnail`
+    // is a suffix of it, and the per-card route is `/api/parts/{id}/thumbnail` — which the
+    // earlier `includes('/parts')` rule would have answered with a page of the grid.
+    if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
+    if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
+    if (url.endsWith('/parts')) return (routes.parts ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
+    // Last of the library routes, because the settings read is the bare path every one of
+    // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
+    // toggle in its unknown state for every test that is not about it.
+    if (url.startsWith('/api/libraries/')) return (routes.library ?? pending)()
     return Promise.reject(new Error(`unstubbed request: ${url}`))
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -52,6 +76,13 @@ function stubFetch(routes: {
 
 /** A batch id shaped like the uuid v7 `enqueue_scan` issues. */
 const BATCH_ID = '01a0699a-9ece-7073-a74b-c977ee7335ff'
+
+/**
+ * The batch id a trigger route hands back. Deliberately not `BATCH_ID`: the assertions
+ * below check that the id from the `202` is the one polled, which cannot fail if the
+ * page could have got the same id from anywhere else.
+ */
+const RENDER_BATCH_ID = '01a069c4-1d3e-7a10-b6f2-4f0c8b2d5e91'
 
 /** A `BatchStatus` as the API sends it, with the counters a test cares about overridden. */
 const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
@@ -62,6 +93,7 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   running: 0,
   ingested: 0,
   skipped: 0,
+  rendered: 0,
   failedTotal: 0,
   failed: [],
   startedAt: '2026-09-03T23:28:56.014618Z',
@@ -174,10 +206,21 @@ test('the empty state points at no upload control, because there is none', async
   await screen.findByText(strings.emptyLibrary.body)
   const rendered = (document.body.textContent ?? '').toLowerCase()
   expect(rendered.length).toBeGreaterThan(40)
-  for (const claim of ['upload', 'drag', 'drop', 'browse', 'choose a file', 'add file']) {
+  const claims = ['upload', 'drag', 'drop', 'browse', 'choose a file', 'add file']
+  for (const claim of claims) {
     expect(rendered).not.toContain(claim)
   }
-  expect(screen.queryByRole('button')).toBeNull()
+  // Narrowed from "no buttons at all" once the action bar landed: the page now offers
+  // controls that act on parts already ingested, and those are not upload controls. What
+  // still must not exist is a control that promises to take a file — checked by
+  // accessible name, so an icon-only button labelled only by `aria-label` is covered too,
+  // which the blanket assertion this replaces would have missed.
+  for (const control of screen.queryAllByRole('button')) {
+    const name = (control.getAttribute('aria-label') ?? control.textContent ?? '').toLowerCase()
+    for (const claim of claims) {
+      expect(name).not.toContain(claim)
+    }
+  }
   expect(document.querySelector('input[type="file"]')).toBeNull()
 })
 
@@ -540,4 +583,262 @@ test('refetches the grid as the worker commits parts', async () => {
     await screen.findByRole('article', { name: MOTOR_MOUNT.name }, { timeout: 4000 }),
   ).toBeTruthy()
   expect(partsCalls).toBeGreaterThan(1)
+})
+
+// The test this task exists for. `Outcome::Rendered` is a terminal outcome the settled
+// count did not know about, and a thumbnail sweep settles EVERY job as `rendered` — so a
+// count that omits it reads 0 for the whole batch, the invalidation never fires, and the
+// grid keeps showing "No preview yet" over parts whose previews are rendered and stored.
+// No backend test can see that: every job succeeded and every row is correct.
+//
+// The fixture is the load-bearing part. `ingested`, `skipped` and `failedTotal` are all
+// zero on purpose — the obvious fixture, a batch with a couple of ingests in it, passes
+// happily with `rendered` dropped from the count, which is exactly the drift this exists
+// to catch. The assertion below pins that property so a later edit cannot quietly restore
+// it. Driven from `?batch=` rather than from the sweep button, so nothing but the settled
+// count can be what refetches the grid.
+test('a batch whose jobs all settle as rendered refetches the grid exactly once', async () => {
+  const swept = batchStatus({
+    total: 4,
+    pending: 0,
+    running: 0,
+    rendered: 4,
+    finishedAt: '2026-09-05T10:14:02.116Z',
+  })
+  expect(swept.ingested + swept.skipped + swept.failedTotal).toBe(0)
+  expect(swept.rendered).toBe(4)
+
+  // Same part either side of the sweep: without a preview, then with one. That is the
+  // user-visible symptom the count controls — a blank card that never fills in.
+  const rendered: PartCard = { ...SHAFT_COUPLER, thumbnail: WEBP_ORANGE }
+  let partsCalls = 0
+  let batchCalls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: async () => {
+      partsCalls += 1
+      return {
+        ok: true,
+        json: async () => (partsCalls === 1 ? page([SHAFT_COUPLER]) : page([rendered])),
+      }
+    },
+    batch: async () => {
+      batchCalls += 1
+      return {
+        ok: true,
+        json: async () => (batchCalls === 1 ? batchStatus({ total: 4, pending: 4 }) : swept),
+      }
+    },
+  })
+
+  const client = newClient()
+  // Spied before mount, and calling through, so the refetch it triggers still happens.
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  renderIndex({ batch: BATCH_ID, client })
+
+  // Nothing has settled on the first poll: the card is there and still has no preview.
+  const before = await screen.findByRole('article', { name: SHAFT_COUPLER.name })
+  expect(within(before).getByText(strings.parts.noThumbnail)).toBeDefined()
+  expect(partsCalls).toBe(1)
+
+  // The second poll reports four renders, and the preview arrives with no reload.
+  const card = await screen.findByRole('article', { name: SHAFT_COUPLER.name }, { timeout: 4000 })
+  await waitFor(
+    () => expect(within(card).getByRole('img').getAttribute('src')).toBe(WEBP_ORANGE),
+    { timeout: 4000 },
+  )
+  expect(partsCalls).toBe(2)
+
+  // And the line above the grid says what happened, in copy that is true of a render:
+  // `strings.scan.finished` reads the ingest counters and would call these four rendered
+  // previews "Scan complete — 0 added."
+  expect(screen.getByText(strings.render.finished(4))).toBeDefined()
+
+  // Exactly one, not "at least one": the effect is keyed on the settled count, so a poll
+  // that reports the same numbers again must cost no refetch. Filtered by key, because
+  // the count is the claim — an invalidation of some other cache entry is not this one.
+  const partsInvalidations = invalidate.mock.calls.filter(([filters]) => {
+    const key = (filters as { queryKey?: unknown } | undefined)?.queryKey
+    return Array.isArray(key) && key[0] === 'parts'
+  })
+  expect(partsInvalidations).toHaveLength(1)
+  expect(partsInvalidations[0]?.[0]).toEqual({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+})
+
+/**
+ * The test this whole slice-4 addendum exists for. A library switched off has to render
+ * off — the failure it replaces is a toggle that showed design §3.2's default and told an
+ * owner who had turned rendering off that it was on.
+ *
+ * `checked === false` alone does not say that: an unknown toggle is unchecked too. So the
+ * mixed state is asserted first, while the read is in flight, and its absence is asserted
+ * after — otherwise a component that never resolved anything would pass the one assertion
+ * this test is named for.
+ */
+test('the auto-thumbnail toggle shows off for a library the server says is off', async () => {
+  let release: (response: StubResponse) => void = () => {}
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: () => new Promise<StubResponse>((resolve) => (release = resolve)),
+  })
+  renderIndex()
+
+  // Before the read lands there is no position to take, and a confident "on" here is the
+  // same lie in a shorter window.
+  const toggle = (await screen.findByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  })) as HTMLInputElement
+  expect(toggle.indeterminate).toBe(true)
+  expect(toggle.checked).toBe(false)
+  expect(toggle.disabled).toBe(true)
+
+  release({ ok: true, json: async () => ({ autoThumbnail: false }) })
+
+  await waitFor(() => expect(toggle.disabled).toBe(false))
+  expect(toggle.checked).toBe(false)
+  expect(toggle.indeterminate).toBe(false)
+  expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}`)
+  expect(screen.queryByText(strings.library.autoThumbnailUnknown)).toBeNull()
+})
+
+// The read is the toggle's starting position, so a read that never answers must not be
+// papered over with the default — that is the same wrong "on" arriving by another route.
+// The control stays mixed and unclickable, and says why.
+test('a settings read that fails leaves the toggle unknown rather than guessing', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: async () => ({ ok: false, status: 503 }),
+  })
+  renderIndex()
+
+  expect(await screen.findByText(strings.library.autoThumbnailUnknown)).toBeTruthy()
+  const toggle = screen.getByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  }) as HTMLInputElement
+  expect(toggle.indeterminate).toBe(true)
+  expect(toggle.checked).toBe(false)
+  expect(toggle.disabled).toBe(true)
+})
+
+// A PATCH the server refused leaves the library where the GET said it was. `variables`
+// covers the round trip and nothing after it: a value the server rejected is not a
+// position this library is in, and now that there is something true to fall back to,
+// holding the failed click on screen under a "could not change this" message would show
+// two contradictory facts at once.
+test('a rejected setting change falls back to what the server said, not to the click', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: ok({ autoThumbnail: true }),
+    settings: async () => ({ ok: false, status: 503 }),
+  })
+  renderIndex()
+
+  const toggle = (await screen.findByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  })) as HTMLInputElement
+  await waitFor(() => expect(toggle.checked).toBe(true))
+
+  fireEvent.click(toggle)
+
+  expect(await screen.findByText(strings.library.autoThumbnailFailed)).toBeTruthy()
+  expect(toggle.checked).toBe(true)
+  expect(toggle.indeterminate).toBe(false)
+})
+
+// The write half, over a library the server says is on. The request is asserted whole,
+// header and body included: `derive.rs`'s `bad_body` names the Content-Type explicitly,
+// and a PATCH without it is a 400 the user would see as the setting silently refusing to
+// change.
+test('the auto-thumbnail toggle sends the setting and reflects what the server echoes', async () => {
+  // Held open on purpose. A stub that resolves immediately never renders the in-flight
+  // frame, and that frame is where this control was wrong: react-query clears a
+  // mutation's `data` the moment it goes pending, so a position read from `data` alone
+  // springs back to its old value and sits there, disabled, until the response lands.
+  let release: (response: StubResponse) => void = () => {}
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: ok({ autoThumbnail: true }),
+    settings: () => new Promise<StubResponse>((resolve) => (release = resolve)),
+  })
+  renderIndex()
+
+  // The server's answer, not a default: this library is on.
+  const toggle = await screen.findByRole('checkbox', { name: strings.library.autoThumbnail })
+  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true))
+
+  fireEvent.click(toggle)
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"autoThumbnail":false}',
+    }),
+  )
+  expect((toggle as HTMLInputElement).checked).toBe(false)
+
+  // And the echo is what it settles on, not the click.
+  release({ ok: true, json: async () => ({ autoThumbnail: false }) })
+  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(false))
+})
+
+// Two cards, and the second one is clicked: with one card on screen a handler wired to
+// `parts[0].id` cannot fail, which is the same hole the two distinct WebP fixtures were
+// introduced to close. The batch id in the `202` is then asserted to be the one polled —
+// that is what proves the acceptance was consumed rather than merely received.
+test('the per-card action renders that part, and polls the batch it was handed', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partThumbnail: ok({ batchId: RENDER_BATCH_ID, queued: 1 }),
+    batch: ok(batchStatus({ batchId: RENDER_BATCH_ID, total: 1, pending: 1 })),
+  })
+  renderIndex()
+
+  const nut = await screen.findByRole('article', { name: HEX_NUT.name })
+  fireEvent.click(within(nut).getByRole('button', { name: strings.render.partFor(HEX_NUT.name) }))
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(`/api/parts/${HEX_NUT.id}/thumbnail`, {
+      method: 'POST',
+    }),
+  )
+  expect(fetchMock).not.toHaveBeenCalledWith(`/api/parts/${MOTOR_MOUNT.id}/thumbnail`, {
+    method: 'POST',
+  })
+
+  // A batch of one, watched through the same poll a scan uses, and reported in the copy
+  // that is true of a render — `strings.scan.finished` would call 151 rendered previews
+  // "Scan complete — 0 added."
+  expect(await screen.findByText(strings.render.running(0, 1))).toBeTruthy()
+  expect(fetchMock).toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${RENDER_BATCH_ID}`,
+  )
+})
+
+// `queued: 0` on a library that exists means every part already has a preview. That is a
+// success, and reading it as a failure is the easy mistake — a library that does not
+// exist answers 404 instead, which is what the error copy is for. Such a batch has no
+// status resource either, so polling it would 404 a moment later and tell the user their
+// successful action failed.
+test('a sweep that finds nothing missing reads as success, not as an error', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    sweep: ok({ batchId: RENDER_BATCH_ID, queued: 0 }),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  fireEvent.click(screen.getByRole('button', { name: strings.render.sweep }))
+
+  expect(await screen.findByText(strings.render.nothingMissing)).toBeTruthy()
+  expect(screen.queryByText(strings.render.queueFailed)).toBeNull()
+  expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/thumbnails`, {
+    method: 'POST',
+  })
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/jobs/'))).toHaveLength(0)
 })

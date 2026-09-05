@@ -6,8 +6,8 @@ mod repo;
 
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
-    IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts, StoredBlobRow,
-    TessellationRow,
+    DerivativeBytes, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts,
+    StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -15,6 +15,7 @@ pub use sqlx::PgPool;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
+use lapidary_core::RevisionId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -48,12 +49,12 @@ pub enum DbError {
     Migrate(#[from] sqlx::migrate::MigrateError),
 
     #[error(
-        "`{column}` holds {value} microseconds since the epoch, which is not a representable timestamp. The row is corrupt — it was probably written by something other than lapidary-db."
+        "`{column}` holds {value} microseconds since the epoch, which is not a representable timestamp. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a timestamp it cannot read back."
     )]
     TimestampOutOfRange { column: &'static str, value: i64 },
 
     #[error(
-        "`{column}` holds {value}, which is negative and cannot be a triangle count. The row is corrupt — it was probably written by something other than lapidary-db."
+        "`{column}` holds {value}, which is negative and cannot be a triangle count. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a negative count."
     )]
     NegativeTriangleCount { column: &'static str, value: i32 },
 
@@ -61,6 +62,28 @@ pub enum DbError {
         "A triangle count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the mesh kernel reported — a real mesh should never have this many triangles."
     )]
     TriangleCountTooLarge { column: &'static str, value: u32 },
+
+    #[error(
+        "`{column}` holds `{value}`, which is not a BLAKE3 digest. Check what else has write access to this database, then re-scan the part so the row names bytes the blob store actually holds."
+    )]
+    CorruptBlobHash { column: &'static str, value: String },
+
+    /// The two derivative shapes nothing can display. Both are refused by
+    /// [`PgIngest::upsert_derivative`] before it opens a transaction, because both write
+    /// a row that is valid, invisible and — since a row exists — invisible to
+    /// [`PgParts::revisions_missing`]'s sweep as well, so nothing ever heals it.
+    #[error(
+        "A thumbnail for revision {revision} was offered as hash-addressed bytes, and nothing can read one back: the grid serves thumbnails inline out of the row it already reads. Store the thumbnail inline, or wait for the hash-addressed thumbnail endpoint that arrives with the viewer."
+    )]
+    ThumbnailNotInline { revision: RevisionId },
+
+    #[error(
+        "The {kind} for revision {revision} was offered as zero bytes, and an empty derivative is worse than none: it reaches the grid as a broken image where \"no preview yet\" belongs. Write no derivative at all, or re-render and write the bytes that produces."
+    )]
+    EmptyDerivative {
+        kind: &'static str,
+        revision: RevisionId,
+    },
 }
 
 impl DbError {
@@ -91,7 +114,10 @@ impl DbError {
             | DbError::UnsupportedVersion { .. }
             | DbError::TimestampOutOfRange { .. }
             | DbError::NegativeTriangleCount { .. }
-            | DbError::TriangleCountTooLarge { .. } => self.to_string(),
+            | DbError::TriangleCountTooLarge { .. }
+            | DbError::CorruptBlobHash { .. }
+            | DbError::ThumbnailNotInline { .. }
+            | DbError::EmptyDerivative { .. } => self.to_string(),
         }
     }
 }

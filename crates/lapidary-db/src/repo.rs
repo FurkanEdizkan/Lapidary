@@ -1,5 +1,8 @@
 use crate::DbError;
-use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId, PartSummary, Provenance};
+use lapidary_core::{
+    BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, PartSummary, Provenance,
+    RevisionId,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -53,12 +56,54 @@ pub struct TessellationRow<'a> {
     pub grid: Option<u32>,
 }
 
+/// Where one derivative's bytes live — the two shapes `derivative` can hold.
+///
+/// An enum rather than two `Option` fields because `derivative_storage_is_exclusive`
+/// (migration `0004`) requires exactly one of `thumb_bytes` and `blake3` to be non-null:
+/// a pair of options can also express "both" and "neither", and each of those is a
+/// constraint violation discovered at runtime instead of a shape the caller cannot write.
+pub enum DerivativeBytes<'a> {
+    /// Inline in `thumb_bytes`. How a thumbnail is stored: small enough that the grid
+    /// serves it straight out of the row it already reads.
+    Inline(&'a [u8]),
+    /// Hash-addressed in `blake3`. How a tessellation rung is stored — the `blob` row is
+    /// written by the same call, because `derivative_blake3_references_blob` refuses a
+    /// derivative naming bytes the `blob` table has never heard of.
+    Hashed {
+        blob: &'a StoredBlobRow,
+        /// Cells per axis, or `None` for the finest grid — see [`TessellationRow::grid`].
+        grid: Option<u32>,
+    },
+}
+
+/// `params_json` for a thumbnail, and for a rung.
+///
+/// Built here rather than by each caller because `kernel_version` and `params_json`
+/// together are what let a derivative be evicted and regenerated instead of backed up: a
+/// re-render must record the same parameters the original ingest did, and it can only do
+/// that if both writers read the shape off the same line.
+fn thumbnail_params() -> serde_json::Value {
+    serde_json::json!({ "px": 512 })
+}
+
+fn rung_params(grid: Option<u32>) -> serde_json::Value {
+    serde_json::json!({ "grid": grid })
+}
+
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
-    pub thumbnail_webp: &'a [u8],
+    /// The rendered preview, or `None` when nothing rendered one — a library with
+    /// `auto_thumbnail = false`, or a kernel that was not asked for a thumbnail.
+    ///
+    /// `None` writes no `derivative` row at all, rather than a row holding no bytes. An
+    /// empty `bytea` is not NULL, so it satisfies `derivative_storage_is_exclusive`
+    /// (migration `0004`), reads back as `Some(vec![])`, and reaches the grid as
+    /// `data:image/webp;base64,` — a broken image where "no preview yet" belongs. The
+    /// absent row is what the grid's `LEFT JOIN LATERAL` is already written to handle.
+    pub thumbnail_webp: Option<&'a [u8]>,
     pub kernel_version: &'a str,
     /// The source format, lowercase and without a dot. Was the SQL literal `'stl'`.
     pub format: &'a str,
@@ -109,6 +154,41 @@ impl PgBlobs {
         .fetch_optional(&self.0)
         .await?;
         Ok(found.is_some())
+    }
+
+    /// Record that these bytes were just handed to somebody, for the age-based storage
+    /// features `docs/superpowers/specs/2026-09-04-phase-1-slice-4-derivatives-design.md`
+    /// §3.10 describes — nothing has written `last_accessed_at` since the column was
+    /// added, and a column nobody has ever populated is worth nothing at the moment you
+    /// first want it.
+    ///
+    /// Fire-and-forget, and that is why it returns `()` rather than a `Result` a call
+    /// site could be tempted to `?`: the caller is midway through serving a read, and a
+    /// timestamp that failed to move is not a reason to fail the read. `debug`, not
+    /// `warn` — a missed touch costs one blob its place in an eviction ordering and
+    /// nothing else, so it is not an incident.
+    ///
+    /// Deliberately its own statement, hence its own implicit transaction. `now()` is
+    /// transaction-*start* time, so folding this into a surrounding transaction to save
+    /// a round trip would make two touches of one blob report the same instant and
+    /// destroy the ordering an eviction sweep reads.
+    ///
+    /// Only a deliberate read belongs here. Ingest's reads are the system writing and
+    /// regenerating rather than somebody looking at data; counting them would mark every
+    /// blob recently used the moment a sweep ran, which is the signal this column exists
+    /// to carry.
+    pub async fn touch_blob(&self, hash: &BlobHash) {
+        if let Err(err) = sqlx::query("UPDATE blob SET last_accessed_at = now() WHERE blake3 = $1")
+            .bind(hash.to_hex())
+            .execute(&self.0)
+            .await
+        {
+            tracing::debug!(
+                hash = %hash.to_hex(),
+                error = %err,
+                "could not record that a blob was read"
+            );
+        }
     }
 
     /// Does `library` already hold a part called `part_name` whose source file is
@@ -176,6 +256,130 @@ impl PgIngest {
         let id = insert_part_chain(&mut tx, &req).await?;
         tx.commit().await?;
         Ok(id)
+    }
+
+    /// Write one derivative onto a revision that already exists, replacing whatever was
+    /// there. The `derive` job's only writer — ingest writes its derivatives inside
+    /// [`insert_part_chain`]'s transaction, and everything produced afterwards arrives
+    /// here, one kind at a time.
+    ///
+    /// `kind` is passed rather than read off `bytes`, because the storage shape does not
+    /// name a rung: all three LOD levels are `Hashed`.
+    ///
+    /// Two shapes are refused before anything is written, and both are refused *here*
+    /// rather than at the call sites so that a new caller is covered without having to
+    /// know. Each writes a row that is perfectly valid and permanently invisible: `page`
+    /// reads a thumbnail only out of `thumb_bytes`, so a hash-addressed one shows as "no
+    /// preview yet" — and [`PgParts::revisions_missing`] then *excludes* that revision,
+    /// because a row exists, so the sweep never heals it either. An empty `Inline` is the
+    /// same failure one step further on: `Some(vec![])` reaches the grid as
+    /// `data:image/webp;base64,`, the broken `<img>` `insert_part_chain` already refuses
+    /// to write. Failing loudly is the trade `CLAUDE.md` asks for everywhere else.
+    pub async fn upsert_derivative(
+        &self,
+        revision: RevisionId,
+        kind: DerivativeKind,
+        bytes: DerivativeBytes<'_>,
+        kernel_version: &str,
+    ) -> Result<(), DbError> {
+        match bytes {
+            DerivativeBytes::Hashed { .. } if kind == DerivativeKind::Thumbnail => {
+                return Err(DbError::ThumbnailNotInline { revision });
+            }
+            DerivativeBytes::Inline([]) => {
+                return Err(DbError::EmptyDerivative {
+                    kind: kind.as_str(),
+                    revision,
+                });
+            }
+            _ => {}
+        }
+
+        let mut tx = self.0.begin().await?;
+        // What this (revision, kind) pointed at before, locked so that a concurrent
+        // upsert of the same row cannot interleave with the `ref_count` arithmetic below.
+        //
+        // `FOR UPDATE` locks nothing when the row does not exist yet, so two jobs racing
+        // the *first* write of one kind both read `None`; the loser then blocks on
+        // `derivative_kind_unique_per_revision` and takes the DO UPDATE arm, incrementing
+        // its own blob without decrementing the winner's. That leaves an over-count,
+        // which keeps bytes alive that nothing points at — the harmless direction. The
+        // direction that matters, an under-count, would have eviction delete bytes a live
+        // row still serves, and this ordering cannot produce one.
+        let previous: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT blake3 FROM derivative WHERE revision_id = $1 AND kind = $2 FOR UPDATE",
+        )
+        .bind(revision.as_uuid())
+        .bind(kind.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let previous_hash = previous.flatten();
+
+        let (thumb_bytes, hash, params) = match bytes {
+            DerivativeBytes::Inline(webp) => (Some(webp), None, thumbnail_params()),
+            DerivativeBytes::Hashed { blob, grid } => {
+                // The blob row first, exactly as the ladder does at ingest: the foreign
+                // key means a derivative cannot name bytes the blob table has never heard
+                // of, and `ON CONFLICT DO NOTHING` because a rung whose bytes another
+                // revision already stored is the ordinary case.
+                sqlx::query(
+                    "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+                     VALUES ($1, $2, $2, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
+                )
+                .bind(blob.hash.to_hex())
+                .bind(blob.size_bytes as i64)
+                .execute(&mut *tx)
+                .await?;
+                (None, Some(blob.hash.to_hex()), rung_params(grid))
+            }
+        };
+
+        // Both storage columns are set from `excluded`, never only the one this call
+        // fills: an upsert over a row stored the other way that set just `thumb_bytes`
+        // would leave the old `blake3` in place, and a row with both non-null trips
+        // `derivative_storage_is_exclusive`.
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, blake3, kernel_version, params_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (revision_id, kind) DO UPDATE SET thumb_bytes = excluded.thumb_bytes, \
+             blake3 = excluded.blake3, kernel_version = excluded.kernel_version, \
+             params_json = excluded.params_json",
+        )
+        .bind(Uuid::now_v7())
+        .bind(revision.as_uuid())
+        .bind(kind.as_str())
+        .bind(thumb_bytes)
+        .bind(hash.as_deref())
+        .bind(kernel_version)
+        .bind(params)
+        .execute(&mut *tx)
+        .await?;
+
+        // A derivative row is one reference to its bytes, the same way a `file` row is —
+        // that is what makes eviction safe. Replacing a hash-addressed rung *moves* the
+        // reference: the bytes it used to name lose one, the bytes it now names gain one.
+        // Without the decrement the old blob stays counted forever; without the increment
+        // the new blob is reapable while a row still serves it.
+        //
+        // Identical hashes are left alone: re-rendering the same bytes rewrites the row
+        // without changing what points at what.
+        if previous_hash != hash {
+            if let Some(old) = &previous_hash {
+                sqlx::query("UPDATE blob SET ref_count = ref_count - 1 WHERE blake3 = $1")
+                    .bind(old)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            if let Some(new) = &hash {
+                sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
+                    .bind(new)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -249,17 +453,22 @@ async fn insert_part_chain(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query(
-        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
-         VALUES ($1, $2, 'thumbnail', $3, $4, $5)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(revision)
-    .bind(req.thumbnail_webp)
-    .bind(req.kernel_version)
-    .bind(serde_json::json!({ "px": 512 }))
-    .execute(&mut **tx)
-    .await?;
+    // No thumbnail, no row. Skipped entirely rather than written empty — see
+    // `IngestRequest::thumbnail_webp` for why an empty `bytea` is worse than nothing.
+    if let Some(thumbnail) = req.thumbnail_webp {
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(revision)
+        .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(thumbnail)
+        .bind(req.kernel_version)
+        .bind(thumbnail_params())
+        .execute(&mut **tx)
+        .await?;
+    }
 
     for rung in req.tessellations {
         // The blob row first: task 1's foreign key means a derivative cannot name bytes
@@ -304,6 +513,174 @@ async fn insert_part_chain(
 }
 
 pub struct PgParts(pub PgPool);
+
+impl PgParts {
+    /// Whether this library wants a thumbnail rendered at ingest (migration `0005`,
+    /// default true). `None` means there is no such library.
+    ///
+    /// The caller decides what a missing library means, because only it knows what it was
+    /// about to do: a `NULL`-vs-absent distinction collapsed into `false` here would have
+    /// a job for a deleted library quietly ingest without a preview instead of saying so.
+    pub async fn auto_thumbnail(&self, library: LibraryId) -> Result<Option<bool>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT auto_thumbnail FROM library WHERE id = $1")
+                .bind(library.as_uuid())
+                .fetch_optional(&self.0)
+                .await?,
+        )
+    }
+
+    /// Turn this library's ingest-time thumbnail on or off — the write side of
+    /// [`PgParts::auto_thumbnail`], and the only statement in this crate that changes a
+    /// `library` row. It sits here, beside its own reader, rather than on a `PgLibraries`
+    /// newtype that would exist to hold one method and split library access across two
+    /// types.
+    ///
+    /// Returns whether a row matched, because a caller cannot tell the two outcomes apart
+    /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
+    /// perfectly successful statement that changes nothing, and a route reporting 200 for
+    /// it would tell a person their setting was saved when no such library exists.
+    pub async fn set_auto_thumbnail(&self, library: LibraryId, on: bool) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE library SET auto_thumbnail = $2 WHERE id = $1")
+            .bind(library.as_uuid())
+            .bind(on)
+            .execute(&self.0)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Which library owns `part`. `None` when there is no such part, or when it is
+    /// soft-deleted.
+    ///
+    /// This is how a part-scoped route stays tenant-safe without a library in its path:
+    /// the library it enqueues under is read off the part rather than taken from the
+    /// caller, so a job can only ever name a revision of the library that owns it. Taking
+    /// both from the caller would let any pair be posted together, and `CLAUDE.md`'s
+    /// "content addressing is not authorization" applies to a part id exactly as
+    /// `jobs.rs` applies it to a batch id — scoping makes the check structural instead of
+    /// a step someone can forget.
+    ///
+    /// Soft-deleted parts answer `None` for the same reason
+    /// [`PgParts::revisions_missing`] skips them: a deleted part is hidden everywhere the
+    /// grid looks, so rendering for one is work whose output nothing will ever display.
+    pub async fn library_of(&self, part: PartId) -> Result<Option<LibraryId>, DbError> {
+        let id: Option<Uuid> =
+            sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1 AND deleted_at IS NULL")
+                .bind(part.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(id.map(LibraryId::from_uuid))
+    }
+
+    /// Which revision of `part` is the current one — the question
+    /// [`PartRepository::page`]'s revision LATERAL answers about every row it returns,
+    /// asked on its own for one part.
+    ///
+    /// The ordering is `created_at DESC, id DESC`, character for character the LATERAL's,
+    /// and it has to stay that way. Two resolutions of "latest" that can disagree are a
+    /// bug waiting for a second revision to exist: an enqueue route that names one
+    /// revision while the grid shows another renders a picture nobody is looking at, and
+    /// reports success doing it.
+    pub async fn latest_revision(&self, part: PartId) -> Result<Option<RevisionId>, DbError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM revision WHERE part_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(part.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(id.map(RevisionId::from_uuid))
+    }
+
+    /// The source blob and format of a revision the caller already holds: everything a
+    /// `derive` job needs to fetch the bytes it must re-read.
+    ///
+    /// Scoped to a library, and through `part.library_id` rather than by a check the
+    /// caller has to remember — exactly as [`PgJobs::batch_status`]'s failure join is
+    /// (`jobs.rs`). Content addressing is not authorization (`CLAUDE.md`) and neither is
+    /// a revision id: it is a uuid a caller might hold from anywhere, and without the
+    /// scope a `derive` job naming another library's revision renders onto it. A revision
+    /// this library cannot reach answers `Ok(None)` — the same answer as a revision with
+    /// no source file, on purpose, so the reply never confirms that the other library's
+    /// revision exists.
+    ///
+    /// Takes a revision, never a part. The derive payload names the revision precisely so
+    /// that nothing resolves "latest" a second time (design §3.7) — a job enqueued
+    /// against revision A must not render onto revision B because a second revision
+    /// landed while it queued.
+    ///
+    /// The `ORDER BY ... LIMIT 1` is a deterministic pick, not a formality: `file` carries
+    /// no unique constraint on `(revision_id, role)` — `0002_parts.sql` gives it two plain
+    /// indexes and nothing else — so "a revision has exactly one source file" describes
+    /// what today's ingest happens to write, not a promise the schema makes. A second
+    /// source row (a re-upload, a later format conversion) must resolve to one answer
+    /// every call, rather than to whichever row the planner handed back first.
+    pub async fn revision_source(
+        &self,
+        library: LibraryId,
+        revision: RevisionId,
+    ) -> Result<Option<(BlobHash, String)>, DbError> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT f.blake3, f.format FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id AND p.library_id = $2 \
+             WHERE f.revision_id = $1 AND f.role = 'source' \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
+        )
+        .bind(revision.as_uuid())
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((hex, format)) = row else {
+            return Ok(None);
+        };
+        let parsed = BlobHash::parse_hex(&hex);
+        let hash = parsed.map_err(|_| DbError::CorruptBlobHash {
+            column: "file.blake3",
+            value: hex,
+        })?;
+        Ok(Some((hash, format)))
+    }
+
+    /// Every revision in `library` with no generated derivative of `kind` — the set a
+    /// sweep enqueues a `derive` job for.
+    ///
+    /// "Missing" deliberately means missing a *generated* derivative, and asks nothing
+    /// about a user-supplied image. A part whose photo is removed later must fall back to
+    /// a rendered thumbnail rather than to nothing, so the render is worth having even
+    /// while a photo hides it. (`part_image` is slice 5's table and does not exist yet;
+    /// this is written down now so that adding it does not turn into "and skip parts that
+    /// have one".)
+    ///
+    /// Per revision, not per part: a rung belongs to the revision it was tessellated
+    /// from, and Phase 2's second revision needs its own rather than inheriting the
+    /// first's. Soft-deleted parts are excluded — they are hidden everywhere else, and
+    /// rendering for one is work whose output nothing will display.
+    ///
+    /// Newest first, matching the grid's own order, so that a sweep over a large library
+    /// fills the page the user is looking at before it works backwards through pages
+    /// nobody has scrolled to.
+    pub async fn revisions_missing(
+        &self,
+        library: LibraryId,
+        kind: DerivativeKind,
+    ) -> Result<Vec<RevisionId>, DbError> {
+        let ids: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT r.id FROM revision r JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = $1 AND p.deleted_at IS NULL \
+               AND NOT EXISTS (SELECT 1 FROM derivative d \
+                               WHERE d.revision_id = r.id AND d.kind = $2) \
+             ORDER BY r.created_at DESC, r.id DESC",
+        )
+        .bind(library.as_uuid())
+        .bind(kind.as_str())
+        .fetch_all(&self.0)
+        .await?;
+        Ok(ids
+            .into_iter()
+            .map(|(id,)| RevisionId::from_uuid(id))
+            .collect())
+    }
+}
 
 #[async_trait::async_trait]
 impl PartRepository for PgParts {
@@ -350,7 +727,7 @@ impl PartRepository for PgParts {
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = 'thumbnail' ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
@@ -358,6 +735,10 @@ impl PartRepository for PgParts {
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
+        // The kind string comes off `DerivativeKind`, never a literal: the write side
+        // stopped spelling it out in task 5, and a reader spelling it differently from
+        // the writer reads nothing while looking entirely correct.
+        .bind(DerivativeKind::Thumbnail.as_str())
         .fetch_all(&self.0)
         .await?;
 

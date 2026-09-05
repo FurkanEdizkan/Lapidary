@@ -41,3 +41,9 @@ Thumbs.db
 # declares. A cache of another repository, never a copy this one owns.
 /.agents/skills/
 /.agents/.cache/
+
+# Transient agent worktrees — a second full checkout of this repository, created and
+# removed by tooling. A broad `git add` here commits an entire copy of the tree into
+# itself, which is the same accident the .rar rule above records, one order of magnitude
+# larger. Never committed, never needed.
+/.claude/worktrees/

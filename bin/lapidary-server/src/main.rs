@@ -144,6 +144,9 @@ fn kernel_description() -> String {
     let params = KernelParams {
         linear_deflection_mm: None,
         format: "stl".to_owned(),
+        // `version` never looks at `produce` -- nothing here is asking the kernel to
+        // build anything, only to name itself.
+        produce: Vec::new(),
     };
     let version = lapidary_cad::MockKernel::new().version(&params);
     format!("{} {}", version.implementation, version.version)
@@ -251,7 +254,7 @@ fn spawn_worker(
         "job worker starting"
     );
 
-    let handler = std::sync::Arc::new(lapidary_ingest::IngestHandler {
+    let handler = std::sync::Arc::new(lapidary_ingest::WorkerHandler {
         db: db.clone(),
         ingest_dir,
         blob_root,

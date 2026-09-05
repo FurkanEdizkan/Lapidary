@@ -69,6 +69,64 @@ export const strings = {
     unknown:
       'No scan with that id has run in this library. It may belong to another library, or have found no files to queue.',
   },
+  /**
+   * The library-wide settings the action bar can change. One today.
+   */
+  library: {
+    autoThumbnail: 'Render previews automatically as parts are ingested',
+    autoThumbnailDetail:
+      'Turning this off leaves existing previews alone. Parts ingested afterwards arrive without one until you generate them.',
+    autoThumbnailFailed:
+      'Could not change this setting. Check that the api service is running, then try again.',
+    /**
+     * The `GET` did not answer, so the toggle has no position to take. It stays in the
+     * mixed state rather than falling back to the documented default: the default is what
+     * a library is set to until someone changes it, not what this one is, and a control
+     * that shows a confident "on" for a library that is off is the mistake this read
+     * exists to close.
+     */
+    autoThumbnailUnknown:
+      'Could not read whether previews are generated automatically here. Check that the api service is running, then reload.',
+  },
+  /**
+   * Rendering previews for parts that are already here — the sweep and the per-card
+   * action. Deliberately its own copy rather than `scan`'s: a thumbnail batch that
+   * finishes ingests nothing and skips nothing, so `scan.finished` would report "Scan
+   * complete — 0 added." over 151 successful renders, which reads as a failure.
+   */
+  render: {
+    sweep: 'Generate missing previews',
+    part: 'Render preview',
+    partFor: (name: string) => `Render the preview for ${name}`,
+    /**
+     * `queued: 0` from the sweep. A success — every part already has a preview — and
+     * the one wording mistake worth guarding against is reporting it as an error.
+     */
+    nothingMissing: 'Every part in this library already has a preview.',
+    queueFailed:
+      'Could not queue the preview render. Check that the api service is running, then try again.',
+    running: (done: number, total: number) =>
+      `Rendering previews — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')}.`,
+    finished: (rendered: number) =>
+      rendered === 1
+        ? 'Preview rendering complete — 1 preview rendered.'
+        : `Preview rendering complete — ${rendered.toLocaleString('en-US')} previews rendered.`,
+    /**
+     * Named `failed` to match `scan.failed`, so the progress line can pick one copy
+     * object by batch kind instead of branching on the kind inside JSX for every field.
+     */
+    failed: (count: number) =>
+      count === 1
+        ? '1 preview could not be rendered. That part keeps the preview it had.'
+        : `${count.toLocaleString('en-US')} previews could not be rendered. Those parts keep the previews they had.`,
+    /**
+     * The render batch this page started cannot be read back. Unlike `scan.unknown`
+     * this is never a mistyped id — the id came from the `202` — so the advice is to
+     * retry rather than to check what was typed.
+     */
+    unknown:
+      'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
+  },
   emptyLibrary: {
     title: 'Nothing scanned yet',
     body:

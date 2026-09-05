@@ -30,6 +30,27 @@ fn measurements() -> MeshMeasurements {
 /// that looked like glTF would invite a later reader to think something did.
 const RUNG: &[u8] = b"pretend-this-is-a-glb";
 
+/// The source file's hash in [`seed_reachable_rung`]. It gets a `blob` row like any other
+/// blob, but nothing in `derivative` names it, so asking this route for it is refused at
+/// the reachability gate -- which makes it the one hash that can prove where the touch
+/// sits relative to that gate.
+fn source_hash() -> BlobHash {
+    BlobHash::from_bytes([0xb1; 32])
+}
+
+/// `blob.last_accessed_at` as epoch microseconds, `None` while the column is still NULL.
+/// Microseconds because sqlx here carries neither `chrono` nor `time`, and the same
+/// `extract(epoch ...)` trick `PgParts::page` uses is cheaper than adding one.
+async fn last_read_us(pool: &sqlx::PgPool, hash: &BlobHash) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT (extract(epoch FROM last_accessed_at) * 1000000)::bigint FROM blob WHERE blake3 = $1",
+    )
+    .bind(hash.to_hex())
+    .fetch_one(pool)
+    .await
+    .expect("the blob row exists")
+}
+
 /// Stores `RUNG` in the derivative store and records a part whose L0 points at it.
 async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> BlobHash {
     let stored = DerivativeStore::open(root)
@@ -40,13 +61,13 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
             library: library(),
             name: "Bracket, LP-1042-03",
             blob: &StoredBlobRow {
-                hash: BlobHash::from_bytes([0xb1; 32]),
+                hash: source_hash(),
                 size_bytes: 204_800,
                 stored_bytes: 91_204,
                 zstd_level: 3,
             },
             measurements: &measurements(),
-            thumbnail_webp: b"the-thumbnail",
+            thumbnail_webp: Some(b"the-thumbnail"),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
             tessellations: &[TessellationRow {
@@ -192,4 +213,104 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
     // a route the worker serves.
     let (status, _, _) = get(app, &hash.to_hex()).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    assert_eq!(
+        last_read_us(&pool, &hash).await,
+        None,
+        "a blob nobody has read yet has never been touched"
+    );
+
+    let (status, _, _) = get(app, &hash.to_hex()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let read_at = last_read_us(&pool, &hash).await;
+    assert!(
+        read_at.is_some(),
+        "handing the bytes to somebody is what this column records, got {read_at:?}"
+    );
+    // The other blob in this database, and it was never served. Asserted because the
+    // whole value of the column is that it discriminates: an UPDATE that lost its WHERE
+    // would mark every blob recently used and still pass the assertion above.
+    assert_eq!(
+        last_read_us(&pool, &source_hash()).await,
+        None,
+        "the source file was not the blob that was read"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn reading_a_blob_twice_moves_the_timestamp_forward(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: root.path().to_path_buf(),
+    };
+
+    let (first_status, _, _) = get(router(state.clone(), Role::Api), &hash.to_hex()).await;
+    let first = last_read_us(&pool, &hash)
+        .await
+        .expect("the first read recorded a timestamp");
+    let (second_status, _, _) = get(router(state, Role::Api), &hash.to_hex()).await;
+    let second = last_read_us(&pool, &hash)
+        .await
+        .expect("the second read recorded a timestamp");
+
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::OK);
+    // Strictly forward, and it cannot flake: `now()` is transaction-start time, each
+    // touch is its own implicit transaction, and a request costs at least two round trips
+    // to Postgres -- hundreds of microseconds against the column's one-microsecond
+    // resolution. Folding the touch into the reachability transaction would make these
+    // two equal, which is the regression this comparison exists to catch.
+    assert!(
+        second > first,
+        "the second read must record a later instant than the first, got {second} after {first}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
+    // The bytes live somewhere the server is not looking, so the rung is reachable in the
+    // database and absent from the store it serves -- an evicted derivative, exactly.
+    let elsewhere = tempfile::tempdir().expect("temp dir");
+    let served = tempfile::tempdir().expect("temp dir");
+    let hash = seed_reachable_rung(&pool, elsewhere.path()).await;
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: served.path().to_path_buf(),
+    };
+
+    // Refused after the reachability check, when the bytes turn out not to be there.
+    let (missing, _, _) = get(router(state.clone(), Role::Api), &hash.to_hex()).await;
+    // Refused at the reachability check itself: a real blob row, and no derivative names
+    // it. This is the request that pins the touch *after* the gate rather than before --
+    // if it moved, guessing any stored hash would be enough to keep bytes looking warm.
+    let (unreachable, _, _) = get(router(state, Role::Api), &source_hash().to_hex()).await;
+
+    assert_eq!(missing, StatusCode::NOT_FOUND);
+    assert_eq!(unreachable, StatusCode::NOT_FOUND);
+    assert_eq!(
+        last_read_us(&pool, &hash).await,
+        None,
+        "bytes that were never handed over were never read"
+    );
+    assert_eq!(
+        last_read_us(&pool, &source_hash()).await,
+        None,
+        "a hash this route refuses to serve must not be touchable by asking for it"
+    );
 }

@@ -1,11 +1,12 @@
 //! The mesh implementation of the kernel boundary. Ingest invokes this; the open path
 //! never does — that separation is what keeps `lapidary-api` free of this crate.
 
-use crate::cluster::ladder;
+use crate::cluster::{Lod, cluster};
 use crate::glb::GLB_VERSION;
 use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
 use crate::stl::Mesh;
 use crate::{RASTER_VERSION, measure, parse_3mf, parse_obj, parse_stl, render_thumbnail};
+use lapidary_core::DerivativeKind;
 
 pub struct MeshKernel;
 
@@ -35,6 +36,11 @@ impl Kernel for MeshKernel {
     /// derivative and an STL-derived one are different bytes from different code, and a
     /// version that says `stl-1` for both makes a regenerated derivative
     /// indistinguishable from a stale one.
+    ///
+    /// `RASTER_VERSION` is always in this string, even for a call whose `params.produce`
+    /// asks for no thumbnail. This names the build, not the run: a worker running a
+    /// different kernel version must not produce derivatives that are cached as
+    /// equivalent, whether or not this particular call happened to render one.
     fn version(&self, params: &KernelParams) -> KernelVersion {
         KernelVersion {
             implementation: "mesh".to_owned(),
@@ -45,15 +51,26 @@ impl Kernel for MeshKernel {
         }
     }
 
-    /// Parse once, then measure, rasterize and cluster off the one `Mesh`. Ordered
-    /// cheapest-first only incidentally; what matters is that a parse failure costs no
-    /// raster and no clustering, and that all four outputs describe the same geometry.
+    /// Parse once, then measure unconditionally and produce only what `params.produce`
+    /// asks for off the one `Mesh`. Measurement always runs — it is what ingest needs to
+    /// decide anything at all — but a thumbnail render or a tessellation rung the caller
+    /// did not ask for is one that never runs.
     async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
         let mesh = parse(bytes, &params.format)?;
+        let mut tessellations = Vec::new();
+        let mut thumbnail_webp = None;
+        for want in &params.produce {
+            match want {
+                DerivativeKind::Thumbnail => thumbnail_webp = Some(render_thumbnail(&mesh)?),
+                DerivativeKind::TessellationL0 => tessellations.push(cluster(&mesh, Lod::L0)?),
+                DerivativeKind::TessellationL1 => tessellations.push(cluster(&mesh, Lod::L1)?),
+                DerivativeKind::TessellationL2 => tessellations.push(cluster(&mesh, Lod::L2)?),
+            }
+        }
         Ok(KernelOutput {
             measurements: measure(&mesh),
-            thumbnail_webp: render_thumbnail(&mesh)?,
-            tessellations: ladder(&mesh)?,
+            thumbnail_webp,
+            tessellations,
             // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
             // no analytic surfaces to recover, so this is the truthful answer, not a stub.
             entities: Vec::new(),
@@ -64,12 +81,12 @@ impl Kernel for MeshKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::Lod;
 
     fn params(format: &str) -> KernelParams {
         KernelParams {
             linear_deflection_mm: None,
             format: format.to_owned(),
+            produce: DerivativeKind::ALL.to_vec(),
         }
     }
 
@@ -85,7 +102,7 @@ mod tests {
             .await
             .expect("ingests");
         assert!(out.measurements.triangle_count > 0);
-        assert!(!out.thumbnail_webp.is_empty());
+        assert!(out.thumbnail_webp.is_some_and(|w| !w.is_empty()));
     }
 
     #[tokio::test]
@@ -100,10 +117,52 @@ mod tests {
         for rung in &out.tessellations {
             assert!(!rung.glb.is_empty(), "{:?} has no bytes", rung.lod);
         }
+        let lods: Vec<Lod> = out.tessellations.iter().map(|t| t.lod).collect();
         assert_eq!(
-            out.tessellations.map(|t| t.lod),
-            [Lod::L0, Lod::L1, Lod::L2],
-            "the array is ordered, and consumers index it rather than search it"
+            lods,
+            vec![Lod::L0, Lod::L1, Lod::L2],
+            "produce asked for all three in ascending order, and the output preserves it"
+        );
+    }
+
+    #[tokio::test]
+    async fn asking_for_one_rung_produces_exactly_that_rung_and_no_thumbnail() {
+        // The bug this whole slice removes: a kernel that built everything regardless of
+        // `produce`. Asking for one rung must return one rung, and no thumbnail at all.
+        let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: "stl".to_owned(),
+            produce: vec![DerivativeKind::TessellationL1],
+        };
+        let out = MeshKernel.process(bytes, &params).await.expect("ingests");
+        assert_eq!(out.tessellations.len(), 1);
+        assert_eq!(out.tessellations[0].lod, Lod::L1);
+        assert!(out.thumbnail_webp.is_none());
+    }
+
+    #[tokio::test]
+    async fn asking_for_nothing_still_measures() {
+        // `KernelParams::produce` promises that empty is legal and means measurements
+        // only. The measurement assertions are the point of this test, not decoration:
+        // without them it would pass equally against a `process` that saw an empty
+        // `produce`, returned early and measured nothing — and measurement is the one
+        // thing ingest needs in order to decide anything at all.
+        let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
+        let params = KernelParams {
+            linear_deflection_mm: None,
+            format: "stl".to_owned(),
+            produce: Vec::new(),
+        };
+        let out = MeshKernel.process(bytes, &params).await.expect("ingests");
+        assert!(out.tessellations.is_empty());
+        assert!(out.thumbnail_webp.is_none());
+        assert!(out.measurements.triangle_count > 0);
+        assert!(out.measurements.surface_area_mm2 > 0.0);
+        assert!(
+            out.measurements.bbox_mm.iter().all(|mm| *mm > 0.0),
+            "a real bracket has extent on all three axes, got {:?}",
+            out.measurements.bbox_mm
         );
     }
 
@@ -149,7 +208,7 @@ mod tests {
             .await
             .expect("ingests");
         assert!(out.measurements.triangle_count > 0);
-        assert!(!out.thumbnail_webp.is_empty());
+        assert!(out.thumbnail_webp.is_some_and(|w| !w.is_empty()));
     }
 
     #[tokio::test]

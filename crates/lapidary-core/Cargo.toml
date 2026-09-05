@@ -9,15 +9,13 @@ publish = false
 
 [dependencies]
 serde.workspace = true
+# `JobPayload::to_json`/`from_row` own the `job.payload` column's shape, so this crate
+# now produces JSON itself rather than only being tested against it.
+serde_json.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
 jiff.workspace = true
-
-[dev-dependencies]
-# Only the serialisation tests need it. Keeping it out of [dependencies] stops the domain
-# crate acquiring a JSON representation it does not actually own.
-serde_json.workspace = true
 
 [lints]
 workspace = true
