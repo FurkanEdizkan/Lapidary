@@ -109,17 +109,36 @@ than any compression decision above.
 
 > **The open path never touches a source file and never invokes the CAD kernel.**
 
-### 2.1 LOD ladder — all generated at ingest
+### 2.1 LOD ladder — L0 at ingest, L1 and L2 on demand
 
-| LOD | Triangles | Used for |
-|---|---|---|
-| `thumb` | — | 512px WebP, grid card |
-| `L0` | ~5 k | instant viewer paint, hover preview |
-| `L1` | ~50 k | default inspector |
-| `L2` | full | measurement, zoom |
+| LOD | Triangles | Used for | Built |
+|---|---|---|---|
+| `thumb` | — | 512px WebP, grid card | At ingest, unless the library sets `auto_thumbnail = false`; `POST /api/libraries/{id}/thumbnails` fills the rest |
+| `L0` | ~5 k | instant viewer paint, hover preview | At ingest, always |
+| `L1` | ~50 k | default inspector | On demand, the first time something asks for it |
+| `L2` | full | measurement, zoom | On demand, the first time something asks for it |
 
-Deriving lazily on first open is the tempting optimization that makes first open slow,
-which is the impression that sticks.
+**This reverses the rule that stood here — "all generated at ingest", on the grounds that
+deriving lazily on first open is the tempting optimization that makes first open slow,
+which is the impression that sticks.** That reasoning was not wrong when it was written.
+Two things changed it, and neither was available at the time.
+
+The first is a measurement. Slice 3's exit run built the whole ladder over a 150-file
+corpus and recorded what each rung cost: **L0 7.3 MB, L1 41 MB, L2 52 MB**. Ninety-three
+per cent of the bytes sit in the two rungs the grid never opens. Slice 4's exit run over
+the same corpus writes **7.5 MB** — the same L0 and nothing else, a **92.5%** drop.
+
+The second is the constraint that number runs into. Not every computer has this kind of
+free memory: the stack is built for a modest workstation, and `deploy/compose.yaml` says
+so in ceilings — a 2 GiB worker, a 1 GiB database, a 512 MB api. Spending 93 MB per 150
+parts on rungs nothing has asked for is not a latency decision at that ratio; it is a
+decision to spend somebody else's disk on a refinement that may never be opened.
+
+**What the old rule protected is still protected, by the same mechanism.** L0 is still
+built at ingest, so the open path still has bytes to paint without touching a source file
+or the kernel. Only the refine step behind it is deferred. If that step ever reads as
+slow, the answer is a background sweep after ingest — the machinery slice 4 built for
+thumbnails — not a return to building three rungs per part on the chance one is opened.
 
 ### 2.2 meshopt, not Draco
 

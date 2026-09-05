@@ -58,7 +58,7 @@ anything generated.
 | **Image by URL** | Its own slice. `DATA.md` §3.5 states the build order — "1. **User uploads a file.** Always works. 2. **User pastes an image URL.**" — `FEATURES.md:91-94` schedules URL plus SSRF controls at Phase 5, and there is no HTTP client in the workspace (`grep -c '^name = "reqwest"' Cargo.lock` → 0). Adding one touches `deny.toml`'s source allow-list and the air-gapped build claim, and deserves the review slice 3b got. The `origin` and `source_url` columns land now, so that slice is purely additive |
 | Reclaiming L1/L2 rows already written | The render-cache eviction slice. An existing rung is not stale — it is a correct cache of a revision that still exists. Removing it is a space action, which `DATA.md` §1.5 already specifies with its own wording rules and its own quarantine machinery |
 | A route listing a revision's derivatives | Phase 3. The viewer needs it regardless of this slice, and there is no viewer to test its shape against |
-| Multiple images per part | No consumer. `unique (part_id)` now; a gallery is a schema change when something wants one |
+| Multiple images per part | **Reversed by the owner on 2026-09-05, before any of it was built.** A part carries an *ordered gallery*: user-uploaded images first, generated views appended after them, never replacing them, and both freely added and deleted. So there is no `unique (part_id)` — the constraint this row asserted is withdrawn, and slice 5 designs an ordering column instead. This costs nothing to reverse because `part_image` was never created: migration `0005` added only `library.auto_thumbnail` and the widened `job_outcome_known` CHECK (§6), so this is a spec being reversed, not a schema |
 | EXIF stripping, image orientation | Phase 5 with the rest of the image pipeline. Re-encoding through `image` already drops metadata as a side effect; relying on that deliberately is a separate decision |
 
 **Explicitly not re-decided here:** the clustering algorithm, the glTF writer, the
@@ -122,6 +122,12 @@ TypeScript bindings do not change at all.
 
 **The original upload is not retained**, only the bounded re-encode. Refusing to store
 something at the boundary, and saying so, is not implicit deletion.
+
+**One image per part is no longer the shape.** §2's deferral row is reversed: a part
+carries an ordered gallery, user images ahead of generated views, so slice 5 designs
+`part_image` with an ordering column and no `unique (part_id)`. Everything above about
+*how one image is stored* — inline bounded WebP, not by hash, not in `DerivativeStore` —
+is unaffected: it is a per-row decision and a gallery is many rows.
 
 ### 3.4 The URL is provenance, never a fetch target
 
@@ -365,7 +371,7 @@ callers want.
 | A `derive` job for a revision with no source file | `Permanent` — the revision cannot be re-derived, and retrying will not change that |
 | Source blob missing from disk | `Transient` — the store may be a mount that is not ready |
 | Parse failure during re-derivation | `Permanent`, same as ingest: the bytes are immutable |
-| Unknown `job.kind` | `Permanent`, **naming the kind**. Today the handler answers any unrecognised job with "This job has no file path in its payload", which is simply false |
+| Unknown `job.kind` | `Permanent`, **naming the kind**. This row understated the bug when it was written, and slice 4 measured the rest of it: the old handler did not answer an unrecognised job with the wrong message, it never reached a message at all. `payload.get("path")` succeeds on any ingest-shaped payload, so an unknown kind fell through to a file read and returned `Transient` — *"Could not read bracket-lp-1042-03.stl: No such file or directory"* — and the queue then **retried a job it could never run, three times, before failing**. The wrong classification, not the wrong string, is the half that mattered; the fix corrects both at once |
 | Upload larger than 10 MB | 413 before the body is read |
 | Upload that is not PNG/JPEG/WebP by magic bytes | 415 |
 | Upload that decodes past `image::Limits` | 413 — a decompression bomb, which `DATA.md` §4.1's control list names specifically |

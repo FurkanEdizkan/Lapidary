@@ -29,15 +29,17 @@ snowball `tsvector` config is present.
 - Blob CAS: BLAKE3, 2-level sharding, `ref_count`, zstd -3 on source
 - Postgres job queue: `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY`, crash-resumable
 - Upload: client-side WASM BLAKE3 → probe → chunked resumable transfer
-- Mesh ingest (STL/3MF/OBJ) → thumbnail + L0/L1/L2
+- Mesh ingest (STL/3MF/OBJ) → thumbnail (per-library, on by default) + L0; L1/L2 on demand
 - Virtualized grid, keyset pagination, inline `bytea` thumbnails
 - SSE progress; UI never blocks
 - Download `variant=original` with hash displayed
 - First run seeds a bundled licence-clean example part — never an empty grid
 
-**Exit:** drop a folder of 1,000 STLs, grid is interactive immediately, all thumbnails
-land, re-dropping the same folder completes in seconds via hash short-circuit, and grid
-page load is under 80 ms warm.
+**Exit:** drop a folder of 1,000 STLs, grid is interactive immediately, every part
+appears — with a thumbnail where the library renders them automatically, and with "No
+preview yet" plus a working `POST /api/libraries/{id}/thumbnails` where it does not —
+re-dropping the same folder completes in seconds via hash short-circuit, and grid page
+load is under 80 ms warm.
 
 ---
 

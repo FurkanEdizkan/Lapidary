@@ -27,7 +27,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 |---|---|
 | Virtualized part grid, keyset pagination | 1 |
 | Page size 50/100/250/500 and card density, both persisted per library | 1 |
-| Thumbnails inline from Postgres `bytea` | 1 |
+| Thumbnails inline from Postgres `bytea`, rendered at ingest or on demand per library | 1 |
 | Full-text search over names, tags, materials | 1 |
 | Trigram search for part numbers and filenames | 1 |
 | Faceted filters: format, material, library, tags, lifecycle | 2 |
