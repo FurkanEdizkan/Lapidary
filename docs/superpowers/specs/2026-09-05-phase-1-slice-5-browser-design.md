@@ -268,7 +268,32 @@ Per part: original size, size on disk, whether it is compressed. Per library: so
 derivative total, and the ratio between them — the number that made slice 4's 92.5% drop
 legible is the same number a user wants for their own library.
 
-All of it is already on `blob` (`size_bytes`, `stored_bytes`, `zstd_level`). No migration.
+Per part, all of it is already on `blob` (`size_bytes`, `stored_bytes`, `zstd_level`) and
+there is no migration.
+
+**Per library that was wrong, and task 5 caught it.** Every derivative that exists in
+practice today is a thumbnail living inline in `derivative.thumb_bytes`, which has no `blob`
+row at all — so a blob-only sum reports **0 B of derivatives** for a library where every
+part has a preview. The derivative total is `sum(blob.stored_bytes)` over hash-addressed
+rungs **plus** `sum(octet_length(thumb_bytes))` over the inline ones.
+
+Two shapes that look right and are not:
+
+- Summing over `file` rows rather than over the distinct blobs they reference **double-counts
+  a deduplicated library** — two parts sharing bytes have two `file` rows and one blob.
+- Counting only `blob` rows silently drops every inline preview, as above.
+
+Both totals exclude deleted parts, matching the grid.
+
+**Ratio** is derivative ÷ source, `null` when there are no source bytes, computed server-side
+so two consumers cannot report the same library upside down.
+
+**A taxonomy that disagrees with itself, recorded not resolved.** `DATA.md` §1.1 has three
+storage classes — Source, Derivative, Preview — and this section collapses Preview into
+Derivative, so a library holding only thumbnails reads "derivatives 5.7 MB". Slice 5 follows
+this spec rather than inventing a third figure mid-slice. Slice 7 meets this again the
+moment it reports what tiering saved, and should reconcile the two documents then.
+
 This is an aggregate query and a panel, and it is the readout Phase D's tiering work will be
 judged against, which is why it lands before the tiering rather than after.
 

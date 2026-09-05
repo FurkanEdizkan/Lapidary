@@ -244,8 +244,15 @@ Exit run on the live stack against `/home/jbo/lapidary-ingest-real`, cold
   format and for 3MF, since they take different paths through §2.5;
 - the displayed hash matches `b3sum` on the downloaded file;
 - a Turkish-named part downloads with its name intact in the browser's save dialog;
-- storage figures on the card match `du` on the blob, and the library totals match `SELECT
-  sum(...)`;
+- storage figures on the card match `du` on the blob, and the library totals match a
+  hand-written `SELECT` — **and that SELECT is not the obvious one.** Task 5 measured the
+  two shapes that look right and are not: sum over the distinct blobs a library's `file`
+  rows reference (summing the `file` rows themselves double-counts a deduplicated library),
+  and add `sum(octet_length(thumb_bytes))` to the derivative side, because every thumbnail
+  today is inline and has no `blob` row. Exclude deleted parts on both sides. Slice 4's
+  handoff counted rung bytes and inline thumbnails separately; slice 5 folds them into one
+  derivative figure, so the two documents' numbers are not comparable without saying which
+  is which;
 - `last_accessed_at` moves for the downloaded blob and for nothing else;
 - 0 WARN, 0 ERROR on cold start.
 
@@ -262,4 +269,5 @@ with `--no-ff`.
 | Source blobs have exactly one warm input, and `HEAD` moves it without delivering bytes | Spec §2.6. Recorded, not guarded: it is a two-route property (`blob.rs` has the same `get(...)` shape) and a guard would quietly answer the question slice 7 must answer openly. **Escalation trigger:** if the compression sweep ships before this resolves, a link prefetcher or an uptime check walking the grid marks a whole library warm and the sweep skips exactly the blobs nobody downloads. At that point add the guard to both routes rather than wait — it is three lines each and no new dependency |
 | Downloads buffer the whole file | `read_blob` already does. Fine at Phase 1 sizes, wrong for a 2 GB STEP. Streaming is its own slice |
 | Two `source` rows on one revision would make `ORDER BY` load-bearing, and it is unpinned | Task 2, deliberately: nothing writes a second source row today. The stakes differ from `revision_source`'s identical gap — a wrong pick there renders the wrong thumbnail, here it hands the user the wrong bytes under a byte-identity claim |
+| A live part with **zero** revision rows is invisible in the grid | The revision LATERAL is inner. Pre-existing, found by task 4's review, and awkward beside task 4's own argument that a half-repaired part must stay visible. Nothing writes that state today — ingest always creates a revision |
 | `HandlerError` has no `Display` | Pre-existing since slice 3b |
