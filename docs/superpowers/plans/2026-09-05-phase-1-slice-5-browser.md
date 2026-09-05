@@ -65,10 +65,17 @@ struct is *write*-side only — it mirrors `lapidary_storage::StoredBlob` and is
 decoded from a row — so it is no precedent. The column is nullable and NULL is real: every
 derivative blob is written with `zstd_level NULL` (`repo.rs:479-483`). Source blobs always
 carry a concrete level today, so NULL on one means nobody recorded how those bytes were
-stored — which is precisely the input spec §2.5's hash check exists to catch. Do **not**
-`COALESCE(zstd_level, 0)`: that turns an unrecorded compression state into a confident
-"raw" and serves a zstd frame as the file. Decode the `Option`, pass it through unchanged,
-and let the hash check be loud.
+stored.
+
+**Corrected after task 2 — the ruling's conclusion held, its reasoning did not.** It said
+a `COALESCE(zstd_level, 0)` would "serve a zstd frame as the file". It would not:
+`SourceReader::get` decodes on `zstd_level.is_some_and(|level| level > 0)`, so `None` and
+`Some(0)` both take the raw branch and are byte-identical through today's code. The hash
+check catches either. Keep the `Option` for the reason task 2 gave instead — the DB layer
+has no business destroying information a nullable column carries, and preserving `None`
+lets **task 3 refuse an unrecorded level with a message that names it** rather than
+falling through to a generic hash mismatch. Decode the `Option`, pass it through
+unchanged.
 
 **Test:** a soft-deleted part's revision returns `None`; a live one returns all four fields.
 **Mutation:** drop the `deleted_at` filter. The deleted-part test must fail.
@@ -78,9 +85,19 @@ and let the hash check be loud.
 New `crates/lapidary-api/src/download.rs`, mounted `Role::Api` only. The one file allowed
 to name `SourceReader`.
 
+Use `lapidary_db::DownloadSource`, which task 2 already exported — do not invent a second
+name for the same four fields.
+
 Order of operations, and it matters: resolve the row → 404 if `None` → validate `variant`
-→ 400 if missing or unknown, naming `original` → read bytes → **re-hash and 500 on
-mismatch** (spec §2.5) → `touch_blob` → respond.
+→ 400 if missing or unknown, naming `original` → **500 if `zstd_level` is `None`, with a
+message naming the blob** (spec §2.5.1, added after task 2 pointed out the original order
+had nowhere to put it) → read bytes → **re-hash and 500 on mismatch** (spec §2.5) →
+`touch_blob` → respond.
+
+The `None` branch and the hash-mismatch branch are both 500 and both refuse to serve. They
+are separate because their messages are: one says an operator has a blob row no ingest path
+wrote, the other says the bytes on disk are not the bytes we recorded. Collapsing them
+loses the only part an operator can act on.
 
 Headers per spec §2.3: `application/octet-stream` always, `ETag` the hash, and
 `Content-Disposition: attachment` with both the ASCII fallback and RFC 5987
@@ -239,4 +256,5 @@ with `--no-ff`.
 | 65 unpushed commits, CI unrun since slice 2 | The push at Phase F. Both gates CI has that the local bar lacked are in the bar now |
 | Source blobs have exactly one warm input | Spec §2.6. A browse-only library goes cold and slice 7 compresses it. Slice 7 decides, deliberately |
 | Downloads buffer the whole file | `read_blob` already does. Fine at Phase 1 sizes, wrong for a 2 GB STEP. Streaming is its own slice |
+| Two `source` rows on one revision would make `ORDER BY` load-bearing, and it is unpinned | Task 2, deliberately: nothing writes a second source row today. The stakes differ from `revision_source`'s identical gap — a wrong pick there renders the wrong thumbnail, here it hands the user the wrong bytes under a byte-identity claim |
 | `HandlerError` has no `Display` | Pre-existing since slice 3b |

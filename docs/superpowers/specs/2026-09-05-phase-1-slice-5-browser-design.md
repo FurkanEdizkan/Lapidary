@@ -132,10 +132,14 @@ Out of scope here.
 
 ### 2.5 Decompression, and verifying what we serve
 
-The api decides from **`blob.zstd_level`**, read in the same row as the hash. Not from
+The api decides from **`blob.zstd_level`**, read by the same query as the hash — one
+query, not one row: `blake3` is on `file` and `zstd_level` is on `blob`, one join away. Not from
 `Compression::for_source_format` — that is ingest-time policy, and slice 7 is about to
 change it; a reader that re-derives policy would start returning zstd frames the day the
 policy moves.
+
+A NULL level on a **source** blob is not "raw" — it is "nobody recorded how these bytes
+were stored", and the route says so rather than guessing (§2.5.1).
 
 `INSERT INTO blob … ON CONFLICT (blake3) DO NOTHING` is what makes the column trustworthy:
 the row is written by the same call that created the file, and no later ingest overwrites
@@ -154,6 +158,21 @@ Narrow, but silent, and this turns it into a loud 500.
 Revisit when downloads stream rather than buffer. `read_blob` returns a `Vec<u8>` today, so
 the whole file is already in memory; re-hashing adds no allocation. Streaming a 2 GB STEP
 is a real concern and a later one — note it, do not build for it.
+
+### 2.5.1 An unrecorded level is its own answer
+
+`SourceReader::get` reads `None` and `Some(0)` identically — both take the raw branch. So
+the choice between `Option<i16>` and `COALESCE(zstd_level, 0)` changes no bytes, and the
+hash check catches either. The `Option` is still what the query returns, for a different
+reason than the one first recorded: it is information the column carries, and destroying
+it in SQL costs the route its ability to be specific.
+
+Every source blob written today carries a concrete level; every derivative carries NULL.
+So a NULL reached through `source_for_download` means a source row exists that no ingest
+path produced. The route answers **500 with a message naming the blob and saying the
+download cannot be trusted**, rather than reading raw bytes and falling through to a
+hash-mismatch whose message explains nothing. Same status, same refusal to serve — a
+message an operator can act on instead of one that says the bytes were wrong.
 
 ### 2.6 The warm signal
 
