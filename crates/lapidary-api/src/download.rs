@@ -133,9 +133,18 @@ pub async fn original(
     (
         [
             // Always, and never `model/stl`: a browser that renders the file inline is a
-            // download that did not download. No `Cache-Control` — this URL names a
-            // revision, not a hash, so `immutable` would be a promise it cannot keep.
+            // download that did not download.
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            // `no-cache` is "revalidate before reuse", not "do not store". The blob route
+            // can promise `immutable` because its URL contains the hash of what it
+            // returns; this URL names a *revision*, whose source could be re-pointed, so
+            // the same promise would be one this route cannot keep. Sending nothing at
+            // all is worse than either: with no directive a browser falls back to
+            // heuristic freshness and may hand back a stale file it never asked us about.
+            // Nothing serves 304s yet — a revalidation costs a full transfer today — but
+            // the strong `ETag` below is what a conditional handler would need, and
+            // correctness before the round trip is the right order.
+            (header::CACHE_CONTROL, "no-cache".to_owned()),
             // Quoted per RFC 9110, strong because these are exact bytes — and the same
             // digest `DATA.md` §5.1 asks the UI to show beside the button, so a user can
             // check what they got against what they were promised.

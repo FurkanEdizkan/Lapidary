@@ -230,8 +230,8 @@ async fn a_compressed_source_comes_back_byte_identical(pool: sqlx::PgPool) {
     );
     assert_eq!(
         header(&headers, "cache-control"),
-        None,
-        "this URL names a revision, not a hash, so nothing here may be cached as immutable"
+        Some("no-cache"),
+        "revalidate before reuse: this URL names a revision, not a hash"
     );
 }
 

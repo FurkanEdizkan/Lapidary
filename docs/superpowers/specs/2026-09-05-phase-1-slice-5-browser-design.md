@@ -113,8 +113,15 @@ than what was asked for is the failure `DATA.md` §5.1 exists to forbid.
   RFC 5987 `filename*=UTF-8''…`. `DATA.md` §5.1 is explicit that Turkish part names carry
   ğ, ş, ı and a naive `filename=` mangles the download. A Turkish name in the fixture, not
   an ASCII one with a comment about Turkish.
-- `ETag` is the blob hash, as the blob route does. No `immutable` cache header: the URL
-  names a revision, not a hash, and a revision's source could in principle be re-pointed.
+- `ETag` is the blob hash, as the blob route does.
+- `Cache-Control: no-cache` — added after task 3 pointed out this section forbade
+  `immutable` and named no replacement, which is not the same as deciding to send nothing.
+  `no-cache` means *revalidate before reuse*, not *do not store*. The blob route can
+  promise `immutable` because its URL contains the hash of what it returns; this URL names
+  a revision, whose source could be re-pointed. Sending no directive at all is worse than
+  either — heuristic freshness then lets a browser hand back a stale file without asking.
+  Nothing serves 304s yet, so a revalidation costs a full transfer; the strong `ETag` is
+  what a conditional handler will need when that is worth building.
 
 ### 2.4 Filename
 
@@ -173,6 +180,18 @@ path produced. The route answers **500 with a message naming the blob and saying
 download cannot be trusted**, rather than reading raw bytes and falling through to a
 hash-mismatch whose message explains nothing. Same status, same refusal to serve — a
 message an operator can act on instead of one that says the bytes were wrong.
+
+### 2.5.2 A source blob that is not on disk
+
+Unspecified until task 3 hit it. `SourceReader::get` returning `StorageError::NotFound` is
+a **third distinct 500**, not the blob route's 404.
+
+The two cases are genuinely different. A derivative is evictable by design and something
+will regenerate it, so `blob.rs` answers 404 and tells the caller to re-open the part. A
+source blob is never removed while a part references it (`StorageError::NotFound`'s own
+message says so) and nothing regenerates it — its absence means a lost volume or a broken
+mount, and no amount of retrying will produce the bytes. The response says what to check;
+the store's error names a filesystem path, so that goes to the log and not to the user.
 
 ### 2.6 The warm signal
 

@@ -32,7 +32,12 @@ never run is not a test.
 
 `crates/lapidary-storage/src/lib.rs`. Read-only handle: `open(root)` with no `WorkerRole`,
 `get(&self, hash, zstd_level: Option<i16>)`, no `put`, no `remove`. It shares `read_blob`
-with the two existing stores — the decode flag becomes `zstd_level.is_some_and(|l| l > 0)`.
+with the two existing stores — the decode flag becomes
+`zstd_level.is_some_and(|level| level != 0)`. **Corrected from `> 0`, which this plan
+carried until task 3 caught it stale:** zstd spells `--fast=N` levels negative, and a
+negative level still produces a frame, so `> 0` would hand a compressed frame to a user as
+their file. Task 1 shipped `!= 0` and the plan kept the old text; anyone re-deriving from
+the plan would ship the bug task 1 avoided.
 
 Module doc says why it exists and why it is not `SourceStore`: reading stored bytes for a
 user who asked for those exact bytes is not the open path, and the write surface is the half
@@ -69,7 +74,7 @@ stored.
 
 **Corrected after task 2 — the ruling's conclusion held, its reasoning did not.** It said
 a `COALESCE(zstd_level, 0)` would "serve a zstd frame as the file". It would not:
-`SourceReader::get` decodes on `zstd_level.is_some_and(|level| level > 0)`, so `None` and
+`SourceReader::get` decodes on `zstd_level.is_some_and(|level| level != 0)`, so `None` and
 `Some(0)` both take the raw branch and are byte-identical through today's code. The hash
 check catches either. Keep the `Option` for the reason task 2 gave instead — the DB layer
 has no business destroying information a nullable column carries, and preserving `None`
