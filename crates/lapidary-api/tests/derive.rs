@@ -390,20 +390,30 @@ async fn a_library_with_nothing_missing_queues_nothing_and_that_is_a_success(poo
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_sweep_over_a_library_that_does_not_exist_enqueues_nothing_rather_than_404(
-    pool: sqlx::PgPool,
-) {
-    // Deliberately not the 404 `PATCH` answers on the same id, and the asymmetry is the
-    // point: the sweep enqueued nothing, so there is nothing to report, and the reply does
-    // not confirm or deny that another tenant's library id exists. `PATCH` can say 404
-    // because there the write itself is what did or did not land.
+async fn a_sweep_over_a_library_that_does_not_exist_is_a_404_like_patch_is(pool: sqlx::PgPool) {
+    // `revisions_missing` finds nothing for a library that does not exist and nothing for
+    // one with every preview already rendered, so without an existence check the route
+    // answers both with `202 queued: 0` and someone who mistyped an id reads it as
+    // "nothing was missing". The non-disclosure that asymmetry was defended with is not
+    // obtained either: `PATCH` on this very id says 404 and discloses the same fact.
     let absent = LibraryId::new();
     let (status, json) = post_sweep(pool.clone(), Role::Api, absent).await;
 
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 0);
-    let (status, _) = get_batch(pool, absent, accepted_batch(&json)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("No library with that id")),
+        "the 404 has to be this crate's message, not axum's empty body: {json}"
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
+        .fetch_one(&pool)
+        .await
+        .expect("counts jobs");
+    assert_eq!(
+        queued, 0,
+        "a 404 must not leave a batch behind on its way out"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

@@ -401,9 +401,24 @@ bytes for the corpus drop from slice 3's measured ~100 MB per 151 parts to under
 `finishedAt`, `rendered` equals the part count, and the grid refetches without a manual
 reload.
 
-An on-demand L2 for one part produces a rung a third-party glTF validator accepts, and it
-is byte-identical to one built at ingest — a lazily-built rung must not differ from an
-eager one.
+An on-demand L2 for one part produces a rung a third-party glTF validator accepts. That is
+an **exit-run step, not a suite step**, performed with Khronos `gltf-validator` as an
+external tool exactly as slices 3 and 3b performed it. No validator exists in this repo,
+and `triangles_in_glb` in `crates/lapidary-ingest/tests/handler.rs` is a *structural*
+check — magic, container version, declared-length agreement, JSON chunk parse — so a rung
+with a valid header and an invalid mesh passes it. Its absence from the suite is
+deliberate; it is not a missing test.
+
+Byte-identity is asked of **L0**, not L2 — a lazily-built rung must not differ from an
+eager one, and L0 is the only rung built both ways. Ingest builds no L2 at all, which is
+the point of this slice, so there is no eager L2 to compare a lazy one against and the
+clause cannot be checked as it was originally worded.
+`a_derived_l0_is_byte_identical_to_the_one_ingest_wrote` pins the version that can be: a
+`derive` of L0 over an ingest-built L0 yields the same BLAKE3, adds no `blob` row, does not
+inflate `ref_count`, and records the same `kernel_version`. The last of those is not
+incidental — ingest asks the kernel for `[Thumbnail, L0]` and the derive asks for `[L0]`,
+and `kernel.version()` names the build rather than the run, so it must not vary with
+`produce`.
 
 Ingest throughput is **measured and recorded**, not asserted. It should improve — two
 clustering passes, two glTF writes and one render per file are gone — but the slice-3b
@@ -420,9 +435,9 @@ Phase 3 finds the refine step objectionable, the answer is a background sweep af
 ingest — the machinery this slice builds — not a return to eager generation.
 
 **Two derivative-producing paths must not drift.** Ingest and the `derive` handler both
-call `kernel.process`. They differ only in `produce`, and the exit criterion requires a
-lazily-built rung to be byte-identical to an eager one, which is the test that catches
-drift.
+call `kernel.process`. They differ only in `produce`, and §10 requires a lazily-built **L0**
+to be byte-identical to an eager one, which is the test that catches drift. It has to be
+L0: ingest builds no L2, so an L2 has no eager counterpart to be compared against.
 
 **The sweep can enqueue thousands of jobs.** A library of 10,000 parts missing thumbnails
 produces 10,000 jobs in one `INSERT ... SELECT`. That is the same shape `enqueue_scan`

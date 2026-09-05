@@ -1019,3 +1019,123 @@ async fn a_derive_job_naming_another_librarys_revision_renders_nothing(pool: PgP
         "the refusal has to happen before the render, or the row is already written"
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_ingest_job_for_a_library_that_does_not_exist_fails_permanently_naming_it(pool: PgPool) {
+    // Step 3a's `ok_or_else` is the whole guard, and nothing else in this suite can see
+    // it: relaxing it to `unwrap_or(true)` leaves all 20 handler tests and the ingest and
+    // jobs suites passing, and degrades this case to a Transient "violates foreign key
+    // constraint \"part_library_id_fkey\" at line 2772" -- three retries, each paying a
+    // full parse, render and blob write, to hand an operator a Postgres constraint name
+    // and a line number.
+    //
+    // Only the classification and the message discriminate. The failed write reaps what it
+    // wrote and rolls back its transaction, so "no part row" and "an empty blob store" are
+    // true of the degraded path too.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let absent = LibraryId::new();
+
+    let err = handler
+        .handle(&job_for_library(absent, BRACKET))
+        .await
+        .expect_err("a job naming a library that does not exist cannot ingest anything");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains(&absent.to_string()),
+        "the failure must name the library an operator has to go looking for, got: {message}"
+    );
+    assert!(
+        !message.contains("foreign key") && !message.contains("part_library_id_fkey"),
+        "a Postgres constraint name is not something an operator can act on, got: {message}"
+    );
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "a library row that is gone will not reappear on a retry, got: {err:?}"
+    );
+}
+
+/// The L0 rung's blob hash and recorded kernel version — between them, the whole of what
+/// "a lazily-built rung must not differ from an eager one" is a claim about.
+async fn l0_row(pool: &PgPool) -> (String, String) {
+    sqlx::query_as("SELECT blake3, kernel_version FROM derivative WHERE kind = 'tessellation_l0'")
+        .fetch_one(pool)
+        .await
+        .expect("exactly one L0 row, with bytes and a version on it")
+}
+
+/// Every `blob` row, source and derivative alike — unlike `blob_rows` above, which is
+/// scoped to source bytes. A derive that reproduces bytes already stored must add none.
+async fn all_blob_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(pool)
+        .await
+        .expect("count query")
+}
+
+/// How many rows point at these bytes. `ref_count` is what makes eviction safe, so a
+/// derive that re-files bytes that are already stored must leave it exactly where it was.
+async fn refs_to(pool: &PgPool, blake3: &str) -> i32 {
+    sqlx::query_scalar("SELECT ref_count FROM blob WHERE blake3 = $1")
+        .bind(blake3)
+        .fetch_one(pool)
+        .await
+        .expect("the rung's blob row")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_derived_l0_is_byte_identical_to_the_one_ingest_wrote(pool: PgPool) {
+    // Design section 10's byte-identity criterion, asked of the rung it can actually be
+    // asked of. It named L2, and that is unaskable now: ingest builds no L2 at all, which
+    // is the point of this slice, so there is no eager rung to compare a lazy one against.
+    // L0 is built both ways, so L0 is the one that can drift.
+    //
+    // The gear, not the bracket: at 20 triangles the bracket is coarser than L0's grid and
+    // clusters to itself, so its rungs are identical whatever level produced them and this
+    // test would pass under exactly the drift it exists to catch.
+    //
+    // `auto_thumbnail` stays on, so ingest asks the kernel for [Thumbnail, L0] while the
+    // derive asks for [L0]. That difference is the point of the version assertion below:
+    // `kernel.version()` names the build, not the run, and must not vary with `produce`.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(GEAR)).await.expect("ingests");
+
+    let (hash_before, version_before) = l0_row(&pool).await;
+    let blobs_before = all_blob_rows(&pool).await;
+    let refs_before = refs_to(&pool, &hash_before).await;
+
+    let revision = only_revision(&pool).await;
+    assert_eq!(
+        handler
+            .handle(&derive_job(revision, DerivativeKind::TessellationL0))
+            .await
+            .expect("derives an L0 over the one ingest already built"),
+        Outcome::Rendered
+    );
+
+    let (hash_after, version_after) = l0_row(&pool).await;
+    assert_eq!(
+        hash_after, hash_before,
+        "the same bytes from the same source must hash the same however they were asked for"
+    );
+    assert_eq!(
+        version_after, version_before,
+        "the recorded kernel must name the build, not what this particular call produced"
+    );
+    assert_eq!(
+        all_blob_rows(&pool).await,
+        blobs_before,
+        "identical bytes are one blob; a second row means the derive stored a second copy"
+    );
+    assert_eq!(
+        refs_to(&pool, &hash_before).await,
+        refs_before,
+        "re-rendering the same bytes moves no reference, so `ref_count` must not inflate"
+    );
+}

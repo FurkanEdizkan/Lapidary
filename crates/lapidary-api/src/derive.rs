@@ -102,16 +102,31 @@ pub async fn part_thumbnail(State(state): State<AppState>, Path(part): Path<Part
 /// is the normal state, and `ScanAccepted`'s doc already tells the client such a batch
 /// has no status resource and must not be polled.
 ///
-/// A library that does not exist takes the same path and answers the same way, because
-/// `revisions_missing` finds nothing for it. That is deliberate — nothing was enqueued,
-/// so there is nothing to report, and the reply does not confirm or deny that some other
-/// tenant's library id exists. `PATCH` above is the route that says 404, because there
-/// the write itself is what did or did not land.
+/// A library that does not exist is a `404`, exactly as `PATCH` on the same id is. The
+/// asymmetry this route used to keep was defended as non-disclosure — not telling a caller
+/// whether another tenant's library id exists — and that property is not obtained: `PATCH`
+/// discloses the same fact about the same id, so an enumerator would simply use `PATCH`.
+/// What the asymmetry did cost was real, because `revisions_missing` finds nothing for a
+/// library that does not exist and nothing for one with every preview already rendered:
+/// someone who mistyped an id got `202 queued: 0` and read it as "nothing was missing"
+/// when they had named nothing at all. Non-disclosure becomes worth having when there is
+/// an auth model to hang it on (Phase 5, per `FEATURES.md`), and then it belongs on both
+/// routes at once rather than on one.
 pub async fn library_thumbnails(
     State(state): State<AppState>,
     Path(library): Path<LibraryId>,
 ) -> Response {
-    let missing = match PgParts(state.db.clone())
+    let parts = PgParts(state.db.clone());
+    // The existence probe is `auto_thumbnail`'s `None` rather than a query written for it:
+    // reading the library's own setting is the one question this crate already knows how
+    // to ask of a `library` row, and the sweep needs the answer before `revisions_missing`
+    // collapses "does not exist" and "nothing to do" into the same empty vector.
+    match parts.auto_thumbnail(library).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return no_such_library(),
+        Err(err) => return internal_error(&err, "library lookup failed"),
+    }
+    let missing = match parts
         .revisions_missing(library, DerivativeKind::Thumbnail)
         .await
     {
@@ -156,6 +171,9 @@ fn bad_body(rejection: &JsonRejection) -> Response {
         .into_response()
 }
 
+/// Shared by `PATCH` and the sweep. "Nothing was changed" is true of both — an update that
+/// matched no row, and a sweep that enqueued nothing — and a second message saying the same
+/// thing differently would be a string to keep in step for no reason.
 fn no_such_library() -> Response {
     (
         StatusCode::NOT_FOUND,
