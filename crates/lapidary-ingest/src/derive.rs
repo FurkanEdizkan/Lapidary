@@ -25,9 +25,11 @@
 //! to re-read and there never will be. A blob store that
 //! will not give up the bytes is `Transient`: the store may be a mount that is not ready.
 //! A parse failure is `Permanent`, because the bytes are immutable and already parsed
-//! once at ingest, so a second answer would be the same answer.
+//! once at ingest, so a second answer would be the same answer. A write refused by
+//! `upsert_derivative`'s two shape guards is `Permanent` too — `classify_db` decides
+//! that, per variant, so a new call site cannot get it wrong by picking the mapper.
 
-use crate::handler::{WorkerHandler, reap, transient_db};
+use crate::handler::{WorkerHandler, classify_db, reap};
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
 use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
 use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgParts, StoredBlobRow};
@@ -50,7 +52,7 @@ impl WorkerHandler {
         let Some((hash, format)) = PgParts(self.db.clone())
             .revision_source(library, revision)
             .await
-            .map_err(transient_db)?
+            .map_err(classify_db)?
         else {
             return Err(HandlerError::Permanent {
                 message: format!(
@@ -101,7 +103,7 @@ impl WorkerHandler {
                         &kernel_version,
                     )
                     .await
-                    .map_err(transient_db)?;
+                    .map_err(classify_db)?;
             }
             DerivativeKind::TessellationL0
             | DerivativeKind::TessellationL1
@@ -125,7 +127,7 @@ impl WorkerHandler {
                 let reapable = !PgBlobs(self.db.clone())
                     .exists(&stored.hash)
                     .await
-                    .map_err(transient_db)?;
+                    .map_err(classify_db)?;
                 let blob = StoredBlobRow {
                     hash: stored.hash,
                     size_bytes: stored.size_bytes,
@@ -147,7 +149,7 @@ impl WorkerHandler {
                     if reapable {
                         reap(&derivatives, &[blob.hash]);
                     }
-                    return Err(transient_db(db_err));
+                    return Err(classify_db(db_err));
                 }
             }
         }

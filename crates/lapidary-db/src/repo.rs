@@ -530,6 +530,48 @@ impl PgParts {
         )
     }
 
+    /// Turn this library's ingest-time thumbnail on or off — the write side of
+    /// [`PgParts::auto_thumbnail`], and the only statement in this crate that changes a
+    /// `library` row. It sits here, beside its own reader, rather than on a `PgLibraries`
+    /// newtype that would exist to hold one method and split library access across two
+    /// types.
+    ///
+    /// Returns whether a row matched, because a caller cannot tell the two outcomes apart
+    /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
+    /// perfectly successful statement that changes nothing, and a route reporting 200 for
+    /// it would tell a person their setting was saved when no such library exists.
+    pub async fn set_auto_thumbnail(&self, library: LibraryId, on: bool) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE library SET auto_thumbnail = $2 WHERE id = $1")
+            .bind(library.as_uuid())
+            .bind(on)
+            .execute(&self.0)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Which library owns `part`. `None` when there is no such part, or when it is
+    /// soft-deleted.
+    ///
+    /// This is how a part-scoped route stays tenant-safe without a library in its path:
+    /// the library it enqueues under is read off the part rather than taken from the
+    /// caller, so a job can only ever name a revision of the library that owns it. Taking
+    /// both from the caller would let any pair be posted together, and `CLAUDE.md`'s
+    /// "content addressing is not authorization" applies to a part id exactly as
+    /// `jobs.rs` applies it to a batch id — scoping makes the check structural instead of
+    /// a step someone can forget.
+    ///
+    /// Soft-deleted parts answer `None` for the same reason
+    /// [`PgParts::revisions_missing`] skips them: a deleted part is hidden everywhere the
+    /// grid looks, so rendering for one is work whose output nothing will ever display.
+    pub async fn library_of(&self, part: PartId) -> Result<Option<LibraryId>, DbError> {
+        let id: Option<Uuid> =
+            sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1 AND deleted_at IS NULL")
+                .bind(part.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(id.map(LibraryId::from_uuid))
+    }
+
     /// Which revision of `part` is the current one — the question
     /// [`PartRepository::page`]'s revision LATERAL answers about every row it returns,
     /// asked on its own for one part.

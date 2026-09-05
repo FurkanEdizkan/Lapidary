@@ -140,7 +140,7 @@ impl WorkerHandler {
         if blobs
             .library_holds(library, name, &hash)
             .await
-            .map_err(transient_db)?
+            .map_err(classify_db)?
         {
             return Ok(Outcome::Skipped);
         }
@@ -153,7 +153,7 @@ impl WorkerHandler {
         let auto_thumbnail = PgParts(self.db.clone())
             .auto_thumbnail(library)
             .await
-            .map_err(transient_db)?
+            .map_err(classify_db)?
             .ok_or_else(|| HandlerError::Permanent {
                 message: format!(
                     "There is no library {library} to ingest {file_name} into. The library \
@@ -203,7 +203,7 @@ impl WorkerHandler {
             // still serving -- the same rule the source blob follows above, asked of the
             // same authority. `put` is content-addressed, so writing them again was a
             // no-op rather than a second copy.
-            if !blobs.exists(&stored.hash).await.map_err(transient_db)? {
+            if !blobs.exists(&stored.hash).await.map_err(classify_db)? {
                 reapable.push(stored.hash);
             }
             rungs.push(TessellationRow {
@@ -222,7 +222,7 @@ impl WorkerHandler {
         // second copy on disk, no second `blob` row, and -- the part that matters -- no
         // reap on failure, because those bytes are referenced by a part this job did not
         // create.
-        if blobs.exists(&hash).await.map_err(transient_db)? {
+        if blobs.exists(&hash).await.map_err(classify_db)? {
             let blob = StoredBlobRow {
                 hash,
                 // `link_existing` reads only `hash` and `size_bytes` (the `file` row);
@@ -353,9 +353,24 @@ pub(crate) fn source_format(file_name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-pub(crate) fn transient_db(error: DbError) -> HandlerError {
-    HandlerError::Transient {
-        message: error.to_string(),
+/// A database error, sorted into "try again" and "never". Almost every `DbError` a
+/// handler can see is a connection or a query that may work on the next attempt, so
+/// `Transient` is the default -- but two of them are refusals, not failures.
+///
+/// `ThumbnailNotInline` and `EmptyDerivative` are `PgIngest::upsert_derivative` rejecting
+/// a derivative shape before it writes anything. Nothing about the next attempt is
+/// different: the same handler will offer the same bytes in the same shape and be refused
+/// again, so `Transient` would have the queue retry a job that cannot succeed three times
+/// and only then record a failure whose text has been true since the first try. That is
+/// the bug ruling T7-B named in the old unknown-kind path, and it is `Permanent` here for
+/// the same reason `classify_write` below is not a blanket mapping either.
+pub(crate) fn classify_db(error: DbError) -> HandlerError {
+    let message = error.to_string();
+    match error {
+        DbError::ThumbnailNotInline { .. } | DbError::EmptyDerivative { .. } => {
+            HandlerError::Permanent { message }
+        }
+        _ => HandlerError::Transient { message },
     }
 }
 
@@ -381,5 +396,38 @@ mod tests {
     #[test]
     fn part_name_strips_the_stl_extension() {
         assert_eq!(part_name("bracket-lp-1042-03.stl"), "bracket-lp-1042-03");
+    }
+
+    /// A refused derivative shape is not a database that might be back in a moment. If
+    /// this ever reads `Transient` again, the queue will retry a write that is refused
+    /// deterministically -- three attempts, three identical refusals, and a failure
+    /// recorded four backoffs after it was already known.
+    #[test]
+    fn a_refused_derivative_shape_is_permanent_not_a_retry() {
+        let revision = lapidary_core::RevisionId::new();
+        let refusals = [
+            DbError::ThumbnailNotInline { revision },
+            DbError::EmptyDerivative {
+                kind: "thumbnail",
+                revision,
+            },
+        ];
+        for refusal in refusals {
+            let text = refusal.to_string();
+            match classify_db(refusal) {
+                // The operator's remedy has to survive the classification: it is the only
+                // place the reason for the refusal is written down.
+                HandlerError::Permanent { message } => assert_eq!(message, text),
+                other => panic!("a guard refusal must not be retried, got {other:?}"),
+            }
+        }
+    }
+
+    /// The other direction, so the match above cannot quietly become a blanket
+    /// `Permanent` and strand a job the next attempt would have run.
+    #[test]
+    fn a_query_failure_is_still_transient() {
+        let err = DbError::Query(sqlx::Error::PoolClosed);
+        assert!(matches!(classify_db(err), HandlerError::Transient { .. }));
     }
 }
