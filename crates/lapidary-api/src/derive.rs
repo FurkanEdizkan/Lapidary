@@ -24,12 +24,20 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{DerivativeKind, JobPayload, LibraryId, PartId, ScanAccepted};
 use lapidary_db::{DbError, PgJobs, PgParts, PgPool};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-/// The `PATCH` body. Deliberately not `#[ts(export)]`: nothing in `web/` sends it yet,
-/// and an exported type no caller has is a binding to keep in step for no one.
-#[derive(Debug, Deserialize)]
+/// The `PATCH` body, and the `200` echo of it.
+///
+/// Exported now that `web/` sends it. It was deliberately not `#[ts(export)]` while no
+/// caller existed — an exported type nobody imports is a binding to keep in step for no
+/// one — and the grid's action bar is that caller, so the reason has expired. Hand-writing
+/// `{ autoThumbnail: boolean }` in `web/src/lib/api.ts` instead would be a shape that
+/// keeps compiling after this field is renamed, which is the one thing `web/src/lib/types.ts`
+/// exists to make impossible.
+#[derive(Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct LibrarySettings {
     auto_thumbnail: bool,
 }
@@ -52,10 +60,10 @@ pub async fn set_library(
         .await
     {
         // Echoes the value that landed rather than answering with an empty 200, so a
-        // client sees what it now holds without a second request.
-        Ok(true) => {
-            Json(serde_json::json!({ "autoThumbnail": settings.auto_thumbnail })).into_response()
-        }
+        // client sees what it now holds without a second request. Serialized from the
+        // request type itself, not a hand-built object, so the echo cannot drift from the
+        // shape the exported binding promises.
+        Ok(true) => Json(settings).into_response(),
         Ok(false) => no_such_library(),
         Err(err) => internal_error(&err, "library setting update failed"),
     }

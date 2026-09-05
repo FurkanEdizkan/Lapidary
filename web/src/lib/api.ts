@@ -1,4 +1,12 @@
-import type { BatchId, BatchStatus, LibraryId, PartsPage } from './types'
+import type {
+  BatchId,
+  BatchStatus,
+  LibraryId,
+  LibrarySettings,
+  PartId,
+  PartsPage,
+  ScanAccepted,
+} from './types'
 
 export interface Health {
   status: string
@@ -57,4 +65,60 @@ export async function fetchBatchStatus(
     throw new Error(`batch status returned ${response.status}`)
   }
   return (await response.json()) as BatchStatus
+}
+
+/**
+ * `PATCH /api/libraries/{id}` — whether ingest renders a preview for this library.
+ *
+ * The response echoes the setting that landed, so the toggle reflects what the server
+ * now holds rather than what the click assumed. There is no `GET` counterpart: nothing
+ * in the API reads a library's settings back, so the toggle's *initial* position is the
+ * documented default (design §3.2: on), not a fact read from the server. A library
+ * already switched off therefore shows on until someone changes it. Closing that needs a
+ * read route, which is a backend change and not this task's.
+ *
+ * A 404 is a real answer: no library with that id.
+ */
+export async function setAutoThumbnail(
+  library: LibraryId,
+  autoThumbnail: boolean,
+): Promise<LibrarySettings> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ autoThumbnail } satisfies LibrarySettings),
+  })
+  if (!response.ok) {
+    throw new Error(`library settings returned ${response.status}`)
+  }
+  return (await response.json()) as LibrarySettings
+}
+
+/**
+ * `POST /api/libraries/{id}/thumbnails` — render every preview this library is missing.
+ *
+ * Answers `202` with the same `ScanAccepted` a scan answers with, which is why the batch
+ * poll above needs no change to watch a sweep drain. `queued: 0` is a success, not an
+ * error — every part already has a preview — and such a batch has no status resource, so
+ * the caller must not poll it.
+ */
+export async function renderLibraryThumbnails(library: LibraryId): Promise<ScanAccepted> {
+  return accepted(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/thumbnails`, { method: 'POST' }),
+  )
+}
+
+/** `POST /api/parts/{id}/thumbnail` — render one part's preview. A batch of one. */
+export async function renderPartThumbnail(part: PartId): Promise<ScanAccepted> {
+  return accepted(
+    await fetch(`/api/parts/${encodeURIComponent(part)}/thumbnail`, { method: 'POST' }),
+  )
+}
+
+/** Both enqueue routes answer alike, so they read the answer alike. */
+async function accepted(response: Response): Promise<ScanAccepted> {
+  if (!response.ok) {
+    throw new Error(`thumbnail render returned ${response.status}`)
+  }
+  return (await response.json()) as ScanAccepted
 }
