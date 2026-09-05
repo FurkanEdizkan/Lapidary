@@ -417,6 +417,43 @@ mod tests {
         assert_eq!(download_filename("   ", "3mf"), "download.3mf");
     }
 
+    /// The three characters `attr-char` excludes, and the three the fixture above cannot
+    /// see: `Şaft yatak kapağı, LP-3120-05` carries none of them, so an allowlist that
+    /// grew to admit `%`, `'` or `*` would leave every other assertion in this file green.
+    /// Each one breaks something different. A raw `'` closes the language tag in
+    /// `filename*=UTF-8''…` early, so a client reads the rest of the name as a charset it
+    /// does not know. A raw `*` is excluded from `attr-char` outright, so the parameter is
+    /// no longer well-formed and a client is entitled to ignore it. A raw `%` is the worst
+    /// of the three, because nothing looks wrong: RFC 8187 has the client percent-decode
+    /// this value, so `%2F` in a name arrives at the client as `/` — the separator
+    /// [`sanitize`] exists to strip, put back after it ran.
+    ///
+    /// Asserted against the whole header, like the Turkish case: the ASCII half keeps all
+    /// three raw on purpose, because a quoted-string is not percent-decoded, and only the
+    /// two halves side by side show that the difference between them is deliberate.
+    #[test]
+    fn the_characters_attr_char_excludes_are_escaped_rather_than_passed_through() {
+        assert_eq!(
+            content_disposition(&download_filename(
+                "M8'lik flanş, %20 dolgu *taslak*, LP-4415-02",
+                "stl"
+            )),
+            "attachment; filename=\"M8'lik flan_, %20 dolgu *taslak*, LP-4415-02.stl\"; \
+             filename*=UTF-8''M8%27lik%20flan%C5%9F%2C%20%2520%20dolgu%20%2Ataslak%2A\
+             %2C%20LP-4415-02.stl"
+        );
+
+        // The same escape as the security property rather than the grammar one. A
+        // supplier export that percent-encoded the separator in its own catalogue path
+        // leaves that text sitting in the part name; encoding the `%` again is the whole
+        // reason the client's decode hands back those six characters instead of a path.
+        assert_eq!(
+            content_disposition(&download_filename("Rulman%2FLP-4415-02", "step")),
+            "attachment; filename=\"Rulman%2FLP-4415-02.step\"; \
+             filename*=UTF-8''Rulman%252FLP-4415-02.step"
+        );
+    }
+
     /// `NAME_MAX` is a byte count, so the cap has to be one too — and it has to land on a
     /// character boundary, since a header truncated mid-`ğ` is not UTF-8 at all.
     #[test]

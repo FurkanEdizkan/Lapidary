@@ -98,6 +98,18 @@ The revision uuid is the capability, consistent with every other Phase 1 route. 
 lands, the check becomes "is this revision's library reachable by this caller" — a real
 check with a real subject. Write it then, not as a placeholder now.
 
+That capability is not guessable — `RevisionId` is `Uuid::now_v7()` — but review found an
+asymmetry inside this one crate worth recording, because the two routes answer the same
+question differently and it is not obvious from either file. `blob.rs` goes out of its way
+to make "unknown hash" and "exists but nothing references it" byte-identical, so that
+holding a digest yields no existence oracle. `download.rs` treats a revision uuid as
+sufficient to hand over source bytes. Both are defensible under Phase 1's no-auth posture,
+where anyone who can reach the api can reach every route on it — but they stop being
+symmetric the moment auth lands. `blob.rs` already has a reachability check to hang a
+tenant on; **`download.rs` is the route that needs a new check written**, and it is the
+one serving the bytes a user actually ingested. Written down so a future reader inherits
+it rather than re-deriving it.
+
 ### 2.2 `variant`
 
 Exactly one legal value in this slice: `original`. Missing or unknown → **400**, naming
@@ -208,6 +220,20 @@ by the detail card) or writes down that browsing does not count.
 Note also that `blob.last_accessed_at` is per-blob and deduplicated: two parts with
 identical bytes share one timestamp. Correct for a compression decision, wrong as "this
 part was used."
+
+**Second consequence, and it is unfixed:** `get(handler)` also routes `HEAD` in axum, and
+the handler runs to completion first — full file read, zstd decode, BLAKE3, `touch_blob` —
+before axum discards the body. So a `HEAD` request moves `last_accessed_at` while handing
+nobody any bytes, which is precisely what this section says the column does not mean.
+
+`blob.rs` has the identical `get(...)` shape and the identical defect, so this is a
+property of both routes rather than a bug in one, and patching a single handler would be
+the wrong shape of fix: the sweep reads one column fed by both. Nothing guards it today.
+Slice 7 resolves it as part of the same decision — either it skips the touch on a method
+that carries no body, or it accepts a `HEAD` as a read and says so. The shape that makes
+this cost something is a link prefetcher or an uptime check walking the grid: it would
+mark a library warm and the compression sweep would then skip exactly the blobs nobody is
+downloading.
 
 ### 2.7 Forward constraint on slice 7
 

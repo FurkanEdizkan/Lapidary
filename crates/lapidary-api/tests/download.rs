@@ -560,3 +560,53 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
         "a broken escape survives decoding and is answered as the unknown variant it is"
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
+    // A volume that came back empty, which is the only way a referenced source blob goes
+    // missing: nothing evicts one while a part points at it. Spec §2.5.2 makes this a
+    // third 500 rather than the 404 `blob.rs` answers for the same shape, and the whole
+    // difference is in what the caller is told to do next — a derivative regenerates, so
+    // "reload the grid and try the part again" is true there and can never be true here.
+    std::fs::remove_file(blob_file(root.path(), &seeded.hash)).expect("remove the blob file");
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let body = message(&body);
+    assert!(
+        body.contains(&format!(
+            "Blob {} could not be read from the blob store",
+            seeded.hash.to_hex()
+        )) && body.contains("Check that the blob volume is mounted"),
+        "the message names the blob and the one thing an operator can go and look at: \
+         {body}"
+    );
+    // Distinct from the other two 500s in wording, not only in cause. Collapsing any pair
+    // of them leaves an operator holding a confident explanation of a problem they do not
+    // have: nothing is wrong with this row, and nothing is wrong with these bytes.
+    assert!(
+        !body.contains("no recorded compression level")
+            && !body.contains("are not the file that was ingested"),
+        "neither the unrecorded-level 500 nor the hash-mismatch one: {body}"
+    );
+    // `StorageError` names a filesystem path. That is an operator's business and reaches
+    // them through the log; a caller gets what to check, not where we keep it.
+    assert!(
+        !body.contains(root.path().to_str().expect("a utf-8 temp path")),
+        "the blob store's path stays out of the response: {body}"
+    );
+    assert_eq!(
+        last_read_us(&pool, &seeded.hash).await,
+        None,
+        "nothing was served, so nothing was read"
+    );
+}
