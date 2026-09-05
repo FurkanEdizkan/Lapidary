@@ -62,6 +62,7 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   running: 0,
   ingested: 0,
   skipped: 0,
+  rendered: 0,
   failedTotal: 0,
   failed: [],
   startedAt: '2026-09-03T23:28:56.014618Z',
