@@ -259,7 +259,7 @@ with `--no-ff`.
 | Risk | Where it bites |
 |---|---|
 | 65 unpushed commits, CI unrun since slice 2 | The push at Phase F. Both gates CI has that the local bar lacked are in the bar now |
-| Source blobs have exactly one warm input | Spec §2.6. A browse-only library goes cold and slice 7 compresses it. Slice 7 decides, deliberately |
+| Source blobs have exactly one warm input, and `HEAD` moves it without delivering bytes | Spec §2.6. Recorded, not guarded: it is a two-route property (`blob.rs` has the same `get(...)` shape) and a guard would quietly answer the question slice 7 must answer openly. **Escalation trigger:** if the compression sweep ships before this resolves, a link prefetcher or an uptime check walking the grid marks a whole library warm and the sweep skips exactly the blobs nobody downloads. At that point add the guard to both routes rather than wait — it is three lines each and no new dependency |
 | Downloads buffer the whole file | `read_blob` already does. Fine at Phase 1 sizes, wrong for a 2 GB STEP. Streaming is its own slice |
 | Two `source` rows on one revision would make `ORDER BY` load-bearing, and it is unpinned | Task 2, deliberately: nothing writes a second source row today. The stakes differ from `revision_source`'s identical gap — a wrong pick there renders the wrong thumbnail, here it hands the user the wrong bytes under a byte-identity claim |
 | `HandlerError` has no `Display` | Pre-existing since slice 3b |
