@@ -108,6 +108,17 @@ export const strings = {
       count === 1
         ? '1 file could not be read. It will not appear in the grid.'
         : `${count.toLocaleString('en-US')} files could not be read. They will not appear in the grid.`,
+    /** The action bar's trigger. Names the mount rather than the button's effect,
+     * because what a scan reads is a folder on the server and not anything on this
+     * page — the empty state below says the same thing at more length.
+     */
+    start: 'Scan the ingest folder',
+    /**
+     * The scan could not be queued at all. Distinct from a scan that ran and failed:
+     * nothing was written, so trying again is the whole remedy.
+     */
+    startFailed:
+      'Could not start the scan. Check that the api service is running, then try again.',
     /**
      * The batch id in the URL matched nothing this library can show. Deliberately does
      * not distinguish "never issued" from "belongs to another library" — the API does not
@@ -175,6 +186,31 @@ export const strings = {
       'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
   },
   /**
+   * Why a job failed, as the handler wrote it. `scan.failed` and `render.failed` above
+   * are counts, and a count cannot tell an operator that `/ingest` is not mounted — the
+   * reason can, and `BatchStatus.failed` has carried it since slice 2 with nothing
+   * displaying it. Neutral between a scan and a render because the message itself says
+   * which it was.
+   */
+  failure: {
+    /**
+     * A `derive` failure falls through to the part its revision belongs to, and a
+     * `scan_directory` failure has no path at all — it is the directory that failed, and
+     * the reason names it. So an empty path renders as the reason alone rather than as a
+     * dangling separator.
+     */
+    line: (path: string, reason: string) => (path === '' ? reason : `${path} — ${reason}`),
+    /**
+     * `BatchStatus.failed` is capped at 100 while `failedTotal` is the real number. A
+     * list that silently stops at 100 is a measurement that lies by omission, which is
+     * the same fault the truncated grid needs `parts.showingFirstPage` for.
+     */
+    more: (hidden: number) =>
+      hidden === 1
+        ? 'And 1 more not listed here.'
+        : `And ${hidden.toLocaleString('en-US')} more not listed here.`,
+  },
+  /**
    * The per-card download control. Its own group rather than a field on `parts`: this is
    * the one thing on this page that hands a user their own bytes back, and `DATA.md`
    * §5.1 is the section it answers to.
@@ -217,6 +253,6 @@ export const strings = {
   emptyLibrary: {
     title: 'Nothing scanned yet',
     body:
-      'This library is empty. Lapidary ingests from a directory mounted on the server, not from this page — run a scan against that directory and every model it finds appears here.',
+      'This library is empty. Lapidary ingests from a directory mounted on the server, not from files on this machine — scan that directory and every model it finds appears here.',
   },
 } as const

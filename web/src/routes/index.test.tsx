@@ -52,6 +52,7 @@ function stubFetch(routes: {
   settings?: () => Promise<StubResponse>
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
+  scan?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
@@ -64,6 +65,7 @@ function stubFetch(routes: {
     if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
     if (url.endsWith('/parts')) return (routes.parts ?? pending)()
+    if (url.endsWith('/scan')) return (routes.scan ?? pending)()
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith('/storage')) return (routes.storage ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
@@ -86,6 +88,9 @@ const BATCH_ID = '01a0699a-9ece-7073-a74b-c977ee7335ff'
  * page could have got the same id from anywhere else.
  */
 const RENDER_BATCH_ID = '01a069c4-1d3e-7a10-b6f2-4f0c8b2d5e91'
+
+/** The same, for the scan button, and distinct for the same reason. */
+const SCAN_BATCH_ID = '01a06a11-77b2-7c4d-9f18-2ab6e0c31d45'
 
 /** A `BatchStatus` as the API sends it, with the counters a test cares about overridden. */
 const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
@@ -511,8 +516,94 @@ test('reports files that could not be read alongside the progress', async () => 
   })
   renderIndex({ batch: BATCH_ID })
 
-  // The count belongs on screen; the per-file reason is the failed-file drawer, Phase 2.
+  // The count and the reason are different claims and both belong on screen — see the
+  // test below for why the reason is the one that cannot be dropped.
   expect(await screen.findByText(strings.scan.failed(1))).toBeTruthy()
+})
+
+// What makes moving the directory walk into a job honest rather than merely convenient.
+// The walk used to run inside the request, so an unreadable `/ingest` mount answered the
+// operator with a 500 naming the mount; it now fails a job in this batch instead, and
+// `batch_status` has carried that message in `failures[].last_error` since slice 2 with
+// nothing rendering it. A count alone ("1 file could not be read") cannot tell anyone the
+// mount is missing, which is the failure this whole shape has to stay visible for.
+test('a failed job shows the reason it failed, not only that it failed', async () => {
+  const reason =
+    'Could not read the ingest directory /ingest: No such file or directory (os error 2). ' +
+    'Check that the mount is present and readable on the worker, then start the scan again.'
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 1,
+        pending: 0,
+        failedTotal: 1,
+        // A `scan_directory` job has no path: it is the directory that failed, and the
+        // reason names it. `COALESCE(payload->>'path', p.name, '')` gives back `''`.
+        failed: [{ path: '', reason, attempts: 1 }],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // `findByText` throws when absent, so this cannot pass for a reason that never rendered.
+  expect(await screen.findByText(reason)).toBeTruthy()
+})
+
+// A per-file failure keeps its path, and the two halves must both reach the screen: the
+// reason alone does not say which file, and slice 2's `path` column exists for that.
+test('a per-file failure names the file alongside the reason', async () => {
+  const failure = {
+    path: 'spacer-lp-2001-00.stl',
+    reason:
+      'Could not read this STL — it declares 24 facets but the file ends after 11. ' +
+      'Re-export from your CAD tool and retry.',
+    attempts: 3,
+  }
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 2,
+        pending: 0,
+        ingested: 1,
+        failedTotal: 1,
+        failed: [failure],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(
+    await screen.findByText(strings.failure.line(failure.path, failure.reason)),
+  ).toBeTruthy()
+})
+
+// The server caps `failed` at 100 while `failedTotal` is the real number. A list that
+// simply stops is a measurement that lies by omission, which is the same fault the
+// truncated grid needs `parts.showingFirstPage` for.
+test('a failure list capped by the server says how many it is not showing', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 150,
+        pending: 0,
+        ingested: 30,
+        failedTotal: 120,
+        failed: [{ path: 'vee-block-lp-4410-01.stl', reason: 'not watertight', attempts: 1 }],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.failure.more(119))).toBeTruthy()
 })
 
 test('stops polling once the batch reports it finished', async () => {
@@ -841,6 +932,72 @@ test('the per-card action renders that part, and polls the batch it was handed',
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${RENDER_BATCH_ID}`,
   )
+})
+
+/**
+ * The task's own exit criterion: a scan started from the browser, no terminal.
+ *
+ * Two claims, and the second is the one that would have been missed. The route it POSTs
+ * to is `/api/libraries/{id}/scan` on the api service — `deploy/web/Caddyfile` proxies
+ * `/api/*` there and to nothing else, so a route mounted under `Role::Worker` is a button
+ * that cannot work. And the batch it polls has to read as a *scan*: the progress copy is
+ * picked from what was clicked, not from the counters, and before this button existed
+ * "this page started it" meant "a preview render" — a scan inheriting that would report a
+ * folder of 150 new parts as "Rendering previews — 0 of 1."
+ */
+test('the scan button starts a scan and watches it as a scan, not as a render', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    // What the route really answers: one job, the walk. The files it finds join this same
+    // batch afterwards, which is why `total` is 1 on the first poll and climbs later.
+    scan: ok({ batchId: SCAN_BATCH_ID, queued: 1 }),
+    batch: ok(batchStatus({ batchId: SCAN_BATCH_ID, total: 1, pending: 0, running: 1 })),
+  })
+  renderIndex()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/scan`, {
+      method: 'POST',
+    }),
+  )
+  expect(await screen.findByText(strings.scan.running(0, 1))).toBeTruthy()
+  expect(screen.queryByText(strings.render.running(0, 1))).toBeNull()
+  expect(fetchMock).toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${SCAN_BATCH_ID}`,
+  )
+})
+
+// The batch a scan grows under the poll. `batch_status` computes `total` by counting rows
+// with that `batch_id` and stores no total, so the walk enqueueing its files into its own
+// batch is what the progress line reads — and the alternative, a fresh batch for the
+// files, would leave this line saying `1 of 1` while 150 files were still queued.
+test('the progress line follows a batch whose total grows after the first poll', async () => {
+  let polls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      polls += 1
+      return {
+        ok: true,
+        json: async () =>
+          polls === 1
+            ? // The walk itself, still running.
+              batchStatus({ total: 1, pending: 0, running: 1 })
+            : // It found three files and put them in this batch; it is done itself.
+              batchStatus({ total: 4, pending: 3, running: 0 }),
+      }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.scan.running(0, 1))).toBeTruthy()
+  expect(
+    await screen.findByText(strings.scan.running(1, 4), undefined, { timeout: 4000 }),
+  ).toBeTruthy()
 })
 
 // `queued: 0` on a library that exists means every part already has a preview. That is a

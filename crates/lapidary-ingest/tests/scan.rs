@@ -1,11 +1,11 @@
-//! The scan route, which as of slice 2 task 10 enqueues rather than ingests. What it
-//! must prove is now a much smaller claim than slice 1's: the walk finds the right
-//! candidates, turns each into a job row, and touches neither the bytes nor the kernel.
+//! The scan route, which as of slice 5 task 6 enqueues a *job* rather than walking the
+//! directory itself. What it must prove is now the smallest claim it has ever made: one
+//! `scan_directory` row lands, and the ingest directory is not read at all.
 //!
-//! The pipeline those jobs later run is `tests/handler.rs`'s subject — including the
-//! four cases that used to be driven through this route (the pre-kernel short-circuit,
-//! per-library parts, blob sharing, and the orphan-blob reap). They moved with the code
-//! they test; they were not dropped.
+//! The walk those jobs later perform is `tests/handler.rs`'s subject — including the
+//! candidate selection and the unreadable-mount failure, both of which used to be driven
+//! through this route. They moved with the code they test; they were not dropped. See
+//! `src/scan.rs`'s module doc for why the walk moved.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -46,41 +46,20 @@ async fn scan(app_state: AppState, library: &str) -> (StatusCode, serde_json::Va
     (status, json)
 }
 
-async fn part_count(pool: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM part")
-        .fetch_one(pool)
-        .await
-        .expect("count query")
-}
-
-/// The `payload -> 'path'` of every job row, in enqueue order.
-async fn queued_paths(pool: &sqlx::PgPool) -> Vec<String> {
-    sqlx::query_scalar("SELECT payload ->> 'path' FROM job ORDER BY created_at, id")
+/// Every job row's `(kind, payload)`, in enqueue order.
+async fn queued(pool: &sqlx::PgPool) -> Vec<(String, serde_json::Value)> {
+    sqlx::query_as("SELECT kind, payload FROM job ORDER BY created_at, id")
         .fetch_all(pool)
         .await
-        .expect("reads the queued paths")
+        .expect("reads the queued jobs")
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool) {
-    // The whole point of the slice: the request must not touch the CAD kernel. Four
-    // files, each doing a different job here.
-    //
-    // The valid fixture is what makes the mutation check bite. Restore a synchronous
-    // `ingest_one` inside the walk and this file becomes a part, so `part_count == 0`
-    // fails. An unparseable file alone could not catch that -- it produces no part either
-    // way, which is why this test does not rely on one.
-    //
-    // The unparseable file is what proves the bytes were never read. Under slice 1 it
-    // came back in a `failed` list, because the walk parsed it inside the request. Now it
-    // is simply accepted alongside the other, with nothing anywhere reporting on its
-    // contents, because nothing has looked at them.
-    //
-    // The 3MF file proves the walk admits that extension too -- arbitrary bytes are fine
-    // here for the same reason the unparseable STL's are: the route decides by extension
-    // alone and never reads a candidate's contents.
-    //
-    // The README is not a candidate and is counted nowhere.
+async fn scanning_enqueues_one_scan_directory_job_and_walks_nothing(pool: sqlx::PgPool) {
+    // Three real candidates are staged and none of them may produce a job row here: the
+    // request enqueues the walk, it does not perform it. A test against an *empty*
+    // directory could not tell the two apart — it would pass just as well for a route
+    // that walked and found nothing.
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(
@@ -89,15 +68,10 @@ async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool
     )
     .expect("stages a genuinely ingestable STL");
     std::fs::write(
-        ingest_dir.path().join("notes.stl"),
-        b"LP-1042-03 revision notes: chamfer the mounting face.\n",
-    )
-    .expect("stages a file that is not an STL by any reading");
-    std::fs::write(
         ingest_dir.path().join("carrier-lp-3480-02.3mf"),
         b"not a real OPC package, just bytes with the right extension",
     )
-    .expect("stages a 3MF candidate the route must never parse");
+    .expect("stages a 3MF candidate");
     std::fs::write(
         ingest_dir.path().join("README.md"),
         b"Brackets for the LP-1042 mounting series. Not a part.\n",
@@ -113,64 +87,13 @@ async fn scanning_enqueues_one_job_per_stl_and_parses_nothing(pool: sqlx::PgPool
     assert_eq!(status, StatusCode::ACCEPTED);
     let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
     assert_eq!(
-        accepted.queued, 3,
-        "the two .stl files and the .3mf file are candidates; the README is not"
-    );
-
-    assert_eq!(
-        queued_paths(&pool).await,
-        vec![
-            "bracket-lp-1042-03.stl".to_owned(),
-            "carrier-lp-3480-02.3mf".to_owned(),
-            "notes.stl".to_owned(),
-        ],
-        "one job per candidate, each carrying the file name the worker will read"
+        accepted.queued, 1,
+        "one job, the walk itself — not one per candidate"
     );
     assert_eq!(
-        part_count(&pool).await,
-        0,
-        "the request must enqueue, not ingest -- not even the file it could have ingested"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn scanning_an_empty_directory_is_accepted_with_nothing_queued(pool: sqlx::PgPool) {
-    // Zero is a success, not an error. It is also the one response the client must not
-    // poll on: `batch_status` has no rows to aggregate, so it answers 404 — see
-    // `ScanAccepted`'s doc.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-
-    let (status, json) = scan(
-        state(pool.clone(), ingest_dir.path(), blob_root.path()),
-        SEEDED_LIBRARY,
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::ACCEPTED);
-    let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
-    assert_eq!(accepted.queued, 0, "an empty folder scanned successfully");
-    assert!(queued_paths(&pool).await.is_empty());
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_unreadable_ingest_directory_fails_the_whole_request_not_silently(pool: sqlx::PgPool) {
-    // A path that was never created — distinct from a per-file failure, this is the
-    // directory itself being unwalkable (the real-world case is a missing /ingest mount).
-    // It must not answer `202 { queued: 0 }`, which is indistinguishable from an empty
-    // directory that scanned perfectly well. This is why the walk stays in the request.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let missing = ingest_dir.path().join("does-not-exist");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-
-    let (status, json) = scan(state(pool, &missing, blob_root.path()), SEEDED_LIBRARY).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(
-        json["message"]
-            .as_str()
-            .expect("message is a string")
-            .contains("does-not-exist"),
-        "the message must name the directory it could not read: {json}"
+        queued(&pool).await,
+        vec![("scan_directory".to_owned(), serde_json::json!({}))],
+        "the library is the job row's own column and the directory is the worker's \
+         mount, so the payload carries neither"
     );
 }

@@ -1,81 +1,158 @@
-//! Kicking off a library scan: walk the read-only mounted ingest directory and enqueue
-//! one job per mesh candidate. Nothing here reads a file's bytes, hashes anything or
-//! invokes the CAD kernel — that is `handler.rs`, running later on a worker. `router()`
-//! (`lib.rs`) always mounts this; see that module's doc for why this crate, rather than a
-//! role check inside `lapidary-api`, is what keeps the open path from linking the kernel.
+//! Starting a library scan, and the walk it starts.
 //!
-//! # Why the walk stays in the request
+//! Two halves that used to be one. [`scan`] is the worker's `POST /scan` route, now a
+//! thin enqueue of a single `scan_directory` job; [`WorkerHandler::scan_directory`] is
+//! the walk itself, running later on a worker, which reads the mounted ingest directory
+//! and enqueues one `ingest_file` job per mesh candidate. Nothing in either half reads a
+//! file's bytes, hashes anything or invokes the CAD kernel — that is `handler.rs`.
+//! `router()` (`lib.rs`) always mounts the route; see that module's doc for why this
+//! crate, rather than a role check inside `lapidary-api`, is what keeps the open path
+//! from linking the kernel.
 //!
-//! It would be tidier to enqueue a single "scan this directory" job and answer
-//! immediately, but the walk is the one part of a scan that can fail in a way the user
-//! must see *now*: a missing or unreadable `/ingest` mount is a deployment mistake, and
-//! behind a job it becomes a batch that quietly fails a poll or two later, with the
-//! request having already answered 202. The walk is one `read_dir` and one insert even
-//! for a thousand entries, so keeping it here costs a few milliseconds and buys an
-//! error the operator gets as a response.
+//! # The walk used to stay in the request, and no longer does
+//!
+//! What this doc said until slice 5, and it was right on its own terms:
+//!
+//! > It would be tidier to enqueue a single "scan this directory" job and answer
+//! > immediately, but the walk is the one part of a scan that can fail in a way the user
+//! > must see *now*: a missing or unreadable `/ingest` mount is a deployment mistake, and
+//! > behind a job it becomes a batch that quietly fails a poll or two later, with the
+//! > request having already answered 202.
+//!
+//! Reversed deliberately, for two reasons that arrived together.
+//!
+//! The forcing one: the browser cannot reach this route. `deploy/web/Caddyfile` proxies
+//! `/api/*` to `api:8080` and nothing else, so a scan a user can start has to be a route
+//! on `lapidary-api` — and `lapidary-api` does not mount `/ingest`, by design, so it has
+//! no directory to walk and no path list to enqueue. A job is the only thing an api-side
+//! route can hand to a worker. (The two alternatives were weighed and rejected: a Caddy
+//! route to `worker:8081` splits the browser's API surface across two backends by URL
+//! pattern with no gate watching that the pattern still matches the route, and mounting
+//! `/ingest` on the api re-litigates why scan lives in this crate at all.)
+//!
+//! The one that makes it honest rather than merely necessary: **the failure UI now
+//! exists.** The objection above was that a failure goes unseen, and when it was written
+//! that was true — `batch_status` returned a `failures` list carrying each job's
+//! `last_error` and the grid rendered only the count. It renders the reasons now
+//! (`web/src/routes/index.tsx`), so an unreadable mount arrives in the browser as the
+//! message [`WorkerHandler::scan_directory`] wrote, naming the directory. Two things keep
+//! that promise from being decorative: the failure is classified `Permanent`, so it lands
+//! in `state = 'failed'` on the first attempt rather than three backoffs later (a
+//! `Transient` classification would not appear in `failures` at all until `max_attempts`
+//! ran out), and the scan job's children go into the scan job's **own** batch, so the
+//! batch the browser is already polling is the one that carries the failure.
+//!
+//! # The batch
+//!
+//! `enqueue` mints a fresh `BatchId` on every call, so the walk uses
+//! [`lapidary_db::PgJobs::enqueue_into`] with the batch its own job row already belongs
+//! to. A scan job that enqueued its files into a new batch would leave the browser
+//! polling a batch of one, seeing it settle, and reporting a finished scan while a
+//! hundred and fifty files were still ingesting. `batch_status` stores no total — it
+//! counts rows by `batch_id` on every read — so the total simply grows as the walk
+//! inserts.
 //!
 //! # What the response means
 //!
-//! `202 ScanAccepted` — the files have been *accepted*, not ingested. The counters that
-//! slice 1 returned synchronously now live in `lapidary_core::BatchStatus`, behind
-//! `GET /api/libraries/{lib}/jobs/{batch}`, and arrive as the worker commits parts.
-//! `queued: 0` is a success: an empty directory scanned cleanly. It is also the one case
-//! the client must not poll, because a batch with no jobs has no status resource.
+//! `202 ScanAccepted` — the scan has been *accepted*, not performed. `queued` is `1`: the
+//! `scan_directory` job. The file counters live in `lapidary_core::BatchStatus`, behind
+//! `GET /api/libraries/{lib}/jobs/{batch}`, and `total` climbs from 1 to 1 + however many
+//! candidates the walk finds.
 
 use crate::AppState;
+use crate::handler::WorkerHandler;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{LibraryId, ScanAccepted};
+use lapidary_core::{BatchId, JobPayload, LibraryId, Outcome, ScanAccepted};
 use lapidary_db::{DbError, PgJobs};
+use lapidary_jobs::HandlerError;
 use std::path::Path as FsPath;
 
-/// Walks `state.ingest_dir` non-recursively and enqueues one `ingest_file` job per mesh
-/// (case-insensitive) for `library`. Returns `202` with the batch id the caller polls.
+/// Enqueues one `scan_directory` job for `library` and returns `202` with the batch id
+/// the caller polls. The walk happens in [`WorkerHandler::scan_directory`].
+///
+/// Deliberately identical in shape to `lapidary_api::scan`, which is the route a browser
+/// reaches. This one is the worker's own `:8081` surface, kept so `README.md`'s first-run
+/// `curl` keeps working — and kept as an enqueue rather than a second walk, so there is
+/// one walk implementation rather than two that drift.
 pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
-    let entries = match std::fs::read_dir(&state.ingest_dir) {
-        Ok(entries) => entries,
-        Err(source) => return ingest_dir_unreadable(&state.ingest_dir, &source),
-    };
-
-    let mut paths = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) if is_mesh_candidate(&entry.path()) => {
-                let path = entry.path();
-                paths.push(
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string()),
-                );
-            }
-            // Not a candidate — a README beside a library's STLs is not an error, and it
-            // is counted nowhere: `queued` is the number of mesh candidates, not the
-            // number of directory entries.
-            Ok(_) => {}
-            // A directory entry the OS could not even name cannot be enqueued: there is
-            // no path to put in a payload. It is logged rather than counted, because
-            // `ScanAccepted` reports what was queued and this was not. See
-            // `entry_read_failure` for why no live test constructs this condition.
-            Err(source) => {
-                let failure = entry_read_failure(&state.ingest_dir, &source);
-                tracing::warn!(file = %failure.file, reason = %failure.reason, "skipped a directory entry");
-            }
-        }
-    }
-
-    // Deterministic order, so the job ids a scan issues are ordered the way a person
-    // reading the directory would expect. `unnest` preserves array order.
-    paths.sort();
-
-    match PgJobs(state.db.clone()).enqueue_scan(library, &paths).await {
+    match PgJobs(state.db.clone())
+        .enqueue(library, &[JobPayload::ScanDirectory])
+        .await
+    {
         Ok((batch_id, queued)) => (
             StatusCode::ACCEPTED,
             Json(ScanAccepted { batch_id, queued }),
         )
             .into_response(),
         Err(source) => enqueue_failed(&source),
+    }
+}
+
+impl WorkerHandler {
+    /// Walks `self.ingest_dir` non-recursively and enqueues one `ingest_file` job per
+    /// mesh candidate (case-insensitive) into `batch` — the batch this job itself is in.
+    ///
+    /// Returns [`Outcome::Scanned`], which exists for this and nothing else: a scan job
+    /// ingests nothing, skips nothing and renders nothing, and borrowing one of those
+    /// three would put a number the user reads on a line it is not true of.
+    pub(crate) async fn scan_directory(
+        &self,
+        batch: BatchId,
+        library: LibraryId,
+    ) -> Result<Outcome, HandlerError> {
+        let entries = std::fs::read_dir(&self.ingest_dir)
+            .map_err(|e| ingest_dir_unreadable(&self.ingest_dir, &e))?;
+
+        let mut paths = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) if is_mesh_candidate(&entry.path()) => {
+                    let path = entry.path();
+                    paths.push(
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string()),
+                    );
+                }
+                // Not a candidate — a README beside a library's STLs is not an error, and
+                // it is counted nowhere: the batch total grows by the number of mesh
+                // candidates, not the number of directory entries.
+                Ok(_) => {}
+                // A directory entry the OS could not even name cannot be enqueued: there
+                // is no path to put in a payload. It is logged rather than counted, and
+                // it does not fail the scan — the other candidates are still real work.
+                // See `entry_read_failure` for why no live test constructs this
+                // condition.
+                Err(source) => {
+                    let failure = entry_read_failure(&self.ingest_dir, &source);
+                    tracing::warn!(file = %failure.file, reason = %failure.reason, "skipped a directory entry");
+                }
+            }
+        }
+
+        // Deterministic order, so the job ids a scan issues are ordered the way a person
+        // reading the directory would expect. `unnest` preserves array order.
+        paths.sort();
+
+        let jobs: Vec<JobPayload> = paths
+            .into_iter()
+            .map(|path| JobPayload::IngestFile { path })
+            .collect();
+        // `enqueue_into`, never `enqueue`: the files belong to the batch the browser is
+        // already polling. See this module's doc.
+        PgJobs(self.db.clone())
+            .enqueue_into(batch, library, &jobs)
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: format!(
+                    "Could not queue the files this scan found: {e}. Nothing was queued, \
+                     so it is safe to start the scan again once the database is reachable."
+                ),
+            })?;
+        Ok(Outcome::Scanned)
     }
 }
 
@@ -95,25 +172,29 @@ fn is_mesh_candidate(path: &FsPath) -> bool {
 pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
 
 /// The ingest directory itself could not be walked — a missing mount, a permissions
-/// error, or (in a test) a nonexistent `TempDir` path. The whole request fails rather
-/// than answering `202 { queued: 0 }`, which would be indistinguishable from an empty
+/// error, or (in a test) a nonexistent `TempDir` path. The whole job fails rather than
+/// succeeding with nothing queued, which would be indistinguishable from an empty
 /// directory that scanned perfectly well.
-fn ingest_dir_unreadable(dir: &FsPath, source: &std::io::Error) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "message": format!(
-                "Could not read the ingest directory {}: {source}. Check that the mount is \
-                 present and readable.",
-                dir.display()
-            )
-        })),
-    )
-        .into_response()
+///
+/// `Permanent`, and that is the classification the reversal in this module's doc rests
+/// on. A `Transient` failure is rescheduled with its message on a `pending` row, and
+/// `batch_status` reports `failures` for `state = 'failed'` only — so the operator would
+/// see nothing at all until `max_attempts` ran out, which is the "quietly fails a poll or
+/// two later" this design is supposed to have stopped being. A mount that is absent when
+/// a person clicks Scan is a deployment fact, not a race worth three retries, and the
+/// remedy is to fix the mount and click Scan again.
+fn ingest_dir_unreadable(dir: &FsPath, source: &std::io::Error) -> HandlerError {
+    HandlerError::Permanent {
+        message: format!(
+            "Could not read the ingest directory {}: {source}. Check that the mount is \
+             present and readable on the worker, then start the scan again.",
+            dir.display()
+        ),
+    }
 }
 
-/// The directory was walked but the batch could not be written. Nothing has been queued,
-/// so retrying the same scan is safe and is what the message asks for.
+/// The scan could not be queued at all. Nothing has been written, so retrying the same
+/// request is safe and is what the message asks for.
 fn enqueue_failed(source: &DbError) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -148,7 +229,7 @@ struct EntryReadFailure {
 /// call itself (e.g. `EBADF`, `EIO`) — not for anything reachable through ordinary
 /// filesystem operations like permissions, deletion, or symlinks, which was the class of
 /// condition every other error path in this module *can* construct portably (see
-/// `tests/scan.rs`'s unreadable-directory test). Reproducing it would need OS- or
+/// `tests/handler.rs`'s unreadable-directory test). Reproducing it would need OS- or
 /// hardware-level fault injection, which is neither portable across the platforms CI runs
 /// nor safe to do in a shared test process. `entry_read_failure` is factored out as a
 /// pure function specifically so the one part that *is* testable portably — what gets
@@ -189,6 +270,29 @@ mod tests {
             "must carry the underlying OS error: {}",
             failure.reason
         );
+    }
+
+    /// The reversal recorded in this module's doc rests on the operator seeing this
+    /// message on the first poll. `batch_status` lists `failures` for `state = 'failed'`
+    /// rows only, and a `Transient` error is rescheduled as `pending` — so if this ever
+    /// reads `Transient` again, a bad mount goes unreported until `max_attempts` runs
+    /// out and the argument for moving the walk into a job stops holding.
+    #[test]
+    fn an_unreadable_ingest_directory_is_permanent_so_the_browser_sees_it_at_once() {
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        match ingest_dir_unreadable(FsPath::new("/ingest"), &err) {
+            HandlerError::Permanent { message } => {
+                assert!(
+                    message.contains("/ingest"),
+                    "must name the mount: {message}"
+                );
+                assert!(
+                    message.contains("Check that the mount"),
+                    "must say what to check (CLAUDE.md): {message}"
+                );
+            }
+            other => panic!("a bad mount must not be retried into invisibility, got {other:?}"),
+        }
     }
 
     #[test]

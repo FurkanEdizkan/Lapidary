@@ -1139,3 +1139,136 @@ async fn a_derived_l0_is_byte_identical_to_the_one_ingest_wrote(pool: PgPool) {
         "re-rendering the same bytes moves no reference, so `ref_count` must not inflate"
     );
 }
+
+/// A `scan_directory` job row belonging to `batch`, shaped exactly as the api route's
+/// `enqueue` writes one: the payload is empty, and the batch is the row's own column.
+fn scan_job(batch: BatchId, library: LibraryId) -> JobRow {
+    JobRow {
+        id: JobId::new(),
+        batch_id: batch,
+        library_id: library,
+        kind: JobPayload::SCAN_DIRECTORY.to_owned(),
+        payload: JobPayload::ScanDirectory.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    }
+}
+
+/// The `payload->>'path'` of every `ingest_file` job in one batch, in enqueue order.
+async fn ingest_paths_in(pool: &PgPool, batch: BatchId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT payload ->> 'path' FROM job \
+         WHERE batch_id = $1 AND kind = 'ingest_file' ORDER BY created_at, id",
+    )
+    .bind(batch.as_uuid())
+    .fetch_all(pool)
+    .await
+    .expect("reads the queued paths")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_job_enqueues_its_files_into_its_own_batch_and_grows_the_total(pool: PgPool) {
+    // The reason `enqueue_into` exists. The api route enqueues the scan job into a fresh
+    // batch and hands the browser that id; if the walk minted a second batch for the
+    // files, the browser would poll a batch of one, watch it settle, and report a
+    // finished scan while every file was still queued.
+    //
+    // Four files, each doing a different job. The two STLs and the 3MF are candidates;
+    // the README is not and is counted nowhere. Nothing here is parsed — the walk decides
+    // by extension, which is why arbitrary bytes under a mesh extension are fine.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    std::fs::write(
+        ingest_dir.path().join("notes.stl"),
+        b"LP-1042-03 revision notes: chamfer the mounting face.\n",
+    )
+    .expect("stages a file that is not an STL by any reading");
+    std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
+    std::fs::write(
+        ingest_dir.path().join("README.md"),
+        b"Brackets for the LP-1042 mounting series. Not a part.\n",
+    )
+    .expect("stages a non-candidate");
+
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let (batch, queued) = jobs
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues the scan itself, as the api route does");
+    assert_eq!(queued, 1);
+    let before = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads the batch")
+        .expect("a batch with one job has a status");
+    assert_eq!(before.total, 1, "the scan job alone, before it has run");
+
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler
+            .handle(&scan_job(batch, seeded()))
+            .await
+            .expect("walks the directory"),
+        Outcome::Scanned,
+        "a scan ingests nothing, skips nothing and renders nothing, and says so"
+    );
+
+    // The growth assertion first, because it is the one the whole shape exists for: the
+    // walk enqueued into the batch it was given, so the batch the browser is polling now
+    // reports four jobs where it reported one.
+    let after = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads the batch")
+        .expect("the batch still has jobs");
+    assert_eq!(
+        after.total, 4,
+        "batch_status counts rows by batch_id with no stored total, so a batch that \
+         grows after the browser started polling it reports the grown number"
+    );
+    assert_eq!(after.batch_id, batch, "and it is still the same batch");
+    assert_eq!(
+        ingest_paths_in(&pool, batch).await,
+        vec![
+            BRACKET.to_owned(),
+            "notes.stl".to_owned(),
+            CARRIER.to_owned(),
+        ],
+        "one ingest_file per candidate, sorted, all in the batch the job was given"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_unreadable_ingest_directory_fails_the_scan_job_and_names_the_mount(pool: PgPool) {
+    // A path that was never created — the real-world case is a missing or unreadable
+    // `/ingest` mount. It must not succeed with nothing queued, which is
+    // indistinguishable from an empty directory that scanned perfectly well, and it must
+    // be Permanent: `batch_status` reports `failures` for `state = 'failed'` rows only,
+    // so a Transient classification would keep the operator's own diagnosis off the
+    // screen until `max_attempts` ran out. See `src/scan.rs`'s module doc — the whole
+    // reversal rests on this message reaching the browser on the first poll.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let missing = ingest_dir.path().join("does-not-exist");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    let handler = handler_over(&pool, &missing, blob_root.path());
+    let error = handler
+        .handle(&scan_job(BatchId::new(), seeded()))
+        .await
+        .expect_err("an unwalkable mount is a failure, not an empty scan");
+
+    match error {
+        HandlerError::Permanent { message } => {
+            assert!(
+                message.contains("does-not-exist"),
+                "the message must name the directory it could not read: {message}"
+            );
+            assert!(
+                message.contains("Check that the mount"),
+                "and say what to check (CLAUDE.md): {message}"
+            );
+        }
+        other => panic!("a bad mount must be reported at once, not retried, got {other:?}"),
+    }
+}

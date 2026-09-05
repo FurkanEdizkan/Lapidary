@@ -4,9 +4,9 @@
 //! All four are on `Role::Api`, and that is necessity rather than preference (design
 //! §3.5). `deploy/web/Caddyfile` proxies `/api/*` to `api:8080` and nothing else, and
 //! `web/vite.config.ts` does the same in development — there is no route from a browser
-//! to the worker at all, which is why the existing `POST /scan` is documented as a `curl`
-//! from the host. A trigger route mounted under `Role::Worker` would be unreachable from
-//! the UI it exists for.
+//! to the worker at all. A trigger route mounted under `Role::Worker` would be
+//! unreachable from the UI it exists for. `scan.rs` is the fourth route to reach that
+//! conclusion, and the one that had to change the shape of a scan to act on it.
 //!
 //! Enqueueing is a database write, so none of this needs the kernel, `ingest_dir` or a
 //! source file: the rendering still happens in the worker, where `lapidary-cad` is linked
@@ -175,9 +175,10 @@ pub async fn library_thumbnails(
     accept(state.db, library, &jobs).await
 }
 
-/// One batch, `202`, and the id to poll it with. Shared by both enqueue routes so the two
-/// cannot drift into answering differently.
-async fn accept(db: PgPool, library: LibraryId, jobs: &[JobPayload]) -> Response {
+/// One batch, `202`, and the id to poll it with. Shared by every enqueue route in this
+/// crate — the two thumbnail routes here and `scan.rs` — so they cannot drift into
+/// answering differently.
+pub(crate) async fn accept(db: PgPool, library: LibraryId, jobs: &[JobPayload]) -> Response {
     match PgJobs(db).enqueue(library, jobs).await {
         Ok((batch_id, queued)) => (
             StatusCode::ACCEPTED,
@@ -203,10 +204,11 @@ fn bad_body(rejection: &JsonRejection) -> Response {
         .into_response()
 }
 
-/// Shared by `PATCH` and the sweep. "Nothing was changed" is true of both — an update that
-/// matched no row, and a sweep that enqueued nothing — and a second message saying the same
-/// thing differently would be a string to keep in step for no reason.
-fn no_such_library() -> Response {
+/// Shared by `PATCH`, the sweep and `scan.rs`. "Nothing was changed" is true of all three
+/// — an update that matched no row, a sweep that enqueued nothing, and a scan that queued
+/// no walk — and a second message saying the same thing differently would be a string to
+/// keep in step for no reason.
+pub(crate) fn no_such_library() -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({
@@ -248,7 +250,7 @@ fn no_such_part() -> Response {
 /// The query itself failed. Same asymmetry `jobs::internal_error` keeps: the operator gets
 /// the real error through the log, the client gets whatever `client_message` decides is
 /// safe to hand back.
-fn internal_error(err: &DbError, what: &'static str) -> Response {
+pub(crate) fn internal_error(err: &DbError, what: &'static str) -> Response {
     tracing::error!(error = %err, "{what}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,

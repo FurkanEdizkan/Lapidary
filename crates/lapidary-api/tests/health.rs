@@ -131,16 +131,25 @@ async fn health_is_served_in_both_roles(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_scan_route_is_unknown_to_this_crate_under_either_role(pool: sqlx::PgPool) {
-    // Fix round 1 moved the scan handler into its own crate, lapidary-ingest (see its
-    // lib.rs module doc for why a runtime Role check inside lapidary-api was not enough
-    // on its own — it kept the open path from *invoking* the kernel, but not from
-    // *linking* it, since lapidary-api depending on lapidary-cad at all made the api
-    // image link it regardless of which routes Role::Api mounted). This crate now has no
-    // route, dependency, or type that reaches ingest at all, under either role — unlike
-    // the_worker_role_does_not_serve_the_grid below, this isn't "wrong role", it's "this
-    // crate has never heard of /scan".
-    for role in [Role::Api, Role::Worker] {
+async fn the_scan_trigger_is_on_the_api_role_and_only_there(pool: sqlx::PgPool) {
+    // This crate had no scan route at all until slice 5 task 6, and the reason it has one
+    // now is not that the boundary moved: the *handler* still lives in lapidary-ingest,
+    // which is what keeps the api image from linking lapidary-cad (see that crate's
+    // lib.rs). What lives here is a trigger that writes one `scan_directory` job row and
+    // walks nothing.
+    //
+    // `Role::Api` and nowhere else, and both halves are load-bearing. On the api because
+    // deploy/web/Caddyfile proxies /api/* to api:8080 alone, so a scan button calling a
+    // worker-only route is a button that cannot work. NOT on the worker because
+    // bin/lapidary-server merges this router with lapidary-ingest's, which mounts the
+    // same path — two routes on one path is a merge that panics at startup.
+    //
+    // The seeded library, deliberately: a phantom id answers 404 from the route itself,
+    // so this would pass under either role with an id that names nothing.
+    for (role, expected) in [
+        (Role::Api, StatusCode::ACCEPTED),
+        (Role::Worker, StatusCode::NOT_FOUND),
+    ] {
         let app = router(
             AppState {
                 db: pool.clone(),
@@ -158,7 +167,7 @@ async fn the_scan_route_is_unknown_to_this_crate_under_either_role(pool: sqlx::P
             )
             .await
             .expect("responds");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), expected, "under {role:?}");
     }
 }
 

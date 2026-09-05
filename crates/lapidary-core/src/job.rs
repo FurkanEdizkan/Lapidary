@@ -16,9 +16,16 @@ pub enum JobState {
     Failed,
 }
 
-/// How a job finished. All three are successes: `Skipped` means this library already
+/// How a job finished. All four are successes: `Skipped` means this library already
 /// held this exact file, which is slice 1's hash short-circuit doing its job; `Rendered`
-/// means a `derive` job upserted the derivative it was asked to produce.
+/// means a `derive` job upserted the derivative it was asked to produce; `Scanned` means
+/// a `scan_directory` job walked the ingest mount and enqueued what it found.
+///
+/// `Scanned` exists because the other three would each be a counter that lies. The
+/// database requires a finished job to say how it finished (`job_done_has_outcome`), and
+/// a scan job ingests nothing, skips nothing and renders nothing: reporting it as
+/// `Skipped` tells a user a file was "already here", `Rendered` makes the grid read the
+/// whole batch as a preview render, and `Ingested` claims a part that does not exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -26,6 +33,7 @@ pub enum Outcome {
     Ingested,
     Skipped,
     Rendered,
+    Scanned,
 }
 
 /// What a job carries, without its kind.
@@ -42,6 +50,12 @@ pub enum JobPayload {
         revision: RevisionId,
         produce: DerivativeKind,
     },
+    /// Walk the worker's ingest mount and enqueue one `IngestFile` per candidate. No
+    /// fields: the directory is the worker's `ingest_dir` and the library is the job
+    /// row's own `library_id`, so a payload would only be a second place for either to
+    /// be wrong. See `lapidary_ingest::scan`'s module doc for why the walk is a job at
+    /// all.
+    ScanDirectory,
 }
 
 /// The `derive` payload's shape, deserialised as a whole rather than field by field so a
@@ -55,11 +69,13 @@ struct DerivePayload {
 impl JobPayload {
     pub const INGEST_FILE: &'static str = "ingest_file";
     pub const DERIVE: &'static str = "derive";
+    pub const SCAN_DIRECTORY: &'static str = "scan_directory";
 
     pub fn kind(&self) -> &'static str {
         match self {
             JobPayload::IngestFile { .. } => Self::INGEST_FILE,
             JobPayload::Derive { .. } => Self::DERIVE,
+            JobPayload::ScanDirectory => Self::SCAN_DIRECTORY,
         }
     }
 
@@ -71,6 +87,7 @@ impl JobPayload {
             JobPayload::Derive { revision, produce } => {
                 serde_json::json!({ "revision": revision, "produce": produce })
             }
+            JobPayload::ScanDirectory => serde_json::json!({}),
         }
     }
 
@@ -96,6 +113,11 @@ impl JobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),
                 }),
+            // Nothing is read out of the payload, so nothing in it can be malformed:
+            // a row written by an older or newer Lapidary carrying extra keys still
+            // names a directory walk, and refusing it would strand a scan over a key
+            // this build does not use.
+            Self::SCAN_DIRECTORY => Ok(JobPayload::ScanDirectory),
             other => Err(CoreError::UnknownJobKind {
                 kind: other.to_owned(),
             }),
@@ -150,8 +172,10 @@ pub struct BatchStatus {
 #[ts(export)]
 pub struct ScanAccepted {
     pub batch_id: BatchId,
-    /// How many `*.stl` candidates were enqueued. Zero is a success, not an error —
-    /// and a batch with zero jobs has no status resource, so the client must not poll.
+    /// How many jobs were enqueued. Zero is a success, not an error — and a batch with
+    /// zero jobs has no status resource, so the client must not poll. Not a file count:
+    /// the thumbnail routes answer with revisions, and a scan answers with `1`, the one
+    /// `scan_directory` job whose own walk grows the batch as it finds candidates.
     pub queued: u32,
 }
 
@@ -292,6 +316,25 @@ mod tests {
             p
         );
         assert_eq!(p.to_json()["produce"], "tessellation_l2");
+    }
+
+    /// The payload is empty by design, and `from_row` must not start caring what is in
+    /// it: the library comes from the job row's own column and the directory from the
+    /// worker's mount, so a row carrying extra keys is still a directory walk.
+    #[test]
+    fn a_scan_directory_payload_is_empty_and_round_trips() {
+        let p = JobPayload::ScanDirectory;
+        assert_eq!(p.kind(), "scan_directory");
+        assert_eq!(p.to_json(), serde_json::json!({}));
+        assert_eq!(
+            JobPayload::from_row("scan_directory", &p.to_json()).expect("round trips"),
+            p
+        );
+        assert_eq!(
+            JobPayload::from_row("scan_directory", &serde_json::json!({ "path": "unused" }))
+                .expect("an unread key is not a malformed payload"),
+            p
+        );
     }
 
     #[test]

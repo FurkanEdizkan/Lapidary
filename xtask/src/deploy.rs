@@ -166,9 +166,9 @@ impl std::fmt::Display for Violation {
             Violation::NoWorkerService => write!(
                 f,
                 "no service in deploy/compose.yaml sets `LAPIDARY_ROLE: worker`, so \
-                 nothing in this deployment mounts the ingest routes — POST \
-                 /api/libraries/{{id}}/scan would 404 everywhere and no part could ever \
-                 enter a library. Give the ingest service `LAPIDARY_ROLE: worker` under \
+                 nothing in this deployment drains the job queue — a scan would enqueue \
+                 its walk and no part could ever enter a library, because nothing walks \
+                 the mount. Give the ingest service `LAPIDARY_ROLE: worker` under \
                  its environment: block in deploy/compose.yaml."
             ),
             Violation::ComposeUnreadableBuildSpec { service } => write!(

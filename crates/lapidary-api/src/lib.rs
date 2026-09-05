@@ -8,6 +8,7 @@ mod error;
 mod health;
 mod jobs;
 mod parts;
+mod scan;
 
 pub use error::ApiError;
 pub use parts::{LibraryStorage, PartCard, PartsPage};
@@ -30,8 +31,8 @@ pub struct AppState {
     pub blob_root: std::path::PathBuf,
 }
 
-/// Which process this is. `api` serves the open path and must never mount an ingest
-/// route: its image deliberately does not link `lapidary-cad` (enforced by
+/// Which process this is. `api` serves the open path and must never link the CAD kernel:
+/// its image deliberately does not link `lapidary-cad` (enforced by
 /// `xtask/src/layers.rs`'s `FORBIDDEN_PAIRS` and `cargo xtask check-deploy`), and both
 /// containers run one binary from one router, so anything mounted unconditionally is
 /// served by both.
@@ -95,6 +96,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{id}",
                 get(derive::get_library).patch(derive::set_library),
             )
+            // The scan trigger, on `Role::Api` for the same reason the three below it
+            // are: nothing proxies a browser to the worker, so a scan button needs a
+            // route the api serves. It enqueues a `scan_directory` job and walks
+            // nothing — see `scan.rs`.
+            .route("/api/libraries/{id}/scan", post(scan::scan))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

@@ -12,6 +12,7 @@ import {
   renderLibraryThumbnails,
   renderPartThumbnail,
   setAutoThumbnail,
+  startScan,
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import type {
@@ -29,13 +30,11 @@ export const Route = createFileRoute('/')({
   /**
    * `?batch=<id>` — the batch a scan returned, so this page can watch it drain.
    *
-   * The id arrives in the URL rather than from a mutation this page issued, because this
-   * page cannot start a scan: `POST /api/libraries/{id}/scan` is mounted under the worker
-   * role only (port 8081), while `deploy/web/Caddyfile` and vite's dev proxy both forward
-   * `/api/*` to the api service. Proxying the worker to the browser instead would put the
-   * public web surface inside the boundary the api/worker split exists to hold. So the
-   * operator who ran the scan opens `/?batch=<id>`. A scan the browser can start belongs
-   * with the upload path, which is a later slice.
+   * The page can start a scan of its own now (`POST /api/libraries/{id}/scan` on
+   * `Role::Api`, which enqueues the walk rather than performing it), so this parameter is
+   * no longer the only way in. It stays for the scan someone starts against the worker's
+   * own `:8081` with `curl`, and for a link to a scan already running — a batch id is a
+   * URL a person can send someone.
    *
    * Without `validateSearch` the search params are not typed at all and `useSearch()`
    * hands back nothing, so the poll below would simply never enable — silently, and
@@ -60,30 +59,34 @@ function RouteComponent() {
 /**
  * Jobs the worker is finished with, however it finished with them.
  *
- * `rendered` counts because it is a terminal outcome exactly as `ingested` is — a
- * `derive` job that upserted its derivative is done. Leaving it out is not a cosmetic
- * undercount: a thumbnail sweep settles *every* job as `rendered`, so this returns 0 for
- * the whole batch, the invalidation below never fires, and the grid stays blank while
- * every job succeeds. No backend test can see that, which is why one below asserts it.
+ * Subtraction, not a sum of the outcome counters. Summing them was a standing bug the
+ * moment a new outcome appeared: `rendered` was once missing from the sum, so a thumbnail
+ * sweep — every job of which settles as `rendered` — returned 0 for the whole batch, the
+ * invalidation below never fired, and the grid stayed blank while every job succeeded.
+ * `scanned` would be the same bug a second time. What is actually being asked is "how
+ * much is no longer in flight", and `total - pending - running` answers exactly that for
+ * every outcome there will ever be, including the ones `BatchStatus` does not break out.
  *
- * Named for jobs rather than files since a `derive` job is a revision, not a file.
+ * Named for jobs rather than files since a `derive` job is a revision and a
+ * `scan_directory` job is a directory.
  */
 function jobsSettled(status: BatchStatus): number {
-  return status.ingested + status.skipped + status.rendered + status.failedTotal
+  return status.total - status.pending - status.running
 }
 
 /**
  * Which copy the progress line uses. `BatchStatus` carries counters, not job kinds, so
- * this is read from two things instead: a batch this page started by asking for previews
- * is a render, and so is any batch that has rendered something — a batch enqueued by the
- * sweep holds `derive` jobs only, exactly as one enqueued by a scan holds `ingest_file`
- * jobs only. The second half matters on its own, because a sweep started with `curl` and
- * opened as `/?batch=<id>` has no trigger to be read from and would otherwise report
- * "Scan complete — 0 added." over a batch of successful renders.
+ * this is read from two things instead: a batch this page started is whichever kind the
+ * click that started it was — the state below carries that alongside the id, and it has
+ * to, now that this page can start both a scan and a render. Failing that, a batch that
+ * has rendered something is a render, which covers a sweep started with `curl` and opened
+ * as `/?batch=<id>`: it has no trigger to be read from and would otherwise report "Scan
+ * complete — 0 added." over a batch of successful renders.
  *
  * What neither reads is a batch mixing both kinds. Nothing enqueues one — `enqueue` is
- * called once per payload kind — and telling them apart properly means putting the job
- * kind on `BatchStatus`, which is a backend change.
+ * called once per payload kind, and a scan's own children are all `ingest_file` — and
+ * telling them apart properly means putting the job kind on `BatchStatus`, which is a
+ * backend change.
  */
 type BatchKind = 'scan' | 'render'
 
@@ -103,12 +106,15 @@ export function Index({ batch }: { batch?: string }) {
   const queryClient = useQueryClient()
 
   /**
-   * The batch this page started, if it started one. A trigger route answers `202` with a
-   * `batchId`, and watching it is the same poll a scan uses — the whole reason every
-   * trigger route returns `ScanAccepted` rather than a shape of its own.
+   * The batch this page started, if it started one, and which button started it. A
+   * trigger route answers `202` with a `batchId`, and watching it is the same poll
+   * whatever was triggered — the whole reason every trigger route returns `ScanAccepted`
+   * rather than a shape of its own. The kind rides along because the counters cannot
+   * carry it: a scan of 150 new files and a preview sweep are told apart by what was
+   * clicked, not by anything in `BatchStatus`.
    */
-  const [started, setStarted] = useState<BatchId | undefined>(undefined)
-  const activeBatch = started ?? batch
+  const [started, setStarted] = useState<{ id: BatchId; kind: BatchKind } | undefined>(undefined)
+  const activeBatch = started?.id ?? batch
 
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
   const parts = useQuery({
@@ -125,8 +131,7 @@ export function Index({ batch }: { batch?: string }) {
     refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
   })
 
-  const kind: BatchKind =
-    started !== undefined || (scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan'
+  const kind: BatchKind = started?.kind ?? ((scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
 
   /**
    * What this library is actually set to. Its own query rather than a field on the grid's
@@ -156,18 +161,24 @@ export function Index({ batch }: { batch?: string }) {
    * path to a refetch. A second path here would make that effect untestable, since the
    * grid would still refill with `rendered` missing from `jobsSettled`.
    */
-  const watch = (accepted: ScanAccepted) => {
+  const watch = (accepted: ScanAccepted, kind: BatchKind) => {
     if (accepted.queued > 0) {
-      setStarted(accepted.batchId)
+      setStarted({ id: accepted.batchId, kind })
     }
   }
+  // Always `queued: 1` — the directory walk — so this always arms the poll. The file
+  // count arrives as `total` grows, which is why nothing here waits for it.
+  const scanNow = useMutation({
+    mutationFn: () => startScan(DEFAULT_LIBRARY_ID),
+    onSuccess: (accepted) => watch(accepted, 'scan'),
+  })
   const sweep = useMutation({
     mutationFn: () => renderLibraryThumbnails(DEFAULT_LIBRARY_ID),
-    onSuccess: watch,
+    onSuccess: (accepted) => watch(accepted, 'render'),
   })
   const renderPart = useMutation({
     mutationFn: (part: PartId) => renderPartThumbnail(part),
-    onSuccess: watch,
+    onSuccess: (accepted) => watch(accepted, 'render'),
   })
 
   // The grid is a separate query with its own cache, and nothing else would tell it the
@@ -184,8 +195,9 @@ export function Index({ batch }: { batch?: string }) {
     }
   }, [settled, queryClient])
 
-  const note =
-    sweep.isError || renderPart.isError
+  const note = scanNow.isError
+    ? strings.scan.startFailed
+    : sweep.isError || renderPart.isError
       ? strings.render.queueFailed
       : sweep.data?.queued === 0
         ? strings.render.nothingMissing
@@ -218,6 +230,8 @@ export function Index({ batch }: { batch?: string }) {
               ? strings.library.autoThumbnailUnknown
               : null
         }
+        onScan={() => scanNow.mutate()}
+        scanBusy={scanNow.isPending}
         onSweep={() => sweep.mutate()}
         sweepBusy={sweep.isPending}
         note={note}
@@ -256,20 +270,23 @@ export function Index({ batch }: { batch?: string }) {
 }
 
 /**
- * What this page can do to a library that is already here: whether ingest renders
- * previews, and rendering the ones it does not have.
+ * What this page can do to a library: scan the server's ingest folder into it, change
+ * whether ingest renders previews, and render the previews it does not have.
  *
- * Both actions enqueue rather than do — the rendering happens in the worker — so neither
- * button waits on geometry. The toggle is the one control here that has a state of its
- * own to be wrong about, which is why it takes `boolean | undefined` and not a default. `note` carries whatever the last action has to say: a sweep
- * that found nothing missing is a success and says so, which is the one place this
- * reading is easy to get backwards.
+ * Every action enqueues rather than does — the walk and the rendering both happen in the
+ * worker — so no button here waits on a filesystem or on geometry. The toggle is the one
+ * control that has a state of its own to be wrong about, which is why it takes
+ * `boolean | undefined` and not a default. `note` carries whatever the last action has to
+ * say: a sweep that found nothing missing is a success and says so, which is the one
+ * place this reading is easy to get backwards.
  */
 function ActionBar({
   autoThumbnail,
   onAutoThumbnail,
   settingsBusy,
   settingsNote,
+  onScan,
+  scanBusy,
   onSweep,
   sweepBusy,
   note,
@@ -278,6 +295,8 @@ function ActionBar({
   onAutoThumbnail: (on: boolean) => void
   settingsBusy: boolean
   settingsNote: string | null
+  onScan: () => void
+  scanBusy: boolean
   onSweep: () => void
   sweepBusy: boolean
   note: string | null
@@ -313,6 +332,14 @@ function ActionBar({
       </label>
       <button
         type="button"
+        onClick={onScan}
+        disabled={scanBusy}
+        className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {strings.scan.start}
+      </button>
+      <button
+        type="button"
         onClick={onSweep}
         disabled={sweepBusy}
         className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
@@ -328,7 +355,14 @@ function ActionBar({
 }
 
 /**
- * The batch line: how far a batch has got, and how it ended.
+ * The batch line: how far a batch has got, how it ended, and what went wrong.
+ *
+ * The reasons, not only the count. `batch_status` has returned a `failures` list carrying
+ * each job's `last_error` since slice 2 and nothing displayed it, which mattered more
+ * once the directory walk moved into a job: an unreadable `/ingest` mount used to fail
+ * the request an operator was watching, and now fails a job in this batch. If the reason
+ * does not reach the screen, that move only relocated a terminal round-trip somewhere
+ * less obvious. See `crates/lapidary-ingest/src/scan.rs`'s module doc.
  *
  * Nothing renders while the first poll is in flight. A batch whose status has not
  * arrived yet is not a fact about the library, and the grid below is the page — a
@@ -353,11 +387,29 @@ function ScanProgress({
   if (status === undefined) {
     return null
   }
+  // The server caps the list at 100 while `failedTotal` is the real number, so a batch
+  // with more failures than that says so rather than trailing off at the hundredth.
+  const hidden = status.failedTotal - status.failed.length
   return (
-    <p className="mb-4 flex max-w-prose flex-wrap gap-2 text-[var(--color-muted)]">
-      <span>{progressText(status, kind)}</span>
-      {status.failedTotal === 0 ? null : <span>{copy.failed(status.failedTotal)}</span>}
-    </p>
+    <div className="mb-4 max-w-prose text-[var(--color-muted)]">
+      <p className="flex flex-wrap gap-2">
+        <span>{progressText(status, kind)}</span>
+        {status.failedTotal === 0 ? null : <span>{copy.failed(status.failedTotal)}</span>}
+      </p>
+      {status.failed.length === 0 ? null : (
+        <ul className="mt-2 space-y-1 text-sm">
+          {status.failed.map((failure) => (
+            // The path is not unique — two jobs can name the same file across retries,
+            // and a `scan_directory` failure has no path at all — so the key is the pair
+            // that identifies the row on screen.
+            <li key={`${failure.path}\u0000${failure.reason}`}>
+              {strings.failure.line(failure.path, failure.reason)}
+            </li>
+          ))}
+          {hidden <= 0 ? null : <li>{strings.failure.more(hidden)}</li>}
+        </ul>
+      )}
+    </div>
   )
 }
 
