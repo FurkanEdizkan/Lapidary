@@ -1290,6 +1290,102 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(pool: sqlx::PgPool) {
+    // The download route reads exactly this row and nothing else, so every column it
+    // needs is asserted here rather than at the route, where a wrong one shows up as a
+    // file named after the wrong part or a zstd frame handed over as an STL.
+    let blob = blob_row(0xd1);
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Spindle housing, LP-4180-02",
+            blob: &blob,
+            measurements: &watertight(),
+            kernel_version: "mesh 3mf-1+cpu-1",
+            format: "3mf",
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("records");
+    let revision = only_revision(&pool, id).await;
+    // A newer non-source row on the same revision, as `revision_source`'s test seeds:
+    // without one the `role = 'source'` filter is untested here, because the only row in
+    // the table would be the right answer either way. Same blake3, so the foreign key is
+    // satisfied without inventing a second blob — and a second blob would also hide a
+    // wrong `role` behind a matching `zstd_level`.
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at) \
+         VALUES (gen_random_uuid(), $1, 'export', 'glb', $2, 4096, now() + interval '1 hour')",
+    )
+    .bind(revision.as_uuid())
+    .bind(blob.hash.to_hex())
+    .execute(&pool)
+    .await
+    .expect("a later export row");
+
+    let parts = PgParts(pool.clone());
+    let source = parts
+        .source_for_download(revision)
+        .await
+        .expect("query")
+        .expect("a live part's revision has a source file");
+    assert_eq!(source.hash.to_hex(), blob.hash.to_hex());
+    assert_eq!(
+        source.format, "3mf",
+        "the source file's format, not the newer export's — the route synthesizes the \
+         download's extension from it"
+    );
+    assert_eq!(source.part_name, "Spindle housing, LP-4180-02");
+    assert_eq!(
+        source.zstd_level,
+        Some(3),
+        "the level the bytes were actually written at, read off `blob` rather than \
+         re-derived from the format"
+    );
+
+    // Ruling T1-A. `zstd_level` is nullable and NULL is real — every derivative blob is
+    // written that way — so a source blob with no level means nobody recorded how those
+    // bytes were stored. That must reach the route as the unknown it is: COALESCEd to 0
+    // it becomes a confident "raw", and a compressed file is served as a zstd frame under
+    // the part's own name. Every fixture in this file writes level 3, so without this the
+    // assertion above passes just as well against the COALESCE.
+    sqlx::query("UPDATE blob SET zstd_level = NULL WHERE blake3 = $1")
+        .bind(blob.hash.to_hex())
+        .execute(&pool)
+        .await
+        .expect("clear the recorded level");
+    assert_eq!(
+        parts
+            .source_for_download(revision)
+            .await
+            .expect("query")
+            .expect("still a live part")
+            .zstd_level,
+        None,
+        "an unrecorded compression state must stay unrecorded, not become level 0"
+    );
+
+    // Delete is soft, and a download URL is held by whoever was last shown the grid. A
+    // part the user deleted is not browsable, so a link minted before the delete must
+    // stop serving bytes rather than outliving it. `library_holds` omits this same filter
+    // on purpose — a re-scan must not resurrect — which is the opposite question.
+    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
+        .bind(id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("soft delete");
+    assert!(
+        parts
+            .source_for_download(revision)
+            .await
+            .expect("query")
+            .is_none(),
+        "a soft-deleted part's revision has nothing to download, and that is not an error"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
     // Two resolutions of "which revision is current" that can disagree is the bug §3.7
     // exists to prevent: a derive job enqueued against the revision the grid is not
@@ -1490,10 +1586,23 @@ async fn a_source_hash_that_is_not_a_digest_is_reported_with_what_to_do(pool: sq
         .await
         .expect("corrupt the column directly");
 
-    let err = PgParts(pool)
+    let parts = PgParts(pool);
+    let err = parts
         .revision_source(library(), revision)
         .await
         .expect_err("a hash that is not a hash must be reported, not parsed into one");
+    // The download route reads the same column through its own query, so it reports the
+    // same thing rather than parsing the garbage into a hash and 404ing on the blob store.
+    assert!(
+        matches!(
+            parts.source_for_download(revision).await,
+            Err(DbError::CorruptBlobHash {
+                column: "file.blake3",
+                ..
+            })
+        ),
+        "source_for_download reads the same column and must refuse it the same way"
+    );
     match &err {
         DbError::CorruptBlobHash { column, value } => {
             assert_eq!(*column, "file.blake3");

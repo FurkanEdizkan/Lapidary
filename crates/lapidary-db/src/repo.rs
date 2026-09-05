@@ -18,6 +18,28 @@ pub struct PartRow {
     pub thumbnail_webp: Option<Vec<u8>>,
 }
 
+/// Everything the download route needs about a revision's source file, in one row.
+///
+/// Four columns off three tables, so it is a struct rather than a tuple: `format`,
+/// `part_name` and the hex hash are all text, and a tuple of them is three positions a
+/// call site can silently transpose into a file served under the wrong name.
+#[derive(Debug)]
+pub struct DownloadSource {
+    pub hash: BlobHash,
+    /// `file.format` — lowercase, no dot. The route synthesizes `{part_name}.{format}`.
+    pub format: String,
+    /// `part.name`, the download's filename stem. A renamed part downloads under its new
+    /// name, which is the design decision spec §2.4 records; the byte-identity claim is
+    /// about bytes, not labels.
+    pub part_name: String,
+    /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0: NULL
+    /// means nobody recorded how these bytes were written, and answering "raw" to that
+    /// would hand a caller a zstd frame as though it were the file (ruling T1-A). The
+    /// route's hash check is what turns the unknown case into a loud failure, and it can
+    /// only do that if the unknown reaches it.
+    pub zstd_level: Option<i16>,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
@@ -639,6 +661,63 @@ impl PgParts {
             value: hex,
         })?;
         Ok(Some((hash, format)))
+    }
+
+    /// Everything `GET /api/revisions/{id}/download` needs, in one row: which bytes, what
+    /// format, what to call the file, and how those bytes were stored.
+    ///
+    /// Sits beside [`PgParts::revision_source`] and does not replace it. That one feeds a
+    /// `derive` job, which arrives holding a second id — its library — and cross-checking
+    /// the two is a real test (ruling T7-C). A download arrives with the revision id and
+    /// nothing else, so resolving the library from the revision and comparing it to itself
+    /// would be a no-op that reads like a check, which is worse than no check: spec §2.1
+    /// argues this at length and it is not re-derived here. The revision uuid is the
+    /// capability, as it is on every other Phase 1 route; when auth lands the check becomes
+    /// "is this revision's library reachable by this caller", which has a subject.
+    ///
+    /// Filters `part.deleted_at IS NULL`, which [`PgBlobs::library_holds`] deliberately
+    /// does not. Different question, opposite answer: a re-scan must not resurrect a part
+    /// the user deleted, and a download URL held from before the delete must not outlive
+    /// it. A deleted part is not browsable, so it is not downloadable either.
+    ///
+    /// `zstd_level` comes from the `blob` row joined off the same `file` row that carried
+    /// the hash — never from `Compression::for_source_format`. That is ingest-time policy
+    /// and slice 7 is about to move it, so a reader that re-derived it would start serving
+    /// zstd frames as files the day the policy changed (spec §2.5). It is passed through as
+    /// the nullable column it is; see [`DownloadSource::zstd_level`].
+    ///
+    /// The `role = 'source'` filter and the `ORDER BY … LIMIT 1` are character for
+    /// character [`PgParts::revision_source`]'s, and for its reason: `file` has no unique
+    /// constraint on `(revision_id, role)`, so a second source row must resolve to the same
+    /// answer on every call rather than to whichever row the planner returned first.
+    pub async fn source_for_download(
+        &self,
+        revision: RevisionId,
+    ) -> Result<Option<DownloadSource>, DbError> {
+        let row: Option<(String, String, String, Option<i16>)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, b.zstd_level FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             JOIN blob b ON b.blake3 = f.blake3 \
+             WHERE f.revision_id = $1 AND f.role = 'source' AND p.deleted_at IS NULL \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
+        )
+        .bind(revision.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((hex, format, part_name, zstd_level)) = row else {
+            return Ok(None);
+        };
+        let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+            column: "file.blake3",
+            value: hex,
+        })?;
+        Ok(Some(DownloadSource {
+            hash,
+            format,
+            part_name,
+            zstd_level,
+        }))
     }
 
     /// Every revision in `library` with no generated derivative of `kind` — the set a
