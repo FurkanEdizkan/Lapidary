@@ -68,14 +68,30 @@ export async function fetchBatchStatus(
 }
 
 /**
+ * `GET /api/libraries/{id}` — what this library's settings actually are.
+ *
+ * The toggle's starting position, and the reason it is not design §3.2's documented
+ * default: a library already switched off used to render as on until somebody changed it,
+ * which is a control misreporting the state it controls.
+ *
+ * A 404 is a real answer: no library with that id. It is deliberately not softened into
+ * the default here — the toggle would then be confidently wrong about a library that does
+ * not exist, which is the same lie one level down.
+ */
+export async function fetchLibrarySettings(library: LibraryId): Promise<LibrarySettings> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}`)
+  if (!response.ok) {
+    throw new Error(`library settings returned ${response.status}`)
+  }
+  return (await response.json()) as LibrarySettings
+}
+
+/**
  * `PATCH /api/libraries/{id}` — whether ingest renders a preview for this library.
  *
  * The response echoes the setting that landed, so the toggle reflects what the server
- * now holds rather than what the click assumed. There is no `GET` counterpart: nothing
- * in the API reads a library's settings back, so the toggle's *initial* position is the
- * documented default (design §3.2: on), not a fact read from the server. A library
- * already switched off therefore shows on until someone changes it. Closing that needs a
- * read route, which is a backend change and not this task's.
+ * now holds rather than what the click assumed. It answers the very type
+ * `fetchLibrarySettings` reads, so the two cannot disagree about the shape.
  *
  * A 404 is a real answer: no library with that id.
  */

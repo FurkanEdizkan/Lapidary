@@ -47,6 +47,7 @@ function stubFetch(routes: {
   healthz?: () => Promise<StubResponse>
   parts?: () => Promise<StubResponse>
   batch?: () => Promise<StubResponse>
+  library?: () => Promise<StubResponse>
   settings?: () => Promise<StubResponse>
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
@@ -63,6 +64,10 @@ function stubFetch(routes: {
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
     if (url.endsWith('/parts')) return (routes.parts ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
+    // Last of the library routes, because the settings read is the bare path every one of
+    // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
+    // toggle in its unknown state for every test that is not about it.
+    if (url.startsWith('/api/libraries/')) return (routes.library ?? pending)()
     return Promise.reject(new Error(`unstubbed request: ${url}`))
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -660,11 +665,93 @@ test('a batch whose jobs all settle as rendered refetches the grid exactly once'
   expect(partsInvalidations[0]?.[0]).toEqual({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
 })
 
-// Nothing reads a library's settings back — there is no GET — so the toggle starts at
-// design §3.2's documented default and the server's echo is what corrects it. The request
-// is asserted whole, header and body included: `derive.rs`'s `bad_body` names the
-// Content-Type explicitly, and a PATCH without it is a 400 the user would see as the
-// setting silently refusing to change.
+/**
+ * The test this whole slice-4 addendum exists for. A library switched off has to render
+ * off — the failure it replaces is a toggle that showed design §3.2's default and told an
+ * owner who had turned rendering off that it was on.
+ *
+ * `checked === false` alone does not say that: an unknown toggle is unchecked too. So the
+ * mixed state is asserted first, while the read is in flight, and its absence is asserted
+ * after — otherwise a component that never resolved anything would pass the one assertion
+ * this test is named for.
+ */
+test('the auto-thumbnail toggle shows off for a library the server says is off', async () => {
+  let release: (response: StubResponse) => void = () => {}
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: () => new Promise<StubResponse>((resolve) => (release = resolve)),
+  })
+  renderIndex()
+
+  // Before the read lands there is no position to take, and a confident "on" here is the
+  // same lie in a shorter window.
+  const toggle = (await screen.findByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  })) as HTMLInputElement
+  expect(toggle.indeterminate).toBe(true)
+  expect(toggle.checked).toBe(false)
+  expect(toggle.disabled).toBe(true)
+
+  release({ ok: true, json: async () => ({ autoThumbnail: false }) })
+
+  await waitFor(() => expect(toggle.disabled).toBe(false))
+  expect(toggle.checked).toBe(false)
+  expect(toggle.indeterminate).toBe(false)
+  expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}`)
+  expect(screen.queryByText(strings.library.autoThumbnailUnknown)).toBeNull()
+})
+
+// The read is the toggle's starting position, so a read that never answers must not be
+// papered over with the default — that is the same wrong "on" arriving by another route.
+// The control stays mixed and unclickable, and says why.
+test('a settings read that fails leaves the toggle unknown rather than guessing', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: async () => ({ ok: false, status: 503 }),
+  })
+  renderIndex()
+
+  expect(await screen.findByText(strings.library.autoThumbnailUnknown)).toBeTruthy()
+  const toggle = screen.getByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  }) as HTMLInputElement
+  expect(toggle.indeterminate).toBe(true)
+  expect(toggle.checked).toBe(false)
+  expect(toggle.disabled).toBe(true)
+})
+
+// A PATCH the server refused leaves the library where the GET said it was. `variables`
+// covers the round trip and nothing after it: a value the server rejected is not a
+// position this library is in, and now that there is something true to fall back to,
+// holding the failed click on screen under a "could not change this" message would show
+// two contradictory facts at once.
+test('a rejected setting change falls back to what the server said, not to the click', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    library: ok({ autoThumbnail: true }),
+    settings: async () => ({ ok: false, status: 503 }),
+  })
+  renderIndex()
+
+  const toggle = (await screen.findByRole('checkbox', {
+    name: strings.library.autoThumbnail,
+  })) as HTMLInputElement
+  await waitFor(() => expect(toggle.checked).toBe(true))
+
+  fireEvent.click(toggle)
+
+  expect(await screen.findByText(strings.library.autoThumbnailFailed)).toBeTruthy()
+  expect(toggle.checked).toBe(true)
+  expect(toggle.indeterminate).toBe(false)
+})
+
+// The write half, over a library the server says is on. The request is asserted whole,
+// header and body included: `derive.rs`'s `bad_body` names the Content-Type explicitly,
+// and a PATCH without it is a 400 the user would see as the setting silently refusing to
+// change.
 test('the auto-thumbnail toggle sends the setting and reflects what the server echoes', async () => {
   // Held open on purpose. A stub that resolves immediately never renders the in-flight
   // frame, and that frame is where this control was wrong: react-query clears a
@@ -674,14 +761,14 @@ test('the auto-thumbnail toggle sends the setting and reflects what the server e
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT])),
+    library: ok({ autoThumbnail: true }),
     settings: () => new Promise<StubResponse>((resolve) => (release = resolve)),
   })
   renderIndex()
 
-  // §3.2's documented default, which is all this page has: nothing reads a library's
-  // settings back.
+  // The server's answer, not a default: this library is on.
   const toggle = await screen.findByRole('checkbox', { name: strings.library.autoThumbnail })
-  expect((toggle as HTMLInputElement).checked).toBe(true)
+  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true))
 
   fireEvent.click(toggle)
   await waitFor(() =>

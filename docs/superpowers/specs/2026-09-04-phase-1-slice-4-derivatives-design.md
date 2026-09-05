@@ -245,6 +245,7 @@ from opening a stored one and no "decompressing…" affordance is needed.
 
 | Route | Role | Notes |
 |---|---|---|
+| `GET /api/libraries/{id}` | `Api` | New. Answers the `PATCH` body's own type. Added by ruling T9-B: without it the toggle renders §3.2's default rather than the library's setting, so a library already switched off shows on. `404` for a library that does not exist, as `PATCH` is |
 | `PATCH /api/libraries/{id}` | `Api` | New. `{ autoThumbnail }` |
 | `POST /api/parts/{id}/thumbnail` | `Api` | New. Enqueues one `derive`, returns `ScanAccepted` |
 | `POST /api/libraries/{id}/thumbnails` | `Api` | New. Sweep; `queued: 0` is a success |

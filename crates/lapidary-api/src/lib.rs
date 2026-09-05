@@ -12,7 +12,7 @@ pub use error::ApiError;
 pub use parts::{PartCard, PartsPage};
 
 use axum::Router;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use lapidary_db::PgPool;
 
 #[derive(Clone)]
@@ -74,11 +74,17 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),
             )
-            // The three trigger routes. `Role::Api` out of necessity, not preference:
-            // nothing proxies a browser to the worker, so mounting these there would
-            // make them unreachable from the UI that exists to call them. See
-            // `derive.rs`'s module doc and design section 3.5.
-            .route("/api/libraries/{id}", patch(derive::set_library))
+            // The library's own settings and the two trigger routes. `Role::Api` out of
+            // necessity, not preference: nothing proxies a browser to the worker, so
+            // mounting these there would make them unreachable from the UI that exists to
+            // call them. See `derive.rs`'s module doc and design section 3.5.
+            //
+            // Read and write are one `.route` on one path rather than two entries axum
+            // would have to be trusted to merge, and they answer the same type.
+            .route(
+                "/api/libraries/{id}",
+                get(derive::get_library).patch(derive::set_library),
+            )
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

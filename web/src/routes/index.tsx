@@ -5,6 +5,7 @@ import {
   DEFAULT_LIBRARY_ID,
   fetchBatchStatus,
   fetchHealth,
+  fetchLibrarySettings,
   fetchParts,
   renderLibraryThumbnails,
   renderPartThumbnail,
@@ -124,6 +125,15 @@ export function Index({ batch }: { batch?: string }) {
   const kind: BatchKind =
     started !== undefined || (scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan'
 
+  /**
+   * What this library is actually set to. Its own query rather than a field on the grid's
+   * page, because the two answer different questions and a settings read must not be
+   * invalidated every time the worker commits a part.
+   */
+  const librarySettings = useQuery({
+    queryKey: ['library', DEFAULT_LIBRARY_ID],
+    queryFn: () => fetchLibrarySettings(DEFAULT_LIBRARY_ID),
+  })
   const settings = useMutation({
     mutationFn: (on: boolean) => setAutoThumbnail(DEFAULT_LIBRARY_ID, on),
   })
@@ -168,18 +178,30 @@ export function Index({ batch }: { batch?: string }) {
   return (
     <section>
       <ActionBar
-        // Three sources, most authoritative first. The server's echo is the truth once it
-        // lands; `variables` is what this click asked for and covers the round trip, since
-        // react-query clears `data` the moment a mutation goes pending — without it the
-        // box springs back to its old position and sits there, disabled, for as long as
-        // the request takes, which reads as the click having been ignored. `true` is the
-        // starting position: no GET reads a library's settings back, so before anything
-        // has happened all this page has is design §3.2's documented default. A library
-        // already switched off therefore shows on until someone changes it here.
-        autoThumbnail={settings.data?.autoThumbnail ?? settings.variables ?? true}
+        // Three sources, most authoritative first, and `undefined` when none of them has
+        // an answer. The server's echo is the truth once it lands; `variables` is what this
+        // click asked for and covers the round trip, since react-query clears `data` the
+        // moment a mutation goes pending — without it the box springs back to its old
+        // position and sits there, disabled, for as long as the request takes, which reads
+        // as the click having been ignored. A click the server refused is dropped, because
+        // a value it rejected is not a position this library is in and there is now
+        // something true to fall back to: the `GET`, which is the starting position and
+        // the reason design §3.2's default is not. The default is what a library is set to
+        // until someone changes it, not what this one is set to.
+        autoThumbnail={
+          settings.data?.autoThumbnail ??
+          (settings.isError ? undefined : settings.variables) ??
+          librarySettings.data?.autoThumbnail
+        }
         onAutoThumbnail={(on) => settings.mutate(on)}
         settingsBusy={settings.isPending}
-        settingsFailed={settings.isError}
+        settingsNote={
+          settings.isError
+            ? strings.library.autoThumbnailFailed
+            : librarySettings.isError
+              ? strings.library.autoThumbnailUnknown
+              : null
+        }
         onSweep={() => sweep.mutate()}
         sweepBusy={sweep.isPending}
         note={note}
@@ -221,7 +243,8 @@ export function Index({ batch }: { batch?: string }) {
  * previews, and rendering the ones it does not have.
  *
  * Both actions enqueue rather than do — the rendering happens in the worker — so neither
- * button waits on geometry. `note` carries whatever the last action has to say: a sweep
+ * button waits on geometry. The toggle is the one control here that has a state of its
+ * own to be wrong about, which is why it takes `boolean | undefined` and not a default. `note` carries whatever the last action has to say: a sweep
  * that found nothing missing is a success and says so, which is the one place this
  * reading is easy to get backwards.
  */
@@ -229,15 +252,15 @@ function ActionBar({
   autoThumbnail,
   onAutoThumbnail,
   settingsBusy,
-  settingsFailed,
+  settingsNote,
   onSweep,
   sweepBusy,
   note,
 }: {
-  autoThumbnail: boolean
+  autoThumbnail: boolean | undefined
   onAutoThumbnail: (on: boolean) => void
   settingsBusy: boolean
-  settingsFailed: boolean
+  settingsNote: string | null
   onSweep: () => void
   sweepBusy: boolean
   note: string | null
@@ -245,10 +268,27 @@ function ActionBar({
   return (
     <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--color-border)] pb-4">
       <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
+        {/*
+          `undefined` is "not known yet", and the checkbox says so in the way a checkbox
+          says it: mixed, and not clickable until there is a state to click away from.
+          Painting a confident "on" for the tick before the read lands is the same lie in a
+          shorter window, and a box that flips under the cursor is worse than one that
+          waits. It stays mixed if the read fails outright — `settingsNote` says why and
+          says to reload — because there is nothing honest to put there.
+
+          `indeterminate` is a DOM property with no attribute, so it is set through the ref
+          rather than rendered. Block body: a React 19 ref callback that returns a value is
+          read as a cleanup function.
+        */}
         <input
           type="checkbox"
-          checked={autoThumbnail}
-          disabled={settingsBusy}
+          checked={autoThumbnail ?? false}
+          ref={(el) => {
+            if (el !== null) {
+              el.indeterminate = autoThumbnail === undefined
+            }
+          }}
+          disabled={settingsBusy || autoThumbnail === undefined}
           onChange={(event) => onAutoThumbnail(event.target.checked)}
           className="accent-[var(--color-accent)]"
         />
@@ -262,11 +302,9 @@ function ActionBar({
       >
         {strings.render.sweep}
       </button>
-      {settingsFailed ? (
-        <span className="text-sm text-[var(--color-muted)]">
-          {strings.library.autoThumbnailFailed}
-        </span>
-      ) : null}
+      {settingsNote === null ? null : (
+        <span className="text-sm text-[var(--color-muted)]">{settingsNote}</span>
+      )}
       {note === null ? null : <span className="text-sm text-[var(--color-muted)]">{note}</span>}
     </div>
   )

@@ -78,6 +78,15 @@ export const strings = {
       'Turning this off leaves existing previews alone. Parts ingested afterwards arrive without one until you generate them.',
     autoThumbnailFailed:
       'Could not change this setting. Check that the api service is running, then try again.',
+    /**
+     * The `GET` did not answer, so the toggle has no position to take. It stays in the
+     * mixed state rather than falling back to the documented default: the default is what
+     * a library is set to until someone changes it, not what this one is, and a control
+     * that shows a confident "on" for a library that is off is the mistake this read
+     * exists to close.
+     */
+    autoThumbnailUnknown:
+      'Could not read whether previews are generated automatically here. Check that the api service is running, then reload.',
   },
   /**
    * Rendering previews for parts that are already here — the sweep and the per-card

@@ -1,7 +1,7 @@
 //! Asking for a derivative without a terminal: the library's ingest-time thumbnail
 //! setting, one part's thumbnail, and a whole library's missing ones.
 //!
-//! All three are on `Role::Api`, and that is necessity rather than preference (design
+//! All four are on `Role::Api`, and that is necessity rather than preference (design
 //! §3.5). `deploy/web/Caddyfile` proxies `/api/*` to `api:8080` and nothing else, and
 //! `web/vite.config.ts` does the same in development — there is no route from a browser
 //! to the worker at all, which is why the existing `POST /scan` is documented as a `curl`
@@ -40,6 +40,30 @@ use ts_rs::TS;
 #[ts(export)]
 pub struct LibrarySettings {
     auto_thumbnail: bool,
+}
+
+/// `GET /api/libraries/{id}` — what `PATCH` on the same id would change.
+///
+/// Answers the very type `PATCH` takes and echoes, so a client that reads a setting and
+/// one that writes it cannot disagree about the shape by construction rather than by
+/// coincidence — and so no second binding exists for the frontend to keep in step.
+///
+/// The read is `PgParts::auto_thumbnail`, the same one the sweep already probes existence
+/// with. A query written for this route would answer the same question twice and be the
+/// thing that drifts.
+///
+/// A library that does not exist is a `404`, as it is on `PATCH` and on the sweep: a
+/// documented default returned for an id that names nothing is exactly the plausible
+/// answer that gets believed.
+pub async fn get_library(
+    State(state): State<AppState>,
+    Path(library): Path<LibraryId>,
+) -> Response {
+    match PgParts(state.db).auto_thumbnail(library).await {
+        Ok(Some(auto_thumbnail)) => Json(LibrarySettings { auto_thumbnail }).into_response(),
+        Ok(None) => no_such_library_read(),
+        Err(err) => internal_error(&err, "library lookup failed"),
+    }
 }
 
 /// `PATCH /api/libraries/{id}` — whether ingest renders a thumbnail for this library.
@@ -188,6 +212,20 @@ fn no_such_library() -> Response {
         Json(serde_json::json!({
             "message": "No library with that id exists, so nothing was changed. Check the \
                         id against the library list."
+        })),
+    )
+        .into_response()
+}
+
+/// The read half's 404. Deliberately not [`no_such_library`]: "nothing was changed" is
+/// reassurance a writer needs and an answer a reader did not ask for, and telling someone
+/// who asked a question that their edit did not land is its own small confusion.
+fn no_such_library_read() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "message": "No library with that id exists, so it has no settings to show. \
+                        Check the id against the library list."
         })),
     )
         .into_response()

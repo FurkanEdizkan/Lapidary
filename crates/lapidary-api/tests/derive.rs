@@ -1,6 +1,7 @@
 //! Task 8: the three enqueue routes. `PATCH /api/libraries/{id}`,
 //! `POST /api/parts/{id}/thumbnail` and `POST /api/libraries/{id}/thumbnails`, driven
-//! through this crate's router against a live, migrated Postgres.
+//! through this crate's router against a live, migrated Postgres. Task 10 adds the read
+//! half of the first of them, `GET /api/libraries/{id}`.
 //!
 //! Rows are seeded through `PgIngest` — the repository the scan handler itself uses — so
 //! a part these tests create is indistinguishable from one a scan produced. The two
@@ -136,6 +137,14 @@ async fn patch_library(
     .await
 }
 
+async fn get_library(
+    pool: sqlx::PgPool,
+    role: Role,
+    library: LibraryId,
+) -> (StatusCode, serde_json::Value) {
+    send(pool, role, "GET", format!("/api/libraries/{library}"), None).await
+}
+
 async fn post_part_thumbnail(
     pool: sqlx::PgPool,
     role: Role,
@@ -237,6 +246,51 @@ async fn patching_a_library_that_does_not_exist_is_a_404_not_a_silent_success(po
             .as_str()
             .is_some_and(|m| m.contains("No library with that id")),
         "the 404 has to be this crate's message, not axum's empty body: {json}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_library_that_renders_nothing_reads_back_as_off(pool: sqlx::PgPool) {
+    // Switched off through the repository rather than through `PATCH`, so this cannot pass
+    // by the route echoing its own request back: the value on the wire has to have come
+    // out of the `library` row. Without a `GET` at all the grid renders design §3.2's
+    // default here, and an owner who turned rendering off sees it reported as on.
+    PgParts(pool.clone())
+        .set_auto_thumbnail(library(), false)
+        .await
+        .expect("switches the setting off");
+
+    let (status, json) = get_library(pool, Role::Api, library()).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json, serde_json::json!({ "autoThumbnail": false }));
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_library_nobody_has_touched_reads_back_as_the_migrations_default(pool: sqlx::PgPool) {
+    let (status, json) = get_library(pool, Role::Api, library()).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json, serde_json::json!({ "autoThumbnail": true }));
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn reading_a_library_that_does_not_exist_is_a_404_not_the_documented_default(
+    pool: sqlx::PgPool,
+) {
+    // T8-B again, on the read side: answering `{ "autoThumbnail": true }` for an id that
+    // names nothing is a plausible-looking body that gets believed. The message is asserted
+    // whole rather than by its shared opening, because `no_such_library`'s "so nothing was
+    // changed" would satisfy a prefix check while telling a reader their edit did not land.
+    let absent = LibraryId::new();
+    let (status, json) = get_library(pool, Role::Api, absent).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no settings to show")),
+        "the read gets the read's 404, not the writer's: {json}"
     );
 }
 
@@ -482,7 +536,7 @@ async fn a_batch_is_enqueued_under_the_parts_own_library_and_no_other(pool: sqlx
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_worker_role_serves_none_of_the_three_routes(pool: sqlx::PgPool) {
+async fn the_worker_role_serves_none_of_these_routes(pool: sqlx::PgPool) {
     // Every id here is one that *works* under `Role::Api` — the seeded library, and a real
     // part. A 404 for an id that does not exist would prove nothing, because a mounted
     // handler answers 404 for those too. What separates "not mounted" from "mounted and
@@ -492,6 +546,10 @@ async fn the_worker_role_serves_none_of_the_three_routes(pool: sqlx::PgPool) {
     let (status, json) = patch_library(pool.clone(), Role::Worker, library(), false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json, serde_json::Value::Null, "PATCH is mounted on worker");
+
+    let (status, json) = get_library(pool.clone(), Role::Worker, library()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json, serde_json::Value::Null, "GET is mounted on worker");
 
     let (status, json) = post_part_thumbnail(pool.clone(), Role::Worker, part).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
