@@ -59,6 +59,17 @@ cross-check — the spec says why at length, do not re-derive it).
 
 Reuses `DbError::CorruptBlobHash` on a non-hex column, as `revision_source` does.
 
+**Ruling T1-A — `zstd_level` stays `Option<i16>` end to end.** Task 1 asked whether the
+`Option` buys anything, since `StoredBlobRow.zstd_level` is a bare `i16`. It does: that
+struct is *write*-side only — it mirrors `lapidary_storage::StoredBlob` and is never
+decoded from a row — so it is no precedent. The column is nullable and NULL is real: every
+derivative blob is written with `zstd_level NULL` (`repo.rs:479-483`). Source blobs always
+carry a concrete level today, so NULL on one means nobody recorded how those bytes were
+stored — which is precisely the input spec §2.5's hash check exists to catch. Do **not**
+`COALESCE(zstd_level, 0)`: that turns an unrecorded compression state into a confident
+"raw" and serves a zstd frame as the file. Decode the `Option`, pass it through unchanged,
+and let the hash check be loud.
+
 **Test:** a soft-deleted part's revision returns `None`; a live one returns all four fields.
 **Mutation:** drop the `deleted_at` filter. The deleted-part test must fail.
 
@@ -129,21 +140,69 @@ ruling caught exactly that shape.
 
 ## Task 6 — scan from the UI
 
-`POST /api/libraries/{id}/scan` on `Role::Api`, enqueue-only, returning the existing
-`ScanAccepted`; 404 for a library id matching no row. The worker keeps the directory walk —
-only it mounts `ingest_dir`. Same shape slice 4's `derive` job established; reuse
-`enqueue`, do not write a second one.
+**Amended after task 1. The original brief could not have been built.** It said the route
+"validates and enqueues" while "the worker keeps the directory walk" — but `enqueue_scan`
+takes a *path list*, and that list comes from walking `/ingest`, which the api container
+does not mount. There is nothing for an api-side route to enqueue.
 
-The worker's `:8081` scan route stays — `README.md`'s first-run curl documents it.
+`crates/lapidary-ingest/src/scan.rs`'s module doc also argues directly against the shape
+this task needs, and it is right on its own terms:
 
-Frontend: a scan control in the action bar, wired to the existing batch-status polling so
-progress appears without a reload.
+> It would be tidier to enqueue a single "scan this directory" job and answer immediately,
+> but the walk is the one part of a scan that can fail in a way the user must see *now*: a
+> missing or unreadable `/ingest` mount is a deployment mistake, and behind a job it
+> becomes a batch that quietly fails a poll or two later, with the request having already
+> answered 202.
 
-**Test:** the route enqueues a job with the right kind and payload; a phantom library id is
-404, not 202.
-**Mutation:** mount it under `Role::Worker`. The route test must fail — and that is the
-finding worth encoding: `deploy/web/Caddyfile` proxies only to `api:8080`, so a route on the
-worker is unreachable from a browser even though the worker is listening.
+**Reverse it, deliberately, and record the reversal in `scan.rs` where the reasoning is
+written — not only here.** A new `JobPayload::ScanDirectory` job kind, dispatched on
+`job.kind` exactly as slice 4's `derive` is. The api route enqueues one; the worker's
+handler does the walk and enqueues the per-file jobs.
+
+Rejected alternatives, with the reason each fails:
+
+- **A Caddy route to `worker:8081`.** Three lines and no Rust, and same-origin through the
+  proxy — the spec's §1.2 aside about "a second CORS surface" was wrong and does not apply
+  here. It fails on something else: the browser's API surface would span two backends by
+  URL pattern, with no gate watching that the pattern still matches the route.
+- **Mount `/ingest` on the api too.** Re-litigates why scan lives in `lapidary-ingest` at
+  all, and puts the ingest directory on the container whose whole point is that it reads
+  metadata and derivatives.
+
+**What makes the reversal honest rather than convenient:** the module doc's objection is
+that a failure goes unseen. Today it half-does — `index.tsx:342` renders `failedTotal` as
+a *count*, and `batch_status` already returns a `failures` list with `last_error` that
+nothing displays. So this task **renders the failure reasons**. A scan that fails on a bad
+mount must say so in the browser, or the reversal just moved the terminal round-trip
+somewhere less obvious.
+
+### The batch, which is the part that will bite
+
+`enqueue` mints a fresh `BatchId` every call. If the `ScanDirectory` job enqueues its files
+into a new batch, the UI polls the scan's own batch, sees `1 of 1` complete, and reports a
+finished scan while 150 files are still ingesting.
+
+So: `enqueue_into(batch, library, jobs)`, and the scan job puts its children in **its own**
+batch. `batch_status` counts rows by `batch_id` with no stored total (`jobs.rs:293`), so a
+growing batch already works — the aggregate is computed, not cached. Verify that rather
+than assuming it.
+
+The worker's `:8081` route becomes a thin enqueue of the same job kind. `README.md`'s
+first-run curl keeps working, and there is **one** walk implementation rather than two that
+drift.
+
+**Tests:** the api route enqueues a `scan_directory` job with the right kind and payload; a
+phantom library id is 404, not 202; the handler's walk enqueues one `ingest_file` per mesh
+candidate **into the batch it was given**, and `batch_status` on that batch reports the
+grown total; an unreadable ingest directory fails the job with a message naming the mount.
+**Mutation:** have the scan handler call `enqueue` instead of `enqueue_into`. The
+grown-total test must fail. This is the whole reason the task is shaped this way — if that
+test passes under the mutation, it is not pinning it.
+
+Second mutation, the one the original brief already had: mount the api route under
+`Role::Worker`. The route test must fail. `deploy/web/Caddyfile` proxies only to
+`api:8080`, so a route on the worker is unreachable from a browser even though the worker
+is listening on 8081.
 
 ## Task 7 — docs, then the exit run
 
