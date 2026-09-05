@@ -152,6 +152,15 @@ pub struct BatchStatus {
     pub ingested: u32,
     pub skipped: u32,
     pub rendered: u32,
+    /// How many `scan_directory` jobs in this batch have finished their walk — in
+    /// practice 0 or 1, since a scan enqueues one and its children join the same batch.
+    ///
+    /// Exposed so the progress line can say *files*. `total` counts jobs, and the walk is
+    /// a job; reporting it as a file made a three-file directory read "Scanning — 1 of 4
+    /// files", which `CLAUDE.md`'s measurement rule forbids. Subtracting this from both
+    /// halves is exact, where subtracting a hardcoded 1 would encode "every batch has a
+    /// walk" in the frontend — untrue of a render sweep.
+    pub scanned: u32,
     pub failed_total: u32,
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
@@ -195,12 +204,15 @@ mod tests {
         BatchStatus {
             batch_id: BatchId::new(),
             library_id: LibraryId::new(),
-            total: 6,
+            total: 7,
             pending: 0,
             running: 0,
             ingested: 5,
             skipped: 0,
             rendered: 0,
+            // The walk that found the six files, one of which failed. Counted in `total`
+            // as the job it is, and subtracted out wherever the number is called `files`.
+            scanned: 1,
             failed_total: 1,
             failed: vec![JobFailure {
                 path: "spacer-lp-2001-00.stl".to_owned(),

@@ -106,9 +106,19 @@ export const strings = {
   },
   scan: {
     /**
+     * Before the walk finishes there is no file count to report — the worker is still
+     * reading the directory. Saying "0 of 1 files" there is not a smaller claim than the
+     * truth, it is a wrong one: the 1 is the walk itself.
+     */
+    walking: 'Reading the folder…',
+    /**
      * Shown while a batch is draining. `done` counts every file the worker has finished
      * with, however it finished — ingested, skipped and failed alike — because what this
      * line answers is "how much is left", and a file that failed is not still pending.
+     *
+     * Both numbers are **files**, not jobs. The walk is a job in the same batch, so the
+     * caller subtracts `BatchStatus.scanned` from both halves before calling this — a
+     * three-file folder read "Scanning — 1 of 4 files" until a review measured it.
      */
     running: (done: number, total: number) =>
       `Scanning — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,

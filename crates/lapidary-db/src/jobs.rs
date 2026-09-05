@@ -309,25 +309,36 @@ impl PgJobs {
         // guard below. Both aggregate timestamp columns are `Option<i64>` for exactly
         // this reason.
         #[allow(clippy::type_complexity)]
-        let counts: Option<(i64, i64, i64, i64, i64, i64, i64, Option<i64>, Option<i64>)> =
-            sqlx::query_as(
-                "SELECT count(*), \
+        let counts: Option<(
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT count(*), \
                     count(*) FILTER (WHERE state = 'pending'), \
                     count(*) FILTER (WHERE state = 'running'), \
                     count(*) FILTER (WHERE outcome = 'ingested'), \
                     count(*) FILTER (WHERE outcome = 'skipped'), \
                     count(*) FILTER (WHERE outcome = 'rendered'), \
+                    count(*) FILTER (WHERE outcome = 'scanned'), \
                     count(*) FILTER (WHERE state = 'failed'), \
                     (extract(epoch FROM min(created_at)) * 1000000)::bigint, \
                     CASE WHEN count(*) FILTER (WHERE state IN ('pending','running')) = 0 \
                          THEN (extract(epoch FROM max(updated_at)) * 1000000)::bigint \
                     END \
              FROM job WHERE batch_id = $1 AND library_id = $2",
-            )
-            .bind(batch.as_uuid())
-            .bind(library.as_uuid())
-            .fetch_optional(&self.0)
-            .await?;
+        )
+        .bind(batch.as_uuid())
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
 
         // An aggregate over zero rows still returns one row, with count 0 -- so "no
         // jobs" is detected on the count, not on fetch_optional returning None.
@@ -338,6 +349,7 @@ impl PgJobs {
             ingested,
             skipped,
             rendered,
+            scanned,
             failed_total,
             started,
             finished,
@@ -400,6 +412,7 @@ impl PgJobs {
             ingested: ingested as u32,
             skipped: skipped as u32,
             rendered: rendered as u32,
+            scanned: scanned as u32,
             failed_total: failed_total as u32,
             failed: failures
                 .into_iter()

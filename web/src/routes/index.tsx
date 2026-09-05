@@ -93,9 +93,17 @@ type BatchKind = 'scan' | 'render'
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
     const settled = jobsSettled(status)
-    return kind === 'render'
-      ? strings.render.running(settled, status.total)
-      : strings.scan.running(settled, status.total)
+    if (kind === 'render') {
+      return strings.render.running(settled, status.total)
+    }
+    // `total` counts jobs and the walk is one of them, so both halves are shifted by the
+    // number of walks that have finished. While that is still 0 the batch holds nothing
+    // but the walk, and there is no file count to report yet — the worker is still
+    // reading the directory.
+    if (status.scanned === 0) {
+      return strings.scan.walking
+    }
+    return strings.scan.running(settled - status.scanned, status.total - status.scanned)
   }
   return kind === 'render'
     ? strings.render.finished(status.rendered)

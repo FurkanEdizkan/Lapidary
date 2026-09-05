@@ -97,6 +97,7 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   batchId: BATCH_ID,
   libraryId: DEFAULT_LIBRARY_ID,
   total: 6,
+  scanned: 0,
   pending: 6,
   running: 0,
   ingested: 0,
@@ -487,13 +488,16 @@ test('shows how far a running scan has got', async () => {
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([])),
-    batch: ok(batchStatus({ total: 6, pending: 3, running: 1, ingested: 2 })),
+    // Seven jobs: the walk, which is done, and the six files it found.
+    batch: ok(batchStatus({ total: 7, scanned: 1, pending: 3, running: 1, ingested: 2 })),
   })
   renderIndex({ batch: BATCH_ID })
 
-  // Two of six settled, so that is what the line says — `total` comes from the batch, not
-  // from the grid, which is still empty at this point precisely because the scan is why.
-  expect(await screen.findByText(strings.scan.running(2, 6))).toBeTruthy()
+  // Literal, never `strings.scan.running(2, 6)`: an assertion built from the same
+  // template it is checking compares the template against itself and passes whatever
+  // numbers, nouns or word order the template grows. That is how "1 of 4 files" for a
+  // three-file folder survived a green suite.
+  expect(await screen.findByText('Scanning — 2 of 6 files.')).toBeTruthy()
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}`,
   )
@@ -963,7 +967,10 @@ test('the scan button starts a scan and watches it as a scan, not as a render', 
       method: 'POST',
     }),
   )
-  expect(await screen.findByText(strings.scan.running(0, 1))).toBeTruthy()
+  // The walk has not finished, so the batch holds one job and zero known files. The old
+  // line read "Scanning — 0 of 1 files.", counting the walk as a file.
+  expect(await screen.findByText('Reading the folder…')).toBeTruthy()
+  expect(screen.queryByText(/of 1 files/)).toBeNull()
   expect(screen.queryByText(strings.render.running(0, 1))).toBeNull()
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${SCAN_BATCH_ID}`,
@@ -986,17 +993,19 @@ test('the progress line follows a batch whose total grows after the first poll',
         json: async () =>
           polls === 1
             ? // The walk itself, still running.
-              batchStatus({ total: 1, pending: 0, running: 1 })
+              batchStatus({ total: 1, scanned: 0, pending: 0, running: 1 })
             : // It found three files and put them in this batch; it is done itself.
-              batchStatus({ total: 4, pending: 3, running: 0 }),
+              batchStatus({ total: 4, scanned: 1, pending: 3, running: 0 }),
       }
     },
   })
   renderIndex({ batch: BATCH_ID })
 
-  expect(await screen.findByText(strings.scan.running(0, 1))).toBeTruthy()
+  expect(await screen.findByText('Reading the folder…')).toBeTruthy()
+  // Three files found, none settled — not "1 of 4", which counted the finished walk as a
+  // settled file and the walk job as a fourth file.
   expect(
-    await screen.findByText(strings.scan.running(1, 4), undefined, { timeout: 4000 }),
+    await screen.findByText('Scanning — 0 of 3 files.', undefined, { timeout: 4000 }),
   ).toBeTruthy()
 })
 

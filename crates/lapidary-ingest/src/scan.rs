@@ -52,6 +52,25 @@
 //! counts rows by `batch_id` on every read — so the total simply grows as the walk
 //! inserts.
 //!
+//! # What the reversal cost: the walk is retryable now
+//!
+//! The in-request walk ran exactly once — a request that failed was a request, and there
+//! was nothing to retry it. A job is retried, and this one is not idempotent: it re-walks
+//! and re-enqueues every candidate. Three paths reach it — `dequeue` reclaiming an
+//! expired lease, `release_leases` after `SHUTDOWN_GRACE` on a worker that was killed
+//! mid-walk, and a `Transient` failure from `enqueue_into` rescheduling the whole job —
+//! and `max_attempts` bounds it at three.
+//!
+//! Not made idempotent, deliberately. The duplicate `ingest_file` jobs hash the same
+//! bytes, hit `library_holds`, and settle as `Skipped`; nothing is ingested twice and no
+//! part is duplicated. What it costs is honesty in two numbers: `total` counts the
+//! duplicates, and a first-ever scan can report *"Scan complete — 150 added, 150 already
+//! here."* Deduplicating the walk would mean reading the batch's existing payloads before
+//! enqueueing — a query, a race, and a second definition of "already queued" — to prevent
+//! a wrong sentence on a path that needs a crashed worker to reach. Written down instead,
+//! because the in-request walk could not do this and a reader comparing the two versions
+//! deserves to know what changed.
+//!
 //! # What the response means
 //!
 //! `202 ScanAccepted` — the scan has been *accepted*, not performed. `queued` is `1`: the
@@ -148,8 +167,10 @@ impl WorkerHandler {
             .await
             .map_err(|e| HandlerError::Transient {
                 message: format!(
-                    "Could not queue the files this scan found: {e}. Nothing was queued, \
-                     so it is safe to start the scan again once the database is reachable."
+                    "Could not queue the files this scan found: {e}. Wait for the \
+                     database to come back and start the scan again — anything this \
+                     attempt did queue is re-scanned and reported as already here, \
+                     never ingested twice."
                 ),
             })?;
         Ok(Outcome::Scanned)

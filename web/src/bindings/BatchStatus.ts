@@ -9,7 +9,18 @@ import type { LibraryId } from "./LibraryId";
  * `ingested`, `skipped` and the per-file failures are slice 1's `ScanReport` counters,
  * relocated from a response body that vanished with the connection to rows that do not.
  */
-export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: number, pending: number, running: number, ingested: number, skipped: number, rendered: number, failedTotal: number, 
+export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: number, pending: number, running: number, ingested: number, skipped: number, rendered: number, 
+/**
+ * How many `scan_directory` jobs in this batch have finished their walk — in
+ * practice 0 or 1, since a scan enqueues one and its children join the same batch.
+ *
+ * Exposed so the progress line can say *files*. `total` counts jobs, and the walk is
+ * a job; reporting it as a file made a three-file directory read "Scanning — 1 of 4
+ * files", which `CLAUDE.md`'s measurement rule forbids. Subtracting this from both
+ * halves is exact, where subtracting a hardcoded 1 would encode "every batch has a
+ * walk" in the frontend — untrue of a render sweep.
+ */
+scanned: number, failedTotal: number, 
 /**
  * The first 100 failures, ordered by creation, so the list is stable across polls
  * rather than reshuffling under the reader. `failed_total` is the real count.
