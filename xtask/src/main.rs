@@ -375,8 +375,8 @@ fn check_deploy() -> Result<()> {
              services link the CAD kernel (static check: configuration only, not built images), \
              every service that runs lapidary-server sets LAPIDARY_ROLE, every kernel-linked \
              service sets it to worker and something does, and lapidary-api never names \
-             SourceStore and names SourceReader only in download.rs ({} source file(s) \
-             checked)",
+             SourceStore and names SourceReader only in crates/lapidary-api/src/download.rs \
+             ({} source file(s) checked)",
             api_sources.len()
         );
         Ok(())
@@ -399,7 +399,8 @@ fn check_deploy() -> Result<()> {
              service must set it to `worker` specifically, since any other value produces \
              that same container by a different route. The open path also never touches a \
              source file — lapidary-api must never name SourceStore, and may name \
-             SourceReader only in download.rs, the one route that hands a user the exact \
+             SourceReader only in crates/lapidary-api/src/download.rs — that path exactly, \
+             not any file named download.rs — the one route that hands a user the exact \
              bytes they asked for."
         );
         bail!("deploy check failed")

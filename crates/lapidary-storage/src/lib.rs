@@ -11,11 +11,12 @@
 //! holds the bytes; `deploy/compose.yaml` mounts the blob volume on `api` already. The
 //! dependency-graph half cannot express it on its own — `lapidary-api` legitimately
 //! depends on this crate for `DerivativeStore`, so the distinction is *which type*, not
-//! whether the crates may be connected — so `cargo xtask check-deploy` asserts
-//! `lapidary-api` never names `SourceStore` as a textual backstop against the mistake of
-//! importing it there. The crate that actually needs `SourceStore` is `lapidary-ingest`,
-//! not `lapidary-api`: ingest was tried as a role-gated route inside `lapidary-api`
-//! first, and moved out once it became clear that `lapidary-api` depending on
+//! whether the crates may be connected — so `cargo xtask check-deploy` asserts both
+//! halves as a textual backstop against the mistake of importing either type there:
+//! `lapidary-api` never names `SourceStore` at all, and names `SourceReader` only in
+//! `crates/lapidary-api/src/download.rs`. The crate that actually needs `SourceStore` is
+//! `lapidary-ingest`, not `lapidary-api`: ingest was tried as a role-gated route inside
+//! `lapidary-api` first, and moved out once it became clear that `lapidary-api` depending on
 //! `lapidary-cad` at all — regardless of which routes ever ran — made the `api`
 //! container image link the kernel again. See `docs/ARCHITECTURE.md`'s crate graph.
 
@@ -320,8 +321,13 @@ impl SourceReader {
     /// is about to change it, so a reader that re-derived it would start handing out zstd
     /// frames as though they were the file the day the policy moved. `None` is the column's
     /// nullable absence (`0002_parts.sql`) and reads as uncompressed, exactly like level 0.
+    ///
+    /// Every other level decodes, negatives included: zstd's `--fast=N` levels are spelled
+    /// as negative numbers and still produce a zstd *frame*, so a `> 0` test would hand a
+    /// user a compressed frame as their file. Nothing writes one today — `Compression`
+    /// cannot produce one — but slice 7's tiering is where level spellings get picked.
     pub fn get(&self, hash: &BlobHash, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
-        read_blob(&self.root, hash, zstd_level.is_some_and(|level| level > 0))
+        read_blob(&self.root, hash, zstd_level.is_some_and(|level| level != 0))
     }
 }
 
@@ -591,6 +597,13 @@ mod tests {
                 .get(&raw.hash, None)
                 .expect("reads with a null level"),
             threemf
+        );
+        // A negative level is zstd's --fast=N, which still writes a frame, so it has to
+        // take the decode branch. These bytes are not a frame, so refusing is the proof:
+        // a `> 0` test would return them unchanged and call that success.
+        assert!(
+            reader.get(&raw.hash, Some(-3)).is_err(),
+            "a negative level must decode, not pass raw bytes through"
         );
     }
 
