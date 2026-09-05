@@ -58,11 +58,19 @@ storedBytes: number | null,
  * Whether the stored bytes are a zstd frame — `blob.zstd_level` is `Some(level)`
  * with `level != 0`, the same predicate `SourceReader::get` decodes on.
  *
- * An unrecorded level (`NULL`) reports `false`, not "unknown". This is a display
- * field, and what it has to agree with is the file the user gets: the download
- * path takes the raw branch for `None`, so "not compressed" is what will actually
- * happen to those bytes. A third state would exist for a case nothing writes —
- * every source blob carries a concrete level, and the `NULL`-level derivative
- * blobs never reach this row.
+ * An unrecorded level (`NULL`) reports `false`, not "unknown" — and not because the
+ * download would hand those bytes over raw. It would not: `download.rs` refuses a
+ * `NULL` level outright, 500 naming the blob, per spec §2.5.1 and ruling T1-A, so
+ * the `None` half of that predicate is unreachable from the only caller.
+ *
+ * The reason is smaller. This field's own `None` is already spoken for: it means the
+ * revision has no source row at all, and a third state would put two unrelated facts
+ * on one display field. A `NULL` level is a data error, and the place that reports
+ * one is the route that has to refuse to act on it, not a card in a grid.
+ *
+ * That state is reachable in production, not only from a test's `UPDATE`:
+ * `link_existing` does not rewrite an existing `blob` row, and tessellation blobs
+ * are written with `zstd_level NULL`, so ingesting bytes byte-identical to a
+ * derivative writes a `role = 'source'` file row over a `NULL`-level blob.
  */
 compressed: boolean | null, createdAt: string, updatedAt: string, };

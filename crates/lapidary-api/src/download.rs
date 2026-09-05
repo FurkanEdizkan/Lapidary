@@ -96,10 +96,14 @@ pub async fn original(
         None => return missing_variant(),
     }
 
-    // Spec §2.5.1. Every source blob ingest writes carries a concrete level and every
-    // derivative carries NULL, so a NULL reached through `source_for_download` means a
-    // source row exists that no ingest path produced. Reading it raw would serve
-    // something and hope; refusing names the one thing an operator can go and look at.
+    // Spec §2.5.1. Ingest records a concrete level for every source blob it writes and
+    // NULL for every derivative — which does not make a NULL reached here a row from
+    // outside. `link_existing` leaves an existing `blob` row alone, so bytes
+    // byte-identical to a tessellation rung land as a source file over a NULL-level blob,
+    // and lapidary-db's `a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed`
+    // builds exactly that. Either way nobody recorded how these bytes were written:
+    // reading them raw would serve something and hope, and refusing names the one thing
+    // an operator can go and look at.
     let Some(zstd_level) = source.zstd_level else {
         return unrecorded_level(&source.hash);
     };
@@ -290,9 +294,9 @@ fn unknown_variant(got: &str) -> Response {
 }
 
 /// Spec §2.5.1. Same status and same refusal as [`hash_mismatch`], and a different
-/// message on purpose: this one says an operator has a `blob` row no ingest path wrote,
-/// which is something they can go and look at. Collapsing the two would leave them
-/// holding "the bytes were wrong" about bytes that were never the problem.
+/// message on purpose: this one says an operator has a `blob` row whose compression
+/// nobody recorded, which is something they can go and look at. Collapsing the two would
+/// leave them holding "the bytes were wrong" about bytes that were never the problem.
 fn unrecorded_level(hash: &BlobHash) -> Response {
     let hex = hash.to_hex();
     tracing::error!(hash = %hex, "a source blob has no recorded compression level");
@@ -302,8 +306,9 @@ fn unrecorded_level(hash: &BlobHash) -> Response {
             "message": format!(
                 "Blob {hex} has no recorded compression level, so there is no way to know \
                  whether reading it would produce the file that was ingested. Nothing was \
-                 served. Every source blob written by ingest records one, so this row came \
-                 from somewhere else — check it against the file on disk before serving it."
+                 served. Ingest records one for every source blob it writes, and leaves the \
+                 row alone for bytes it already held — check this row against the file on \
+                 disk before serving it."
             )
         })),
     )

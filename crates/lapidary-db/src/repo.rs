@@ -983,9 +983,17 @@ impl PartRepository for PgParts {
                     // the column is nullable, so a `None` level on a row that exists
                     // means "nobody recorded how these bytes were stored", which is a
                     // different fact from "this revision has no source file" and must
-                    // not collapse into it. The predicate is `SourceReader::get`'s, so
-                    // a card claiming "compressed" while the download hands over raw
-                    // bytes is the drift this pins. See `PartSummary::compressed`.
+                    // not collapse into it. The predicate matches `SourceReader::get`'s
+                    // for every level actually recorded, which is what keeps a card
+                    // claiming "compressed" from sitting over a raw download. A `NULL`
+                    // one is not a download this card describes at all: `download.rs`
+                    // answers 500 for it rather than serving anything (spec §2.5.1), so
+                    // reporting `false` is the display field declining to be the place a
+                    // data error surfaces. Reachable in production, not only by a direct
+                    // UPDATE — `link_existing` leaves an existing `blob` row alone and
+                    // tessellation blobs carry `zstd_level NULL`, so bytes byte-identical
+                    // to a derivative arrive as a source file over one. See
+                    // `PartSummary::compressed`.
                     let compressed = source_hash
                         .as_ref()
                         .map(|_| zstd_level.is_some_and(|level| level != 0));

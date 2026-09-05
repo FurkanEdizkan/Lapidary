@@ -1050,6 +1050,208 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool) {
+    // `PgParts::page` and `PgParts::source_for_download` both claim, in their own
+    // comments, to resolve the same `file` row: same `role = 'source'` filter, same
+    // `created_at DESC, id DESC`. `file` carries no unique constraint on
+    // `(revision_id, role)`, so that agreement is a choice rather than something the
+    // schema enforces — and one revision with one file row cannot tell whether either
+    // query still makes it. Three rows on one revision can. Stop filtering on the role
+    // and the card advertises the render's 777 bytes while the button serves half a
+    // megabyte of STL; reverse either ordering and the card describes the file the
+    // re-upload replaced.
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(
+        &ingest,
+        library(),
+        "Manifold block, LP-2210-04",
+        0xe1,
+        Some(b"webp"),
+    )
+    .await;
+    let revision = only_revision(&pool, id).await;
+    let reupload = BlobHash::from_bytes([0xe2; 32]);
+    let render = BlobHash::from_bytes([0xe3; 32]);
+
+    // Sizes deliberately unlike `blob_row`'s and unlike each other: a card that reads
+    // the wrong row has to read visibly wrong numbers, not the same ones twice.
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($1, 512000, 218640, 3, 1), ($2, 777, 777, 0, 1)",
+    )
+    .bind(reupload.to_hex())
+    .bind(render.to_hex())
+    .execute(&pool)
+    .await
+    .expect("a blob for the re-uploaded STL and one for the render");
+    // Explicit timestamps rather than three statements racing `now()`: the ordering is
+    // the whole assertion, so it is written down instead of inferred from insert order.
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at) \
+         VALUES (gen_random_uuid(), $1, 'source', 'stl', $2, 512000, now() + interval '1 minute'), \
+         (gen_random_uuid(), $1, 'render', 'png', $3, 777, now() + interval '2 minutes')",
+    )
+    .bind(revision.as_uuid())
+    .bind(reupload.to_hex())
+    .bind(render.to_hex())
+    .execute(&pool)
+    .await
+    .expect("a newer source row and a newer row of another role");
+
+    let parts = PgParts(pool.clone());
+    let page = parts.page(library(), None, 10).await.expect("page");
+    assert_eq!(page.len(), 1, "three file rows are still one part");
+    let card = &page[0].summary;
+    let download = parts
+        .source_for_download(revision)
+        .await
+        .expect("query")
+        .expect("a live part has something to download");
+
+    assert_eq!(
+        card.source_hash,
+        Some(download.hash),
+        "the figures on the card and the bytes behind its download link have to come \
+         off one `file` row, or the card is advertising a file the button will not serve"
+    );
+    assert_eq!(
+        card.source_hash,
+        Some(reupload),
+        "and that row is the newest source one, not the render and not the original"
+    );
+    assert_eq!(card.source_bytes, Some(512_000));
+    assert_eq!(card.stored_bytes, Some(218_640));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: sqlx::PgPool) {
+    // Built through the path that actually produces this state rather than by an UPDATE
+    // over `blob`, because whether it is reachable at all is half of what is being
+    // asserted. `insert_part_chain` writes every tessellation blob with `zstd_level
+    // NULL`, and the ingest handler routes bytes it already holds to `link_existing`,
+    // which leaves that row exactly as it found it. So a file whose bytes are
+    // byte-identical to an existing rung lands as a `role = 'source'` row over a
+    // NULL-level blob. Contrived under an STL-only scan; not unreachable.
+    let ingest = PgIngest(pool.clone());
+    let rungs = [rung("tessellation_l0", 0xe6, Some(32))];
+    ingest
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &blob_row(0xe5),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &rungs,
+            thumbnail_webp: Some(b"webp-bracket"),
+        })
+        .await
+        .expect("records the part whose rung the next part's bytes are identical to");
+
+    // Exactly what the handler passes on that branch: `bytes.len()` for both sizes and a
+    // level it does not get to choose, because the `blob` row already exists.
+    let duplicate = StoredBlobRow {
+        hash: BlobHash::from_bytes([0xe6; 32]),
+        size_bytes: 40_960,
+        stored_bytes: 40_960,
+        zstd_level: 0,
+    };
+    let clip = ingest
+        .link_existing(IngestRequest {
+            library: library(),
+            name: "Cable clip, LP-3300-01",
+            blob: &duplicate,
+            measurements: &open_mesh(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp-clip"),
+        })
+        .await
+        .expect("links the part onto bytes the database already holds");
+
+    let level: Option<i16> = sqlx::query_scalar("SELECT zstd_level FROM blob WHERE blake3 = $1")
+        .bind(duplicate.hash.to_hex())
+        .fetch_one(&pool)
+        .await
+        .expect("the rung's blob row");
+    assert_eq!(
+        level, None,
+        "link_existing must have left the rung's blob row alone, or this fixture is not \
+         the state it claims to be"
+    );
+
+    let parts = PgParts(pool.clone());
+    let page = parts.page(library(), None, 10).await.expect("page");
+    let card = page
+        .iter()
+        .find(|row| row.summary.id == clip)
+        .map(|row| &row.summary)
+        .expect("the linked part is in the page");
+    assert_eq!(
+        card.source_hash,
+        Some(duplicate.hash),
+        "there is a source row, so the field below is about its level and not its absence"
+    );
+    assert_eq!(
+        card.compressed,
+        Some(false),
+        "`false`, never `None`: `None` on this field means no source row at all, which \
+         is a different fact and is asserted next door"
+    );
+
+    // The other half of that decision. The card declines to be where a data error
+    // surfaces; the download route is where it surfaces, and refuses to serve the bytes
+    // rather than reading them raw (spec §2.5.1). Asserted here because this fixture is
+    // the proof that the 500 is reachable from an ordinary ingest.
+    let download = parts
+        .source_for_download(only_revision(&pool, clip).await)
+        .await
+        .expect("query")
+        .expect("a live part has something to download");
+    assert_eq!(
+        download.zstd_level, None,
+        "the unrecorded level the download route answers 500 for, reached without \
+         corrupting a single row by hand"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx::PgPool) {
+    // The last of `bytes_column`'s four sibling guards without a test, and the one whose
+    // absence is easiest to justify wrongly: neither `blob.size_bytes` nor
+    // `blob.stored_bytes` carries a CHECK constraint, so a negative row is representable
+    // by anything else with write access, and `as u64` would put 18 exabytes on a card
+    // instead of saying the row is wrong. Same shape as its triangle-count neighbour.
+    let ingest = PgIngest(pool.clone());
+    seed_part(
+        &ingest,
+        library(),
+        "Impeller, LP-5501-02",
+        0xe8,
+        Some(b"webp"),
+    )
+    .await;
+    sqlx::query("UPDATE blob SET stored_bytes = -1 WHERE blake3 = $1")
+        .bind(BlobHash::from_bytes([0xe8; 32]).to_hex())
+        .execute(&pool)
+        .await
+        .expect("corrupt the column directly");
+
+    let err = PgParts(pool)
+        .page(library(), None, 10)
+        .await
+        .expect_err("a negative size must be reported, not reinterpreted");
+    match err {
+        DbError::NegativeByteCount { column, value } => {
+            assert_eq!(column, "blob.stored_bytes");
+            assert_eq!(value, -1);
+        }
+        other => panic!("expected NegativeByteCount, got {other:?}"),
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::PgPool) {
     // The source LATERAL has to be a LEFT one, and nothing else proves it: ingest always
     // writes a `file` row, so `a_part_ingested_without_a_thumbnail_still_appears_in_the
