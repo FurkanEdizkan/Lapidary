@@ -1,10 +1,14 @@
-//! Content-addressed blob storage. Two handles, deliberately:
+//! Content-addressed blob storage. Three handles, deliberately:
 //!
 //! `DerivativeStore` reads and writes derivatives — thumbnails, tessellations — and both
 //! roles hold one. `SourceStore` reaches the ingested source bytes and requires a
-//! `WorkerRole` token to construct.
+//! `WorkerRole` token to construct. `SourceReader` reads those same bytes and can do
+//! nothing else — its own doc says why that is not a hole in the rule below.
 //!
-//! This is the API-level half of "the open path never touches a source file". The
+//! This is the type half of "the **open** path never touches a source file" — a rule
+//! about *opening*: the grid, the viewer, the detail card, the interactive path that
+//! must not parse a STEP file to draw a thumbnail. It is not a rule about which process
+//! holds the bytes; `deploy/compose.yaml` mounts the blob volume on `api` already. The
 //! dependency-graph half cannot express it on its own — `lapidary-api` legitimately
 //! depends on this crate for `DerivativeStore`, so the distinction is *which type*, not
 //! whether the crates may be connected — so `cargo xtask check-deploy` asserts
@@ -282,6 +286,45 @@ impl SourceStore {
     }
 }
 
+/// Source bytes, read-only: no `put`, no `remove`, and no `WorkerRole` to construct.
+///
+/// It exists for `lapidary-api`'s download route, which hands a user the exact bytes they
+/// asked for. That is not the open path — it parses nothing, draws nothing, and no route
+/// that renders a part reads through here — and `CLAUDE.md`'s other rule, *"`variant=original`
+/// returns byte-identical ingested bytes"*, cannot be satisfied without it.
+///
+/// Not `SourceStore`, because the alternatives were worse: gating this behind `WorkerRole`
+/// means handing the api `put` and `remove` on source bytes to buy a read, and the write
+/// surface is the half of that type worth spending a token on. Proxying the download
+/// through the worker instead buys nothing — the api already has the bytes — and puts every
+/// download behind the 2 GiB ceiling that exists so the worker can mesh. See
+/// `docs/superpowers/specs/2026-09-05-phase-1-slice-5-browser-design.md` §1.2.
+///
+/// What keeps that from spreading: `xtask/src/deploy.rs`'s `check_open_path_boundary`
+/// allows `lapidary-api` to name this type in `download.rs` and nowhere else. A read-only
+/// handle in one named route is a decision; the same handle in six files is the mistake the
+/// `SourceStore` grep exists to catch, arrived at by copy-paste.
+pub struct SourceReader {
+    root: PathBuf,
+}
+
+impl SourceReader {
+    pub fn open(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// `zstd_level` is `blob.zstd_level` as stored, read from the same row that carried the
+    /// hash — never `Compression::for_source_format`. That is ingest-time policy and slice 7
+    /// is about to change it, so a reader that re-derived it would start handing out zstd
+    /// frames as though they were the file the day the policy moved. `None` is the column's
+    /// nullable absence (`0002_parts.sql`) and reads as uncompressed, exactly like level 0.
+    pub fn get(&self, hash: &BlobHash, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
+        read_blob(&self.root, hash, zstd_level.is_some_and(|level| level > 0))
+    }
+}
+
 /// A missing file is success: the reap's job is that the bytes are not on disk
 /// afterwards, and a `put` that failed before its rename leaves nothing to remove.
 fn remove_blob(root: &Path, hash: &BlobHash) -> Result<(), StorageError> {
@@ -499,6 +542,55 @@ mod tests {
         assert_eq!(
             s.get(&stored.hash, Compression::AsIs).expect("reads"),
             bytes
+        );
+    }
+
+    #[test]
+    fn a_source_reader_reads_back_what_a_source_store_wrote() {
+        // The download route's claim in miniature: bytes ingest stored come back
+        // byte-identical through a handle that cannot write them. The level is threaded
+        // from the `StoredBlob` the write returned rather than written as a literal,
+        // because that is the coupling the route has — it reads `blob.zstd_level` out of
+        // the same row that carried the hash.
+        let (dir, s) = store();
+        let reader = SourceReader::open(dir.path());
+
+        let stl = "facet normal 0 0 1\nvertex 12.0 4.5 0.0\n"
+            .repeat(512)
+            .into_bytes();
+        let compressed = s.put(&stl, Compression::Zstd).expect("stores the STL");
+        assert!(
+            compressed.stored_bytes < compressed.size_bytes,
+            "the STL must actually be compressed on disk, or the decode leg proves nothing"
+        );
+        assert_eq!(
+            reader
+                .get(&compressed.hash, Some(compressed.zstd_level))
+                .expect("reads the STL back"),
+            stl
+        );
+
+        // 3MF is a deflate ZIP, so DATA.md §1.2 stores it as-is — the leg where a reader
+        // that decoded unconditionally would fail on a frame that was never a frame.
+        let threemf = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".repeat(2048);
+        let raw = s.put(&threemf, Compression::AsIs).expect("stores the 3MF");
+        assert_eq!(
+            raw.stored_bytes, raw.size_bytes,
+            "deliberately compressible bytes, so equal sizes prove they were stored raw"
+        );
+        assert_eq!(
+            reader
+                .get(&raw.hash, Some(raw.zstd_level))
+                .expect("reads the 3MF back"),
+            threemf
+        );
+        // The column is nullable, and an absent level must read as uncompressed rather
+        // than sending raw bytes through the decoder.
+        assert_eq!(
+            reader
+                .get(&raw.hash, None)
+                .expect("reads with a null level"),
+            threemf
         );
     }
 

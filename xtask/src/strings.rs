@@ -76,73 +76,73 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "xtask/src/deploy.rs",
-        503,
+        521,
         "a doc comment quoting a real indented BuildKit RUN-continuation example (RUN foo, a comment line, then an indented bar) where the indentation is the example itself",
     ),
     (
         "xtask/src/deploy.rs",
-        667,
+        715,
         "CORRECT_COMPOSE: a deliberate compose.yaml fixture; YAML indentation is meaningful",
     ),
     (
         "xtask/src/deploy.rs",
-        735,
+        783,
         "a compose.yaml api-service fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        736,
+        784,
         "a compose.yaml api-service (with args) fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        752,
+        800,
         "a compose.yaml args-block fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        774,
+        822,
         "a compose.yaml api-service fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        775,
+        823,
         "a compose.yaml api-service (with a banner comment) fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        793,
+        841,
         "a compose.yaml worker-service fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        820,
+        868,
         "a compose.yaml args-block fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        821,
+        869,
         "a compose.yaml args-block (list form) fixture, same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        921,
+        969,
         "a compose.yaml worker-service fixture (long build form), same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        922,
+        970,
         "a compose.yaml worker-service fixture (short build form), same reason as CORRECT_COMPOSE",
     ),
     (
         "xtask/src/deploy.rs",
-        1074,
+        1122,
         "a Containerfile RUN cargo build fixture; the leading spaces are the line-continuation indent this module's own parser is being tested against",
     ),
     (
         "xtask/src/deploy.rs",
-        1115,
-        "a Containerfile RUN cargo build (with an interior comment) fixture, same reason as line 1074",
+        1163,
+        "a Containerfile RUN cargo build (with an interior comment) fixture, same reason as line 1122",
     ),
     (
         "xtask/src/strings.rs",
@@ -181,18 +181,18 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "xtask/src/main.rs",
-        735,
+        738,
         "a synthetic cargo test -- --list transcript reproducing real cargo output (see bindings_command_tests); the leading spaces before Running are cargo's own formatting, not ours",
     ),
     (
         "xtask/src/main.rs",
-        778,
-        "a synthetic cargo test -- --list transcript pinning that a test matching only by its MODULE name is not counted, same reason as line 735",
+        781,
+        "a synthetic cargo test -- --list transcript pinning that a test matching only by its MODULE name is not counted, same reason as line 738",
     ),
     (
         "xtask/src/main.rs",
-        747,
-        "a synthetic cargo test -- --list transcript, same reason as line 735",
+        750,
+        "a synthetic cargo test -- --list transcript, same reason as line 738",
     ),
 ];
 
