@@ -114,11 +114,16 @@ const WEBP_ORANGE = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQ
 const MOTOR_MOUNT: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0001',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0001',
   name: 'NEMA 17 motor mount, 42 mm face',
   partNumber: 'LP-3105-A',
   thumbnail: WEBP_BLUE,
   triangleCount: 12486,
   approximate: true,
+  sourceHash: '33237f7971cb1497a5417c667e9a459c240943c7378b44fcd4f6404590363895',
+  sourceBytes: 624_384,
+  storedBytes: 197_012,
+  compressed: true,
   createdAt: '2026-08-14T09:12:44Z',
   updatedAt: '2026-08-14T09:12:44Z',
 }
@@ -126,24 +131,40 @@ const MOTOR_MOUNT: PartCard = {
 const HEX_NUT: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0002',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0002',
   name: 'Hex nut M8, DIN 934',
   partNumber: 'DIN934-M8-A2',
   thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
   approximate: true,
+  sourceHash: 'a0763a33d499b598864ddd26eeca15f6d9794ce44185883fd969888941de365d',
+  sourceBytes: 99_284,
+  storedBytes: 26_741,
+  compressed: true,
   createdAt: '2026-08-14T09:12:51Z',
   updatedAt: '2026-08-14T09:12:51Z',
 }
 
-/** Ingested, but the worker has not rasterized a thumbnail derivative for it yet. */
+/**
+ * Ingested, but the worker has not rasterized a thumbnail derivative for it yet. Also
+ * the only 3MF of the three, so it is the fixture that carries the `AsIs` storage
+ * shape: a 3MF is already a zip, the ingest policy stores it uncompressed, and its two
+ * sizes agree. The other two would let a card that rendered `sourceBytes` where
+ * `storedBytes` belongs pass unnoticed.
+ */
 const SHAFT_COUPLER: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0003',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0003',
   name: 'Flexible shaft coupler, 5 mm to 8 mm',
   partNumber: 'LP-4420-B',
   thumbnail: null,
   triangleCount: 7320,
   approximate: true,
+  sourceHash: 'c6b1d88498005800fb68ccc2f54588d00bbc1603243fcef5ef8f8000d1be2a70',
+  sourceBytes: 148_930,
+  storedBytes: 148_930,
+  compressed: false,
   createdAt: '2026-08-14T09:13:02Z',
   updatedAt: '2026-08-14T09:13:02Z',
 }

@@ -958,6 +958,140 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
+    // Two source blobs that differ the way the ingest policy makes them differ: an STL
+    // goes through zstd (`Compression::for_source_format`), a 3MF is already a zip and
+    // is stored `AsIs`. Written out here rather than through `blob_row`, because the
+    // whole assertion is that these two rows read back differently — a fixture pair
+    // that happened to carry the same sizes would pass whatever the query reported.
+    let stl = StoredBlobRow {
+        hash: BlobHash::from_bytes([0xc1; 32]),
+        size_bytes: 204_800,
+        stored_bytes: 91_204,
+        zstd_level: 3,
+    };
+    let three_mf = StoredBlobRow {
+        hash: BlobHash::from_bytes([0xc2; 32]),
+        size_bytes: 61_294,
+        stored_bytes: 61_294,
+        zstd_level: 0,
+    };
+    assert!(
+        stl.stored_bytes < stl.size_bytes,
+        "the compressed fixture has to actually compress, or reporting size_bytes for \
+         both columns would look correct"
+    );
+
+    let ingest = PgIngest(pool.clone());
+    let bracket = ingest
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            blob: &stl,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp"),
+        })
+        .await
+        .expect("records the compressed source");
+    let impeller = ingest
+        .record(IngestRequest {
+            library: library(),
+            name: "Impeller, LP-5501-02",
+            blob: &three_mf,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "3mf",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp"),
+        })
+        .await
+        .expect("records the AsIs source");
+
+    let page = PgParts(pool.clone())
+        .page(library(), None, 10)
+        .await
+        .expect("page");
+    assert_eq!(page.len(), 2);
+    let row = |id: PartId| {
+        page.iter()
+            .find(|row| row.summary.id == id)
+            .map(|row| &row.summary)
+            .expect("the part is in the page")
+    };
+
+    let compressed = row(bracket);
+    assert_eq!(compressed.source_bytes, Some(204_800));
+    assert_eq!(
+        compressed.stored_bytes,
+        Some(91_204),
+        "the size on disk, not the size ingested — the whole point of showing both"
+    );
+    assert_eq!(compressed.compressed, Some(true));
+    assert_eq!(compressed.source_hash, Some(stl.hash));
+    assert_eq!(
+        compressed.revision,
+        only_revision(&pool, bracket).await,
+        "the card names the revision its numbers came from, which is what a download \
+         link is built out of"
+    );
+
+    let as_is = row(impeller);
+    assert_eq!(as_is.source_bytes, Some(61_294));
+    assert_eq!(
+        as_is.stored_bytes,
+        Some(61_294),
+        "a 3MF is stored as it arrived, so the two figures agree"
+    );
+    assert_eq!(as_is.compressed, Some(false));
+    assert_eq!(as_is.source_hash, Some(three_mf.hash));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::PgPool) {
+    // The source LATERAL has to be a LEFT one, and nothing else proves it: ingest always
+    // writes a `file` row, so `a_part_ingested_without_a_thumbnail_still_appears_in_the
+    // _grid` would stay green with an inner join here. A part whose source row is gone is
+    // a part its owner most needs to see — to delete it, or to re-scan it — and hiding it
+    // is how a half-repaired database becomes an invisible one.
+    let id = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Cable clip, LP-3300-01",
+            blob: &blob_row(0xc3),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp"),
+        })
+        .await
+        .expect("records");
+    sqlx::query(
+        "DELETE FROM file f USING revision r WHERE f.revision_id = r.id AND r.part_id = $1",
+    )
+    .bind(id.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("removes the source file row");
+
+    let page = PgParts(pool.clone())
+        .page(library(), None, 10)
+        .await
+        .expect("page");
+    assert_eq!(page.len(), 1, "the part is still in the grid");
+    assert_eq!(page[0].summary.source_hash, None);
+    assert_eq!(page[0].summary.source_bytes, None);
+    assert_eq!(page[0].summary.stored_bytes, None);
+    assert_eq!(
+        page[0].summary.compressed, None,
+        "absent, not false: there is no source row to be uncompressed"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let id = ingest

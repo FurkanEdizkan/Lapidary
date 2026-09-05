@@ -1,7 +1,10 @@
 //! The grid: listing parts in a library. `GET /api/libraries/{id}/parts?after=&limit=`,
 //! `api` role only. The open path's main read — this is what the grid renders from —
 //! and it reads metadata and derivatives only, never a source file and never the CAD
-//! kernel (structurally: this crate cannot link `lapidary-cad`, see `lib.rs`).
+//! kernel (structurally: this crate cannot link `lapidary-cad`, see `lib.rs`). The
+//! storage figures on a card are `file` and `blob` rows — how large a source file is
+//! and how it was stored — and reading a row about a file is not opening one; nothing
+//! here ever asks the blob store for bytes.
 //!
 //! `after=` with nothing after the `=` is not a client bug: it is the literal shape of
 //! `` `…/parts?after=${cursor ?? ''}&limit=${n}` ``, the natural way to build this URL
@@ -17,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
-use lapidary_core::{LibraryId, PartId};
+use lapidary_core::{BlobHash, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, PartRepository, PartRow, PgParts};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -44,6 +47,10 @@ const MAX_LIMIT: u16 = 100;
 pub struct PartCard {
     pub id: PartId,
     pub library: LibraryId,
+    /// The revision this card's numbers describe, and the one its download link names.
+    /// Carried verbatim from `PartSummary.revision` — see there for why the frontend
+    /// must not resolve "latest" a second time of its own.
+    pub revision: RevisionId,
     pub name: String,
     pub part_number: Option<String>,
     /// `data:image/webp;base64,<...>`. `None` when the part's latest revision has no
@@ -56,6 +63,20 @@ pub struct PartCard {
     /// meaning must stay "any" for when analytic B-rep figures arrive alongside mesh
     /// ones on the same part.
     pub approximate: bool,
+    /// The source file's hash, `None` when the revision has no source row. Rendered as
+    /// a short hash beside the download link so a user can check what they got against
+    /// what the card claimed (`DATA.md` §5.1) — holding it is not authorization to read
+    /// it, exactly as `PartSummary.thumbnail` is not.
+    pub source_hash: Option<BlobHash>,
+    /// Ingested size and size on disk, from `PartSummary`. `number | null`, not
+    /// `bigint`, for the reason given there: it is what serde puts on the wire.
+    #[ts(type = "number | null")]
+    pub source_bytes: Option<u64>,
+    #[ts(type = "number | null")]
+    pub stored_bytes: Option<u64>,
+    /// Whether the stored bytes are a zstd frame. `Some(false)` covers both "stored
+    /// raw" and "level unrecorded" — see `PartSummary.compressed`.
+    pub compressed: Option<bool>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -184,6 +205,7 @@ fn to_card(row: PartRow) -> PartCard {
     PartCard {
         id: summary.id,
         library: summary.library,
+        revision: summary.revision,
         name: summary.name,
         part_number: summary.part_number,
         thumbnail: row
@@ -191,6 +213,10 @@ fn to_card(row: PartRow) -> PartCard {
             .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),
         triangle_count: summary.triangle_count,
         approximate: summary.approximate,
+        source_hash: summary.source_hash,
+        source_bytes: summary.source_bytes,
+        stored_bytes: summary.stored_bytes,
+        compressed: summary.compressed,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

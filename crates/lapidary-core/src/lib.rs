@@ -49,11 +49,16 @@ mod tests {
         let summary = PartSummary {
             id: PartId::new(),
             library: LibraryId::new(),
+            revision: RevisionId::new(),
             name: "Bearing block, 608ZZ".to_owned(),
             part_number: Some("LP-1042-03".to_owned()),
             thumbnail: Some(BlobHash::from_bytes([0x11; 32])),
             triangle_count: Some(48_112),
             approximate: true,
+            source_hash: Some(BlobHash::from_bytes([0x22; 32])),
+            source_bytes: Some(204_800),
+            stored_bytes: Some(91_204),
+            compressed: Some(true),
             created_at: now,
             updated_at: now,
         };
@@ -64,6 +69,11 @@ mod tests {
         assert_eq!(
             json["thumbnail"], "1111111111111111111111111111111111111111111111111111111111111111",
             "a blob hash must go over the wire as hex, never as a byte array"
+        );
+        assert!(
+            json["sourceBytes"].is_u64(),
+            "a size is a JSON number, which is why the binding says `number` — ts-rs 12 \
+             types a bare u64 as `bigint`, and JSON.parse never produces one"
         );
     }
 

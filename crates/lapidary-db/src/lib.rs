@@ -64,6 +64,11 @@ pub enum DbError {
     TriangleCountTooLarge { column: &'static str, value: u32 },
 
     #[error(
+        "`{column}` holds {value}, which is negative and cannot be a size in bytes. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a negative size."
+    )]
+    NegativeByteCount { column: &'static str, value: i64 },
+
+    #[error(
         "`{column}` holds `{value}`, which is not a BLAKE3 digest. Check what else has write access to this database, then re-scan the part so the row names bytes the blob store actually holds."
     )]
     CorruptBlobHash { column: &'static str, value: String },
@@ -115,6 +120,7 @@ impl DbError {
             | DbError::TimestampOutOfRange { .. }
             | DbError::NegativeTriangleCount { .. }
             | DbError::TriangleCountTooLarge { .. }
+            | DbError::NegativeByteCount { .. }
             | DbError::CorruptBlobHash { .. }
             | DbError::ThumbnailNotInline { .. }
             | DbError::EmptyDerivative { .. } => self.to_string(),

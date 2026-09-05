@@ -202,6 +202,47 @@ async fn the_thumbnail_is_a_data_url_that_decodes_to_the_ingested_bytes(pool: sq
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_card_carries_the_revision_and_the_storage_figures(pool: sqlx::PgPool) {
+    // `to_card` is a hand-written mapping of five new fields, and it is the only seam
+    // the rest of the suite does not cross: `PgParts::page`'s test asserts the domain
+    // shape, and the web fixtures are hand-built `PartCard`s that never travel through
+    // here. A mapper that dropped `revision`, or that assigned `sourceBytes` to both
+    // size fields, would leave every one of those green and reach the browser wrong.
+    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03", b"webp").await;
+    // As text: this crate does not depend on `uuid`, and comparing the JSON string to a
+    // string is the same assertion without a dependency added to make a test read nicer.
+    let revision: String = sqlx::query_scalar(
+        "SELECT r.id::text FROM revision r JOIN part p ON p.id = r.part_id WHERE p.library_id = $1",
+    )
+    .bind(library().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("the seeded revision");
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    let card = &json["parts"][0];
+    assert_eq!(
+        card["revision"],
+        serde_json::Value::String(revision),
+        "the card names the revision a download URL is built from"
+    );
+    assert_eq!(
+        card["sourceHash"],
+        serde_json::Value::String(BlobHash::from_bytes([0x31; 32]).to_hex()),
+        "the hash goes over the wire as hex, for the user to check what they got against"
+    );
+    // `seed_part` stores 2048 bytes as 1024 — the two figures must not read as one.
+    assert_eq!(card["sourceBytes"], 2_048);
+    assert_eq!(card["storedBytes"], 1_024);
+    assert_eq!(card["compressed"], true);
+    assert!(
+        card["sourceBytes"].is_u64(),
+        "a size is a JSON number, which is what the `number | null` binding promises"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
     // Nothing in slice 1 creates a library through the API (same note as
     // crates/lapidary-db/tests/repo.rs), so a second library is inserted directly.

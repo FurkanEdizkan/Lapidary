@@ -806,8 +806,21 @@ impl PartRepository for PgParts {
         // those: several derivative rows for one revision means several identical grid
         // cards for one part, and a page of `limit` rows holding fewer than `limit` distinct
         // parts, silently under-reporting `next`.
+        //
+        // The source LATERAL is a third of the same shape, and it is a LEFT one for the
+        // reason the derivative's is: a revision whose source `file` row is missing is a
+        // part whose owner most needs to see it in the grid, to delete or re-scan it. An
+        // inner join would answer that by hiding the part. Its `role = 'source'` filter
+        // and `created_at DESC, id DESC` ordering are character for character
+        // `source_for_download`'s, so the sizes on a card and the bytes behind its
+        // download link always describe the same `file` row — `file` has no unique
+        // constraint on `(revision_id, role)`, so that agreement is a choice, not a
+        // property of the schema. `blob` is joined inside the LATERAL because both sizes
+        // must come off one row: `file.size_bytes` duplicates `blob.size_bytes`, and a
+        // card built from one of each would report a ratio between two tables.
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
+            Uuid,
             Uuid,
             Uuid,
             String,
@@ -815,16 +828,25 @@ impl PartRepository for PgParts {
             Option<Vec<u8>>,
             Option<i32>,
             Option<bool>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i16>,
             i64,
             i64,
         )> = sqlx::query_as(
-            "SELECT p.id, p.library_id, p.name, p.part_number, d.thumb_bytes, \
+            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
+                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT f.blake3, b.size_bytes, b.stored_bytes, b.zstd_level \
+                                FROM file f JOIN blob b ON b.blake3 = f.blake3 \
+                                WHERE f.revision_id = r.id AND f.role = 'source' \
+                                ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
@@ -839,16 +861,32 @@ impl PartRepository for PgParts {
         .fetch_all(&self.0)
         .await?;
 
+        // `blob`'s size columns are `bigint`, so sqlx hands them back signed. `as u64`
+        // on a negative one would put 18 exabytes on a card instead of saying the row
+        // is wrong — the same silent wraparound the triangle count below refuses.
+        fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
+            value
+                .map(|v| {
+                    u64::try_from(v).map_err(|_| DbError::NegativeByteCount { column, value: v })
+                })
+                .transpose()
+        }
+
         rows.into_iter()
             .map(
                 |(
                     id,
                     lib,
+                    revision,
                     name,
                     part_number,
                     thumb_bytes,
                     triangles,
                     _watertight,
+                    source_hash,
+                    source_bytes,
+                    stored_bytes,
+                    zstd_level,
                     created_us,
                     updated_us,
                 )| {
@@ -863,10 +901,29 @@ impl PartRepository for PgParts {
                             })
                         })
                         .transpose()?;
+                    let source_hash = source_hash
+                        .map(|hex| {
+                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                                column: "file.blake3",
+                                value: hex,
+                            })
+                        })
+                        .transpose()?;
+                    // Keyed off the source row's presence, never off `zstd_level`'s:
+                    // the column is nullable, so a `None` level on a row that exists
+                    // means "nobody recorded how these bytes were stored", which is a
+                    // different fact from "this revision has no source file" and must
+                    // not collapse into it. The predicate is `SourceReader::get`'s, so
+                    // a card claiming "compressed" while the download hands over raw
+                    // bytes is the drift this pins. See `PartSummary::compressed`.
+                    let compressed = source_hash
+                        .as_ref()
+                        .map(|_| zstd_level.is_some_and(|level| level != 0));
                     Ok(PartRow {
                         summary: PartSummary {
                             id: PartId::from_uuid(id),
                             library: LibraryId::from_uuid(lib),
+                            revision: RevisionId::from_uuid(revision),
                             name,
                             part_number,
                             // The hash is not carried in slice 1: thumbnails arrive inline
@@ -876,6 +933,10 @@ impl PartRepository for PgParts {
                             triangle_count,
                             // Every figure on a mesh part is tessellated, so any is all.
                             approximate: true,
+                            source_hash,
+                            source_bytes: bytes("blob.size_bytes", source_bytes)?,
+                            stored_bytes: bytes("blob.stored_bytes", stored_bytes)?,
+                            compressed,
                             created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
                                 |_| DbError::TimestampOutOfRange {
                                     column: "part.created_at",
