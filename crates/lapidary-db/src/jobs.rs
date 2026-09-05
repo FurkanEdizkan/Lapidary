@@ -75,11 +75,31 @@ impl PgJobs {
         jobs: &[JobPayload],
     ) -> Result<(BatchId, u32), DbError> {
         let batch = BatchId::new();
+        let queued = self.enqueue_into(batch, library, jobs).await?;
+        Ok((batch, queued))
+    }
 
+    /// Enqueue into a batch that already exists, rather than minting a fresh one.
+    ///
+    /// This is what a `scan_directory` job uses for the per-file jobs its walk finds, and
+    /// the reason it exists at all: `enqueue` mints a `BatchId` on every call, so a scan
+    /// job that enqueued its children into a new batch would leave the browser polling
+    /// the scan's own batch, seeing `1 of 1` settled, and reporting a finished scan while
+    /// a hundred and fifty files were still ingesting.
+    ///
+    /// Growing a batch after the fact is safe because `batch_status` stores no total: it
+    /// counts rows by `batch_id` on every read, so the total moves as rows land. Nothing
+    /// caches it, and nothing may start to.
+    pub async fn enqueue_into(
+        &self,
+        batch: BatchId,
+        library: LibraryId,
+        jobs: &[JobPayload],
+    ) -> Result<u32, DbError> {
         if jobs.is_empty() {
             // No rows, and deliberately no NOTIFY: waking every worker to find nothing
             // is the one case where the optimization is pure cost.
-            return Ok((batch, 0));
+            return Ok(0);
         }
 
         let ids: Vec<Uuid> = (0..jobs.len()).map(|_| JobId::new().as_uuid()).collect();
@@ -104,7 +124,7 @@ impl PgJobs {
             .execute(&self.0)
             .await?;
 
-        Ok((batch, jobs.len() as u32))
+        Ok(jobs.len() as u32)
     }
 
     /// Enqueue one `ingest_file` job per path under a fresh batch. A thin wrapper over
@@ -192,6 +212,7 @@ impl PgJobs {
             Outcome::Ingested => "ingested",
             Outcome::Skipped => "skipped",
             Outcome::Rendered => "rendered",
+            Outcome::Scanned => "scanned",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
@@ -288,25 +309,36 @@ impl PgJobs {
         // guard below. Both aggregate timestamp columns are `Option<i64>` for exactly
         // this reason.
         #[allow(clippy::type_complexity)]
-        let counts: Option<(i64, i64, i64, i64, i64, i64, i64, Option<i64>, Option<i64>)> =
-            sqlx::query_as(
-                "SELECT count(*), \
+        let counts: Option<(
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT count(*), \
                     count(*) FILTER (WHERE state = 'pending'), \
                     count(*) FILTER (WHERE state = 'running'), \
                     count(*) FILTER (WHERE outcome = 'ingested'), \
                     count(*) FILTER (WHERE outcome = 'skipped'), \
                     count(*) FILTER (WHERE outcome = 'rendered'), \
+                    count(*) FILTER (WHERE outcome = 'scanned'), \
                     count(*) FILTER (WHERE state = 'failed'), \
                     (extract(epoch FROM min(created_at)) * 1000000)::bigint, \
                     CASE WHEN count(*) FILTER (WHERE state IN ('pending','running')) = 0 \
                          THEN (extract(epoch FROM max(updated_at)) * 1000000)::bigint \
                     END \
              FROM job WHERE batch_id = $1 AND library_id = $2",
-            )
-            .bind(batch.as_uuid())
-            .bind(library.as_uuid())
-            .fetch_optional(&self.0)
-            .await?;
+        )
+        .bind(batch.as_uuid())
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
 
         // An aggregate over zero rows still returns one row, with count 0 -- so "no
         // jobs" is detected on the count, not on fetch_optional returning None.
@@ -317,6 +349,7 @@ impl PgJobs {
             ingested,
             skipped,
             rendered,
+            scanned,
             failed_total,
             started,
             finished,
@@ -379,6 +412,7 @@ impl PgJobs {
             ingested: ingested as u32,
             skipped: skipped as u32,
             rendered: rendered as u32,
+            scanned: scanned as u32,
             failed_total: failed_total as u32,
             failed: failures
                 .into_iter()

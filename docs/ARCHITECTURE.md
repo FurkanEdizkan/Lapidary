@@ -78,9 +78,13 @@ crates/
 ├── lapidary-vcs/         L2  revisions, lineage DAG, locks, geometric diff
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
-├── lapidary-api/         L3          axum Router: the open path (grid, health). Depends
-│                                     on the L2 crates it uses — never lapidary-cad or
-│                                     lapidary-storage's SourceStore. A LIBRARY.
+├── lapidary-api/         L3          axum Router: the open path (grid, health) and the
+│                                     download. Depends on the L2 crates it uses — never
+│                                     lapidary-cad, and never lapidary-storage's
+│                                     SourceStore. It may name SourceReader, the
+│                                     read-only source handle, in download.rs and nowhere
+│                                     else; `cargo xtask check-deploy` enforces both
+│                                     halves. A LIBRARY.
 ├── lapidary-ingest/      L3          axum Router: the worker-only scan route. The one
 │                                     crate allowed to depend on lapidary-cad and to hold
 │                                     a SourceStore — see its module doc for why this is a

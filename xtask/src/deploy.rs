@@ -61,6 +61,12 @@ const WORKER_ROLE: &str = "worker";
 /// its own doc comment can't drift apart.
 const ARG_EXPANSION: &str = "${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}";
 
+/// The one file allowed to name `SourceReader`, as a path and not a file name — the rule
+/// is about this exact file, not about whatever anyone calls their next module. Shared by
+/// the rule and the message it prints, so the two cannot drift into telling a reader to put
+/// the code somewhere the check still rejects.
+const DOWNLOAD_MODULE: &str = "crates/lapidary-api/src/download.rs";
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
     /// A `deploy/compose.yaml` service sets `SERVER_FEATURES` but is not in
@@ -107,6 +113,10 @@ pub enum Violation {
     /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
     /// (`lapidary-api`) must never touch a source file — only derivatives.
     OpenPathNamesSourceStore { path: String },
+    /// A file under `crates/lapidary-api/src/` that is not `src/download.rs` itself names
+    /// `SourceReader`. Handing a user the exact bytes they asked for is a download; every
+    /// other route in `lapidary-api` is the open path and reads derivatives only.
+    OpenPathNamesSourceReaderOutsideDownload { path: String },
 }
 
 impl std::fmt::Display for Violation {
@@ -156,9 +166,9 @@ impl std::fmt::Display for Violation {
             Violation::NoWorkerService => write!(
                 f,
                 "no service in deploy/compose.yaml sets `LAPIDARY_ROLE: worker`, so \
-                 nothing in this deployment mounts the ingest routes — POST \
-                 /api/libraries/{{id}}/scan would 404 everywhere and no part could ever \
-                 enter a library. Give the ingest service `LAPIDARY_ROLE: worker` under \
+                 nothing in this deployment drains the job queue — a scan would enqueue \
+                 its walk and no part could ever enter a library, because nothing walks \
+                 the mount. Give the ingest service `LAPIDARY_ROLE: worker` under \
                  its environment: block in deploy/compose.yaml."
             ),
             Violation::ComposeUnreadableBuildSpec { service } => write!(
@@ -232,6 +242,17 @@ impl std::fmt::Display for Violation {
                 "{path} names SourceStore. lapidary-api serves the open path, which must \
                  never touch a source file — it reads metadata and derivatives only. Use \
                  DerivativeStore, or move the work into the worker."
+            ),
+            Violation::OpenPathNamesSourceReaderOutsideDownload { path } => write!(
+                f,
+                "{path} names SourceReader. That handle exists for exactly one file — \
+                 {DOWNLOAD_MODULE}, the download route, which streams a user the bytes \
+                 they asked for and parses nothing. Every other file in lapidary-api \
+                 serves the open path, which reads metadata and derivatives only, and a \
+                 second file reaching source bytes is how that boundary is lost. Move the \
+                 read into {DOWNLOAD_MODULE} — that path exactly, so splitting the route \
+                 into a download/ directory or naming a second module after it does not \
+                 widen the exemption — or use DerivativeStore."
             ),
         }
     }
@@ -625,6 +646,18 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     violations
 }
 
+/// Rules 4 and 5, over the same file list: `lapidary-api` must never name `SourceStore`,
+/// and may name `SourceReader` only in `crates/lapidary-api/src/download.rs`.
+///
+/// Rule 5 exists because `SourceReader` has no `WorkerRole` gate — spec
+/// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2 chose a read-only handle over
+/// relaxing rule 4's gate, since the write surface is the half of `SourceStore` worth
+/// spending a token on. So nothing but this grep keeps source reads to the one route that
+/// is allowed one; without it the exemption spreads by copy-paste, which is precisely how
+/// the mistake rule 4 catches gets made. The two rules do not interact: `SourceReader` does
+/// not contain `SourceStore` as a substring, so rule 4 sees neither more nor less than it
+/// saw before.
+///
 /// Rule 4: `lapidary-api` must never name `SourceStore`. The type needs a `WorkerRole`
 /// token to construct, so the compiler already prevents obtaining one — this catches the
 /// earlier mistake of importing it at all, which is the first move someone makes before
@@ -640,15 +673,38 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
 /// name — `pub use lapidary_storage::SourceStore as BlobStore` from somewhere `lapidary-api`
 /// then imports — would slip past. That is an acceptable trade for a cheap static check
 /// against the mistake this actually catches (importing the type directly, the first thing
-/// someone does before discovering the compiler won't let them build one); a future reader
-/// should not treat a green run here as proof no source bytes are reachable, only as proof
-/// nothing named `SourceStore` directly.
+/// someone does before discovering the compiler won't let them build one).
+///
+/// Rule 5 is textual in the same way and evadable by the same move, demonstrably:
+/// `pub(crate) use lapidary_storage::SourceReader as Bytes;` in `download.rs`, then `Bytes`
+/// used from an open-path file, is green here. Both rules are lints against the mistake,
+/// not seals against someone routing around them on purpose. A future reader should not
+/// treat a green run as proof no source bytes are reachable, only as proof that nothing
+/// under `crates/lapidary-api/src/` names `SourceStore` directly, and that nothing but
+/// `crates/lapidary-api/src/download.rs` names `SourceReader` directly.
 pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
-    api_sources
+    let names_source_store = api_sources
         .iter()
         .filter(|(_, body)| body.contains("SourceStore"))
-        .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() })
-        .collect()
+        .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() });
+    let reader_outside_download = api_sources
+        .iter()
+        .filter(|(path, body)| body.contains("SourceReader") && !is_download_module(path))
+        .map(
+            |(path, _)| Violation::OpenPathNamesSourceReaderOutsideDownload { path: path.clone() },
+        );
+    names_source_store.chain(reader_outside_download).collect()
+}
+
+/// The single file `SourceReader` is allowed in. `Path::ends_with` is *component-wise*,
+/// not a string suffix, which is the whole reason it is the right primitive here: it
+/// rejects `bulk_download.rs` (a different final component, not a suffix of one) and
+/// equally rejects `handlers/download.rs` and `download/mod.rs` (right name, wrong
+/// parents). Comparing `file_name()` instead would exempt every `download.rs` at every
+/// depth, which is precisely the copy-paste spread rule 5 exists to stop. `main.rs` hands
+/// us absolute paths; a component-wise suffix match is indifferent to the prefix.
+fn is_download_module(path: &str) -> bool {
+    std::path::Path::new(path).ends_with(DOWNLOAD_MODULE)
 }
 
 /// Run every rule over both files and collect the violations, in the order `main.rs`
@@ -1187,6 +1243,91 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             }]
         );
         assert!(violations[0].to_string().contains("handlers/open.rs"));
+    }
+
+    #[test]
+    fn source_reader_is_allowed_in_one_file_and_nowhere_else() {
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/download.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            // main.rs walks from an absolute workspace root, so the exempt path arrives
+            // with a prefix — here the one GitHub Actions checks out into. Nothing else
+            // in this list exercises the spelling the gate actually receives.
+            (
+                "/home/runner/work/lapidary/lapidary/crates/lapidary-api/src/download.rs"
+                    .to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/parts.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            // A string-suffix test on the whole path would let this one through.
+            (
+                "crates/lapidary-api/src/bulk_download.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            // A file-name comparison would let these two through: the same name at a
+            // different depth is how one exempt route becomes an exempt filename.
+            (
+                "crates/lapidary-api/src/handlers/download.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/download/mod.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+        ];
+        let violations = check_open_path_boundary(&sources);
+        assert_eq!(
+            violations,
+            vec![
+                Violation::OpenPathNamesSourceReaderOutsideDownload {
+                    path: "crates/lapidary-api/src/parts.rs".to_owned()
+                },
+                Violation::OpenPathNamesSourceReaderOutsideDownload {
+                    path: "crates/lapidary-api/src/bulk_download.rs".to_owned()
+                },
+                Violation::OpenPathNamesSourceReaderOutsideDownload {
+                    path: "crates/lapidary-api/src/handlers/download.rs".to_owned()
+                },
+                Violation::OpenPathNamesSourceReaderOutsideDownload {
+                    path: "crates/lapidary-api/src/download/mod.rs".to_owned()
+                },
+            ]
+        );
+        let msg = violations[0].to_string();
+        assert!(
+            msg.contains("parts.rs"),
+            "names the file that broke it: {msg}"
+        );
+        // The whole path, not the file name: for download/mod.rs — a file that already is
+        // the download module — "move it into download.rs" only reads as an instruction if
+        // it says which download.rs.
+        let split_module = violations[3].to_string();
+        assert!(
+            split_module.contains("crates/lapidary-api/src/download.rs"),
+            "says exactly where the read may live: {split_module}"
+        );
+    }
+
+    /// Every import in the fixtures above spells the type the same way, so a grep narrowed
+    /// to `lapidary_storage::SourceReader` would pass them all. A signature, a type
+    /// annotation or a re-export names the type bare, and that is a source read too.
+    #[test]
+    fn the_grep_catches_the_bare_type_name_without_its_path() {
+        let sources = vec![(
+            "crates/lapidary-api/src/blob.rs".to_owned(),
+            "fn source_bytes(reader: &SourceReader, hash: &BlobHash) -> Vec<u8> {\n".to_owned(),
+        )];
+        assert_eq!(
+            check_open_path_boundary(&sources),
+            vec![Violation::OpenPathNamesSourceReaderOutsideDownload {
+                path: "crates/lapidary-api/src/blob.rs".to_owned()
+            }]
+        );
     }
 
     #[test]

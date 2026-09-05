@@ -3,8 +3,10 @@ import type {
   BatchStatus,
   LibraryId,
   LibrarySettings,
+  LibraryStorage,
   PartId,
   PartsPage,
+  RevisionId,
   ScanAccepted,
 } from './types'
 
@@ -43,13 +45,52 @@ export async function fetchParts(library: LibraryId): Promise<PartsPage> {
 }
 
 /**
+ * `GET /api/revisions/{id}/download?variant=original` — the exact bytes that were
+ * ingested.
+ *
+ * A URL, not a fetch. The card renders it as `<a href download>` and the browser is what
+ * reads `Content-Disposition`, including the RFC 5987 `filename*` the route works to get
+ * right so that a part named `Gövde plakası` keeps its name in the save dialog. Pulling
+ * the bytes through `fetch` into a blob URL would discard that header and name every
+ * download after the revision id instead.
+ *
+ * `variant` is spelled out and never defaults. The route answers 400 without it on
+ * purpose (`DATA.md` §5.1): a download that quietly returns something other than what
+ * was asked for is the failure that section exists to forbid, and a client omitting the
+ * parameter is asking for exactly that.
+ */
+export function downloadUrl(revision: RevisionId): string {
+  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`
+}
+
+/**
+ * `GET /api/libraries/{id}/storage` — what this library occupies on disk, by storage
+ * class, and the ratio between the two.
+ *
+ * Its own query rather than a field on the grid's page, for the reason the settings read
+ * is its own: the totals cover the whole library while a page covers 50 parts, so
+ * summing the cards on screen would report a library of 200 as a quarter of its size.
+ *
+ * A 404 is a real answer: no library with that id. Deliberately not softened into zeroes
+ * here — `0 B` for an id that names nothing is a number a person would believe.
+ */
+export async function fetchLibraryStorage(library: LibraryId): Promise<LibraryStorage> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/storage`)
+  if (!response.ok) {
+    throw new Error(`library storage returned ${response.status}`)
+  }
+  return (await response.json()) as LibraryStorage
+}
+
+/**
  * `GET /api/libraries/{library}/jobs/{batch}` — how a scan is going.
  *
- * A scan is started against the worker (`POST /api/libraries/{id}/scan` on port 8081),
- * not from this page: the scan route is mounted under the worker role only, and the web
- * proxy deliberately forwards `/api/*` to the api service. So the batch id arrives here
- * in the URL — `/?batch=<id>` — rather than from a mutation this page issued. A scan the
- * browser can start belongs with the upload path, which is a later slice.
+ * The batch id comes from `startScan`'s `202`, or from `/?batch=<id>` for a scan started
+ * with the worker's own `curl`. Both are the same resource and the same poll.
+ *
+ * `total` is the number to watch and `queued` is not: a scan answers `queued: 1` — the
+ * directory walk — and the walk then enqueues its files into this same batch, so `total`
+ * climbs from 1 while the poll is already running.
  *
  * A 404 is a real answer, not only a failure: it is what an id from another library, an
  * id that was never issued, and a scan that queued nothing all look like.
@@ -111,6 +152,24 @@ export async function setAutoThumbnail(
 }
 
 /**
+ * `POST /api/libraries/{id}/scan` — walk the directory mounted on the worker and ingest
+ * every model in it.
+ *
+ * On `Role::Api`, which is what makes a scan button possible at all: `deploy/web/Caddyfile`
+ * and vite's dev proxy both forward `/api/*` to the api service and nothing to the worker.
+ * The api container mounts no ingest directory, so this route enqueues one `scan_directory`
+ * job and the worker does the walk — see `crates/lapidary-ingest/src/scan.rs`.
+ *
+ * Hence `queued: 1` on success, always: one job, not one per file. The files join the same
+ * batch as the walk finds them, which is why the poll watches `total`.
+ */
+export async function startScan(library: LibraryId): Promise<ScanAccepted> {
+  return accepted(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/scan`, { method: 'POST' }),
+  )
+}
+
+/**
  * `POST /api/libraries/{id}/thumbnails` — render every preview this library is missing.
  *
  * Answers `202` with the same `ScanAccepted` a scan answers with, which is why the batch
@@ -131,10 +190,10 @@ export async function renderPartThumbnail(part: PartId): Promise<ScanAccepted> {
   )
 }
 
-/** Both enqueue routes answer alike, so they read the answer alike. */
+/** Every enqueue route answers alike, so they read the answer alike. */
 async function accepted(response: Response): Promise<ScanAccepted> {
   if (!response.ok) {
-    throw new Error(`thumbnail render returned ${response.status}`)
+    throw new Error(`enqueue returned ${response.status}`)
   }
   return (await response.json()) as ScanAccepted
 }

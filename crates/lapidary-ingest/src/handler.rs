@@ -100,6 +100,10 @@ impl JobHandler for WorkerHandler {
             JobPayload::Derive { revision, produce } => {
                 self.derive_one(job.library_id, revision, produce).await
             }
+            // The batch comes from this job's own row, never from the payload: the files
+            // a scan finds belong in the batch the browser is already polling. See
+            // `scan.rs`'s module doc.
+            JobPayload::ScanDirectory => self.scan_directory(job.batch_id, job.library_id).await,
         }
     }
 }

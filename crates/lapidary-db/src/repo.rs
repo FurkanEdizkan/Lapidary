@@ -18,6 +18,49 @@ pub struct PartRow {
     pub thumbnail_webp: Option<Vec<u8>>,
 }
 
+/// Everything the download route needs about a revision's source file, in one row.
+///
+/// Four columns off three tables, so it is a struct rather than a tuple: `format`,
+/// `part_name` and the hex hash are all text, and a tuple of them is three positions a
+/// call site can silently transpose into a file served under the wrong name.
+#[derive(Debug)]
+pub struct DownloadSource {
+    pub hash: BlobHash,
+    /// `file.format` — lowercase, no dot. The route synthesizes `{part_name}.{format}`.
+    pub format: String,
+    /// `part.name`, the download's filename stem. A renamed part downloads under its new
+    /// name, which is the design decision spec §2.4 records; the byte-identity claim is
+    /// about bytes, not labels.
+    pub part_name: String,
+    /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
+    /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
+    /// a `COALESCE` could not serve a zstd frame as the file, because
+    /// `SourceReader::get` decodes on `is_some_and(|level| level != 0)` and reads `None`
+    /// and `Some(0)` identically. The two are byte-identical on the wire.
+    ///
+    /// The real reason is smaller. NULL means nobody recorded how these bytes were
+    /// written, matching the nullable column is less code than erasing it, and the
+    /// unknown is worth keeping because the route can then *say* so: spec §2.5.1 refuses
+    /// an unrecorded level with a message naming the blob, instead of reading raw bytes
+    /// and falling through to a hash mismatch that explains nothing.
+    ///
+    /// The hazard the retracted wording described is real but belongs to spec §2.7: a
+    /// *recorded* `0` written over zstd bytes during slice 7's rewrite window. Nothing
+    /// about `None` produces it.
+    pub zstd_level: Option<i16>,
+}
+
+/// What one library occupies, by storage class. Bytes on disk, not ingested sizes — see
+/// [`PgParts::storage_totals`], which is the only thing that builds one.
+///
+/// No ratio here: it is one division over these two numbers, and a third field carrying
+/// it would be a second place for the same fact to be computed differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageTotals {
+    pub source_bytes: u64,
+    pub derivative_bytes: u64,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
@@ -512,6 +555,12 @@ async fn insert_part_chain(
     Ok(part)
 }
 
+/// A `bigint` byte column as `u64`. Never `as u64`: that turns a negative row into 18
+/// exabytes on a card instead of saying the row is wrong.
+fn bytes_column(column: &'static str, value: i64) -> Result<u64, DbError> {
+    u64::try_from(value).map_err(|_| DbError::NegativeByteCount { column, value })
+}
+
 pub struct PgParts(pub PgPool);
 
 impl PgParts {
@@ -614,6 +663,14 @@ impl PgParts {
     /// what today's ingest happens to write, not a promise the schema makes. A second
     /// source row (a re-upload, a later format conversion) must resolve to one answer
     /// every call, rather than to whichever row the planner handed back first.
+    ///
+    /// Deliberately does **not** filter `part.deleted_at`, where its neighbour
+    /// [`PgParts::source_for_download`] does — the asymmetry is the point, not an
+    /// oversight to tidy up. This one is reached only from a `derive` job, and both
+    /// sweeps that enqueue those (`revisions_missing`, and the page query beside it)
+    /// already filter deleted parts, so a deleted part never arrives here. The download
+    /// route is reached from a URL a user can hold after deleting the part, which is a
+    /// different question with a different answer.
     pub async fn revision_source(
         &self,
         library: LibraryId,
@@ -639,6 +696,130 @@ impl PgParts {
             value: hex,
         })?;
         Ok(Some((hash, format)))
+    }
+
+    /// Everything `GET /api/revisions/{id}/download` needs, in one row: which bytes, what
+    /// format, what to call the file, and how those bytes were stored.
+    ///
+    /// Sits beside [`PgParts::revision_source`] and does not replace it. That one feeds a
+    /// `derive` job, which arrives holding a second id — its library — and cross-checking
+    /// the two is a real test (ruling T7-C). A download arrives with the revision id and
+    /// nothing else, so resolving the library from the revision and comparing it to itself
+    /// would be a no-op that reads like a check, which is worse than no check: spec §2.1
+    /// argues this at length and it is not re-derived here. The revision uuid is the
+    /// capability, as it is on every other Phase 1 route; when auth lands the check becomes
+    /// "is this revision's library reachable by this caller", which has a subject.
+    ///
+    /// Filters `part.deleted_at IS NULL`, which [`PgBlobs::library_holds`] deliberately
+    /// does not. Different question, opposite answer: a re-scan must not resurrect a part
+    /// the user deleted, and a download URL held from before the delete must not outlive
+    /// it. A deleted part is not browsable, so it is not downloadable either.
+    ///
+    /// `zstd_level` comes from the `blob` row joined off the same `file` row that carried
+    /// the hash — never from `Compression::for_source_format`. That is ingest-time policy
+    /// and slice 7 is about to move it, so a reader that re-derived it would start serving
+    /// zstd frames as files the day the policy changed (spec §2.5). It is passed through as
+    /// the nullable column it is; see [`DownloadSource::zstd_level`].
+    ///
+    /// The `role = 'source'` filter and the `ORDER BY … LIMIT 1` are character for
+    /// character [`PgParts::revision_source`]'s, and for its reason: `file` has no unique
+    /// constraint on `(revision_id, role)`, so a second source row must resolve to the same
+    /// answer on every call rather than to whichever row the planner returned first.
+    pub async fn source_for_download(
+        &self,
+        revision: RevisionId,
+    ) -> Result<Option<DownloadSource>, DbError> {
+        let row: Option<(String, String, String, Option<i16>)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, b.zstd_level FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             JOIN blob b ON b.blake3 = f.blake3 \
+             WHERE f.revision_id = $1 AND f.role = 'source' AND p.deleted_at IS NULL \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
+        )
+        .bind(revision.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((hex, format, part_name, zstd_level)) = row else {
+            return Ok(None);
+        };
+        let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+            column: "file.blake3",
+            value: hex,
+        })?;
+        Ok(Some(DownloadSource {
+            hash,
+            format,
+            part_name,
+            zstd_level,
+        }))
+    }
+
+    /// What this library occupies, split the way `DATA.md` §1.1 splits storage classes.
+    /// `None` means there is no such library, so a route can 404 rather than report zero
+    /// bytes for an id that names nothing — the same distinction
+    /// [`PgParts::auto_thumbnail`] draws, and for the same reason.
+    ///
+    /// Both blob totals are `stored_bytes`, never `size_bytes`: the question is what is
+    /// on the volume, and spec §4 wants a figure Phase D's tiering work can be judged
+    /// against. They are summed over `blob` rows selected by `IN (subquery)`, so a blob
+    /// two parts share is counted once — which is what `ref_count` exists for and what
+    /// `du` would report. Summing over `file` rows instead would count identical STLs
+    /// twice and inflate a deduplicated library.
+    ///
+    /// Inline thumbnails are added to the derivative total from `octet_length`, because
+    /// they are derivative bytes this library costs whatever holds them — `DATA.md` §1.5
+    /// makes Postgres their deliberate exception to "blobs never live in Postgres", not
+    /// an exemption from being counted. Leaving them out would report `0 B` of
+    /// derivatives over a library holding megabytes of previews, which is the omission
+    /// `CLAUDE.md`'s measurement rule forbids.
+    ///
+    /// `f.role = 'source'` is not decoration either, and it was missing until a review
+    /// measured its absence: one `role = 'export'` row moved a library's source total
+    /// from 176,543 to 180,864 while its cards did not move at all. Only `'source'` is
+    /// written today, so the divergence was dormant — but [`PartRepository::page`]'s own
+    /// source LATERAL filters that column seven lines from here, and two queries over one
+    /// table disagreeing about which rows they mean is a bug waiting for the slice that
+    /// writes the second role. The card figures and this total describe the same set, and
+    /// this clause is what keeps that true.
+    ///
+    /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
+    /// feeds sits over that grid, and a total counting parts the grid does not show could
+    /// not be checked against it. Their bytes are still on the volume until a purge, so
+    /// whichever slice adds delete owns telling an operator about the difference — today
+    /// nothing writes `deleted_at`, so the two answers are the same answer.
+    pub async fn storage_totals(
+        &self,
+        library: LibraryId,
+    ) -> Result<Option<StorageTotals>, DbError> {
+        // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
+        // i64 — hence the `::bigint` casts, not decoration.
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
+             JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL \
+             AND f.role = 'source')), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL)) \
+             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
+             FROM derivative d JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+             FROM library l WHERE l.id = $1",
+        )
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((source, derivative)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(StorageTotals {
+            source_bytes: bytes_column("blob.stored_bytes", source)?,
+            derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+        }))
     }
 
     /// Every revision in `library` with no generated derivative of `kind` — the set a
@@ -709,8 +890,21 @@ impl PartRepository for PgParts {
         // those: several derivative rows for one revision means several identical grid
         // cards for one part, and a page of `limit` rows holding fewer than `limit` distinct
         // parts, silently under-reporting `next`.
+        //
+        // The source LATERAL is a third of the same shape, and it is a LEFT one for the
+        // reason the derivative's is: a revision whose source `file` row is missing is a
+        // part whose owner most needs to see it in the grid, to delete or re-scan it. An
+        // inner join would answer that by hiding the part. Its `role = 'source'` filter
+        // and `created_at DESC, id DESC` ordering are character for character
+        // `source_for_download`'s, so the sizes on a card and the bytes behind its
+        // download link always describe the same `file` row — `file` has no unique
+        // constraint on `(revision_id, role)`, so that agreement is a choice, not a
+        // property of the schema. `blob` is joined inside the LATERAL because both sizes
+        // must come off one row: `file.size_bytes` duplicates `blob.size_bytes`, and a
+        // card built from one of each would report a ratio between two tables.
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
+            Uuid,
             Uuid,
             Uuid,
             String,
@@ -718,16 +912,25 @@ impl PartRepository for PgParts {
             Option<Vec<u8>>,
             Option<i32>,
             Option<bool>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i16>,
             i64,
             i64,
         )> = sqlx::query_as(
-            "SELECT p.id, p.library_id, p.name, p.part_number, d.thumb_bytes, \
+            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
+                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT f.blake3, b.size_bytes, b.stored_bytes, b.zstd_level \
+                                FROM file f JOIN blob b ON b.blake3 = f.blake3 \
+                                WHERE f.revision_id = r.id AND f.role = 'source' \
+                                ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
@@ -742,16 +945,28 @@ impl PartRepository for PgParts {
         .fetch_all(&self.0)
         .await?;
 
+        // `blob`'s size columns are `bigint`, so sqlx hands them back signed, and
+        // `bytes_column` refuses a negative one rather than wrapping it — the same
+        // silent wraparound the triangle count below refuses.
+        fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
+            value.map(|v| bytes_column(column, v)).transpose()
+        }
+
         rows.into_iter()
             .map(
                 |(
                     id,
                     lib,
+                    revision,
                     name,
                     part_number,
                     thumb_bytes,
                     triangles,
                     _watertight,
+                    source_hash,
+                    source_bytes,
+                    stored_bytes,
+                    zstd_level,
                     created_us,
                     updated_us,
                 )| {
@@ -766,10 +981,37 @@ impl PartRepository for PgParts {
                             })
                         })
                         .transpose()?;
+                    let source_hash = source_hash
+                        .map(|hex| {
+                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                                column: "file.blake3",
+                                value: hex,
+                            })
+                        })
+                        .transpose()?;
+                    // Keyed off the source row's presence, never off `zstd_level`'s:
+                    // the column is nullable, so a `None` level on a row that exists
+                    // means "nobody recorded how these bytes were stored", which is a
+                    // different fact from "this revision has no source file" and must
+                    // not collapse into it. The predicate matches `SourceReader::get`'s
+                    // for every level actually recorded, which is what keeps a card
+                    // claiming "compressed" from sitting over a raw download. A `NULL`
+                    // one is not a download this card describes at all: `download.rs`
+                    // answers 500 for it rather than serving anything (spec §2.5.1), so
+                    // reporting `false` is the display field declining to be the place a
+                    // data error surfaces. Reachable in production, not only by a direct
+                    // UPDATE — `link_existing` leaves an existing `blob` row alone and
+                    // tessellation blobs carry `zstd_level NULL`, so bytes byte-identical
+                    // to a derivative arrive as a source file over one. See
+                    // `PartSummary::compressed`.
+                    let compressed = source_hash
+                        .as_ref()
+                        .map(|_| zstd_level.is_some_and(|level| level != 0));
                     Ok(PartRow {
                         summary: PartSummary {
                             id: PartId::from_uuid(id),
                             library: LibraryId::from_uuid(lib),
+                            revision: RevisionId::from_uuid(revision),
                             name,
                             part_number,
                             // The hash is not carried in slice 1: thumbnails arrive inline
@@ -779,6 +1021,10 @@ impl PartRepository for PgParts {
                             triangle_count,
                             // Every figure on a mesh part is tessellated, so any is all.
                             approximate: true,
+                            source_hash,
+                            source_bytes: bytes("blob.size_bytes", source_bytes)?,
+                            stored_bytes: bytes("blob.stored_bytes", stored_bytes)?,
+                            compressed,
                             created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
                                 |_| DbError::TimestampOutOfRange {
                                     column: "part.created_at",

@@ -6,8 +6,8 @@ mod repo;
 
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
-    DerivativeBytes, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest, PgParts,
-    StoredBlobRow, TessellationRow,
+    DerivativeBytes, DownloadSource, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest,
+    PgParts, StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -64,6 +64,11 @@ pub enum DbError {
     TriangleCountTooLarge { column: &'static str, value: u32 },
 
     #[error(
+        "`{column}` holds {value}, which is negative and cannot be a size in bytes. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a negative size."
+    )]
+    NegativeByteCount { column: &'static str, value: i64 },
+
+    #[error(
         "`{column}` holds `{value}`, which is not a BLAKE3 digest. Check what else has write access to this database, then re-scan the part so the row names bytes the blob store actually holds."
     )]
     CorruptBlobHash { column: &'static str, value: String },
@@ -115,6 +120,7 @@ impl DbError {
             | DbError::TimestampOutOfRange { .. }
             | DbError::NegativeTriangleCount { .. }
             | DbError::TriangleCountTooLarge { .. }
+            | DbError::NegativeByteCount { .. }
             | DbError::CorruptBlobHash { .. }
             | DbError::ThumbnailNotInline { .. }
             | DbError::EmptyDerivative { .. } => self.to_string(),

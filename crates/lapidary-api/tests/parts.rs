@@ -202,6 +202,47 @@ async fn the_thumbnail_is_a_data_url_that_decodes_to_the_ingested_bytes(pool: sq
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_card_carries_the_revision_and_the_storage_figures(pool: sqlx::PgPool) {
+    // `to_card` is a hand-written mapping of five new fields, and it is the only seam
+    // the rest of the suite does not cross: `PgParts::page`'s test asserts the domain
+    // shape, and the web fixtures are hand-built `PartCard`s that never travel through
+    // here. A mapper that dropped `revision`, or that assigned `sourceBytes` to both
+    // size fields, would leave every one of those green and reach the browser wrong.
+    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03", b"webp").await;
+    // As text: this crate does not depend on `uuid`, and comparing the JSON string to a
+    // string is the same assertion without a dependency added to make a test read nicer.
+    let revision: String = sqlx::query_scalar(
+        "SELECT r.id::text FROM revision r JOIN part p ON p.id = r.part_id WHERE p.library_id = $1",
+    )
+    .bind(library().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("the seeded revision");
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    let card = &json["parts"][0];
+    assert_eq!(
+        card["revision"],
+        serde_json::Value::String(revision),
+        "the card names the revision a download URL is built from"
+    );
+    assert_eq!(
+        card["sourceHash"],
+        serde_json::Value::String(BlobHash::from_bytes([0x31; 32]).to_hex()),
+        "the hash goes over the wire as hex, for the user to check what they got against"
+    );
+    // `seed_part` stores 2048 bytes as 1024 — the two figures must not read as one.
+    assert_eq!(card["sourceBytes"], 2_048);
+    assert_eq!(card["storedBytes"], 1_024);
+    assert_eq!(card["compressed"], true);
+    assert!(
+        card["sourceBytes"].is_u64(),
+        "a size is a JSON number, which is what the `number | null` binding promises"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
     // Nothing in slice 1 creates a library through the API (same note as
     // crates/lapidary-db/tests/repo.rs), so a second library is inserted directly.
@@ -359,5 +400,159 @@ async fn a_corrupt_rows_own_error_text_reaches_the_client_verbatim(pool: sqlx::P
     assert!(
         !message.contains("db` service is running"),
         "must not append connectivity advice on top of a corrupt-row error: {message}"
+    );
+}
+
+/// GETs `/api/libraries/{library}/storage` through the router built for `role`.
+///
+/// A body that is not JSON decodes as `Value::Null` rather than panicking, which is what
+/// separates a route this router never mounted (axum's own empty 404) from a mounted one
+/// answering 404 with this crate's message.
+async fn get_storage(
+    pool: sqlx::PgPool,
+    role: Role,
+    library: &str,
+) -> (StatusCode, serde_json::Value) {
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+        },
+        role,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/libraries/{library}/storage"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body reads");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// One part with sizes of its own, since the storage total is the thing under test and
+/// `seed_part`'s fixed 2,048/1,024 would make every part cost the same.
+async fn seed_sized_part(
+    pool: &sqlx::PgPool,
+    seed: u8,
+    name: &str,
+    format: &str,
+    blob: StoredBlobRow,
+    thumbnail_webp: &[u8],
+) {
+    assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name,
+            blob: &blob,
+            measurements: &measurements(),
+            thumbnail_webp: Some(thumbnail_webp),
+            kernel_version: "mesh stl-1+cpu-1",
+            format,
+            tessellations: &[],
+        })
+        .await
+        .expect("seed part");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: sqlx::PgPool) {
+    // A compressed STL and an `AsIs` 3MF, so the source total is a sum of two different
+    // stored sizes rather than a doubled one — a route reporting `size_bytes` would read
+    // 266,094 here instead of 152,498.
+    seed_sized_part(
+        &pool,
+        0xe1,
+        "Bracket, LP-1042-03",
+        "stl",
+        StoredBlobRow {
+            hash: BlobHash::from_bytes([0xe1; 32]),
+            size_bytes: 204_800,
+            stored_bytes: 91_204,
+            zstd_level: 3,
+        },
+        b"webp-bracket",
+    )
+    .await;
+    seed_sized_part(
+        &pool,
+        0xe2,
+        "Impeller, LP-5501-02",
+        "3mf",
+        StoredBlobRow {
+            hash: BlobHash::from_bytes([0xe2; 32]),
+            size_bytes: 61_294,
+            stored_bytes: 61_294,
+            zstd_level: 0,
+        },
+        b"webp-impeller",
+    )
+    .await;
+
+    let (status, json) = get_storage(pool, Role::Api, SEEDED_LIBRARY).await;
+    assert_eq!(status, StatusCode::OK);
+    let source = json["sourceBytes"].as_u64().expect("a JSON number");
+    let derivative = json["derivativeBytes"].as_u64().expect("a JSON number");
+    assert_eq!(source, 91_204 + 61_294);
+    assert_eq!(
+        derivative,
+        ("webp-bracket".len() + "webp-impeller".len()) as u64,
+        "both previews, counted where they are actually stored"
+    );
+
+    // Numbers, not strings: `u64` would reach ts-rs as `bigint` and serde as a number,
+    // and the binding would promise the frontend something `JSON.parse` never produces.
+    assert!(json["sourceBytes"].is_number() && json["derivativeBytes"].is_number());
+
+    let ratio = json["derivativeRatio"].as_f64().expect("a JSON number");
+    assert!(
+        (ratio - derivative as f64 / source as f64).abs() < f64::EPSILON,
+        "derivative over source, not the other way round: {ratio}"
+    );
+    assert!(
+        ratio < 1.0,
+        "two previews against 149 KB of sources is a small fraction; a ratio above 1 \
+         here would mean the division is inverted: {ratio}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn storage_for_a_library_that_does_not_exist_is_a_404_not_a_row_of_zeroes(
+    pool: sqlx::PgPool,
+) {
+    let absent = LibraryId::new().to_string();
+    let (status, json) = get_storage(pool, Role::Api, &absent).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let message = json["message"].as_str().expect("a JSON message");
+    assert!(
+        message.contains("No library with that id") && message.contains("library list"),
+        "says what is wrong and what to check (CLAUDE.md): {message}"
+    );
+    // The grid answers an unknown id with an empty page on purpose; this route must not,
+    // because `0 B` for a mistyped id is a number a person would believe.
+    assert!(json["sourceBytes"].is_null());
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_worker_role_does_not_serve_the_storage_route(pool: sqlx::PgPool) {
+    // The seeded id, which works under `Role::Api` — a 404 for a nonexistent library
+    // would prove nothing, since a mounted handler answers 404 for one too. The empty
+    // body is what says axum answered rather than this crate.
+    let (status, json) = get_storage(pool, Role::Worker, SEEDED_LIBRARY).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        json,
+        serde_json::Value::Null,
+        "the storage route is mounted on the worker, which no browser can reach"
     );
 }

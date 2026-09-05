@@ -2,6 +2,37 @@
  * Every user-facing string. English only; Turkish is the planned second locale, which
  * is why nothing is inlined in a component.
  */
+/**
+ * Decimal, not binary: 1 kB is 1000 B here, which is what `du --si` prints and the unit
+ * every figure in the slice handoffs was recorded in. A card reading 91.2 kB beside a
+ * shell reporting 89 KiB is a disagreement nobody can resolve without first knowing
+ * which convention each side picked.
+ */
+const BYTE_UNITS = ['B', 'kB', 'MB', 'GB', 'TB'] as const
+
+/**
+ * A byte count as a person reads it. Whole bytes stay whole — a count is a count — and
+ * anything scaled carries at most one decimal, which is the precision at which two of
+ * these are worth comparing.
+ */
+function bytes(value: number): string {
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1000 && unit < BYTE_UNITS.length - 1) {
+    scaled /= 1000
+    unit += 1
+  }
+  // Re-check after rounding, not only before it: 999,999 B divides to 999.999 kB, which
+  // is under the threshold going in and renders `1,000 kB` coming out. The scale has to
+  // be chosen against the number that will be shown, not the one being carried.
+  if (unit < BYTE_UNITS.length - 1 && Number(scaled.toFixed(unit === 0 ? 0 : 1)) >= 1000) {
+    scaled /= 1000
+    unit += 1
+  }
+  const digits = unit === 0 ? 0 : 1
+  return `${scaled.toLocaleString('en-US', { maximumFractionDigits: digits })} ${BYTE_UNITS[unit]}`
+}
+
 export const strings = {
   appName: 'Lapidary',
   health: {
@@ -27,6 +58,38 @@ export const strings = {
     approximateDetail:
       'At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.',
     /**
+     * The leading hex of the source blob's BLAKE3, rendered beside the download link.
+     * `DATA.md` §5.1 requires the hash be on screen so a user can check what they got
+     * against what the card claimed. Twelve characters is enough to compare against the
+     * head of `b3sum`'s output by eye, and the whole digest is on the element's title
+     * for anyone who wants to check all of it.
+     */
+    shortHash: (hash: string) => hash.slice(0, 12),
+    /**
+     * What the file costs on disk, and what it cost before compression. Both figures,
+     * because the pair is the point: one number alone cannot say whether zstd bought
+     * anything on this part.
+     */
+    storedCompressed: (stored: number, ingested: number) =>
+      `${bytes(stored)} on disk, compressed from ${bytes(ingested)}`,
+    /**
+     * The other half. A 3MF is a deflate zip already, so the ingest policy stores it
+     * as-is and the two figures would agree — this says so in words rather than showing
+     * the same number twice. In words, and not in a tooltip: whether a part is
+     * compressed is something the card states, not something a user has to hover to
+     * find.
+     */
+    storedRaw: (stored: number) => `${bytes(stored)} on disk, stored uncompressed`,
+    /**
+     * Neither claim. A compressed part whose ingested size did not arrive cannot be
+     * described by either sentence above: `storedCompressed` needs the second figure,
+     * and `storedRaw` would state the opposite of what the row says. Falling back to
+     * `storedRaw` there is not the weaker claim, it is a false one — CLAUDE.md's
+     * measurement rule forbids the card asserting a compression state it does not have
+     * the numbers for.
+     */
+    storedSize: (stored: number) => `${bytes(stored)} on disk`,
+    /**
      * The whole library fitted in one page, so the count is the count.
      */
     showingAll: (count: number) =>
@@ -43,9 +106,19 @@ export const strings = {
   },
   scan: {
     /**
+     * Before the walk finishes there is no file count to report — the worker is still
+     * reading the directory. Saying "0 of 1 files" there is not a smaller claim than the
+     * truth, it is a wrong one: the 1 is the walk itself.
+     */
+    walking: 'Reading the folder…',
+    /**
      * Shown while a batch is draining. `done` counts every file the worker has finished
      * with, however it finished — ingested, skipped and failed alike — because what this
      * line answers is "how much is left", and a file that failed is not still pending.
+     *
+     * Both numbers are **files**, not jobs. The walk is a job in the same batch, so the
+     * caller subtracts `BatchStatus.scanned` from both halves before calling this — a
+     * three-file folder read "Scanning — 1 of 4 files" until a review measured it.
      */
     running: (done: number, total: number) =>
       `Scanning — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
@@ -61,6 +134,17 @@ export const strings = {
       count === 1
         ? '1 file could not be read. It will not appear in the grid.'
         : `${count.toLocaleString('en-US')} files could not be read. They will not appear in the grid.`,
+    /** The action bar's trigger. Names the mount rather than the button's effect,
+     * because what a scan reads is a folder on the server and not anything on this
+     * page — the empty state below says the same thing at more length.
+     */
+    start: 'Scan the ingest folder',
+    /**
+     * The scan could not be queued at all. Distinct from a scan that ran and failed:
+     * nothing was written, so trying again is the whole remedy.
+     */
+    startFailed:
+      'Could not start the scan. Check that the api service is running, then try again.',
     /**
      * The batch id in the URL matched nothing this library can show. Deliberately does
      * not distinguish "never issued" from "belongs to another library" — the API does not
@@ -127,9 +211,78 @@ export const strings = {
     unknown:
       'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
   },
+  /**
+   * Why a job failed, as the handler wrote it. `scan.failed` and `render.failed` above
+   * are counts, and a count cannot tell an operator that `/ingest` is not mounted — the
+   * reason can, and `BatchStatus.failed` has carried it since slice 2 with nothing
+   * displaying it. Neutral between a scan and a render because the message itself says
+   * which it was.
+   */
+  failure: {
+    /**
+     * A `derive` failure falls through to the part its revision belongs to, and a
+     * `scan_directory` failure has no path at all — it is the directory that failed, and
+     * the reason names it. So an empty path renders as the reason alone rather than as a
+     * dangling separator.
+     */
+    line: (path: string, reason: string) => (path === '' ? reason : `${path} — ${reason}`),
+    /**
+     * `BatchStatus.failed` is capped at 100 while `failedTotal` is the real number. A
+     * list that silently stops at 100 is a measurement that lies by omission, which is
+     * the same fault the truncated grid needs `parts.showingFirstPage` for.
+     */
+    more: (hidden: number) =>
+      hidden === 1
+        ? 'And 1 more not listed here.'
+        : `And ${hidden.toLocaleString('en-US')} more not listed here.`,
+  },
+  /**
+   * The per-card download control. Its own group rather than a field on `parts`: this is
+   * the one thing on this page that hands a user their own bytes back, and `DATA.md`
+   * §5.1 is the section it answers to.
+   */
+  download: {
+    original: 'Download',
+    /**
+     * The accessible name, because the visible label is identical on every card and
+     * "Download" alone does not say what of. Same shape as `render.partFor`.
+     */
+    originalFor: (name: string) => `Download the original file for ${name}`,
+    /**
+     * The revision has no source `file` row, so there are no bytes to hand over and no
+     * link to render. Not a disabled control: pressing it again would not help, and
+     * something that cannot work must not look like something that can. Says what does
+     * help instead, because a re-scan is what re-attaches a source to a part in this
+     * state.
+     */
+    noSource:
+      'No source file on this revision, so there is nothing to download. Re-scan the library to attach one.',
+  },
+  /**
+   * What the library occupies, split by the storage classes `DATA.md` §1.1 splits it
+   * into. Sources are the bytes nothing can regenerate; derivatives and previews are the
+   * bytes something can, which is why the ratio between them is the figure worth showing
+   * and neither total is worth showing alone.
+   */
+  storage: {
+    /**
+     * Both totals are bytes on disk after compression, deduplicated — bytes two parts
+     * share are counted once, because that is what the volume holds.
+     */
+    totals: (source: number, derivative: number, ratio: number | null) =>
+      // `typeof`, not `=== null`: the response is cast rather than validated, so a field
+      // the server stops sending arrives as undefined, which `=== null` waves through
+      // into `(undefined * 100)` and renders `NaN% of source`. Same defence `SourceFile`
+      // applies to its three fields, applied to the one field this component reads.
+      typeof ratio !== 'number'
+        ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
+        : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
+    failed:
+      'Could not read what this library occupies. Check that the api service is running, then reload.',
+  },
   emptyLibrary: {
     title: 'Nothing scanned yet',
     body:
-      'This library is empty. Lapidary ingests from a directory mounted on the server, not from this page — run a scan against that directory and every model it finds appears here.',
+      'This library is empty. Lapidary ingests from a directory mounted on the server, not from files on this machine — scan that directory and every model it finds appears here.',
   },
 } as const

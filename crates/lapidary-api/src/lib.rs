@@ -3,13 +3,15 @@
 
 mod blob;
 mod derive;
+mod download;
 mod error;
 mod health;
 mod jobs;
 mod parts;
+mod scan;
 
 pub use error::ApiError;
-pub use parts::{PartCard, PartsPage};
+pub use parts::{LibraryStorage, PartCard, PartsPage};
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -18,13 +20,19 @@ use lapidary_db::PgPool;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// Where `DerivativeStore` looks. The same root the worker writes to; this crate can
-    /// only ever open the derivative half of it, having no `WorkerRole` proof.
+    /// Where `DerivativeStore` looks. The same root the worker writes to, and it holds
+    /// both halves: source blobs and derivatives share one content-addressed layout. This
+    /// crate reaches the source half from the download route and nowhere else — that
+    /// route hands a user the exact bytes they asked for, which is not the open path.
+    /// Nothing at the type level enforces "nowhere else": the read-only handle the route
+    /// uses takes no `WorkerRole` proof, deliberately (spec
+    /// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2), so `cargo xtask check-deploy`
+    /// is what holds that line, by rejecting any other file that names it.
     pub blob_root: std::path::PathBuf,
 }
 
-/// Which process this is. `api` serves the open path and must never mount an ingest
-/// route: its image deliberately does not link `lapidary-cad` (enforced by
+/// Which process this is. `api` serves the open path and must never link the CAD kernel:
+/// its image deliberately does not link `lapidary-cad` (enforced by
 /// `xtask/src/layers.rs`'s `FORBIDDEN_PAIRS` and `cargo xtask check-deploy`), and both
 /// containers run one binary from one router, so anything mounted unconditionally is
 /// served by both.
@@ -70,6 +78,9 @@ pub fn router(state: AppState, role: Role) -> Router {
     let by_role = match role {
         Role::Api => Router::new()
             .route("/api/libraries/{id}/parts", get(parts::page))
+            // What that page of cards costs, summed. `Role::Api` with the grid it totals
+            // — see `parts.rs`.
+            .route("/api/libraries/{id}/storage", get(parts::storage))
             .route(
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),
@@ -85,6 +96,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{id}",
                 get(derive::get_library).patch(derive::set_library),
             )
+            // The scan trigger, on `Role::Api` for the same reason the three below it
+            // are: nothing proxies a browser to the worker, so a scan button needs a
+            // route the api serves. It enqueues a `scan_directory` job and walks
+            // nothing — see `scan.rs`.
+            .route("/api/libraries/{id}/scan", post(scan::scan))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",
@@ -92,7 +108,12 @@ pub fn router(state: AppState, role: Role) -> Router {
             )
             // Not in `shared`: the worker has no business serving bytes to anyone, and a
             // route mounted unconditionally is served by both images.
-            .route("/api/blob/{blake3}", get(blob::by_hash)),
+            .route("/api/blob/{blake3}", get(blob::by_hash))
+            // The only route in this crate that reads a source file, and the only one
+            // that may — see `download.rs`. `Role::Api` for the same reason the blob
+            // route is: nothing proxies a browser to the worker, and this URL is one a
+            // user clicks.
+            .route("/api/revisions/{id}/download", get(download::original)),
         Role::Worker => Router::new(),
     };
     shared.merge(by_role).with_state(state)

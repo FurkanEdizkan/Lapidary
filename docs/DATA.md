@@ -350,6 +350,21 @@ contain ğ, ş, ı and a naive `filename=` mangles or breaks the download.
 Download is just a `Target` whose `accepts()` the user picks manually — so send-to-app
 degrades to download naturally when no agent is present.
 
+**Built in slice 5, with three things this section did not specify.** `variant=original`
+is the only legal value today — `variant=3mf` is a 400 naming what to send, never a
+silent fallback, because a download that quietly returns something other than what was
+asked for is the failure this section exists to forbid. The route **re-hashes the bytes
+before serving them** and refuses with a 500 on mismatch, which is what makes "verifiable
+against the stored BLAKE3" true rather than asserted; it costs microseconds against the
+transfer that follows. And `Cache-Control: no-cache` — revalidate before reuse. The blob
+route can promise `immutable` because its URL contains the hash of what it returns; this
+URL names a *revision*, whose source could be re-pointed, and sending no directive at all
+would leave heuristic freshness free to hand back a stale file.
+
+Measured on the 150-file corpus: the served bytes `cmp` clean against the file on disk,
+and a name carrying parentheses arrives as `filename*=UTF-8''…tex%28B%29.stl` with an
+ASCII fallback beside it.
+
 ### 5.2 Upload — hash first, client-side
 
 Compute BLAKE3 in WASM **before** uploading, then probe:

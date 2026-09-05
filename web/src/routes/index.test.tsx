@@ -4,7 +4,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { BatchStatus, PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/types'
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
@@ -48,9 +48,11 @@ function stubFetch(routes: {
   parts?: () => Promise<StubResponse>
   batch?: () => Promise<StubResponse>
   library?: () => Promise<StubResponse>
+  storage?: () => Promise<StubResponse>
   settings?: () => Promise<StubResponse>
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
+  scan?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
@@ -63,6 +65,9 @@ function stubFetch(routes: {
     if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
     if (url.endsWith('/parts')) return (routes.parts ?? pending)()
+    if (url.endsWith('/scan')) return (routes.scan ?? pending)()
+    // Before the bare-library rule below, which every library route is a prefix of.
+    if (url.endsWith('/storage')) return (routes.storage ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
     // Last of the library routes, because the settings read is the bare path every one of
     // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
@@ -84,11 +89,15 @@ const BATCH_ID = '01a0699a-9ece-7073-a74b-c977ee7335ff'
  */
 const RENDER_BATCH_ID = '01a069c4-1d3e-7a10-b6f2-4f0c8b2d5e91'
 
+/** The same, for the scan button, and distinct for the same reason. */
+const SCAN_BATCH_ID = '01a06a11-77b2-7c4d-9f18-2ab6e0c31d45'
+
 /** A `BatchStatus` as the API sends it, with the counters a test cares about overridden. */
 const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   batchId: BATCH_ID,
   libraryId: DEFAULT_LIBRARY_ID,
   total: 6,
+  scanned: 0,
   pending: 6,
   running: 0,
   ingested: 0,
@@ -114,11 +123,16 @@ const WEBP_ORANGE = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQ
 const MOTOR_MOUNT: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0001',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0001',
   name: 'NEMA 17 motor mount, 42 mm face',
   partNumber: 'LP-3105-A',
   thumbnail: WEBP_BLUE,
   triangleCount: 12486,
   approximate: true,
+  sourceHash: '33237f7971cb1497a5417c667e9a459c240943c7378b44fcd4f6404590363895',
+  sourceBytes: 624_384,
+  storedBytes: 197_012,
+  compressed: true,
   createdAt: '2026-08-14T09:12:44Z',
   updatedAt: '2026-08-14T09:12:44Z',
 }
@@ -126,24 +140,40 @@ const MOTOR_MOUNT: PartCard = {
 const HEX_NUT: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0002',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0002',
   name: 'Hex nut M8, DIN 934',
   partNumber: 'DIN934-M8-A2',
   thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
   approximate: true,
+  sourceHash: 'a0763a33d499b598864ddd26eeca15f6d9794ce44185883fd969888941de365d',
+  sourceBytes: 99_284,
+  storedBytes: 26_741,
+  compressed: true,
   createdAt: '2026-08-14T09:12:51Z',
   updatedAt: '2026-08-14T09:12:51Z',
 }
 
-/** Ingested, but the worker has not rasterized a thumbnail derivative for it yet. */
+/**
+ * Ingested, but the worker has not rasterized a thumbnail derivative for it yet. Also
+ * the only 3MF of the three, so it is the fixture that carries the `AsIs` storage
+ * shape: a 3MF is already a zip, the ingest policy stores it uncompressed, and its two
+ * sizes agree. The other two would let a card that rendered `sourceBytes` where
+ * `storedBytes` belongs pass unnoticed.
+ */
 const SHAFT_COUPLER: PartCard = {
   id: '01931b6e-0000-7000-8000-0000000a0003',
   library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0003',
   name: 'Flexible shaft coupler, 5 mm to 8 mm',
   partNumber: 'LP-4420-B',
   thumbnail: null,
   triangleCount: 7320,
   approximate: true,
+  sourceHash: 'c6b1d88498005800fb68ccc2f54588d00bbc1603243fcef5ef8f8000d1be2a70',
+  sourceBytes: 148_930,
+  storedBytes: 148_930,
+  compressed: false,
   createdAt: '2026-08-14T09:13:02Z',
   updatedAt: '2026-08-14T09:13:02Z',
 }
@@ -458,13 +488,16 @@ test('shows how far a running scan has got', async () => {
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([])),
-    batch: ok(batchStatus({ total: 6, pending: 3, running: 1, ingested: 2 })),
+    // Seven jobs: the walk, which is done, and the six files it found.
+    batch: ok(batchStatus({ total: 7, scanned: 1, pending: 3, running: 1, ingested: 2 })),
   })
   renderIndex({ batch: BATCH_ID })
 
-  // Two of six settled, so that is what the line says — `total` comes from the batch, not
-  // from the grid, which is still empty at this point precisely because the scan is why.
-  expect(await screen.findByText(strings.scan.running(2, 6))).toBeTruthy()
+  // Literal, never `strings.scan.running(2, 6)`: an assertion built from the same
+  // template it is checking compares the template against itself and passes whatever
+  // numbers, nouns or word order the template grows. That is how "1 of 4 files" for a
+  // three-file folder survived a green suite.
+  expect(await screen.findByText('Scanning — 2 of 6 files.')).toBeTruthy()
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}`,
   )
@@ -487,8 +520,94 @@ test('reports files that could not be read alongside the progress', async () => 
   })
   renderIndex({ batch: BATCH_ID })
 
-  // The count belongs on screen; the per-file reason is the failed-file drawer, Phase 2.
+  // The count and the reason are different claims and both belong on screen — see the
+  // test below for why the reason is the one that cannot be dropped.
   expect(await screen.findByText(strings.scan.failed(1))).toBeTruthy()
+})
+
+// What makes moving the directory walk into a job honest rather than merely convenient.
+// The walk used to run inside the request, so an unreadable `/ingest` mount answered the
+// operator with a 500 naming the mount; it now fails a job in this batch instead, and
+// `batch_status` has carried that message in `failures[].last_error` since slice 2 with
+// nothing rendering it. A count alone ("1 file could not be read") cannot tell anyone the
+// mount is missing, which is the failure this whole shape has to stay visible for.
+test('a failed job shows the reason it failed, not only that it failed', async () => {
+  const reason =
+    'Could not read the ingest directory /ingest: No such file or directory (os error 2). ' +
+    'Check that the mount is present and readable on the worker, then start the scan again.'
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 1,
+        pending: 0,
+        failedTotal: 1,
+        // A `scan_directory` job has no path: it is the directory that failed, and the
+        // reason names it. `COALESCE(payload->>'path', p.name, '')` gives back `''`.
+        failed: [{ path: '', reason, attempts: 1 }],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  // `findByText` throws when absent, so this cannot pass for a reason that never rendered.
+  expect(await screen.findByText(reason)).toBeTruthy()
+})
+
+// A per-file failure keeps its path, and the two halves must both reach the screen: the
+// reason alone does not say which file, and slice 2's `path` column exists for that.
+test('a per-file failure names the file alongside the reason', async () => {
+  const failure = {
+    path: 'spacer-lp-2001-00.stl',
+    reason:
+      'Could not read this STL — it declares 24 facets but the file ends after 11. ' +
+      'Re-export from your CAD tool and retry.',
+    attempts: 3,
+  }
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 2,
+        pending: 0,
+        ingested: 1,
+        failedTotal: 1,
+        failed: [failure],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(
+    await screen.findByText(strings.failure.line(failure.path, failure.reason)),
+  ).toBeTruthy()
+})
+
+// The server caps `failed` at 100 while `failedTotal` is the real number. A list that
+// simply stops is a measurement that lies by omission, which is the same fault the
+// truncated grid needs `parts.showingFirstPage` for.
+test('a failure list capped by the server says how many it is not showing', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 150,
+        pending: 0,
+        ingested: 30,
+        failedTotal: 120,
+        failed: [{ path: 'vee-block-lp-4410-01.stl', reason: 'not watertight', attempts: 1 }],
+        finishedAt: '2026-09-05T09:14:02.114Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.failure.more(119))).toBeTruthy()
 })
 
 test('stops polling once the batch reports it finished', async () => {
@@ -819,6 +938,77 @@ test('the per-card action renders that part, and polls the batch it was handed',
   )
 })
 
+/**
+ * The task's own exit criterion: a scan started from the browser, no terminal.
+ *
+ * Two claims, and the second is the one that would have been missed. The route it POSTs
+ * to is `/api/libraries/{id}/scan` on the api service — `deploy/web/Caddyfile` proxies
+ * `/api/*` there and to nothing else, so a route mounted under `Role::Worker` is a button
+ * that cannot work. And the batch it polls has to read as a *scan*: the progress copy is
+ * picked from what was clicked, not from the counters, and before this button existed
+ * "this page started it" meant "a preview render" — a scan inheriting that would report a
+ * folder of 150 new parts as "Rendering previews — 0 of 1."
+ */
+test('the scan button starts a scan and watches it as a scan, not as a render', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    // What the route really answers: one job, the walk. The files it finds join this same
+    // batch afterwards, which is why `total` is 1 on the first poll and climbs later.
+    scan: ok({ batchId: SCAN_BATCH_ID, queued: 1 }),
+    batch: ok(batchStatus({ batchId: SCAN_BATCH_ID, total: 1, pending: 0, running: 1 })),
+  })
+  renderIndex()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/scan`, {
+      method: 'POST',
+    }),
+  )
+  // The walk has not finished, so the batch holds one job and zero known files. The old
+  // line read "Scanning — 0 of 1 files.", counting the walk as a file.
+  expect(await screen.findByText('Reading the folder…')).toBeTruthy()
+  expect(screen.queryByText(/of 1 files/)).toBeNull()
+  expect(screen.queryByText(strings.render.running(0, 1))).toBeNull()
+  expect(fetchMock).toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${SCAN_BATCH_ID}`,
+  )
+})
+
+// The batch a scan grows under the poll. `batch_status` computes `total` by counting rows
+// with that `batch_id` and stores no total, so the walk enqueueing its files into its own
+// batch is what the progress line reads — and the alternative, a fresh batch for the
+// files, would leave this line saying `1 of 1` while 150 files were still queued.
+test('the progress line follows a batch whose total grows after the first poll', async () => {
+  let polls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      polls += 1
+      return {
+        ok: true,
+        json: async () =>
+          polls === 1
+            ? // The walk itself, still running.
+              batchStatus({ total: 1, scanned: 0, pending: 0, running: 1 })
+            : // It found three files and put them in this batch; it is done itself.
+              batchStatus({ total: 4, scanned: 1, pending: 3, running: 0 }),
+      }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText('Reading the folder…')).toBeTruthy()
+  // Three files found, none settled — not "1 of 4", which counted the finished walk as a
+  // settled file and the walk job as a fourth file.
+  expect(
+    await screen.findByText('Scanning — 0 of 3 files.', undefined, { timeout: 4000 }),
+  ).toBeTruthy()
+})
+
 // `queued: 0` on a library that exists means every part already has a preview. That is a
 // success, and reading it as a failure is the easy mistake — a library that does not
 // exist answers 404 instead, which is what the error copy is for. Such a batch has no
@@ -841,4 +1031,236 @@ test('a sweep that finds nothing missing reads as success, not as an error', asy
     method: 'POST',
   })
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/jobs/'))).toHaveLength(0)
+})
+
+/**
+ * A revision whose source `file` row is gone. Not something ingest writes — it is what a
+ * half-repaired database looks like — and the part still has to appear, because its owner
+ * is the one person who needs to find it to delete or re-scan it. All four source fields
+ * are absent together, which is the shape `PartCard` documents.
+ */
+const RECOVERED_BRACKET: PartCard = {
+  ...SHAFT_COUPLER,
+  id: '01931b6e-0000-7000-8000-0000000a0006',
+  revision: '01931b6e-0000-7000-8000-0000000b0006',
+  name: 'Angle bracket, 40 x 40 x 3 mm',
+  partNumber: 'LP-1042-03',
+  sourceHash: null,
+  sourceBytes: null,
+  storedBytes: null,
+  compressed: null,
+}
+
+/**
+ * A library's totals as the API sends them. The numbers are slice 4's own measured ones —
+ * 5,718,866 bytes of inline previews over 151 parts — so the ratio on screen is a figure
+ * that was actually observed rather than one invented to round nicely.
+ */
+const LIBRARY_STORAGE: LibraryStorage = {
+  sourceBytes: 12_480_000,
+  derivativeBytes: 5_718_866,
+  derivativeRatio: 5_718_866 / 12_480_000,
+}
+
+// The download is a plain anchor on purpose: the browser reads `Content-Disposition`,
+// which is where the RFC 5987 filename lives, and a fetch into a blob URL would rename
+// every file. Two cards, and both are asserted, so a link wired to `parts[0].revision` —
+// every user downloading the same part — fails on the second.
+test('each card links to its own revision and asks for the original bytes', async () => {
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, HEX_NUT])) })
+  renderIndex()
+
+  const mount = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const nut = screen.getByRole('article', { name: HEX_NUT.name })
+
+  // `getByRole` throws when there is no link, so this cannot pass over a card that
+  // renders no download control at all — which is the shape slice 4's SET-B ruling
+  // caught, an assertion equally true of an element that is not there.
+  const mountLink = within(mount).getByRole('link', {
+    name: strings.download.originalFor(MOTOR_MOUNT.name),
+  })
+  const nutLink = within(nut).getByRole('link', {
+    name: strings.download.originalFor(HEX_NUT.name),
+  })
+
+  // The revision, never the part: a download URL names a revision, and every fixture
+  // here carries a revision id that differs from its part id so that a link built from
+  // the wrong one cannot pass.
+  expect(mountLink.getAttribute('href')).toBe(
+    `/api/revisions/${MOTOR_MOUNT.revision}/download?variant=original`,
+  )
+  expect(nutLink.getAttribute('href')).toBe(
+    `/api/revisions/${HEX_NUT.revision}/download?variant=original`,
+  )
+  // Called out on its own as well: the route 400s without `variant`, and a URL that
+  // dropped it would still carry the revision id and still look entirely plausible.
+  expect(mountLink.getAttribute('href')).toContain('variant=original')
+  // An anchor the browser treats as a download, not a navigation.
+  expect(mountLink.getAttribute('download')).not.toBeNull()
+  // And nothing fetched it. A `fetch` here would discard `Content-Disposition` and hand
+  // the user a file named after the revision id.
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/download'))).toBe(false)
+
+  // The hash beside the link is this card's own, at the length the card renders it, with
+  // the whole digest available to check the downloaded file against (DATA.md §5.1).
+  const shortHash = within(mount).getByText(MOTOR_MOUNT.sourceHash!.slice(0, 12))
+  expect(shortHash.getAttribute('title')).toBe(MOTOR_MOUNT.sourceHash)
+  expect(within(nut).getByText(HEX_NUT.sourceHash!.slice(0, 12))).toBeDefined()
+})
+
+// Literals, not the constants: this copy exists to state two specific facts — what the
+// file occupies, and whether zstd bought anything — and reading it back from strings.ts
+// would pass just as happily against wording that states neither. The pair of fixtures is
+// the point: the compressed one and the `AsIs` one take different branches.
+test('the card says what the file costs on disk and whether it was compressed', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, SHAFT_COUPLER])) })
+  renderIndex()
+
+  const mount = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const coupler = screen.getByRole('article', { name: SHAFT_COUPLER.name })
+  expect(within(mount).getByText('197 kB on disk, compressed from 624.4 kB')).toBeDefined()
+  expect(within(coupler).getByText('148.9 kB on disk, stored uncompressed')).toBeDefined()
+})
+
+// Four nulls. The card must still render, and the download must not look available.
+test('a revision with no source file keeps its card and offers no download', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([RECOVERED_BRACKET, HEX_NUT])) })
+  renderIndex()
+
+  // In this order, and all three. "There is no link on this card" is also true of a card
+  // that never rendered, so the card and its message are asserted first — otherwise this
+  // test passes over a grid that dropped the part entirely, which is the failure it
+  // exists to forbid.
+  const card = await screen.findByRole('article', { name: RECOVERED_BRACKET.name })
+  expect(within(card).getByText(strings.download.noSource)).toBeDefined()
+  expect(within(card).queryByRole('link')).toBeNull()
+  // No size line invented out of nulls either.
+  expect(within(card).queryByText(/on disk/)).toBeNull()
+
+  // And the neighbouring part still has its link, so the absence above is this card's
+  // and not the page failing to render links at all.
+  const nut = screen.getByRole('article', { name: HEX_NUT.name })
+  expect(
+    within(nut).getByRole('link', { name: strings.download.originalFor(HEX_NUT.name) }),
+  ).toBeDefined()
+})
+
+// Spec §4: source total, derivative total, and the ratio between them — the figure that
+// made slice 4's 92.5% drop legible, for a user's own library. Literal again, because the
+// direction of the ratio is the whole meaning and a line reading "273% of source" would
+// satisfy any assertion built out of the same constant.
+test('the library totals report both storage classes and the ratio between them', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(
+    await screen.findByText('Sources 12.5 MB on disk · derivatives 5.7 MB, 45.8% of source.'),
+  ).toBeDefined()
+  expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/storage`)
+})
+
+// The combination with no honest sentence: the row says compressed, and the size it was
+// compressed from did not arrive. `storedCompressed` cannot be built without the second
+// figure, and `storedRaw` would print "stored uncompressed" over a row that says the
+// opposite — a false claim, not a cautious one, against CLAUDE.md's measurement rule.
+// The card states the size and says nothing about compression.
+test('a compressed part whose ingested size is missing claims no compression state', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(
+      page([{ ...MOTOR_MOUNT, sourceBytes: null } as unknown as PartCard]),
+    ),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  // The size is still stated — a card that dropped the line entirely would satisfy the
+  // absence assertion below while telling the user less than it knows.
+  expect(within(card).getByText('197 kB on disk')).toBeDefined()
+  expect(within(card).queryByText(/stored uncompressed/)).toBeNull()
+  expect(within(card).queryByText(/compressed from/)).toBeNull()
+})
+
+// A library whose parts all lack a source row divides by nothing, so the server sends
+// `derivativeRatio: null` and the sentence has to stop after the two totals. The
+// percentage clause is not merely redundant there — collapsing the branch renders
+// `NaN% of source`, which is a figure rather than an omission and reads as a real one.
+test('a library with no source bytes reports its totals without a ratio', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ sourceBytes: 0, derivativeBytes: 40_960, derivativeRatio: null }),
+  })
+  renderIndex()
+
+  expect(await screen.findByText('Sources 0 B on disk · derivatives 41 kB.')).toBeDefined()
+  expect(screen.queryByText(/NaN/)).toBeNull()
+  expect(screen.queryByText(/% of source/)).toBeNull()
+})
+
+// The panel reads one field the response is not validated against, so the same drift
+// `SourceFile` narrows for reaches it too: `=== null` waves `undefined` through into
+// `(undefined * 100)`. Asserting the absence of `NaN` alone would pass against a panel
+// that rendered nothing at all, so the totals themselves are asserted first.
+test('a ratio the server stopped sending renders as no ratio, not as NaN', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ sourceBytes: 12_480_000, derivativeBytes: 5_718_866 }),
+  })
+  renderIndex()
+
+  expect(
+    await screen.findByText('Sources 12.5 MB on disk · derivatives 5.7 MB.'),
+  ).toBeDefined()
+  expect(screen.queryByText(/NaN/)).toBeNull()
+})
+
+// A total that cannot be read is not a total of zero, and silence is what a reader would
+// take it for. The grid still renders, because one failed panel must not take the page
+// with it — which is why the card is asserted before the message.
+test('a storage read that fails says so instead of going quiet', async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: () => Promise.reject(new Error('api unreachable')),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(
+    await screen.findByText(
+      'Could not read what this library occupies. Check that the api service is running, then reload.',
+    ),
+  ).toBeDefined()
+})
+
+// The totals move when the library does. A scan that adds parts and leaves the panel
+// showing the pre-scan figures is worse than a panel that never rendered: the number is
+// there, it is wrong, and nothing about it looks stale.
+test('finishing a scan re-reads what the library occupies', async () => {
+  let storageReads = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: () => {
+      storageReads += 1
+      return ok(LIBRARY_STORAGE)()
+    },
+    scan: ok({ batchId: SCAN_BATCH_ID, queued: 1 }),
+    batch: ok(batchStatus({ batchId: SCAN_BATCH_ID, total: 1, pending: 0, ingested: 1 })),
+  })
+  renderIndex()
+
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  const before = storageReads
+  fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
+
+  await waitFor(() => expect(storageReads).toBeGreaterThan(before))
 })

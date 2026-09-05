@@ -47,8 +47,14 @@ Docker do not agree on auto-loading it.
 ```sh
 cp deploy/.env.example deploy/.env   # then edit it and set POSTGRES_PASSWORD
 podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
-curl -X POST http://localhost:8081/api/libraries/01931b6e-0000-7000-8000-000000000001/scan
 open http://localhost:3000
+```
+
+Then press **Scan the ingest folder** in the grid. Or, headless, post to the worker
+directly — the same job, and the same batch to poll:
+
+```sh
+curl -X POST http://localhost:8081/api/libraries/01931b6e-0000-7000-8000-000000000001/scan
 ```
 
 The scan walks the directory mounted at `/ingest`, which defaults to this repository's
@@ -62,23 +68,37 @@ that instead; see `deploy/.env.example`. The UUID is the library seeded by migra
 
 Scanning is idempotent. BLAKE3 is computed before anything else, and a hash already in
 the blob store short-circuits the whole pipeline — no parse, no raster, no write. Run the
-same scan twice and the second reports `{"ingested":0,"skipped":6,"failed":[]}`.
+same scan twice and the second batch settles every file as `skipped` rather than
+`ingested`, which the grid reports as "6 already here".
 
-### Why the scan is on port 8081 and the grid is on 3000
+### Why the ports are split, and why both of them scan
 
 Three services, and the port tells you which one you are talking to:
 
 | Port | Service | What it is |
 |---|---|---|
 | 3000 | `web` | The SPA, with `/api/*` reverse-proxied to `api` |
-| 8080 | `api` | The grid and the open path |
-| 8081 | `worker` | Ingest — the only place the scan route exists |
+| 8080 | `api` | The grid, the open path, and the scan trigger the browser uses |
+| 8081 | `worker` | Ingest — the directory walk, and everything that touches a file |
 
-Posting the scan to `:8080` returns 404, and that is the design working, not a routing
-mistake. Opening a part must never invoke the CAD kernel, so `lapidary-api` is forbidden
-from depending on `lapidary-cad` at all (`cargo xtask check-layers`) — which means the
-scan handler, which parses and rasterizes, cannot live in it. It lives in
-`lapidary-ingest`, and only the `worker` image compiles that in:
+Both ports accept `POST /api/libraries/{id}/scan`, and neither of them walks a directory
+in the request. The route writes one `scan_directory` job; the worker picks it up, walks
+the mount, and enqueues one job per model it finds *into the same batch*, so the batch id
+either port hands back is the one that reports the whole scan. The `curl` above is the
+`:8081` copy of that route, kept so a headless first run needs no browser; the Scan button
+in the grid is the `:8080` one.
+
+That is what lets the browser start a scan at all. `deploy/web/Caddyfile` proxies `/api/*`
+to `api:8080` and to nothing else, so a route only the worker serves is a route no browser
+can reach — and the api container mounts no ingest directory to walk, deliberately.
+Enqueueing a job is a database write, which the api may do; walking a mount and parsing
+geometry is not.
+
+The split the ports draw is the one that matters and is unchanged: opening a part must
+never invoke the CAD kernel, so `lapidary-api` is forbidden from depending on
+`lapidary-cad` at all (`cargo xtask check-layers`) — which means the ingest handler, which
+parses and rasterizes, cannot live in it. It lives in `lapidary-ingest`, and only the
+`worker` image compiles that in:
 
 ```sh
 cargo tree -p lapidary-server                        | grep lapidary-cad   # nothing
@@ -90,8 +110,10 @@ One `Containerfile` builds both images; `deploy/compose.yaml` passes
 check-deploy` fails the build if that ever stops being true. So the `api` container does
 not merely decline to serve `/scan` — the code behind it is not linked into the binary.
 
-Ingest is synchronous today: the POST returns when the whole directory is done. The job
-queue, progress over SSE, and a scan button in the UI arrive in later slices of Phase 1.
+Ingest is asynchronous: the POST returns a batch id as soon as the work is queued, and
+`GET /api/libraries/{id}/jobs/{batch}` reports how it is going — which is what the grid
+polls, and where a failed file's reason comes from. Progress over SSE, rather than a
+one-second poll, is a later slice.
 
 ## Documentation
 
