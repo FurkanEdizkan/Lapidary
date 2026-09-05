@@ -3,6 +3,7 @@
 
 mod blob;
 mod derive;
+mod download;
 mod error;
 mod health;
 mod jobs;
@@ -98,7 +99,12 @@ pub fn router(state: AppState, role: Role) -> Router {
             )
             // Not in `shared`: the worker has no business serving bytes to anyone, and a
             // route mounted unconditionally is served by both images.
-            .route("/api/blob/{blake3}", get(blob::by_hash)),
+            .route("/api/blob/{blake3}", get(blob::by_hash))
+            // The only route in this crate that reads a source file, and the only one
+            // that may — see `download.rs`. `Role::Api` for the same reason the blob
+            // route is: nothing proxies a browser to the worker, and this URL is one a
+            // user clicks.
+            .route("/api/revisions/{id}/download", get(download::original)),
         Role::Worker => Router::new(),
     };
     shared.merge(by_role).with_state(state)
