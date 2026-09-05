@@ -1344,12 +1344,14 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
          re-derived from the format"
     );
 
-    // Ruling T1-A. `zstd_level` is nullable and NULL is real — every derivative blob is
-    // written that way — so a source blob with no level means nobody recorded how those
-    // bytes were stored. That must reach the route as the unknown it is: COALESCEd to 0
-    // it becomes a confident "raw", and a compressed file is served as a zstd frame under
-    // the part's own name. Every fixture in this file writes level 3, so without this the
-    // assertion above passes just as well against the COALESCE.
+    // Ruling T1-A, as corrected. `zstd_level` is nullable and NULL is real — every
+    // derivative blob is written that way — so a source blob with no level means nobody
+    // recorded how those bytes were stored, and that unknown must reach the route intact.
+    // Not because a `COALESCE` would serve a zstd frame as the file: it would not,
+    // `SourceReader::get` reads `None` and `Some(0)` identically. Because the route can
+    // only refuse an unrecorded level with a message naming it (spec §2.5.1) if the
+    // unknown survives the query. Every fixture in this file writes level 3, so without
+    // this leg the assertion above passes just as well against the COALESCE.
     sqlx::query("UPDATE blob SET zstd_level = NULL WHERE blake3 = $1")
         .bind(blob.hash.to_hex())
         .execute(&pool)

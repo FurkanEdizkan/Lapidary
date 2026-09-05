@@ -32,11 +32,21 @@ pub struct DownloadSource {
     /// name, which is the design decision spec §2.4 records; the byte-identity claim is
     /// about bytes, not labels.
     pub part_name: String,
-    /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0: NULL
-    /// means nobody recorded how these bytes were written, and answering "raw" to that
-    /// would hand a caller a zstd frame as though it were the file (ruling T1-A). The
-    /// route's hash check is what turns the unknown case into a loud failure, and it can
-    /// only do that if the unknown reaches it.
+    /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
+    /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
+    /// a `COALESCE` could not serve a zstd frame as the file, because
+    /// `SourceReader::get` decodes on `is_some_and(|level| level != 0)` and reads `None`
+    /// and `Some(0)` identically. The two are byte-identical on the wire.
+    ///
+    /// The real reason is smaller. NULL means nobody recorded how these bytes were
+    /// written, matching the nullable column is less code than erasing it, and the
+    /// unknown is worth keeping because the route can then *say* so: spec §2.5.1 refuses
+    /// an unrecorded level with a message naming the blob, instead of reading raw bytes
+    /// and falling through to a hash mismatch that explains nothing.
+    ///
+    /// The hazard the retracted wording described is real but belongs to spec §2.7: a
+    /// *recorded* `0` written over zstd bytes during slice 7's rewrite window. Nothing
+    /// about `None` produces it.
     pub zstd_level: Option<i16>,
 }
 
@@ -636,6 +646,14 @@ impl PgParts {
     /// what today's ingest happens to write, not a promise the schema makes. A second
     /// source row (a re-upload, a later format conversion) must resolve to one answer
     /// every call, rather than to whichever row the planner handed back first.
+    ///
+    /// Deliberately does **not** filter `part.deleted_at`, where its neighbour
+    /// [`PgParts::source_for_download`] does — the asymmetry is the point, not an
+    /// oversight to tidy up. This one is reached only from a `derive` job, and both
+    /// sweeps that enqueue those (`revisions_missing`, and the page query beside it)
+    /// already filter deleted parts, so a deleted part never arrives here. The download
+    /// route is reached from a URL a user can hold after deleting the part, which is a
+    /// different question with a different answer.
     pub async fn revision_source(
         &self,
         library: LibraryId,
