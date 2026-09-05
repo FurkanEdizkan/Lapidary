@@ -9,23 +9,27 @@
 //!
 //! # The revision is taken, never resolved
 //!
-//! `revision_source(payload.revision)`, never `latest_revision(part)`. The payload names
-//! the revision precisely so that nothing resolves "latest" a second time (§3.7): a job
-//! enqueued against revision A while a second revision lands must not render onto B and
-//! report success. That is also why nothing here reads `ingest_dir` — the bytes come from
-//! the blob store, which is the only place they are still guaranteed to be.
+//! `revision_source(job.library_id, payload.revision)`, never `latest_revision(part)`.
+//! The payload names the revision precisely so that nothing resolves "latest" a second
+//! time (§3.7): a job enqueued against revision A while a second revision lands must not
+//! render onto B and report success. That is also why nothing here reads `ingest_dir` —
+//! the bytes come from the blob store, which is the only place they are still guaranteed
+//! to be. The library comes from the job's own column rather than the payload, and the
+//! query is scoped by it: a revision id is a uuid a caller might hold from anywhere, and
+//! an unscoped resolve renders one library's part onto another's job.
 //!
 //! # Error classification
 //!
-//! `handler.rs`'s rules, applied to a shorter pipeline. A revision with no source file is
-//! `Permanent` — there are no bytes to re-read and there never will be. A blob store that
+//! `handler.rs`'s rules, applied to a shorter pipeline. A revision this library cannot
+//! reach — no such revision, or no source file on it — is `Permanent`: there are no bytes
+//! to re-read and there never will be. A blob store that
 //! will not give up the bytes is `Transient`: the store may be a mount that is not ready.
 //! A parse failure is `Permanent`, because the bytes are immutable and already parsed
 //! once at ingest, so a second answer would be the same answer.
 
 use crate::handler::{WorkerHandler, reap, transient_db};
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-use lapidary_core::{DerivativeKind, Outcome, RevisionId};
+use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
 use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
@@ -38,19 +42,21 @@ impl WorkerHandler {
     /// with work that indexed nothing.
     pub(crate) async fn derive_one(
         &self,
+        library: LibraryId,
         revision: RevisionId,
         want: DerivativeKind,
     ) -> Result<Outcome, HandlerError> {
         let kind = want.as_str();
         let Some((hash, format)) = PgParts(self.db.clone())
-            .revision_source(revision)
+            .revision_source(library, revision)
             .await
             .map_err(transient_db)?
         else {
             return Err(HandlerError::Permanent {
                 message: format!(
-                    "Could not build the {kind} for revision {revision}: it has no source \
-                     file, so there is nothing to re-read. Re-scan the part to give it one."
+                    "Could not build the {kind} for revision {revision}: library {library} \
+                     has no such revision with a source file to re-read. Check that the \
+                     revision belongs to this library, and re-scan the part if it does."
                 ),
             });
         };

@@ -265,6 +265,16 @@ impl PgIngest {
     ///
     /// `kind` is passed rather than read off `bytes`, because the storage shape does not
     /// name a rung: all three LOD levels are `Hashed`.
+    ///
+    /// Two shapes are refused before anything is written, and both are refused *here*
+    /// rather than at the call sites so that a new caller is covered without having to
+    /// know. Each writes a row that is perfectly valid and permanently invisible: `page`
+    /// reads a thumbnail only out of `thumb_bytes`, so a hash-addressed one shows as "no
+    /// preview yet" — and [`PgParts::revisions_missing`] then *excludes* that revision,
+    /// because a row exists, so the sweep never heals it either. An empty `Inline` is the
+    /// same failure one step further on: `Some(vec![])` reaches the grid as
+    /// `data:image/webp;base64,`, the broken `<img>` `insert_part_chain` already refuses
+    /// to write. Failing loudly is the trade `CLAUDE.md` asks for everywhere else.
     pub async fn upsert_derivative(
         &self,
         revision: RevisionId,
@@ -272,6 +282,19 @@ impl PgIngest {
         bytes: DerivativeBytes<'_>,
         kernel_version: &str,
     ) -> Result<(), DbError> {
+        match bytes {
+            DerivativeBytes::Hashed { .. } if kind == DerivativeKind::Thumbnail => {
+                return Err(DbError::ThumbnailNotInline { revision });
+            }
+            DerivativeBytes::Inline([]) => {
+                return Err(DbError::EmptyDerivative {
+                    kind: kind.as_str(),
+                    revision,
+                });
+            }
+            _ => {}
+        }
+
         let mut tx = self.0.begin().await?;
         // What this (revision, kind) pointed at before, locked so that a concurrent
         // upsert of the same row cannot interleave with the `ref_count` arithmetic below.
@@ -529,6 +552,15 @@ impl PgParts {
     /// The source blob and format of a revision the caller already holds: everything a
     /// `derive` job needs to fetch the bytes it must re-read.
     ///
+    /// Scoped to a library, and through `part.library_id` rather than by a check the
+    /// caller has to remember — exactly as [`PgJobs::batch_status`]'s failure join is
+    /// (`jobs.rs`). Content addressing is not authorization (`CLAUDE.md`) and neither is
+    /// a revision id: it is a uuid a caller might hold from anywhere, and without the
+    /// scope a `derive` job naming another library's revision renders onto it. A revision
+    /// this library cannot reach answers `Ok(None)` — the same answer as a revision with
+    /// no source file, on purpose, so the reply never confirms that the other library's
+    /// revision exists.
+    ///
     /// Takes a revision, never a part. The derive payload names the revision precisely so
     /// that nothing resolves "latest" a second time (design §3.7) — a job enqueued
     /// against revision A must not render onto revision B because a second revision
@@ -542,13 +574,18 @@ impl PgParts {
     /// every call, rather than to whichever row the planner handed back first.
     pub async fn revision_source(
         &self,
+        library: LibraryId,
         revision: RevisionId,
     ) -> Result<Option<(BlobHash, String)>, DbError> {
         let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT blake3, format FROM file WHERE revision_id = $1 AND role = 'source' \
-             ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT f.blake3, f.format FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id AND p.library_id = $2 \
+             WHERE f.revision_id = $1 AND f.role = 'source' \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
         )
         .bind(revision.as_uuid())
+        .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
         let Some((hex, format)) = row else {
@@ -648,7 +685,7 @@ impl PartRepository for PgParts {
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = 'thumbnail' ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
@@ -656,6 +693,10 @@ impl PartRepository for PgParts {
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
+        // The kind string comes off `DerivativeKind`, never a literal: the write side
+        // stopped spelling it out in task 5, and a reader spelling it differently from
+        // the writer reads nothing while looking entirely correct.
+        .bind(DerivativeKind::Thumbnail.as_str())
         .fetch_all(&self.0)
         .await?;
 

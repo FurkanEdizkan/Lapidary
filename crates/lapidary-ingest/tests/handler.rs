@@ -56,11 +56,18 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
 /// will write it: the kind is the COLUMN, and the payload names the revision rather than
 /// the part, so nothing re-resolves "latest" between enqueue and run (design §3.7).
 fn derive_job(revision: RevisionId, produce: DerivativeKind) -> JobRow {
+    derive_job_for(seeded(), revision, produce)
+}
+
+/// `derive_job`, against a library other than the one that owns the revision. The library
+/// is the job's own COLUMN, not part of the payload, which is what lets the query be
+/// scoped by it.
+fn derive_job_for(library: LibraryId, revision: RevisionId, produce: DerivativeKind) -> JobRow {
     let payload = JobPayload::Derive { revision, produce };
     JobRow {
         id: JobId::new(),
         batch_id: BatchId::new(),
-        library_id: seeded(),
+        library_id: library,
         kind: payload.kind().to_owned(),
         payload: payload.to_json(),
         attempts: 1,
@@ -965,5 +972,50 @@ async fn an_unknown_job_kind_fails_permanently_naming_the_kind(pool: PgPool) {
     assert!(
         matches!(err, HandlerError::Permanent { .. }),
         "an unknown kind will not become known on a retry, got: {err:?}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_derive_job_naming_another_librarys_revision_renders_nothing(pool: PgPool) {
+    // A revision id is a uuid a caller might hold from anywhere, and the payload carries
+    // one. Without the scope this job renders onto a revision its library does not own --
+    // a cross-tenant WRITE, which is the direction that cannot be undone. CLAUDE.md:
+    // content addressing is not authorization, and neither is knowing a revision id.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    stop_rendering(&pool, seeded()).await;
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    assert_eq!(thumbnail_rows(&pool).await, 0, "nothing rendered at ingest");
+    let revision = only_revision(&pool).await;
+    let other_library = second_library(&pool).await;
+
+    let err = handler
+        .handle(&derive_job_for(
+            other_library,
+            revision,
+            DerivativeKind::Thumbnail,
+        ))
+        .await
+        .expect_err("a library that does not own this revision must not render onto it");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains(&revision.to_string()) && message.contains(&other_library.to_string()),
+        "the failure must name the revision it refused and the library that asked, got: {message}"
+    );
+    assert!(
+        !message.contains("bracket-lp-1042-03"),
+        "and it must not leak what the owning library calls its own part, got: {message}"
+    );
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "a revision this library will never own is not worth three retries, got: {err:?}"
+    );
+    assert_eq!(
+        thumbnail_rows(&pool).await,
+        0,
+        "the refusal has to happen before the render, or the row is already written"
     );
 }

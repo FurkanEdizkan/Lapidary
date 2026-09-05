@@ -1250,9 +1250,11 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
     .await
     .expect("a later export row");
 
+    let other_library = second_library(&pool).await;
+
     let parts = PgParts(pool);
     let (hash, format) = parts
-        .revision_source(revision)
+        .revision_source(library(), revision)
         .await
         .expect("query")
         .expect("the revision has a source file");
@@ -1265,11 +1267,25 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
 
     assert!(
         parts
-            .revision_source(RevisionId::new())
+            .revision_source(library(), RevisionId::new())
             .await
             .expect("query")
             .is_none(),
         "a revision that does not exist has no source, and that is not an error"
+    );
+
+    // The tenant guard, at the layer that owns it. A revision id is a uuid a caller might
+    // hold from anywhere, so the scope has to be structural rather than a check the
+    // caller remembers: without `p.library_id = $2` this returns another library's source
+    // bytes and the derive arm renders onto that library's revision.
+    assert!(
+        parts
+            .revision_source(other_library, revision)
+            .await
+            .expect("query")
+            .is_none(),
+        "a library that does not reach this revision must be told nothing about it — not \
+         its hash, not its format, and not that it exists"
     );
 }
 
@@ -1352,5 +1368,153 @@ async fn touching_a_blob_leaves_every_other_blob_alone(pool: sqlx::PgPool) {
         touched,
         vec![read.hash.to_hex()],
         "exactly the blob that was read carries a timestamp"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_hash_addressed_thumbnail_is_refused_rather_than_written(pool: sqlx::PgPool) {
+    // The row this refuses is valid, invisible and unhealable: `page` reads a thumbnail
+    // only out of `thumb_bytes`, so the grid says "no preview yet" for a part that has
+    // one — and `revisions_missing` then excludes that revision, because a row exists, so
+    // the sweep never fills it in either. There is no reader for a hash-addressed
+    // thumbnail until the viewer lands, so the honest answer is to refuse the shape.
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(&ingest, library(), "Bracket, LP-1042-03", 0xa1, None).await;
+    let revision = only_revision(&pool, id).await;
+    let rung = rung_blob(0xa2);
+
+    let err = ingest
+        .upsert_derivative(
+            revision,
+            DerivativeKind::Thumbnail,
+            DerivativeBytes::Hashed {
+                blob: &rung,
+                grid: None,
+            },
+            "mesh stl-1+glb-1+cpu-1",
+        )
+        .await
+        .expect_err("nothing can read a hash-addressed thumbnail back");
+    match err {
+        DbError::ThumbnailNotInline { revision: named } => assert_eq!(named, revision),
+        other => panic!("expected ThumbnailNotInline, got {other:?}"),
+    }
+
+    // Refused before the transaction opens, so it leaves nothing behind — not the
+    // derivative row, and not the `blob` row the Hashed arm would otherwise insert first.
+    let rows: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM derivative WHERE revision_id = $1), \
+                (SELECT count(*) FROM blob WHERE blake3 = $2)",
+    )
+    .bind(revision.as_uuid())
+    .bind(rung.hash.to_hex())
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        rows,
+        (0, 0),
+        "a refused write must write nothing at all, or it leaves a blob row nothing points at"
+    );
+
+    // And the revision is still one the sweep will offer to fill, which is what a row
+    // would have taken away.
+    let missing = PgParts(pool)
+        .revisions_missing(library(), DerivativeKind::Thumbnail)
+        .await
+        .expect("query");
+    assert_eq!(
+        missing.iter().map(|r| r.as_uuid()).collect::<Vec<_>>(),
+        vec![revision.as_uuid()],
+        "the revision must stay in the sweep's list, or nothing ever heals it"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_empty_inline_derivative_is_refused_rather_than_written(pool: sqlx::PgPool) {
+    // `DerivativeBytes` closed "both columns" and "neither"; it did not close *empty*. An
+    // empty bytea is not NULL, so it satisfies `derivative_storage_is_exclusive`, reads
+    // back as `Some(vec![])` and reaches the grid as `data:image/webp;base64,` — the
+    // broken image `insert_part_chain` already refuses to write.
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(&ingest, library(), "Spacer, LP-2001-00", 0xa3, None).await;
+    let revision = only_revision(&pool, id).await;
+
+    let err = ingest
+        .upsert_derivative(
+            revision,
+            DerivativeKind::Thumbnail,
+            DerivativeBytes::Inline(b""),
+            "mesh stl-1+cpu-1",
+        )
+        .await
+        .expect_err("zero bytes are not a thumbnail");
+    match err {
+        DbError::EmptyDerivative {
+            kind,
+            revision: named,
+        } => {
+            assert_eq!(kind, "thumbnail");
+            assert_eq!(named, revision);
+        }
+        other => panic!("expected EmptyDerivative, got {other:?}"),
+    }
+
+    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    assert_eq!(
+        page[0].thumbnail_webp, None,
+        "the grid must still read \"no preview yet\", not zero bytes it will render as a \
+         broken image"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_source_hash_that_is_not_a_digest_is_reported_with_what_to_do(pool: sqlx::PgPool) {
+    // `file.blake3` is plain `text` with a foreign key and no format check, so a row
+    // holding something that is not a digest is representable — and `revision_source` is
+    // where it surfaces. Nothing outside `src/` pinned this message before, so its
+    // wording was free to drift back into the speculation CLAUDE.md forbids.
+    const NOT_A_DIGEST: &str = "0xdeadbeef-written-by-hand";
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(&ingest, library(), "Cable clip, LP-3300-01", 0xa4, None).await;
+    let revision = only_revision(&pool, id).await;
+    sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, 204800, 91204)")
+        .bind(NOT_A_DIGEST)
+        .execute(&pool)
+        .await
+        .expect("a blob row the corrupt file row can reference");
+    sqlx::query("UPDATE file SET blake3 = $1 WHERE revision_id = $2 AND role = 'source'")
+        .bind(NOT_A_DIGEST)
+        .bind(revision.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("corrupt the column directly");
+
+    let err = PgParts(pool)
+        .revision_source(library(), revision)
+        .await
+        .expect_err("a hash that is not a hash must be reported, not parsed into one");
+    match &err {
+        DbError::CorruptBlobHash { column, value } => {
+            assert_eq!(*column, "file.blake3");
+            assert_eq!(value, NOT_A_DIGEST);
+        }
+        other => panic!("expected CorruptBlobHash, got {other:?}"),
+    }
+    let message = err.to_string();
+    assert!(
+        message.contains("Check what else has write access to this database")
+            && message.contains("re-scan the part"),
+        "the message must say what to do about it (CLAUDE.md), got: {message}"
+    );
+    assert!(
+        !message.contains("probably written by something other than lapidary-db"),
+        "speculating about who wrote the row is not an instruction, got: {message}"
+    );
+    assert_eq!(
+        err.client_message(),
+        message,
+        "this variant's text is crafted, safe and actionable, so the client sees it \
+         verbatim rather than being sent to the server logs"
     );
 }

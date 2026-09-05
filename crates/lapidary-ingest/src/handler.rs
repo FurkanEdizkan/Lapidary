@@ -97,7 +97,9 @@ impl JobHandler for WorkerHandler {
             })?;
         match payload {
             JobPayload::IngestFile { path } => self.ingest_one(job.library_id, &path).await,
-            JobPayload::Derive { revision, produce } => self.derive_one(revision, produce).await,
+            JobPayload::Derive { revision, produce } => {
+                self.derive_one(job.library_id, revision, produce).await
+            }
         }
     }
 }
