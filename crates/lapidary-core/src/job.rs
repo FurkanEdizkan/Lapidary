@@ -300,4 +300,31 @@ mod tests {
             .expect_err("must fail");
         assert!(err.to_string().contains("polish_the_brass"), "{err}");
     }
+
+    /// The message must not claim Lapidary did not write the row. `from_row`'s whole
+    /// reason for existing is that an older Lapidary wrote rows a newer one has to read,
+    /// so version skew is the *expected* way to reach this error and "It was not written
+    /// by Lapidary" was a false statement pointing the operator at the wrong cause.
+    /// Nothing outside `src/` pinned the wording, which is how it survived.
+    #[test]
+    fn a_malformed_payload_does_not_assert_who_wrote_the_row() {
+        let err = JobPayload::from_row(JobPayload::DERIVE, &serde_json::json!({}))
+            .expect_err("a derive payload with no revision is malformed");
+        let message = err.to_string();
+        assert!(
+            message.contains("`derive`"),
+            "the kind is quoted like every other offending value, got: {message}"
+        );
+        assert!(
+            message.contains("written by an older Lapidary")
+                && message.contains("something other than Lapidary"),
+            "the message must name both causes and say what to check (CLAUDE.md), \
+             got: {message}"
+        );
+        assert!(
+            !message.contains("It was not written by Lapidary"),
+            "a row an older Lapidary wrote is malformed AND written by Lapidary, \
+             got: {message}"
+        );
+    }
 }

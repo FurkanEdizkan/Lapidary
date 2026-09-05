@@ -24,7 +24,7 @@ pub enum CoreError {
     ProvenanceUnknown { got: String },
 
     #[error(
-        "A {kind} job's payload is not the shape that kind requires — {detail}. It was not written by Lapidary; check whether something else is inserting into the job table."
+        "A `{kind}` job's payload is not the shape that kind requires — {detail}. Check whether the row was written by an older Lapidary, or by something other than Lapidary inserting into the job table."
     )]
     MalformedJobPayload { kind: String, detail: String },
 
