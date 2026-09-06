@@ -82,6 +82,13 @@ largest single win and needs this layout to extract into. Cold tiering measures 
     blobs/ab/cd/<blake3>               derivatives only. Content-addressed. Evictable.
 ```
 
+**Correction, after the slice shipped: the code writes a different tree, and the spec is
+the defect.** `blob_path` is `root.join("blobs")`, so derivatives land at `<root>/blobs/`,
+a sibling of `libraries/` with no `cache/` level; nothing writes an `images/` directory
+(thumbnails are Postgres `bytea`) and nothing reads or writes a `lapidary.toml`. `docs/DATA.md`
+§1.1 describes what is actually on disk, including what naming the cache `blobs/` costs.
+The block above stands as the record of what was designed, not of what exists.
+
 **`libraries/<slug>/` exists even though there is one library today.** Two libraries each
 holding a `Terrain` category would collide at the root, and retrofitting the level later
 means moving every file in the store. Cheap now, expensive later.
