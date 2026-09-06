@@ -19,13 +19,38 @@
 //! 5. one transaction: the `file` rows get their paths, the `blob` row drops to level 0
 //! 6. **only now** unlink `blobs/ab/cd/<hash>`
 //!
+//! Steps 1 through 5 happen under a CLAIM on the hash
+//! ([`lapidary_db::PgStorageMigration::claim_hash`]): a transaction-scoped advisory lock,
+//! and the rows re-read inside it. Two `migrate_storage` jobs for one library overlap as a
+//! matter of course, and without the claim the second one acts on a row set the first has
+//! already settled — see "Two runners" below.
+//!
 //! A crash between any two of those leaves a store that still serves every file. Step 5
 //! failing is the one case that must NOT reap what steps 3 and 4 wrote: a `commit` can
 //! return an error after the server has already applied it (the connection drops between
 //! `COMMIT` and its acknowledgement), and reaping then would delete the file a committed
-//! row now points at. A failure in step 3 or 4 is different — nothing is committed yet, the
-//! old copy is untouched, and the bytes are reaped so a retry lands on the same directory
-//! rather than on a disambiguated one.
+//! row now points at. A failure in step 3 or 4 is different — the claim is still open, so
+//! nothing is committed and nothing else could have committed either, the old copy is
+//! untouched, and the bytes are reaped so a retry lands on the same directory rather than
+//! on a disambiguated one.
+//!
+//! # Two runners
+//!
+//! The claim is what makes the paragraph above true of a store with more than one worker.
+//! Without it, both halves of this job read a row set once and act on it later:
+//!
+//! - The reap in step 3 removes the paths this run wrote. If another run settled those
+//!   same rows in between, those paths are what the committed rows now name, and the reap
+//!   is deleting the user's file — with the old copy already unlinked by that other run's
+//!   step 6, which is the case the section above calls forbidden.
+//! - `model_dir_for` disambiguates around any directory that already exists, without asking
+//!   whose it is. A second runner re-processing a row the first has committed writes a
+//!   complete duplicate of the file and its manifest into `<slug>_<hash6>` and then settles
+//!   nothing, because the row already holds a path.
+//!
+//! Under the claim neither is reachable: the loser's re-read returns no rows for that hash,
+//! so it writes nothing, disambiguates nothing and reaps nothing. It skips the hash, and
+//! the hash is still there for whoever finishes first.
 //!
 //! # Why the batch is a hash and not a file row
 //!
@@ -155,14 +180,23 @@ impl WorkerHandler {
 
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         let mut moved = 0usize;
+        let mut skipped = 0usize;
         let mut refused: Option<HandlerError> = None;
-        // Rows arrive ordered by hash, so consecutive equal hashes are the whole group.
+        // Rows arrive ordered by hash, so consecutive equal hashes are the whole group —
+        // and all this loop takes from a group is its hash. The rows a move acts on are the
+        // ones `claim_hash` re-reads under the lock; these are a work list and a page can
+        // be stale by the time its turn comes.
         for group in pending.chunk_by(|a, b| a.hash == b.hash) {
-            match self.migrate_one_hash(&source, &migrations, group).await {
-                Ok(()) => moved += group.len(),
+            let Some(hash) = group.first().map(|row| row.hash) else {
+                continue;
+            };
+            match self.migrate_one_hash(&source, &migrations, &hash).await {
+                // Not an error and not progress: another live runner holds this hash.
+                Ok(0) => skipped += 1,
+                Ok(rows) => moved += rows,
                 Err(error) => {
                     tracing::warn!(
-                        hash = %group.first().map(|row| row.hash.to_hex()).unwrap_or_default(),
+                        hash = %hash.to_hex(),
                         reason = ?error,
                         "could not move a blob into its model directory; its bytes are \
                          still readable where they were"
@@ -174,14 +208,24 @@ impl WorkerHandler {
             }
         }
 
-        // Nothing moved and something refused: report it rather than re-enqueue. A run that
-        // makes no progress and queues itself again is a queue that never drains — the
-        // refusal repeats, the batch never settles, and the operator sees a scan bar that
-        // moves forever. Progress is what earns another run.
-        if moved == 0
-            && let Some(error) = refused
-        {
-            return Err(error);
+        if moved == 0 {
+            // Nothing moved and something refused: report it rather than re-enqueue. A run
+            // that makes no progress and queues itself again is a queue that never drains —
+            // the refusal repeats, the batch never settles, and the operator sees a scan bar
+            // that moves forever. Progress is what earns another run.
+            if let Some(error) = refused {
+                return Err(error);
+            }
+            // Nothing moved, nothing refused, and every hash this page saw was held by
+            // another runner. Re-enqueueing here is a spin: `any_pending` is a live read and
+            // says yes for exactly the hashes we just skipped, so the successor would skip
+            // them again, and again, as fast as the queue turns jobs around, for as long as
+            // the holders are copying. Stopping is safe because a holder is a running job
+            // that evaluates its own `any_pending` on the way out — whatever is left when
+            // the last one finishes gets a successor from that one, not from us.
+            if skipped > 0 {
+                return Ok(Outcome::Migrated);
+            }
         }
 
         if migrations.any_pending(library).await.map_err(classify_db)? {
@@ -189,12 +233,15 @@ impl WorkerHandler {
             // this executes, and a worker that hit its shutdown grace period or lost a
             // lease mid-run can already have put it back to `pending` in the
             // background (`lapidary_jobs::worker`'s `SHUTDOWN_GRACE`) -- either way, a
-            // successor may already be queued. `reenqueue_migration_if_absent`'s own
-            // doc has the full reasoning; the short version is that a plain `INSERT`
-            // here would occasionally throw the unique violation
-            // `job_migrate_storage_pending_per_library` exists to prevent straight into
-            // this `map_err`, misreporting a benign double-enqueue as "could not reach
-            // the database."
+            // successor may already be queued. The guard is a check, not a constraint:
+            // migration `0011` dropped the partial unique index that used to back it,
+            // because that index constrained `pending` rows and had no opinion about
+            // `running` ones, which is the state two overlapping migrations are actually
+            // in. So this can still lose its race and queue a second pending row, and
+            // that is now harmless rather than merely rare: the two runs claim hashes
+            // one at a time and the loser skips what the winner holds. What the guard
+            // buys is fewer redundant jobs, not correctness -- correctness is
+            // `claim_hash`, above.
             PgJobs(self.db.clone())
                 .reenqueue_migration_if_absent(batch, library)
                 .await
@@ -210,17 +257,31 @@ impl WorkerHandler {
         Ok(Outcome::Migrated)
     }
 
-    /// Every un-migrated `file` row that names one hash, moved together.
+    /// Every un-migrated `file` row that names one hash, moved together, under a claim no
+    /// second runner can hold at the same time.
+    ///
+    /// Returns how many rows moved. `Ok(0)` is a SKIP, not a failure: another runner owns
+    /// this hash, and the caller goes on to the next one without counting a retry.
+    ///
+    /// Everything below reads the CLAIM's rows, never the caller's page. The page was read
+    /// without exclusion and a hash another runner settled since is still in it; the claim's
+    /// re-read is what makes "every row in this group still says NULL" true for as long as
+    /// the files are being written — which the reap arm below depends on.
     async fn migrate_one_hash(
         &self,
         source: &SourceStore,
         migrations: &PgStorageMigration,
-        group: &[PendingSource],
-    ) -> Result<(), HandlerError> {
-        let Some(first) = group.first() else {
-            return Ok(());
+        hash: &BlobHash,
+    ) -> Result<usize, HandlerError> {
+        let Some(claim) = migrations.claim_hash(hash).await.map_err(classify_db)? else {
+            return Ok(0);
         };
-        let hash = first.hash;
+        let group = claim.rows();
+        let Some(first) = group.first() else {
+            // Claimed, and there is nothing left in it: the runner that held this hash
+            // settled it between the page read and this lock. Its work, and it is done.
+            return Ok(0);
+        };
 
         // The level the row RECORDS, never one re-derived from the format — `SourceReader`'s
         // rule, and it applies with more force here than anywhere else: this is the read
@@ -232,7 +293,7 @@ impl WorkerHandler {
             Compression::AsIs
         };
         let bytes = source
-            .get(&hash, compression)
+            .get(hash, compression)
             .map_err(|e| HandlerError::Transient {
                 message: format!(
                     "Could not read the stored copy of {} before moving it: {e}. Check that \
@@ -251,7 +312,7 @@ impl WorkerHandler {
         // Permanent: the same blob decodes to the same bytes on every attempt, so three
         // retries would produce three identical refusals.
         let read = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-        if read != hash {
+        if read != *hash {
             return Err(HandlerError::Permanent {
                 message: format!(
                     "The stored copy of {} does not match the hash recorded for it — it \
@@ -274,11 +335,14 @@ impl WorkerHandler {
                     written.push((model_dir, storage_path));
                 }
                 Err(error) => {
-                    // Safe to reap only because nothing has been committed yet: every row
-                    // in this group still says NULL, so the bytes these paths hold are
-                    // bytes nothing points at, and the old copy is still where it was. See
-                    // the module doc for why the same reap after `settle` would be data
-                    // loss.
+                    // Safe to reap because the CLAIM is still open and nothing has been
+                    // committed under it: every row it holds still says NULL, and no second
+                    // runner could have settled one, because settling this hash needs the
+                    // lock this claim has not released. So the bytes at these paths are
+                    // bytes nothing points at, and the old copy is still where it was.
+                    // Dropping the claim below rolls its transaction back and releases the
+                    // hash. Without the claim this reap deletes committed files: see the
+                    // module doc's "Two runners".
                     for (model_dir, storage_path) in &written {
                         reap_copy(source, model_dir, storage_path);
                     }
@@ -287,15 +351,13 @@ impl WorkerHandler {
             }
         }
 
-        let unreferenced = migrations
-            .settle(&hash, &moved)
-            .await
-            .map_err(classify_db)?;
+        let count = moved.len();
+        let unreferenced = claim.settle(&moved).await.map_err(classify_db)?;
 
         // The delete half, and the only place it happens. `unreferenced` was read inside
         // the transaction that just committed, so a row that still needs the old copy — an
         // un-migrated sibling in a library this page did not reach — keeps it.
-        if unreferenced && let Err(error) = source.remove(&hash) {
+        if unreferenced && let Err(error) = source.remove(hash) {
             tracing::warn!(
                 hash = %hash.to_hex(),
                 %error,
@@ -303,7 +365,7 @@ impl WorkerHandler {
                  stored twice until it is removed by hand"
             );
         }
-        Ok(())
+        Ok(count)
     }
 
     /// One row's file and its manifest, written into the directory its model owns. Returns
@@ -318,8 +380,9 @@ impl WorkerHandler {
     /// in which a newer build's unknown fields could be dropped. The only manifest that can
     /// already exist at this path is one this same build wrote on an earlier attempt at
     /// this same file — a newer build's directory would have made `model_dir_for`
-    /// disambiguate away from it, and a row a newer build had already migrated would not
-    /// have a null `storage_path` to be selected by.
+    /// disambiguate away from it, and a row a newer build had already migrated has a
+    /// `storage_path`, so the claim's re-read does not return it. (The page might still
+    /// carry it; the claim's rows are what this walks.)
     async fn copy_into_model_dir(
         &self,
         source: &SourceStore,

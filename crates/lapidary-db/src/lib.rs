@@ -8,7 +8,7 @@ mod repo;
 
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
-pub use migrate::{PendingSource, PgStorageMigration};
+pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
     DerivativeBytes, DownloadSource, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest,
     PgParts, RevisionSource, StorageTotals, StoredBlobRow, TessellationRow,
