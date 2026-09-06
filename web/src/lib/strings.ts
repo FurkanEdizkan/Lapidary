@@ -478,6 +478,18 @@ export const strings = {
       typeof ratio !== 'number'
         ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
         : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
+    /**
+     * Appended when the library holds removed parts, and the wording is the point: they
+     * are *still on disk*, not freed. Without this clause the totals above fall the moment
+     * somebody removes a part and the volume does not, which reads as a saving — the one
+     * reading `CLAUDE.md` says this area must never produce.
+     *
+     * Says nothing about quarantined bytes, which have no library to belong to: a purge
+     * removes the part chain, so those blobs are counted by no library's panel. That gap
+     * is real and is recorded in the slice 7 design; it closes with Phase 4's
+     * instance-wide storage view.
+     */
+    removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
   },

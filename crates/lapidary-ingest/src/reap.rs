@@ -56,10 +56,11 @@ pub async fn sweep(
 /// catch up.
 pub async fn run(db: PgPool, blob_root: PathBuf, shutdown: CancellationToken) {
     loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => return,
-            _ = tokio::time::sleep(EVERY) => {}
-        }
+        // Sweep first, sleep after. The other order would make the doc comment above a
+        // lie by an hour: a blob whose part was restored moments before a restart would
+        // stay flagged for a full interval with a running process that had already decided
+        // it should not be. The sweep is a lookup against a partial index that is almost
+        // always empty, so doing it at startup costs nothing worth deferring.
         match sweep(&db, &blob_root, QUARANTINE).await {
             Ok(report) if report.removed.is_empty() && report.un_quarantined == 0 => {}
             Ok(report) => tracing::info!(
@@ -72,6 +73,10 @@ pub async fn run(db: PgPool, blob_root: PathBuf, shutdown: CancellationToken) {
             // The whole sweep rolled back, so nothing was removed and nothing was left
             // half-removed. Next hour tries again.
             Err(error) => tracing::error!(%error, "quarantine sweep failed"),
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = tokio::time::sleep(EVERY) => {}
         }
     }
 }

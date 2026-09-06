@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   RouterProvider,
@@ -1220,6 +1220,9 @@ const LIBRARY_STORAGE: LibraryStorage = {
   sourceBytes: 12_480_000,
   derivativeBytes: 5_718_866,
   derivativeRatio: 5_718_866 / 12_480_000,
+  // Nothing removed, which is every library until somebody removes something — and the
+  // case where the panel must say nothing about it rather than "0 B removed".
+  removedBytes: 0,
 }
 
 // The download is a plain anchor on purpose: the browser reads `Content-Disposition`,
@@ -1548,4 +1551,33 @@ test('a finished status closes the stream, so the browser does not re-open it fo
   })
 
   await waitFor(() => expect(streams[0]?.closed).toBe(true))
+})
+
+test('the storage panel says removed bytes are still on disk, and says nothing when there are none', async () => {
+  // The panel's two totals exclude removed parts, so without this clause a removal reads
+  // as a saving: the number falls and the volume does not. `CLAUDE.md` forbids exactly
+  // that reading, and this is the only place in the app a figure could produce it.
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ ...LIBRARY_STORAGE, removedBytes: 2_400_000 }),
+  })
+  renderIndex()
+
+  const panel = await screen.findByText(/removed, still on disk/)
+  expect(panel.textContent).toMatch(/2\.4 MB removed, still on disk/)
+  // Never the other word. The bytes are waiting, not recovered.
+  expect(panel.textContent).not.toMatch(/freed|recovered|saved/i)
+
+  // And nothing at all when there is nothing removed, which is every library until
+  // somebody removes something. A permanent "0 B removed" would be noise on all of them.
+  cleanup()
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(screen.queryByText(/removed, still on disk/)).toBeNull()
 })

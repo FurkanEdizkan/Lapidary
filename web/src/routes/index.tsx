@@ -767,6 +767,13 @@ function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError
   return (
     <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
       {strings.storage.totals(storage.sourceBytes, storage.derivativeBytes, storage.derivativeRatio)}
+      {/*
+        Only when there is something to say. A permanent "0 B removed" would be noise on
+        every library that has never removed anything, which is most of them — but the
+        moment one exists, the totals above stop describing the whole volume and this is
+        what says so.
+      */}
+      {storage.removedBytes > 0 ? strings.storage.removed(storage.removedBytes) : null}
     </p>
   )
 }

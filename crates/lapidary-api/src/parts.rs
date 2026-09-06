@@ -129,6 +129,17 @@ pub struct LibraryStorage {
     /// this is the figure that made slice 4's 92.5% drop legible (spec §4), and a second
     /// consumer dividing the other way would report the same library twice, differently.
     pub derivative_ratio: Option<f64>,
+    /// What this library's removed parts still occupy on the volume.
+    ///
+    /// Shown only when non-zero. It exists so the panel does not report a removal as a
+    /// saving: the two totals above exclude soft-deleted parts, so without this figure the
+    /// number falls the moment somebody removes a part and the disk does not.
+    ///
+    /// Quarantined bytes are deliberately absent and are not merely missing — see
+    /// `PgParts::storage_totals` for why a quarantined blob has no library to be counted
+    /// against.
+    #[ts(type = "number")]
+    pub removed_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +248,7 @@ pub async fn storage(State(state): State<AppState>, Path(library): Path<LibraryI
         Ok(Some(totals)) => Json(LibraryStorage {
             source_bytes: totals.source_bytes,
             derivative_bytes: totals.derivative_bytes,
+            removed_bytes: totals.removed_bytes,
             // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
             // library; a ratio is a display figure and does not need more than that.
             derivative_ratio: (totals.source_bytes > 0)

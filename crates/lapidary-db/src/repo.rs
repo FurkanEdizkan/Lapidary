@@ -67,6 +67,17 @@ pub struct DownloadSource {
 pub struct StorageTotals {
     pub source_bytes: u64,
     pub derivative_bytes: u64,
+    /// What this library's *removed* parts still occupy.
+    ///
+    /// Zero until somebody removes something, and the reason it exists at all is that the
+    /// two figures above deliberately exclude soft-deleted parts: without this, removing a
+    /// part would drop the panel's total by its size while the disk was unchanged, which
+    /// is the panel telling a user bytes were freed. `CLAUDE.md` forbids exactly that
+    /// reading, and `strings.removal` is written around never producing it.
+    ///
+    /// A blob shared with a live part is counted here *and* above, because it is genuinely
+    /// serving both and purging the removed part would not reclaim it.
+    pub removed_bytes: u64,
 }
 
 /// Which side of `deleted_at` a page reads.
@@ -352,7 +363,7 @@ impl PgBlobs {
                 message,
             })?;
             removed.push(hash);
-            bytes += *stored_bytes as u64;
+            bytes += bytes_column("blob.stored_bytes", *stored_bytes)?;
         }
 
         // The other half, and it is not conditional on the cutoff: bytes somebody pointed
@@ -1228,9 +1239,15 @@ impl PgParts {
         // part still points at, which are exactly the blobs that must not be counted as
         // entering quarantine.
         let entering: Vec<i64> = sizes.into_iter().flatten().collect();
+        let mut quarantined_bytes = 0u64;
+        for stored in &entering {
+            // `bytes_column`, never `as u64`: a negative row would otherwise reach a person
+            // as 18 exabytes entering quarantine instead of saying the row is wrong.
+            quarantined_bytes += bytes_column("blob.stored_bytes", *stored)?;
+        }
         Ok(Purged::Done(PurgeReport {
             quarantined: entering.len() as u32,
-            quarantined_bytes: entering.iter().map(|bytes| *bytes as u64).sum(),
+            quarantined_bytes,
         }))
     }
 
@@ -1420,18 +1437,29 @@ impl PgParts {
     /// writes the second role. The card figures and this total describe the same set, and
     /// this clause is what keeps that true.
     ///
-    /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
-    /// feeds sits over that grid, and a total counting parts the grid does not show could
-    /// not be checked against it. Their bytes are still on the volume until a purge, so
-    /// whichever slice adds delete owns telling an operator about the difference — today
-    /// nothing writes `deleted_at`, so the two answers are the same answer.
+    /// Soft-deleted parts are excluded from the first two figures, matching
+    /// [`PartRepository::page`]. The panel this feeds sits over that grid, and a total
+    /// counting parts the grid does not show could not be checked against it.
+    ///
+    /// Slice 7 is the slice this comment used to defer to -- "whichever slice adds delete
+    /// owns telling an operator about the difference" -- and `removed_bytes` is that
+    /// telling. Without it, removing a part drops the panel by its size while the volume is
+    /// unchanged, which reads as bytes freed and is the one thing `CLAUDE.md` says this
+    /// area must never read as.
+    ///
+    /// **Quarantined bytes are not here, and cannot be.** A purge removes the part chain,
+    /// so a quarantined blob has no `file` row, no `revision`, no `part` and therefore no
+    /// library: the figure is library-less by construction rather than merely
+    /// unimplemented. It belongs to an instance-wide storage view, which arrives with
+    /// Phase 4's tiering job. Until then a purge does drop this panel while the bytes wait
+    /// out their thirty days -- recorded in the slice 7 design, section 2.
     pub async fn storage_totals(
         &self,
         library: LibraryId,
     ) -> Result<Option<StorageTotals>, DbError> {
         // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
         // i64 — hence the `::bigint` casts, not decoration.
-        let row: Option<(i64, i64)> = sqlx::query_as(
+        let row: Option<(i64, i64, i64)> = sqlx::query_as(
             "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
@@ -1444,18 +1472,32 @@ impl PgParts {
              + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
              FROM derivative d JOIN revision r ON r.id = d.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
+             JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
+             AND f.role = 'source' \
+             UNION SELECT d.blake3 FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
+             AND d.blake3 IS NOT NULL)) \
+             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
+             FROM derivative d JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL) \
              FROM library l WHERE l.id = $1",
         )
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((source, derivative)) = row else {
+        let Some((source, derivative, removed)) = row else {
             return Ok(None);
         };
         Ok(Some(StorageTotals {
             source_bytes: bytes_column("blob.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+            removed_bytes: bytes_column("blob.stored_bytes", removed)?,
         }))
     }
 

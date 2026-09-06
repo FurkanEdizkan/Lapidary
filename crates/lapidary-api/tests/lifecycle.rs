@@ -571,3 +571,43 @@ async fn the_removed_list_is_the_only_route_back_to_a_deleted_part(pool: sqlx::P
     assert_eq!(json["parts"].as_array().expect("an array").len(), 1);
     assert_eq!(json["parts"][0]["name"], "Impeller, LP-5501-02");
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_storage_panel_does_not_report_a_removal_as_a_saving(pool: sqlx::PgPool) {
+    // The figure exists because of what the two totals beside it deliberately exclude. A
+    // removed part's bytes are still on the volume — nothing was freed, and a panel whose
+    // number falls by 91 KB while the disk holds the same 182 KB is the panel making the
+    // one claim `CLAUDE.md` says this area must never make.
+    let gone = seed(
+        &pool,
+        0xb1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+    seed(&pool, 0xb2, "Impeller, LP-5501-02", "pumps/LP-5501-02.stl").await;
+
+    let uri = format!("/api/libraries/{SEEDED_LIBRARY}/storage");
+    let (_, json) = call(pool.clone(), "GET", &uri).await;
+    assert_eq!(json["sourceBytes"], 91_204 * 2);
+    assert_eq!(json["removedBytes"], 0, "nothing removed yet");
+
+    assert_eq!(
+        call(pool.clone(), "DELETE", &format!("/api/parts/{gone}"))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+
+    let (_, json) = call(pool.clone(), "GET", &uri).await;
+    assert_eq!(
+        json["sourceBytes"], 91_204,
+        "the library is one part smaller"
+    );
+    assert_eq!(
+        json["removedBytes"],
+        91_204 + "webp-preview".len(),
+        "and the difference is accounted for rather than vanishing — source blob and \
+         inline thumbnail both, because both are still on the volume"
+    );
+}

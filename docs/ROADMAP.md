@@ -81,7 +81,13 @@ tessellated approximation. Part open to first paint under 120 ms warm.
 - `lapidary://` scheme, checkout to workspace, launch external tool
 - Native watcher with debounce, write-settle, hash-before-believing, Windows buffer
   overflow rescan, macOS file-level FSEvents
-- Storage tiering job, quarantine, three-step deletion
+- Storage tiering job, and the instance-wide storage view that can report quarantined
+  bytes (a purged blob belongs to no library, so no library's panel can count it)
+  <!-- Three-step deletion and quarantine landed early, in Phase 1 slice 7, on the
+       owner's priority call: a library you can add to and never remove from was the
+       more pressing gap. What stayed here is tiering, because tiering is what makes
+       quarantine's physical layout matter, and building a layout before the job that
+       uses it is building for a caller that does not exist. -->
 
 **Exit:** open a STEP from Lapidary in FreeCAD, change it, save, and a new revision
 appears automatically with a correct volume delta — on Linux, macOS and Windows.

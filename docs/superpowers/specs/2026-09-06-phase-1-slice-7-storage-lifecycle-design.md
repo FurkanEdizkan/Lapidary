@@ -120,6 +120,32 @@ a later change from breaking it silently.
 
 Undelete stays explicit, for the reason delete does: we do not un-delete implicitly either.
 
+**One hole, recorded rather than closed.** `page`'s revision LATERAL is an inner join, so
+a part carrying *zero* revisions appears in neither list — the library's or the removed
+one — and removing such a part would put it beyond reach. Nothing in Phase 1 writes that
+row; migration `0007`'s comment already records that the schema permits it and the slice 5
+handoff names it. It is left open here because closing it means making that LATERAL a
+`LEFT JOIN` and giving every downstream field a null case, which is a change to the grid's
+hottest query for a state nothing produces. Phase 2, which is the first thing that can
+create a revisionless part, owns it.
+
+### The panel, and the number that must not read as a saving
+
+The two figures in the storage panel exclude soft-deleted parts, so a removal would drop
+the total by the part's size while the volume is unchanged — a panel reporting a removal as
+a saving, which is the exact reading `CLAUDE.md` forbids. `repo.rs`'s own comment deferred
+this to "whichever slice adds delete", and this is that slice.
+
+`LibraryStorage.removed_bytes` closes it: what this library's removed parts still occupy,
+shown only when non-zero.
+
+**Quarantined bytes are not in it and cannot be.** A purge removes the part chain, so a
+quarantined blob has no `file` row, no revision, no part and therefore no library — the
+figure is library-less by construction rather than unimplemented. So a purge *does* drop
+this panel while the bytes wait out their thirty days. The honest fix is an instance-wide
+storage view, which is what `ROADMAP.md`'s Phase 4 line now names alongside the tiering
+job.
+
 ---
 
 ## 3. Purge recomputes rather than decrementing

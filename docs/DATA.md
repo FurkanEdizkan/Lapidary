@@ -99,9 +99,37 @@ than any compression decision above.
 
 1. **Delete** — sets `deleted_at`, hides the part. Nothing touches disk. Reversible
    indefinitely.
-2. **Purge** — separate, explicitly worded action. Decrements `ref_count`.
-3. **Quarantine** — `ref_count = 0` moves the blob to `quarantine/` for 30 days.
-   Reachable by hash, invisible in UI, restorable. Only then removed.
+2. **Purge** — separate, explicitly worded action, and refused on a part that has not been
+   deleted first. Removes the part chain and **recomputes** each affected blob's
+   `ref_count` from what actually points at it.
+3. **Quarantine** — a blob whose recomputed count reaches zero gets `quarantined_at` set,
+   and is left where it is for 30 days. Reachable by hash, invisible in the UI, restorable.
+   Only then removed.
+
+**Amended by slice 7, and two of these lines changed.**
+
+*Purge recomputes rather than decrementing.* A counter maintained only by increments and
+decrements drifts, and the drift is invisible until something acts on it — the thing that
+acts on it deletes bytes. Recomputing makes any accumulated drift self-heal the moment a
+purge touches that blob, and it is the reason a reference count the project has never
+fully audited is still safe to ship.
+
+*Quarantine is a timestamp, not a `quarantine/` tree.* The bytes do not move. Restoring
+then needs no path rewrite, no reader needs a second lookup location on the hot path to
+serve a case that is meant to be rare, and the store's layout has a pending change (the
+folder-tree work) that a second tree built now would be built against.
+
+*What actually keeps a referenced blob safe is neither the counter nor the reaper's own
+`WHERE` clause.* It is `file.blake3` and `derivative.blake3`, both foreign keys to `blob`:
+deleting a referenced row raises a constraint violation whatever any query says. The
+reaper's reachability check is what lets it *decline* such a row instead of failing the
+whole sweep on it.
+
+*What the panel does not say.* A purged blob has no `file` row, no revision, no part and
+therefore no library, so quarantined bytes cannot be attributed to a library's storage
+figure — the number is library-less by construction. `LibraryStorage.removed_bytes` covers
+the deleted-but-not-purged case, which is attributable; the quarantined figure belongs to
+an instance-wide view arriving with Phase 4's tiering job.
 
 ---
 
