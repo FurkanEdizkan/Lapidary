@@ -5,12 +5,16 @@ mod blob;
 mod derive;
 mod download;
 mod error;
+mod folders;
 mod health;
 mod jobs;
+mod moves;
 mod parts;
 mod scan;
 
 pub use error::ApiError;
+pub use folders::FolderNode;
+pub use moves::MovePart;
 pub use parts::{LibraryStorage, PartCard, PartsPage};
 
 use axum::Router;
@@ -102,6 +106,24 @@ pub fn router(state: AppState, role: Role) -> Router {
             // nothing — see `scan.rs`.
             .route("/api/libraries/{id}/scan", post(scan::scan))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
+            // The category tree and the two ways it changes. `Role::Api` for the reason
+            // everything else a browser calls is: nothing proxies a browser to the worker.
+            // None of these four reaches a file — see `folders.rs`, including why a
+            // renamed category does not rename its directory.
+            .route(
+                "/api/libraries/{id}/folders",
+                get(folders::tree).post(folders::create),
+            )
+            .route(
+                "/api/folders/{id}",
+                axum::routing::patch(folders::patch).delete(folders::delete),
+            )
+            // Moving a model, which is the one route here that does touch the store — a
+            // directory rename, no content access. `moves.rs` is the only file in this
+            // crate allowed to hold that rename handle, enforced by `cargo xtask
+            // check-deploy`'s `RELOCATE_MODULE`.
+            .route("/api/parts/{id}", axum::routing::patch(moves::move_part))
+            .route("/api/parts/{id}/moves", get(moves::history))
             .route(
                 "/api/libraries/{id}/thumbnails",
                 post(derive::library_thumbnails),

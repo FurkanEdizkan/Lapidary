@@ -6,6 +6,7 @@ import type {
   LibraryId,
   LibrarySettings,
   LibraryStorage,
+  MovePart,
   PartId,
   PartsPage,
   RevisionId,
@@ -244,7 +245,7 @@ export async function movePart(
   const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ folderId, acknowledgeDuplicate }),
+    body: JSON.stringify({ folderId, acknowledgeDuplicate } satisfies MovePart),
   })
   if (response.status === 409) {
     return 'duplicate'
