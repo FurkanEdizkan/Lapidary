@@ -93,6 +93,8 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
         .expect("stores the source file");
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name,
             source_path: name,

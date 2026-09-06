@@ -57,6 +57,8 @@ async fn seed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library,
             name,
             source_path: name,
@@ -453,6 +455,8 @@ async fn seed_sized_part(
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name,
             source_path: name,

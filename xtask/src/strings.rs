@@ -71,7 +71,7 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/lapidary-db/tests/repo.rs",
-        61,
+        63,
         "a multi-line SQL query string, indented for readability across its four sub-selects; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose)",
     ),
     (

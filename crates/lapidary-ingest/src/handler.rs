@@ -1,5 +1,5 @@
 //! One file's worth of ingest, as a job. The pipeline below is slice 1's, moved rather
-//! than rewritten: read, BLAKE3, library_holds, kernel, link-or-put.
+//! than rewritten: read, BLAKE3, library_holds, kernel, write, record.
 //!
 //! # Ordering
 //!
@@ -12,19 +12,45 @@
 //!    3a. `parts.auto_thumbnail(library)` — what this library wants produced;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
 //! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
-//! 5. does any library already hold these bytes (`blobs.exists(hash)`)?
-//!    - yes -> `ingest.link_existing(...)`: the blob stays exactly where it is, and this
-//!      library gets its own part pointing at it. No write, so nothing to reap.
-//!    - no  -> `source.put(bytes, compression)` writes the blob *before* the transaction,
-//!      then `ingest.record(...)`; on error, `source.remove(hash)` reaps the blob just
-//!      written and the failure is returned
+//! 5. the LOD rungs go to the derivative store
+//! 6. `blobs.exists(hash)` — whether a `blob` row for these bytes is already there. Read
+//!    here rather than beside the insert it decides, so that nothing fallible sits
+//!    between the source write and the transaction
+//! 7. `model_dir_for(...)` — the category rows this file's directories imply, and the
+//!    directory this model lands in
+//! 8. `source.put_at(storage_path, bytes, AsIs)` writes the file into that directory,
+//!    under its own name, *before* the transaction
+//! 9. `ingest.record(...)`, or `ingest.link_existing(...)` when step 6 said the row is
+//!    there; on a genuine failure the file, the directory and the rungs this job wrote
+//!    are reaped and the failure is returned
+//! 10. `metadata.json` beside the file, from the ids the transaction generated
 //!
-//! Step 5's reap is not optional. The Node prototype wrote its blob and then failed the
+//! Step 9's reap is not optional. The Node prototype wrote its blob and then failed the
 //! insert with no cleanup, leaving bytes on disk that nothing referenced and nothing
 //! would ever collect — `docs/prototype-notes.md` records it. It is equally not optional
-//! that the reap runs only on the branch that *wrote* something: reaping a blob another
-//! library's part references would be silent data loss, which is why the two branches
-//! are separate rather than one call with a flag.
+//! that it runs only when the write really failed: `classify_write` turns a unique
+//! violation into `Skipped`, which means another worker's part row now describes the file
+//! at this path, and reaping it would be silent data loss. That is why the reap is inside
+//! an `is_err()` and not on every `Err` arm.
+//!
+//! # Where the bytes go, and why both branches write them
+//!
+//! Source files are path-addressed: `libraries/<library>/<category…>/<model>/cliff.stl`,
+//! with a `metadata.json` beside each one. The store is something the owner opens in a
+//! file manager, which the content-addressed `blobs/ab/cd/<hash>` layout could never be —
+//! see `docs/superpowers/specs/2026-09-06-folder-tree-and-moves-design.md` §0, which
+//! reverses `DATA.md` §1.1 on the owner's instruction and states the price: identical
+//! bytes in two models are two files, and source dedup is gone.
+//!
+//! So the old asymmetry is gone with it. `blobs.exists(hash)` used to decide both whether
+//! to write bytes and which insert to run; it now decides only the second, which is why
+//! it moved above the write, because a
+//! model directory that does not hold its own file is a directory that does not hold the
+//! model. `blob.ref_count` keeps its meaning — how many `file` rows name this hash — and
+//! loses the implication that it counts copies on disk.
+//!
+//! Derivatives are untouched by any of this. They stay content-addressed, freely
+//! evictable, and reachable by hash; only source files moved.
 //!
 //! # Why the short-circuit is scoped to the library, and to the path
 //!
@@ -71,9 +97,13 @@
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-use lapidary_core::{BlobHash, DerivativeKind, JobPayload, LibraryId, Outcome};
+use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
+use lapidary_core::slug::{disambiguate, slugify};
+use lapidary_core::{
+    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, Outcome, Provenance,
+};
 use lapidary_db::{
-    DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgParts, PgPool, StoredBlobRow,
+    DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, StoredBlobRow,
     TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
@@ -248,50 +278,46 @@ impl WorkerHandler {
             });
         }
 
-        // 5a. Some library already holds these bytes. Reuse them exactly as they are: no
-        // second copy on disk, no second `blob` row, and -- the part that matters -- no
-        // reap on failure, because those bytes are referenced by a part this job did not
-        // create.
-        if blobs.exists(&hash).await.map_err(classify_db)? {
-            let blob = StoredBlobRow {
-                hash,
-                // `link_existing` reads only `hash` and `size_bytes` (the `file` row);
-                // the `blob` row, and with it the stored size and compression level,
-                // already exists and is not rewritten.
-                size_bytes: bytes.len() as u64,
-                stored_bytes: bytes.len() as u64,
-                zstd_level: 0,
-            };
-            return match ingest
-                .link_existing(IngestRequest {
-                    library,
-                    name,
-                    source_path,
-                    blob: &blob,
-                    measurements: &output.measurements,
-                    thumbnail_webp: output.thumbnail_webp.as_deref(),
-                    kernel_version: &kernel_version,
-                    format: &params.format,
-                    tessellations: &rungs,
-                })
-                .await
-            {
-                Ok(_) => Ok(Outcome::Ingested),
-                Err(db_err) => {
-                    // This branch wrote no source blob and must not reap one. It did
-                    // write rungs, so it reaps exactly those.
-                    reap(&derivatives, &reapable);
-                    classify_write(db_err)
-                }
-            };
-        }
+        // 6. Is there already a `blob` row for these bytes? Asked here, before anything is
+        // written, and not beside the insert it decides: every query between the source
+        // write and the transaction is a way to fail with the file already on disk and no
+        // reap to run, which would leave the retry of this same file walking around a
+        // directory it wrote itself. Widening the window changes nothing -- a row another
+        // worker inserts in it makes `record`'s `ON CONFLICT (blake3) DO NOTHING` a no-op.
+        let blob_row_exists = blobs.exists(&hash).await.map_err(classify_db)?;
 
-        // 5b. New bytes. The blob is written before the transaction. `stored.hash` is
-        // recomputed from `bytes` inside `put` and is definitionally the same as `hash`
-        // above; `hash` is used below rather than `stored.hash` so there is exactly one
-        // hash variable in scope.
+        // 7. Where this model lives: its category rows, and the directory that holds it.
+        // See `model_dir_for` for why this is here and not earlier.
+        let (folder, model_dir) = self
+            .model_dir_for(library, source_path, name, &hash)
+            .await?;
+        // The file keeps the name the user gave it, not the slugged part name: the whole
+        // promise is that the directory holds the file they recognise. `part_name` is the
+        // fallback for the pathological case of a candidate file with no file name at all.
+        let file_name = FsPath::new(source_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(name);
+        let storage_path = format!("{model_dir}/{file_name}");
+
+        // 8. The bytes, written before the transaction exactly as they always were -- a
+        // filesystem write cannot be rolled back by Postgres, so they must be on disk
+        // before a row is allowed to point at them. What changed is only the name they are
+        // written under, and that *both* branches below now need this write: a
+        // path-addressed store holds one copy per model, so a second library ingesting
+        // bytes it already holds gets its own file rather than a second reference to one.
+        //
+        // `Compression::AsIs`, not `for_source_format`: this file is the one the owner
+        // opens in a file manager, and a zstd frame named `cliff.stl` is not that. The
+        // recorded `zstd_level` of 0 is what every reader follows, so re-introducing
+        // compression here is a one-argument change (`DATA.md` §1.3's opt-out, sub-project
+        // 4) rather than a format nobody can read.
+        //
+        // `stored.hash` is recomputed from `bytes` inside `put_at` and is definitionally
+        // the same as `hash` above; `hash` is used below so there is exactly one hash
+        // variable in scope.
         let stored = source
-            .put(&bytes, Compression::for_source_format(&params.format))
+            .put_at(&storage_path, &bytes, Compression::AsIs)
             .map_err(|e| HandlerError::Transient {
                 message: e.to_string(),
             })?;
@@ -301,47 +327,245 @@ impl WorkerHandler {
             stored_bytes: stored.stored_bytes,
             zstd_level: stored.zstd_level,
         };
+        let request = IngestRequest {
+            library,
+            name,
+            source_path,
+            folder,
+            storage_path: Some(&storage_path),
+            blob: &blob,
+            measurements: &output.measurements,
+            thumbnail_webp: output.thumbnail_webp.as_deref(),
+            kernel_version: &kernel_version,
+            format: &params.format,
+            tessellations: &rungs,
+        };
 
-        // 6. One transaction. On failure, reap the blob `put` just wrote -- nothing
-        // references it, and nothing else ever will, so it must not be left on disk. The
-        // Node prototype's exact miss (docs/prototype-notes.md): a successful blob write
-        // followed by a failed DB insert, with no cleanup.
-        match ingest
-            .record(IngestRequest {
-                library,
-                name,
-                source_path,
-                blob: &blob,
-                measurements: &output.measurements,
-                thumbnail_webp: output.thumbnail_webp.as_deref(),
-                kernel_version: &kernel_version,
-                format: &params.format,
-                tessellations: &rungs,
-            })
-            .await
-        {
-            Ok(_) => Ok(Outcome::Ingested),
+        // 9. One transaction, and nothing fallible between it and the write above. The
+        // question read at step 6 decides one thing only, now that both branches write
+        // their own file: whether the `blob` row for these bytes has to be inserted, or
+        // already exists because another part shares the hash.
+        let written = if blob_row_exists {
+            ingest.link_existing(request).await
+        } else {
+            ingest.record(request).await
+        };
+        let part = match written {
+            Ok(part) => part,
             Err(db_err) => {
-                // Best-effort: the DB error is the one worth reporting to the caller
-                // either way, and a failed reap does not change what they need to know
-                // about this file. But a failed reap is not nothing -- it leaves bytes
-                // behind that nothing will ever reference and nothing will ever collect,
-                // which is exactly the leak this whole reap exists to close.
-                // `SourceStore::remove` already treats a missing file as success, so this
-                // only fires on a real I/O problem with the store itself -- the one place
-                // in the pipeline that knowingly leaves bytes behind, so it is the one
-                // place that says so.
-                if let Err(reap_err) = source.remove(&hash) {
+                // Reap only what a *failure* wrote. `classify_write` turns a unique
+                // violation into `Skipped`, and that is not a failure: another worker won
+                // the race for this file after a lease expiry, its part row is committed,
+                // and the bytes at `storage_path` are the bytes that row describes.
+                // Reaping them would delete a part that ingested perfectly well -- the
+                // exact mistake the old branch-specific reap existed to avoid, which
+                // survives here as a condition rather than as two code paths.
+                let settled = classify_write(db_err);
+                if settled.is_err() {
+                    reap_source(&source, &storage_path, &model_dir);
+                    reap(&derivatives, &reapable);
+                }
+                return settled;
+            }
+        };
+
+        // 10. `metadata.json`, beside the file it describes. This is the whole of
+        // re-adoption: delete the database and each directory still says what it is.
+        //
+        // After the commit, because the ids it carries are generated inside it, and
+        // warn-only for the same reason the spec (§1) makes a missing manifest an orphan
+        // the walk reports and skips rather than a failure: the part is already committed
+        // and already in the grid, a retry would settle as `Skipped` and never reach this
+        // line again, and reporting the job as failed would tell the user a file did not
+        // ingest when it did.
+        match PgParts(self.db.clone()).latest_revision(part).await {
+            Ok(Some(revision)) => {
+                let m = &output.measurements;
+                let tessellated = Provenance::Tessellated.as_str().to_owned();
+                let manifest = ModelManifest {
+                    schema: ModelManifest::SCHEMA,
+                    part: ManifestPart {
+                        id: part,
+                        library,
+                        name: name.to_owned(),
+                        // Ingest reads neither off a mesh, and writes neither: a part
+                        // number invented here would be a part number the user did not
+                        // give this part.
+                        part_number: None,
+                        classification: None,
+                        source_path: source_path.to_owned(),
+                        metadata: serde_json::json!({}),
+                    },
+                    revisions: vec![ManifestRevision {
+                        id: revision,
+                        rev_label: "1".to_owned(),
+                        origin: "ingest".to_owned(),
+                        volume_mm3: m.volume_mm3,
+                        // No volume means no provenance for one, exactly as
+                        // `insert_part_chain` writes it: claiming a measurement beside a
+                        // NULL would say we measured something we refused to measure.
+                        volume_source: m.volume_mm3.map(|_| tessellated),
+                        bbox_mm: Some(m.bbox_mm),
+                        triangle_count: i32::try_from(m.triangle_count).ok(),
+                        is_watertight: Some(m.is_watertight),
+                        units: Some("mm".to_owned()),
+                        files: vec![ManifestFile {
+                            role: "source".to_owned(),
+                            format: params.format.clone(),
+                            blake3: hash,
+                            size_bytes: bytes.len() as i64,
+                            file_name: file_name.to_owned(),
+                        }],
+                    }],
+                };
+                let written = serde_json::to_vec_pretty(&manifest)
+                    .map_err(|e| e.to_string())
+                    .and_then(|json| {
+                        source
+                            .put_at(
+                                &format!("{model_dir}/metadata.json"),
+                                &json,
+                                Compression::AsIs,
+                            )
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    });
+                if let Err(error) = written {
                     tracing::warn!(
-                        hash = %hash.to_hex(),
-                        error = %reap_err,
-                        "failed to reap a blob after a failed ingest write; it may now be an orphan on disk"
+                        %error,
+                        model_dir,
+                        "could not write metadata.json; this model directory will read as an orphan until it is rewritten"
                     );
                 }
-                reap(&derivatives, &reapable);
-                classify_write(db_err)
             }
+            Ok(None) => tracing::warn!(
+                %part,
+                model_dir,
+                "the revision this ingest just wrote could not be found again, so metadata.json was not written; this model directory will read as an orphan until it is rewritten"
+            ),
+            Err(error) => tracing::warn!(
+                %part,
+                model_dir,
+                %error,
+                "could not read back the revision just written, so metadata.json was not written; this model directory will read as an orphan until it is rewritten"
+            ),
         }
+
+        Ok(Outcome::Ingested)
+    }
+
+    /// The category rows and the directory one model lands in: its leaf `folder_id`, and
+    /// the store-relative path of the directory itself.
+    ///
+    /// Both of the ordering rules that constrain it are about *when* it is called, so they
+    /// are stated where the constraint lives rather than at the call site alone:
+    ///
+    /// - **After the `library_holds` short-circuit**, never during the walk. A re-scan of a
+    ///   directory whose models have all been moved away must not silently re-create the
+    ///   now-empty originals, on disk or in the tree (spec §6).
+    /// - **After the kernel**, so a file that will never parse creates no folder rows and
+    ///   no directory. "Categories are created only for files that actually ingest" is the
+    ///   same sentence read one step further.
+    ///
+    /// One method with two callers rather than one rule written twice: the
+    /// `migrate_storage` job resolves the directory for a part that ingested before this
+    /// layout existed, and a second implementation of "where does this model go" would
+    /// drift from this one the first time either changed.
+    ///
+    /// The collision rule is the spec's (§2): slugify the part name, and if that directory
+    /// already exists in the target category, append `_` and six hex characters of the
+    /// source hash. Deterministic, so re-ingesting the same bytes lands on the same name.
+    /// The existence check is a plain `exists()` on a path built entirely from slugs --
+    /// `slugify` removes every separator, so nothing here can name a directory outside the
+    /// store, and `put_at` re-checks that regardless.
+    pub(crate) async fn model_dir_for(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        name: &str,
+        hash: &BlobHash,
+    ) -> Result<(Option<FolderId>, String), HandlerError> {
+        let library_slug = PgParts(self.db.clone())
+            .library_slug(library)
+            .await
+            .map_err(classify_db)?
+            .ok_or_else(|| HandlerError::Permanent {
+                message: format!(
+                    "There is no library {library} to store {source_path} in. The library \
+                     may have been removed after this job was queued; re-scan the library \
+                     you meant."
+                ),
+            })?;
+
+        // The tree mirrors the ingest directory's own nesting. `get_or_create` is
+        // insert-then-select against a unique constraint, so two workers racing the same
+        // directory is safe, and `mkdir -p` races harmlessly for the filesystem half.
+        let folders = PgFolders(self.db.clone());
+        let mut parent: Option<FolderId> = None;
+        let segments: Vec<&str> = FsPath::new(source_path)
+            .parent()
+            .and_then(|dir| dir.to_str())
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| dir.split('/').collect())
+            .unwrap_or_default();
+        for segment in segments {
+            parent = Some(
+                folders
+                    .get_or_create(library, parent, segment, &slugify(segment))
+                    .await
+                    .map_err(classify_db)?,
+            );
+        }
+
+        // Read back rather than joined from the segments above: `slug_path` is what every
+        // later reader of this tree uses, and a folder that already existed carries the
+        // slug it was created with, which a re-slug of today's segment need not match.
+        let category = match parent {
+            Some(folder) => folders.slug_path(folder).await.map_err(classify_db)?,
+            None => String::new(),
+        };
+        let base = format!("libraries/{library_slug}/{category}");
+        let base = base.trim_end_matches('/');
+
+        let mut model_dir = slugify(name);
+        if FsPath::new(&self.blob_root)
+            .join(base)
+            .join(&model_dir)
+            .exists()
+        {
+            model_dir = disambiguate(&model_dir, hash);
+        }
+        Ok((parent, format!("{base}/{model_dir}")))
+    }
+}
+
+/// Remove the source file, and the directory that held it, after a transaction that
+/// failed.
+///
+/// The empty directory is not tidiness. `model_dir_for` decides a model's name by asking
+/// whether the directory is already taken, so one left behind by a failed write makes the
+/// *retry* of that same file think its name is taken and rename the model — a transient
+/// database error would permanently change where a part lives. `remove_dir_if_empty`
+/// refuses a directory that still holds something, which is the case where another writer
+/// got there first and the directory is not ours to remove.
+///
+/// Best-effort and warn-only, exactly as the derivative reap below is: the database error
+/// is what the caller needs to hear about either way. A failed reap is still worth a line,
+/// because it is the one place in the pipeline that knowingly leaves bytes behind.
+pub(crate) fn reap_source(source: &SourceStore, storage_path: &str, model_dir: &str) {
+    if let Err(reap_err) = source.remove_at(storage_path) {
+        tracing::warn!(
+            storage_path,
+            error = %reap_err,
+            "failed to reap a source file after a failed ingest write; it may now be an orphan on disk"
+        );
+    }
+    if let Err(reap_err) = source.remove_dir_if_empty(model_dir) {
+        tracing::warn!(
+            model_dir,
+            error = %reap_err,
+            "left a model directory behind after a failed ingest write; a retry of this file will store it under a disambiguated name"
+        );
     }
 }
 

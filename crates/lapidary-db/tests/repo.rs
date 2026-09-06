@@ -44,6 +44,8 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
     let blob = blob_row(0xab);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bearing block, 608ZZ",
             source_path: "bearing-block-608zz.stl",
@@ -75,6 +77,8 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
     let blob = blob_row(0xcd);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -103,6 +107,8 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
     let blob = blob_row(0xef);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -141,6 +147,8 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
     assert!(!blobs.exists(&blob.hash).await.expect("query"));
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Spacer, LP-2001-00",
             source_path: "spacer-lp-2001-00.stl",
@@ -181,6 +189,8 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
     let other = second_library(&pool).await;
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Vee block, LP-3072-02",
             source_path: "vee-block-lp-3072-02.stl",
@@ -271,6 +281,8 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
     // (E0515) — the brief's original listing does not compile.
     let measurements = watertight();
     let req = |name: &'static str| IngestRequest {
+        folder: None,
+        storage_path: None,
         library: library(),
         name,
         source_path: name,
@@ -311,6 +323,8 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     {
         ingest
             .record(IngestRequest {
+                folder: None,
+                storage_path: None,
                 library: library(),
                 name,
                 source_path: name,
@@ -361,6 +375,8 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
 async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -399,6 +415,8 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
     // as current, not a crash.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -452,6 +470,8 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
     // the grid query ever runs. What's left to assert is that refusal.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -493,6 +513,8 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
     // WHERE kind = 'thumbnail' filter inside the LATERAL not regressing later.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -538,6 +560,8 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
     // — exactly what the error message says.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -585,6 +609,8 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
     };
     let err = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Implausible mesh",
             source_path: "implausible-mesh.stl",
@@ -621,6 +647,8 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
 async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -747,6 +775,8 @@ async fn three_tessellations_and_a_thumbnail_coexist_on_one_revision(pool: sqlx:
     ];
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -822,6 +852,8 @@ async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool
     for (seed, name) in [(0x90, "Bracket, LP-1042-03"), (0x92, "Spacer, LP-2001-00")] {
         PgIngest(pool.clone())
             .record(IngestRequest {
+                folder: None,
+                storage_path: None,
                 library: library(),
                 name,
                 source_path: name,
@@ -855,6 +887,8 @@ async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool
 async fn the_file_row_records_the_format_it_was_given(pool: sqlx::PgPool) {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Idler Bracket, LP-2210-01",
             source_path: "idler-bracket-lp-2210-01.obj",
@@ -913,6 +947,8 @@ async fn seed_part(
 ) -> PartId {
     ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library,
             name,
             source_path: name,
@@ -943,6 +979,8 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
     // LATERAL` is what guarantees it, so it is asserted rather than assumed.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -1012,6 +1050,8 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let bracket = ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -1026,6 +1066,8 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .expect("records the compressed source");
     let impeller = ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",
@@ -1165,6 +1207,8 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
     let rungs = [rung("tessellation_l0", 0xe6, Some(32))];
     ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -1188,6 +1232,8 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
     };
     let clip = ingest
         .link_existing(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1291,6 +1337,8 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
     // is how a half-repaired database becomes an invisible one.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1330,6 +1378,8 @@ async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(poo
     let ingest = PgIngest(pool.clone());
     let id = ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Spacer, LP-2001-00",
             source_path: "spacer-lp-2001-00.stl",
@@ -1401,6 +1451,8 @@ async fn upserting_over_the_other_storage_shape_moves_the_reference(pool: sqlx::
     let ingest = PgIngest(pool.clone());
     let id = ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1593,6 +1645,8 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
     let blob = blob_row(0xe0);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Idler Bracket, LP-2210-01",
             source_path: "idler-bracket-lp-2210-01.3mf",
@@ -1624,14 +1678,14 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
     let other_library = second_library(&pool).await;
 
     let parts = PgParts(pool);
-    let (hash, format) = parts
+    let source = parts
         .revision_source(library(), revision)
         .await
         .expect("query")
         .expect("the revision has a source file");
-    assert_eq!(hash.to_hex(), blob.hash.to_hex());
+    assert_eq!(source.hash.to_hex(), blob.hash.to_hex());
     assert_eq!(
-        format, "3mf",
+        source.format, "3mf",
         "the source file's format, not the newer export's — the derive arm reopens the \
          source with Compression::for_source_format(format)"
     );
@@ -1668,6 +1722,8 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
     let blob = blob_row(0xd1);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Spindle housing, LP-4180-02",
             source_path: "spindle-housing-lp-4180-02.3mf",
@@ -1768,6 +1824,8 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
     // smallest shape where an ASC ordering picks the other one.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -2018,6 +2076,8 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
     let rungs = [rung("tessellation_l0", 0xd5, Some(32))];
     ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -2034,6 +2094,8 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
     // which is the ordinary case `link_existing` exists for. One file on disk.
     ingest
         .link_existing(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03 (spare)",
             source_path: "bracket-lp-1042-03-spare.stl",
@@ -2050,6 +2112,8 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
     let other = second_library(&pool).await;
     ingest
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: other,
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",

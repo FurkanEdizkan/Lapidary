@@ -71,6 +71,8 @@ async fn seed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library,
             name,
             source_path: name,

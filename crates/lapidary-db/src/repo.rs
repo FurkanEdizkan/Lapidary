@@ -1,7 +1,7 @@
 use crate::DbError;
 use lapidary_core::{
-    BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, PartSummary, Provenance,
-    RevisionId,
+    BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartSummary,
+    Provenance, RevisionId,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -16,6 +16,26 @@ use uuid::Uuid;
 pub struct PartRow {
     pub summary: PartSummary,
     pub thumbnail_webp: Option<Vec<u8>>,
+}
+
+/// Everything a `derive` job needs to re-read a revision's source bytes.
+///
+/// Two ways of naming the same file, and which one applies is `storage_path`'s
+/// nullability: a row written since ingest started writing model directories carries the
+/// path the bytes are actually at, and a row from before that carries NULL, meaning they
+/// are still at `blobs/ab/cd/<hash>`. Migration `0008` states that rule, and it stays
+/// true until the `migrate_storage` job has drained every library.
+#[derive(Debug)]
+pub struct RevisionSource {
+    pub hash: BlobHash,
+    /// `file.format` — lowercase, no dot. What the kernel is asked to parse.
+    pub format: String,
+    /// `file.storage_path`. `None` means the bytes are still content-addressed.
+    pub storage_path: Option<String>,
+    /// `blob.zstd_level` exactly as stored, for the same reason [`DownloadSource`] keeps
+    /// it: a reader must follow the level that was recorded when the bytes were written,
+    /// never re-derive one from the format.
+    pub zstd_level: Option<i16>,
 }
 
 /// Everything the download route needs about a revision's source file, in one row.
@@ -143,6 +163,21 @@ pub struct IngestRequest<'a> {
     /// the scan descends, two folders may each hold a `bracket.stl`; they are two parts
     /// with one name, and only the path tells them apart.
     pub source_path: &'a str,
+    /// The category this model lands in. `None` is the library root.
+    ///
+    /// Location, never identity — the third column beside `source_path` and
+    /// `storage_path`, and the only one of the three a user can change afterwards
+    /// (migration `0008`'s header states all three).
+    pub folder: Option<FolderId>,
+    /// Where the bytes were written, relative to the storage root. Distinct from
+    /// `source_path`: that names a directory we only ever read, this names one we own.
+    ///
+    /// `None` writes the column NULL, which has the meaning `0008` gives it — *the bytes
+    /// are still at the old content-addressed path*. A caller that wrote through
+    /// `SourceStore::put` rather than `put_at` says `None` and is telling the truth; an
+    /// empty string would be a path that exists nowhere, and every reader would then have
+    /// to know that `""` secretly means NULL.
+    pub storage_path: Option<&'a str>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     /// The rendered preview, or `None` when nothing rendered one — a library with
@@ -462,13 +497,17 @@ async fn insert_part_chain(
             value: m.triangle_count,
         })?;
 
-    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
-        .bind(part.as_uuid())
-        .bind(req.library.as_uuid())
-        .bind(req.name)
-        .bind(req.source_path)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path, folder_id) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(part.as_uuid())
+    .bind(req.library.as_uuid())
+    .bind(req.name)
+    .bind(req.source_path)
+    .bind(req.folder.map(|folder| folder.as_uuid()))
+    .execute(&mut **tx)
+    .await?;
 
     sqlx::query(
         "INSERT INTO revision (id, part_id, rev_label, origin, volume, volume_source, \
@@ -494,14 +533,15 @@ async fn insert_part_chain(
     .await?;
 
     sqlx::query(
-        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes) \
-         VALUES ($1, $2, 'source', $3, $4, $5)",
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, storage_path) \
+         VALUES ($1, $2, 'source', $3, $4, $5, $6)",
     )
     .bind(Uuid::now_v7())
     .bind(revision)
     .bind(req.format)
     .bind(req.blob.hash.to_hex())
     .bind(req.blob.size_bytes as i64)
+    .bind(req.storage_path)
     .execute(&mut **tx)
     .await?;
 
@@ -594,6 +634,27 @@ impl PgParts {
                 .fetch_optional(&self.0)
                 .await?,
         )
+    }
+
+    /// This library's own directory inside `libraries/`. `None` means there is no such
+    /// library, exactly as [`PgParts::auto_thumbnail`] means it.
+    ///
+    /// Lowercased after slugging, which is the one place in the store where case is
+    /// flattened: the seeded library is named `Default` and the layout in the spec (§1)
+    /// says `libraries/default/`. Category and model directories keep their case, because
+    /// those are names a user typed for a folder they will look at; a library directory is
+    /// one level of plumbing above that, and two libraries called `Parts` and `parts`
+    /// colliding on a case-insensitive filesystem (macOS, Windows) is a worse outcome than
+    /// a lowercase directory name.
+    ///
+    /// Read rather than stored: `library` has no slug column, and adding one would make
+    /// this the second place a library's directory name is decided.
+    pub async fn library_slug(&self, library: LibraryId) -> Result<Option<String>, DbError> {
+        let name: Option<String> = sqlx::query_scalar("SELECT name FROM library WHERE id = $1")
+            .bind(library.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
+        Ok(name.map(|name| lapidary_core::slug::slugify(&name).to_lowercase()))
     }
 
     /// Turn this library's ingest-time thumbnail on or off — the write side of
@@ -692,11 +753,12 @@ impl PgParts {
         &self,
         library: LibraryId,
         revision: RevisionId,
-    ) -> Result<Option<(BlobHash, String)>, DbError> {
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT f.blake3, f.format FROM file f \
+    ) -> Result<Option<RevisionSource>, DbError> {
+        let row: Option<(String, String, Option<String>, Option<i16>)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, f.storage_path, b.zstd_level FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id AND p.library_id = $2 \
+             LEFT JOIN blob b ON b.blake3 = f.blake3 \
              WHERE f.revision_id = $1 AND f.role = 'source' \
              ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
         )
@@ -704,7 +766,7 @@ impl PgParts {
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((hex, format)) = row else {
+        let Some((hex, format, storage_path, zstd_level)) = row else {
             return Ok(None);
         };
         let parsed = BlobHash::parse_hex(&hex);
@@ -712,7 +774,12 @@ impl PgParts {
             column: "file.blake3",
             value: hex,
         })?;
-        Ok(Some((hash, format)))
+        Ok(Some(RevisionSource {
+            hash,
+            format,
+            storage_path,
+            zstd_level,
+        }))
     }
 
     /// Everything `GET /api/revisions/{id}/download` needs, in one row: which bytes, what
