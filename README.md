@@ -50,6 +50,12 @@ podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 open http://localhost:3000
 ```
 
+**Upgrading an existing deployment?** Read `docs/DATA.md` §1.1, *"Upgrading a store created
+before this layout"*, **before** you bring the stack up. The store moved out of a named volume
+and into a host directory, and nothing copies it across for you. Nothing fails at boot if you
+skip it — the grid still renders, because thumbnails live in Postgres — so the first sign is a
+download returning 500.
+
 Then press **Scan the ingest folder** in the grid. Or, headless, post to the worker
 directly — the same job, and the same batch to poll:
 
