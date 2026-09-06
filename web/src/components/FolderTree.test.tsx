@@ -47,8 +47,18 @@ const pending = () => new Promise<StubResponse>(() => {})
 
 const ok = (body: unknown) => async (): Promise<StubResponse> => ({ ok: true, json: async () => body })
 
-/** The name collision. An answer, not a failure — the client asks and re-sends. */
-const conflict = async (): Promise<StubResponse> => ({ ok: false, status: 409, json: async () => ({}) })
+/**
+ * A `409` refusal, with the `reason` the route would carry — or without one, to stand in
+ * for an old server or a body this client cannot make sense of. Only `'duplicateName'` is
+ * an answer a retry can act on; every other reason, `undefined` included, is a dead end.
+ */
+const conflict =
+  (reason?: string) =>
+  async (): Promise<StubResponse> => ({
+    ok: false,
+    status: 409,
+    json: async () => (reason === undefined ? {} : { reason }),
+  })
 
 /** One response per call, in order, for the ask-then-acknowledge pair. */
 function inOrder(...responses: Array<() => Promise<StubResponse>>) {
@@ -166,7 +176,7 @@ test('dropping a card on All models files it under no category at all', async ()
 test('a name collision asks once, and confirming re-sends the same move acknowledged', async () => {
   const fetchMock = stubFetch({
     folders: ok([TERRAIN, ROCKS]),
-    move: inOrder(conflict, ok({})),
+    move: inOrder(conflict('duplicateName'), ok({})),
   })
   renderTree()
 
@@ -191,7 +201,12 @@ test('a name collision asks once, and confirming re-sends the same move acknowle
 })
 
 test('a refusal that survives the acknowledgement becomes a note, not the dialog again', async () => {
-  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: inOrder(conflict, conflict) })
+  const fetchMock = stubFetch({
+    folders: ok([TERRAIN]),
+    // Realistic race: the target is deleted between the ask and the confirm, so the retry
+    // comes back `noSuchFolder` rather than the collision again.
+    move: inOrder(conflict('duplicateName'), conflict('noSuchFolder')),
+  })
   renderTree()
 
   fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
@@ -202,10 +217,76 @@ test('a refusal that survives the acknowledgement becomes a note, not the dialog
   )
 
   await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(2))
-  // The route answers 409 for a model still migrating and for a cross-library target as
-  // well, so a second refusal is not the collision again — re-opening the same dialog
-  // would be a loop with no exit.
+  // The retry can surface a different reason than the one it acknowledged, so a refusal
+  // that survives the acknowledgement is not the collision again — re-opening the same
+  // dialog would be a loop with no exit.
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(screen.getByText(strings.folders.noSuchFolderRefusal)).toBeDefined()
+})
+
+test('a target in another library refuses the move without offering to retry', async () => {
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('crossLibrary') })
+  renderTree()
+
+  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
+
+  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
+  // No dialog: acknowledging cannot move a category into this library, so the fix is a
+  // different target, not a retry of the same one.
+  expect(screen.getByText(strings.folders.crossLibraryRefusal)).toBeDefined()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+test('a model still migrating refuses the move without offering to retry', async () => {
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('migrationPending') })
+  renderTree()
+
+  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
+
+  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
+  // Same wording the card's own "not movable yet" state uses. No dialog: acknowledging
+  // cannot finish a migration, so offering "move anyway" would invite a retry that can
+  // never succeed.
+  expect(screen.getByText(strings.folders.notMigrated)).toBeDefined()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+test('a folder that no longer exists refuses the move without offering to retry', async () => {
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('noSuchFolder') })
+  renderTree()
+
+  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
+
+  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
+  expect(screen.getByText(strings.folders.noSuchFolderRefusal)).toBeDefined()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+test('a 409 with no reason this client recognises is a dead end, not a guessed duplicate', async () => {
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict() })
+  renderTree()
+
+  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
+
+  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
+  // An absent `reason` — an old server, or a body this client cannot make sense of — must
+  // never open the acknowledge-and-retry dialog: that would invite the user to confirm a
+  // move that can never succeed, for a refusal this client cannot even name.
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByText(strings.folders.moveRefused)).toBeDefined()
+})
+
+test('a 409 with a reason this client does not recognise is a dead end too', async () => {
+  // Distinct from the absent-`reason` case above: this exercises the branch where a
+  // `reason` is present but is not one of the four names this client knows, rather than
+  // the branch where the field is missing outright.
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('teapot') })
+  renderTree()
+
+  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
+
+  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
+  expect(screen.queryByRole('dialog')).toBeNull()
   expect(screen.getByText(strings.folders.moveRefused)).toBeDefined()
 })
 
@@ -277,7 +358,7 @@ test('the move chooser files a model with no drag at all', async () => {
 })
 
 test('the chooser asks about a collision too, and keeps the target it was given', async () => {
-  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: inOrder(conflict, ok({})) })
+  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: inOrder(conflict('duplicateName'), ok({})) })
   render(
     <QueryClientProvider client={newClient()}>
       <MovePartDialog part={CLIFF} library={LIBRARY} onClose={vi.fn()} />

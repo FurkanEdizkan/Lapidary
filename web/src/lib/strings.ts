@@ -346,13 +346,28 @@ export const strings = {
     moveFailed:
       'Could not move this model. Check that the api service is running, then try again.',
     /**
-     * A second refusal after the duplicate was acknowledged. The route answers `409` for a
-     * name collision, for a model still migrating and for a target in another library, so
-     * a refusal that survives the acknowledgement is one of the other two and re-opening
-     * the same dialog would loop with no way out.
+     * The move route's `409` carries no `reason` this client recognises — an old server,
+     * from before that field shipped, or a value that is not one of the four it documents.
+     * The fallback has to stay a dead end rather than a guess: treating an unrecognised
+     * reason as `duplicateName` is the exact bug this string exists to avoid, since
+     * acknowledging a refusal that was never the name collision only loops.
      */
     moveRefused:
-      'The server would not file this model there. Nothing changed — try another category, or try again once the storage migration has finished.',
+      'The server refused to file this model there, for a reason this app does not recognise. Nothing changed — try again, or pick a different category.',
+    /**
+     * `409 crossLibrary` — the target category belongs to a different library. A dead end
+     * for this attempt: acknowledging cannot move the category into this library, so the
+     * fix is a different target, not a retry of the same one.
+     */
+    crossLibraryRefusal:
+      "That category belongs to a different library. A model can only be filed under a category in its own library — pick one from this library's tree.",
+    /**
+     * `409 noSuchFolder` — the target category no longer exists, e.g. a sidebar that has
+     * not noticed a delete made elsewhere. Also a dead end: there is nowhere to file the
+     * model until the tree is reloaded and a real target is picked from it.
+     */
+    noSuchFolderRefusal:
+      'That category no longer exists, so there is nowhere to file this model. Reload the category tree and try again.',
     duplicateTitle: (name: string) => `“${name}” is already in this folder`,
     duplicateBody: 'Two models can share a name — they are told apart by where they came from.',
     duplicateConfirm: 'Move anyway',

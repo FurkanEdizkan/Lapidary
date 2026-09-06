@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useId, useState, type DragEvent, type ReactNode } from 'react'
-import { deleteFolder, fetchFolders, movePart } from '../lib/api'
+import { deleteFolder, fetchFolders, movePart, type MoveRefusalReason } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
 
@@ -43,37 +43,67 @@ export function useFolders(library: LibraryId) {
   return useQuery({ queryKey: ['folders', library], queryFn: () => fetchFolders(library) })
 }
 
+/** The three `409` reasons that cannot be fixed by acknowledging — see `refusalMessage`. */
+type TerminalRefusal = Exclude<MoveRefusalReason, 'duplicateName'>
+
 /**
- * Moving one model, including the collision the move can come back with.
+ * Which string names a terminal refusal. `duplicateName` never reaches here — it is the
+ * one reason `useMovePart` turns into `duplicate` instead — so this switch is exhaustive
+ * over what is left without needing a fallback case that could paper over a fifth reason
+ * arriving later unnoticed.
+ */
+function refusalMessage(reason: TerminalRefusal): string {
+  switch (reason) {
+    case 'migrationPending':
+      // Same wording the card's own "not movable yet" state uses — the two places a user
+      // meets this state say the same thing.
+      return strings.folders.notMigrated
+    case 'crossLibrary':
+      return strings.folders.crossLibraryRefusal
+    case 'noSuchFolder':
+      return strings.folders.noSuchFolderRefusal
+    case 'unknown':
+      return strings.folders.moveRefused
+  }
+}
+
+/**
+ * Moving one model, including the four `409` reasons the move can come back with.
  *
- * `409` is an answer, not a failure: two models may share a name — slice 6a decided that
- * is the truth — so the API warns once and the client re-sends the SAME target with
- * `acknowledgeDuplicate: true`. Both requests spell the flag out; the route defaults it,
- * but a move that silently omitted it would be indistinguishable on the wire from one that
- * meant `false`.
+ * `409` is an answer, not a failure — but only one of its four reasons is fixed by trying
+ * again: `duplicateName`, where two models sharing a name is slice 6a's decided truth, so
+ * the API warns once and the client re-sends the SAME target with `acknowledgeDuplicate:
+ * true`. Both requests spell the flag out; the route defaults it, but a move that silently
+ * omitted it would be indistinguishable on the wire from one that meant `false`.
  *
- * A second `409` after the acknowledgement is not the collision again — the route returns
- * that status for a model that has not finished migrating and for a cross-library target
- * as well — so it becomes a note rather than the same dialog a second time. Re-opening it
- * would be a loop with no exit.
+ * The other three — `migrationPending`, `crossLibrary`, `noSuchFolder` — are dead ends for
+ * this attempt no matter which request carried them: acknowledging cannot finish a
+ * migration, move a category into this library, or bring back a folder that is gone. Those
+ * become a note instead of the dialog, on the first `409` as readily as a second — nothing
+ * here waits for an acknowledgement round trip to find out.
  */
 function useMovePart(library: LibraryId, onMoved?: () => void) {
   const queryClient = useQueryClient()
   const [duplicate, setDuplicate] = useState<{ part: DraggedPart; folderId: FolderId | null } | null>(
     null,
   )
-  const [refused, setRefused] = useState(false)
+  const [refusal, setRefusal] = useState<TerminalRefusal | null>(null)
   const move = useMutation({
     mutationFn: (input: { part: DraggedPart; folderId: FolderId | null; acknowledge: boolean }) =>
       movePart(input.part.id, input.folderId, input.acknowledge),
     onSuccess: (outcome, input) => {
-      if (outcome === 'duplicate') {
-        setDuplicate(input.acknowledge ? null : { part: input.part, folderId: input.folderId })
-        setRefused(input.acknowledge)
+      if (outcome.kind === 'refused') {
+        if (outcome.reason === 'duplicateName') {
+          setDuplicate({ part: input.part, folderId: input.folderId })
+          setRefusal(null)
+        } else {
+          setDuplicate(null)
+          setRefusal(outcome.reason)
+        }
         return
       }
       setDuplicate(null)
-      setRefused(false)
+      setRefusal(null)
       // Both move with the model: the grid it left and the grid it landed in are the same
       // query under different keys, and `partCount` is what the delete dialog names.
       void queryClient.invalidateQueries({ queryKey: ['parts', library] })
@@ -84,9 +114,9 @@ function useMovePart(library: LibraryId, onMoved?: () => void) {
   return {
     move,
     duplicate,
-    refused,
+    refusal,
     start: (part: DraggedPart, folderId: FolderId | null) => {
-      setRefused(false)
+      setRefusal(null)
       move.mutate({ part, folderId, acknowledge: false })
     },
     confirm: () => {
@@ -121,7 +151,7 @@ export function FolderTree({
 }) {
   const folders = useFolders(library)
   const queryClient = useQueryClient()
-  const { move, duplicate, refused, start, confirm, dismiss } = useMovePart(library)
+  const { move, duplicate, refusal, start, confirm, dismiss } = useMovePart(library)
   const [pendingDelete, setPendingDelete] = useState<FolderNode | null>(null)
 
   const remove = useMutation({
@@ -181,8 +211,8 @@ export function FolderTree({
       )}
       {move.isError ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveFailed}</p>
-      ) : refused ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveRefused}</p>
+      ) : refusal !== null ? (
+        <p className="mt-2 text-sm text-[var(--color-muted)]">{refusalMessage(refusal)}</p>
       ) : null}
       {remove.isError ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.deleteFailed}</p>
@@ -357,7 +387,7 @@ export function MovePartDialog({
   onClose: () => void
 }) {
   const folders = useFolders(library)
-  const { move, duplicate, refused, start, confirm, dismiss } = useMovePart(library, onClose)
+  const { move, duplicate, refusal, start, confirm, dismiss } = useMovePart(library, onClose)
   if (duplicate !== null) {
     return (
       <DuplicateDialog
@@ -397,8 +427,8 @@ export function MovePartDialog({
       </ul>
       {move.isError ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveFailed}</p>
-      ) : refused ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveRefused}</p>
+      ) : refusal !== null ? (
+        <p className="mt-2 text-sm text-[var(--color-muted)]">{refusalMessage(refusal)}</p>
       ) : null}
       {/*
         Focus lands on cancel, never on a target: every other control here files the model

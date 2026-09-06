@@ -223,12 +223,55 @@ export async function fetchFolders(library: LibraryId): Promise<FolderNode[]> {
 }
 
 /**
+ * The four causes `moves.rs`'s `refused` helper puts on a `409` body's `reason` field, plus
+ * the shape a body without one takes. Not a `ts-rs` binding — the route hands the reason
+ * back as a bare string on an ad hoc JSON object, not a Rust enum on the wire — so this is
+ * hand-written the way `MovePart`'s own request shape is, right below.
+ *
+ * `'unknown'` covers two cases on purpose: an old server (before this field shipped) and a
+ * value this client does not recognise. Both have to fall here and nowhere else — folding
+ * either into `'duplicateName'` would open the acknowledge-and-retry dialog on a refusal
+ * that acknowledging can never fix.
+ */
+export type MoveRefusalReason =
+  | 'migrationPending'
+  | 'crossLibrary'
+  | 'duplicateName'
+  | 'noSuchFolder'
+  | 'unknown'
+
+const KNOWN_MOVE_REFUSAL_REASONS: readonly string[] = [
+  'migrationPending',
+  'crossLibrary',
+  'duplicateName',
+  'noSuchFolder',
+]
+
+async function moveRefusalReason(response: Response): Promise<MoveRefusalReason> {
+  try {
+    const body: unknown = await response.json()
+    const reason =
+      body !== null && typeof body === 'object' ? (body as { reason?: unknown }).reason : undefined
+    return typeof reason === 'string' && KNOWN_MOVE_REFUSAL_REASONS.includes(reason)
+      ? (reason as MoveRefusalReason)
+      : 'unknown'
+  } catch {
+    // A `409` with a body that is not JSON at all — no more readable than one with an
+    // unrecognised `reason`, and not a reason to guess `duplicateName`.
+    return 'unknown'
+  }
+}
+
+/**
  * `PATCH /api/parts/{id}` — file a model under a category, or under none.
  *
  * `409` is an answer rather than a failure, which is why this returns an outcome instead
- * of throwing on it: a model with the same name is already in the target, and slice 6a
- * decided two models called `bracket` are the truth. The client shows the warning once and
- * re-sends the same target with `acknowledgeDuplicate: true`.
+ * of throwing on it — but the status alone does not say which of four refusals it is, so
+ * the body's `reason` rides along. Only `duplicateName` is the collision slice 6a decided
+ * two models called `bracket` can both be true; the client shows that warning once and
+ * re-sends the same target with `acknowledgeDuplicate: true`. The other three —
+ * `migrationPending`, `crossLibrary`, `noSuchFolder` — are dead ends for this attempt, and
+ * acknowledging would not change the answer.
  *
  * Both fields are always sent. The route defaults `acknowledgeDuplicate`, but a request
  * that omitted it would be indistinguishable on the wire from one that meant `false`, and
@@ -241,19 +284,19 @@ export async function movePart(
   part: PartId,
   folderId: FolderId | null,
   acknowledgeDuplicate: boolean,
-): Promise<'moved' | 'duplicate'> {
+): Promise<{ kind: 'moved' } | { kind: 'refused'; reason: MoveRefusalReason }> {
   const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ folderId, acknowledgeDuplicate } satisfies MovePart),
   })
   if (response.status === 409) {
-    return 'duplicate'
+    return { kind: 'refused', reason: await moveRefusalReason(response) }
   }
   if (!response.ok) {
     throw new Error(`move returned ${response.status}`)
   }
-  return 'moved'
+  return { kind: 'moved' }
 }
 
 /**
