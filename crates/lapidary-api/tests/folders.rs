@@ -352,6 +352,29 @@ async fn the_tree_counts_every_model_under_a_category_and_no_deleted_one(pool: s
     assert_eq!(count_of(bases), 0);
     // The part at the library root belongs to no category, so it is in no node's count —
     // the sidebar's "All models" row is what stands for those.
+
+    // The invariant the count exists for, asserted against the grid rather than against
+    // itself: the number beside a category has to be the number of cards that category
+    // shows. Two recursive descents in two files answer this, and only a test that reads
+    // both notices if one of them is ever "tidied up" out of step with the other — a
+    // `deleted_at` filter added to one descent alone would leave every other test green
+    // and put a number on screen contradicting the grid beside it.
+    let (status, grid) = send(
+        &pool,
+        Request::builder()
+            .uri(format!(
+                "/api/libraries/{SEEDED_LIBRARY}/parts?folderId={terrain}"
+            ))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        grid["parts"].as_array().map(Vec::len),
+        Some(2),
+        "the sidebar's count and the grid it filters must agree: {grid}"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
