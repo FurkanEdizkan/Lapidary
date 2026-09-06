@@ -76,7 +76,7 @@ pub const EXEMPT: &[(&str, usize, &str)] = &[
     ),
     (
         "crates/lapidary-db/tests/migrations.rs",
-        469,
+        472,
         "a multi-line recursive CTE string reading the folder tree back out, indented for readability across its base case and recursive step; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose)",
     ),
     (

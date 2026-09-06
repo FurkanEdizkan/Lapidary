@@ -5,6 +5,9 @@
 //! they may edit, so readers treat a missing or malformed one as an orphan to report, never
 //! as a reason to fail a walk.
 //!
+//! Wire format is `snake_case` (a file humans edit), not `camelCase` (a browser payload) —
+//! true of every struct below, not just one of them.
+//!
 //! ## Forward compatibility
 //!
 //! Unknown fields survive a **read** (serde ignores them) but are **dropped on write-back**.
@@ -18,7 +21,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelManifest {
     /// Bumped when a field's *meaning* changes. Additive fields do not bump it — readers
-    /// keep unknown ones rather than refusing them. See module doc for forward-compatibility notes.
+    /// ignore unknown ones rather than refusing them, though those fields are dropped if
+    /// this manifest is later written back out. See module doc for forward-compatibility
+    /// notes.
     pub schema: u32,
     pub part: ManifestPart,
     pub revisions: Vec<ManifestRevision>,
@@ -36,7 +41,6 @@ impl ModelManifest {
     }
 }
 
-/// Wire format is `snake_case` (a file humans edit), not `camelCase` (a browser payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestPart {
     pub id: PartId,

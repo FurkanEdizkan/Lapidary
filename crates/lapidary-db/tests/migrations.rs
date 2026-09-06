@@ -445,8 +445,11 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
     for (name, path) in [
         ("bracket-lp-1042-03", "bracket-lp-1042-03.stl"),
         ("rock", "Terrain/rock.stl"),
-        ("cliff", "Terrain/Rocks/cliff.stl"),
-        ("spire", "Terrain/Rocks/Cliffs/spire.stl"),
+        // The "?" is deliberate: these directories already exist on disk under that exact
+        // name, so the folder this backfills must carry it unslugged — see the assertion
+        // below.
+        ("cliff", "Terrain/Rocks?/cliff.stl"),
+        ("spire", "Terrain/Rocks?/Cliffs/spire.stl"),
         ("round-32mm", "Bases/round-32mm.stl"),
         ("base-rock", "Bases/Rocks/base-rock.stl"),
     ] {
@@ -481,10 +484,26 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
             "Bases",
             "Bases/Rocks",
             "Terrain",
-            "Terrain/Rocks",
-            "Terrain/Rocks/Cliffs"
+            "Terrain/Rocks?",
+            "Terrain/Rocks?/Cliffs"
         ],
-        "Terrain/Rocks and Bases/Rocks are two folders, not one"
+        "Terrain/Rocks? and Bases/Rocks are two folders, not one"
+    );
+
+    // The backfill must not slugify: "Rocks?" is a directory name the store already has
+    // on disk, and turning it into anything else would rename a directory the store is
+    // about to be told to find. `folder.slug` is meant to be the filesystem-safe name —
+    // it just is not computed by this backfill, on purpose, because these names did not
+    // come through a path where computing one was safe.
+    let rocks_slug: String =
+        sqlx::query_scalar("SELECT slug FROM folder WHERE library_id = $1 AND name = 'Rocks?'")
+            .bind(library)
+            .fetch_one(&pool)
+            .await
+            .expect("reads the Rocks? folder's slug");
+    assert_eq!(
+        rocks_slug, "Rocks?",
+        "the slug must stay unslugged, character for character"
     );
 
     let root_parts: i64 = sqlx::query_scalar(
@@ -575,4 +594,23 @@ async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool
         .await
         .expect("counts");
     assert_eq!(unfiled, 1, "only the flat part stays unfiled");
+}
+
+/// `backfill/0008_backfill.sql` and the copy appended inside `migrations/0008_folders.sql`
+/// exist for two different reasons — the standalone file is what this test file re-runs by
+/// hand against an already-migrated database, the appended copy is what upgrades a database
+/// that already has parts when `0008` itself runs — and nothing stops the two drifting
+/// apart. This is not a live-database test: it reads both files as text and checks the
+/// migration contains the standalone file's contents verbatim, so an edit to one that is
+/// not carried to the other fails here instead of shipping two silently different rebuilds
+/// of the same tree.
+#[test]
+fn the_standalone_backfill_file_and_the_copy_inside_0008_agree() {
+    let standalone = include_str!("../backfill/0008_backfill.sql");
+    let migration = include_str!("../migrations/0008_folders.sql");
+    assert!(
+        migration.contains(standalone),
+        "migrations/0008_folders.sql must contain backfill/0008_backfill.sql verbatim, or \
+         the two have drifted apart"
+    );
 }
