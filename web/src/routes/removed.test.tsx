@@ -102,14 +102,15 @@ test('the list asks for removed parts and tells two identically named ones apart
   // Both rows say the same name. The path is the only thing distinguishing them, which is
   // why it is on the summary at all.
   expect(screen.getAllByText('Bracket, LP-1042-03')).toHaveLength(2)
-  expect(calls[0].url).toContain('state=removed')
+  expect(calls[0]?.url).toContain('state=removed')
 })
 
 test('purge is behind a confirmation that names the path, and declining calls nothing', async () => {
   const calls = stub([MOUNTING, SPARES])
   // `false`: the user read the dialog and said no. Nothing may reach the API — this is the
   // one action in the product that cannot be undone.
-  const confirm = vi.fn(() => false)
+  // Typed argument, so the assertion below can read what the dialog actually said.
+  const confirm = vi.fn((_message: string) => false)
   vi.stubGlobal('confirm', confirm)
   renderPage()
 
@@ -121,7 +122,7 @@ test('purge is behind a confirmation that names the path, and declining calls no
   )
   // The confirmation has to name *this* row's path. A dialog naming the other part, or
   // naming only the shared name, is one a person cannot answer correctly.
-  expect(confirm.mock.calls[0][0]).toContain('spares/')
+  expect(confirm.mock.calls[0]?.[0]).toContain('spares/')
   expect(calls.some((call) => call.url.includes('/purge'))).toBe(false)
 })
 
