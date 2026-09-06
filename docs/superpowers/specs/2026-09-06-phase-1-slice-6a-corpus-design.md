@@ -265,9 +265,19 @@ than on the door is the shape that leaves a sibling caller unprotected.
 
 ### 4.5 Not in this task
 
-The browser half — WASM BLAKE3, the drop target, `webkitdirectory` — is the commit after
-this one. The server half is testable with `curl` and is where the boundary decisions
-live, so it lands first and alone.
+The browser half — BLAKE3 in wasm, the drop target, `webkitdirectory` — landed in the
+commit after the server half rather than beside it: the server half is testable with
+`curl` and is where the boundary decisions live, so it went first and alone.
+
+Two things the browser half decided that this section did not. **`webkitRelativePath`
+keeps the dropped folder's own first segment**, so dropping `brackets/` gives
+`brackets/steel/x.stl`; stripping it makes two dropped folders collide on a shared
+basename, and §2's constraint turns that into one part indexed and one silently skipped. A
+dropped folder and the same tree scanned from `/ingest` therefore differ by that segment,
+which is honest — the scan's root is a server mount whose name is in no path, and a drop's
+root is a folder the user named. And **`readEntries` returns at most 100 entries per
+call**, so the walk loops until it returns empty; calling it once reads the first hundred
+files of a parts library and drops the rest.
 
 A staging file with no commit behind it is never swept. It is a `.part` in a volume, it
 holds no row, and no route reads it; slice 7 owns reclaiming disk, and a sweep written
