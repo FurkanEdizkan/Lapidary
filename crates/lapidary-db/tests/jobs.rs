@@ -544,6 +544,67 @@ async fn releasing_leases_skips_a_migrate_row_whose_library_already_has_a_pendin
     );
 }
 
+/// Fix round 2: the round-1 guard only excludes a row whose library already has a
+/// PENDING successor. It does nothing when a worker holds TWO already-`running`
+/// `migrate_storage` rows for the same library with no pending row yet -- the ordinary
+/// case right after `reenqueue_migration_if_absent`'s own `pg_notify` lets this same
+/// worker's dequeue loop claim and start the fresh successor before the predecessor's
+/// `complete()` lands. The bulk `UPDATE` then tries to move BOTH into `pending` in one
+/// statement and collides with `job_migrate_storage_pending_per_library` against
+/// itself -- no pending successor involved at all, just two rows this one statement is
+/// writing at once. Exactly the fixture the coordinator's reviewer used to reproduce it.
+#[sqlx::test(migrations = "./migrations")]
+async fn releasing_leases_moves_at_most_one_running_migrate_row_per_library(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let worker = "worker-w";
+    let migrate_a = insert_job(&pool, seeded(), "migrate_storage", "running", Some(worker)).await;
+    let migrate_b = insert_job(&pool, seeded(), "migrate_storage", "running", Some(worker)).await;
+    let ingest = insert_job(&pool, seeded(), "ingest_file", "running", Some(worker)).await;
+
+    let released = jobs
+        .release_leases(worker)
+        .await
+        .expect("must not error even with two running migrate rows for one library");
+    assert_eq!(
+        released, 2,
+        "the ingest row plus exactly one of the two migrate rows"
+    );
+
+    let states: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, state FROM job WHERE id IN ($1, $2) ORDER BY id")
+            .bind(migrate_a.as_uuid())
+            .bind(migrate_b.as_uuid())
+            .fetch_all(&pool)
+            .await
+            .expect("reads back");
+    let pending_count = states
+        .iter()
+        .filter(|(_, state)| state == "pending")
+        .count();
+    let running_count = states
+        .iter()
+        .filter(|(_, state)| state == "running")
+        .count();
+    assert_eq!(
+        pending_count, 1,
+        "at most one migrate row per library may move to pending in one statement"
+    );
+    assert_eq!(
+        running_count, 1,
+        "the other is left running to lapse by lease expiry, not counted as released"
+    );
+
+    let ingest_state: String = sqlx::query_scalar("SELECT state FROM job WHERE id = $1")
+        .bind(ingest.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("reads back");
+    assert_eq!(
+        ingest_state, "pending",
+        "an unrelated kind held by the same worker must still release normally"
+    );
+}
+
 /// The startup guard's whole purpose, proved rather than asserted: several workers can
 /// boot at the same instant against the same un-migrated library, each independently
 /// deciding it needs a `migrate_storage` job, and exactly one job must land.

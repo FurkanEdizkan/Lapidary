@@ -33,18 +33,31 @@ fn to_timestamp(column: &'static str, micros: i64) -> Result<Timestamp, DbError>
 const FAILED_SAMPLE: i64 = 100;
 
 /// `complete`/`fail`/`reschedule` all guard their `UPDATE` with `AND state = 'running'`
-/// (see `complete`'s doc comment for why), so zero rows affected is not an error -- it
-/// means a second worker already reclaimed and finished this job before this call
-/// landed. That is a correct, expected outcome of the design, but it is also a race that
-/// is otherwise invisible: nothing else records that it happened. This turns it into
-/// something an operator going looking for stalled-worker symptoms can actually find.
+/// (see `complete`'s doc comment for why), so zero rows affected is not an error -- most
+/// often it means a second worker already reclaimed and finished this job before this
+/// call landed. That is a correct, expected outcome of the design, but it is also a race
+/// that is otherwise invisible: nothing else records that it happened. This turns it
+/// into something an operator going looking for stalled-worker symptoms can actually
+/// find.
+///
+/// Since fix round 2, `reschedule` alone can also match zero rows for a second, distinct
+/// reason with nothing stale about it: its own `migrate_storage` guard (see that
+/// method's doc) can leave a row deliberately `running`, still held by the very same
+/// caller, because moving it to `pending` would collide with a pending or racing
+/// sibling. `rows_affected` alone cannot tell that apart from a genuinely stale write,
+/// so the message below no longer claims either cause specifically -- claiming "another
+/// worker already reclaimed and finished it" for a row nobody touched would be exactly
+/// the kind of measurement that lies this project's error-message rule already forbids
+/// in user-facing text, even here where the audience is `tracing::debug!` and an
+/// operator, not an end user.
 fn log_if_stale(id: JobId, verb: &str, rows_affected: u64) {
     if rows_affected == 0 {
         tracing::debug!(
             job = %id,
             verb,
-            "job was no longer running when this write landed -- another worker had \
-             already reclaimed and finished it; this write was a no-op"
+            "this write changed nothing -- either another worker already reclaimed \
+             and finished this job, or (reschedule only) its own migrate_storage guard \
+             left the row running on purpose; neither is a problem to chase"
         );
     }
 }
@@ -462,26 +475,51 @@ impl PgJobs {
     /// of them can run cleanup code.
     ///
     /// One `UPDATE`, every kind this worker holds, at once -- which is exactly why the
-    /// `migrate_storage` exclusion below (see `reschedule`'s doc for the full reasoning)
-    /// has to live in this statement rather than in a second pass over just that kind: a
-    /// `migrate_storage` row whose library already has a pending successor colliding
-    /// with `job_migrate_storage_pending_per_library` (migration 0010) would abort this
-    /// UPDATE in its entirety, silently leaving every OTHER job of any kind this worker
-    /// held -- an `ingest_file` mid-scan, a `derive` mid-render -- leased and un-released,
-    /// degrading a graceful shutdown into the crash path for all of them, not just the
-    /// one migration. Excluding that one row lets the rest release normally; the excluded
-    /// row lapses by lease expiry instead, which is the same outcome a crashed worker's
-    /// jobs already get.
+    /// `migrate_storage` exclusions below (see `reschedule`'s doc for the pending-
+    /// successor half of the reasoning) have to live in this statement rather than in a
+    /// second pass over just that kind: a `migrate_storage` row that cannot become
+    /// `pending` colliding with `job_migrate_storage_pending_per_library` (migration
+    /// 0010) would abort this UPDATE in its entirety, silently leaving every OTHER job
+    /// of any kind this worker held -- an `ingest_file` mid-scan, a `derive` mid-render
+    /// -- leased and un-released, degrading a graceful shutdown into the crash path for
+    /// all of them, not just the one migration.
+    ///
+    /// Fix round 2: excluding a row with a pending successor is not enough on its own.
+    /// This worker can hold TWO `running` `migrate_storage` rows for the SAME library at
+    /// once, with no pending row yet -- `reenqueue_migration_if_absent` fires
+    /// `pg_notify` on success, and this worker's own dequeue loop (default concurrency
+    /// 4) can claim and start running the fresh successor on another slot before the
+    /// predecessor's `complete()` call lands, or before a `Transient` retry lands, or
+    /// while the predecessor is still legitimately busy past `SHUTDOWN_GRACE` on a large
+    /// corpus. Releasing BOTH in the same `UPDATE` would move two rows for one library
+    /// to `pending` in one statement -- a self-collision against the same index, from
+    /// this statement alone, with no pending successor involved at all. The second
+    /// `EXISTS` below closes that: it excludes a `migrate_storage` row whenever ANOTHER
+    /// `running` `migrate_storage` row for the same library, held by this SAME worker,
+    /// sorts before it (`id` is uuidv7 and therefore time-ordered, so this is a stable,
+    /// deterministic "oldest wins" tie-break, not an arbitrary one) -- so at most ONE
+    /// such row moves per library per call. The rest stay `running` to lapse by lease
+    /// expiry, for the identical reason the pending-successor exclusion already gives:
+    /// their work is either already queued or about to be, so losing the lease costs
+    /// nothing a retry does not already cover.
     pub async fn release_leases(&self, worker_id: &str) -> Result<u64, DbError> {
         let result = sqlx::query(
             "UPDATE job SET state = 'pending', run_after = now(), leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
              WHERE leased_by = $1 AND state = 'running' \
-               AND NOT (job.kind = 'migrate_storage' AND EXISTS ( \
-                   SELECT 1 FROM job successor \
-                    WHERE successor.kind = 'migrate_storage' \
-                      AND successor.library_id = job.library_id \
-                      AND successor.state = 'pending'))",
+               AND NOT (job.kind = 'migrate_storage' AND ( \
+                   EXISTS ( \
+                       SELECT 1 FROM job successor \
+                        WHERE successor.kind = 'migrate_storage' \
+                          AND successor.library_id = job.library_id \
+                          AND successor.state = 'pending') \
+                   OR EXISTS ( \
+                       SELECT 1 FROM job other \
+                        WHERE other.kind = 'migrate_storage' \
+                          AND other.library_id = job.library_id \
+                          AND other.state = 'running' \
+                          AND other.leased_by = $1 \
+                          AND other.id < job.id)))",
         )
         .bind(worker_id)
         .execute(&self.0)
