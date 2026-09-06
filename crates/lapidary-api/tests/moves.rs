@@ -275,6 +275,62 @@ async fn a_failed_rename_leaves_the_database_untouched(pool: sqlx::PgPool) {
     );
 }
 
+/// The one 500 on this route that is not a `DbError`. It has to behave like the others:
+/// the operator gets the real failure through the log, the caller gets prose that names no
+/// host path. `StorageError::Io` carries the store's absolute path, which is the server's
+/// filesystem layout and not something a browser has any business being told.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_store_that_cannot_take_the_directory_says_so_without_naming_the_disk(
+    pool: sqlx::PgPool,
+) {
+    let store = tempfile::tempdir().expect("temp store");
+    let folders = PgFolders(pool.clone());
+    let terrain = folders
+        .get_or_create(library(), None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+    let bases = folders
+        .get_or_create(library(), None, "Bases", "Bases")
+        .await
+        .expect("Bases");
+    let part = seed_model(
+        &pool,
+        store.path(),
+        Some(terrain),
+        "scree",
+        "Terrain/scree.stl",
+        "libraries/default/Terrain/scree/scree.stl",
+        0x44,
+    )
+    .await;
+
+    // A plain file standing where the category's directory has to go. `create_dir` is
+    // `mkdir -p`, so it fails on the component that is not a directory — the cheapest
+    // reachable stand-in for a volume that is full, read-only or unmounted.
+    std::fs::write(
+        store.path().join("libraries/default/Bases"),
+        b"not a directory",
+    )
+    .expect("a file in the way");
+
+    let (status, body) = move_request(&pool, store.path(), part, Some(bases), false).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        body["reason"], "storageUnwritable",
+        "the client tells this apart from a failed rename by `reason`, never by the prose"
+    );
+    let message = body["message"].as_str().expect("a message");
+    assert!(
+        !message.contains(store.path().to_str().expect("utf-8 temp dir")),
+        "the store's absolute path is for the log, not for the response: {message}"
+    );
+    assert!(
+        message.contains("storage"),
+        "and it still has to tell the operator what to go and look at: {message}"
+    );
+}
+
 /// Two models may share a name — slice 6a decided that is the truth — so the collision is a
 /// warning the client can answer, not a refusal.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

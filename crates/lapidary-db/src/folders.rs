@@ -127,7 +127,14 @@ impl PgFolders {
         .bind(slug)
         .execute(&self.0)
         .await
-        .map_err(|err| collision(name, slug, err))?;
+        .map_err(|err| match constraint_of(&err).as_deref() {
+            // The only route that can be handed a library id nobody chose from a list, so
+            // the only one that can meet this. Recognised here rather than pre-checked with
+            // a SELECT: the constraint is the authority, and a prior read would be a second
+            // round trip that a concurrent delete could still invalidate.
+            Some("folder_library_id_fkey") => DbError::NoSuchLibrary { library },
+            _ => collision(name, slug, err),
+        })?;
         Ok(id)
     }
 
@@ -374,11 +381,7 @@ impl PgFolders {
 /// same way `lapidary-ingest`'s `classify_write` does, and a violation of some other
 /// constraint is not a collision this function knows how to describe.
 fn collision(name: &str, slug: &str, err: sqlx::Error) -> DbError {
-    let constraint = match &err {
-        sqlx::Error::Database(db) => db.constraint(),
-        _ => None,
-    };
-    match constraint {
+    match constraint_of(&err).as_deref() {
         Some("folder_name_unique_per_parent") => DbError::FolderNameTaken {
             name: name.to_owned(),
         },
@@ -387,5 +390,15 @@ fn collision(name: &str, slug: &str, err: sqlx::Error) -> DbError {
             slug: slug.to_owned(),
         },
         _ => DbError::Query(err),
+    }
+}
+
+/// The constraint a failed statement names, owned so the error itself can be moved
+/// afterwards. `None` for anything that is not a database error, and for a database error
+/// that violated no named constraint.
+fn constraint_of(err: &sqlx::Error) -> Option<String> {
+    match err {
+        sqlx::Error::Database(db) => db.constraint().map(str::to_owned),
+        _ => None,
     }
 }

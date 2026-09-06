@@ -130,10 +130,13 @@ pub async fn move_part(
     if let Some((parent, _)) = destination.rsplit_once('/')
         && let Err(err) = relocator.create_dir(parent)
     {
-        return refused(
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return storage_failure(
+            &err,
             "storageUnwritable",
-            &err.to_string(),
+            "move destination directory create failed",
+            "Could not create the category's directory in the storage folder, so nothing \
+             was moved. Check that the storage volume is mounted and writable, then try \
+             again.",
         );
     }
 
@@ -153,11 +156,18 @@ pub async fn move_part(
         .await
     {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(err @ DbError::RenameFailed { .. }) => refused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "renameFailed",
-            &err.to_string(),
-        ),
+        // `DbError::RenameFailed`'s own text is what the caller gets — `client_message`
+        // passes it through, audited, because the storage layer composed it for an operator
+        // — but the log entry is not optional either. Every 500 this route can answer now
+        // leaves one.
+        Err(err @ DbError::RenameFailed { .. }) => {
+            tracing::error!(error = %err, "part move rename failed");
+            refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "renameFailed",
+                &err.client_message(),
+            )
+        }
         Err(err) => internal_error(&err, "part move failed"),
     }
 }
@@ -308,6 +318,23 @@ fn duplicate(name: &str) -> Response {
              again with acknowledgeDuplicate set if that is what you meant."
         ),
     )
+}
+
+/// [`internal_error`] for the one failure on this route that is not a `DbError`.
+///
+/// `StorageError` has no `client_message` to defer to, and its `Io` variant carries the
+/// store's absolute path — the server's filesystem layout, which is the operator's business
+/// and not the caller's. So the real error goes to the log and the caller gets a fixed
+/// message, and the `reason` field is what a client matches on, exactly as for the two
+/// refusals that share this status.
+fn storage_failure(
+    err: &lapidary_storage::StorageError,
+    reason: &'static str,
+    what: &'static str,
+    message: &'static str,
+) -> Response {
+    tracing::error!(error = %err, "{what}");
+    refused(StatusCode::INTERNAL_SERVER_ERROR, reason, message)
 }
 
 /// Same shape and reasoning as `parts.rs`'s: the operator gets the real error through the

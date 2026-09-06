@@ -292,11 +292,20 @@ fn partly_applied(err: &DbError) -> Response {
     )
 }
 
-/// The three `DbError`s these routes raise that are answers rather than failures — a name
-/// or directory a sibling already holds, and a move that would put a category inside
-/// itself. Everything else is a 500.
+/// The `DbError`s these routes raise that are answers rather than failures — a name or
+/// directory a sibling already holds, a move that would put a category inside itself, and a
+/// library id that names nothing. Everything else is a 500.
 fn folder_error(err: &DbError, what: &'static str) -> Response {
     match err {
+        // `create` and `tree` deliberately answer an unknown library differently, and the
+        // difference is read versus write. `tree` returns `[]` because an empty library and
+        // an id naming nothing look alike to somebody browsing, and the sidebar's "No
+        // categories yet" is true of both. A create cannot borrow that: reporting a category
+        // made inside a library that does not exist is a lie the caller then builds on. So
+        // this is the 404 an unknown *category* already gets, and the write says no.
+        DbError::NoSuchLibrary { .. } => {
+            refused(StatusCode::NOT_FOUND, "noSuchLibrary", &err.to_string())
+        }
         DbError::FolderNameTaken { .. } => {
             refused(StatusCode::CONFLICT, "nameTaken", &err.to_string())
         }

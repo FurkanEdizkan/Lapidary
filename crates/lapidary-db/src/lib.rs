@@ -19,7 +19,7 @@ pub use sqlx::PgPool;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
-use lapidary_core::{FolderId, RevisionId};
+use lapidary_core::{FolderId, LibraryId, RevisionId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -123,6 +123,14 @@ pub enum DbError {
     )]
     FolderSlugTaken { name: String, slug: String },
 
+    /// `folder_library_id_fkey`, read off the constraint the same way the two collisions
+    /// above are. Reached only through [`PgFolders::create`]: `get_or_create` is the scan's,
+    /// and the scan always has a library in hand.
+    #[error(
+        "There is no library with the id {library}, so there is nowhere to put this category. Reload the library list and try again."
+    )]
+    NoSuchLibrary { library: LibraryId },
+
     /// The filesystem half of a move failed, so the transaction that had already written
     /// the new location was rolled back and nothing moved. Carries the storage layer's own
     /// message: this crate cannot name that error type (both crates are L1, and
@@ -169,6 +177,7 @@ impl DbError {
             | DbError::WouldCreateCycle { .. }
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
+            | DbError::NoSuchLibrary { .. }
             // Composed here from the storage layer's own `Display`, which is already
             // operator-facing and carries no connection string — the same audit the
             // variants above pass.

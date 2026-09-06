@@ -451,6 +451,48 @@ async fn creating_a_category_refuses_a_name_that_needs_a_taken_directory(pool: s
     );
 }
 
+/// The two routes over an unknown library, and why they answer differently on purpose.
+///
+/// `GET` answers `[]`: an empty library and an id naming nothing look alike to somebody
+/// browsing, and "No categories yet" is the right thing to say about both. `POST` cannot
+/// borrow that, because it is a write — reporting a category created inside a library that
+/// does not exist is a lie the caller then builds on. It used to be a raw foreign-key
+/// violation `collision()` did not recognise, so a request that is simply wrong read as a
+/// server fault; it is now the same 404 an unknown category gets.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn creating_a_category_under_an_unknown_library_is_a_404(pool: sqlx::PgPool) {
+    let missing = LibraryId::new();
+    let (status, body) = send(
+        &pool,
+        json_request(
+            "POST",
+            format!("/api/libraries/{missing}/folders"),
+            serde_json::json!({ "name": "Terrain" }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unknown library is a wrong request, not a server fault: {body}"
+    );
+    assert_eq!(body["reason"], "noSuchLibrary");
+
+    // The read half of the pair, asserted here so the two answers stay a decision rather
+    // than a divergence nobody wrote down.
+    let (status, body) = send(
+        &pool,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/libraries/{missing}/folders"))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, serde_json::json!([]), "the grid's answer, matched");
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_category_that_does_not_exist_is_a_404(pool: sqlx::PgPool) {
     let missing = FolderId::new();
