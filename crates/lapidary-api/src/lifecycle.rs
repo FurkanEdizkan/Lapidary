@@ -21,11 +21,14 @@
 
 use crate::AppState;
 use crate::derive::{internal_error, no_such_part};
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::PartId;
-use lapidary_db::PgParts;
+use lapidary_db::{PgParts, Purged};
+use serde::Serialize;
+use ts_rs::TS;
 
 /// `DELETE /api/parts/{id}` — step one of three. Hide the part; touch nothing.
 ///
@@ -54,5 +57,58 @@ pub async fn restore(State(state): State<AppState>, Path(part): Path<PartId>) ->
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => no_such_part(),
         Err(err) => internal_error(&err, "restore failed"),
+    }
+}
+
+/// What a purge did, in the only terms that are true right afterwards.
+///
+/// Not "bytes freed". A purge frees nothing on the day it runs — the blobs it orphans sit
+/// exactly where they were for thirty days, reachable by hash and restorable, and a number
+/// labelled "freed" would be describing something that has not happened. `quarantinedBytes`
+/// is what will come back, later, if nobody re-ingests those bytes first.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PurgeResult {
+    /// Blobs this purge left with nothing pointing at them.
+    quarantined: u32,
+    /// `number`, not `bigint`: ts-rs maps a bare `u64` to `bigint`, which `JSON.parse`
+    /// never produces — the same correction `PartSummary::source_bytes` carries, for the
+    /// same reason.
+    #[ts(type = "number")]
+    quarantined_bytes: u64,
+}
+
+/// `POST /api/parts/{id}/purge` — step two, and it refuses to be step one.
+///
+/// A live part is `409`, not `404`, and the body says to delete it first. This is the one
+/// place in the crate that tells a caller an id exists when it will not act on it, and it
+/// is worth the disclosure: the alternative is answering "no such part" about a part the
+/// caller can see in the grid, which reads as a bug and invites a retry loop. There is no
+/// principal to withhold it from in this phase anyway — `GET` on the same id discloses the
+/// same fact.
+///
+/// `200` with a body rather than `204`, because there is something to say that the caller
+/// cannot work out for itself: how many blobs this orphaned, and how much they hold. A
+/// part sharing every one of its blobs with another part quarantines nothing, and that is
+/// a real and reassuring outcome to be able to report.
+pub async fn purge(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
+    match PgParts(state.db).purge(part).await {
+        Ok(Purged::Done(report)) => Json(PurgeResult {
+            quarantined: report.quarantined,
+            quarantined_bytes: report.quarantined_bytes,
+        })
+        .into_response(),
+        Ok(Purged::NoSuchPart) => no_such_part(),
+        Ok(Purged::NotDeletedYet) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "message": "This part is still in the library. Remove it first, then purge \
+                            it — purging is permanent and is never the same click as \
+                            removing."
+            })),
+        )
+            .into_response(),
+        Err(err) => internal_error(&err, "purge failed"),
     }
 }

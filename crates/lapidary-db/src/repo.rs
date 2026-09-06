@@ -358,6 +358,35 @@ impl PgBlobs {
     }
 }
 
+/// What [`PgParts::purge`] did, so a caller can say it truthfully.
+///
+/// The counts are of *blobs entering quarantine*, not of bytes freed, and the
+/// difference is the point: purging a part frees nothing today. Its bytes sit where
+/// they were for thirty days, reachable by hash and restorable, and only then are they
+/// removed. A route that reported "12.4 MB freed" would be describing something that
+/// has not happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PurgeReport {
+    /// Blobs this purge left with nothing pointing at them.
+    pub quarantined: u32,
+    /// What those blobs occupy on disk — `stored_bytes`, the compressed figure, since
+    /// that is the space that will actually come back.
+    pub quarantined_bytes: u64,
+}
+
+/// Purging a part that cannot be purged, told apart — a caller has something different
+/// to say about each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purged {
+    /// No part with that id.
+    NoSuchPart,
+    /// The part is live. Purge is the *second* step and refuses to be the first: a
+    /// single call that both hid a part and destroyed its chain would be the implicit
+    /// deletion the product rule forbids.
+    NotDeletedYet,
+    Done(PurgeReport),
+}
+
 pub struct PgIngest(pub PgPool);
 
 impl PgIngest {
@@ -937,6 +966,126 @@ impl PgParts {
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Step two of the three: remove the part chain, and leave the bytes alone.
+    ///
+    /// # The reference update recomputes rather than decrementing
+    ///
+    /// `ref_count` is maintained by arithmetic everywhere else — `+1` per `file` and
+    /// `derivative` row in [`insert_part_chain`], moved on rung replacement in
+    /// [`PgParts::record_derivative`]. This is the one place that does not do that, and it
+    /// is deliberate: a counter maintained only by increments and decrements is a counter
+    /// that drifts, and the drift is invisible until something acts on it. The thing that
+    /// acts on it is the reaper, and what it does is delete bytes.
+    ///
+    /// So the destructive path refuses to trust the number. It recomputes each affected
+    /// hash from what actually points at it, which makes any accumulated drift self-heal
+    /// the moment a purge touches that blob.
+    ///
+    /// A concurrent ingest of the same bytes is *not* fully excluded by this, and the
+    /// honest version is worth writing down. The `UPDATE` takes the same `blob` row lock
+    /// ingest's `ref_count + 1` takes, so the two serialize on the write — but the count
+    /// itself is computed by a CTE evaluated under the statement's own snapshot, so a
+    /// `file` row that another transaction commits while this one waits for the lock can
+    /// be missed. The recompute would then land on zero for bytes something does point at.
+    ///
+    /// That is survivable, and it is survivable by design rather than by luck: reaching
+    /// zero sets `quarantined_at`, which starts a thirty-day clock and removes nothing.
+    /// [`PgBlobs::reap`] re-asks reachability inside the transaction that would delete the
+    /// bytes, and a blob with a `file` row is not removed — it is un-quarantined. The
+    /// layering is the point. This statement is allowed to be wrong; the one that destroys
+    /// data is not, so it does not rely on this one being right.
+    ///
+    /// # Order matters twice
+    ///
+    /// The doomed hashes are collected *before* the chain is deleted, because afterwards
+    /// there is no path from the part to its blobs. And the chain comes down child-first:
+    /// nothing in `0002_parts.sql` declares `ON DELETE CASCADE`, which is a property worth
+    /// keeping — a stray `DELETE FROM part` should fail loudly on a foreign key rather
+    /// than quietly take four tables with it.
+    pub async fn purge(&self, part: PartId) -> Result<Purged, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        // `FOR UPDATE` holds the part row for the whole transaction, so two purges of the
+        // same part cannot both pass the gate below and double-count the recompute.
+        let state: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT (extract(epoch FROM deleted_at) * 1000000)::bigint FROM part \
+             WHERE id = $1 FOR UPDATE",
+        )
+        .bind(part.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await?;
+        match state {
+            None => return Ok(Purged::NoSuchPart),
+            Some(None) => return Ok(Purged::NotDeletedYet),
+            Some(Some(_)) => {}
+        }
+
+        let doomed: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT h FROM ( \
+                 SELECT f.blake3 AS h FROM file f \
+                 JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1 \
+                 UNION ALL \
+                 SELECT d.blake3 FROM derivative d \
+                 JOIN revision r ON r.id = d.revision_id \
+                 WHERE r.part_id = $1 AND d.blake3 IS NOT NULL \
+             ) hashes",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for statement in [
+            "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
+            "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
+            "DELETE FROM revision WHERE part_id = $1",
+            "DELETE FROM part WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(part.as_uuid())
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Recompute and quarantine in one statement, so a hash cannot be counted correct
+        // and left un-quarantined by a failure between two of them.
+        //
+        // `quarantined_at` is cleared when the count comes back above zero, which is what
+        // makes re-ingesting quarantined bytes un-quarantine them: `link_existing` points
+        // a new `file` row at a blob whose clock was running, and the next purge that
+        // touches it stops that clock. `coalesce` on the other branch is what stops a
+        // second purge from restarting a clock that is already running.
+        let sizes: Vec<Option<i64>> = sqlx::query_scalar(
+            "WITH counts AS ( \
+                 SELECT h AS blake3, \
+                        (SELECT count(*) FROM file f WHERE f.blake3 = h) \
+                      + (SELECT count(*) FROM derivative d WHERE d.blake3 = h) AS actual \
+                 FROM unnest($1::text[]) AS h \
+             ) \
+             UPDATE blob b SET \
+                 ref_count = c.actual, \
+                 quarantined_at = CASE WHEN c.actual = 0 \
+                                       THEN coalesce(b.quarantined_at, now()) \
+                                       ELSE NULL END \
+             FROM counts c \
+             WHERE b.blake3 = c.blake3 \
+             RETURNING CASE WHEN c.actual = 0 THEN b.stored_bytes ELSE NULL END",
+        )
+        .bind(&doomed)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // One row came back per hash the purge touched; the `NULL`s are the ones another
+        // part still points at, which are exactly the blobs that must not be counted as
+        // entering quarantine.
+        let entering: Vec<i64> = sizes.into_iter().flatten().collect();
+        Ok(Purged::Done(PurgeReport {
+            quarantined: entering.len() as u32,
+            quarantined_bytes: entering.iter().map(|bytes| *bytes as u64).sum(),
+        }))
     }
 
     /// Which library owns `part`. `None` when there is no such part, or when it is

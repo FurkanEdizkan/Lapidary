@@ -290,3 +290,227 @@ async fn deleted_at(pool: &sqlx::PgPool, part: PartId) -> Option<jiff::Timestamp
         jiff::Timestamp::from_microsecond(us).expect("a timestamp Postgres just produced")
     })
 }
+
+/// Seeds a second part at a different path over the *same* blob, the way ingest does when
+/// it recognises bytes it already holds. This is the case purge has to be careful about,
+/// and the one the corpus audit could not cover: on a real library, identical files under
+/// two folders are the ordinary case, not the exotic one.
+async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
+    PgIngest(pool.clone())
+        .link_existing(IngestRequest {
+            library: library(),
+            name,
+            source_path: path,
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([seed; 32]),
+                size_bytes: 204_800,
+                stored_bytes: 91_204,
+                zstd_level: 3,
+            },
+            measurements: &MeshMeasurements {
+                bbox_mm: [61.0, 42.0, 18.5],
+                triangle_count: 48_112,
+                surface_area_mm2: 9_804.25,
+                volume_mm3: Some(21_478.5),
+                is_watertight: true,
+            },
+            thumbnail_webp: Some(b"webp-preview"),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("seed sharing part")
+}
+
+async fn blob_state(pool: &sqlx::PgPool, seed: u8) -> (i32, bool) {
+    sqlx::query_as("SELECT ref_count, quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1")
+        .bind(BlobHash::from_bytes([seed; 32]).to_hex())
+        .fetch_one(pool)
+        .await
+        .expect("blob state reads")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn purging_one_of_two_parts_over_the_same_blob_quarantines_nothing(pool: sqlx::PgPool) {
+    // The same bytes under two paths — `mounting/` and `spares/` — which is what a real
+    // library looks like. Purging one of them must leave the other's download working, and
+    // the whole design of the reference update is in service of that.
+    let first = seed(
+        &pool,
+        0xc1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+    let second = seed_sharing(&pool, 0xc1, "Bracket, LP-1042-03", "spares/LP-1042-03.stl").await;
+    assert_eq!(blob_state(&pool, 0xc1).await, (2, false), "two file rows");
+
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(first)
+            .await
+            .expect("soft delete")
+    );
+    let (status, json) = call(pool.clone(), "POST", &format!("/api/parts/{first}/purge")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["quarantined"], 0,
+        "the bytes are still serving the other part: {json}"
+    );
+    assert_eq!(json["quarantinedBytes"], 0);
+    assert_eq!(
+        blob_state(&pool, 0xc1).await,
+        (1, false),
+        "one reference left, and nothing quarantined"
+    );
+
+    // The surviving part is untouched, which is the thing that would have gone wrong.
+    let (status, json) = call(pool.clone(), "GET", &format!("/api/parts/{second}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["sourcePath"], "spares/LP-1042-03.stl");
+
+    // Now the last one. Same call, different outcome, because nothing points at the bytes
+    // any more.
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(second)
+            .await
+            .expect("soft delete")
+    );
+    let (status, json) = call(pool.clone(), "POST", &format!("/api/parts/{second}/purge")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["quarantined"], 1);
+    assert_eq!(json["quarantinedBytes"], 91_204);
+    assert_eq!(blob_state(&pool, 0xc1).await, (0, true));
+
+    // Quarantined, not gone. Thirty days is a promise that the bytes are still there, and
+    // a row that had been deleted here would make the promise unkeepable.
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("blob count");
+    assert_eq!(rows, 1, "the blob row survives its own quarantine");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn purge_corrects_a_reference_count_that_had_drifted(pool: sqlx::PgPool) {
+    // The reason purge recomputes instead of decrementing. `ref_count` is maintained by
+    // arithmetic on every other path, and this is what a drift there looks like by the
+    // time the reaper sees it: two parts sharing a blob whose counter says seven.
+    //
+    // A decrementing purge would take it to six and quarantine nothing, ever. The bytes
+    // would be immortal — the failure mode a reference count has when it is only ever
+    // adjusted and never checked.
+    let first = seed(
+        &pool,
+        0xd1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+    let second = seed_sharing(&pool, 0xd1, "Bracket, LP-1042-03", "spares/LP-1042-03.stl").await;
+    sqlx::query("UPDATE blob SET ref_count = 7 WHERE blake3 = $1")
+        .bind(BlobHash::from_bytes([0xd1; 32]).to_hex())
+        .execute(&pool)
+        .await
+        .expect("drift the counter");
+
+    let parts = PgParts(pool.clone());
+    assert!(parts.soft_delete(first).await.expect("soft delete"));
+    let (status, _) = call(pool.clone(), "POST", &format!("/api/parts/{first}/purge")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        blob_state(&pool, 0xd1).await,
+        (1, false),
+        "the count is what reachability says it is, not 7 minus 1"
+    );
+
+    assert!(parts.soft_delete(second).await.expect("soft delete"));
+    let (status, json) = call(pool.clone(), "POST", &format!("/api/parts/{second}/purge")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["quarantined"], 1,
+        "and the last purge still reaches zero, which a decrementing one never would"
+    );
+    assert_eq!(blob_state(&pool, 0xd1).await, (0, true));
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn purge_refuses_to_be_the_first_step(pool: sqlx::PgPool) {
+    let part = seed(
+        &pool,
+        0xe1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+
+    let (status, json) = call(pool.clone(), "POST", &format!("/api/parts/{part}/purge")).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a live part must not be purgeable in one call"
+    );
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("a message")
+            .contains("Remove it first"),
+        "and the body has to say what to do instead: {json}"
+    );
+    assert_eq!(
+        call(pool.clone(), "GET", &format!("/api/parts/{part}"))
+            .await
+            .0,
+        StatusCode::OK,
+        "the refused purge changed nothing"
+    );
+    assert_eq!(blob_state(&pool, 0xe1).await, (1, false));
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_purged_part_leaves_no_rows_behind_it(pool: sqlx::PgPool) {
+    let part = seed(
+        &pool,
+        0xf1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(part)
+            .await
+            .expect("soft delete")
+    );
+    assert_eq!(
+        call(pool.clone(), "POST", &format!("/api/parts/{part}/purge"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+
+    // Nothing declares ON DELETE CASCADE, so every one of these is a statement purge had
+    // to write. A missed table is a foreign key that blocks the reaper from ever removing
+    // the blob, and nothing else would notice.
+    for (table, query) in [
+        ("part", "SELECT count(*) FROM part"),
+        ("revision", "SELECT count(*) FROM revision"),
+        ("file", "SELECT count(*) FROM file"),
+        ("derivative", "SELECT count(*) FROM derivative"),
+    ] {
+        let rows: i64 = sqlx::query_scalar(query)
+            .fetch_one(&pool)
+            .await
+            .expect("count reads");
+        assert_eq!(rows, 0, "{table} still holds rows for a purged part");
+    }
+    // And a second purge of the same id is honestly "no such part" now.
+    assert_eq!(
+        call(pool.clone(), "POST", &format!("/api/parts/{part}/purge"))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}

@@ -161,6 +161,7 @@ pub fn router(state: AppState, role: Role) -> Router {
                 get(detail::detail).delete(lifecycle::remove),
             )
             .route("/api/parts/{id}/restore", post(lifecycle::restore))
+            .route("/api/parts/{id}/purge", post(lifecycle::purge))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",
