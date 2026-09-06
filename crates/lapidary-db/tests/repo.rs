@@ -1720,10 +1720,16 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
     // needs is asserted here rather than at the route, where a wrong one shows up as a
     // file named after the wrong part or a zstd frame handed over as an STL.
     let blob = blob_row(0xd1);
+    // `Some`, not `None`: this is also the one test in the file that stands in for
+    // `RevisionSource::storage_path`'s column, off the same query — a part ingested since
+    // the store became a folder tree, so the download route's `Some(storage_path)` branch
+    // has a row to read.
+    let storage_path =
+        "libraries/default/spindle-housing-lp-4180-02/spindle-housing-lp-4180-02.3mf";
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
             folder: None,
-            storage_path: None,
+            storage_path: Some(storage_path),
             library: library(),
             name: "Spindle housing, LP-4180-02",
             source_path: "spindle-housing-lp-4180-02.3mf",
@@ -1765,6 +1771,12 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
          download's extension from it"
     );
     assert_eq!(source.part_name, "Spindle housing, LP-4180-02");
+    assert_eq!(
+        source.storage_path.as_deref(),
+        Some(storage_path),
+        "the download route picks its read by this column, so the query must return \
+         exactly what `file.storage_path` holds"
+    );
     assert_eq!(
         source.zstd_level,
         Some(3),

@@ -99,6 +99,27 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, StorageError> {
     Ok(root.join(rel))
 }
 
+/// Read bytes back from a store-relative path, decoding per `zstd_level` exactly as
+/// [`read_blob`] does for a hash-addressed one. Shared by [`SourceStore::get_at`] (the
+/// write side) and [`SourceReader::get_at`] (the read-only side) so the two cannot drift
+/// into different answers for the same row — see [`SourceReader::get`]'s doc for why the
+/// level is always the recorded one and never re-derived.
+fn read_blob_at(root: &Path, rel: &str, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
+    let path = resolve(root, rel)?;
+    let raw = std::fs::read(&path).map_err(|source| StorageError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    if zstd_level.is_some_and(|level| level != 0) {
+        zstd::decode_all(raw.as_slice()).map_err(|source| StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        })
+    } else {
+        Ok(raw)
+    }
+}
+
 /// Put `payload` at `path`, creating the directories above it: a uniquely-named temp file
 /// in the *same* directory, flushed to disk, then an atomic rename.
 ///
@@ -373,19 +394,7 @@ impl SourceStore {
     /// the policy moved. `None` is the column's nullable absence and reads as
     /// uncompressed, exactly like level 0.
     pub fn get_at(&self, rel: &str, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
-        let path = resolve(&self.root, rel)?;
-        let raw = std::fs::read(&path).map_err(|source| StorageError::Io {
-            path: path.display().to_string(),
-            source,
-        })?;
-        if zstd_level.is_some_and(|level| level != 0) {
-            zstd::decode_all(raw.as_slice()).map_err(|source| StorageError::Io {
-                path: path.display().to_string(),
-                source,
-            })
-        } else {
-            Ok(raw)
-        }
+        read_blob_at(&self.root, rel, zstd_level)
     }
 
     /// Reap a source file written for a transaction that then failed — the path-addressed
@@ -475,6 +484,26 @@ impl SourceReader {
     /// cannot produce one — but slice 7's tiering is where level spellings get picked.
     pub fn get(&self, hash: &BlobHash, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
         read_blob(&self.root, hash, zstd_level.is_some_and(|level| level != 0))
+    }
+
+    /// Read source bytes back from `file.storage_path` — the path-addressed twin of
+    /// [`SourceReader::get`], for a row whose bytes have already migrated off the
+    /// content-addressed store (migration `0008`). `rel` is resolved through the same
+    /// [`reject_escaping_path`](lapidary_core::slug::reject_escaping_path) guard every
+    /// other path-addressed method in this crate runs, because a `storage_path` reaching
+    /// here came off a database row, not off a hash — data, in the sense `resolve`'s own
+    /// doc means it.
+    ///
+    /// `zstd_level` is the same rule as `get`, restated because it is the rule this method
+    /// exists to not get wrong: the recorded level off the same `blob` row that carried
+    /// the hash, never re-derived from the format or from the fact that this is the
+    /// path-addressed leg rather than the hash-addressed one. Ingest writes every
+    /// path-addressed file as-is today (`handler.rs`), which makes `Some(0)` the only
+    /// value this method sees in production — but the column does not promise that, and a
+    /// reader that assumed it would be the thing that breaks first when it stops being
+    /// true.
+    pub fn get_at(&self, rel: &str, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
+        read_blob_at(&self.root, rel, zstd_level)
     }
 }
 
@@ -804,6 +833,69 @@ mod tests {
             reader.get(&raw.hash, Some(-3)).is_err(),
             "a negative level must decode, not pass raw bytes through"
         );
+    }
+
+    #[test]
+    fn a_source_reader_reads_a_path_addressed_file_back_by_its_recorded_level() {
+        // The download route's `Some(storage_path)` branch, proven at the layer that does
+        // not need a database. Ingest only ever writes a path-addressed file `AsIs`
+        // (`handler.rs`), so this fixture is deliberately compressed anyway: `get_at` must
+        // follow whatever `zstd_level` the row says, not assume "path-addressed" means
+        // "uncompressed" — the same mistake the hash-addressed twin above exists to catch
+        // for `get`.
+        let (dir, s) = store();
+        let reader = SourceReader::open(dir.path());
+        let rel = "libraries/default/Bases/round-32mm/round-32mm.stl";
+        let bytes = "solid round-32mm\n".repeat(64).into_bytes();
+        let compressed = s.put_at(rel, &bytes, Compression::Zstd).expect("put_at");
+        assert!(
+            compressed.stored_bytes < compressed.size_bytes,
+            "the fixture must really be compressed on disk, or the decode leg proves nothing"
+        );
+        assert_eq!(
+            reader
+                .get_at(rel, Some(compressed.zstd_level))
+                .expect("reads the compressed file back"),
+            bytes
+        );
+
+        // The shape ingest actually writes today: `AsIs`, recorded as level 0.
+        let as_is_rel = "libraries/default/Terrain/Rocks/cliff/cliff.stl";
+        let raw = s
+            .put_at(as_is_rel, b"solid cliff\n", Compression::AsIs)
+            .expect("put_at");
+        assert_eq!(raw.zstd_level, 0);
+        assert_eq!(
+            reader
+                .get_at(as_is_rel, Some(raw.zstd_level))
+                .expect("reads the as-is file back"),
+            b"solid cliff\n"
+        );
+        // The column is nullable, and an absent level must read as uncompressed rather
+        // than sending raw bytes through the decoder — same rule as `get`.
+        assert_eq!(
+            reader
+                .get_at(as_is_rel, None)
+                .expect("reads with a null level"),
+            b"solid cliff\n"
+        );
+    }
+
+    #[test]
+    fn a_reader_cannot_be_talked_out_of_the_store_by_a_path_either() {
+        // The read-only twin of `a_path_addressed_write_cannot_be_talked_out_of_the_store`:
+        // `get_at` takes a path off a database row, not off a hash, so it runs the same
+        // `reject_escaping_path` guard rather than trusting the caller scoped it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let reader = SourceReader::open(dir.path());
+        assert!(matches!(
+            reader.get_at("/etc/passwd", None),
+            Err(StorageError::PathRefused { .. })
+        ));
+        assert!(matches!(
+            reader.get_at("../../etc/passwd", None),
+            Err(StorageError::PathRefused { .. })
+        ));
     }
 
     #[test]

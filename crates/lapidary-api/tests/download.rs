@@ -1,16 +1,23 @@
 //! `GET /api/revisions/{id}/download?variant=original`.
 //!
-//! Every fixture here is written by `SourceStore::put` and recorded from the `StoredBlob`
-//! it returns — hash, sizes and level all four. Typing a level literal instead is how a
-//! test comes to describe bytes that were never written that way: the `blob` row would
-//! say 3 over a raw ZIP, the reader would try to decode it, and the failure would have
-//! nothing to do with the route. The db crate's own fixtures can afford that shorthand
-//! because nothing there reads bytes; this file cannot.
+//! Every fixture here is written by `SourceStore::put` or `put_at` and recorded from the
+//! `StoredBlob` each returns — hash, sizes and level all four. Typing a level literal
+//! instead is how a test comes to describe bytes that were never written that way: the
+//! `blob` row would say 3 over a raw ZIP, the reader would try to decode it, and the
+//! failure would have nothing to do with the route. The db crate's own fixtures can afford
+//! that shorthand because nothing there reads bytes; this file cannot.
 //!
 //! The compressed leg and the `AsIs` leg are not a coverage pair. They take genuinely
 //! different paths through spec §2.5 — one decodes, one does not — and only the first can
 //! detect a reader that stopped decoding, which is the drift the byte-identity claim
 //! exists to catch.
+//!
+//! Two more fixtures, `seed` and `seed_at_path`, are not a coverage pair either, for the
+//! matching reason: `file.storage_path` is nullable and stays that way for as long as
+//! `migrate_storage` takes to drain a real corpus (migration `0008`), so `None` and `Some`
+//! are two live layouts, not a before-and-after. `seed`'s hash-addressed fixtures cover
+//! every part ingested before the previous task; `seed_at_path`'s folder-addressed ones
+//! cover every part ingested since.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -95,6 +102,59 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
         .record(IngestRequest {
             folder: None,
             storage_path: None,
+            library: library(),
+            name,
+            source_path: name,
+            blob: &StoredBlobRow {
+                hash: stored.hash,
+                size_bytes: stored.size_bytes,
+                stored_bytes: stored.stored_bytes,
+                zstd_level: stored.zstd_level,
+            },
+            measurements: &measurements(),
+            thumbnail_webp: Some(b"the-thumbnail"),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format,
+            tessellations: &[],
+        })
+        .await
+        .expect("records");
+    let revision = PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("the ingested revision");
+    Seeded {
+        part,
+        revision,
+        hash: stored.hash,
+        size_bytes: stored.size_bytes,
+        stored_bytes: stored.stored_bytes,
+    }
+}
+
+/// `seed`'s twin for the other layout: writes `bytes` at `rel` — a store-relative path
+/// under the model's own directory — rather than at its hash, and records a `file` row
+/// whose `storage_path` names it. This is what ingest has written since the previous task
+/// (`handler.rs`, always `Compression::AsIs`), and it is the state every part ingested
+/// from now on is in, where `seed`'s `storage_path: None` is the state every part ingested
+/// before it is in. Both are live on the same corpus for as long as `migrate_storage`
+/// takes to drain (migration `0008`), so the route has to answer both.
+async fn seed_at_path(
+    pool: &sqlx::PgPool,
+    root: &Path,
+    rel: &str,
+    name: &str,
+    format: &str,
+    bytes: &[u8],
+) -> Seeded {
+    let stored = SourceStore::open(root, &WorkerRole::assume())
+        .put_at(rel, bytes, Compression::AsIs)
+        .expect("stores the source file at its path");
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: Some(rel),
             library: library(),
             name,
             source_path: name,
@@ -272,6 +332,91 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
              filename*=UTF-8''K%C4%B1lavuz%20burcu%2C%20LP-2207-01.3mf"
         ),
         "the extension is the source file's format, synthesized rather than stored"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: sqlx::PgPool) {
+    // The other half of the layout the previous task introduced: `file.storage_path` is
+    // `Some` and the bytes live under the model's own directory, not at `blobs/ab/cd/
+    // <hash>`. Every part ingested from now on is in this state, and migration `0008`
+    // states that both this and the null-path state are supported for as long as
+    // `migrate_storage` takes to drain a real corpus — hours, not an edge case.
+    let root = tempfile::tempdir().expect("temp dir");
+    let bytes = ascii_stl();
+    let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
+    let seeded = seed_at_path(&pool, root.path(), rel, TURKISH_NAME, "stl", &bytes).await;
+    assert_eq!(
+        seeded.stored_bytes, seeded.size_bytes,
+        "ingest writes the folder-tree copy as-is (handler.rs); a fixture stored some \
+         other way would not be testing the branch this test exists for"
+    );
+    // The proof that the route actually took the `storage_path` branch rather than
+    // falling through to the hash-addressed one and happening to find nothing: there is
+    // nothing to find there. A route that ignored `storage_path` would 500 here, not
+    // silently pass.
+    assert!(
+        !blob_file(root.path(), &seeded.hash).exists(),
+        "this part's bytes exist only at the folder path, not also at the hash"
+    );
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    let (status, headers, body) =
+        get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body, bytes,
+        "byte-identical to what was ingested, read back from the folder path"
+    );
+    assert_eq!(
+        header(&headers, "etag"),
+        Some(format!("\"{}\"", seeded.hash.to_hex()).as_str()),
+        "the digest is still the content hash, whichever path the bytes were read from"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn bytes_at_a_folder_path_that_do_not_hash_are_refused_as_bytes(pool: sqlx::PgPool) {
+    // `bytes_that_do_not_hash_to_their_digest_are_refused_as_bytes`'s claim, pinned again
+    // for the other layout: the re-hash runs on whatever `bytes` the branch produced, so
+    // corruption at a folder path must be caught exactly as corruption at a hash-addressed
+    // one is.
+    let root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
+    let seeded = seed_at_path(&pool, root.path(), rel, TURKISH_NAME, "stl", &ascii_stl()).await;
+    std::fs::write(
+        root.path().join(rel),
+        b"solid LP-9911-00\nendsolid LP-9911-00\n",
+    )
+    .expect("overwrite the file with bytes that are not it");
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let body = message(&body);
+    assert!(
+        body.contains(&format!(
+            "The bytes stored for blob {}",
+            seeded.hash.to_hex()
+        )),
+        "the message names the digest the bytes were filed under: {body}"
+    );
+    assert_eq!(
+        last_read_us(&pool, &seeded.hash).await,
+        None,
+        "nothing was served, so nothing was read"
     );
 }
 
@@ -608,6 +753,52 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
     assert!(
         !body.contains(root.path().to_str().expect("a utf-8 temp path")),
         "the blob store's path stays out of the response: {body}"
+    );
+    assert_eq!(
+        last_read_us(&pool, &seeded.hash).await,
+        None,
+        "nothing was served, so nothing was read"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool: sqlx::PgPool) {
+    // The folder-path twin of `a_source_blob_missing_from_disk_is_its_own_500`, and not a
+    // duplicate of it: "the file for that hash" is the wrong thing to tell an operator
+    // about a part whose bytes were never written to `blobs/ab/cd/<hash>` at all — nothing
+    // put them there, so nothing there is what is missing. `unreadable` has to say a
+    // different sentence for this layout, or it sends whoever reads it looking for a file
+    // that was never going to exist.
+    let root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
+    let seeded = seed_at_path(&pool, root.path(), rel, TURKISH_NAME, "stl", &ascii_stl()).await;
+    std::fs::remove_file(root.path().join(rel)).expect("remove the folder-path file");
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let body = message(&body);
+    assert!(
+        body.contains(&format!(
+            "Blob {} could not be read from the blob store",
+            seeded.hash.to_hex()
+        )),
+        "still names the blob: {body}"
+    );
+    assert!(
+        body.contains("model directory") && !body.contains("the file for that hash"),
+        "the advice must point at the model directory, not the content-addressed path \
+         nothing was ever written to: {body}"
+    );
+    assert!(
+        !body.contains(root.path().to_str().expect("a utf-8 temp path")),
+        "the store's own path stays out of the response, same as the other layout: {body}"
     );
     assert_eq!(
         last_read_us(&pool, &seeded.hash).await,

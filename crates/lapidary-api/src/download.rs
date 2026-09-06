@@ -111,9 +111,22 @@ pub async fn original(
     // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
     // `PathBuf` and a decode flag, so holding one in `AppState` would buy nothing and put
     // source-byte access in a struct every other route shares.
-    let bytes = match SourceReader::open(&blob_root).get(&source.hash, Some(zstd_level)) {
+    let reader = SourceReader::open(&blob_root);
+
+    // `storage_path` is null while `migrate_storage` is still draining a library — a live
+    // state for as long as that job takes, hours on a real corpus, and not an edge case to
+    // special-case away (migration `0008`, `CLAUDE.md`). `Some` names where the bytes
+    // actually sit and reads through `get_at`; `None` means they are still at the old
+    // content-addressed path and reads exactly as this route always has. Either way the
+    // `zstd_level` above came off the same row, so both branches follow the same recorded
+    // compression rather than one of them re-deriving it from which branch it is.
+    let bytes = match source.storage_path.as_deref() {
+        Some(rel) => reader.get_at(rel, Some(zstd_level)),
+        None => reader.get(&source.hash, Some(zstd_level)),
+    };
+    let bytes = match bytes {
         Ok(bytes) => bytes,
-        Err(err) => return unreadable(&source.hash, &err),
+        Err(err) => return unreadable(&source.hash, source.storage_path.as_deref(), &err),
     };
 
     // Spec §2.5. BLAKE3 at ~1 GB/s against single-digit-megabyte files is free next to
@@ -345,17 +358,30 @@ fn hash_mismatch(expected: &BlobHash, served: &BlobHash) -> Response {
 /// its absence is a broken deployment or a lost volume and nothing regenerates it.
 ///
 /// The store's own error names a filesystem path, which is an operator's business and not
-/// a caller's — it goes to the log, and the response says what to check.
-fn unreadable(hash: &BlobHash, err: &StorageError) -> Response {
+/// a caller's — it goes to the log (with `storage_path`, when there is one), and the
+/// response says what to check. `storage_path` also decides *what* it says: "the file for
+/// that hash" is wrong advice for a part whose bytes were never written there at all, and
+/// sending an operator to look at `blobs/ab/cd/<hash>` for a part that lives at
+/// `libraries/…` wastes the one thing this message exists to save them.
+fn unreadable(hash: &BlobHash, storage_path: Option<&str>, err: &StorageError) -> Response {
     let hex = hash.to_hex();
-    tracing::error!(hash = %hex, error = %err, "a referenced source blob could not be read");
+    tracing::error!(
+        hash = %hex,
+        storage_path = storage_path.unwrap_or("(content-addressed)"),
+        error = %err,
+        "a referenced source blob could not be read"
+    );
+    let check = match storage_path {
+        Some(_) => "that this part's file is still present in its model directory",
+        None => "that the file for that hash is present",
+    };
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
             "message": format!(
                 "Blob {hex} could not be read from the blob store, so nothing was served. \
-                 Check that the blob volume is mounted and that the file for that hash is \
-                 present — a source file is never removed while a part still references it."
+                 Check that the blob volume is mounted and {check} — a source file is \
+                 never removed while a part still references it."
             )
         })),
     )

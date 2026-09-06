@@ -40,9 +40,9 @@ pub struct RevisionSource {
 
 /// Everything the download route needs about a revision's source file, in one row.
 ///
-/// Four columns off three tables, so it is a struct rather than a tuple: `format`,
-/// `part_name` and the hex hash are all text, and a tuple of them is three positions a
-/// call site can silently transpose into a file served under the wrong name.
+/// Five columns off three tables, so it is a struct rather than a tuple: `format`,
+/// `part_name`, `storage_path` and the hex hash are all text, and a tuple of them is
+/// positions a call site can silently transpose into a file served under the wrong name.
 #[derive(Debug)]
 pub struct DownloadSource {
     pub hash: BlobHash,
@@ -52,6 +52,12 @@ pub struct DownloadSource {
     /// name, which is the design decision spec §2.4 records; the byte-identity claim is
     /// about bytes, not labels.
     pub part_name: String,
+    /// `file.storage_path`. Same nullability, same meaning, as [`RevisionSource::storage_path`]:
+    /// `Some` names where the bytes actually sit, relative to the storage root; `None`
+    /// means this row predates the folder tree and the bytes are still content-addressed.
+    /// Migration `0008`'s comment states the rule and how long it holds — for as long as
+    /// `migrate_storage` takes to drain every library, which is hours on a real corpus.
+    pub storage_path: Option<String>,
     /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
     /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
     /// a `COALESCE` could not serve a zstd frame as the file, because
@@ -829,6 +835,10 @@ impl PgParts {
     /// zstd frames as files the day the policy changed (spec §2.5). It is passed through as
     /// the nullable column it is; see [`DownloadSource::zstd_level`].
     ///
+    /// `storage_path` rides along the same way, for the same reason: the route picks its
+    /// read by this column, not by guessing from `zstd_level` or from anything else on the
+    /// row, so it has to be the value `file` actually holds.
+    ///
     /// The `role = 'source'` filter and the `ORDER BY … LIMIT 1` are character for
     /// character [`PgParts::revision_source`]'s, and for its reason: `file` has no unique
     /// constraint on `(revision_id, role)`, so a second source row must resolve to the same
@@ -837,8 +847,9 @@ impl PgParts {
         &self,
         revision: RevisionId,
     ) -> Result<Option<DownloadSource>, DbError> {
-        let row: Option<(String, String, String, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, p.name, b.zstd_level FROM file f \
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, String, Option<String>, Option<i16>)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, f.storage_path, b.zstd_level FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
              JOIN blob b ON b.blake3 = f.blake3 \
@@ -848,7 +859,7 @@ impl PgParts {
         .bind(revision.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((hex, format, part_name, zstd_level)) = row else {
+        let Some((hex, format, part_name, storage_path, zstd_level)) = row else {
             return Ok(None);
         };
         let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
@@ -859,6 +870,7 @@ impl PgParts {
             hash,
             format,
             part_name,
+            storage_path,
             zstd_level,
         }))
     }
