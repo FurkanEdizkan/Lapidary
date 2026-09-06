@@ -67,6 +67,12 @@ services:
       # a file manager and find a model by name; a named volume they cannot locate on
       # disk would defeat that. `z`, lowercase — see the ingest mount below for why.
       #
+      # UPGRADING: a deployment that ran before this line kept its whole store in the
+      # `lapidary-blobs` named volume this file no longer declares. Bringing the stack up
+      # points api and worker at an empty directory while the volume keeps the bytes, and
+      # nothing here copies them across. docs/DATA.md §1.1, "Upgrading a store created
+      # before this layout", has the command and the symptom to expect if it is skipped.
+      #
       # Same host directory the worker writes into, mounted read-write rather than :ro.
       #
       # Slice 1's grid does not actually read this yet — thumbnails are small enough to
