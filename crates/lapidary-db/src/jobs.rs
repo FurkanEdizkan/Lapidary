@@ -143,6 +143,130 @@ impl PgJobs {
         self.enqueue(library, &jobs).await
     }
 
+    /// One fresh `migrate_storage` job for `library`, under a batch of its own, unless
+    /// `library` already has one pending or running -- or unless a concurrent caller
+    /// wins the race to create the first one.
+    ///
+    /// This is the worker startup guard (`bin/lapidary-server`, worker role only): for
+    /// every library `PgStorageMigration::libraries_needing_migration` still finds
+    /// un-migrated rows in, it calls this once, so an operator upgrading an old store
+    /// never has to hand-write `INSERT INTO job`. It is also what the optional manual
+    /// trigger route (`lapidary_ingest::migrate::migrate`) calls.
+    ///
+    /// A single statement, not a read then a write -- deliberately, and it has to be
+    /// for the property this exists to guarantee: two workers booting at the same
+    /// instant against the same un-migrated library each take their own READ COMMITTED
+    /// snapshot before either commits, so a bare `WHERE NOT EXISTS` here is NOT
+    /// race-free by itself. Verified by hand against a real Postgres 18.6 before this
+    /// was written, including the tempting-looking fix of wrapping the check in an
+    /// advisory lock inside this same statement (a CTE calling `pg_advisory_xact_lock`
+    /// ahead of the `INSERT ... SELECT`): that is not race-free either. Blocking on a
+    /// lock mid-statement does not give the rest of that same statement a fresher
+    /// snapshot -- the whole statement, including a `WHERE NOT EXISTS` evaluated after
+    /// the block, still reads the snapshot it started with, so the loser's check comes
+    /// back "nothing exists yet" even though the winner has, by then, already
+    /// committed. `job_migrate_storage_pending_per_library` (migration 0010) is the
+    /// actual guarantee: `ON CONFLICT ... DO NOTHING` only has something to conflict
+    /// with because that index exists, and Postgres makes the loser's INSERT wait on
+    /// the winner's uncommitted row and then discard itself once the winner commits --
+    /// no stale snapshot involved, because unique-index conflict checking is not an
+    /// MVCC read.
+    ///
+    /// The `WHERE NOT EXISTS` clause is still load-bearing, just not for that race: it
+    /// checks `state IN ('pending', 'running')`, where the index (see its migration for
+    /// why) covers `'pending'` alone. Removing this clause would still leave the
+    /// concurrency race closed by the index, but a library whose migration is already
+    /// RUNNING -- with no pending successor queued yet -- would no longer be recognised,
+    /// and this method would queue a second, redundant chain beside it.
+    ///
+    /// Returns the batch this job was queued under, or `None` if nothing was queued.
+    pub async fn enqueue_migration_if_absent(
+        &self,
+        library: LibraryId,
+    ) -> Result<Option<BatchId>, DbError> {
+        let batch: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload) \
+             SELECT uuidv7(), uuidv7(), $1, 'migrate_storage', '{}'::jsonb \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM job \
+                  WHERE kind = 'migrate_storage' AND library_id = $1 \
+                    AND state IN ('pending', 'running')) \
+             ON CONFLICT (library_id) WHERE kind = 'migrate_storage' AND state = 'pending' \
+                 DO NOTHING \
+             RETURNING batch_id",
+        )
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+
+        let batch = batch.map(BatchId::from_uuid);
+        if batch.is_some() {
+            // Same optimization `enqueue_into` makes, and the same reason: waking every
+            // worker to find one migration job is cheap once, and not worth skipping
+            // for the no-op case above, which already returns before reaching here.
+            sqlx::query("SELECT pg_notify($1, '')")
+                .bind(JOB_CHANNEL)
+                .execute(&self.0)
+                .await?;
+        }
+        Ok(batch)
+    }
+
+    /// `migrate_storage`'s own re-enqueue arm, guarded the same way
+    /// `enqueue_migration_if_absent` is, and backed by the same
+    /// `job_migrate_storage_pending_per_library` index -- but checking
+    /// `state = 'pending'` ONLY, never `'running'`.
+    ///
+    /// That difference is not an oversight. The caller of this method IS the currently
+    /// RUNNING `migrate_storage` job for `library` -- a `NOT EXISTS` that also excluded
+    /// `'running'` rows would see that caller's own row on every single run and refuse
+    /// to queue a successor, silently stopping the chain from ever draining. What this
+    /// guards against instead is a successor some OTHER path already queued:
+    /// `lapidary_jobs::worker`'s shutdown-grace release can put this same job's own row
+    /// back to `'pending'` while this handler is still finishing in the background (see
+    /// that module's `SHUTDOWN_GRACE` doc), and a second worker can reclaim an expired
+    /// lease and run this same re-enqueue concurrently. Either way, without this guard
+    /// the plain `INSERT` this replaced would throw the index's unique violation
+    /// straight into the caller, which `lapidary_ingest::migrate` would then report as
+    /// "could not queue the next batch" -- true of a database outage, and false of a
+    /// benign double-enqueue this method exists to make harmless instead.
+    ///
+    /// Inserts into `batch` -- the chain's own, existing batch -- rather than minting a
+    /// fresh one, for `enqueue_into`'s reason: the browser (or whatever else is
+    /// watching) is already polling this batch, and a new one would orphan its count.
+    ///
+    /// Returns whether this call actually queued the next run. `false` is not a
+    /// failure -- it means the chain's continuation is already queued by someone else.
+    pub async fn reenqueue_migration_if_absent(
+        &self,
+        batch: BatchId,
+        library: LibraryId,
+    ) -> Result<bool, DbError> {
+        let queued: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload) \
+             SELECT uuidv7(), $1, $2, 'migrate_storage', '{}'::jsonb \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM job \
+                  WHERE kind = 'migrate_storage' AND library_id = $2 AND state = 'pending') \
+             ON CONFLICT (library_id) WHERE kind = 'migrate_storage' AND state = 'pending' \
+                 DO NOTHING \
+             RETURNING id",
+        )
+        .bind(batch.as_uuid())
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+
+        let queued = queued.is_some();
+        if queued {
+            sqlx::query("SELECT pg_notify($1, '')")
+                .bind(JOB_CHANNEL)
+                .execute(&self.0)
+                .await?;
+        }
+        Ok(queued)
+    }
+
     /// Claim one job, or reclaim one whose lease expired.
     ///
     /// Reclamation is folded in here rather than given to a sweeper, so there is no
@@ -319,6 +443,7 @@ impl PgJobs {
             i64,
             i64,
             i64,
+            i64,
             Option<i64>,
             Option<i64>,
         )> = sqlx::query_as(
@@ -329,6 +454,7 @@ impl PgJobs {
                     count(*) FILTER (WHERE outcome = 'skipped'), \
                     count(*) FILTER (WHERE outcome = 'rendered'), \
                     count(*) FILTER (WHERE outcome = 'scanned'), \
+                    count(*) FILTER (WHERE outcome = 'migrated'), \
                     count(*) FILTER (WHERE state = 'failed'), \
                     (extract(epoch FROM min(created_at)) * 1000000)::bigint, \
                     CASE WHEN count(*) FILTER (WHERE state IN ('pending','running')) = 0 \
@@ -351,6 +477,7 @@ impl PgJobs {
             skipped,
             rendered,
             scanned,
+            migrated,
             failed_total,
             started,
             finished,
@@ -414,6 +541,7 @@ impl PgJobs {
             skipped: skipped as u32,
             rendered: rendered as u32,
             scanned: scanned as u32,
+            migrated: migrated as u32,
             failed_total: failed_total as u32,
             failed: failures
                 .into_iter()

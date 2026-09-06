@@ -212,6 +212,26 @@ export const strings = {
       'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
   },
   /**
+   * Moving a library's source files out of the shared content-addressed store and into
+   * each part's own directory. The worker queues this itself on startup for a library
+   * upgraded from before folders existed — nothing on this page starts one — so this
+   * copy exists to make a batch already running, watched by its id in the URL, read as
+   * what it is rather than as a scan of the mounted directory.
+   *
+   * Its own copy for the same reason `render`'s is: a migration ingests nothing and
+   * skips nothing, so `scan.finished` would report "Scan complete — 0 added." over a
+   * corpus that just moved, and an operator watching their own files get relocated
+   * deserves a line that says so.
+   */
+  migrate: {
+    running: (done: number, total: number) =>
+      `Moving files into their model folders — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')}.`,
+    finished: (migrated: number) =>
+      migrated === 1
+        ? 'Move complete — 1 file moved into its model folder.'
+        : `Move complete — ${migrated.toLocaleString('en-US')} files moved into their model folders.`,
+  },
+  /**
    * Why a job failed, as the handler wrote it. `scan.failed` and `render.failed` above
    * are counts, and a count cannot tell an operator that `/ingest` is not mounted — the
    * reason can, and `BatchStatus.failed` has carried it since slice 2 with nothing

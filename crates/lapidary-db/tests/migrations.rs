@@ -596,6 +596,91 @@ async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool
     assert_eq!(unfiled, 1, "only the flat part stays unfiled");
 }
 
+/// Task 8b's own opening line: an operator could only start a `migrate_storage` job by
+/// hand-writing `INSERT INTO job` -- and nothing stopped them from writing it twice for
+/// the same library. `0010_migrate_storage_startup_guard.sql` adds a unique index that a
+/// database in exactly that state would otherwise fail to create at all
+/// (`CREATE UNIQUE INDEX` refuses to build over an existing duplicate), taking a
+/// deployment down at its next upgrade for having used the very workaround this task
+/// exists to remove. The migration de-duplicates first for exactly this reason.
+#[sqlx::test(migrations = false)]
+async fn migration_0010_de_duplicates_pending_migrations_hand_written_before_the_guard_existed(
+    pool: PgPool,
+) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(9, &pool)
+        .await
+        .expect("migrations up to 0009 apply");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let mut oldest = None;
+    for offset_seconds in [2_i64, 1, 0] {
+        let id = Uuid::now_v7();
+        if oldest.is_none() {
+            oldest = Some(id);
+        }
+        sqlx::query(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload, state, created_at) \
+             VALUES ($1, $2, $3, 'migrate_storage', '{}', 'pending', \
+                     now() - make_interval(secs => $4))",
+        )
+        .bind(id)
+        .bind(Uuid::now_v7())
+        .bind(library)
+        .bind(offset_seconds)
+        .execute(&pool)
+        .await
+        .expect("hand-writes a pending migrate_storage row, as an operator would have");
+    }
+    // Three hand-written rows, none of them created by this test in `created_at` order --
+    // the oldest is the FIRST one inserted (offset 2s ago), not the one this loop
+    // happened to insert last, so this also pins that the migration keeps the oldest
+    // rather than an arbitrary survivor.
+    let count_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM job WHERE kind = 'migrate_storage' AND library_id = $1",
+    )
+    .bind(library)
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        count_before, 3,
+        "three hand-written rows exist before 0010 runs"
+    );
+
+    migrator
+        .run(&pool)
+        .await
+        .expect("0010 must not fail against a database already holding duplicates");
+
+    let survivors: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
+          AND state = 'pending'",
+    )
+    .bind(library)
+    .fetch_all(&pool)
+    .await
+    .expect("reads back");
+    assert_eq!(
+        survivors,
+        vec![oldest.expect("set in the loop above")],
+        "exactly the oldest pending row must survive"
+    );
+
+    let index_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes \
+          WHERE tablename = 'job' AND indexname = 'job_migrate_storage_pending_per_library')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("checks pg_indexes");
+    assert!(
+        index_exists,
+        "0010 must still create the index it exists for"
+    );
+}
+
 /// `backfill/0008_backfill.sql` and the copy appended inside `migrations/0008_folders.sql`
 /// exist for two different reasons — the standalone file is what this test file re-runs by
 /// hand against an already-migrated database, the appended copy is what upgrades a database

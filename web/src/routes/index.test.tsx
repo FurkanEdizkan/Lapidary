@@ -103,6 +103,7 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   ingested: 0,
   skipped: 0,
   rendered: 0,
+  migrated: 0,
   failedTotal: 0,
   failed: [],
   startedAt: '2026-09-03T23:28:56.014618Z',
@@ -782,6 +783,71 @@ test('a batch whose jobs all settle as rendered refetches the grid exactly once'
   })
   expect(partsInvalidations).toHaveLength(1)
   expect(partsInvalidations[0]?.[0]).toEqual({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+})
+
+/**
+ * The regression this task exists to close. Nothing on this page starts a migration —
+ * the worker queues it on its own at startup — so the only way this page ever learns
+ * about one is a batch id it never clicked into, exactly like the render sweep's own
+ * `curl` gap above. Before `migrated` existed on `BatchStatus`, this batch's `rendered`
+ * count was 0 just like a scan's, so `kind` fell through to `'scan'` and an operator
+ * watching their files get relocated read "Scan complete — 3 added." over three files
+ * that were only moved, not added.
+ */
+test('a batch whose jobs all settle as migrated reads as a migration, not a scan', async () => {
+  const migrated = batchStatus({
+    total: 3,
+    pending: 0,
+    running: 0,
+    migrated: 3,
+    finishedAt: '2026-09-06T10:14:02.116Z',
+  })
+  expect(migrated.ingested + migrated.skipped + migrated.rendered + migrated.failedTotal).toBe(0)
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(migrated),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.finished(3))).toBeTruthy()
+  // Neither of the other two kinds' copy leaked in — `scan.finished` would call three
+  // moved files "added", and `render.finished` would call them rendered previews. Not a
+  // bare `/preview/i` check: the action bar's own static copy ("Generate missing
+  // previews", "Render preview") always contains that word and would make this
+  // assertion fire on correct output.
+  expect(screen.queryByText(/Scan complete/)).toBeNull()
+  expect(screen.queryByText(strings.render.finished(3))).toBeNull()
+})
+
+// The converse, pinned beside the test above so the two cannot drift: adding a third
+// batch kind must not change how an ordinary scan, with no jobs of either other kind
+// settled, reads. `migrated` defaults to 0 in every fixture already — this is what
+// proves that default keeps the scan path silent rather than merely asserting it does.
+test('a batch with nothing migrated or rendered still reads as a scan', async () => {
+  const scanned = batchStatus({
+    total: 4,
+    scanned: 1,
+    pending: 0,
+    running: 0,
+    ingested: 3,
+    finishedAt: '2026-09-06T10:14:02.116Z',
+  })
+  expect(scanned.migrated).toBe(0)
+  expect(scanned.rendered).toBe(0)
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(scanned),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.scan.finished(3, 0))).toBeTruthy()
+  expect(screen.queryByText(/Move complete/)).toBeNull()
 })
 
 /**

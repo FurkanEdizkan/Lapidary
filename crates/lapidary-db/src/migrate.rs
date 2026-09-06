@@ -261,4 +261,34 @@ impl PgStorageMigration {
         .fetch_one(&self.0)
         .await?)
     }
+
+    /// Every library that still holds at least one un-migrated source file -- the
+    /// worker startup guard's own "who needs a job" read (`bin/lapidary-server`, worker
+    /// role only, feeding `PgJobs::enqueue_migration_if_absent` once per library this
+    /// returns).
+    ///
+    /// An ordinary, ungoverned SELECT: it does not need to be race-free with itself,
+    /// because the write it feeds is guarded on its own, per library. A library this
+    /// read misses on one boot -- because, say, its migration finished a moment after
+    /// this query ran -- costs nothing: there is no job left to queue for it anyway. A
+    /// library this read finds but a concurrent caller already queued a job for costs
+    /// nothing either: `enqueue_migration_if_absent` is the one call in this path that
+    /// actually decides, and it is a no-op when there is nothing left to do.
+    ///
+    /// Not scoped to `role = 'source'`, matching `any_pending`'s own reasoning above:
+    /// only `'source'` rows exist today, but any row with a null `storage_path` reads
+    /// through the same shared `blob` row and would be broken by the same
+    /// compression-level change -- a second, narrower definition of "needs migration"
+    /// here would only be free to drift from the first.
+    pub async fn libraries_needing_migration(&self) -> Result<Vec<LibraryId>, DbError> {
+        let rows: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT p.library_id FROM file f \
+               JOIN revision r ON r.id = f.revision_id \
+               JOIN part p ON p.id = r.part_id \
+              WHERE f.storage_path IS NULL",
+        )
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows.into_iter().map(LibraryId::from_uuid).collect())
+    }
 }

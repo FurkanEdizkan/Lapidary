@@ -51,5 +51,9 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/libraries/{id}/scan", post(scan::scan))
+        .route(
+            "/api/libraries/{id}/migrate-storage",
+            post(migrate::migrate),
+        )
         .with_state(state)
 }

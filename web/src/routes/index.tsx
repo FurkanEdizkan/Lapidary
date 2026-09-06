@@ -78,23 +78,40 @@ function jobsSettled(status: BatchStatus): number {
  * Which copy the progress line uses. `BatchStatus` carries counters, not job kinds, so
  * this is read from two things instead: a batch this page started is whichever kind the
  * click that started it was — the state below carries that alongside the id, and it has
- * to, now that this page can start both a scan and a render. Failing that, a batch that
- * has rendered something is a render, which covers a sweep started with `curl` and opened
- * as `/?batch=<id>`: it has no trigger to be read from and would otherwise report "Scan
- * complete — 0 added." over a batch of successful renders.
+ * to, now that this page can start a scan, a render or a migration. Failing that, a
+ * batch that has settled at least one `migrate_storage` or `derive` job is read as that
+ * kind, which is what a batch this page never clicked into falls back to: a sweep or a
+ * migration started with `curl`, or a migration the worker queued on its own at startup
+ * and nothing on this page ever asked for — the reason this task added `migrated` to
+ * `BatchStatus` in the first place. Migration is checked first because both counters
+ * can be genuinely 0 for either kind while a batch's first job is still running, and
+ * `migrated` is the rarer of the two triggers, so it must not lose a tie it cannot
+ * actually be in.
  *
- * What neither reads is a batch mixing both kinds. Nothing enqueues one — `enqueue` is
- * called once per payload kind, and a scan's own children are all `ingest_file` — and
- * telling them apart properly means putting the job kind on `BatchStatus`, which is a
- * backend change.
+ * This still gets a fresh batch of either kind wrong for as long as it holds only ONE
+ * unsettled job — the ordinary case immediately after a `curl` or a startup enqueue,
+ * before anything has finished — because with both counters at 0 there is nothing here
+ * to tell it apart from a fresh scan. Confirmed by hand: `/?batch=<id>` opened against
+ * such a batch reads `strings.scan.walking` ("Reading the folder…") until either finishes
+ * its first job. A migration chains itself the same way a scan's walk does, though, so a
+ * corpus large enough to need more than one run reaches a genuine `migrated > 0` state
+ * well before the batch as a whole settles — this is the gap the task that added this
+ * comment measured and chose to leave, rather than give `BatchStatus` a job kind of its
+ * own for a one-job window this page's own trigger buttons never produce. What neither
+ * reads at all is a batch mixing more than one kind: nothing enqueues one — `enqueue` is
+ * called once per payload kind, a scan's own children are all `ingest_file`, and a
+ * migration's are all `migrate_storage`.
  */
-type BatchKind = 'scan' | 'render'
+type BatchKind = 'scan' | 'render' | 'migrate'
 
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
     const settled = jobsSettled(status)
     if (kind === 'render') {
       return strings.render.running(settled, status.total)
+    }
+    if (kind === 'migrate') {
+      return strings.migrate.running(settled, status.total)
     }
     // `total` counts jobs and the walk is one of them, so both halves are shifted by the
     // number of walks that have finished. While that is still 0 the batch holds nothing
@@ -105,9 +122,13 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     }
     return strings.scan.running(settled - status.scanned, status.total - status.scanned)
   }
-  return kind === 'render'
-    ? strings.render.finished(status.rendered)
-    : strings.scan.finished(status.ingested, status.skipped)
+  if (kind === 'render') {
+    return strings.render.finished(status.rendered)
+  }
+  if (kind === 'migrate') {
+    return strings.migrate.finished(status.migrated)
+  }
+  return strings.scan.finished(status.ingested, status.skipped)
 }
 
 export function Index({ batch }: { batch?: string }) {
@@ -139,7 +160,9 @@ export function Index({ batch }: { batch?: string }) {
     refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
   })
 
-  const kind: BatchKind = started?.kind ?? ((scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
+  const kind: BatchKind =
+    started?.kind ??
+    ((scan.data?.migrated ?? 0) > 0 ? 'migrate' : (scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
 
   /**
    * What this library is actually set to. Its own query rather than a field on the grid's

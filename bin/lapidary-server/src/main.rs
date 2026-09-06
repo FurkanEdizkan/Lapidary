@@ -204,6 +204,59 @@ fn worker_router(
     );
 }
 
+/// One `migrate_storage` job per library still holding source files in the old
+/// content-addressed store, so an operator upgrading from before that migration existed
+/// never has to hand-write `INSERT INTO job` -- the gap Task 8b closes. Worker role
+/// only: called from the `Role::Worker` arm alone, never from `Role::Api`.
+///
+/// Not gated by the `mock-kernel` feature, unlike `worker_router` and `spawn_worker`
+/// beside it: this touches only `lapidary-db`, which both images link unconditionally,
+/// and neither the CAD kernel nor `lapidary-ingest`. Nothing here can pull either into
+/// the api image.
+///
+/// Never fails startup. `libraries_needing_migration` and `enqueue_migration_if_absent`
+/// each log and return on their own error rather than propagate one, because a database
+/// hiccup at this one moment must cost a delayed migration -- picked up on this same
+/// worker's next restart, exactly as any other resumable job would be -- and not a
+/// worker that never came up at all.
+async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
+    let libraries = match lapidary_db::PgStorageMigration(db.clone())
+        .libraries_needing_migration()
+        .await
+    {
+        Ok(libraries) => libraries,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "could not check for libraries needing a storage migration; skipping for \
+                 this boot -- the next worker restart tries again"
+            );
+            return;
+        }
+    };
+
+    let jobs = lapidary_db::PgJobs(db.clone());
+    for library in libraries {
+        match jobs.enqueue_migration_if_absent(library).await {
+            Ok(Some(batch)) => tracing::info!(
+                %library,
+                %batch,
+                "queued a storage migration for a library upgraded from the old \
+                 content-addressed store"
+            ),
+            // Already pending, already running, or a concurrent caller won the race --
+            // all three are the guard doing its job, not something worth a log line.
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                %library,
+                %error,
+                "could not queue a storage migration for this library; it will be \
+                 retried on the next worker restart"
+            ),
+        }
+    }
+}
+
 /// Spawns the job worker that drains what `/scan` enqueued. Gated by the same feature as
 /// `worker_router` and for the same reason: without it there is no `lapidary-ingest`, and
 /// therefore no `JobHandler` to hand the loop.
@@ -407,6 +460,11 @@ async fn main() -> Result<()> {
                 config.ingest_dir.clone(),
                 config.blob_root.clone(),
             )?;
+            // Worker role only: the api role must never enqueue this, and nothing above
+            // this arm can reach it. See `enqueue_pending_migrations`'s own doc for why
+            // a failure here logs and continues rather than joining the `?` chain the
+            // rest of this function uses.
+            enqueue_pending_migrations(&db).await;
             let handle = spawn_worker(db, &config, shutdown.clone())?;
             (app, Some(handle))
         }
@@ -440,6 +498,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+    use uuid::Uuid;
 
     const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -593,5 +652,93 @@ mod tests {
             .await
             .expect("responds");
         assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+    }
+
+    // `enqueue_pending_migrations`'s own wiring, proved end to end: the underlying
+    // enumeration and guard are `lapidary-db`'s own, thoroughly tested there, but
+    // nothing there proves this function actually calls them in the right order for a
+    // real library holding a real un-migrated file. This is a plain, sequential test —
+    // the guard's race-freedom is `lapidary-db`'s `two_workers_forced_to_start_together_
+    // still_enqueue_exactly_one_migration`, which forces a real concurrent collision;
+    // this only needs to show one call queues a job and a second does not duplicate it.
+    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+    async fn enqueue_pending_migrations_queues_exactly_one_job_for_a_library_with_un_migrated_files(
+        pool: sqlx::PgPool,
+    ) {
+        let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+        let hash = "a".repeat(64);
+        sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, 10, 10)")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .expect("blob inserts");
+        let part = Uuid::now_v7();
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $3)")
+            .bind(part)
+            .bind(library)
+            .bind("bracket-lp-1042-05")
+            .execute(&pool)
+            .await
+            .expect("part inserts");
+        let revision = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+        )
+        .bind(revision)
+        .bind(part)
+        .execute(&pool)
+        .await
+        .expect("revision inserts");
+        sqlx::query(
+            "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes) \
+             VALUES ($1, $2, 'source', 'stl', $3, 10)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(revision)
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("file inserts with a null storage_path -- an old, un-migrated store");
+
+        enqueue_pending_migrations(&pool).await;
+
+        let jobs: Vec<(String, Uuid)> =
+            sqlx::query_as("SELECT kind, library_id FROM job WHERE kind = 'migrate_storage'")
+                .fetch_all(&pool)
+                .await
+                .expect("reads back");
+        assert_eq!(
+            jobs,
+            vec![("migrate_storage".to_owned(), library)],
+            "exactly one migration job, for the library the un-migrated file belongs to"
+        );
+
+        // Calling it again -- the next worker restart, say -- must not queue a
+        // duplicate: the guard underneath this wiring is what makes that true, and this
+        // is what proves the wiring actually reaches it.
+        enqueue_pending_migrations(&pool).await;
+        let total: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'migrate_storage'")
+                .fetch_one(&pool)
+                .await
+                .expect("counts");
+        assert_eq!(total, 1, "a second call must not queue a duplicate");
+    }
+
+    // The converse: a library with nothing un-migrated must not get a job at all. The
+    // seeded library has no parts of its own in a fresh migrated database, so this is
+    // the "nothing to do" case with no setup beyond the migrations themselves.
+    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+    async fn enqueue_pending_migrations_queues_nothing_for_a_library_with_nothing_to_migrate(
+        pool: sqlx::PgPool,
+    ) {
+        enqueue_pending_migrations(&pool).await;
+
+        let total: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'migrate_storage'")
+                .fetch_one(&pool)
+                .await
+                .expect("counts");
+        assert_eq!(total, 0, "nothing needs a migration, so nothing is queued");
     }
 }

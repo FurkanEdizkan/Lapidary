@@ -186,6 +186,16 @@ pub struct BatchStatus {
     /// halves is exact, where subtracting a hardcoded 1 would encode "every batch has a
     /// walk" in the frontend — untrue of a render sweep.
     pub scanned: u32,
+    /// How many `migrate_storage` jobs in this batch have finished moving a slice of
+    /// the old content-addressed store into its parts' own directories.
+    ///
+    /// A migration chains itself the same way a scan chains its walk (`total` grows as
+    /// each run re-enqueues the next slice), and it ingests nothing and skips nothing —
+    /// borrowing `ingested` for it would put moved-not-added files in the grid's "added"
+    /// column, and `scanned` already means something else. This is what lets the
+    /// progress line, and the batch-kind guess above it, tell a migration apart from
+    /// both without a new job kind on the wire.
+    pub migrated: u32,
     pub failed_total: u32,
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
@@ -238,6 +248,7 @@ mod tests {
             // The walk that found the six files, one of which failed. Counted in `total`
             // as the job it is, and subtracted out wherever the number is called `files`.
             scanned: 1,
+            migrated: 0,
             failed_total: 1,
             failed: vec![JobFailure {
                 path: "spacer-lp-2001-00.stl".to_owned(),

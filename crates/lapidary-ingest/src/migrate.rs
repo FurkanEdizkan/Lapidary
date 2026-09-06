@@ -46,15 +46,67 @@
 //! **Derivatives.** They stay content-addressed, freely evictable and reachable by hash.
 //! Only source files moved.
 
+use crate::AppState;
 use crate::handler::{WorkerHandler, classify_db, reap_source};
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::slugify;
-use lapidary_core::{BatchId, BlobHash, FolderId, JobPayload, LibraryId, Outcome};
+use lapidary_core::{BatchId, BlobHash, FolderId, LibraryId, Outcome, ScanAccepted};
 use lapidary_db::{PendingSource, PgFolders, PgJobs, PgParts, PgStorageMigration};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::{Compression, SourceStore, WorkerRole};
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
+
+/// `POST /api/libraries/{id}/migrate-storage` -- enqueue one `migrate_storage` job for
+/// `library`, guarded exactly like the worker's own startup sweep
+/// (`bin/lapidary-server`, which calls this same `PgJobs::enqueue_migration_if_absent`
+/// once per library it finds un-migrated on boot). This route exists so an operator
+/// does not have to wait for the next worker restart, or hand-write `INSERT INTO job`,
+/// to start one.
+///
+/// Deliberately identical in shape to this crate's own `scan`: `queued: 0` when
+/// `library` already has a migration pending or running, or when this call lost the
+/// race to one that landed first, is a success and not an error -- the batch id in that
+/// case names nothing real and exists only so the response shape never has to be
+/// optional, matching `ScanAccepted`'s own convention.
+pub async fn migrate(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
+    match PgJobs(state.db.clone())
+        .enqueue_migration_if_absent(library)
+        .await
+    {
+        Ok(Some(batch_id)) => (
+            StatusCode::ACCEPTED,
+            Json(ScanAccepted {
+                batch_id,
+                queued: 1,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::ACCEPTED,
+            Json(ScanAccepted {
+                batch_id: BatchId::new(),
+                queued: 0,
+            }),
+        )
+            .into_response(),
+        Err(source) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "message": format!(
+                    "Could not queue a storage migration for this library: {source}. \
+                     Nothing was queued, so it is safe to try again once the database is \
+                     reachable."
+                )
+            })),
+        )
+            .into_response(),
+    }
+}
 
 /// How many distinct blobs one run moves before it hands the queue back and re-enqueues
 /// itself.
@@ -127,8 +179,18 @@ impl WorkerHandler {
         }
 
         if migrations.any_pending(library).await.map_err(classify_db)? {
+            // Guarded, not a plain insert: this run's own row is still `running` while
+            // this executes, and a worker that hit its shutdown grace period or lost a
+            // lease mid-run can already have put it back to `pending` in the
+            // background (`lapidary_jobs::worker`'s `SHUTDOWN_GRACE`) -- either way, a
+            // successor may already be queued. `reenqueue_migration_if_absent`'s own
+            // doc has the full reasoning; the short version is that a plain `INSERT`
+            // here would occasionally throw the unique violation
+            // `job_migrate_storage_pending_per_library` exists to prevent straight into
+            // this `map_err`, misreporting a benign double-enqueue as "could not reach
+            // the database."
             PgJobs(self.db.clone())
-                .enqueue_into(batch, library, &[JobPayload::MigrateStorage])
+                .reenqueue_migration_if_absent(batch, library)
                 .await
                 .map_err(|e| HandlerError::Transient {
                     message: format!(

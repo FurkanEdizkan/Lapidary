@@ -20,7 +20,19 @@ export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: numbe
  * halves is exact, where subtracting a hardcoded 1 would encode "every batch has a
  * walk" in the frontend — untrue of a render sweep.
  */
-scanned: number, failedTotal: number, 
+scanned: number, 
+/**
+ * How many `migrate_storage` jobs in this batch have finished moving a slice of
+ * the old content-addressed store into its parts' own directories.
+ *
+ * A migration chains itself the same way a scan chains its walk (`total` grows as
+ * each run re-enqueues the next slice), and it ingests nothing and skips nothing —
+ * borrowing `ingested` for it would put moved-not-added files in the grid's "added"
+ * column, and `scanned` already means something else. This is what lets the
+ * progress line, and the batch-kind guess above it, tell a migration apart from
+ * both without a new job kind on the wire.
+ */
+migrated: number, failedTotal: number, 
 /**
  * The first 100 failures, ordered by creation, so the list is stable across polls
  * rather than reshuffling under the reader. `failed_total` is the real count.
