@@ -123,11 +123,10 @@ than any compression decision above.
 1. **Delete** — sets `deleted_at`, hides the part. Nothing touches disk. Reversible
    indefinitely.
 2. **Purge** — separate, explicitly worded action. Decrements `ref_count`.
-3. **Quarantine** — `ref_count = 0` sets `blob.quarantined_at`, not a move to a
-   `quarantine/` directory: the bytes stay exactly where they already are. Restoring
-   needs no path rewrite, and no reader needs a second lookup location on the hot path
-   to serve a case that is meant to be rare. Reachable by hash, invisible in UI,
-   restorable. Only then removed, after 30 days.
+3. **Quarantine** — `ref_count` reaching zero sets `blob.quarantined_at = now()` on the
+   existing row, in place — not a move to a `quarantine/` directory. A re-scan or a new
+   reference to the same hash clears the flag. Reachable by hash while flagged, invisible
+   in UI, restorable. A blob still flagged after the 30-day hold is removed by a sweep.
 
 ---
 
