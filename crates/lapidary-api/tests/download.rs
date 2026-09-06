@@ -382,6 +382,74 @@ async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: s
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgPool) {
+    // `a_compressed_source_comes_back_byte_identical`'s claim, crossed to the other layout,
+    // and deliberately at a *negative* recorded level rather than the positive one
+    // `put_at` returned. A positive level (3) cannot tell a route that decodes on
+    // `zstd_level != 0` apart from one that decodes only on `zstd_level > 0`, because 3
+    // satisfies both — and this fixture exists to catch the second, weaker check as much
+    // as the first. `SourceReader::get`'s own doc names why: zstd's `--fast=N` levels are
+    // spelled negative and still produce a real frame, and DATA.md §1.3's tiering job is
+    // specced to recompress cold files in place at exactly these storage_path locations,
+    // which is the future producer of a `Some(rel)` row at a level this route has to get
+    // right today, not once that job ships.
+    let root = tempfile::tempdir().expect("temp dir");
+    let bytes = ascii_stl();
+    let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
+    let stored = SourceStore::open(root.path(), &WorkerRole::assume())
+        .put_at(rel, &bytes, Compression::Zstd)
+        .expect("stores the source file at its path, compressed");
+    assert!(
+        stored.stored_bytes < stored.size_bytes,
+        "the fixture must really be compressed on disk, or the decode leg proves nothing"
+    );
+    // The row says the negative spelling of the level the bytes were actually compressed
+    // at, not the positive one `put_at` returned: the route has to read past the sign, not
+    // just past zero.
+    let blob = StoredBlobRow {
+        hash: stored.hash,
+        size_bytes: stored.size_bytes,
+        stored_bytes: stored.stored_bytes,
+        zstd_level: -stored.zstd_level,
+    };
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: Some(rel),
+            library: library(),
+            name: TURKISH_NAME,
+            source_path: TURKISH_NAME,
+            blob: &blob,
+            measurements: &measurements(),
+            thumbnail_webp: Some(b"the-thumbnail"),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("records");
+    let revision = PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("the ingested revision");
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: root.path().to_path_buf(),
+        },
+        Role::Api,
+    );
+
+    let (status, _, body) = get(app, &download_uri(revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body, bytes,
+        "byte-identical after decoding a negative-level frame read from its folder path"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn bytes_at_a_folder_path_that_do_not_hash_are_refused_as_bytes(pool: sqlx::PgPool) {
     // `bytes_that_do_not_hash_to_their_digest_are_refused_as_bytes`'s claim, pinned again
     // for the other layout: the re-hash runs on whatever `bytes` the branch produced, so

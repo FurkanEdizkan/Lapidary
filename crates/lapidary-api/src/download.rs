@@ -105,7 +105,7 @@ pub async fn original(
     // reading them raw would serve something and hope, and refusing names the one thing
     // an operator can go and look at.
     let Some(zstd_level) = source.zstd_level else {
-        return unrecorded_level(&source.hash);
+        return unrecorded_level(&source.hash, source.storage_path.as_deref());
     };
 
     // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
@@ -310,9 +310,13 @@ fn unknown_variant(got: &str) -> Response {
 /// message on purpose: this one says an operator has a `blob` row whose compression
 /// nobody recorded, which is something they can go and look at. Collapsing the two would
 /// leave them holding "the bytes were wrong" about bytes that were never the problem.
-fn unrecorded_level(hash: &BlobHash) -> Response {
+fn unrecorded_level(hash: &BlobHash, storage_path: Option<&str>) -> Response {
     let hex = hash.to_hex();
-    tracing::error!(hash = %hex, "a source blob has no recorded compression level");
+    tracing::error!(
+        hash = %hex,
+        storage_path = storage_path.unwrap_or("(content-addressed)"),
+        "a source blob has no recorded compression level"
+    );
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
