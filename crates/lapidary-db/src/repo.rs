@@ -614,15 +614,15 @@ async fn insert_part_chain(
     .execute(&mut **tx)
     .await?;
 
-    // `zstd_level` is recorded on the file row and not read back off `blob` (migration
-    // `0012`): the blob row is per-hash and a hash can have a compressed legacy copy and a
-    // raw model file at the same time, all through the migration window. `record` and
-    // `link_existing` both arrive here, and both pass the level `put_at` reported for the
-    // write they just did — so `link_existing` records the truth about its own file
-    // instead of inheriting whatever the shared row happened to say.
+    // `zstd_level` and `stored_bytes` are recorded on the file row and not read back off
+    // `blob` (migration `0012`): the blob row is per-hash and a hash can have a compressed
+    // legacy copy and a raw model file at the same time, all through the migration window.
+    // `record` and `link_existing` both arrive here, and both pass what `put_at` reported
+    // for the write they just did — so `link_existing` describes its own file instead of
+    // inheriting whatever the shared row happened to say.
     sqlx::query(
         "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, storage_path, \
-         zstd_level) VALUES ($1, $2, 'source', $3, $4, $5, $6, $7)",
+         zstd_level, stored_bytes) VALUES ($1, $2, 'source', $3, $4, $5, $6, $7, $8)",
     )
     .bind(Uuid::now_v7())
     .bind(revision)
@@ -631,6 +631,7 @@ async fn insert_part_chain(
     .bind(req.blob.size_bytes as i64)
     .bind(req.storage_path)
     .bind(req.blob.zstd_level)
+    .bind(req.blob.stored_bytes as i64)
     .execute(&mut **tx)
     .await?;
 
@@ -1297,9 +1298,12 @@ impl PartRepository for PgParts {
         // `source_for_download`'s, so the sizes on a card and the bytes behind its
         // download link always describe the same `file` row — `file` has no unique
         // constraint on `(revision_id, role)`, so that agreement is a choice, not a
-        // property of the schema. `blob` is joined inside the LATERAL because both sizes
-        // must come off one row: `file.size_bytes` duplicates `blob.size_bytes`, and a
-        // card built from one of each would report a ratio between two tables.
+        // property of the schema. Every column here now comes off that one row, `blob`
+        // included no longer: since migration `0012` a file records its own
+        // `stored_bytes` and `zstd_level`, because a hash can have a compressed legacy
+        // copy and a raw model file at once and the shared row could only describe one of
+        // them. That also makes this grid checkable against the storage panel over it —
+        // `storage_totals` sums the same `file` rows.
         //
         // The folder filter is the recursive CTE at the top, and it is inline here rather
         // than a separate "give me the descendants" call for one reason: the descent and
@@ -1339,8 +1343,8 @@ impl PartRepository for PgParts {
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, b.size_bytes, b.stored_bytes, f.zstd_level \
-                                FROM file f JOIN blob b ON b.blake3 = f.blake3 \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
+                                FROM file f \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
@@ -1359,9 +1363,14 @@ impl PartRepository for PgParts {
         .fetch_all(&self.0)
         .await?;
 
-        // `blob`'s size columns are `bigint`, so sqlx hands them back signed, and
+        // `file`'s size columns are `bigint`, so sqlx hands them back signed, and
         // `bytes_column` refuses a negative one rather than wrapping it — the same
         // silent wraparound the triangle count below refuses.
+        //
+        // Read off `file` and not `blob` since migration `0012`, and that is also what
+        // makes this grid checkable against the storage panel above it: `storage_totals`
+        // sums `f.size_bytes`, so both now describe the same rows rather than agreeing by
+        // coincidence.
         fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
             value.map(|v| bytes_column(column, v)).transpose()
         }
@@ -1437,8 +1446,8 @@ impl PartRepository for PgParts {
                             // Every figure on a mesh part is tessellated, so any is all.
                             approximate: true,
                             source_hash,
-                            source_bytes: bytes("blob.size_bytes", source_bytes)?,
-                            stored_bytes: bytes("blob.stored_bytes", stored_bytes)?,
+                            source_bytes: bytes("file.size_bytes", source_bytes)?,
+                            stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
                             compressed,
                             created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
                                 |_| DbError::TimestampOutOfRange {

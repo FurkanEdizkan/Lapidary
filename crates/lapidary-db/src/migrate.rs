@@ -424,13 +424,15 @@ impl HashClaim {
         let ids: Vec<Uuid> = moved.iter().map(|(id, _)| *id).collect();
         let paths: Vec<String> = moved.iter().map(|(_, path)| path.clone()).collect();
 
-        // `zstd_level = 0` moves with `storage_path`, in the same statement, because they
-        // are one fact: the copy this row now names was written `Compression::AsIs`.
+        // `zstd_level = 0` and `stored_bytes = size_bytes` move with `storage_path`, in the
+        // same statement, because they are one fact: the copy this row now names was
+        // written `Compression::AsIs`, so it is uncompressed and occupies its real size.
         // Splitting them would leave a window — and, worse, a crash — in which a row points
-        // at a raw file while still recording the legacy copy's level, which is exactly the
-        // stale-level hazard migration `0012` exists to close.
+        // at a raw file while still describing the legacy compressed copy, which is exactly
+        // the stale-metadata hazard migration `0012` exists to close.
         sqlx::query(
-            "UPDATE file SET storage_path = t.path, zstd_level = 0 \
+            "UPDATE file SET storage_path = t.path, zstd_level = 0, \
+                             stored_bytes = file.size_bytes \
                FROM unnest($1::uuid[], $2::text[]) AS t(id, path) \
               WHERE file.id = t.id AND file.storage_path IS NULL",
         )

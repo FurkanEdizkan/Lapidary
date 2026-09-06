@@ -1167,9 +1167,12 @@ async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool)
     // Explicit timestamps rather than three statements racing `now()`: the ordering is
     // the whole assertion, so it is written down instead of inferred from insert order.
     sqlx::query(
-        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at) \
-         VALUES (gen_random_uuid(), $1, 'source', 'stl', $2, 512000, now() + interval '1 minute'), \
-         (gen_random_uuid(), $1, 'render', 'png', $3, 777, now() + interval '2 minutes')",
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, stored_bytes, \
+         zstd_level, created_at) \
+         VALUES (gen_random_uuid(), $1, 'source', 'stl', $2, 512000, 218640, 3, \
+                 now() + interval '1 minute'), \
+         (gen_random_uuid(), $1, 'render', 'png', $3, 777, 777, 0, \
+                 now() + interval '2 minutes')",
     )
     .bind(revision.as_uuid())
     .bind(reupload.to_hex())
@@ -1304,7 +1307,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_duplicate_ingested_mid_migration_records_its_own_level_not_the_legacy_blobs(
+async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legacy_blobs(
     pool: sqlx::PgPool,
 ) {
     // The migration window, which spec §5.2 calls a supported state and not an edge case:
@@ -1390,23 +1393,56 @@ async fn a_duplicate_ingested_mid_migration_records_its_own_level_not_the_legacy
     );
 
     let page = parts.page(library(), None, None, 10).await.expect("page");
-    let card = page
-        .iter()
-        .find(|row| row.summary.id == duplicate)
-        .map(|row| &row.summary)
-        .expect("the linked part is in the page");
+    let card_of = |part| {
+        page.iter()
+            .find(|row| row.summary.id == part)
+            .map(|row| &row.summary)
+            .expect("the part is in the page")
+    };
+
+    let card = card_of(duplicate);
     assert_eq!(
         card.compressed,
         Some(false),
         "and the card says what the file is, not what the shared row used to say"
+    );
+    assert_eq!(
+        card.stored_bytes,
+        Some(204_800),
+        "a card saying `not compressed` beside a compressed size is a card contradicting \
+         itself -- the size on disk is the size of the file this ingest wrote"
+    );
+    assert_eq!(card.source_bytes, Some(204_800));
+
+    assert_eq!(
+        card_of(legacy).stored_bytes,
+        Some(91_204),
+        "and the un-migrated row keeps the legacy copy's compressed size, because that \
+         is what is on disk for it -- the same split the level needed"
+    );
+
+    // The panel over this grid sums `file`, so the cards have to be reading `file` too.
+    // A card total that does not add up to the figure beside it is the same defect in a
+    // second place.
+    let totals = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_eq!(
+        totals.source_bytes,
+        page.iter()
+            .filter_map(|row| row.summary.source_bytes)
+            .sum::<u64>(),
+        "the library panel and the cards under it describe the same files"
     );
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx::PgPool) {
     // The last of `bytes_column`'s four sibling guards without a test, and the one whose
-    // absence is easiest to justify wrongly: neither `blob.size_bytes` nor
-    // `blob.stored_bytes` carries a CHECK constraint, so a negative row is representable
+    // absence is easiest to justify wrongly: neither `file.size_bytes` nor
+    // `file.stored_bytes` carries a CHECK constraint, so a negative row is representable
     // by anything else with write access, and `as u64` would put 18 exabytes on a card
     // instead of saying the row is wrong. Same shape as its triangle-count neighbour.
     let ingest = PgIngest(pool.clone());
@@ -1418,7 +1454,7 @@ async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx:
         Some(b"webp"),
     )
     .await;
-    sqlx::query("UPDATE blob SET stored_bytes = -1 WHERE blake3 = $1")
+    sqlx::query("UPDATE file SET stored_bytes = -1 WHERE blake3 = $1")
         .bind(BlobHash::from_bytes([0xe8; 32]).to_hex())
         .execute(&pool)
         .await
@@ -1430,7 +1466,7 @@ async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx:
         .expect_err("a negative size must be reported, not reinterpreted");
     match err {
         DbError::NegativeByteCount { column, value } => {
-            assert_eq!(column, "blob.stored_bytes");
+            assert_eq!(column, "file.stored_bytes");
             assert_eq!(value, -1);
         }
         other => panic!("expected NegativeByteCount, got {other:?}"),
