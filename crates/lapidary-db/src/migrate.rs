@@ -374,10 +374,12 @@ impl PgStorageMigration {
 /// sqlx type to do it ("No SQL outside `lapidary-db`", CLAUDE.md).
 ///
 /// Dropping one WITHOUT calling [`HashClaim::settle`] -- the error path of a copy loop, or
-/// a panic -- rolls its transaction back and releases the hash in the same instant. That is
-/// the behaviour the copy loop's reap depends on: a claim that ended without settling wrote
-/// no path, so every row it held still says NULL, and the files it wrote are files nothing
-/// points at.
+/// a panic -- rolls its transaction back and releases the hash with it. (sqlx sends that
+/// rollback as the connection returns to the pool, so the hash comes free a round trip
+/// later, not in the same instant. Nothing rests on which: what the copy loop's reap depends
+/// on is that the transaction never COMMITS. A claim that ended without settling wrote no
+/// path, so every row it held still says NULL, and the files it wrote are files nothing
+/// points at.)
 pub struct HashClaim {
     /// Owns the advisory lock and the read that came after it. `'static` because
     /// `Pool::begin` hands out a transaction that owns its connection, so this struct can

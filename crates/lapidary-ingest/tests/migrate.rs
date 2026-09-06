@@ -1186,13 +1186,14 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
         "a second runner is told the hash is taken rather than queueing behind a file copy"
     );
 
-    // A row ingested WHILE a claim is open cannot widen it. Today's ingest writes the file
-    // into its model directory and records the path in one request (`handler.rs` builds a
-    // single `IngestRequest` with `storage_path: Some(..)` for both `record` and
-    // `link_existing`), so no path in this build creates a null-`storage_path` row for a
-    // blob a migration is holding. That is what lets `migrate_storage` re-slug the libraries
-    // its PAGE names and still trust the claim's re-read: the claim can only ever see fewer
-    // rows than the page, never one from a library the re-slug pre-pass did not cover.
+    // A part ingested WHILE the claim is open, sharing the blob being moved — the shape
+    // `link_existing` writes. Today's ingest puts the file in its model directory and
+    // records the path in the same request (`handler.rs` builds one `IngestRequest` with
+    // `storage_path: Some(..)` for both `record` and `link_existing`), so no path in this
+    // build creates a null-`storage_path` row for a blob a migration is holding. That is
+    // what lets `migrate_storage` re-slug the libraries its PAGE names and still trust the
+    // claim's re-read: the claim can only ever hold fewer rows than the page, never one
+    // from a library the re-slug pre-pass did not cover.
     let other = second_library(&pool).await;
     let blob = StoredBlobRow {
         hash,
@@ -1206,7 +1207,7 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
             name: "cliff",
             source_path: "Cliffs/cliff.stl",
             folder: None,
-            storage_path: Some("libraries/terrain packs/cliff/cliff.stl"),
+            storage_path: Some("libraries/terrain packs/Cliffs/cliff/cliff.stl"),
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: None,
@@ -1217,35 +1218,55 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
         .await
         .expect("ingests a part that shares the blob being migrated");
 
-    let settled = held.settle(&[]).await.expect("settles nothing and commits");
-    assert!(
-        !settled,
-        "a row that shares this blob still reads it, so the old copy stays"
-    );
-    let after = migrations
-        .claim_hash(&hash)
-        .await
-        .expect("asks")
-        .expect("the hash came back with the transaction that held it");
-    assert_eq!(
-        after
-            .rows()
-            .iter()
-            .map(|row| row.source_path.as_str())
-            .collect::<Vec<_>>(),
-        ["Terrain/Rocks/cliff.stl"],
-        "the claim re-reads un-migrated rows only, so a row ingested since is not in it"
-    );
-
-    // Dropped rather than settled: the transaction rolls back and the lock goes with it.
-    // sqlx rolls a dropped transaction back on the connection as it returns to the pool, so
-    // this asks until it has, rather than assuming the drop finished the round trip.
-    drop(after);
+    // Dropped rather than settled — the path a failed copy loop takes, and the reason its
+    // reap is safe. sqlx sends the rollback as the connection goes back to the pool, so this
+    // asks until it has landed rather than assuming the drop finished the round trip.
+    drop(held);
+    let mut back = None;
     for attempt in 0.. {
-        if migrations.claim_hash(&hash).await.expect("asks").is_some() {
+        back = migrations.claim_hash(&hash).await.expect("asks");
+        if back.is_some() {
             break;
         }
         assert!(attempt < 200, "a dropped claim never released its hash");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+    let back = back.expect("the hash came back with the transaction that held it");
+    assert_eq!(
+        back.rows()
+            .iter()
+            .map(|row| row.source_path.as_str())
+            .collect::<Vec<_>>(),
+        ["Terrain/Rocks/cliff.stl"],
+        "the claim re-reads un-migrated rows only, so the part ingested since is not in it"
+    );
+
+    // And settling gives it back too: the commit that records the path releases the hash.
+    let file_id = back.rows()[0].file_id;
+    let moved = "libraries/default/Terrain/Rocks/cliff/cliff.stl";
+    SourceStore::open(store.path(), &WorkerRole::assume())
+        .put_at(moved, CLIFF, Compression::AsIs)
+        .expect("writes the file the settle is about to record");
+    assert!(
+        back.settle(&[(file_id, moved.to_owned())])
+            .await
+            .expect("settles and commits"),
+        "nothing reads the content-addressed copy once both rows name a directory"
+    );
+    assert_eq!(
+        storage_path_of(&pool, "Terrain/Rocks/cliff.stl")
+            .await
+            .as_deref(),
+        Some(moved)
+    );
+    assert!(
+        migrations
+            .claim_hash(&hash)
+            .await
+            .expect("asks")
+            .expect("a settled hash is claimable again")
+            .rows()
+            .is_empty(),
+        "and there is nothing left in it to move"
+    );
 }
