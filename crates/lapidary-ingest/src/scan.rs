@@ -187,6 +187,10 @@ const MAX_DEPTH: usize = 16;
 /// corpus is logged and skipped, because failing four thousand files over one folder is
 /// not the trade an operator wants — and the failure they need to see, a missing mount, is
 /// exactly the case where `root` itself cannot be read.
+pub(crate) fn candidates(root: &FsPath) -> Result<Vec<String>, HandlerError> {
+    walk(root)
+}
+
 fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
     // Read the root eagerly, so an unreadable mount is Permanent before anything else.
     let mut queue = vec![(root.to_path_buf(), 0usize)];

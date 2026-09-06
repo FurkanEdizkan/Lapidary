@@ -24,8 +24,10 @@
 mod derive;
 mod handler;
 mod scan;
+mod seed;
 
 pub use handler::WorkerHandler;
+pub use seed::seed_examples;
 
 use axum::Router;
 use axum::routing::post;

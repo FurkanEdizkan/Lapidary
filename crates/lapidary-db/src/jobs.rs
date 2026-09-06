@@ -295,6 +295,25 @@ impl PgJobs {
     /// What a scan turned into. `None` when the batch has no jobs -- an id never issued
     /// and a scan that enqueued nothing are indistinguishable, and both mean "no status
     /// resource" (Task 11 turns this into a 404).
+    /// Has anything ever run in this library?
+    ///
+    /// The seeder's question, and deliberately not "does it have parts". A library with no
+    /// parts is not the same as a library nothing has ever happened to: a user who deleted
+    /// every part has scanned before, and seeding them again on the next restart would put
+    /// back data they removed. A `job` row is the durable record that something happened
+    /// here, and it outlives every part it created.
+    ///
+    /// `EXISTS`, not a count: the answer is a boolean and the table is the busiest one in
+    /// the schema.
+    pub async fn library_has_history(&self, library: LibraryId) -> Result<bool, DbError> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM job WHERE library_id = $1 LIMIT 1")
+                .bind(library.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(found.is_some())
+    }
+
     pub async fn batch_status(
         &self,
         library: LibraryId,

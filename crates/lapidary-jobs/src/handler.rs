@@ -28,3 +28,26 @@ pub enum HandlerError {
     /// while a non-retried transient failure costs the user a file.
     Transient { message: String },
 }
+
+/// The message, verbatim, with no prefix naming the variant.
+///
+/// A carried item since slice 3b: `HandlerError` had no `Display`, so every caller that
+/// wanted to log one reached for `{:?}` and printed `Permanent { message: "Could not read
+/// …" }` — the debug form of a struct wrapped around a sentence that was already written
+/// for a person to read. `job.last_error` stores this same string and the UI shows it, so
+/// a log line and the failed-file drawer now say the same words.
+///
+/// Whether a failure is permanent is the *queue's* business and it is already recorded in
+/// `job.state`; repeating it inside the message would put it on screen twice, in the one
+/// place a user is reading to find out what went wrong with their file.
+impl std::fmt::Display for HandlerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HandlerError::Permanent { message } | HandlerError::Transient { message } => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for HandlerError {}

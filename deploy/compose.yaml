@@ -117,6 +117,10 @@ services:
       # bin/lapidary-server refuses to start without them rather than guessing a path.
       # They name the two mounts below.
       LAPIDARY_INGEST_DIR: /ingest
+      # The bundled examples, copied into the image by deploy/Containerfile. Seeded once,
+      # on the first start of a library nothing has ever run in — see
+      # `lapidary_ingest::seed`. Unset it to start with an empty grid.
+      LAPIDARY_EXAMPLE_DIR: /usr/share/lapidary/example-parts
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
       # Job worker knobs, worker-only — the api service has no worker to configure.
       # Passed through empty when unset, which bin/lapidary-server reads as "use the
