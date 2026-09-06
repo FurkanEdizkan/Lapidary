@@ -147,6 +147,14 @@ impl PgFolders {
     /// what makes the count subtree-*inclusive*), and the aggregate below counts live parts
     /// per root.
     ///
+    /// `p.library_id = $1` is not redundant with the walk starting inside this library.
+    /// Every writer of `part.folder_id` keeps a part and its folder in one library, but
+    /// nothing in the schema requires it — `part.folder_id` references `folder(id)` and no
+    /// constraint relates the two `library_id` columns — so without this clause one bad row
+    /// from a repair script or a future writer would put a foreign model in this library's
+    /// sidebar count and in the number its delete confirmation shows. The grid this count
+    /// has to agree with filters on library, so this count does too.
+    ///
     /// The descent is not filtered on `deleted_at`: a soft-deleted subfolder's parts were
     /// soft-deleted with it by `soft_delete_subtree`, so they fall out at the part filter
     /// anyway, and filtering the walk as well would only add a way for the two rules to
@@ -162,7 +170,7 @@ impl PgFolders {
              counts AS ( \
              SELECT d.root, count(p.id) AS n FROM down d \
              JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL \
-             WHERE NOT d.is_cycle \
+             WHERE NOT d.is_cycle AND p.library_id = $1 \
              GROUP BY d.root) \
              SELECT f.id, f.parent_id, f.name, f.slug, coalesce(c.n, 0) \
              FROM folder f LEFT JOIN counts c ON c.root = f.id \

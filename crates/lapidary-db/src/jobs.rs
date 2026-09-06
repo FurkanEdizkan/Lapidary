@@ -40,24 +40,17 @@ const FAILED_SAMPLE: i64 = 100;
 /// into something an operator going looking for stalled-worker symptoms can actually
 /// find.
 ///
-/// Since fix round 2, `reschedule` alone can also match zero rows for a second, distinct
-/// reason with nothing stale about it: its own `migrate_storage` guard (see that
-/// method's doc) can leave a row deliberately `running`, still held by the very same
-/// caller, because moving it to `pending` would collide with a pending or racing
-/// sibling. `rows_affected` alone cannot tell that apart from a genuinely stale write,
-/// so the message below no longer claims either cause specifically -- claiming "another
-/// worker already reclaimed and finished it" for a row nobody touched would be exactly
-/// the kind of measurement that lies this project's error-message rule already forbids
-/// in user-facing text, even here where the audience is `tracing::debug!` and an
-/// operator, not an end user.
+/// `reschedule` used to carry a second cause -- a `migrate_storage` guard that could leave
+/// a row deliberately `running` rather than collide with a pending sibling. Migration
+/// `0011` dropped the index that guard existed for and the guard went with it, so the one
+/// cause below is the only one left.
 fn log_if_stale(id: JobId, verb: &str, rows_affected: u64) {
     if rows_affected == 0 {
         tracing::debug!(
             job = %id,
             verb,
-            "this write changed nothing -- either another worker already reclaimed \
-             and finished this job, or (reschedule only) its own migrate_storage guard \
-             left the row running on purpose; neither is a problem to chase"
+            "this write changed nothing -- another worker already reclaimed and \
+             finished this job; not a problem to chase"
         );
     }
 }

@@ -1147,10 +1147,16 @@ impl PgParts {
     /// succeeded.** A failed rename rolls the rows back and nothing moved. The remaining
     /// window is a rename that succeeds and a commit that then fails, which leaves the disk
     /// ahead of the database — repairable, because `metadata.json` makes every model
-    /// directory self-identifying. The reverse order was considered and rejected: its
-    /// failure leaves the database naming a path that does not exist, and every subsequent
-    /// read hits it. A disk ahead of the database is a repair job; a database ahead of the
-    /// disk is a broken grid.
+    /// directory self-identifying.
+    ///
+    /// The reverse order was considered and rejected, but not because its failure is worse
+    /// in kind: both orderings can leave a `storage_path` that reads fail on — one naming a
+    /// path the rename never created, the other naming the directory the rename just
+    /// emptied. What separates them is how often each window opens. A rename fails for
+    /// ordinary reasons and this order turns every one of those into a clean refusal with
+    /// nothing moved; a commit failing after a successful rename needs the connection to
+    /// drop between `COMMIT` and its acknowledgement, which is rare. The common failure is
+    /// made total, the rare one is made repairable.
     ///
     /// `rename` is a closure rather than a storage handle because this crate cannot hold
     /// one: `lapidary-db` and `lapidary-storage` are both L1, and `cargo xtask check-layers`

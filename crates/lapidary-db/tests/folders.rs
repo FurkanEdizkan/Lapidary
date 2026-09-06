@@ -358,3 +358,46 @@ async fn deleting_a_deep_category_hides_the_models_below_the_old_walk_cap(pool: 
     assert_eq!(folders, 17, "every category under the one deleted");
     assert_eq!(parts, 1, "and the model filed under the deepest of them");
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_part_in_another_library_is_not_counted_under_this_librarys_category(pool: sqlx::PgPool) {
+    // Correct today only by luck. Every writer of `part.folder_id` -- the scan, the move
+    // route, migration `0008`'s backfill -- keeps a part and its folder in one library, so
+    // the count join never had to say so. Nothing in the schema requires it: `part.folder_id`
+    // references `folder(id)` and no constraint relates the two `library_id`s, so one bad
+    // row from a repair script or a future writer would put a foreign model in this
+    // library's sidebar count and in the number its delete confirmation shows.
+    let f = PgFolders(pool.clone());
+    let terrain = f
+        .get_or_create(library(), None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+
+    let other = LibraryId::new();
+    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Shop floor')")
+        .bind(other.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("a second library");
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path, folder_id) \
+         VALUES (gen_random_uuid(), $1, 'Impeller, LP-5501-02', \
+                 'impeller-lp-5501-02.stl', $2)",
+    )
+    .bind(other.as_uuid())
+    .bind(terrain.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a part in the other library, filed under this library's category");
+
+    let rows = f.tree(library()).await.expect("tree");
+    let terrain_row = rows
+        .iter()
+        .find(|r| r.id == terrain)
+        .expect("Terrain is in the tree");
+    assert_eq!(
+        terrain_row.part_count, 0,
+        "the count beside a category is the number of cards this library's grid shows \
+         for it, and the grid filters on library"
+    );
+}

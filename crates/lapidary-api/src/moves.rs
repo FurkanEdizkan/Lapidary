@@ -11,13 +11,21 @@
 //! **Ordering: rename first, inside the transaction, commit only if it succeeded.** A
 //! failed rename rolls back and nothing moved. The window that remains is a rename that
 //! succeeds and a commit that then fails, leaving the disk ahead of the database — which
-//! `metadata.json` makes repairable, because every model directory identifies itself. The
-//! reverse ordering was rejected: its failure leaves the database pointing at a path that
-//! does not exist, which every read then hits. A disk ahead of the database is a repair
-//! job; a database ahead of the disk is a broken grid. The transaction itself lives in
-//! `PgParts::move_to_folder` (no SQL outside `lapidary-db`), and the rename travels there
-//! as a closure — this crate holds the storage handle, that crate holds the transaction,
-//! and neither may depend on the other's half.
+//! `metadata.json` makes repairable, because every model directory identifies itself.
+//!
+//! What separates the two orderings is *how often each window opens*, not what it leaves
+//! behind. Both leave a row naming a directory that reads fail on: commit-first leaves one
+//! naming a path the rename never created, and rename-first leaves one naming the directory
+//! the rename just emptied. The outcomes are symmetric. The frequencies are not. A rename
+//! fails for ordinary reasons — a full volume, a permission, a destination that appeared —
+//! and this ordering answers every one of those with a clean refusal and nothing moved. A
+//! commit failing *after* a successful rename needs the connection to drop in the gap
+//! between `COMMIT` and its acknowledgement, which is rare. So the common failure is made
+//! total and the rare one is made repairable, rather than the other way round.
+//!
+//! The transaction itself lives in `PgParts::move_to_folder` (no SQL outside
+//! `lapidary-db`), and the rename travels there as a closure — this crate holds the storage
+//! handle, that crate holds the transaction, and neither may depend on the other's half.
 //!
 //! What a move does **not** touch is as load-bearing as what it does. `part.source_path` is
 //! identity: where the file sat in the ingest directory, immutable, and the reason a

@@ -79,10 +79,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::slugify;
-use lapidary_core::{BatchId, BlobHash, FolderId, LibraryId, Outcome, ScanAccepted};
+use lapidary_core::{BatchId, BlobHash, FolderId, LibraryId, Outcome, PartId, ScanAccepted};
 use lapidary_db::{PendingSource, PgFolders, PgJobs, PgParts, PgStorageMigration};
 use lapidary_jobs::HandlerError;
-use lapidary_storage::{Compression, SourceStore, WorkerRole};
+use lapidary_storage::{Compression, SourceStore, StorageError, WorkerRole};
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
 
@@ -326,13 +326,13 @@ impl WorkerHandler {
             });
         }
 
-        let mut written: Vec<(String, String)> = Vec::with_capacity(group.len());
+        let mut written: Vec<(String, String, PartId)> = Vec::with_capacity(group.len());
         let mut moved = Vec::with_capacity(group.len());
         for row in group {
             match self.copy_into_model_dir(source, row, &bytes).await {
                 Ok((model_dir, storage_path)) => {
                     moved.push((row.file_id, storage_path.clone()));
-                    written.push((model_dir, storage_path));
+                    written.push((model_dir, storage_path, row.part));
                 }
                 Err(error) => {
                     // Safe to reap because the CLAIM is still open and nothing has been
@@ -343,8 +343,8 @@ impl WorkerHandler {
                     // Dropping the claim below rolls its transaction back and releases the
                     // hash. Without the claim this reap deletes committed files: see the
                     // module doc's "Two runners".
-                    for (model_dir, storage_path) in &written {
-                        reap_copy(source, model_dir, storage_path);
+                    for (model_dir, storage_path, part) in &written {
+                        reap_copy(source, model_dir, storage_path, *part);
                     }
                     return Err(error);
                 }
@@ -434,7 +434,7 @@ impl WorkerHandler {
         // does get another attempt — and a model directory whose manifest is missing is
         // exactly the orphan this migration exists to stop producing.
         if let Err(error) = written {
-            reap_copy(source, &model_dir, &storage_path);
+            reap_copy(source, &model_dir, &storage_path, row.part);
             return Err(HandlerError::Transient {
                 message: format!(
                     "Could not write {model_dir}/metadata.json: {error}. Check that the blob \
@@ -586,13 +586,53 @@ fn displaces(refused: Option<&HandlerError>, next: &HandlerError) -> bool {
 /// Remove a model directory this job wrote for a move that then failed before anything was
 /// committed. `handler::reap_source`'s rule, plus the manifest, because a directory that
 /// still holds one cannot be removed and a retry would then disambiguate around it.
-fn reap_copy(source: &SourceStore, model_dir: &str, storage_path: &str) {
-    if let Err(error) = source.remove_at(&format!("{model_dir}/metadata.json")) {
-        tracing::warn!(
+///
+/// The manifest is removed only if it names `part`. `model_dir_for` disambiguates around a
+/// directory that already exists without asking whose it is, and that check is not atomic
+/// with the write that follows it, so a migration and an ingest can resolve the same
+/// directory inside one window — and this reap would then delete a committed part's only
+/// self-identifying record. The window is microseconds wide and no bytes are at risk either
+/// way; it is guarded because the manifest is the thing a repair walk reads to work out what
+/// a directory holds, and deleting one is exactly what this job exists to stop producing.
+///
+/// A manifest that cannot be read or parsed is left where it is. It is not provably this
+/// job's, and this project does not delete what it cannot identify — the cost is that the
+/// directory survives, so the retry disambiguates and the model keeps a suffixed directory
+/// name. That is visible and repairable; a deleted manifest is neither.
+fn reap_copy(source: &SourceStore, model_dir: &str, storage_path: &str, part: PartId) {
+    let manifest_path = format!("{model_dir}/metadata.json");
+    match source.get_at(&manifest_path, None) {
+        Ok(bytes) => match serde_json::from_slice::<ModelManifest>(&bytes) {
+            Ok(manifest) if manifest.part.id == part => {
+                if let Err(error) = source.remove_at(&manifest_path) {
+                    tracing::warn!(
+                        model_dir,
+                        %error,
+                        "failed to reap a metadata.json after a failed move; it may now be an orphan on disk"
+                    );
+                }
+            }
+            Ok(manifest) => tracing::warn!(
+                model_dir,
+                theirs = %manifest.part.id,
+                ours = %part,
+                "left a metadata.json in place: it names another part, so this directory is \
+                 somebody else's and reaping it would delete their record"
+            ),
+            Err(error) => tracing::warn!(
+                model_dir,
+                %error,
+                "left an unreadable metadata.json in place: it cannot be shown to belong to \
+                 this move, and an unidentifiable manifest is not something to delete"
+            ),
+        },
+        // Nothing there is the ordinary case when the manifest write is what failed.
+        Err(StorageError::NotFound { .. }) => {}
+        Err(error) => tracing::warn!(
             model_dir,
             %error,
-            "failed to reap a metadata.json after a failed move; it may now be an orphan on disk"
-        );
+            "could not read a metadata.json to decide whether this move wrote it; leaving it"
+        ),
     }
     reap_source(source, storage_path, model_dir);
 }
@@ -638,6 +678,98 @@ fn manifest_for(row: &PendingSource, file_name: &str) -> ModelManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision};
+    use lapidary_core::{BlobHash, RevisionId};
+
+    fn a_part() -> PartId {
+        PartId::from_uuid(
+            "01931b6e-0000-7000-8000-0000000000aa"
+                .parse()
+                .expect("a valid uuid"),
+        )
+    }
+
+    fn manifest_naming(part: PartId) -> ModelManifest {
+        ModelManifest {
+            schema: ModelManifest::SCHEMA,
+            part: ManifestPart {
+                id: part,
+                library: LibraryId::from_uuid(
+                    "01931b6e-0000-7000-8000-000000000001"
+                        .parse()
+                        .expect("a valid uuid"),
+                ),
+                name: "Cliff face, LP-7712-04".to_owned(),
+                part_number: Some("LP-7712-04".to_owned()),
+                classification: None,
+                source_path: "Terrain/cliff-face-lp-7712-04.stl".to_owned(),
+                metadata: serde_json::json!({}),
+            },
+            revisions: vec![ManifestRevision {
+                id: RevisionId::new(),
+                rev_label: "1".to_owned(),
+                origin: "ingest".to_owned(),
+                volume_mm3: Some(21_478.5),
+                volume_source: Some("tessellated".to_owned()),
+                bbox_mm: Some([61.0, 42.0, 18.5]),
+                triangle_count: Some(48_112),
+                is_watertight: Some(true),
+                units: Some("mm".to_owned()),
+                files: vec![ManifestFile {
+                    role: "source".to_owned(),
+                    format: "stl".to_owned(),
+                    blake3: BlobHash::from_bytes([0xf7; 32]),
+                    size_bytes: 204_800,
+                    file_name: "cliff-face-lp-7712-04.stl".to_owned(),
+                }],
+            }],
+        }
+    }
+
+    /// `model_dir_for` resolves a directory without asking whose it is, and does it with a
+    /// check that is not atomic with the write after it. So a migration whose group then
+    /// fails can be standing in a directory an ingest committed in the meantime, and an
+    /// unconditional reap deletes that part's only self-identifying record.
+    #[test]
+    fn a_failed_move_reaps_its_own_manifest_and_leaves_somebody_elses() {
+        let root = tempfile::tempdir().expect("temp store");
+        let store = SourceStore::open(root.path(), &WorkerRole::assume());
+        let dir = "libraries/default/Terrain/cliff-face-lp-7712-04";
+        let manifest_path = format!("{dir}/metadata.json");
+        let file_path = format!("{dir}/cliff-face-lp-7712-04.stl");
+
+        let write = |part: PartId| {
+            let json = serde_json::to_vec_pretty(&manifest_naming(part)).expect("serialises");
+            store
+                .put_at(&manifest_path, &json, Compression::AsIs)
+                .expect("writes the manifest");
+            store
+                .put_at(&file_path, b"solid cliff\n", Compression::AsIs)
+                .expect("writes the file");
+        };
+
+        // Somebody else's directory: the manifest names a part this move knows nothing
+        // about, so the manifest stays exactly where it is.
+        write(PartId::new());
+        reap_copy(&store, dir, &file_path, a_part());
+        assert!(
+            root.path().join(&manifest_path).exists(),
+            "a manifest naming another part is that part's record, not this job's to delete"
+        );
+
+        // Its own: written by this move, for this part, and reaped with the file.
+        write(a_part());
+        reap_copy(&store, dir, &file_path, a_part());
+        assert!(
+            !root.path().join(&manifest_path).exists(),
+            "the manifest this move wrote is the one it has to take away, or the retry \
+             disambiguates around a directory nothing points at"
+        );
+        assert!(
+            !root.path().join(&file_path).exists(),
+            "and the file with it"
+        );
+    }
 
     fn transient() -> HandlerError {
         HandlerError::Transient {
