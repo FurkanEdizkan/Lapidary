@@ -121,15 +121,6 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         }
     }
 
-    let payload = if compress {
-        zstd::encode_all(bytes, INGEST_LEVEL).map_err(|source| StorageError::Io {
-            path: path.display().to_string(),
-            source,
-        })?
-    } else {
-        bytes.to_vec()
-    };
-
     // Write to a uniquely-named temp file in the *same* directory as the final path, then
     // rename into place. A same-directory rename is atomic on POSIX filesystems — readers
     // see either the old state (nothing, since this is a new blob) or the complete new
@@ -142,13 +133,39 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         std::process::id(),
         TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    if let Err(source) = std::fs::write(&tmp_path, &payload) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(StorageError::Io {
-            path: tmp_path.display().to_string(),
-            source,
-        });
-    }
+    // Compressed straight into the temp file rather than into a `Vec` first. `encode_all`
+    // allocated a second full copy of the file and held it alongside the caller's slice
+    // for the whole write: on the 380 MB STL in the owner's corpus that is 380 MB plus
+    // ~185 MB resident at once, inside a worker capped at 2 GB running two jobs. The
+    // uncompressed branch had the same shape for no reason at all — `bytes.to_vec()`
+    // copied the slice only to hand it straight to `write`.
+    //
+    // `stored_bytes` now comes from the file rather than from a buffer's length, which is
+    // the same number by a shorter route: it is what the blob actually occupies.
+    let write_result = (|| -> std::io::Result<u64> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        if compress {
+            zstd::stream::copy_encode(bytes, &mut file, INGEST_LEVEL)?;
+        } else {
+            std::io::Write::write_all(&mut file, bytes)?;
+        }
+        // Before the rename, so a reader that observes the renamed path observes complete
+        // bytes rather than whatever the page cache had flushed.
+        file.sync_all()?;
+        file.metadata().map(|m| m.len())
+    })();
+
+    let stored_bytes = match write_result {
+        Ok(len) => len,
+        Err(source) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(StorageError::Io {
+                path: tmp_path.display().to_string(),
+                source,
+            });
+        }
+    };
+
     if let Err(source) = std::fs::rename(&tmp_path, &path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(StorageError::Io {
@@ -160,7 +177,7 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
     Ok(StoredBlob {
         hash,
         size_bytes: bytes.len() as u64,
-        stored_bytes: payload.len() as u64,
+        stored_bytes,
         zstd_level: if compress { INGEST_LEVEL as i16 } else { 0 },
     })
 }
@@ -186,16 +203,63 @@ fn classify_read_error(source: std::io::Error, hash: &BlobHash, path: &Path) -> 
     }
 }
 
+/// The whole blob, decompressed, in memory.
+///
+/// Decodes *from the file* rather than from a `Vec` of the file. The previous shape read
+/// the compressed bytes whole and then decoded them into a second buffer, so both were
+/// resident at the peak — 565 MB for the 380 MB STL in the owner's corpus, inside an `api`
+/// container capped at 512 MB. That was not a slow path, it was an OOM on a real file.
+///
+/// This still holds the decompressed result whole, which is right for a caller that needs
+/// the bytes (the kernel) and wrong for one that only forwards them. [`open_blob`] is the
+/// forwarding case.
 fn read_blob(root: &Path, hash: &BlobHash, compressed: bool) -> Result<Vec<u8>, StorageError> {
     let path = blob_path(root, hash);
-    let raw = std::fs::read(&path).map_err(|source| classify_read_error(source, hash, &path))?;
+    let file =
+        std::fs::File::open(&path).map_err(|source| classify_read_error(source, hash, &path))?;
+    let mut out = Vec::new();
     if compressed {
-        zstd::decode_all(raw.as_slice()).map_err(|source| StorageError::Io {
+        zstd::stream::copy_decode(file, &mut out).map_err(|source| StorageError::Io {
             path: path.display().to_string(),
             source,
-        })
+        })?;
     } else {
-        Ok(raw)
+        std::io::Read::read_to_end(&mut std::io::BufReader::new(file), &mut out).map_err(
+            |source| StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            },
+        )?;
+    }
+    Ok(out)
+}
+
+/// The blob as a reader, decompressing as it is read, holding no full copy of anything.
+///
+/// For a caller that forwards bytes rather than inspecting them — today the download
+/// route, whose memory used to scale with the file it served multiplied by the number of
+/// people asking for it at once.
+///
+/// Blocking, deliberately: the callers that stream this hand it to `spawn_blocking`, and
+/// an async decompressor would be a new dependency to avoid an ordinary thread.
+fn open_blob(
+    root: &Path,
+    hash: &BlobHash,
+    compressed: bool,
+) -> Result<Box<dyn std::io::Read + Send>, StorageError> {
+    let path = blob_path(root, hash);
+    let file =
+        std::fs::File::open(&path).map_err(|source| classify_read_error(source, hash, &path))?;
+    let reader = std::io::BufReader::new(file);
+    if compressed {
+        let decoder =
+            zstd::stream::read::Decoder::new(reader).map_err(|source| StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+        Ok(Box::new(decoder))
+    } else {
+        Ok(Box::new(reader))
     }
 }
 
@@ -328,6 +392,22 @@ impl SourceReader {
     /// cannot produce one — but slice 7's tiering is where level spellings get picked.
     pub fn get(&self, hash: &BlobHash, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
         read_blob(&self.root, hash, zstd_level.is_some_and(|level| level != 0))
+    }
+
+    /// The same bytes as [`get`](Self::get), as a reader that holds no full copy.
+    ///
+    /// The download route's memory used to be the size of the file it served, times the
+    /// number of people asking at once, inside an `api` container capped at 512 MB — so a
+    /// single 380 MB STL from the owner's corpus was an OOM rather than a slow request.
+    ///
+    /// The `zstd_level` argument means exactly what it means in `get`, including why a
+    /// negative level still decodes.
+    pub fn stream(
+        &self,
+        hash: &BlobHash,
+        zstd_level: Option<i16>,
+    ) -> Result<Box<dyn std::io::Read + Send>, StorageError> {
+        open_blob(&self.root, hash, zstd_level.is_some_and(|level| level != 0))
     }
 }
 

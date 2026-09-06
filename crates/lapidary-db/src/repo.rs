@@ -26,6 +26,14 @@ pub struct PartRow {
 #[derive(Debug)]
 pub struct DownloadSource {
     pub hash: BlobHash,
+    /// `blob.size_bytes` — the *uncompressed* length, which is what the route sends as
+    /// `Content-Length` and therefore what the user is promised.
+    ///
+    /// It matters more since the download began streaming: the body is no longer
+    /// verified before its first byte goes out, so a declared length is what turns a
+    /// mid-stream abort into a transfer the client can see was short rather than a file
+    /// that merely looks complete.
+    pub size_bytes: i64,
     /// `file.format` — lowercase, no dot. The route synthesizes `{part_name}.{format}`.
     pub format: String,
     /// `part.name`, the download's filename stem. A renamed part downloads under its new
@@ -746,8 +754,8 @@ impl PgParts {
         &self,
         revision: RevisionId,
     ) -> Result<Option<DownloadSource>, DbError> {
-        let row: Option<(String, String, String, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, p.name, b.zstd_level FROM file f \
+        let row: Option<(String, String, String, Option<i16>, i64)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, b.zstd_level, b.size_bytes FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
              JOIN blob b ON b.blake3 = f.blake3 \
@@ -757,7 +765,7 @@ impl PgParts {
         .bind(revision.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((hex, format, part_name, zstd_level)) = row else {
+        let Some((hex, format, part_name, zstd_level, size_bytes)) = row else {
             return Ok(None);
         };
         let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
@@ -766,6 +774,7 @@ impl PgParts {
         })?;
         Ok(Some(DownloadSource {
             hash,
+            size_bytes,
             format,
             part_name,
             zstd_level,

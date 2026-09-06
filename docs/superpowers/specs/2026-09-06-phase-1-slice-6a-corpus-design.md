@@ -114,13 +114,38 @@ behaviour and the visible failure mode.
 `Vec<u8>` response body in `download.rs` — which says so itself: *"Fine at Phase 1 sizes
 and wrong for a 2 GB STEP."* `DATA.md`'s own source range is 1 MB – 2 GB.
 
-Hash and store the source in chunks, and stream the download body. The mesh kernel still
-needs the whole mesh in memory to tessellate — that is inherent and not this slice's fight;
-what changes is that reading, hashing, compressing and serving stop each holding their own
-full copy.
+Stream the download body, and stop the store holding a second full copy of everything it
+writes or reads. The mesh kernel still needs the whole mesh in memory to tessellate — that
+is inherent and not this slice's fight — so **ingest** goes from two copies to one rather
+than to none. The **download** path can go to constant memory, because it only forwards
+bytes.
 
-**Acceptance is a measurement, not an assertion:** resident memory during ingest of the
-largest file in the corpus must not track file size.
+That asymmetry is the point, and the original wording of this section got it wrong: it
+asked for ingest RSS not to track file size, which the kernel makes impossible. The two
+honest criteria are:
+
+- **Ingest:** peak resident memory is ~1× the file, not ~1.5×. `write_blob` compressed into
+  a `Vec` and held it beside the caller's slice; on a real 380 MB STL, which the slice 5
+  handoff measured compressing 2.05×, that is 380 MB + ~185 MB at once inside a worker
+  capped at 2 GB running two jobs.
+- **Download:** peak resident memory is constant in the file's size. This one is measurable
+  directly, and `deploy/compose.yaml` caps `api` at **512 MB** — so a 380 MB file was not a
+  slow download, it was one the container could not serve at all, let alone twice at once.
+
+**Measured, in a fresh process per mode, on a synthetic 380 MB STL:** streaming peaks at
+**5.7 MB**; buffering the same blob peaks at **385.8 MB**. Reverting the streaming decode is
+behaviourally identical — no test can catch it — which is exactly why this criterion is a
+measurement and is written down here.
+
+**One guarantee changes shape, deliberately.** The route used to hash the whole file and
+compare it against `blob.blake3` before sending anything, so a corrupt blob was a 500 and
+the user got nothing. Verifying before the first byte *is* buffering, so streaming cannot
+keep that. The bytes are hashed incrementally and a mismatch closes the body early, with
+`Content-Length` sent from `blob.size_bytes` so a short read is detectable and the strong
+`ETag` still carrying the digest to check against. The promise moves from *"we never begin
+sending unverified bytes"* to *"we never finish a download whose bytes did not verify, and
+we always say how many bytes a complete one has"*. `crates/lapidary-api/src/download.rs`'s
+header carries this too, because that is where someone will meet it.
 
 ## 4. Upload from the browser
 

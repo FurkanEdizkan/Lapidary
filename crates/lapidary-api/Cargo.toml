@@ -23,6 +23,11 @@ jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The download route's body: `spawn_blocking` for the blocking zstd decoder and an mpsc
+# channel to bound what it reads ahead. `rt` only -- this crate builds a Router and never
+# starts a runtime; `bin/lapidary-server` owns that.
+tokio = { workspace = true, features = ["rt", "sync"] }
+tokio-stream.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
