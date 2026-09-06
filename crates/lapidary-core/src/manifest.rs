@@ -4,34 +4,40 @@
 //! says what it is. It is machine-owned but lives in a folder the user has been promised
 //! they may edit, so readers treat a missing or malformed one as an orphan to report, never
 //! as a reason to fail a walk.
+//!
+//! ## Forward compatibility
+//!
+//! Unknown fields survive a **read** (serde ignores them) but are **dropped on write-back**.
+//! Code that reads a manifest and rewrites it (e.g., during migration to a new path) must
+//! call [`ModelManifest::is_future_schema`] first and refuse to rewrite if it returns `true`.
+//! Otherwise, a newer build's fields are silently lost.
 
-use crate::{LibraryId, PartId, RevisionId};
+use crate::{BlobHash, LibraryId, PartId, RevisionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ModelManifest {
     /// Bumped when a field's *meaning* changes. Additive fields do not bump it — readers
-    /// keep unknown ones rather than refusing them.
+    /// keep unknown ones rather than refusing them. See module doc for forward-compatibility notes.
     pub schema: u32,
     pub part: ManifestPart,
     pub revisions: Vec<ManifestRevision>,
 }
 
 impl ModelManifest {
-    #[allow(dead_code)]
     pub const SCHEMA: u32 = 1;
 
     /// Written by a build newer than this one. The caller reports the directory and moves
-    /// on rather than guessing at fields it does not know.
-    #[allow(dead_code)]
+    /// on rather than guessing at fields it does not know. See module doc: unknown fields
+    /// from a future schema are dropped on write-back, so code that migrates a manifest
+    /// must refuse to rewrite it if this returns `true`.
     pub fn is_future_schema(&self) -> bool {
         self.schema > Self::SCHEMA
     }
 }
 
+/// Wire format is `snake_case` (a file humans edit), not `camelCase` (a browser payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ManifestPart {
     pub id: PartId,
     pub library: LibraryId,
@@ -44,7 +50,6 @@ pub struct ManifestPart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ManifestRevision {
     pub id: RevisionId,
     pub rev_label: String,
@@ -61,12 +66,11 @@ pub struct ManifestRevision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ManifestFile {
     pub role: String,
     pub format: String,
     /// Hex. Re-adoption verifies bytes against this before trusting the directory.
-    pub blake3: String,
+    pub blake3: BlobHash,
     pub size_bytes: i64,
     /// The file's name inside this directory. Not a path — a model's files are flat.
     pub file_name: String,
@@ -104,7 +108,7 @@ mod tests {
                 files: vec![ManifestFile {
                     role: "source".to_owned(),
                     format: "stl".to_owned(),
-                    blake3: "ab".repeat(32),
+                    blake3: BlobHash::from_bytes([0xab; 32]),
                     size_bytes: 204_800,
                     file_name: "bracket-lp-1042-03.stl".to_owned(),
                 }],
@@ -132,9 +136,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_fields_are_kept_not_rejected() {
-        // Forward compatibility: a field a newer build added must not make this directory
-        // an orphan on an older one.
+    fn unknown_fields_do_not_break_parsing() {
+        // Serde ignores unknown fields, so a directory written by a newer build can still be
+        // read by this one. But see module doc: unknown fields are dropped on write-back.
         let mut v = serde_json::to_value(a_manifest()).expect("to value");
         v["part"]["invented_later"] = serde_json::json!("hello");
         assert!(serde_json::from_value::<ModelManifest>(v).is_ok());
