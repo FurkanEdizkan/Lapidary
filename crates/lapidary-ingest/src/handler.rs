@@ -31,7 +31,14 @@
 //! that it runs only when the write really failed: `classify_write` turns a unique
 //! violation into `Skipped`, which means another worker's part row now describes the file
 //! at this path, and reaping it would be silent data loss. That is why the reap is inside
-//! an `is_err()` and not on every `Err` arm.
+//! an `is_err()` and not on every `Err` arm. For the *source* file that is the rare path
+//! — `model_dir_for` disambiguates, so a loser that resolved its directory after the
+//! winner wrote one owns a directory of its own, and only the narrow window where both
+//! resolve before either writes puts them on one path. The **rungs** have no
+//! disambiguation and are the guard's live exposure: two workers meshing one file produce
+//! the same rung bytes, both see `blobs.exists` answer false for them, and a loser that
+//! reaped on its way to `Skipped` would take the derivatives the winner's committed rows
+//! serve.
 //!
 //! # Where the bytes go, and why both branches write them
 //!
@@ -690,5 +697,92 @@ mod tests {
     fn a_query_failure_is_still_transient() {
         let err = DbError::Query(sqlx::Error::PoolClosed);
         assert!(matches!(classify_db(err), HandlerError::Transient { .. }));
+    }
+
+    /// A `DatabaseError` carrying one constraint name and nothing else.
+    ///
+    /// `sqlx` will not let a `PgDatabaseError` be built outside its own crate, and the
+    /// test below has to ask `classify_write` about a *named constraint* rather than about
+    /// a live database. Everything under `constraint` is the trait's required surface,
+    /// untouched by the code under test.
+    #[derive(Debug)]
+    struct ViolatedConstraint(&'static str);
+
+    impl std::fmt::Display for ViolatedConstraint {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "duplicate key value violates unique constraint \"{}\"",
+                self.0
+            )
+        }
+    }
+
+    impl std::error::Error for ViolatedConstraint {}
+
+    impl sqlx::error::DatabaseError for ViolatedConstraint {
+        fn message(&self) -> &str {
+            "duplicate key value violates a unique constraint"
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::UniqueViolation
+        }
+        fn constraint(&self) -> Option<&str> {
+            Some(self.0)
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    fn violation(constraint: &'static str) -> DbError {
+        DbError::Query(sqlx::Error::Database(Box::new(ViolatedConstraint(
+            constraint,
+        ))))
+    }
+
+    /// The condition the reap is guarded by, pinned where it can be pinned deterministically.
+    ///
+    /// `ingest_one` reaps its source file, its model directory and its rungs only when
+    /// `classify_write(...).is_err()`, because the one error it turns into `Ok(Skipped)` is
+    /// a race this worker lost — a race whose winner's committed row describes the very
+    /// bytes a reap would delete. The end-to-end version of that is
+    /// `losing_the_race_for_a_file_is_a_skip_rather_than_a_failure`, and it depends on two
+    /// concurrent handlers actually overlapping: measured over 20 runs against a restored
+    /// bug it caught it twice. This asserts the same invariant as a fact about one
+    /// function, so a change to the mapping, or a flip of the `is_err()`, fails on every
+    /// run of the suite with no database and no scheduler involved.
+    #[test]
+    fn only_a_lost_race_for_the_same_path_is_a_skip_rather_than_an_error() {
+        let lost_race = classify_write(violation("part_source_path_unique_per_library"));
+        assert_eq!(
+            lost_race.as_ref().ok(),
+            Some(&Outcome::Skipped),
+            "another worker won the race for this file; its row is committed and its bytes \
+             are the bytes on disk. This is also the one outcome that must not reap -- \
+             `ingest_one`'s failure arm reaps behind exactly this value's `is_err()`"
+        );
+
+        // Every other refusal is a failure, and a failure reaps what it wrote. A unique
+        // violation on some *other* constraint is the case worth naming: it is the same
+        // shape of error, and reporting it as `Skipped` would tell the user a file is
+        // already indexed when nothing indexed it.
+        for other in [
+            violation("folder_name_unique_per_parent"),
+            violation("derivative_kind_unique_per_revision"),
+            DbError::Query(sqlx::Error::PoolClosed),
+        ] {
+            let settled = classify_write(other);
+            assert!(
+                settled.is_err(),
+                "only a lost race for this path may settle as an outcome, got {settled:?}"
+            );
+        }
     }
 }

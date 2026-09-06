@@ -326,11 +326,16 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
     assert_eq!(parts, 1, "the race must not produce two parts");
 
     // The half this test did not check until a review restored the bug and watched it stay
-    // green: the LOSER must not reap. Both workers write the same `storage_path`, so the
-    // file the winner's committed row points at is the file the loser just wrote -- reaping
-    // it on the way to `Skipped` deletes a part that ingested perfectly well, and every
-    // assertion above still passes while it happens. The outcome and the row count cannot
-    // see it, so this crosses to the filesystem and re-hashes the bytes.
+    // green: the LOSER must not reap. The outcome and the row count cannot see a reap at
+    // all, so this crosses to the filesystem.
+    //
+    // For the source file the two workers usually do NOT collide, and that is worth saying
+    // plainly because it is easy to assume otherwise: `model_dir_for` disambiguates, so a
+    // loser that resolves its directory after the winner has written one takes
+    // `bracket-lp-1042-03_<hash6>/` and reaps only its own. Measured over 20 runs against a
+    // restored bug, the source path never collided. What this assertion pins is therefore
+    // the weaker but still real claim that the winner's file is intact and unaltered; the
+    // rungs below are where the collision is deterministic.
     let (storage_path, blake3): (Option<String>, String) =
         sqlx::query_as("SELECT storage_path, blake3 FROM file WHERE role = 'source'")
             .fetch_one(&pool)
@@ -357,10 +362,14 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
             .await
             .expect("the winner's hash-addressed derivatives");
     // Verified by restoring the bug: with the guard flipped to an unconditional reap this
-    // goes red on the runs where the two handlers genuinely overlap, and stays green on
-    // the runs where the scheduler serialises them -- in which case the second job
-    // short-circuits at `library_holds` and never writes anything to reap. It is never
-    // falsely red, and forcing the overlap would mean a test hook in the pipeline.
+    // goes red on the runs where the two handlers genuinely overlap, and stays green on the
+    // runs where the scheduler serialises them -- in which case the second job
+    // short-circuits at `library_holds` and never writes anything to reap. A review
+    // measured that at 2 catches in 20 runs, so this is a corroborating check and not the
+    // guard: `only_a_lost_race_for_the_same_path_is_a_skip_rather_than_an_error` in
+    // `handler.rs` pins the branch condition itself, deterministically and without a
+    // scheduler. Forcing the overlap here would mean a barrier in the pipeline, which is a
+    // larger change than the thing it would pin.
     assert!(!rungs.is_empty(), "the ingest wrote at least one rung");
     for hash in rungs {
         let path = blob_root
