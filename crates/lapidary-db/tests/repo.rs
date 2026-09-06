@@ -46,6 +46,7 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
         .record(IngestRequest {
             library: library(),
             name: "Bearing block, 608ZZ",
+            source_path: "bearing-block-608zz.stl",
             blob: &blob,
             measurements: &watertight(),
             thumbnail_webp: Some(b"webp bytes"),
@@ -76,6 +77,7 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -103,6 +105,7 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
         .record(IngestRequest {
             library: library(),
             name: "Cable clip, LP-3300-01",
+            source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob,
             measurements: &open_mesh(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -140,6 +143,7 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Spacer, LP-2001-00",
+            source_path: "spacer-lp-2001-00.stl",
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -179,6 +183,7 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
         .record(IngestRequest {
             library: library(),
             name: "Vee block, LP-3072-02",
+            source_path: "vee-block-lp-3072-02.stl",
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -195,28 +200,29 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
     );
     assert!(
         blobs
-            .library_holds(library(), "Vee block, LP-3072-02", &blob.hash)
+            .library_holds(library(), "vee-block-lp-3072-02.stl", &blob.hash)
             .await
             .expect("query"),
         "the library that was scanned into holds the part"
     );
     assert!(
         !blobs
-            .library_holds(other, "Vee block, LP-3072-02", &blob.hash)
+            .library_holds(other, "vee-block-lp-3072-02.stl", &blob.hash)
             .await
             .expect("query"),
         "a different library does not hold it, however well known the hash is"
     );
     assert!(
         !blobs
-            .library_holds(library(), "Vee block copy, LP-3072-02", &blob.hash)
+            .library_holds(library(), "copies/vee-block-lp-3072-02.stl", &blob.hash)
             .await
             .expect("query"),
-        "a different name is a different part, even byte for byte"
+        "a different path is a different part, even byte for byte -- and since slice 6a \
+         the same NAME at a different path is too"
     );
     assert!(
         !blobs
-            .library_holds(library(), "Vee block, LP-3072-02", &blob_row(0x44).hash)
+            .library_holds(library(), "vee-block-lp-3072-02.stl", &blob_row(0x44).hash)
             .await
             .expect("query"),
         "a hash nothing has ingested is held by no library"
@@ -224,29 +230,36 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn the_same_part_name_in_two_libraries_is_not_refused(pool: sqlx::PgPool) {
-    // Negative control for `part_name_unique_per_library`
-    // (tests/migrations.rs::two_parts_with_one_name_in_one_library_are_refused). That
-    // test alone can't tell a correctly-scoped `UNIQUE (library_id, name)` from an
-    // accidentally-global `UNIQUE (name)` — it never inserts into a second library, and
-    // being scoped per library is the entire point (spec §3.5). This is the other half:
-    // the same name in a *different* library must succeed, not just the same name in
-    // the same library must fail.
+async fn the_same_source_path_in_two_libraries_is_not_refused(pool: sqlx::PgPool) {
+    // Negative control for `part_source_path_unique_per_library`
+    // (tests/migrations.rs::two_parts_at_one_source_path_in_one_library_are_refused).
+    // That test alone can't tell a correctly-scoped `UNIQUE (library_id, source_path)`
+    // from an accidentally-global `UNIQUE (source_path)` — it never inserts into a second
+    // library, and being scoped per library is the entire point (spec §3.5). This is the
+    // other half: the same path in a *different* library must succeed, not just the same
+    // path in the same library must fail.
+    //
+    // It matters more since slice 6a than it did on the name, because two libraries
+    // mounted at two roots routinely hold the same relative path.
     let other = second_library(&pool).await;
 
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES (gen_random_uuid(), $1, $2)")
-        .bind(library().as_uuid())
+    let insert = |library: uuid::Uuid| {
+        sqlx::query(
+            "INSERT INTO part (id, library_id, name, source_path) \
+             VALUES (gen_random_uuid(), $1, $2, $3)",
+        )
+        .bind(library)
         .bind("bracket-lp-1042-03")
+        .bind("brackets/bracket-lp-1042-03.stl")
         .execute(&pool)
+    };
+
+    insert(library().as_uuid())
         .await
         .expect("the first library's part inserts");
-
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES (gen_random_uuid(), $1, $2)")
-        .bind(other.as_uuid())
-        .bind("bracket-lp-1042-03")
-        .execute(&pool)
+    insert(other.as_uuid())
         .await
-        .expect("the same name in a different library must not be refused");
+        .expect("the same path in a different library must not be refused");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -260,6 +273,7 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
     let req = |name: &'static str| IngestRequest {
         library: library(),
         name,
+        source_path: name,
         blob: &blob,
         measurements: &measurements,
         kernel_version: "mesh stl-1+cpu-1",
@@ -299,6 +313,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
             .record(IngestRequest {
                 library: library(),
                 name,
+                source_path: name,
                 blob: &blob_row(0x30 + i as u8),
                 measurements: &watertight(),
                 kernel_version: "mesh stl-1+cpu-1",
@@ -348,6 +363,7 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x40),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -385,6 +401,7 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x51),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -437,6 +454,7 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x60),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -477,6 +495,7 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x61),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -521,6 +540,7 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x70),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -567,6 +587,7 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
         .record(IngestRequest {
             library: library(),
             name: "Implausible mesh",
+            source_path: "implausible-mesh.stl",
             blob: &blob_row(0x71),
             measurements: &oversized,
             kernel_version: "mesh stl-1+cpu-1",
@@ -602,6 +623,7 @@ async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(seed),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -727,6 +749,7 @@ async fn three_tessellations_and_a_thumbnail_coexist_on_one_revision(pool: sqlx:
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x80),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
@@ -801,6 +824,7 @@ async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool
             .record(IngestRequest {
                 library: library(),
                 name,
+                source_path: name,
                 blob: &blob_row(seed),
                 measurements: &watertight(),
                 kernel_version: "mesh stl-1+glb-1+cpu-1",
@@ -833,6 +857,7 @@ async fn the_file_row_records_the_format_it_was_given(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Idler Bracket, LP-2210-01",
+            source_path: "idler-bracket-lp-2210-01.obj",
             blob: &blob_row(0xa0),
             measurements: &open_mesh(),
             kernel_version: "mesh obj-1+glb-1+cpu-1",
@@ -890,6 +915,7 @@ async fn seed_part(
         .record(IngestRequest {
             library,
             name,
+            source_path: name,
             blob: &blob_row(blob),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -919,6 +945,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0xb0),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -987,6 +1014,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &stl,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1000,6 +1028,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Impeller, LP-5501-02",
+            source_path: "impeller-lp-5501-02.3mf",
             blob: &three_mf,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1138,6 +1167,7 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0xe5),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
@@ -1160,6 +1190,7 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
         .link_existing(IngestRequest {
             library: library(),
             name: "Cable clip, LP-3300-01",
+            source_path: "cable-clip-lp-3300-01.stl",
             blob: &duplicate,
             measurements: &open_mesh(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1262,6 +1293,7 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
         .record(IngestRequest {
             library: library(),
             name: "Cable clip, LP-3300-01",
+            source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob_row(0xc3),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1300,6 +1332,7 @@ async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(poo
         .record(IngestRequest {
             library: library(),
             name: "Spacer, LP-2001-00",
+            source_path: "spacer-lp-2001-00.stl",
             blob: &blob_row(0xb1),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1370,6 +1403,7 @@ async fn upserting_over_the_other_storage_shape_moves_the_reference(pool: sqlx::
         .record(IngestRequest {
             library: library(),
             name: "Cable clip, LP-3300-01",
+            source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob_row(0xc0),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
@@ -1561,6 +1595,7 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
         .record(IngestRequest {
             library: library(),
             name: "Idler Bracket, LP-2210-01",
+            source_path: "idler-bracket-lp-2210-01.3mf",
             blob: &blob,
             measurements: &open_mesh(),
             kernel_version: "mesh 3mf-1+cpu-1",
@@ -1635,6 +1670,7 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
         .record(IngestRequest {
             library: library(),
             name: "Spindle housing, LP-4180-02",
+            source_path: "spindle-housing-lp-4180-02.3mf",
             blob: &blob,
             measurements: &watertight(),
             kernel_version: "mesh 3mf-1+cpu-1",
@@ -1734,6 +1770,7 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0xf0),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -1983,6 +2020,7 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &shared,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+glb-1+cpu-1",
@@ -1998,6 +2036,7 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .link_existing(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03 (spare)",
+            source_path: "bracket-lp-1042-03-spare.stl",
             blob: &shared,
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",
@@ -2013,6 +2052,7 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .record(IngestRequest {
             library: other,
             name: "Impeller, LP-5501-02",
+            source_path: "impeller-lp-5501-02.3mf",
             blob: &blob_row(0xd9),
             measurements: &watertight(),
             kernel_version: "mesh stl-1+cpu-1",

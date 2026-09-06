@@ -60,6 +60,7 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
         .record(IngestRequest {
             library: library(),
             name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
             blob: &StoredBlobRow {
                 hash: source_hash(),
                 size_bytes: 204_800,

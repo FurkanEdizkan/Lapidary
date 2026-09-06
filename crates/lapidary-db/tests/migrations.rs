@@ -7,18 +7,21 @@ use uuid::Uuid;
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
 #[sqlx::test(migrations = "./migrations")]
-async fn two_parts_with_one_name_in_one_library_are_refused(pool: PgPool) {
+async fn two_parts_at_one_source_path_in_one_library_are_refused(pool: PgPool) {
     let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
 
     let insert = |id: Uuid| {
         let pool = pool.clone();
         async move {
-            sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
-                .bind(id)
-                .bind(library)
-                .bind("bracket-lp-1042-03")
-                .execute(&pool)
-                .await
+            sqlx::query(
+                "INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(id)
+            .bind(library)
+            .bind("bracket-lp-1042-03")
+            .bind("brackets/bracket-lp-1042-03.stl")
+            .execute(&pool)
+            .await
         }
     };
 
@@ -27,11 +30,48 @@ async fn two_parts_with_one_name_in_one_library_are_refused(pool: PgPool) {
         .expect("the first part inserts");
     let second = insert(Uuid::now_v7()).await;
 
-    let err = second.expect_err("a second part with the same name must be refused");
+    let err = second.expect_err("a second part at the same path must be refused");
     assert!(
-        err.to_string().contains("part_name_unique_per_library"),
+        err.to_string()
+            .contains("part_source_path_unique_per_library"),
         "expected the named constraint to be what refused it, got: {err}"
     );
+}
+
+/// The regression migration `0007` exists to prevent, and the reason the constraint moved
+/// off the name.
+///
+/// Once the scan descends, two folders may each hold a `bracket.stl`. They are two parts
+/// with one name. Under `part_name_unique_per_library` the second insert raised a unique
+/// violation, `classify_write` mapped that violation to `Outcome::Skipped`, and the file
+/// was reported as already here and never indexed — silently, for as many files as the
+/// corpus had duplicate basenames.
+#[sqlx::test(migrations = "./migrations")]
+async fn two_parts_with_one_name_at_different_paths_are_allowed(pool: PgPool) {
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+
+    let insert = |path: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(library)
+            // One name. This is the whole point: the stem is a label, not an identity.
+            .bind("bracket-lp-1042-03")
+            .bind(path)
+            .execute(&pool)
+            .await
+        }
+    };
+
+    insert("brackets/bracket-lp-1042-03.stl")
+        .await
+        .expect("the first part inserts");
+    insert("plates/bracket-lp-1042-03.stl")
+        .await
+        .expect("the same name in a different folder is a second part, not a duplicate");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -238,5 +278,92 @@ async fn a_pending_job_that_claims_an_outcome_is_refused(pool: PgPool) {
     assert!(
         err.to_string().contains("job_done_has_outcome"),
         "expected job_done_has_outcome to refuse it, got: {err}"
+    );
+}
+
+/// Migration `0007` reconstructs `source_path` for rows that predate the column, and a
+/// backfill that quietly writes the wrong value is worse than one that fails: it becomes
+/// the identity every later scan compares against. Every pre-6a row is flat by
+/// construction — the scan that created it could not descend — so the original filename is
+/// exactly the stem plus the source format.
+#[sqlx::test(migrations = false)]
+async fn the_source_path_backfill_reconstructs_the_filename_a_flat_scan_used(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(6, &pool)
+        .await
+        .expect("migrations up to 0006 apply, so `part` has no source_path yet");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+
+    // Two parts: one with a source `file` row to reconstruct from, one without. The
+    // second is the case the COALESCE exists for — a live part with no revision is a
+    // state this schema permits, and NOT NULL would strand it.
+    let with_file = Uuid::now_v7();
+    let orphan = Uuid::now_v7();
+    for (id, name) in [
+        (with_file, "idler-pulley-lp-4820-00"),
+        (orphan, "flange-dn40-lp-3310-02"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(library)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .expect("part inserts");
+    }
+
+    let revision = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision)
+    .bind(with_file)
+    .execute(&pool)
+    .await
+    .expect("revision inserts");
+
+    let hash = "b".repeat(64);
+    sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, 4096, 2048)")
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("blob inserts");
+    // `obj`, not `stl`: a backfill that hardcoded an extension would pass on `stl` alone.
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes) \
+         VALUES ($1, $2, 'source', 'obj', $3, 4096)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(revision)
+    .bind(&hash)
+    .execute(&pool)
+    .await
+    .expect("file inserts");
+
+    migrator.run(&pool).await.expect("0007 applies");
+
+    let backfilled: Vec<(String, String)> =
+        sqlx::query_as("SELECT name, source_path FROM part WHERE library_id = $1 ORDER BY name")
+            .bind(library)
+            .fetch_all(&pool)
+            .await
+            .expect("reads the backfilled rows");
+
+    assert_eq!(
+        backfilled,
+        vec![
+            (
+                "flange-dn40-lp-3310-02".to_owned(),
+                "flange-dn40-lp-3310-02".to_owned()
+            ),
+            (
+                "idler-pulley-lp-4820-00".to_owned(),
+                "idler-pulley-lp-4820-00.obj".to_owned()
+            ),
+        ],
+        "the stem plus the recorded format where there is a source file, and the bare \
+         name where there is none — never NULL, which NOT NULL would have refused"
     );
 }

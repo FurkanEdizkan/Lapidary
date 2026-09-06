@@ -59,6 +59,7 @@ async fn seed_part(
         .record(IngestRequest {
             library,
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: Some(thumbnail_webp),
@@ -454,6 +455,7 @@ async fn seed_sized_part(
         .record(IngestRequest {
             library: library(),
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: Some(thumbnail_webp),

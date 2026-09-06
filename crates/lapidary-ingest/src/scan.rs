@@ -111,8 +111,13 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
 }
 
 impl WorkerHandler {
-    /// Walks `self.ingest_dir` non-recursively and enqueues one `ingest_file` job per
-    /// mesh candidate (case-insensitive) into `batch` — the batch this job itself is in.
+    /// Walks `self.ingest_dir` and enqueues one `ingest_file` job per mesh candidate
+    /// (case-insensitive) into `batch` — the batch this job itself is in.
+    ///
+    /// Recursive since slice 6a. It was one `read_dir`, and a nested corpus therefore
+    /// scanned as "0 files" with no error anywhere — the operator had to flatten their
+    /// library before Lapidary could see it. See
+    /// `docs/superpowers/specs/2026-09-06-phase-1-slice-6a-corpus-design.md` §1.
     ///
     /// Returns [`Outcome::Scanned`], which exists for this and nothing else: a scan job
     /// ingests nothing, skips nothing and renders nothing, and borrowing one of those
@@ -122,38 +127,11 @@ impl WorkerHandler {
         batch: BatchId,
         library: LibraryId,
     ) -> Result<Outcome, HandlerError> {
-        let entries = std::fs::read_dir(&self.ingest_dir)
-            .map_err(|e| ingest_dir_unreadable(&self.ingest_dir, &e))?;
-
-        let mut paths = Vec::new();
-        for entry in entries {
-            match entry {
-                Ok(entry) if is_mesh_candidate(&entry.path()) => {
-                    let path = entry.path();
-                    paths.push(
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.display().to_string()),
-                    );
-                }
-                // Not a candidate — a README beside a library's STLs is not an error, and
-                // it is counted nowhere: the batch total grows by the number of mesh
-                // candidates, not the number of directory entries.
-                Ok(_) => {}
-                // A directory entry the OS could not even name cannot be enqueued: there
-                // is no path to put in a payload. It is logged rather than counted, and
-                // it does not fail the scan — the other candidates are still real work.
-                // See `entry_read_failure` for why no live test constructs this
-                // condition.
-                Err(source) => {
-                    let failure = entry_read_failure(&self.ingest_dir, &source);
-                    tracing::warn!(file = %failure.file, reason = %failure.reason, "skipped a directory entry");
-                }
-            }
-        }
+        let mut paths = walk(&self.ingest_dir)?;
 
         // Deterministic order, so the job ids a scan issues are ordered the way a person
-        // reading the directory would expect. `unnest` preserves array order.
+        // reading the tree would expect. The whole relative path sorts, not the basename,
+        // so a folder's files stay together. `unnest` preserves array order.
         paths.sort();
 
         let jobs: Vec<JobPayload> = paths
@@ -191,6 +169,110 @@ fn is_mesh_candidate(path: &FsPath) -> bool {
 }
 
 pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
+
+/// How deep the walk will descend before it stops and says so.
+///
+/// Not a cycle guard — real directories cannot cycle, and symlinked ones are not followed
+/// (see `walk`), so a cycle is unreachable. This bounds pathological nesting and the one
+/// case that *can* cycle without a symlink: a bind mount pointing at one of its own
+/// ancestors. Sixteen is far past any real parts library and still finite.
+const MAX_DEPTH: usize = 16;
+
+/// Every mesh candidate under `root`, as paths relative to it with `/` separators.
+///
+/// A worklist rather than recursion: the depth cap makes recursion safe, but a flat loop
+/// is easier to read and cannot be made unsafe by someone raising the cap later.
+///
+/// Only `root` being unreadable fails the job. A single unreadable subdirectory deep in a
+/// corpus is logged and skipped, because failing four thousand files over one folder is
+/// not the trade an operator wants — and the failure they need to see, a missing mount, is
+/// exactly the case where `root` itself cannot be read.
+fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
+    // Read the root eagerly, so an unreadable mount is Permanent before anything else.
+    let mut queue = vec![(root.to_path_buf(), 0usize)];
+    std::fs::read_dir(root).map_err(|e| ingest_dir_unreadable(root, &e))?;
+
+    let mut found = Vec::new();
+    while let Some((dir, depth)) = queue.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(source) => {
+                tracing::warn!(dir = %dir.display(), reason = %source, "skipped an unreadable directory");
+                continue;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                // A directory entry the OS could not even name cannot be enqueued: there
+                // is no path to put in a payload. Logged rather than counted, and it does
+                // not fail the scan — the other candidates are still real work. See
+                // `entry_read_failure` for why no live test constructs this condition.
+                Err(source) => {
+                    let failure = entry_read_failure(&dir, &source);
+                    tracing::warn!(file = %failure.file, reason = %failure.reason, "skipped a directory entry");
+                    continue;
+                }
+            };
+
+            // A `.git`, `.Trash` or `.DS_Store` inside someone's parts folder is not part
+            // of their library, and walking a `.git` on a large corpus is pure waste.
+            // Skipped as silently as any other non-candidate.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            // `DirEntry::file_type` does not traverse a symlink, so this is false for a
+            // symlinked directory and following one is impossible — which is what makes
+            // cycles unreachable. A symlinked *file* still reaches `is_mesh_candidate`
+            // below, which uses `Path::is_file` and does follow: an operator who symlinks
+            // an STL into their library meant it.
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => {
+                    if depth + 1 > MAX_DEPTH {
+                        tracing::warn!(
+                            dir = %path.display(),
+                            max_depth = MAX_DEPTH,
+                            "stopped descending; the files above this depth were still scanned"
+                        );
+                        continue;
+                    }
+                    queue.push((path, depth + 1));
+                }
+                Ok(_) if is_mesh_candidate(&path) => {
+                    if let Some(relative) = relative_to(root, &path) {
+                        found.push(relative);
+                    }
+                }
+                // Not a candidate — a README beside a library's STLs is not an error, and
+                // it is counted nowhere: the batch total grows by the number of mesh
+                // candidates, not the number of directory entries.
+                Ok(_) => {}
+                Err(source) => {
+                    tracing::warn!(file = %path.display(), reason = %source, "could not type a directory entry");
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// `path` relative to `root`, `/`-separated, or `None` if it is somehow not below it.
+///
+/// `/` rather than the platform separator because this string becomes `part.source_path`,
+/// which is compared across scans and, from slice 6a's upload route, against a path a
+/// browser reported. One separator, or a library ingested on Windows and re-scanned on
+/// Linux is two libraries.
+fn relative_to(root: &FsPath, path: &FsPath) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let parts: Vec<String> = relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Some(parts.join("/"))
+}
 
 /// The ingest directory itself could not be walked — a missing mount, a permissions
 /// error, or (in a test) a nonexistent `TempDir` path. The whole job fails rather than

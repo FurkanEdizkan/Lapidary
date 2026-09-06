@@ -7,7 +7,7 @@
 //!
 //! 1. read bytes
 //! 2. BLAKE3 — hash first, always
-//! 3. `blobs.library_holds(library, name, hash)`? yes -> `Skipped`, no further work at
+//! 3. `blobs.library_holds(library, source_path, hash)`? yes -> `Skipped`, no further work at
 //!    all: not a parse, not a raster, not a query beyond this one
 //!    3a. `parts.auto_thumbnail(library)` — what this library wants produced;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
@@ -26,7 +26,7 @@
 //! library's part references would be silent data loss, which is why the two branches
 //! are separate rather than one call with a flag.
 //!
-//! # Why the short-circuit is scoped to the library, and to the name
+//! # Why the short-circuit is scoped to the library, and to the path
 //!
 //! It was not, and the consequence was live: `PgBlobs::exists` is keyed on the hash
 //! alone, so scanning six real STLs into a brand-new empty library answered
@@ -35,23 +35,31 @@
 //! addressing is not authorization), the counter said a file row had been linked when
 //! none had, and the user got an empty grid with no error anywhere to explain it.
 //!
-//! `blobs.library_holds(library, name, hash)` is the question this handler actually
-//! needs: *is this the same file, seen again?* The bytes are still reused — that is the
-//! whole point of content addressing, and step 5 reuses them without a second write —
-//! but a library that does not have this part gets one.
+//! `blobs.library_holds(library, source_path, hash)` is the question this handler
+//! actually needs: *is this the same file, seen again?* The bytes are still reused — that
+//! is the whole point of content addressing, and step 5 reuses them without a second
+//! write — but a library that does not have this part gets one.
 //!
-//! Keying on the part name as well as the hash settles the other half, which the earlier
-//! rounds recorded as an open question: two differently-named files with identical bytes
-//! are two parts sharing one blob (`ref_count` 2), not one part and one silent omission.
-//! A directory of files is a set of files, and a scan that quietly indexes only the first
-//! of two is the same shape of lie as the empty second library. Only "same library, same
-//! name, same bytes" is a re-scan.
+//! Keying on the source path as well as the hash settles the other half, which the
+//! earlier rounds recorded as an open question: two files with identical bytes at two
+//! paths are two parts sharing one blob (`ref_count` 2), not one part and one silent
+//! omission. A directory of files is a set of files, and a scan that quietly indexes only
+//! the first of two is the same shape of lie as the empty second library. Only "same
+//! library, same path, same bytes" is a re-scan.
 //!
-//! Known limitation, scheduled rather than guessed at: nothing here records the *path* a
-//! part came from, so renaming a file and re-scanning yields a new part beside the old
-//! one rather than a rename. Closing that needs a source-path column and the slice that
-//! owns incremental directory sync; a duplicate the user can see is the right failure
-//! mode to have in the meantime, against a silent one.
+//! **Slice 6a moved this key from the name to the path, and had to.** Until the scan
+//! learned to descend, the file stem was unique within a library and stood in for the
+//! path perfectly well. It stopped being unique the moment `brackets/bracket.stl` and
+//! `plates/bracket.stl` could both exist: a name-keyed lookup calls the second a re-scan
+//! of the first and skips it, and a name-keyed unique constraint makes the write that
+//! would have caught the mistake report `Skipped` too. Recursion and this key are one
+//! change — see `docs/superpowers/specs/2026-09-06-phase-1-slice-6a-corpus-design.md` §2.
+//!
+//! Known limitation, scheduled rather than guessed at: the path is now *recorded*, but
+//! nothing compares it across scans, so renaming a file still yields a new part beside
+//! the old one rather than a rename. The column is the prerequisite; the comparison
+//! belongs to the slice that owns incremental directory sync. A duplicate the user can
+//! see is the right failure mode to have in the meantime, against a silent one.
 //!
 //! # Error classification
 //!
@@ -114,9 +122,19 @@ impl WorkerHandler {
     pub(crate) async fn ingest_one(
         &self,
         library: LibraryId,
-        file_name: &str,
+        source_path: &str,
     ) -> Result<Outcome, HandlerError> {
-        let path = self.ingest_dir.join(file_name);
+        // The payload is a path relative to `ingest_dir`, and since slice 6a it may have
+        // more than one segment. `Path::join` resolves nothing and refuses nothing, so
+        // `../../etc/passwd` would escape the mount and `/etc/passwd` would replace it
+        // outright. `DATA.md` §5.4 already states this rule for archive entries; it
+        // belongs on every path that reaches a filesystem from a payload.
+        //
+        // The scan produces no such path, so today this guards a door nobody has opened.
+        // Upload opens it, and a guard added with the door is a guard nobody remembers to
+        // add.
+        reject_escaping_path(source_path)?;
+        let path = self.ingest_dir.join(source_path);
         let kernel = MeshKernel;
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
@@ -130,19 +148,19 @@ impl WorkerHandler {
         // Transient rather than Permanent -- unlike every step below it, this one has
         // nothing to do with the bytes themselves.
         let bytes = std::fs::read(&path).map_err(|e| HandlerError::Transient {
-            message: format!("Could not read {file_name}: {e}"),
+            message: format!("Could not read {source_path}: {e}"),
         })?;
 
         // 2. BLAKE3 -- hash first, always. Everything below branches on this.
         let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-        let name = part_name(file_name);
+        let name = part_name(source_path);
 
         // 3. The same file, seen again -- same library, same name, same bytes --
         // short-circuits parse, raster and every write entirely. Scoped to the library on
         // purpose: a hash this library has never seen is a part it does not have,
         // whatever some other library holds. See `scan.rs`'s module doc.
         if blobs
-            .library_holds(library, name, &hash)
+            .library_holds(library, source_path, &hash)
             .await
             .map_err(classify_db)?
         {
@@ -160,7 +178,7 @@ impl WorkerHandler {
             .map_err(classify_db)?
             .ok_or_else(|| HandlerError::Permanent {
                 message: format!(
-                    "There is no library {library} to ingest {file_name} into. The library \
+                    "There is no library {library} to ingest {source_path} into. The library \
                      may have been removed after this job was queued; re-scan the library \
                      you meant."
                 ),
@@ -172,7 +190,7 @@ impl WorkerHandler {
         produce.push(DerivativeKind::TessellationL0);
         let params = KernelParams {
             linear_deflection_mm: None,
-            format: source_format(file_name),
+            format: source_format(source_path),
             produce,
         };
         let version = kernel.version(&params);
@@ -240,6 +258,7 @@ impl WorkerHandler {
                 .link_existing(IngestRequest {
                     library,
                     name,
+                    source_path,
                     blob: &blob,
                     measurements: &output.measurements,
                     thumbnail_webp: output.thumbnail_webp.as_deref(),
@@ -283,6 +302,7 @@ impl WorkerHandler {
             .record(IngestRequest {
                 library,
                 name,
+                source_path,
                 blob: &blob,
                 measurements: &output.measurements,
                 thumbnail_webp: output.thumbnail_webp.as_deref(),
@@ -334,6 +354,41 @@ pub(crate) fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
     }
 }
 
+/// Refuse a relative path that would leave `ingest_dir`.
+///
+/// Absolute paths and `..` segments both escape a `Path::join`, which resolves nothing and
+/// refuses nothing: `ingest_dir.join("/etc/passwd")` *is* `/etc/passwd`, and
+/// `ingest_dir.join("../../etc/passwd")` walks out of the mount. A Windows-style prefix
+/// (`C:\`, `\\server\share`) is caught by the same `is_absolute` check on Windows and is
+/// harmless as a literal filename elsewhere.
+///
+/// `Permanent`, because a payload holds the same bytes on every attempt: three retries of
+/// a traversal produce three identical refusals and delay an answer already available.
+///
+/// Empty is refused too. It joins to `ingest_dir` itself, which reads as a directory and
+/// would fail later with a confusing I/O error instead of the real reason.
+fn reject_escaping_path(source_path: &str) -> Result<(), HandlerError> {
+    let path = FsPath::new(source_path);
+    let escapes = source_path.is_empty()
+        || path.is_absolute()
+        || path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        });
+    if escapes {
+        return Err(HandlerError::Permanent {
+            message: format!(
+                "Refused the file path {source_path:?}: it points outside the ingest \
+                 directory. Paths are relative to the ingest mount and may not be \
+                 absolute or contain `..`."
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
 /// so the file's stem (its name without the extension) is the whole story; falls back to
 /// the full file name on the pathological case where a candidate file (already proven by
@@ -378,13 +433,18 @@ pub(crate) fn classify_db(error: DbError) -> HandlerError {
     }
 }
 
-/// A unique violation on `part_name_unique_per_library` is not a failure: another worker
-/// won the race for this file after a lease expiry, and the part exists. Mapping it to
-/// `Skipped` is what makes at-least-once delivery effectively-once -- see the design doc,
-/// section 3.5.
+/// A unique violation on `part_source_path_unique_per_library` is not a failure: another
+/// worker won the race for this file after a lease expiry, and the part exists. Mapping it
+/// to `Skipped` is what makes at-least-once delivery effectively-once -- see the design
+/// doc, section 3.5.
+///
+/// Was `part_name_unique_per_library` until slice 6a, and the rename is the whole point
+/// rather than a tidy-up: with the scan descending, a name collides whenever two folders
+/// hold the same filename, and mapping *that* to `Skipped` would report a file as already
+/// here and never index it. Only a genuine re-scan of the same path may be skipped.
 fn classify_write(error: DbError) -> Result<Outcome, HandlerError> {
     if let DbError::Query(sqlx::Error::Database(db)) = &error
-        && db.constraint() == Some("part_name_unique_per_library")
+        && db.constraint() == Some("part_source_path_unique_per_library")
     {
         return Ok(Outcome::Skipped);
     }

@@ -95,6 +95,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
         .record(IngestRequest {
             library: library(),
             name,
+            source_path: name,
             blob: &StoredBlobRow {
                 hash: stored.hash,
                 size_bytes: stored.size_bytes,

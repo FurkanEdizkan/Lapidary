@@ -136,6 +136,13 @@ fn rung_params(grid: Option<u32>) -> serde_json::Value {
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
+    /// Where the file sat, relative to the library's ingest root, `/`-separated.
+    ///
+    /// This — not `name` — is what identifies a part inside a library, and
+    /// `part_source_path_unique_per_library` (migration `0007`) is what enforces it. Once
+    /// the scan descends, two folders may each hold a `bracket.stl`; they are two parts
+    /// with one name, and only the path tells them apart.
+    pub source_path: &'a str,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     /// The rendered preview, or `None` when nothing rendered one — a library with
@@ -243,8 +250,16 @@ impl PgBlobs {
     /// does not have — short-circuiting on the global answer meant scanning a directory
     /// into a second library ingested nothing and reported success.
     ///
-    /// Keyed on the name as well as the hash: two differently-named files with identical
-    /// bytes are two parts, and only "same library, same name, same bytes" is a re-scan.
+    /// Keyed on the source path as well as the hash: two files with identical bytes at
+    /// two paths are two parts, and only "same library, same path, same bytes" is a
+    /// re-scan.
+    ///
+    /// Was keyed on `part.name` until slice 6a. The name stopped being unique the moment
+    /// the scan learned to descend — `brackets/bracket.stl` and `plates/bracket.stl` share
+    /// a stem — so a name-keyed lookup would call the second file a re-scan of the first
+    /// and skip it. The key here must agree with
+    /// `part_source_path_unique_per_library`; `0003_jobs.sql` records what happens when
+    /// the two disagree, and migration `0007` moved both together.
     ///
     /// Deliberately does *not* filter `part.deleted_at`. A part the user deleted stays
     /// deleted — re-scanning the directory it came from must not resurrect it, and
@@ -252,18 +267,19 @@ impl PgBlobs {
     pub async fn library_holds(
         &self,
         library: LibraryId,
-        part_name: &str,
+        source_path: &str,
         hash: &BlobHash,
     ) -> Result<bool, DbError> {
         let found: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = $1 AND p.name = $2 AND f.blake3 = $3 AND f.role = 'source' \
+             WHERE p.library_id = $1 AND p.source_path = $2 AND f.blake3 = $3 \
+             AND f.role = 'source' \
              LIMIT 1",
         )
         .bind(library.as_uuid())
-        .bind(part_name)
+        .bind(source_path)
         .bind(hash.to_hex())
         .fetch_optional(&self.0)
         .await?;
@@ -446,10 +462,11 @@ async fn insert_part_chain(
             value: m.triangle_count,
         })?;
 
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
         .bind(part.as_uuid())
         .bind(req.library.as_uuid())
         .bind(req.name)
+        .bind(req.source_path)
         .execute(&mut **tx)
         .await?;
 

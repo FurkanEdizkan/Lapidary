@@ -73,6 +73,7 @@ async fn seed_part(
         .record(IngestRequest {
             library,
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: thumbnail,
