@@ -1,6 +1,8 @@
 import type {
   BatchId,
   BatchStatus,
+  FolderId,
+  FolderNode,
   LibraryId,
   LibrarySettings,
   LibraryStorage,
@@ -35,9 +37,22 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
  * `data:` URLs, so a page of cards costs this single request and no per-card round
  * trip. Keyset paging (`after`, `limit`) is left for the slice that virtualizes the
  * grid; asking for a page and rendering it is the whole of slice 1.
+ *
+ * `folderId` filters the page to one category **and everything under it** — the route's
+ * filter is subtree-inclusive, so selecting `Terrain` shows what is in `Terrain/Rocks`
+ * too. Omitted entirely when nothing is selected rather than sent empty: an absent
+ * parameter is what the route reads as "the whole library", and `?folderId=` is a
+ * different request nothing promises to answer the same way.
  */
-export async function fetchParts(library: LibraryId): Promise<PartsPage> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts`)
+export async function fetchParts(
+  library: LibraryId,
+  folderId?: FolderId | null,
+): Promise<PartsPage> {
+  const filter =
+    typeof folderId === 'string' && folderId.length > 0
+      ? `?folderId=${encodeURIComponent(folderId)}`
+      : ''
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${filter}`)
   if (!response.ok) {
     throw new Error(`parts returned ${response.status}`)
   }
@@ -188,6 +203,71 @@ export async function renderPartThumbnail(part: PartId): Promise<ScanAccepted> {
   return accepted(
     await fetch(`/api/parts/${encodeURIComponent(part)}/thumbnail`, { method: 'POST' }),
   )
+}
+
+/**
+ * `GET /api/libraries/{id}/folders` — the category tree, whole, in one request.
+ *
+ * Not a level at a time. At corpus scale the tree is hundreds of rows, and a lazy tree
+ * costs a round trip per expand on the one interaction that has to feel instant (design
+ * §10). `FolderNode.partCount` rides along on every node, which is what lets the delete
+ * confirmation name the number of models it affects without a second request per folder.
+ */
+export async function fetchFolders(library: LibraryId): Promise<FolderNode[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/folders`)
+  if (!response.ok) {
+    throw new Error(`folders returned ${response.status}`)
+  }
+  return (await response.json()) as FolderNode[]
+}
+
+/**
+ * `PATCH /api/parts/{id}` — file a model under a category, or under none.
+ *
+ * `409` is an answer rather than a failure, which is why this returns an outcome instead
+ * of throwing on it: a model with the same name is already in the target, and slice 6a
+ * decided two models called `bracket` are the truth. The client shows the warning once and
+ * re-sends the same target with `acknowledgeDuplicate: true`.
+ *
+ * Both fields are always sent. The route defaults `acknowledgeDuplicate`, but a request
+ * that omitted it would be indistinguishable on the wire from one that meant `false`, and
+ * the first request in a pair genuinely means `false`.
+ *
+ * `folderId: null` is a real target — the library root, no category — and is not the same
+ * as leaving the field out.
+ */
+export async function movePart(
+  part: PartId,
+  folderId: FolderId | null,
+  acknowledgeDuplicate: boolean,
+): Promise<'moved' | 'duplicate'> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folderId, acknowledgeDuplicate }),
+  })
+  if (response.status === 409) {
+    return 'duplicate'
+  }
+  if (!response.ok) {
+    throw new Error(`move returned ${response.status}`)
+  }
+  return 'moved'
+}
+
+/**
+ * `DELETE /api/folders/{id}` — soft-delete a category and everything under it.
+ *
+ * Soft, and cascading: the category, its subcategories and the models in any of them are
+ * marked deleted. Nothing leaves the disk — `DATA.md` §1.6's purge is a separate,
+ * explicit action, and evicting the derivative cache is a third thing again. The
+ * confirmation this route sits behind is where that distinction is spelled out for a user.
+ */
+export async function deleteFolder(folder: FolderId): Promise<void> {
+  const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error(`folder delete returned ${response.status}`)
+  }
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */

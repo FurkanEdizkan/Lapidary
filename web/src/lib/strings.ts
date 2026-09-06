@@ -309,6 +309,103 @@ export const strings = {
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
   },
+  /**
+   * The category tree beside the grid, moving models between categories, and the folder a
+   * model is stored in.
+   *
+   * A category is a location and never an identity (`FolderId`'s own doc says so), and
+   * every string here has to keep that true. Moving a model changes where it is filed and
+   * where its directory sits on disk. Deleting a category hides what is inside it and
+   * leaves every byte alone. Neither is `DATA.md` §1.6's purge, and neither is evicting
+   * the derivative cache — three different things this product must never let read as
+   * each other, which is why the delete copy below says what stays as plainly as it says
+   * what goes.
+   */
+  folders: {
+    title: 'Categories',
+    /**
+     * The unfiltered library. Selecting it drops `folderId` from the URL rather than
+     * setting it to anything: the parts route reads an absent parameter as "the whole
+     * library", and there is no id that means "no category". Selecting a category shows
+     * what is in it and in everything under it — the server's filter is
+     * subtree-inclusive, because a tree that hides nested models when you click a parent
+     * is a tree that lies about what it contains.
+     */
+    root: 'All models',
+    loading: 'Loading categories…',
+    failed:
+      'Could not load the categories in this library. Check that the api service is running, then reload.',
+    empty: 'No categories yet — they appear when you scan a folder.',
+    moveTo: 'Move to…',
+    /** The accessible name, since the visible label is identical on every card. */
+    moveToFor: (name: string) => `Move ${name} to another category`,
+    moveTitle: (name: string) => `Move ${name}`,
+    moveHere: 'Move here',
+    /** Same, for the row: "Move here" is the visible label on every row in the chooser. */
+    moveInto: (category: string) => `Move here — ${category}`,
+    moveFailed:
+      'Could not move this model. Check that the api service is running, then try again.',
+    /**
+     * A second refusal after the duplicate was acknowledged. The route answers `409` for a
+     * name collision, for a model still migrating and for a target in another library, so
+     * a refusal that survives the acknowledgement is one of the other two and re-opening
+     * the same dialog would loop with no way out.
+     */
+    moveRefused:
+      'The server would not file this model there. Nothing changed — try another category, or try again once the storage migration has finished.',
+    duplicateTitle: (name: string) => `“${name}” is already in this folder`,
+    duplicateBody: 'Two models can share a name — they are told apart by where they came from.',
+    duplicateConfirm: 'Move anyway',
+    deleteAction: 'Delete',
+    deleteFor: (name: string) => `Delete the category ${name}`,
+    deleteTitle: (name: string) => `Delete ${name}?`,
+    /**
+     * What a delete actually does, counted. The requirement is that a destructive
+     * confirmation names what it affects, and `FolderNode.partCount` is subtree-inclusive
+     * because the delete cascades through subcategories.
+     *
+     * Deliberately NOT the plan's "The N models inside will be moved to deleted": that
+     * reads at a glance as files being relocated on disk, which is the exact confusion
+     * this product forbids, and it is ungrammatical at one. Nothing moves and nothing is
+     * erased — the rows are marked deleted and the grid stops showing them.
+     *
+     * It also drops the plan's "and you can undo this". A soft delete is recoverable in
+     * the database, but this slice ships no control that recovers one, and copy that
+     * promises an action the app does not have is the same class of lie as a mesh figure
+     * presented as analytic.
+     */
+    deleteBody: (parts: number) =>
+      parts === 0
+        ? 'No models are inside it. Nothing is removed from your storage folder and no file moves on disk.'
+        : parts === 1
+          ? '1 model is inside it, counting every subcategory. Deleting marks that model deleted and hides it from the grid — nothing is removed from your storage folder and no file moves on disk.'
+          : `${parts.toLocaleString('en-US')} models are inside it, counting every subcategory. Deleting marks them deleted and hides them from the grid — nothing is removed from your storage folder and no file moves on disk.`,
+    deleteConfirm: 'Delete category',
+    deleteFailed:
+      'Could not delete this category. Check that the api service is running, then try again.',
+    cancel: 'Cancel',
+    showInFolder: 'Show in folder',
+    showInFolderFor: (name: string) => `Show the folder ${name} is stored in`,
+    /**
+     * The path, and why it is a path rather than a button. No browser opens a host file
+     * manager — `file://` links are blocked everywhere — so this shows where to look
+     * instead of pretending to a capability the web build does not have. A native reveal
+     * belongs to the Tauri shell.
+     */
+    directoryHint:
+      'A browser cannot open a file manager, so this is the path rather than a button. Copy it and open it where your files are.',
+    /**
+     * `directory` is null: this model predates the folder layout and still lives in the
+     * shared store. Wording taken from the move route's own refusal, so the two places a
+     * user meets this state say the same thing.
+     */
+    directoryPending:
+      'This model has not finished moving into the new storage layout yet, so it has no folder of its own to show. It gets one when the storage migration finishes.',
+    /** The same state, where it stops a move rather than a path from being shown. */
+    notMigrated:
+      'This model has not finished moving into the new storage layout yet. Wait for the storage migration to finish, then try again.',
+    copyPath: 'Copy path',
+  },
   emptyLibrary: {
     title: 'Nothing scanned yet',
     body:
