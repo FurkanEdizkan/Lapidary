@@ -107,7 +107,15 @@ beside the thing it describes is a manifest that goes stale.
 
 **Which one wins on divergence:** the database is authoritative while the app runs;
 `metadata.json` is authoritative for re-adoption into an empty database. Reconciling a store
-a user has edited by hand is Phase 4's watcher and a non-goal here (§10).
+a user has edited by hand is Phase 4's watcher and a non-goal here (§12).
+
+**`metadata.json` is machine-owned, and the user may delete it.** They have been promised a
+folder they can edit freely, so this will happen. It is not defended, it is degraded around:
+a model directory with no readable `metadata.json` is an orphan, and re-adoption **skips it
+and reports it** rather than failing the walk. One hand-edited file must not cost the other
+1,613 models their re-import. The file carries a `schema` version field for the same reason —
+a store written by an older build has to be readable by a newer one, and that is cheaper to
+add now than to infer later.
 
 ## 2. Naming a model's directory
 
@@ -214,8 +222,9 @@ create index folder_library_parent on folder (library_id, parent_id);
 alter table part add column folder_id uuid references folder(id);   -- null = library root
 create index part_folder_id on part (folder_id);
 
--- Where the bytes actually are, relative to the storage root. Nullable only until the
--- backfill in 5.1 runs within this same migration.
+-- Where the bytes actually are, relative to the storage root. Stays nullable: null means
+-- "still at the old content-addressed path", which is a live state for as long as the
+-- migrate_storage job of 5.2 takes to drain. A later migration makes it NOT NULL.
 alter table file add column storage_path text;
 ```
 
@@ -277,13 +286,29 @@ parents — the case a naive path-keyed backfill collapses into one row:
 A level-by-level loop rather than one recursive CTE, because a CTE cannot insert rows and
 then use the ids it just generated as the next level's parents.
 
-**This migration also moves files**, which the validated SQL above does not cover and which
-makes it unlike every migration before it. Existing blobs sit at `blobs/ab/cd/<hash>` and
-have to land in per-model directories with a `metadata.json` written beside them. That is a
-data migration, not a schema one: it runs as a job with progress, it is resumable, and it
-**copies before it deletes** so an interrupted run never loses a file. `file.storage_path`
-goes `NOT NULL` only once it completes. An operator who stops it halfway has a store that is
-half-migrated and entirely readable.
+### 5.2 Moving the files is a job, not part of the migration
+
+Existing blobs sit at `blobs/ab/cd/<hash>` and have to end up in per-model directories with a
+`metadata.json` beside them. **That cannot go in `0008`.** `sqlx` runs a migration in one
+transaction at startup and it either finishes or rolls back; copying 23 GB is not that, and
+it needs a worker the migration cannot assume is running.
+
+So it splits, and the split is the design:
+
+- **`0008` is schema plus the SQL tree backfill above.** Fast, transactional, and correct as
+  validated.
+- **A new `migrate_storage` job kind** does the files. Enqueued once, reported through the
+  existing batch and SSE machinery the scan already uses, and resumable because the job queue
+  is. It **copies before it deletes**, so an interrupted run has the file at both paths and
+  never at neither.
+
+**`file.storage_path` therefore stays nullable, and that nullability is an invariant every
+reader of `file` inherits until the job drains: a null `storage_path` means the bytes are
+still at the old content-addressed path.** Reads must handle both for as long as the
+migration takes — which on the owner's corpus is hours, not seconds. It goes `NOT NULL` in a
+later migration, once the job has drained everywhere, and not before.
+
+An operator who stops it halfway has a store that is half-migrated and entirely readable.
 
 ## 6. The scan creates categories
 
@@ -376,8 +401,14 @@ All three go through `src/lib/strings.ts`, which `web/src/no-bare-strings.test.t
     6a's scan leaves it, run it, assert the tree of §5.1 *and* that every source is now at
     its `storage_path` with a `metadata.json` beside it. Then **re-scan and assert nothing
     changed** — that half catches a backfill that works once and then misbehaves.
-12. **An interrupted backfill loses no file** — kill it midway, assert every source is
-    readable at either its old or its new path, and that resuming completes.
+12. **An interrupted `migrate_storage` loses no file** — kill it midway, assert every source
+    is readable at either its old or its new path, and that resuming completes.
+13. **A part with a null `storage_path` still downloads** — the half-migrated state of §5.2,
+    which is live for hours on a real corpus and is therefore a supported state, not an edge
+    case. Assert `variant=original` returns byte-identical bytes from the old CAS path.
+14. **A model directory whose `metadata.json` is missing or corrupt is skipped, not fatal** —
+    delete one and mangle another in a fixture of six, and assert the other four re-adopt and
+    both failures are reported by path.
 
 ## 9. Move history
 
@@ -406,11 +437,30 @@ are equal. A `folder_move` table is the obvious addition, deferred until asked f
 
 ## 10. API surface
 
-All on `lapidary-api`. Nothing here invokes the kernel. It does now *write* source files,
-which the open path previously never did — but `lapidary-api` still never constructs a
-`SourceStore`, because moving a directory is not reading a source file's contents. **If the
-rename helper ends up needing `SourceStore`, that is the signal this belongs in
-`lapidary-ingest` instead**, and `cargo xtask check-deploy` will say so before CI does.
+All on `lapidary-api`. Nothing here invokes the kernel.
+
+**The move route needs a capability that does not exist yet, and this is the decision.**
+`lapidary-storage` reaches source paths through exactly two handles: `SourceStore`, which
+demands a `WorkerRole`, and `SourceReader`, which is read-only and which
+`check_open_path_boundary` permits in `download.rs` and nowhere else. Neither can rename. So
+there are two ways to build a move and hedging between them would be discovered
+mid-implementation, when it costs a route moving across crates:
+
+1. **A third handle, `SourceRelocator`, that can `rename` and nothing else** — no read, no
+   write, no delete — allowed in the move route and nowhere else, enforced by the same
+   `check-deploy` grep that already names the other two.
+2. **A `move_part` job**, the way slice 5 turned the scan into one, because the browser can
+   only reach `lapidary-api` and a job is the only thing an api-side route can hand a worker.
+
+**Taking (1).** The boundary's stated purpose is that *the open path never parses a source
+file to draw something* — the grid, the viewer, the detail card. A directory rename parses
+nothing, reads no bytes and invokes no kernel, so routing an O(1) syscall through the job
+queue to satisfy the rule would be honouring its letter against its reason, and it would put
+a poll cycle between a user dragging a card and the card arriving. The capability stays
+narrow and the narrowness stays machine-checked, which is what the rule actually protects.
+
+If `SourceRelocator` ever grows a method that reads or writes contents, that is the signal it
+has become `SourceStore` and the route belongs in `lapidary-ingest` after all.
 
 ```
 GET    /api/libraries/{id}/folders        → the tree, one query
