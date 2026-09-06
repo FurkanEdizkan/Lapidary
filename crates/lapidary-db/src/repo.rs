@@ -1312,10 +1312,10 @@ impl PartRepository for PgParts {
             i64,
         )> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id, 1 AS depth FROM folder WHERE id = $5 \
+             SELECT id FROM folder WHERE id = $5 \
              UNION ALL \
-             SELECT f.id, down.depth + 1 FROM folder f \
-             JOIN down ON f.parent_id = down.id WHERE down.depth < $6) \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
                     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, \
@@ -1330,7 +1330,7 @@ impl PartRepository for PgParts {
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
-               AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down)) \
+               AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
              ORDER BY p.id DESC LIMIT $3",
         )
         .bind(library.as_uuid())
@@ -1341,7 +1341,6 @@ impl PartRepository for PgParts {
         // the writer reads nothing while looking entirely correct.
         .bind(DerivativeKind::Thumbnail.as_str())
         .bind(folder.map(|f| f.as_uuid()))
-        .bind(crate::folders::MAX_DEPTH)
         .fetch_all(&self.0)
         .await?;
 

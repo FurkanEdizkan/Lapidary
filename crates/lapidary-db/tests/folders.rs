@@ -258,3 +258,103 @@ async fn two_folders_swapping_parents_at_once_produce_exactly_one_cycle_refusal(
         "exactly one parent-child edge must exist after the race, got terrain_parent={terrain_parent:?} bases_parent={bases_parent:?}"
     );
 }
+
+/// A chain one level deeper than the walk cap that used to bound every query in
+/// `folders.rs`. Seventeen categories, each parented on the last, returned root first.
+///
+/// Built through `get_or_create` rather than raw SQL because nothing refuses it: no route
+/// bounds how deep a category can be nested, which is the whole reason a tree this shape
+/// is reachable at all.
+async fn deep_chain(pool: &sqlx::PgPool, levels: usize) -> Vec<FolderId> {
+    let f = PgFolders(pool.clone());
+    let mut chain: Vec<FolderId> = Vec::with_capacity(levels);
+    for level in 0..levels {
+        let name = format!("Level {level:02}");
+        let parent = chain.last().copied();
+        chain.push(
+            f.get_or_create(library(), parent, &name, &name)
+                .await
+                .expect("creates one level of the chain"),
+        );
+    }
+    chain
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_chain_deeper_than_sixteen_still_refuses_the_cycle_that_would_close_it(
+    pool: sqlx::PgPool,
+) {
+    // The boundary the old `depth < 16` bound left open. Walking up from the seventeenth
+    // folder, the sixteen rows a capped walk sees are the folder itself and fifteen
+    // ancestors — the root, the one being moved, is the one it never reaches. So the
+    // ancestry check answered "no cycle" and the UPDATE landed, and the tree closed into a
+    // real loop that the foreign key and `folder_library_parent` both accept.
+    let chain = deep_chain(&pool, 17).await;
+    let (root, leaf) = (chain[0], chain[16]);
+    let f = PgFolders(pool.clone());
+
+    assert!(
+        f.would_cycle(root, leaf).await.expect("checks"),
+        "the root is an ancestor of the seventeenth folder, however far up that is"
+    );
+    assert!(
+        matches!(
+            f.reparent(root, Some(leaf)).await,
+            Err(DbError::WouldCreateCycle { .. })
+        ),
+        "and the write refuses it too — the in-lock check is the one that decides"
+    );
+
+    // The legal direction still works at this depth, so the refusal above is a refusal and
+    // not a walk that gave up.
+    assert!(
+        !f.would_cycle(leaf, root).await.expect("checks"),
+        "moving the leaf under the root it already descends from is not a cycle"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn slug_path_at_seventeen_levels_still_starts_at_the_library_root(pool: sqlx::PgPool) {
+    // A truncated path is worse than an error: it names a directory that is a sibling of
+    // the real root, so the next model ingested under this category is written outside the
+    // tree its category lives in, silently.
+    let chain = deep_chain(&pool, 17).await;
+    let path = PgFolders(pool)
+        .slug_path(chain[16])
+        .await
+        .expect("slug path");
+    assert_eq!(
+        path.split('/').count(),
+        17,
+        "every level, root first — got {path}"
+    );
+    assert!(
+        path.starts_with("Level 00/Level 01/"),
+        "rooted — got {path}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn deleting_a_deep_category_hides_the_models_below_the_old_walk_cap(pool: sqlx::PgPool) {
+    // The count this returns is the number the confirmation dialog shows. A part left
+    // undeleted under a category that has vanished is that dialog understating what it
+    // just did, on the one screen where the promise is that nothing is lost.
+    let chain = deep_chain(&pool, 17).await;
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path, folder_id) \
+         VALUES (gen_random_uuid(), $1, 'Cliff face, LP-7712-04', \
+                 'level-00/.../cliff-face-lp-7712-04.stl', $2)",
+    )
+    .bind(library().as_uuid())
+    .bind(chain[16].as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a model filed under the deepest category");
+
+    let (folders, parts) = PgFolders(pool)
+        .soft_delete_subtree(chain[0])
+        .await
+        .expect("deletes");
+    assert_eq!(folders, 17, "every category under the one deleted");
+    assert_eq!(parts, 1, "and the model filed under the deepest of them");
+}

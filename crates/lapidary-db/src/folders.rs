@@ -28,9 +28,32 @@ pub struct FolderRow {
     pub part_count: i64,
 }
 
-/// Matches `scan.rs`'s `MAX_DEPTH`. Real trees do not cycle, but a bound keeps a corrupt
-/// `parent_id` from looping the walk forever.
-pub(crate) const MAX_DEPTH: i32 = 16;
+// Every recursive walk below is unbounded and terminates on `CYCLE`, and none of them
+// carries a depth cap any more. That is a correction, not a relaxation.
+//
+// The cap read `depth < 16` and was documented as the thing that kept a corrupt `parent_id`
+// from looping forever. It was in fact what *created* one. `reparent`'s ancestry walk stops
+// after sixteen rows, so on a chain of seventeen the seventeenth ancestor -- the folder
+// being moved -- is never visited, `bool_or(id = $2)` is false, and the UPDATE closes a real
+// loop that the foreign key and `folder_library_parent` both accept. Nothing bounds depth in
+// `create`, so seventeen `POST`s and one `PATCH` is the whole exploit. The same cap made
+// `slug_path` truncate to a rootless path past sixteen, and left `soft_delete_subtree`
+// hiding a category while the models under it stayed visible -- a confirmation dialog
+// understating what it just did.
+//
+// Three fixes were on the table. Bounding depth at creation was rejected because it does not
+// hold on its own: two nine-deep chains reparented one under the other reach eighteen with
+// `create` never consulted, so the cap would have to be enforced in `reparent` too, over the
+// height of the moved subtree -- two more queries to keep an invariant whose only job is to
+// make an approximation safe. A database-level guard (a trigger, or a materialised path with
+// a CHECK) is a second representation of the tree to keep in step with this one.
+//
+// So the walks guard against the thing they were always meant to guard against.
+// PostgreSQL's `CYCLE` clause stops the recursion when it reaches a row already on the
+// current path -- a corrupt `parent_id` terminates because it repeats, not because a counter
+// ran out -- and the row that closes the loop comes back flagged, which is why every outer
+// query filters `NOT is_cycle`. Correct answers are no longer truncated and a cycle can no
+// longer hide past the boundary, because there is no boundary.
 
 pub struct PgFolders(pub PgPool);
 
@@ -124,21 +147,21 @@ impl PgFolders {
     pub async fn tree(&self, library: LibraryId) -> Result<Vec<FolderRow>, DbError> {
         let rows: Vec<(Uuid, Option<Uuid>, String, String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id AS root, id, 1 AS depth FROM folder \
+             SELECT id AS root, id FROM folder \
              WHERE library_id = $1 AND deleted_at IS NULL \
              UNION ALL \
-             SELECT d.root, f.id, d.depth + 1 FROM folder f \
-             JOIN down d ON f.parent_id = d.id WHERE d.depth < $2), \
+             SELECT d.root, f.id FROM folder f \
+             JOIN down d ON f.parent_id = d.id) CYCLE id SET is_cycle USING seen, \
              counts AS ( \
              SELECT d.root, count(p.id) AS n FROM down d \
              JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL \
+             WHERE NOT d.is_cycle \
              GROUP BY d.root) \
              SELECT f.id, f.parent_id, f.name, f.slug, coalesce(c.n, 0) \
              FROM folder f LEFT JOIN counts c ON c.root = f.id \
              WHERE f.library_id = $1 AND f.deleted_at IS NULL ORDER BY f.name",
         )
         .bind(library.as_uuid())
-        .bind(MAX_DEPTH)
         .fetch_all(&self.0)
         .await?;
         Ok(rows
@@ -154,7 +177,7 @@ impl PgFolders {
     }
 
     /// Would moving `folder` under `new_parent` put it inside itself? Walks up from the
-    /// proposed parent looking for the folder being moved.
+    /// proposed parent, as far as the library root, looking for the folder being moved.
     pub async fn would_cycle(
         &self,
         folder: FolderId,
@@ -162,32 +185,35 @@ impl PgFolders {
     ) -> Result<bool, DbError> {
         Ok(sqlx::query_scalar(
             "WITH RECURSIVE up AS ( \
-             SELECT id, parent_id, 1 AS depth FROM folder WHERE id = $1 \
+             SELECT id, parent_id FROM folder WHERE id = $1 \
              UNION ALL \
-             SELECT f.id, f.parent_id, up.depth + 1 FROM folder f \
-             JOIN up ON f.id = up.parent_id WHERE up.depth < $3) \
-             SELECT coalesce(bool_or(id = $2), false) FROM up",
+             SELECT f.id, f.parent_id FROM folder f \
+             JOIN up ON f.id = up.parent_id) CYCLE id SET is_cycle USING seen \
+             SELECT coalesce(bool_or(id = $2), false) FROM up WHERE NOT is_cycle",
         )
         .bind(new_parent.as_uuid())
         .bind(folder.as_uuid())
-        .bind(MAX_DEPTH)
         .fetch_one(&self.0)
         .await?)
     }
 
     /// The `/`-joined slugs from the library root down to this folder — the directory it
     /// lives at inside `libraries/<lib>/`.
+    ///
+    /// `depth` is still carried, but only to order the join. It stopped being a bound when
+    /// the walk became cycle-terminated, and a path truncated by that bound was the worse
+    /// half of the bug: it named a directory that is a *sibling* of the real root, so the
+    /// next model ingested under a deep category was written outside its own library's tree.
     pub async fn slug_path(&self, folder: FolderId) -> Result<String, DbError> {
         Ok(sqlx::query_scalar(
             "WITH RECURSIVE up AS ( \
              SELECT id, parent_id, slug, 1 AS depth FROM folder WHERE id = $1 \
              UNION ALL \
              SELECT f.id, f.parent_id, f.slug, up.depth + 1 FROM folder f \
-             JOIN up ON f.id = up.parent_id WHERE up.depth < $2) \
-             SELECT string_agg(slug, '/' ORDER BY depth DESC) FROM up",
+             JOIN up ON f.id = up.parent_id) CYCLE id SET is_cycle USING seen \
+             SELECT string_agg(slug, '/' ORDER BY depth DESC) FROM up WHERE NOT is_cycle",
         )
         .bind(folder.as_uuid())
-        .bind(MAX_DEPTH)
         .fetch_one(&self.0)
         .await?)
     }
@@ -269,15 +295,14 @@ impl PgFolders {
             // taken — a stale read here is exactly the race this method exists to close.
             let would_cycle: bool = sqlx::query_scalar(
                 "WITH RECURSIVE up AS ( \
-                 SELECT id, parent_id, 1 AS depth FROM folder WHERE id = $1 \
+                 SELECT id, parent_id FROM folder WHERE id = $1 \
                  UNION ALL \
-                 SELECT f.id, f.parent_id, up.depth + 1 FROM folder f \
-                 JOIN up ON f.id = up.parent_id WHERE up.depth < $3) \
-                 SELECT coalesce(bool_or(id = $2), false) FROM up",
+                 SELECT f.id, f.parent_id FROM folder f \
+                 JOIN up ON f.id = up.parent_id) CYCLE id SET is_cycle USING seen \
+                 SELECT coalesce(bool_or(id = $2), false) FROM up WHERE NOT is_cycle",
             )
             .bind(new_parent.as_uuid())
             .bind(folder.as_uuid())
-            .bind(MAX_DEPTH)
             .fetch_one(&mut *tx)
             .await?;
             if would_cycle {
@@ -304,30 +329,29 @@ impl PgFolders {
 
         let folders = sqlx::query(
             "WITH RECURSIVE down AS ( \
-             SELECT id, 1 AS depth FROM folder WHERE id = $1 \
+             SELECT id FROM folder WHERE id = $1 \
              UNION ALL \
-             SELECT f.id, down.depth + 1 FROM folder f \
-             JOIN down ON f.parent_id = down.id WHERE down.depth < $2) \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              UPDATE folder SET deleted_at = now() \
-             WHERE id IN (SELECT id FROM down) AND deleted_at IS NULL",
+             WHERE id IN (SELECT id FROM down WHERE NOT is_cycle) AND deleted_at IS NULL",
         )
         .bind(folder.as_uuid())
-        .bind(MAX_DEPTH)
         .execute(&mut *tx)
         .await?
         .rows_affected();
 
         let parts = sqlx::query(
             "WITH RECURSIVE down AS ( \
-             SELECT id, 1 AS depth FROM folder WHERE id = $1 \
+             SELECT id FROM folder WHERE id = $1 \
              UNION ALL \
-             SELECT f.id, down.depth + 1 FROM folder f \
-             JOIN down ON f.parent_id = down.id WHERE down.depth < $2) \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              UPDATE part SET deleted_at = now() \
-             WHERE folder_id IN (SELECT id FROM down) AND deleted_at IS NULL",
+             WHERE folder_id IN (SELECT id FROM down WHERE NOT is_cycle) \
+             AND deleted_at IS NULL",
         )
         .bind(folder.as_uuid())
-        .bind(MAX_DEPTH)
         .execute(&mut *tx)
         .await?
         .rows_affected();
