@@ -18,13 +18,38 @@
 //! kernel, which this crate cannot link (`xtask/src/layers.rs`), so a converted download
 //! is a worker-side derivative and a different route entirely.
 //!
-//! The whole file is buffered before a byte is written, because `SourceReader::get`
-//! returns a `Vec<u8>`. Fine at Phase 1 sizes and wrong for a 2 GB STEP; streaming is its
-//! own slice, and the re-hash below costs nothing extra while the bytes are already
-//! resident (spec §2.5).
+//! # The body streams, and what that cost
+//!
+//! It used to buffer the whole file before writing a byte, because `SourceReader::get`
+//! returns a `Vec<u8>` and `read_blob` decoded into it from a second full buffer. That was
+//! not merely wasteful at Phase 1 sizes: the largest STL in the owner's corpus is 380 MB,
+//! which decoded to 380 MB *plus* the ~185 MB compressed copy resident at the same time,
+//! inside an `api` container `deploy/compose.yaml` caps at 512 MB. One download of one
+//! real file was an OOM, and two concurrent ones would have been an OOM at any cap.
+//!
+//! So the body is now a stream, and one guarantee changed shape — deliberately, and it is
+//! written here rather than discovered later. The route used to hash the whole file and
+//! compare it to `blob.blake3` **before** sending anything, so a mismatch became a 500 and
+//! the user received nothing. Streaming cannot do that: verifying before the first byte
+//! *is* buffering. The bytes are still hashed, incrementally, as they go out — but the
+//! answer arrives after the last chunk, so a mismatch can only abort the transfer.
+//!
+//! What the user gets on a mismatch is therefore a **short** response, not a wrong file:
+//! `Content-Length` is sent from `blob.size_bytes`, so a client that reads fewer bytes than
+//! promised has been told, and the strong `ETag` still carries the digest they can check
+//! what they received against. The guarantee is no longer "we never begin sending bytes we
+//! have not verified"; it is "we never finish a download whose bytes did not verify, and
+//! we always say how many bytes a complete one has". That is a real weakening of a
+//! promise `CLAUDE.md` cares about, bought for the ability to serve a file larger than the
+//! container's memory at all.
+//!
+//! The hashing itself is still free: BLAKE3 at ~1 GB/s against a transfer is not the
+//! bottleneck, and it remains the only thing standing between a user and a zstd frame
+//! served as their file during slice 7's recompression window (spec §2.7).
 
 use crate::AppState;
 use axum::Json;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -33,6 +58,7 @@ use lapidary_core::{BlobHash, RevisionId};
 use lapidary_db::{DbError, PgBlobs, PgParts};
 use lapidary_storage::{SourceReader, StorageError};
 use serde::Deserialize;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// The only `variant` this slice serves. Named in every message that rejects another
 /// one, so a caller is told what to send rather than what not to.
@@ -68,7 +94,7 @@ pub async fn original(
     Path(revision): Path<RevisionId>,
     query: Result<Query<DownloadQuery>, QueryRejection>,
 ) -> Response {
-    let AppState { db, blob_root } = state;
+    let AppState { db, blob_root, .. } = state;
     let source = match PgParts(db.clone()).source_for_download(revision).await {
         Ok(Some(source)) => source,
         Ok(None) => return no_such_revision(),
@@ -111,21 +137,15 @@ pub async fn original(
     // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
     // `PathBuf` and a decode flag, so holding one in `AppState` would buy nothing and put
     // source-byte access in a struct every other route shares.
-    let bytes = match SourceReader::open(&blob_root).get(&source.hash, Some(zstd_level)) {
-        Ok(bytes) => bytes,
+    //
+    // Opening is where a missing or unreadable blob is still caught synchronously, so that
+    // case is a clean 500 with a message rather than an empty 200 — only the *content*
+    // moved behind the stream, not the existence check.
+    let reader = match SourceReader::open(&blob_root).stream(&source.hash, Some(zstd_level)) {
+        Ok(reader) => reader,
         Err(err) => return unreadable(&source.hash, &err),
     };
-
-    // Spec §2.5. BLAKE3 at ~1 GB/s against single-digit-megabyte files is free next to
-    // the transfer that follows, and it turns the product claim — byte-identical,
-    // verifiable against the stored digest — into something checked rather than asserted.
-    // It is also the only thing standing between a user and a zstd frame served as their
-    // file during slice 7's recompression window (spec §2.7): decode with the wrong level
-    // and the digest cannot match.
-    let served = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-    if served != source.hash {
-        return hash_mismatch(&source.hash, &served);
-    }
+    let body = stream_verified(reader, source.hash);
 
     // Awaited and discarded rather than spawned, exactly as `blob.rs` does: a task racing
     // the response is a timestamp nothing can assert. This is the *only* warm input a
@@ -154,10 +174,79 @@ pub async fn original(
             // check what they got against what they were promised.
             (header::ETAG, format!("\"{}\"", source.hash.to_hex())),
             (header::CONTENT_DISPOSITION, content_disposition(&filename)),
+            // From `blob.size_bytes`, the uncompressed length. Without it the response is
+            // chunked and a client cannot tell a complete download from one this route
+            // abandoned mid-body on a hash mismatch — which is the whole reason the
+            // mismatch is survivable as a failure rather than as silence.
+            (header::CONTENT_LENGTH, source.size_bytes.to_string()),
         ],
-        bytes,
+        body,
     )
         .into_response()
+}
+
+/// The blob's bytes as a response body, hashed on the way out.
+///
+/// A blocking reader on a blocking thread, feeding a bounded channel the response drains:
+/// `zstd`'s decoder is `Read`, and an async decompressor would be a new dependency bought
+/// to avoid an ordinary thread. The bound is what makes this stream rather than buffer —
+/// a slow client stops the reader instead of letting it race ahead into memory.
+///
+/// The final hash is compared to the digest the blob is filed under, and a mismatch closes
+/// the body early. See this module's header for what that does and does not promise; the
+/// short read is deliberate, and it is why `Content-Length` above is not optional.
+fn stream_verified(mut reader: Box<dyn std::io::Read + Send>, expected: BlobHash) -> Body {
+    // Four 64 KiB chunks in flight. Small enough that a stalled client costs a quarter of
+    // a megabyte rather than a file, large enough that the channel is not the bottleneck.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+
+    tokio::task::spawn_blocking(move || {
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                    // A closed receiver means the client went away. Stop reading rather
+                    // than decompressing the rest of a 380 MB file into a channel nobody
+                    // is draining.
+                    if tx
+                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(source) => {
+                    let _ = tx.blocking_send(Err(source));
+                    return;
+                }
+            }
+        }
+
+        let served = BlobHash::from_bytes(*hasher.finalize().as_bytes());
+        if served != expected {
+            // The bytes have already gone out, so all this can do is refuse to end the
+            // body cleanly and leave the client short of `Content-Length`. The operator's
+            // half of the old 500 survives as a log line, which is where it was always the
+            // more useful of the two: nothing is wrong with the row here, and the remedy is
+            // the blob rather than the record.
+            let expected_hex = expected.to_hex();
+            let served_hex = served.to_hex();
+            tracing::error!(
+                expected = %expected_hex,
+                served = %served_hex,
+                "stored bytes do not hash to the digest they are filed under; download truncated"
+            );
+            let message = format!(
+                "The bytes stored for blob {expected_hex} hash to {served_hex}, so they are not the file that was ingested. The download was stopped rather than completed. Restore that blob from a backup, or re-ingest the source file to replace it."
+            );
+            let _ = tx.blocking_send(Err(std::io::Error::other(message)));
+        }
+    });
+
+    Body::from_stream(ReceiverStream::new(rx))
 }
 
 /// Both halves, per RFC 6266 and `DATA.md` §5.1. The ASCII `filename=` comes first
@@ -293,10 +382,12 @@ fn unknown_variant(got: &str) -> Response {
         .into_response()
 }
 
-/// Spec §2.5.1. Same status and same refusal as [`hash_mismatch`], and a different
-/// message on purpose: this one says an operator has a `blob` row whose compression
-/// nobody recorded, which is something they can go and look at. Collapsing the two would
-/// leave them holding "the bytes were wrong" about bytes that were never the problem.
+/// Spec §2.5.1, and the one refusal that still happens *before* any bytes go out, which
+/// is why it can still be a 500 with a body: it is answered from the row, not from the
+/// blob. Its message says an operator has a `blob` row whose compression nobody recorded,
+/// which is something they can go and look at. The hash mismatch — the other thing that
+/// can be wrong with a source blob — moved into `stream_verified` when the body began
+/// streaming, because by the time it is known the status line has been sent.
 fn unrecorded_level(hash: &BlobHash) -> Response {
     let hex = hash.to_hex();
     tracing::error!(hash = %hex, "a source blob has no recorded compression level");
@@ -309,30 +400,6 @@ fn unrecorded_level(hash: &BlobHash) -> Response {
                  served. Ingest records one for every source blob it writes, and leaves the \
                  row alone for bytes it already held — check this row against the file on \
                  disk before serving it."
-            )
-        })),
-    )
-        .into_response()
-}
-
-/// The bytes on disk are not the bytes we filed under that digest. Distinct from
-/// [`unrecorded_level`] in wording as well as in cause: nothing is wrong with the row
-/// here, and the remedy is the blob, not the record.
-fn hash_mismatch(expected: &BlobHash, served: &BlobHash) -> Response {
-    let expected = expected.to_hex();
-    let served = served.to_hex();
-    tracing::error!(
-        expected = %expected,
-        served = %served,
-        "stored bytes do not hash to the digest they are filed under"
-    );
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "message": format!(
-                "The bytes stored for blob {expected} hash to {served}, so they are not \
-                 the file that was ingested. Nothing was served. Restore that blob from a \
-                 backup, or re-ingest the source file to replace it."
             )
         })),
     )

@@ -227,6 +227,141 @@ async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail
     assert_eq!(decoded.width(), 512, "the thumbnail is a real 512px render");
 }
 
+/// A `JobRow` shaped exactly as `lapidary-api`'s upload commit writes one: the kind is
+/// the column, and the payload names bytes already in the store rather than a file on the
+/// ingest mount.
+fn blob_job(hash: BlobHash, source_path: &str) -> JobRow {
+    let payload = JobPayload::IngestBlob {
+        blake3: hash,
+        source_path: source_path.to_owned(),
+    };
+    JobRow {
+        id: JobId::new(),
+        batch_id: BatchId::new(),
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    }
+}
+
+/// The api's half of an upload, without the api: verify and store the bytes, then record
+/// the `blob` row with a zero count. Both halves, because the worker arm under test reads
+/// the level off that row and would otherwise decode a zstd frame as an STL.
+async fn upload_into(pool: &PgPool, blob_root: &Path, bytes: &[u8]) -> BlobHash {
+    let staging = tempfile::tempdir().expect("temp dir");
+    let staged = staging.path().join("upload.part");
+    std::fs::write(&staged, bytes).expect("stages the upload");
+    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+    let stored = lapidary_storage::SourceWriter::open(blob_root)
+        .put_file(&staged, &hash, lapidary_storage::Compression::Zstd)
+        .expect("stores");
+    lapidary_db::PgBlobs(pool.clone())
+        .record_unreferenced(&StoredBlobRow {
+            hash: stored.hash,
+            size_bytes: stored.size_bytes,
+            stored_bytes: stored.stored_bytes,
+            zstd_level: stored.zstd_level,
+        })
+        .await
+        .expect("records the blob");
+    hash
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPool) {
+    // The other end of the upload route. The api wrote these bytes and this job is all
+    // that connects them to a part -- and `ingest_dir` deliberately points at nothing,
+    // because an upload must not need the mount at all.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+
+    let outcome = handler
+        .handle(&blob_job(hash, "brackets/steel/LP-1042-03.stl"))
+        .await
+        .expect("ingests");
+    assert_eq!(outcome, Outcome::Ingested);
+
+    // The path the browser reported is the part's identity, and the stem is what a
+    // person reads -- the same two facts a scanned file lands with, which is what makes
+    // an uploaded folder and a scanned folder the same thing here.
+    let (name, source_path, tri): (String, String, i32) = sqlx::query_as(
+        "SELECT p.name, p.source_path, r.triangle_count \
+         FROM part p JOIN revision r ON r.part_id = p.id \
+         WHERE p.library_id = $1",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("the part landed");
+    assert_eq!(name, "LP-1042-03");
+    assert_eq!(source_path, "brackets/steel/LP-1042-03.stl");
+    assert!(tri > 0, "the kernel meshed the bytes it read back out");
+
+    // The blob's row was the api's, and the ingest linked to it rather than writing a
+    // second one -- `link_existing`, reached through the existing `exists` question.
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE blake3 = $1")
+        .bind(hash.to_hex())
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    assert_eq!(blobs, 1);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool: PgPool) {
+    // Nothing wrote the bytes or the row, so the level needed to decode them does not
+    // exist. Permanent: the row is written in the same request that writes the bytes, so
+    // its absence is not a race that resolves, and three retries would say the same thing
+    // three times.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
+
+    let err = handler
+        .handle(&blob_job(hash, "brackets/LP-1042-03.stl"))
+        .await
+        .expect_err("there is nothing to ingest");
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "expected a permanent failure, got: {err:?}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
+    // The path never reaches a filesystem on this arm -- it becomes `part.source_path`,
+    // and from there a Content-Disposition filename. The api refuses it first; this is
+    // the guard on the door rather than on the caller, so a job enqueued any other way
+    // meets it too.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+
+    let err = handler
+        .handle(&blob_job(hash, "../../etc/passwd"))
+        .await
+        .expect_err("an escaping path is refused");
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "expected a permanent failure, got: {err:?}"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -360,6 +495,10 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
         .record(IngestRequest {
             library: seeded(),
             name: "notes",
+            // Must be the path the job below carries, not the part name: since slice 6a
+            // the short-circuit is keyed on `source_path`, so seeding a different path
+            // here would make this test assert a re-scan that never happened.
+            source_path: "notes.stl",
             blob: &blob,
             measurements: &measurements,
             thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
@@ -1270,5 +1409,269 @@ async fn an_unreadable_ingest_directory_fails_the_scan_job_and_names_the_mount(p
             );
         }
         other => panic!("a bad mount must be reported at once, not retried, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Slice 6a: the walk descends. See
+// docs/superpowers/specs/2026-09-06-phase-1-slice-6a-corpus-design.md §1.
+// ---------------------------------------------------------------------------------------
+
+/// Stage a file at a relative path, creating the folders above it.
+fn stage(root: &Path, relative: &str, bytes: &[u8]) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("stages the folders above the file");
+    }
+    std::fs::write(&path, bytes).expect("stages the file");
+}
+
+/// Run a scan job over `ingest_dir` and return the relative paths it enqueued.
+async fn scanned_paths(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> Vec<String> {
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let (batch, _) = jobs
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues the scan");
+    let handler = handler_over(pool, ingest_dir, blob_root);
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("walks the directory");
+    ingest_paths_in(pool, batch).await
+}
+
+/// The slice's reason to exist. Before this, a nested corpus scanned as "0 files" with no
+/// error anywhere, and the operator had to flatten their library to use Lapidary at all.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_descends_and_reports_paths_relative_to_the_mount(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    stage(
+        ingest_dir.path(),
+        &format!("mounting/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        &format!("drives/planetary/{CARRIER}"),
+        CARRIER_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        "drives/README.md",
+        b"Planetary drive assemblies for the LP-3480 series. Not a part.\n",
+    );
+
+    assert_eq!(
+        scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
+        vec![
+            BRACKET.to_owned(),
+            format!("drives/planetary/{CARRIER}"),
+            format!("mounting/{BRACKET}"),
+        ],
+        "every candidate at every depth, as a `/`-separated path relative to the mount, \
+         sorted by the whole path so a folder's files stay together — and the README is \
+         still counted nowhere"
+    );
+}
+
+/// A symlinked directory is the only way a real filesystem can present a cycle, and
+/// `DirEntry::file_type` not traversing it is what makes the cycle unreachable. A test,
+/// because that guarantee is a property of the API rather than of anything visible in the
+/// walk's own code.
+#[cfg(unix)]
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_does_not_follow_a_symlinked_directory(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    stage(
+        ingest_dir.path(),
+        &format!("mounting/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+    // The loop: a folder inside `mounting` pointing back at the mount root. Following it
+    // would recurse until the depth cap, reporting the same file many times over.
+    std::os::unix::fs::symlink(ingest_dir.path(), ingest_dir.path().join("mounting/loop"))
+        .expect("stages a symlink back to the root");
+
+    assert_eq!(
+        scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
+        vec![format!("mounting/{BRACKET}")],
+        "the file once, by the path it really has — the symlink is not descended, so the \
+         cycle it would have created never exists"
+    );
+}
+
+/// A `.git` inside someone's parts folder is not part of their library, and walking one on
+/// a large corpus is pure waste.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_skips_dot_entries(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    // A dot-directory holding a real candidate, and a dot-file that is one. Both are
+    // skipped: an STL inside `.git/objects` is a coincidence, not a part.
+    stage(
+        ingest_dir.path(),
+        &format!(".git/objects/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        ".hidden-draft.stl",
+        b"An export the operator did not mean to publish.\n",
+    );
+
+    assert_eq!(
+        scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
+        vec![BRACKET.to_owned()],
+        "dot-directories and dot-files are both skipped, at any depth"
+    );
+}
+
+/// The cap bounds pathological nesting; it must not turn a deep tree into a failed scan,
+/// because the files above the cap are still real work.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_stops_at_the_depth_cap_and_keeps_what_it_found_above_it(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    // Shallow enough to be found, at depth 3.
+    stage(
+        ingest_dir.path(),
+        &format!("a/b/c/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+    // Past MAX_DEPTH = 16.
+    let deep = (1..=20)
+        .map(|n| format!("d{n}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    stage(
+        ingest_dir.path(),
+        &format!("{deep}/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+
+    assert_eq!(
+        scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
+        vec![format!("a/b/c/{BRACKET}")],
+        "the shallow file is found and the scan succeeds; only the descent past the cap \
+         stops, and it is logged rather than failing the job"
+    );
+}
+
+/// The regression the source-path column exists to prevent, end to end through the real
+/// handler rather than through the constraint alone.
+///
+/// Two folders, one filename, identical bytes. Before slice 6a these were one part name,
+/// the second insert raised a unique violation, `classify_write` mapped it to `Skipped`,
+/// and the file was reported as already here and never indexed.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn one_filename_in_two_folders_is_two_parts_sharing_one_blob(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+
+    stage(
+        ingest_dir.path(),
+        &format!("mounting/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        &format!("spares/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
+
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler
+            .handle(&job_for(&format!("mounting/{BRACKET}")))
+            .await
+            .expect("the first ingests"),
+        Outcome::Ingested
+    );
+    assert_eq!(
+        handler
+            .handle(&job_for(&format!("spares/{BRACKET}")))
+            .await
+            .expect("the second must ingest too"),
+        Outcome::Ingested,
+        "the same filename in a different folder is a second part, not a re-scan — this \
+         returning Skipped is the silent data loss the slice exists to close"
+    );
+
+    let (parts, blobs, refs): (i64, i64, i32) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM part WHERE library_id = $1), \
+                (SELECT count(DISTINCT f.blake3) FROM file f \
+                   JOIN revision r ON r.id = f.revision_id \
+                   JOIN part p ON p.id = r.part_id \
+                  WHERE p.library_id = $1 AND f.role = 'source'), \
+                (SELECT max(ref_count) FROM blob)",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+
+    assert_eq!(parts, 2, "two parts");
+    assert_eq!(blobs, 1, "one set of source bytes between them");
+    assert!(
+        refs >= 2,
+        "and the blob is referenced by both, not written twice (ref_count {refs})"
+    );
+
+    let names: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, source_path FROM part WHERE library_id = $1 ORDER BY source_path",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("reads the parts");
+    assert_eq!(
+        names,
+        vec![
+            (
+                "bracket-lp-1042-03".to_owned(),
+                format!("mounting/{BRACKET}")
+            ),
+            ("bracket-lp-1042-03".to_owned(), format!("spares/{BRACKET}")),
+        ],
+        "one name, two paths — the name is a label and the path is the identity"
+    );
+}
+
+/// `Path::join` resolves nothing and refuses nothing, so a payload path is a filesystem
+/// reach out of the mount unless something stops it. Nothing produces such a payload
+/// today; slice 6a's upload route will, and the guard belongs on the door.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    for escape in [
+        "../bracket-lp-1042-03.stl",
+        "a/../../b.stl",
+        "/etc/passwd",
+        "",
+    ] {
+        match handler.handle(&job_for(escape)).await {
+            Err(HandlerError::Permanent { message }) => {
+                assert!(
+                    message.contains("outside the ingest directory"),
+                    "the message must say what was wrong with {escape:?}: {message}"
+                );
+            }
+            other => panic!(
+                "{escape:?} must be refused permanently — a payload holds the same bytes \
+                 on every attempt — got {other:?}"
+            ),
+        }
     }
 }

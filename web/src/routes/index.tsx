@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
   downloadUrl,
@@ -15,6 +15,8 @@ import {
   startScan,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
+import type { PickedFile, UploadProgress } from '../lib/upload'
 import type {
   BatchId,
   BatchStatus,
@@ -188,6 +190,38 @@ export function Index({ batch }: { batch?: string }) {
     mutationFn: (part: PartId) => renderPartThumbnail(part),
     onSuccess: (accepted) => watch(accepted, 'render'),
   })
+  /**
+   * The upload's own progress, which the batch poll cannot carry: the batch does not
+   * exist until the transfer is finished and committed, so everything before that — the
+   * hashing, the probe, the bytes on the wire — has no server-side resource to read. Once
+   * the commit lands, `watch` hands it to the same poll a scan uses and this goes quiet.
+   */
+  const [uploading, setUploading] = useState<UploadProgress | undefined>(undefined)
+  const [uploadNote, setUploadNote] = useState<string | null>(null)
+  const upload = useMutation({
+    mutationFn: (picked: PickedFile[]) =>
+      uploadFiles(DEFAULT_LIBRARY_ID, picked, setUploading),
+    onSuccess: ({ accepted, alreadyHere, bytesSkipped }) => {
+      setUploading(undefined)
+      // `queued: 0` means the probe found every file already indexed here, which is a
+      // success with no batch to watch — and reads as one rather than as silence.
+      const saved = strings.upload.saved(alreadyHere, bytesSkipped)
+      setUploadNote(
+        accepted.queued === 0 ? strings.upload.nothingToDo : saved === '' ? null : saved,
+      )
+      watch(accepted, 'scan')
+    },
+    onError: () => {
+      setUploading(undefined)
+      setUploadNote(strings.upload.failed)
+    },
+  })
+  const startUpload = (picked: PickedFile[]) => {
+    setUploadNote(picked.length === 0 ? strings.upload.empty : null)
+    if (picked.length > 0) {
+      upload.mutate(picked)
+    }
+  }
 
   // The grid is a separate query with its own cache, and nothing else would tell it the
   // library changed underneath it while the worker commits parts. Keyed on jobs settled
@@ -244,6 +278,10 @@ export function Index({ batch }: { batch?: string }) {
         sweepBusy={sweep.isPending}
         note={note}
       />
+      <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
+      {uploadNote === null ? null : (
+        <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
+      )}
       {activeBatch === undefined ? null : (
         <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
       )}
@@ -275,6 +313,117 @@ export function Index({ batch }: { batch?: string }) {
       </p>
     </section>
   )
+}
+
+/**
+ * Where a folder goes in.
+ *
+ * Both gestures, because they are not interchangeable. `<input webkitdirectory>` opens
+ * the picker and reports `webkitRelativePath` for free; a *drag* of a folder gives
+ * neither — `DataTransfer.files` holds the folder as a zero-byte entry with none of its
+ * contents — so the drop path goes through `webkitGetAsEntry` and a recursive walk. See
+ * `filesFromDrop`, which is also where the `readEntries` 100-entry limit is handled.
+ *
+ * `dragover` must call `preventDefault` on every event or the browser navigates to the
+ * dropped file instead of handing it here, which is the default and looks exactly like a
+ * broken page. The counter, rather than a boolean: `dragenter`/`dragleave` fire for every
+ * child element the pointer crosses, so a boolean flickers off the moment the drag passes
+ * over the label inside the target.
+ */
+function DropTarget({
+  onFiles,
+  busy,
+  progress,
+}: {
+  onFiles: (picked: PickedFile[]) => void
+  busy: boolean
+  progress: UploadProgress | undefined
+}) {
+  const [depth, setDepth] = useState(0)
+  const input = useRef<HTMLInputElement>(null)
+  const over = depth > 0
+
+  return (
+    <div
+      onDragEnter={(event) => {
+        event.preventDefault()
+        setDepth((d) => d + 1)
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={() => setDepth((d) => Math.max(0, d - 1))}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDepth(0)
+        void filesFromDrop(event.dataTransfer.items).then(onFiles)
+      }}
+      className={`ease-mechanical mb-6 rounded border border-dashed p-6 text-center text-sm duration-[var(--duration-fast)] ${
+        over
+          ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
+          : 'border-[var(--color-border)]'
+      }`}
+    >
+      {busy && progress !== undefined ? (
+        <span className="text-[var(--color-muted)]">{progressLine(progress)}</span>
+      ) : (
+        <span className="text-[var(--color-muted)]">
+          {over ? (
+            strings.upload.dropNow
+          ) : (
+            <>
+              {strings.upload.dropHere}{' '}
+              <button
+                type="button"
+                onClick={() => input.current?.click()}
+                className="underline underline-offset-2 hover:text-[var(--color-fg)]"
+              >
+                {strings.upload.choose}
+              </button>
+            </>
+          )}
+        </span>
+      )}
+      {/*
+        `webkitdirectory` is not in React's typed attribute set — it is a non-standard
+        attribute every browser that matters implements — so it is spelled lowercase as a
+        DOM attribute rather than camelCased. Hidden rather than styled: the button above
+        is the control, and a bare file input cannot be made to look like anything.
+      */}
+      <input
+        ref={input}
+        type="file"
+        multiple
+        {...{ webkitdirectory: '' }}
+        hidden
+        onChange={(event) => {
+          if (event.target.files !== null) {
+            onFiles(filesFromInput(event.target.files))
+          }
+          // So dropping the same folder twice in a row fires a second change event.
+          event.target.value = ''
+        }}
+      />
+    </div>
+  )
+}
+
+/** One line for whichever phase the upload is in. Each phase has a different number
+ *  worth showing, which is why this is a switch and not one string with holes in it. */
+function progressLine(progress: UploadProgress): string {
+  switch (progress.phase) {
+    case 'hashing':
+      return strings.upload.hashing(progress.filesDone, progress.filesTotal)
+    case 'probing':
+      return strings.upload.probing
+    case 'transferring':
+      return strings.upload.transferring(
+        progress.bytesSent,
+        progress.bytesToSend,
+        progress.filesDone,
+        progress.filesTotal,
+      )
+    case 'committing':
+      return strings.upload.committing
+  }
 }
 
 /**

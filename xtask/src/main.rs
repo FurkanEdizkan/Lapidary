@@ -532,10 +532,14 @@ fn check_deploy() -> Result<()> {
              worker container that silently never mounts /scan, and a kernel-linked \
              service must set it to `worker` specifically, since any other value produces \
              that same container by a different route. The open path also never touches a \
-             source file — lapidary-api must never name SourceStore, and may name \
-             SourceReader only in crates/lapidary-api/src/download.rs — that path exactly, \
-             not any file named download.rs — the one route that hands a user the exact \
-             bytes they asked for."
+             source file — lapidary-api must never name SourceStore, and may name each \
+             narrow source-bytes handle only in the single route it exists for \
+             (SOURCE_HANDLE_EXEMPTIONS in xtask/src/deploy.rs) — that path exactly, not \
+             any file that happens to share its name. Those routes hand a user the exact \
+             bytes they asked for, and store the exact bytes a user handed us; every \
+             other file reads metadata and derivatives only. The check greps source text, \
+             so a doc comment that spells one of these type names trips it too — name the \
+             handle by role there, not by type."
         );
         bail!("deploy check failed")
     }

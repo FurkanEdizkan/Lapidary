@@ -73,6 +73,7 @@ async fn seed_part(
         .record(IngestRequest {
             library,
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: thumbnail,
@@ -101,6 +102,7 @@ async fn send(
         AppState {
             db: pool,
             blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         role,
     );

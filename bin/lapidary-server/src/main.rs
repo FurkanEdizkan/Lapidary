@@ -32,6 +32,10 @@ struct Config {
     // `deploy/compose.yaml` (Task 12) supplies the real `/ingest` mount.
     ingest_dir: Option<PathBuf>,
     blob_root: Option<PathBuf>,
+    // Where the api assembles a partial upload. The mirror of `ingest_dir`: only the
+    // `api` role reads it, and only when someone uploads, so it is `Option` for the
+    // same reason and checked in the `Role::Api` arm below rather than here.
+    upload_dir: Option<PathBuf>,
     // Only the worker role reads these four, and each is `Option` for the same reason as
     // the two above. Their defaults live in `lapidary_jobs::WorkerConfig`'s `Default` impl
     // rather than here, so one place decides them: a second set of numbers in this file
@@ -175,6 +179,10 @@ fn worker_router(
         AppState {
             db: db.clone(),
             blob_root: blob_root.clone(),
+            // The worker mounts no upload volume and serves no upload route: `router`
+            // puts all three behind `Role::Api`. An unreachable path is the honest value
+            // for a field this role never reads.
+            upload_dir: PathBuf::new(),
         },
         Role::Worker,
     );
@@ -396,7 +404,25 @@ async fn main() -> Result<()> {
                 .blob_root
                 .clone()
                 .context("Could not start as api: LAPIDARY_BLOB_ROOT is not set.")?;
-            (router(AppState { db, blob_root }, Role::Api), None)
+            // Required rather than defaulted for the same reason `blob_root` is: a
+            // default would put half-transferred files somewhere nobody chose, and the
+            // one wrong answer here — the blob root itself — would put incomplete bytes
+            // inside a store whose whole contract is that everything in it is complete.
+            let upload_dir = config
+                .upload_dir
+                .clone()
+                .context("Could not start as api: LAPIDARY_UPLOAD_DIR is not set.")?;
+            (
+                router(
+                    AppState {
+                        db,
+                        blob_root,
+                        upload_dir,
+                    },
+                    Role::Api,
+                ),
+                None,
+            )
         }
         Role::Worker => {
             // worker_router is built first on purpose: on a build without ingest support
@@ -560,8 +586,10 @@ mod tests {
         let app = router(
             AppState {
                 db: pool,
-                // This test asks only which routes mount; it never reaches the store.
+                // This test asks only which routes mount; it never reaches the store or
+                // stages an upload.
                 blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
+                upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             },
             Role::Api,
         );

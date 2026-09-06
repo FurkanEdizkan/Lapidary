@@ -7,6 +7,11 @@
 		reverse_proxy api:8080
 	}
 
+	# No Content-Security-Policy header is set here yet. Whoever adds one: the upload
+	# path computes BLAKE3 in WebAssembly, instantiated from a base64 blob inside the
+	# bundle rather than fetched as an asset, so `script-src` needs `wasm-unsafe-eval`.
+	# Without it uploads fail in the browser and nowhere else -- the dev server sends no
+	# CSP, so `npm run dev` would keep working.
 	handle {
 		try_files {path} /index.html
 		file_server

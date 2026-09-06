@@ -26,6 +26,14 @@ pub struct PartRow {
 #[derive(Debug)]
 pub struct DownloadSource {
     pub hash: BlobHash,
+    /// `blob.size_bytes` — the *uncompressed* length, which is what the route sends as
+    /// `Content-Length` and therefore what the user is promised.
+    ///
+    /// It matters more since the download began streaming: the body is no longer
+    /// verified before its first byte goes out, so a declared length is what turns a
+    /// mid-stream abort into a transfer the client can see was short rather than a file
+    /// that merely looks complete.
+    pub size_bytes: i64,
     /// `file.format` — lowercase, no dot. The route synthesizes `{part_name}.{format}`.
     pub format: String,
     /// `part.name`, the download's filename stem. A renamed part downloads under its new
@@ -136,6 +144,13 @@ fn rung_params(grid: Option<u32>) -> serde_json::Value {
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
+    /// Where the file sat, relative to the library's ingest root, `/`-separated.
+    ///
+    /// This — not `name` — is what identifies a part inside a library, and
+    /// `part_source_path_unique_per_library` (migration `0007`) is what enforces it. Once
+    /// the scan descends, two folders may each hold a `bracket.stl`; they are two parts
+    /// with one name, and only the path tells them apart.
+    pub source_path: &'a str,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     /// The rendered preview, or `None` when nothing rendered one — a library with
@@ -171,6 +186,69 @@ impl PgBlobs {
             .fetch_optional(&self.0)
             .await?;
         Ok(found.is_some())
+    }
+
+    /// The stored form of a blob: its sizes and the level it was written at.
+    ///
+    /// `zstd_level` is the reason this exists. A reader that re-derived compression from
+    /// the file's extension would hand out zstd frames as though they were the file the
+    /// day ingest-time policy changed — `SourceReader::get` says so at length — and the
+    /// upload path makes that gap wider than a re-scan ever did: the api chooses the
+    /// level, in another process, on a build that may not be this one, and the worker
+    /// decodes what it finds one job later.
+    ///
+    /// `None` means no such row, which the caller must not confuse with bytes it can
+    /// read: the row is what makes a blob known.
+    pub async fn blob(&self, hash: &BlobHash) -> Result<Option<StoredBlobRow>, DbError> {
+        let row: Option<(i64, i64, Option<i16>)> = sqlx::query_as(
+            "SELECT size_bytes, stored_bytes, zstd_level FROM blob WHERE blake3 = $1",
+        )
+        .bind(hash.to_hex())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(
+            row.map(|(size_bytes, stored_bytes, zstd_level)| StoredBlobRow {
+                hash: *hash,
+                size_bytes: size_bytes as u64,
+                stored_bytes: stored_bytes as u64,
+                // The column is nullable and reads as uncompressed, exactly like level 0 —
+                // `0002_parts.sql`, and the same collapse `SourceReader` makes.
+                zstd_level: zstd_level.unwrap_or(0),
+            }),
+        )
+    }
+
+    /// Record bytes that are on disk but that nothing references yet, `ref_count = 0`.
+    ///
+    /// The upload route's, and only the upload route's. Every other producer of source
+    /// bytes writes the blob and the part chain within one call — `PgIngest::record`
+    /// inserts this same row inside the transaction that creates the part, and reaps the
+    /// bytes if it fails, which is the ordering `docs/prototype-notes.md` exists to
+    /// protect.
+    ///
+    /// Upload cannot do that: the api writes the bytes and the *worker* writes the rows,
+    /// one job later. Between the two there are bytes on disk that no `part` points at,
+    /// and if that job fails permanently nothing ever reaps them — the failing process
+    /// did not write the bytes and must not assume it may delete them. A `blob` row with
+    /// a zero count is what makes those bytes *known* rather than lost: slice 7's
+    /// reference-counted reaper is defined over exactly that row, and an orphan with no
+    /// row at all is invisible to it forever.
+    ///
+    /// `ON CONFLICT DO NOTHING` for the same reason it is there in `record`: an upload of
+    /// bytes some library already holds must not disturb the count on the row that
+    /// library's parts are keeping alive.
+    pub async fn record_unreferenced(&self, blob: &StoredBlobRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blake3) DO NOTHING",
+        )
+        .bind(blob.hash.to_hex())
+        .bind(blob.size_bytes as i64)
+        .bind(blob.stored_bytes as i64)
+        .bind(blob.zstd_level)
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     /// Is this derivative reachable — does any part in any library that exists point at
@@ -243,8 +321,16 @@ impl PgBlobs {
     /// does not have — short-circuiting on the global answer meant scanning a directory
     /// into a second library ingested nothing and reported success.
     ///
-    /// Keyed on the name as well as the hash: two differently-named files with identical
-    /// bytes are two parts, and only "same library, same name, same bytes" is a re-scan.
+    /// Keyed on the source path as well as the hash: two files with identical bytes at
+    /// two paths are two parts, and only "same library, same path, same bytes" is a
+    /// re-scan.
+    ///
+    /// Was keyed on `part.name` until slice 6a. The name stopped being unique the moment
+    /// the scan learned to descend — `brackets/bracket.stl` and `plates/bracket.stl` share
+    /// a stem — so a name-keyed lookup would call the second file a re-scan of the first
+    /// and skip it. The key here must agree with
+    /// `part_source_path_unique_per_library`; `0003_jobs.sql` records what happens when
+    /// the two disagree, and migration `0007` moved both together.
     ///
     /// Deliberately does *not* filter `part.deleted_at`. A part the user deleted stays
     /// deleted — re-scanning the directory it came from must not resurrect it, and
@@ -252,18 +338,19 @@ impl PgBlobs {
     pub async fn library_holds(
         &self,
         library: LibraryId,
-        part_name: &str,
+        source_path: &str,
         hash: &BlobHash,
     ) -> Result<bool, DbError> {
         let found: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = $1 AND p.name = $2 AND f.blake3 = $3 AND f.role = 'source' \
+             WHERE p.library_id = $1 AND p.source_path = $2 AND f.blake3 = $3 \
+             AND f.role = 'source' \
              LIMIT 1",
         )
         .bind(library.as_uuid())
-        .bind(part_name)
+        .bind(source_path)
         .bind(hash.to_hex())
         .fetch_optional(&self.0)
         .await?;
@@ -446,10 +533,11 @@ async fn insert_part_chain(
             value: m.triangle_count,
         })?;
 
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
         .bind(part.as_uuid())
         .bind(req.library.as_uuid())
         .bind(req.name)
+        .bind(req.source_path)
         .execute(&mut **tx)
         .await?;
 
@@ -729,8 +817,8 @@ impl PgParts {
         &self,
         revision: RevisionId,
     ) -> Result<Option<DownloadSource>, DbError> {
-        let row: Option<(String, String, String, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, p.name, b.zstd_level FROM file f \
+        let row: Option<(String, String, String, Option<i16>, i64)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, b.zstd_level, b.size_bytes FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
              JOIN blob b ON b.blake3 = f.blake3 \
@@ -740,7 +828,7 @@ impl PgParts {
         .bind(revision.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((hex, format, part_name, zstd_level)) = row else {
+        let Some((hex, format, part_name, zstd_level, size_bytes)) = row else {
             return Ok(None);
         };
         let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
@@ -749,6 +837,7 @@ impl PgParts {
         })?;
         Ok(Some(DownloadSource {
             hash,
+            size_bytes,
             format,
             part_name,
             zstd_level,

@@ -14,7 +14,7 @@ pub use error::CoreError;
 pub use ids::{BatchId, BlobHash, JobId, LibraryId, PartId, RevisionId};
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeshMeasurements, Provenance};
-pub use part::{LibraryMode, PartSummary};
+pub use part::{LibraryMode, PartSummary, path_escapes, source_format};
 
 #[cfg(test)]
 mod tests {

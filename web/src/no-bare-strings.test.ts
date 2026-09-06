@@ -280,7 +280,7 @@ test('the scan reaches every directory that can render', () => {
 test('strings.ts was flattened into something to compare against', () => {
   // The cross-check is only as good as this set; empty would make it inert.
   expect(KNOWN.exact.has('Approximate')).toBe(true)
-  expect(KNOWN.exact.has('Nothing scanned yet')).toBe(true)
+  expect(KNOWN.exact.has('Nothing here yet')).toBe(true)
   expect(KNOWN.exact.has('1 triangle')).toBe(true)
   expect(KNOWN.fragments.has('Rendered preview of')).toBe(true)
   expect(KNOWN.fragments.has('triangles')).toBe(true)
@@ -316,7 +316,7 @@ test('the scan catches copy in every position that renders', () => {
 
   // The cross-check: byte-identical copies of known strings, single-word ones included.
   expect(fires("const a = <span>{'Approximate'}</span>", 'copy of a strings.ts entry')).toBe(true)
-  expect(fires('const a = <p>Nothing scanned yet</p>', 'copy of a strings.ts entry')).toBe(true)
+  expect(fires('const a = <p>Nothing here yet</p>', 'copy of a strings.ts entry')).toBe(true)
   expect(fires('const a = <img alt={`Rendered preview of ${n}`} />', 'copy of a strings.ts entry')).toBe(true)
   expect(fires("const a = <Badge text={'Approximate'} />", 'copy of a strings.ts entry')).toBe(true)
 

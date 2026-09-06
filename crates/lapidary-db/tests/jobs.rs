@@ -803,10 +803,11 @@ async fn a_failed_derive_job_reports_the_parts_name_not_a_missing_path(pool: PgP
     let jobs = PgJobs(pool.clone());
 
     let part_id = Uuid::now_v7();
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
         .bind(part_id)
         .bind(seeded().as_uuid())
         .bind("spacer-lp-2001-00")
+        .bind("spacer-lp-2001-00.stl")
         .execute(&pool)
         .await
         .expect("inserts the part");
@@ -984,10 +985,11 @@ async fn a_derive_job_naming_another_librarys_revision_does_not_leak_its_name(po
 
     let other_part_name = "vee-block-lp-3072-02";
     let part_id = Uuid::now_v7();
-    sqlx::query("INSERT INTO part (id, library_id, name) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
         .bind(part_id)
         .bind(other.as_uuid())
         .bind(other_part_name)
+        .bind("vee-block-lp-3072-02.stl")
         .execute(&pool)
         .await
         .expect("inserts the other library's part");

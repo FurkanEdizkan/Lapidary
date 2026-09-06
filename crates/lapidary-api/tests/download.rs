@@ -95,6 +95,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
         .record(IngestRequest {
             library: library(),
             name,
+            source_path: name,
             blob: &StoredBlobRow {
                 hash: stored.hash,
                 size_bytes: stored.size_bytes,
@@ -175,6 +176,42 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Vec<(String, String)>
     (status, headers, body)
 }
 
+/// Like [`get`], but keeps a body that fails part-way instead of panicking on it.
+///
+/// Since the body streams, a blob whose bytes do not hash to their digest is reported by
+/// closing the stream early rather than by a status code — so a test for that case has to
+/// be able to hold a partial body and the error that ended it.
+async fn get_streaming(
+    app: axum::Router,
+    uri: &str,
+) -> (StatusCode, Vec<(String, String)>, Result<Vec<u8>, String>) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_str().to_owned(),
+                v.to_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| e.to_string());
+    (status, headers, body)
+}
+
 fn download_uri(revision: RevisionId, query: &str) -> String {
     format!("/api/revisions/{revision}/download{query}")
 }
@@ -209,6 +246,7 @@ async fn a_compressed_source_comes_back_byte_identical(pool: sqlx::PgPool) {
         AppState {
             db: pool,
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -254,6 +292,7 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
         AppState {
             db: pool,
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -282,6 +321,7 @@ async fn a_turkish_name_is_percent_encoded_in_one_half_and_degraded_in_the_other
         AppState {
             db: pool,
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -308,6 +348,7 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
     let state = AppState {
         db: pool,
         blob_root: root.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
     };
 
     let (converted, _, converted_body) = get(
@@ -348,6 +389,7 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
         AppState {
             db: pool,
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -377,6 +419,7 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
     let state = AppState {
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
     };
 
     // Delete is soft, and a download URL is held by whoever was last shown the grid: the
@@ -431,6 +474,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
         AppState {
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -456,7 +500,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn bytes_that_do_not_hash_to_their_digest_are_refused_as_bytes(pool: sqlx::PgPool) {
+async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // A different part's bytes, stored at the same level, then moved on top of this
@@ -479,28 +523,104 @@ async fn bytes_that_do_not_hash_to_their_digest_are_refused_as_bytes(pool: sqlx:
         AppState {
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
 
-    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let body = message(&body);
-    assert!(
-        body.contains(&format!(
-            "The bytes stored for blob {}",
-            seeded.hash.to_hex()
-        )) && body.contains(&other.hash.to_hex()),
-        "the message names both what was expected and what was found: {body}"
+    let (status, headers, body) =
+        get_streaming(app, &download_uri(seeded.revision, "?variant=original")).await;
+
+    // 200, and it is not a lie: at the moment the status line is written the route knows
+    // the row is sound and the blob opened. What it cannot know yet is whether the bytes
+    // still hash to their digest, because knowing that means reading all of them — which
+    // is the buffering this route stopped doing. See `download.rs`'s header.
+    assert_eq!(status, StatusCode::OK);
+
+    // The promise the client is given, and the one the truncation breaks visibly.
+    assert_eq!(
+        header(&headers, "content-length"),
+        Some(ascii_stl().len().to_string()).as_deref(),
+        "the declared length is the ingested file's, so a short body is detectable"
+    );
+
+    let error = body.expect_err(
+        "a blob that does not match its digest must end the body in an error, never \
+         complete successfully with the wrong bytes",
     );
     assert!(
-        !body.contains("no recorded compression level"),
-        "this is the other 500 — the row is fine and the bytes are not: {body}"
+        error.contains(&seeded.hash.to_hex()) && error.contains(&other.hash.to_hex()),
+        "the stream's error names both what was expected and what was found: {error}"
+    );
+
+    // The property that did NOT survive streaming, recorded rather than quietly dropped.
+    // `touch_blob` used to sit after the hash check, so refused bytes stayed cold. It now
+    // runs before the first chunk goes out, because there is no longer a point after the
+    // check and before the response. A blob that was read is marked read, which is what
+    // the column has always claimed to mean; slice 7's eviction inherits that.
+    assert!(
+        last_read_us(&pool, &seeded.hash).await.is_some(),
+        "the blob was read, so it is warm — even though the read ended in a refusal"
+    );
+}
+
+/// A file bigger than the whole channel can hold at once, so the reader must actually
+/// block on a full channel and resume as the response drains it.
+///
+/// The body is 4 × 64 KiB in flight; this is ~1.5 MB, so it crosses that boundary about
+/// twenty-four times. A chunking bug that dropped, duplicated or reordered a boundary
+/// would survive every other test in this file, because all of them fit in one chunk.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_larger_than_the_stream_buffer_still_comes_back_byte_identical(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+
+    // Real ASCII STL, repeated: compressible (so the zstd path is genuinely exercised)
+    // but not uniform, so a chunk served twice would show up as a wrong digest rather
+    // than being masked by identical bytes either side of the seam.
+    let mut bytes = Vec::with_capacity(1_600_000);
+    bytes.extend_from_slice(b"solid bracket-lp-1042-03\n");
+    let mut facet = 0u32;
+    while bytes.len() < 1_500_000 {
+        bytes.extend_from_slice(
+            format!(
+                "facet normal 0 0 1\n  outer loop\n    vertex {facet}.0 0.0 0.0\n    \
+                 vertex {facet}.5 1.0 0.0\n    vertex {facet}.0 1.0 0.5\n  endloop\nendfacet\n"
+            )
+            .as_bytes(),
+        );
+        facet += 1;
+    }
+    bytes.extend_from_slice(b"endsolid bracket-lp-1042-03\n");
+
+    let seeded = seed(&pool, root.path(), "bracket-lp-1042-03", "stl", &bytes).await;
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        },
+        Role::Api,
+    );
+
+    let (status, headers, body) =
+        get_streaming(app, &download_uri(seeded.revision, "?variant=original")).await;
+    let body = body.expect("a sound blob streams to completion");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body, bytes,
+        "byte-identical across every chunk boundary, not merely the right length"
     );
     assert_eq!(
-        last_read_us(&pool, &seeded.hash).await,
-        None,
-        "the touch sits after the hash check, so bytes that were refused are not warm"
+        header(&headers, "content-length"),
+        Some(bytes.len().to_string()).as_deref(),
+        "Content-Length is the uncompressed length, which is what was actually sent"
+    );
+    assert!(
+        bytes.len() > 4 * 64 * 1024,
+        "the fixture must exceed the channel's capacity or this test proves nothing \
+         about resuming a blocked reader ({} bytes)",
+        bytes.len()
     );
 }
 
@@ -512,6 +632,7 @@ async fn the_worker_role_does_not_serve_downloads(pool: sqlx::PgPool) {
         AppState {
             db: pool,
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Worker,
     );
@@ -531,6 +652,7 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
     let state = AppState {
         db: pool,
         blob_root: root.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
     };
 
     // The one shape that reaches the handler as a `QueryRejection`, and the reason that
@@ -577,6 +699,7 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
         AppState {
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );

@@ -104,6 +104,67 @@ export const strings = {
     showingFirstPage: (count: number) =>
       `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },
+  upload: {
+    /**
+     * The drop target's own label. Names the two ways in, because they are genuinely
+     * different gestures and a target that mentions only one reads as though the other
+     * will not work — dragging a *folder* is the case most people will try first and the
+     * one a plain file input cannot do.
+     */
+    dropHere: 'Drop a folder here, or',
+    choose: 'choose a folder',
+    /** Shown while the drag is over the target, so the page says the drop will land. */
+    dropNow: 'Release to add these files',
+    /**
+     * Hashing runs before anything is sent, and on a large drop it is the longest silent
+     * stretch in the whole flow, so it says what it is doing rather than only that it is
+     * busy. `DATA.md` §5.2: the hash is what lets the next step skip files this library
+     * already holds.
+     */
+    hashing: (done: number, total: number) =>
+      `Reading ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files — checking which ones are already here.`,
+    probing: 'Asking which files are new…',
+    /**
+     * Bytes, not a percentage: a percentage of a 25 GB drop shows the same number for
+     * minutes at a time, and the two byte figures answer "how much is left" directly.
+     */
+    transferring: (sent: number, total: number, files: number, filesTotal: number) =>
+      `Uploading ${bytes(sent)} of ${bytes(total)} — file ${Math.min(files + 1, filesTotal).toLocaleString('en-US')} of ${filesTotal.toLocaleString('en-US')}.`,
+    committing: 'Finishing the upload…',
+    /**
+     * What the probe saved, said once, after the transfer is queued. Both halves are
+     * worth reporting and they are not the same thing: `alreadyHere` is a file this
+     * library already indexes at that path, and `skipped` is bytes some library already
+     * holds, so only the rows had to be written. The second is the larger number on a
+     * re-import into a new library and is invisible without this line.
+     */
+    saved: (alreadyHere: number, bytesSkipped: number) => {
+      const parts: string[] = []
+      if (alreadyHere > 0) {
+        parts.push(`${alreadyHere.toLocaleString('en-US')} already here`)
+      }
+      if (bytesSkipped > 0) {
+        parts.push(`${bytes(bytesSkipped)} already stored`)
+      }
+      return parts.length === 0 ? '' : `Skipped ${parts.join(' and ')}.`
+    },
+    /** Nothing in the drop was worth sending, which is a success and reads as one. */
+    nothingToDo: 'Every file in that folder is already in this library.',
+    /**
+     * The transfer failed part-way. Deliberately says the upload can be repeated rather
+     * than that it can be *resumed*: the client resumes automatically from whatever the
+     * server holds, so what the user has to do is the same gesture again, and explaining
+     * the offset machinery would be explaining our implementation to someone who wants
+     * their files in.
+     */
+    failed:
+      'The upload did not finish. Drop the same folder again — files that already arrived will not be sent twice.',
+    /**
+     * A drop the browser reported no files for. Almost always an empty folder or a drag
+     * that ended outside the target, and neither is an error worth a red banner.
+     */
+    empty: 'That drop contained no files.',
+  },
   scan: {
     /**
      * Before the walk finishes there is no file count to report — the worker is still
@@ -281,8 +342,8 @@ export const strings = {
       'Could not read what this library occupies. Check that the api service is running, then reload.',
   },
   emptyLibrary: {
-    title: 'Nothing scanned yet',
+    title: 'Nothing here yet',
     body:
-      'This library is empty. Lapidary ingests from a directory mounted on the server, not from files on this machine — scan that directory and every model it finds appears here.',
+      'This library is empty. Drop a folder of models above to add them, or scan the directory mounted on the server — either way, every model found appears here.',
   },
 } as const

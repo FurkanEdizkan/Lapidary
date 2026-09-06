@@ -61,11 +61,26 @@ const WORKER_ROLE: &str = "worker";
 /// its own doc comment can't drift apart.
 const ARG_EXPANSION: &str = "${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}";
 
-/// The one file allowed to name `SourceReader`, as a path and not a file name — the rule
-/// is about this exact file, not about whatever anyone calls their next module. Shared by
-/// the rule and the message it prints, so the two cannot drift into telling a reader to put
-/// the code somewhere the check still rejects.
-const DOWNLOAD_MODULE: &str = "crates/lapidary-api/src/download.rs";
+/// The source-bytes handles `lapidary-api` may name, each with the one file it may be
+/// named in — a path and not a file name, because the rule is about this exact file and
+/// not about whatever anyone calls their next module. Shared by the rule and the message
+/// it prints, so the two cannot drift into telling a reader to put the code somewhere the
+/// check still rejects.
+///
+/// Two entries, arrived at one slice apart and for mirrored reasons. `SourceReader` is
+/// the read half: `download.rs` hands a user the exact bytes they asked for, which is not
+/// the open path because it parses nothing. `SourceWriter` is the write half: `upload.rs`
+/// puts bytes a user just handed it into the store, which is not the open path for the
+/// same reason. Both are narrow types that exist so the alternative — giving the api
+/// `SourceStore`, and with it the whole source half of the store — never has to be
+/// considered.
+///
+/// A third entry should be argued for, not added. The list existing at all is what keeps
+/// "one named route may do this" from becoming "lapidary-api may do this".
+const SOURCE_HANDLE_EXEMPTIONS: &[(&str, &str)] = &[
+    ("SourceReader", "crates/lapidary-api/src/download.rs"),
+    ("SourceWriter", "crates/lapidary-api/src/upload.rs"),
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -113,10 +128,16 @@ pub enum Violation {
     /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
     /// (`lapidary-api`) must never touch a source file — only derivatives.
     OpenPathNamesSourceStore { path: String },
-    /// A file under `crates/lapidary-api/src/` that is not `src/download.rs` itself names
-    /// `SourceReader`. Handing a user the exact bytes they asked for is a download; every
-    /// other route in `lapidary-api` is the open path and reads derivatives only.
-    OpenPathNamesSourceReaderOutsideDownload { path: String },
+    /// A file under `crates/lapidary-api/src/` names one of the narrow source-bytes
+    /// handles somewhere other than the single route that handle exists for. Handing a
+    /// user the exact bytes they asked for is a download, and storing bytes a user just
+    /// handed us is an upload; every other route in `lapidary-api` is the open path and
+    /// reads derivatives only.
+    OpenPathNamesSourceHandleOutsideItsModule {
+        path: String,
+        handle: &'static str,
+        allowed: &'static str,
+    },
 }
 
 impl std::fmt::Display for Violation {
@@ -243,16 +264,20 @@ impl std::fmt::Display for Violation {
                  never touch a source file — it reads metadata and derivatives only. Use \
                  DerivativeStore, or move the work into the worker."
             ),
-            Violation::OpenPathNamesSourceReaderOutsideDownload { path } => write!(
+            Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                path,
+                handle,
+                allowed,
+            } => write!(
                 f,
-                "{path} names SourceReader. That handle exists for exactly one file — \
-                 {DOWNLOAD_MODULE}, the download route, which streams a user the bytes \
-                 they asked for and parses nothing. Every other file in lapidary-api \
-                 serves the open path, which reads metadata and derivatives only, and a \
-                 second file reaching source bytes is how that boundary is lost. Move the \
-                 read into {DOWNLOAD_MODULE} — that path exactly, so splitting the route \
-                 into a download/ directory or naming a second module after it does not \
-                 widen the exemption — or use DerivativeStore."
+                "{path} names {handle}. That handle exists for exactly one file — \
+                 {allowed}, the one route that has business reaching source bytes and \
+                 parses none of them. Every other file in lapidary-api serves the open \
+                 path, which reads metadata and derivatives only, and a second file \
+                 reaching source bytes is how that boundary is lost. Move the work into \
+                 {allowed} — that path exactly, so splitting the route into a directory \
+                 or naming a second module after it does not widen the exemption — or use \
+                 DerivativeStore."
             ),
         }
     }
@@ -687,24 +712,35 @@ pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violati
         .iter()
         .filter(|(_, body)| body.contains("SourceStore"))
         .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() });
-    let reader_outside_download = api_sources
-        .iter()
-        .filter(|(path, body)| body.contains("SourceReader") && !is_download_module(path))
-        .map(
-            |(path, _)| Violation::OpenPathNamesSourceReaderOutsideDownload { path: path.clone() },
-        );
-    names_source_store.chain(reader_outside_download).collect()
+    // Per file, then per handle, so one file naming both handles reports in the order a
+    // reader meets them rather than grouped by handle.
+    let handle_outside_its_module = api_sources.iter().flat_map(|(path, body)| {
+        SOURCE_HANDLE_EXEMPTIONS
+            .iter()
+            .filter(move |(handle, allowed)| body.contains(handle) && !is_module(path, allowed))
+            .map(
+                move |(handle, allowed)| Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                    path: path.clone(),
+                    handle,
+                    allowed,
+                },
+            )
+    });
+    names_source_store
+        .chain(handle_outside_its_module)
+        .collect()
 }
 
-/// The single file `SourceReader` is allowed in. `Path::ends_with` is *component-wise*,
-/// not a string suffix, which is the whole reason it is the right primitive here: it
-/// rejects `bulk_download.rs` (a different final component, not a suffix of one) and
-/// equally rejects `handlers/download.rs` and `download/mod.rs` (right name, wrong
-/// parents). Comparing `file_name()` instead would exempt every `download.rs` at every
-/// depth, which is precisely the copy-paste spread rule 5 exists to stop. `main.rs` hands
-/// us absolute paths; a component-wise suffix match is indifferent to the prefix.
-fn is_download_module(path: &str) -> bool {
-    std::path::Path::new(path).ends_with(DOWNLOAD_MODULE)
+/// Is this the single file a handle is allowed in? `Path::ends_with` is
+/// *component-wise*, not a string suffix, which is the whole reason it is the right
+/// primitive here: it rejects `bulk_download.rs` (a different final component, not a
+/// suffix of one) and equally rejects `handlers/download.rs` and `download/mod.rs` (right
+/// name, wrong parents). Comparing `file_name()` instead would exempt every `download.rs`
+/// at every depth, which is precisely the copy-paste spread rule 5 exists to stop.
+/// `main.rs` hands us absolute paths; a component-wise suffix match is indifferent to the
+/// prefix.
+fn is_module(path: &str, module: &str) -> bool {
+    std::path::Path::new(path).ends_with(module)
 }
 
 /// Run every rule over both files and collect the violations, in the order `main.rs`
@@ -1284,18 +1320,10 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         assert_eq!(
             violations,
             vec![
-                Violation::OpenPathNamesSourceReaderOutsideDownload {
-                    path: "crates/lapidary-api/src/parts.rs".to_owned()
-                },
-                Violation::OpenPathNamesSourceReaderOutsideDownload {
-                    path: "crates/lapidary-api/src/bulk_download.rs".to_owned()
-                },
-                Violation::OpenPathNamesSourceReaderOutsideDownload {
-                    path: "crates/lapidary-api/src/handlers/download.rs".to_owned()
-                },
-                Violation::OpenPathNamesSourceReaderOutsideDownload {
-                    path: "crates/lapidary-api/src/download/mod.rs".to_owned()
-                },
+                reader_violation("crates/lapidary-api/src/parts.rs"),
+                reader_violation("crates/lapidary-api/src/bulk_download.rs"),
+                reader_violation("crates/lapidary-api/src/handlers/download.rs"),
+                reader_violation("crates/lapidary-api/src/download/mod.rs"),
             ]
         );
         let msg = violations[0].to_string();
@@ -1324,9 +1352,54 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         )];
         assert_eq!(
             check_open_path_boundary(&sources),
-            vec![Violation::OpenPathNamesSourceReaderOutsideDownload {
-                path: "crates/lapidary-api/src/blob.rs".to_owned()
-            }]
+            vec![reader_violation("crates/lapidary-api/src/blob.rs")]
+        );
+    }
+
+    /// The read half's violation, which four fixtures below expect.
+    fn reader_violation(path: &str) -> Violation {
+        Violation::OpenPathNamesSourceHandleOutsideItsModule {
+            path: path.to_owned(),
+            handle: "SourceReader",
+            allowed: "crates/lapidary-api/src/download.rs",
+        }
+    }
+
+    /// The write half is the same rule with a different pair, and it has to be tested
+    /// separately: a table-driven check that only ever ran its first row would pass every
+    /// test above.
+    #[test]
+    fn the_write_handle_is_allowed_in_upload_rs_and_nowhere_else() {
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/upload.rs".to_owned(),
+                "use lapidary_storage::SourceWriter;\n".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/parts.rs".to_owned(),
+                "fn store(w: &SourceWriter) {}\n".to_owned(),
+            ),
+            // download.rs is exempt for the *read* handle only. One exemption must not
+            // carry the other, or the two narrow types collapse into one wide one.
+            (
+                "crates/lapidary-api/src/download.rs".to_owned(),
+                "use lapidary_storage::{SourceReader, SourceWriter};\n".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            check_open_path_boundary(&sources),
+            vec![
+                Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                    path: "crates/lapidary-api/src/parts.rs".to_owned(),
+                    handle: "SourceWriter",
+                    allowed: "crates/lapidary-api/src/upload.rs",
+                },
+                Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                    path: "crates/lapidary-api/src/download.rs".to_owned(),
+                    handle: "SourceWriter",
+                    allowed: "crates/lapidary-api/src/upload.rs",
+                },
+            ]
         );
     }
 

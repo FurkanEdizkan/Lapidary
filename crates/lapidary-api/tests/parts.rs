@@ -59,6 +59,7 @@ async fn seed_part(
         .record(IngestRequest {
             library,
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: Some(thumbnail_webp),
@@ -82,6 +83,7 @@ async fn get_page(
         AppState {
             db: pool,
             blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -417,6 +419,7 @@ async fn get_storage(
         AppState {
             db: pool,
             blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         role,
     );
@@ -454,6 +457,7 @@ async fn seed_sized_part(
         .record(IngestRequest {
             library: library(),
             name,
+            source_path: name,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: Some(thumbnail_webp),
