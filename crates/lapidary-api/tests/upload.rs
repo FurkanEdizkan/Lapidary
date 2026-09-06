@@ -50,10 +50,15 @@ impl Server {
         let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
             .await
             .expect("body reads");
+        // Not `expect("body is JSON")`. axum's own rejections -- a body over the limit
+        // is the one this file cares about -- answer a line of plain text, and a parse
+        // panic there reports a serde error instead of the status that explains it.
         let json = if bytes.is_empty() {
             serde_json::Value::Null
         } else {
-            serde_json::from_slice(&bytes).expect("body is JSON")
+            serde_json::from_slice(&bytes).unwrap_or_else(
+                |_| serde_json::json!({ "message": String::from_utf8_lossy(&bytes) }),
+            )
         };
         (status, json)
     }
@@ -408,4 +413,41 @@ async fn the_worker_role_serves_no_upload_route(pool: sqlx::PgPool) {
         .await
         .expect("router responds");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_realistic_chunk_is_not_refused_as_too_large(pool: sqlx::PgPool) {
+    // axum's default body limit is 2 MB, and the client sends 8 MiB chunks. Every test
+    // above sends a few kilobytes, so all of them passed against a router that would
+    // have answered 413 to every real chunk the browser produced. This is that gap.
+    let server = server(pool);
+    let big = vec![0x2eu8; 8 * 1024 * 1024];
+    let hash = BlobHash::from_bytes(*blake3::hash(&big).as_bytes());
+
+    let (status, json) = server.chunk(&hash, 0, &big).await;
+    assert_eq!(status, StatusCode::OK, "answered: {json}");
+    assert_eq!(json["received"], 8 * 1024 * 1024);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_chunk_past_the_limit_is_refused_in_words_rather_than_by_the_framework(
+    pool: sqlx::PgPool,
+) {
+    // The layer sits one byte above the handler's check so this message, and not axum's
+    // plain-text rejection, is what a client reads. Both are 413; only one says what to
+    // do about it.
+    let server = server(pool);
+    let too_big = vec![0x2eu8; 16 * 1024 * 1024 + 1];
+    let hash = BlobHash::from_bytes(*blake3::hash(&too_big).as_bytes());
+
+    let (status, json) = server.chunk(&hash, 0, &too_big).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        json["message"]
+            .as_str()
+            .expect("a message")
+            .contains("smaller chunks"),
+        "must say what to do, got: {}",
+        json["message"]
+    );
 }

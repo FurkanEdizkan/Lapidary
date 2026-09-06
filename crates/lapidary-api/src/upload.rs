@@ -62,7 +62,11 @@ use ts_rs::TS;
 /// of transfer rather than a minute — and small enough that the api holding one whole
 /// chunk in memory per concurrent upload is bounded well under the 512 MB the container
 /// is capped at.
-const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+
+/// The largest manifest either JSON route will read. See `lib.rs` where it is applied:
+/// axum's 2 MB default is about 16,000 files, which a real parts library passes.
+pub(crate) const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// `DATA.md` §1.2's stated upper bound for a source file. Enforced on the staged file
 /// rather than on a declared size because a declared size is a claim: a client that lies
@@ -120,6 +124,12 @@ pub struct UploadPlan {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ChunkAccepted {
+    /// `number` on the wire, for the reason `PartSummary::source_bytes` gives: serde
+    /// writes a JSON number and ts-rs would otherwise type a 64-bit integer as `bigint`,
+    /// which `JSON.parse` never produces — so the client would compare an offset against
+    /// a type it can never hold. The 2^53 ceiling this buys is far above the 2 GB one
+    /// this route already enforces.
+    #[ts(type = "number")]
     pub received: u64,
 }
 

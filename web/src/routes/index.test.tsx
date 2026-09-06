@@ -225,33 +225,40 @@ test('renders the empty-library copy from strings.ts', async () => {
   expect(screen.getByText(strings.emptyLibrary.body)).toBeDefined()
 })
 
-// Ingest is a server-side scan over a mounted directory. The grid has no upload control
-// and slice 1 has no endpoint that would give it one, so copy that sends the user looking
-// for one is a wrong instruction, not a harmless flourish. Read out of the DOM rather
-// than off the constants, so a hardcoded prompt in the component is caught too, and
-// phrased as an invariant so it survives a rewording.
-test('the empty state points at no upload control, because there is none', async () => {
+// This test used to assert the opposite, and its inversion is the point of slice 6a task
+// 3. It read: "the empty state points at no upload control, because there is none" —
+// correct while ingest was only a server-side scan over a mounted directory, when copy
+// sending the user looking for a file picker was a wrong instruction rather than a
+// harmless flourish.
+//
+// There is one now, so the invariant flips rather than being deleted: an empty library
+// must offer BOTH ways in, and neither may be promised without the control that keeps the
+// promise. Read out of the DOM rather than off the constants, so a component that renders
+// the words without wiring the input is still caught.
+test('the empty state offers both ways in, and each has a control behind it', async () => {
   stubFetch({ parts: ok(page([])) })
   renderIndex()
   await screen.findByText(strings.emptyLibrary.body)
   const rendered = (document.body.textContent ?? '').toLowerCase()
-  expect(rendered.length).toBeGreaterThan(40)
-  const claims = ['upload', 'drag', 'drop', 'browse', 'choose a file', 'add file']
-  for (const claim of claims) {
-    expect(rendered).not.toContain(claim)
-  }
-  // Narrowed from "no buttons at all" once the action bar landed: the page now offers
-  // controls that act on parts already ingested, and those are not upload controls. What
-  // still must not exist is a control that promises to take a file — checked by
-  // accessible name, so an icon-only button labelled only by `aria-label` is covered too,
-  // which the blanket assertion this replaces would have missed.
-  for (const control of screen.queryAllByRole('button')) {
-    const name = (control.getAttribute('aria-label') ?? control.textContent ?? '').toLowerCase()
-    for (const claim of claims) {
-      expect(name).not.toContain(claim)
-    }
-  }
-  expect(document.querySelector('input[type="file"]')).toBeNull()
+  expect(rendered).toContain('drop')
+  expect(rendered).toContain('scan')
+
+  // The folder picker, which is what makes the drop copy true for a user who cannot drag
+  // — and `webkitdirectory`, because a plain multi-file input cannot take a folder at all
+  // and would make the word "folder" a lie in the one place it is spelled out.
+  const picker = document.querySelector('input[type="file"]')
+  expect(picker).not.toBeNull()
+  expect(picker?.hasAttribute('webkitdirectory')).toBe(true)
+  expect(picker?.hasAttribute('multiple')).toBe(true)
+
+  // And the scan trigger is still there: the mounted directory did not go away because a
+  // second way in arrived.
+  expect(
+    screen.queryAllByRole('button').some((control) => {
+      const name = (control.getAttribute('aria-label') ?? control.textContent ?? '')
+      return name === strings.scan.start
+    }),
+  ).toBe(true)
 })
 
 // "We have not asked yet" and "we asked and there is nothing" are different facts, and

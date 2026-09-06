@@ -16,6 +16,7 @@ pub use parts::{LibraryStorage, PartCard, PartsPage};
 pub use upload::{ChunkAccepted, UploadFile, UploadManifest, UploadPlan};
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use lapidary_db::PgPool;
 
@@ -115,13 +116,32 @@ pub fn router(state: AppState, role: Role) -> Router {
             // is — nothing proxies a browser to the worker — and additionally because
             // this is the process that mounts the blob volume read-write. See
             // `upload.rs`.
-            .route("/api/libraries/{id}/uploads/probe", post(upload::probe))
-            .route("/api/libraries/{id}/uploads/commit", post(upload::commit))
+            // Both take a manifest of every file in the drop, and axum's default body
+            // limit is 2 MB — about 16,000 entries, which a real parts library passes.
+            // 8 MiB is roughly 65,000 files, and it is a buffered JSON body inside a
+            // container capped at 512 MB, so it is a ceiling rather than an absence of
+            // one. A drop past it needs the manifest split, which is a change to make
+            // when someone actually has one.
+            .route(
+                "/api/libraries/{id}/uploads/probe",
+                post(upload::probe).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
+            )
+            .route(
+                "/api/libraries/{id}/uploads/commit",
+                post(upload::commit).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
+            )
             // Below `probe` and `commit` so those two literal segments win over the
             // `{blake3}` capture. axum's router prefers a static segment over a dynamic
             // one regardless of order, but reading them in this order should not require
             // knowing that.
-            .route("/api/libraries/{id}/uploads/{blake3}", put(upload::chunk))
+            // The default 2 MB limit would reject every chunk the client sends. The
+            // layer sits one byte above the handler's own check so that ours is the one
+            // that fires: axum's rejection is a line of plain text, and the handler
+            // answers with a sentence saying to send smaller chunks.
+            .route(
+                "/api/libraries/{id}/uploads/{blake3}",
+                put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES + 1)),
+            )
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

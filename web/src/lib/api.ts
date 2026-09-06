@@ -1,6 +1,8 @@
 import type {
   BatchId,
   BatchStatus,
+  BlobHash,
+  ChunkAccepted,
   LibraryId,
   LibrarySettings,
   LibraryStorage,
@@ -8,6 +10,9 @@ import type {
   PartsPage,
   RevisionId,
   ScanAccepted,
+  UploadFile,
+  UploadManifest,
+  UploadPlan,
 } from './types'
 
 export interface Health {
@@ -196,4 +201,79 @@ async function accepted(response: Response): Promise<ScanAccepted> {
     throw new Error(`enqueue returned ${response.status}`)
   }
   return (await response.json()) as ScanAccepted
+}
+
+/**
+ * `POST /api/libraries/{id}/uploads/probe` — which of these files this library still
+ * needs, and which of those need their bytes.
+ *
+ * Three lists, and the client acts on all three differently: `have` is dropped on the
+ * floor, `needRows` skips the transfer and goes straight into the commit manifest, and
+ * only `needBytes` is sent. Uploading everything anyway would still be *correct* — the
+ * store is content-addressed and the worker's short-circuit would settle the duplicates
+ * — but re-importing a 25 GB corpus would move 25 GB, which is the whole reason this
+ * route exists.
+ */
+export async function probeUpload(
+  library: LibraryId,
+  files: UploadFile[],
+): Promise<UploadPlan> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/probe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files } satisfies UploadManifest),
+  })
+  if (!response.ok) {
+    throw new Error(`upload probe returned ${response.status}`)
+  }
+  return (await response.json()) as UploadPlan
+}
+
+/**
+ * `PUT /api/libraries/{id}/uploads/{blake3}?offset=N` — one chunk, appended.
+ *
+ * The body is a `Blob` from `File.slice`, never an `ArrayBuffer`: `fetch` streams a blob
+ * off disk, so a chunk of a 2 GB file never becomes 8 MB of JavaScript heap and the file
+ * itself is never read whole. That is the same mistake the download route was fixed for,
+ * on this side of the wire.
+ *
+ * A `409` is not a failure. It is the server saying where it actually is, in the same
+ * `received` field a success answers with, and the caller resumes from there.
+ */
+export async function putChunk(
+  library: LibraryId,
+  blake3: BlobHash,
+  offset: number,
+  chunk: Blob,
+): Promise<ChunkAccepted> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/uploads/${encodeURIComponent(blake3)}?offset=${offset}`,
+    { method: 'PUT', body: chunk },
+  )
+  if (response.ok || response.status === 409) {
+    return (await response.json()) as ChunkAccepted
+  }
+  throw new Error(`upload chunk returned ${response.status}`)
+}
+
+/**
+ * `POST /api/libraries/{id}/uploads/commit` — verify what was transferred, store it, and
+ * queue the meshing.
+ *
+ * One call for the whole drop, not one per file: the route mints one batch, and a folder
+ * of 500 parts committed file by file would give the grid 500 progress bars. Answers the
+ * same `ScanAccepted` every other trigger route answers, which is why the existing batch
+ * poll watches an upload with no change at all.
+ */
+export async function commitUpload(
+  library: LibraryId,
+  files: UploadFile[],
+): Promise<ScanAccepted> {
+  return accepted(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files } satisfies UploadManifest),
+    }),
+  )
 }
