@@ -104,6 +104,7 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   skipped: 0,
   rendered: 0,
   migrated: 0,
+  migrating: 0,
   failedTotal: 0,
   failed: [],
   startedAt: '2026-09-03T23:28:56.014618Z',
@@ -786,10 +787,42 @@ test('a batch whose jobs all settle as rendered refetches the grid exactly once'
 })
 
 /**
+ * The blind window this fix round closes. `migrating` counts ROWS of kind
+ * `migrate_storage`, not settled outcomes, so it is already 1 the instant the worker's
+ * startup enqueue creates the batch — before anything has run. The worker queues a
+ * migration on its own at startup, so this IS the ordinary shape of a migration batch
+ * this page ever learns about, not an edge case: `migrated` (settled outcomes) would
+ * still read 0 here, and if `kind` fell through to that, an operator watching their
+ * files get relocated would see "Reading the folder…" for the whole first run —
+ * worst on a large corpus, where that first run is slowest.
+ */
+test('a migration batch reads as a migration before its first job has settled', async () => {
+  const running = batchStatus({
+    total: 1,
+    pending: 0,
+    running: 1,
+    migrating: 1,
+    migrated: 0,
+  })
+  expect(running.finishedAt).toBeNull()
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(running),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.running)).toBeTruthy()
+  expect(screen.queryByText('Reading the folder…')).toBeNull()
+})
+
+/**
  * The regression this task exists to close. Nothing on this page starts a migration —
  * the worker queues it on its own at startup — so the only way this page ever learns
  * about one is a batch id it never clicked into, exactly like the render sweep's own
- * `curl` gap above. Before `migrated` existed on `BatchStatus`, this batch's `rendered`
+ * `curl` gap above. Before `migrating` existed on `BatchStatus`, this batch's `rendered`
  * count was 0 just like a scan's, so `kind` fell through to `'scan'` and an operator
  * watching their files get relocated read "Scan complete — 3 added." over three files
  * that were only moved, not added.
@@ -799,6 +832,7 @@ test('a batch whose jobs all settle as migrated reads as a migration, not a scan
     total: 3,
     pending: 0,
     running: 0,
+    migrating: 3,
     migrated: 3,
     finishedAt: '2026-09-06T10:14:02.116Z',
   })
@@ -812,7 +846,7 @@ test('a batch whose jobs all settle as migrated reads as a migration, not a scan
 
   renderIndex({ batch: BATCH_ID })
 
-  expect(await screen.findByText(strings.migrate.finished(3))).toBeTruthy()
+  expect(await screen.findByText(strings.migrate.finished)).toBeTruthy()
   // Neither of the other two kinds' copy leaked in — `scan.finished` would call three
   // moved files "added", and `render.finished` would call them rendered previews. Not a
   // bare `/preview/i` check: the action bar's own static copy ("Generate missing
@@ -824,9 +858,10 @@ test('a batch whose jobs all settle as migrated reads as a migration, not a scan
 
 // The converse, pinned beside the test above so the two cannot drift: adding a third
 // batch kind must not change how an ordinary scan, with no jobs of either other kind
-// settled, reads. `migrated` defaults to 0 in every fixture already — this is what
-// proves that default keeps the scan path silent rather than merely asserting it does.
-test('a batch with nothing migrated or rendered still reads as a scan', async () => {
+// settled, reads. `migrating` and `migrated` both default to 0 in every fixture already
+// — this is what proves that default keeps the scan path silent rather than merely
+// asserting it does.
+test('a batch with nothing migrating or rendered still reads as a scan', async () => {
   const scanned = batchStatus({
     total: 4,
     scanned: 1,
@@ -835,6 +870,7 @@ test('a batch with nothing migrated or rendered still reads as a scan', async ()
     ingested: 3,
     finishedAt: '2026-09-06T10:14:02.116Z',
   })
+  expect(scanned.migrating).toBe(0)
   expect(scanned.migrated).toBe(0)
   expect(scanned.rendered).toBe(0)
 

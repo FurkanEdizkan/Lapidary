@@ -69,6 +69,14 @@ async fn the_route_queues_one_job_and_a_second_call_queues_nothing(pool: PgPool)
         second.queued, 0,
         "a migration is already pending for this library"
     );
+    // Fix round 1: `queued: 0` here means a migration IS running, not that nothing is,
+    // so the batch id must name the real, already-queued chain -- not a fresh, fabricated
+    // one an operator would poll straight into a 404 for a migration genuinely in
+    // progress.
+    assert_eq!(
+        second.batch_id, first.batch_id,
+        "queued: 0 must still name the real, already-active batch"
+    );
 
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'migrate_storage'")
         .fetch_one(&pool)

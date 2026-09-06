@@ -192,10 +192,23 @@ pub struct BatchStatus {
     /// A migration chains itself the same way a scan chains its walk (`total` grows as
     /// each run re-enqueues the next slice), and it ingests nothing and skips nothing —
     /// borrowing `ingested` for it would put moved-not-added files in the grid's "added"
-    /// column, and `scanned` already means something else. This is what lets the
-    /// progress line, and the batch-kind guess above it, tell a migration apart from
-    /// both without a new job kind on the wire.
+    /// column, and `scanned` already means something else.
+    ///
+    /// This counts settled OUTCOMES, not rows, so it is 0 for every migration at the
+    /// instant it begins — and the worker's startup enqueue is the only way a
+    /// `migrate_storage` batch can exist, so every migration a browser can watch starts
+    /// inside that window. `migrating` below is what the batch-kind guess actually reads
+    /// to tell a fresh migration apart from a fresh scan; this field is left for
+    /// whatever eventually reports how much of one migration run has settled.
     pub migrated: u32,
+    /// How many `migrate_storage` job ROWS exist in this batch, settled or not —
+    /// `count(*) FILTER (WHERE kind = 'migrate_storage')`, not `... WHERE outcome =
+    /// 'migrated'`. Non-zero from the moment the first `migrate_storage` row is
+    /// inserted, unlike `migrated` above, which stays 0 until one finishes — and since
+    /// `HASHES_PER_RUN` (200) makes the first run the slowest on a large corpus, that is
+    /// exactly the batch where the gap between "exists" and "has settled one" is widest.
+    /// This is the field the batch-kind guess reads.
+    pub migrating: u32,
     pub failed_total: u32,
     /// The first 100 failures, ordered by creation, so the list is stable across polls
     /// rather than reshuffling under the reader. `failed_total` is the real count.
@@ -249,6 +262,7 @@ mod tests {
             // as the job it is, and subtracted out wherever the number is called `files`.
             scanned: 1,
             migrated: 0,
+            migrating: 0,
             failed_total: 1,
             failed: vec![JobFailure {
                 path: "spacer-lp-2001-00.stl".to_owned(),

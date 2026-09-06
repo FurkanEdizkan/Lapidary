@@ -222,14 +222,19 @@ export const strings = {
    * skips nothing, so `scan.finished` would report "Scan complete — 0 added." over a
    * corpus that just moved, and an operator watching their own files get relocated
    * deserves a line that says so.
+   *
+   * Neither line carries a number, and that is deliberate rather than a gap to fill in
+   * later. `BatchStatus.migrated` counts settled `migrate_storage` JOBS, and one job
+   * moves up to `HASHES_PER_RUN` (200) files — so a 1,000-file library finishing in five
+   * runs would read "5 files moved" if this counted jobs as files, which is the exact
+   * mistake `BatchStatus.scanned`'s own doc says CLAUDE.md's measurement rule forbids.
+   * No column on a `job` row counts files actually moved, so there is nothing honest to
+   * put a number to yet — the fix is copy that does not claim a count it does not have,
+   * not a number that quietly means something else.
    */
   migrate: {
-    running: (done: number, total: number) =>
-      `Moving files into their model folders — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')}.`,
-    finished: (migrated: number) =>
-      migrated === 1
-        ? 'Move complete — 1 file moved into its model folder.'
-        : `Move complete — ${migrated.toLocaleString('en-US')} files moved into their model folders.`,
+    running: 'Moving files into their model folders…',
+    finished: "Move complete — this library's files are now in their model folders.",
   },
   /**
    * Why a job failed, as the handler wrote it. `scan.failed` and `render.failed` above

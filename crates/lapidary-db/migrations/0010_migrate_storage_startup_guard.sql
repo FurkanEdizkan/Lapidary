@@ -8,8 +8,18 @@
 -- own. Verified by hand against Postgres 18.6 before writing this: under READ COMMITTED,
 -- a top-level statement takes ONE snapshot at its own start and keeps it for its whole
 -- execution -- including a subquery evaluated after the statement blocks on a lock
--- mid-statement, so even wrapping the check in an advisory lock inside the same
--- statement does not make a blocked transaction's own NOT EXISTS see what unblocked it.
+-- mid-statement, so wrapping the check in an advisory lock taken INSIDE THAT SAME
+-- STATEMENT (a CTE ahead of the `WHERE NOT EXISTS`, both part of one INSERT) does not
+-- make a blocked transaction's own NOT EXISTS see what unblocked it -- confirmed:
+-- reproduced a duplicate row this way, deterministically, before writing this index.
+-- This is NOT a claim that advisory locks cannot close the race at all: a lock taken as
+-- its OWN, separate statement before the insert -- `reparent`'s shape in folders.rs,
+-- one statement to lock, a later one to read and write -- does close it, because the
+-- later statement gets a fresh snapshot once the lock is granted. That shape was ruled
+-- out here for a different reason: it protects only a caller that remembers to take the
+-- lock, where a unique index protects every caller, including a future one that reaches
+-- this table directly.
+--
 -- This index is the actual correctness mechanism: `enqueue_migration_if_absent` and
 -- `reenqueue_migration_if_absent` (lapidary-db/src/jobs.rs) both pair
 -- `ON CONFLICT (library_id) WHERE kind = 'migrate_storage' AND state = 'pending'

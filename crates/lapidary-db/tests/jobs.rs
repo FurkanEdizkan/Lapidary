@@ -12,6 +12,36 @@ fn seeded() -> LibraryId {
     LibraryId::from_uuid(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
 }
 
+/// Inserts one `job` row directly with an arbitrary `kind`/`state`/`leased_by` --
+/// shapes `enqueue`'s public API cannot construct (there is no `JobPayload` for
+/// "a `migrate_storage` row that is already `pending`", and `enqueue` never takes a
+/// `leased_by`). `payload` is always `{}`, which every kind seeded this way accepts.
+async fn insert_job(
+    pool: &PgPool,
+    library: LibraryId,
+    kind: &str,
+    state: &str,
+    leased_by: Option<&str>,
+) -> JobId {
+    let id = JobId::new();
+    sqlx::query(
+        "INSERT INTO job (id, batch_id, library_id, kind, payload, state, leased_by, \
+                          lease_expires_at) \
+         VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, \
+                 CASE WHEN $6::text IS NOT NULL THEN now() + interval '1 hour' END)",
+    )
+    .bind(id.as_uuid())
+    .bind(BatchId::new().as_uuid())
+    .bind(library.as_uuid())
+    .bind(kind)
+    .bind(state)
+    .bind(leased_by)
+    .execute(pool)
+    .await
+    .expect("inserts a raw job row for the fixture");
+    id
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn enqueue_writes_one_pending_row_per_path_under_one_batch(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
@@ -394,6 +424,50 @@ async fn rescheduling_pushes_the_job_into_the_future_and_keeps_the_reason(pool: 
     assert_eq!(reason.as_deref(), Some("the database was unreachable"));
 }
 
+/// Fix round 1: `job_migrate_storage_pending_per_library` (migration 0010) is a unique
+/// INDEX, and `enqueue_migration_if_absent`'s `INSERT` can dodge a collision with
+/// `ON CONFLICT ... DO NOTHING` -- but `reschedule` is an `UPDATE`, which has no such
+/// escape. Reproduced by hand before this guard existed: rescheduling a `migrate_storage`
+/// row into `pending` while its library already has a pending successor (queued by
+/// another attempt at the same underlying job racing this one) aborted with a raw
+/// `23505`, which the caller (`lapidary_ingest::migrate`) would have reported as "could
+/// not reach the database" -- the exact false diagnosis this task's own `INSERT`-side
+/// fix exists to prevent, reproduced on the `UPDATE` side.
+#[sqlx::test(migrations = "./migrations")]
+async fn rescheduling_skips_a_migrate_row_whose_library_already_has_a_pending_successor(
+    pool: PgPool,
+) {
+    let jobs = PgJobs(pool.clone());
+    let migrate = insert_job(
+        &pool,
+        seeded(),
+        "migrate_storage",
+        "running",
+        Some("worker-a"),
+    )
+    .await;
+    insert_job(&pool, seeded(), "migrate_storage", "pending", None).await;
+
+    jobs.reschedule(
+        migrate,
+        "the database was unreachable",
+        Duration::from_secs(8),
+    )
+    .await
+    .expect("must not error even though a pending successor already exists");
+
+    let state: String = sqlx::query_scalar("SELECT state FROM job WHERE id = $1")
+        .bind(migrate.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("reads back");
+    assert_eq!(
+        state, "running",
+        "left running to lapse by lease expiry -- its continuation is already queued, so \
+         rescheduling it too would be a duplicate, not a recovery"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn releasing_a_workers_leases_makes_its_jobs_immediately_available(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
@@ -419,6 +493,54 @@ async fn releasing_a_workers_leases_makes_its_jobs_immediately_available(pool: P
     assert!(
         picked_up.is_some(),
         "a released job must be available at once"
+    );
+}
+
+/// Fix round 1: the same collision as `rescheduling_skips_a_migrate_row_whose_library_
+/// already_has_a_pending_successor`, but with a wider blast radius. `release_leases`
+/// moves EVERY row a worker holds -- of every kind -- in one `UPDATE`, so a single
+/// `migrate_storage` row that cannot become `pending` used to abort the whole statement:
+/// reproduced by hand before this guard existed, a graceful shutdown mid-migration
+/// silently degraded into the crash path for an unrelated `ingest_file` job the same
+/// worker happened to be holding, surfacing at `lapidary_jobs::worker` as "could not
+/// release this worker's leases on shutdown" carrying a raw constraint violation.
+#[sqlx::test(migrations = "./migrations")]
+async fn releasing_leases_skips_a_migrate_row_whose_library_already_has_a_pending_successor(
+    pool: PgPool,
+) {
+    let jobs = PgJobs(pool.clone());
+    let worker = "worker-shutting-down";
+    let migrate = insert_job(&pool, seeded(), "migrate_storage", "running", Some(worker)).await;
+    let ingest = insert_job(&pool, seeded(), "ingest_file", "running", Some(worker)).await;
+    insert_job(&pool, seeded(), "migrate_storage", "pending", None).await;
+
+    let released = jobs
+        .release_leases(worker)
+        .await
+        .expect("must not error even though one of its rows cannot move to pending");
+    assert_eq!(
+        released, 1,
+        "only the ingest row releases; the migrate row is excluded, not counted"
+    );
+
+    let migrate_state: String = sqlx::query_scalar("SELECT state FROM job WHERE id = $1")
+        .bind(migrate.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("reads back");
+    let ingest_state: String = sqlx::query_scalar("SELECT state FROM job WHERE id = $1")
+        .bind(ingest.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("reads back");
+    assert_eq!(
+        migrate_state, "running",
+        "left running to lapse by lease expiry -- its continuation is already queued"
+    );
+    assert_eq!(
+        ingest_state, "pending",
+        "a different kind, held by the same worker, must still release normally -- the \
+         whole point of excluding just the colliding row instead of erroring the batch"
     );
 }
 
@@ -614,6 +736,48 @@ async fn a_library_with_a_running_migration_gets_no_second_one(pool: PgPool) {
     .await
     .expect("counts");
     assert_eq!(total, 1, "the second call must not have queued a duplicate");
+}
+
+/// Fix round 1: `active_migration_batch` is what lets the manual trigger route hand back
+/// a real, pollable batch id on `queued: 0` instead of a fabricated one that can only
+/// ever 404. It must find the SAME batch whichever state the chain's current row is in
+/// -- pending or running -- since a chain's every row shares one `batch_id`.
+#[sqlx::test(migrations = "./migrations")]
+async fn active_migration_batch_finds_the_running_and_the_pending_case_alike(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+
+    assert_eq!(
+        jobs.active_migration_batch(seeded())
+            .await
+            .expect("does not error"),
+        None,
+        "no chain exists yet"
+    );
+
+    let batch = jobs
+        .enqueue_migration_if_absent(seeded())
+        .await
+        .expect("enqueues")
+        .expect("the first call wins");
+    assert_eq!(
+        jobs.active_migration_batch(seeded())
+            .await
+            .expect("does not error"),
+        Some(batch),
+        "a pending chain is found"
+    );
+
+    jobs.dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("the job is available to claim");
+    assert_eq!(
+        jobs.active_migration_batch(seeded())
+            .await
+            .expect("does not error"),
+        Some(batch),
+        "the same chain, now running, is still found under the same batch id"
+    );
 }
 
 /// `migrate_storage`'s own re-enqueue arm, guarded. Its caller is itself the currently

@@ -68,44 +68,50 @@ use std::path::Path as FsPath;
 /// does not have to wait for the next worker restart, or hand-write `INSERT INTO job`,
 /// to start one.
 ///
-/// Deliberately identical in shape to this crate's own `scan`: `queued: 0` when
-/// `library` already has a migration pending or running, or when this call lost the
-/// race to one that landed first, is a success and not an error -- the batch id in that
-/// case names nothing real and exists only so the response shape never has to be
-/// optional, matching `ScanAccepted`'s own convention.
+/// Deliberately identical in shape to this crate's own `scan`: `queued: 0` is a success,
+/// not an error, matching `ScanAccepted`'s own convention. Unlike a render sweep's
+/// `queued: 0` -- which means nothing is running at all, so the batch id in that
+/// response names nothing real -- `queued: 0` here means a migration for `library` IS
+/// running, under a real, pollable batch, and `active_migration_batch` is what finds it:
+/// fabricating an id instead would send an operator polling a batch that can never
+/// resolve, a 404 for a migration genuinely in progress.
 pub async fn migrate(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
-    match PgJobs(state.db.clone())
-        .enqueue_migration_if_absent(library)
-        .await
-    {
-        Ok(Some(batch_id)) => (
-            StatusCode::ACCEPTED,
-            Json(ScanAccepted {
-                batch_id,
-                queued: 1,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::ACCEPTED,
-            Json(ScanAccepted {
-                batch_id: BatchId::new(),
-                queued: 0,
-            }),
-        )
-            .into_response(),
-        Err(source) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "message": format!(
-                    "Could not queue a storage migration for this library: {source}. \
-                     Nothing was queued, so it is safe to try again once the database is \
-                     reachable."
-                )
-            })),
-        )
-            .into_response(),
+    let jobs = PgJobs(state.db.clone());
+    match jobs.enqueue_migration_if_absent(library).await {
+        Ok(Some(batch_id)) => accepted(batch_id, 1),
+        Ok(None) => match jobs.active_migration_batch(library).await {
+            Ok(Some(batch_id)) => accepted(batch_id, 0),
+            // No active chain was found either -- an extremely narrow window where the
+            // migration this call collided with finished draining between the two
+            // reads. Nothing is running, so there is genuinely no batch to name; this
+            // id is as inert as a render sweep's `queued: 0` batch id.
+            Ok(None) => accepted(BatchId::new(), 0),
+            Err(source) => enqueue_failed(&source),
+        },
+        Err(source) => enqueue_failed(&source),
     }
+}
+
+fn accepted(batch_id: BatchId, queued: u32) -> Response {
+    (
+        StatusCode::ACCEPTED,
+        Json(ScanAccepted { batch_id, queued }),
+    )
+        .into_response()
+}
+
+fn enqueue_failed(source: &lapidary_db::DbError) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "message": format!(
+                "Could not queue a storage migration for this library: {source}. \
+                 Nothing was queued, so it is safe to try again once the database is \
+                 reachable."
+            )
+        })),
+    )
+        .into_response()
 }
 
 /// How many distinct blobs one run moves before it hands the queue back and re-enqueues
