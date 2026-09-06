@@ -5,6 +5,7 @@ mod deploy;
 mod layers;
 mod setup;
 mod strings;
+mod verify;
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -20,15 +21,148 @@ fn main() -> Result<()> {
         Some("export-bindings") => export_bindings(),
         Some("export-agents-md") => export_agents_md(),
         Some("setup") => run_setup(),
+        Some("verify") => run_verify(std::env::args().nth(2).as_deref()),
         Some(other) => bail!(
-            "Unknown xtask '{other}'. Available: check-layers, check-deploy, check-strings, check-commit-msg, export-bindings, export-agents-md, setup"
+            "Unknown xtask '{other}'. Available: verify, check-layers, check-deploy, check-strings, check-commit-msg, export-bindings, export-agents-md, setup"
         ),
         None => {
             bail!(
-                "Usage: cargo xtask <check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
+                "Usage: cargo xtask <verify [fast|task|slice]|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
             )
         }
     }
+}
+
+/// Run the verification bar at one tier. See `xtask/src/verify.rs` for what each tier
+/// holds and why the two gated gates are safe to gate.
+fn run_verify(tier_arg: Option<&str>) -> Result<()> {
+    let tier = verify::Tier::parse(tier_arg).map_err(|message| anyhow::anyhow!(message))?;
+    let root = workspace_root()?;
+
+    let changed = changed_paths(&root);
+    if changed.is_none() {
+        // Aligned with a format width rather than literal spaces: a run of three or more
+        // spaces inside a literal is exactly what `check-strings` exists to catch, and it
+        // does not get to make an exception for the command that runs it.
+        println!(
+            "  {:<24} could not determine what this branch changed, so nothing is gated out",
+            "note"
+        );
+    }
+    let steps = verify::steps(tier, changed.as_deref());
+
+    let started = std::time::Instant::now();
+    for step in &steps {
+        let at = std::time::Instant::now();
+        let (name, outcome) = match step {
+            verify::Step::Internal { name, check } => (*name, run_internal(*check)),
+            verify::Step::Command {
+                name,
+                program,
+                args,
+            } => (*name, run_streaming(&root, program, args)),
+            verify::Step::Generated { name, path, fix } => {
+                (*name, check_generated(&root, path, fix))
+            }
+        };
+        match outcome {
+            Ok(()) => println!("  {:<24} ok  {:.2}s", name, at.elapsed().as_secs_f64()),
+            Err(err) => {
+                println!("  {name:<24} FAILED");
+                return Err(err);
+            }
+        }
+    }
+
+    println!(
+        "\n{} gate(s) green in {:.2}s.",
+        steps.len(),
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn run_internal(check: verify::Check) -> Result<()> {
+    match check {
+        verify::Check::Layers => check_layers(),
+        verify::Check::Deploy => check_deploy(),
+        verify::Check::Strings => check_strings(),
+        verify::Check::ExportBindings => export_bindings(),
+        verify::Check::ExportAgentsMd => export_agents_md(),
+    }
+}
+
+/// Like [`run`], but the child inherits stdio. A captured clippy diagnostic that only
+/// surfaces inside an error string is unreadable, and the whole point of a gate is that
+/// you can act on what it says.
+fn run_streaming(root: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .status()
+        .with_context(|| format!("Could not run `{program}`. Is it installed and on PATH?"))?;
+    if !status.success() {
+        bail!("`{program} {}` failed", args.join(" "));
+    }
+    Ok(())
+}
+
+/// A generated file must already be committed and current.
+///
+/// `git status --porcelain`, not `git diff`: the bindings export deletes and recreates its
+/// directory, so a newly exported type is an *untracked* file, and `git diff` never
+/// reports untracked files — the stalest possible case would pass silently. This is the
+/// same reasoning `.github/workflows/ci.yml` carries at its own bindings gate.
+fn check_generated(root: &Path, path: &str, fix: &str) -> Result<()> {
+    let dirty = run(root, "git", &["status", "--porcelain", "--", path])?;
+    if dirty.trim().is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{path} is stale or uncommitted:\n{}\nRun `{fix}` and commit the result.",
+        dirty.trim_end()
+    );
+}
+
+/// Every path this working tree and this branch have touched, or `None` when that cannot
+/// be determined — on which see `verify::steps`, where `None` means gate nothing out.
+///
+/// Two sources, because `verify` runs *before* a commit: `git status` for what is staged,
+/// unstaged or untracked, and a three-dot diff for what the branch already committed. The
+/// three-dot form compares against the merge base, so a branch does not inherit main's
+/// later commits as its own changes.
+fn changed_paths(root: &Path) -> Option<Vec<String>> {
+    let mut paths: Vec<String> = Vec::new();
+
+    // Staged, unstaged and untracked. Porcelain v1 is `XY <path>`, so the path starts at
+    // byte 3; a rename is `R  old -> new` and the new name is what a gate should react to.
+    let status = run(
+        root,
+        "git",
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .ok()?;
+    for line in status.lines() {
+        if let Some(path) = line.get(3..) {
+            let path = path.rsplit(" -> ").next().unwrap_or(path);
+            paths.push(path.trim_matches('"').to_owned());
+        }
+    }
+
+    // What this branch committed that the base has not. A detached HEAD, a missing base or
+    // a fresh clone with no `main` all land in the `None` arm rather than guessing.
+    let base = std::env::var("LAPIDARY_VERIFY_BASE").unwrap_or_else(|_| "main".to_owned());
+    let range = format!("{base}...HEAD");
+    match run(root, "git", &["diff", "--name-only", &range]) {
+        Ok(diff) => paths.extend(diff.lines().map(str::to_owned)),
+        // On `main` itself `main...HEAD` is empty rather than an error, so reaching here
+        // means the base genuinely does not resolve.
+        Err(_) => return None,
+    }
+
+    paths.sort();
+    paths.dedup();
+    Some(paths)
 }
 
 /// Locate the workspace root from xtask's own manifest directory — xtask must stay one
