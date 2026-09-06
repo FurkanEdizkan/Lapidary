@@ -42,6 +42,13 @@ approximate: boolean,
  */
 sourceHash: BlobHash | null, 
 /**
+ * The L0 tessellation's hash, carried verbatim from `PartSummary` for the reason
+ * `source_hash` is: it is the only thing that makes those bytes addressable, and
+ * `GET /api/blob/{blake3}` had no possible caller without it. Holding it is not
+ * authorization — that route checks reachability before serving.
+ */
+tessellationL0: BlobHash | null, 
+/**
  * Ingested size and size on disk, from `PartSummary`. `number | null`, not
  * `bigint`, for the reason given there: it is what serde puts on the wire.
  */

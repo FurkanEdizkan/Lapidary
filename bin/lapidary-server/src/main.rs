@@ -36,6 +36,16 @@ struct Config {
     // `api` role reads it, and only when someone uploads, so it is `Option` for the
     // same reason and checked in the `Role::Api` arm below rather than here.
     upload_dir: Option<PathBuf>,
+    /// Where the bundled example parts live, so a first run is never an empty grid.
+    ///
+    /// Deliberately not `ingest_dir`, even though `deploy/compose.yaml` defaults that to
+    /// the same six files: `LAPIDARY_INGEST_DIR` is the *operator's*, and one who pointed
+    /// it at a 320 GB corpus must not have it scanned because they restarted the worker.
+    /// `deploy/Containerfile` puts these at a path the image owns.
+    ///
+    /// Unset, or a path that does not exist, means no seeding — which is the normal case
+    /// for a binary run outside the image.
+    example_dir: Option<PathBuf>,
     // Only the worker role reads these four, and each is `Option` for the same reason as
     // the two above. Their defaults live in `lapidary_jobs::WorkerConfig`'s `Default` impl
     // rather than here, so one place decides them: a second set of numbers in this file
@@ -193,6 +203,27 @@ fn worker_router(
     });
     Ok(api.merge(ingest))
 }
+
+/// Seed the bundled example parts, if this build has ingest and the image has the files.
+///
+/// Split by feature the same way `worker_router` is, and for the same reason: the `api`
+/// image is built without `mock-kernel` and therefore does not link `lapidary-ingest` at
+/// all, so a call to it has to be absent from that build rather than merely unreachable.
+///
+/// Best-effort inside `seed_examples`: it logs and returns zero rather than failing, so a
+/// server that cannot load its demo content still starts. An operator has both a scan
+/// button and a drop target to fill the grid with.
+#[cfg(feature = "mock-kernel")]
+async fn seed_examples(db: &lapidary_db::PgPool, config: &Config) {
+    if let (Some(examples), Some(blobs)) = (&config.example_dir, &config.blob_root) {
+        lapidary_ingest::seed_examples(db.clone(), blobs, examples).await;
+    }
+}
+
+/// No ingest in this build, so nothing to seed with. The `api` image takes this arm and
+/// never runs as a worker anyway.
+#[cfg(not(feature = "mock-kernel"))]
+async fn seed_examples(_db: &lapidary_db::PgPool, _config: &Config) {}
 
 /// This build was not compiled with the feature that pulls `lapidary-ingest` in at all
 /// (see `Cargo.toml`) — fail loudly rather than silently start a worker with no scan
@@ -433,6 +464,9 @@ async fn main() -> Result<()> {
                 config.ingest_dir.clone(),
                 config.blob_root.clone(),
             )?;
+            // Before the loop starts, so a first run has a populated grid by the time
+            // anyone opens it.
+            seed_examples(&db, &config).await;
             let handle = spawn_worker(db, &config, shutdown.clone())?;
             (app, Some(handle))
         }

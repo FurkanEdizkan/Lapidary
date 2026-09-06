@@ -6,6 +6,7 @@ import type {
   LibraryId,
   LibrarySettings,
   LibraryStorage,
+  PartDetail,
   PartId,
   PartsPage,
   RevisionId,
@@ -41,8 +42,15 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
  * trip. Keyset paging (`after`, `limit`) is left for the slice that virtualizes the
  * grid; asking for a page and rendering it is the whole of slice 1.
  */
-export async function fetchParts(library: LibraryId): Promise<PartsPage> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts`)
+export async function fetchParts(
+  library: LibraryId,
+  after?: PartId,
+): Promise<PartsPage> {
+  // Keyset, not offset: `after` is the previous page's last id, and the server orders by
+  // id descending. Omitted entirely rather than sent empty — the route reads its absence
+  // as "from the top", and `after=` would be a parse error.
+  const query = after === undefined ? '' : `?after=${encodeURIComponent(after)}`
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${query}`)
   if (!response.ok) {
     throw new Error(`parts returned ${response.status}`)
   }
@@ -276,4 +284,48 @@ export async function commitUpload(
       body: JSON.stringify({ files } satisfies UploadManifest),
     }),
   )
+}
+
+/**
+ * `GET /api/parts/{id}` — one part, in full.
+ *
+ * The page a card links to. Its own request rather than a field on the grid's page: the
+ * bounding box, provenance and format a detail page shows would be paid for fifty times
+ * per grid page to be displayed once.
+ *
+ * A 404 is a real answer, and it is deliberately the same one for a deleted part and an id
+ * that names nothing — the route does not distinguish them, because doing so would confirm
+ * a part exists to someone who cannot see it.
+ */
+export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`)
+  if (!response.ok) {
+    throw new Error(`part detail returned ${response.status}`)
+  }
+  return (await response.json()) as PartDetail
+}
+
+/**
+ * `GET /api/blob/{blake3}` — derivative bytes by hash.
+ *
+ * A URL, not a fetch, exactly as `downloadUrl` is: the detail page renders it as an
+ * `<a href download>` and lets the browser do the transfer. Until the L0 rung's hash
+ * reached the client this route had no possible caller at all.
+ *
+ * Holding a hash is not authorization — the route checks that some part in some library
+ * still reaches these bytes before serving one.
+ */
+export function blobUrl(hash: BlobHash): string {
+  return `/api/blob/${encodeURIComponent(hash)}`
+}
+
+/**
+ * `GET /api/libraries/{library}/jobs/{batch}/events` — the same `BatchStatus`, streamed.
+ *
+ * The URL only; opening the `EventSource` belongs to the component that has to close it
+ * again. Exported so the one place that builds this path is the same file every other
+ * route path is built in.
+ */
+export function batchEventsUrl(library: LibraryId, batch: BatchId): string {
+  return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`
 }

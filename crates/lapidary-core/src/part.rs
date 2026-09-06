@@ -47,6 +47,19 @@ pub struct PartSummary {
     /// in the grid, which is why these are optional rather than zeroed. A part the grid
     /// silently omits is a part its owner cannot find, delete or re-scan.
     pub source_hash: Option<BlobHash>,
+    /// The L0 tessellation's content hash — the rung the viewer paints first, and today
+    /// the only thing that makes those bytes addressable at all.
+    ///
+    /// Every ingest writes an L0 glTF, reference-counted and never read, because nothing
+    /// carried its hash: `GET /api/blob/{blake3}` had no possible caller and roughly
+    /// 7.5 MB per 1,000 parts was written and unreachable. That is the whole reason this
+    /// field lands before the viewer that will use it.
+    ///
+    /// A hash, not a URL, and holding one is not authorization — `blob::by_hash` asks
+    /// `PgBlobs::derivative_is_reachable` before serving a byte, exactly as it does for
+    /// `thumbnail` above. `None` means this revision has no L0 rung: a part ingested
+    /// before the LOD ladder, or one whose derive job has not run.
+    pub tessellation_l0: Option<BlobHash>,
     /// The ingested file's size. `u64` here, `number | null` on the wire: serde writes
     /// a JSON number, and ts-rs 12 would otherwise type a 64-bit integer as `bigint`,
     /// which is something `JSON.parse` never produces. The override has to spell the

@@ -1,8 +1,9 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, createFileRoute } from '@tanstack/react-router'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
+  batchEventsUrl,
   downloadUrl,
   fetchBatchStatus,
   fetchHealth,
@@ -127,10 +128,26 @@ export function Index({ batch }: { batch?: string }) {
   const activeBatch = started?.id ?? batch
 
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
-  const parts = useQuery({
+  /**
+   * The grid, page by page. `useInfiniteQuery` over the cursor the server already
+   * returns: `PartsPage.next` is a `PartId` or `null`, which is exactly
+   * `getNextPageParam`'s contract, so nothing on the server changed to make this work.
+   *
+   * This is the half of the roadmap's exit criterion that was failing. `fetchParts` asked
+   * for one page and never asked for another, so a library of 1,000 parts showed 50 and
+   * the other 950 were unreachable from the UI — "every part appears" failed for a reason
+   * no amount of virtualization addresses.
+   */
+  const parts = useInfiniteQuery({
     queryKey: ['parts', DEFAULT_LIBRARY_ID],
-    queryFn: () => fetchParts(DEFAULT_LIBRARY_ID),
+    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam),
+    initialPageParam: undefined as PartId | undefined,
+    getNextPageParam: (last) => last.next ?? undefined,
   })
+  // Flattened once per render rather than at each use: three things read it (the grid,
+  // the extent line and the empty state) and they must agree about how many parts there
+  // are.
+  const loaded = parts.data?.pages.flatMap((page) => page.parts) ?? []
   const scan = useQuery({
     queryKey: ['batch', DEFAULT_LIBRARY_ID, activeBatch],
     queryFn: () => fetchBatchStatus(DEFAULT_LIBRARY_ID, activeBatch as string),
@@ -138,8 +155,48 @@ export function Index({ batch }: { batch?: string }) {
     // The poll stops itself. A batch that finishes while the tab is backgrounded must not
     // leave a closed laptop asking about a completed scan forever — spec §11's last risk,
     // which is easy to forget and so has its own test.
+    //
+    // It is also the *fallback* now rather than the only path: the stream below writes
+    // into this same cache entry, and a browser polls nothing on a hidden document. The
+    // poll is kept because `EventSource` fails in ways a page cannot see — a proxy that
+    // buffers `text/event-stream` breaks it silently — and because every progress test in
+    // this suite is written against it.
     refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
   })
+
+  /**
+   * The same status, streamed, so the progress line keeps moving on a hidden tab.
+   *
+   * `2026-09-05-phase-1-slice-5-HANDOFF.md` recorded the freeze this closes: react-query
+   * does not poll a hidden document, so a user who dropped a thousand files and switched
+   * tabs came back to a line stopped where they left it. A browser keeps an `EventSource`
+   * open on a hidden tab.
+   *
+   * It writes into the poll's cache entry rather than into state of its own, so there is
+   * one status on the page and not two that can disagree. Whichever arrives last wins,
+   * which is correct: both read the same row.
+   */
+  useEffect(() => {
+    if (activeBatch === undefined) {
+      return
+    }
+    const source = new EventSource(batchEventsUrl(DEFAULT_LIBRARY_ID, activeBatch))
+    source.onmessage = (event) => {
+      const status = JSON.parse(event.data) as BatchStatus
+      queryClient.setQueryData(['batch', DEFAULT_LIBRARY_ID, activeBatch], status)
+      // The server closes after the last event, and `EventSource` answers a closed stream
+      // by reconnecting — forever, on a batch that will never change again. Closing from
+      // this side is what stops that, and it is the same hazard `refetchInterval`
+      // returning `false` closes for the poll.
+      if (status.finishedAt != null) {
+        source.close()
+      }
+    }
+    // An error is not reported to the page beyond this: `EventSource` cannot read a status
+    // code or a body. Closing hands the batch back to the poll above, which can.
+    source.onerror = () => source.close()
+    return () => source.close()
+  }, [activeBatch, queryClient])
 
   const kind: BatchKind = started?.kind ?? ((scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
 
@@ -227,15 +284,35 @@ export function Index({ batch }: { batch?: string }) {
   // library changed underneath it while the worker commits parts. Keyed on jobs settled
   // rather than on the poll tick, so a second in which nothing finished costs no refetch.
   const settled = scan.data === undefined ? 0 : jobsSettled(scan.data)
+  const pagesLoaded = parts.data?.pages.length ?? 0
+  const batchFinished = scan.data?.finishedAt != null
   useEffect(() => {
-    if (settled > 0) {
-      void queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
-      // The totals move with the grid, and nothing else would tell them so. A scan that
-      // ingests 151 parts under a line still reporting the pre-scan figure is a
-      // measurement contradicted by the cards directly above it.
-      void queryClient.invalidateQueries({ queryKey: ['storage', DEFAULT_LIBRARY_ID] })
+    if (settled === 0) {
+      return
     }
-  }, [settled, queryClient])
+    // Live-fill costs one request while the grid is on its first page, and one request
+    // *per loaded page* after that: `invalidateQueries` on an infinite query refetches
+    // every page it holds. Measured in Chrome against the 1,000-part bench — a grid
+    // eleven pages deep pulled eleven pages on every settle tick, which during a real
+    // scan is roughly 4.7 MB a second.
+    //
+    // And it bought nothing. Each page keeps its own cursor, so pages two and beyond
+    // re-fetch rows that cannot have changed: parts arrive newest-first, at the top,
+    // ahead of every cursor already held. Only the first page can gain anything.
+    //
+    // So a deep-scrolled grid waits for the batch instead. Trimming to the first page
+    // would be the other way to make it cheap and it snaps a reading user back to the
+    // top of a library they were scrolled into, which is worse than a grid that fills a
+    // few seconds later.
+    if (pagesLoaded <= 1 || batchFinished) {
+      void queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+    }
+    // The totals move with the grid, and nothing else would tell them so. A scan that
+    // ingests 151 parts under a line still reporting the pre-scan figure is a
+    // measurement contradicted by the cards directly above it. One row either way, so it
+    // is not worth gating.
+    void queryClient.invalidateQueries({ queryKey: ['storage', DEFAULT_LIBRARY_ID] })
+  }, [settled, pagesLoaded, batchFinished, queryClient])
 
   const note = scanNow.isError
     ? strings.scan.startFailed
@@ -289,18 +366,23 @@ export function Index({ batch }: { batch?: string }) {
         <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
       ) : parts.isError ? (
         <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
-      ) : parts.data.parts.length === 0 ? (
+      ) : loaded.length === 0 ? (
         // An empty page and a page still in flight are different facts, so only a page
         // that came back empty gets the empty state.
         <EmptyLibrary />
       ) : (
         <>
           <Grid
-            parts={parts.data.parts}
+            parts={loaded}
             onRender={(part) => renderPart.mutate(part)}
             busyPart={renderPart.isPending ? renderPart.variables : undefined}
           />
-          <PageExtent page={parts.data} />
+          <MorePages
+            count={loaded.length}
+            hasMore={parts.hasNextPage}
+            fetching={parts.isFetchingNextPage}
+            onMore={() => void parts.fetchNextPage()}
+          />
           <StorageTotals storage={storage.data} isError={storage.isError} />
         </>
       )}
@@ -580,25 +662,75 @@ function EmptyLibrary() {
 }
 
 /**
- * How much of the library is actually on screen.
+ * How much of the library is on screen, and the sentinel that fetches the rest.
  *
- * `fetchParts` asks for one page and renders it; the server caps a page at 50 parts by
- * default. So a library of 200 shows 50 cards, and without this line nothing on the page
- * says so — a user scans the grid, does not find the part they came for, and concludes it
- * was never ingested. Virtualized scrolling is a later slice; being honest about the
- * truncation is not something to defer along with it.
+ * A grid is a scrolling surface, so the gesture that means "show me more" is scrolling to
+ * the end of it. An `IntersectionObserver` on a sentinel after the last card is fifteen
+ * lines and no dependency; a "load more" button would make a user click ten times to see
+ * a library they can already scroll through.
  *
- * `next` is the server's own answer to "is there more", not a length comparison against a
- * limit this component would otherwise have to know: a full page hands back a cursor, a
- * short one hands back null.
+ * The button is still rendered, and not as a fallback nobody sees. It is what a keyboard
+ * user reaches, and what works when `IntersectionObserver` never fires because the grid is
+ * short enough that the sentinel is already on screen and never crosses the boundary
+ * again. Both paths call the same thing.
+ *
+ * `hasMore` is the server's own answer, not a length comparison against a limit this
+ * component would have to know: a full page hands back a cursor and a short one hands back
+ * null.
  */
-function PageExtent({ page }: { page: PartsPage }) {
+function MorePages({
+  count,
+  hasMore,
+  fetching,
+  onMore,
+}: {
+  count: number
+  hasMore: boolean
+  fetching: boolean
+  onMore: () => void
+}) {
+  const sentinel = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const node = sentinel.current
+    if (node === null || !hasMore) {
+      return
+    }
+    // `fetching` is deliberately not in the dependency list. Re-creating the observer on
+    // every fetch would disconnect and reconnect it mid-scroll, and an observer that
+    // reconnects while its target is already visible fires immediately — which is a
+    // second request for the page still in flight. The guard is inside the callback
+    // instead, where it reads the current value.
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        onMore()
+      }
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasMore, onMore])
+
   return (
-    <p className="mt-4 max-w-prose text-xs text-[var(--color-muted)]">
-      {page.next === null
-        ? strings.parts.showingAll(page.parts.length)
-        : strings.parts.showingFirstPage(page.parts.length)}
-    </p>
+    <>
+      <div ref={sentinel} aria-hidden className="h-px" />
+      <p className="mt-4 max-w-prose text-xs text-[var(--color-muted)]">
+        {hasMore ? (
+          <>
+            {strings.parts.showingSoFar(count)}{' '}
+            <button
+              type="button"
+              onClick={onMore}
+              disabled={fetching}
+              className="underline underline-offset-2 disabled:opacity-50"
+            >
+              {fetching ? strings.parts.loadingMore : strings.parts.loadMore}
+            </button>
+          </>
+        ) : (
+          strings.parts.showingAll(count)
+        )}
+      </p>
+    </>
   )
 }
 
@@ -639,7 +771,25 @@ function Grid({
   return (
     <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
       {parts.map((part) => (
-        <li key={part.id}>
+        // `content-visibility: auto` is the virtualization, and it is one CSS property
+        // rather than a dependency. It tells the browser to skip layout, paint and image
+        // decode for a card that is off screen, which is what a virtualizer buys — while
+        // this grid stays a plain `repeat(auto-fill, …)` CSS grid, whose column count
+        // changes with the viewport and which a virtualizer would therefore have to
+        // measure and re-measure to know a row height it currently never needs.
+        //
+        // `contain-intrinsic-size` is not optional beside it. Without a placeholder size
+        // a skipped card measures zero, so the page height collapses and the scrollbar
+        // jumps as cards enter and leave — which is what makes `content-visibility` look
+        // broken.
+        //
+        // 26rem is 416px, which is a rendered card measured in Chrome (415px, uniform
+        // across 1,000 of them) and not arithmetic — the first guess was 20rem from a
+        // card measured before its thumbnail had loaded, and it under-reported the page
+        // height by 23%. The leading `auto` means the browser substitutes each card's
+        // real size once it has rendered one, so this figure only has to be close for the
+        // first paint rather than exact forever.
+        <li key={part.id} className="[content-visibility:auto] [contain-intrinsic-size:auto_26rem]">
           <Card part={part} onRender={onRender} busy={part.id === busyPart} />
         </li>
       ))}
@@ -676,8 +826,20 @@ function Card({
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
+        {/*
+          The name is the link, not the whole card. A card holds a render button and a
+          download link already, and nesting those inside an anchor is invalid HTML that
+          browsers resolve by guessing. The name is also what a keyboard user tabs to and
+          what a screen reader announces for the card, so it is the right target.
+        */}
         <h2 id={nameId} className="text-sm leading-snug">
-          {part.name}
+          <Link
+            to="/parts/$partId"
+            params={{ partId: part.id }}
+            className="ease-mechanical duration-[var(--duration-fast)] hover:underline hover:underline-offset-2"
+          >
+            {part.name}
+          </Link>
         </h2>
         {part.partNumber === null ? null : (
           <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>

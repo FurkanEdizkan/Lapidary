@@ -643,15 +643,225 @@ async fn insert_part_chain(
     Ok(part)
 }
 
+/// A hex column as a `BlobHash`. Refused rather than dropped: a `blake3` column that is
+/// not a digest is a corrupt row, and reporting it as "this part has none" would hide the
+/// corruption behind a state that looks entirely ordinary.
+fn detail_hash(column: &'static str, hex: Option<String>) -> Result<Option<BlobHash>, DbError> {
+    hex.map(|hex| {
+        BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash { column, value: hex })
+    })
+    .transpose()
+}
+
+fn detail_stamp(column: &'static str, us: i64) -> Result<jiff::Timestamp, DbError> {
+    jiff::Timestamp::from_microsecond(us)
+        .map_err(|_| DbError::TimestampOutOfRange { column, value: us })
+}
+
+/// A provenance column, refused rather than defaulted — and the direction of the refusal
+/// is the whole point. Defaulting to `tessellated` would label an analytic figure
+/// approximate, which is a needless hedge; defaulting to `analytic` would present a
+/// mesh-derived figure as exact, which is the one thing `CLAUDE.md` says a measurement
+/// must never do. Neither default is safe, so there is no default.
+fn detail_provenance(text: Option<String>) -> Result<Option<Provenance>, DbError> {
+    text.map(|t| {
+        t.parse::<Provenance>()
+            .map_err(|_| DbError::UnknownProvenance { value: t })
+    })
+    .transpose()
+}
+
 /// A `bigint` byte column as `u64`. Never `as u64`: that turns a negative row into 18
 /// exabytes on a card instead of saying the row is wrong.
 fn bytes_column(column: &'static str, value: i64) -> Result<u64, DbError> {
     u64::try_from(value).map_err(|_| DbError::NegativeByteCount { column, value })
 }
 
+/// Everything the detail route shows about one part.
+///
+/// Wider than `PartRow` because a card and a page answer different questions: a card
+/// shows what fits under a thumbnail, and a page shows what a person clicked through to
+/// read. The measurement fields arrive as raw value-and-provenance pairs rather than as
+/// `Approximate`, because two of them are independently nullable and `lapidary-api` is
+/// where the wire shape is decided.
+pub struct PartDetailRow {
+    pub id: PartId,
+    pub library: LibraryId,
+    pub revision: RevisionId,
+    pub name: String,
+    pub part_number: Option<String>,
+    /// The part's identity within its library since slice 6a, and the path a scanned or
+    /// dropped folder reported for it.
+    pub source_path: String,
+    pub rev_label: String,
+    pub thumbnail_webp: Option<Vec<u8>>,
+    pub triangle_count: Option<u32>,
+    pub is_watertight: Option<bool>,
+    /// All three axes or none. A box missing one axis is not a box, and rendering two of
+    /// its three numbers is a measurement that lies by omission.
+    pub bbox_mm: Option<[f64; 3]>,
+    pub volume_mm3: Option<f64>,
+    pub volume_source: Option<Provenance>,
+    pub surface_area_mm2: Option<f64>,
+    pub surface_area_source: Option<Provenance>,
+    pub kernel_version: Option<String>,
+    pub source_hash: Option<BlobHash>,
+    pub source_format: Option<String>,
+    pub source_bytes: Option<u64>,
+    pub stored_bytes: Option<u64>,
+    pub compressed: Option<bool>,
+    pub tessellation_l0: Option<BlobHash>,
+    pub tessellation_l0_bytes: Option<u64>,
+    pub created_at: jiff::Timestamp,
+    pub updated_at: jiff::Timestamp,
+}
+
+/// The detail query's columns, exactly as Postgres hands them back.
+///
+/// A `FromRow` struct rather than a tuple: sqlx implements `FromRow` for tuples only up
+/// to sixteen elements and this query selects twenty-seven, but the better reason is that
+/// a tuple of twenty-seven `Option<i64>`s is a shape nobody can read or safely reorder.
+/// Matching is by column name, which is why every ambiguous column in the SQL carries an
+/// explicit alias.
+#[derive(sqlx::FromRow)]
+struct DetailColumns {
+    part_id: Uuid,
+    library_id: Uuid,
+    revision_id: Uuid,
+    name: String,
+    part_number: Option<String>,
+    source_path: String,
+    rev_label: String,
+    thumb_bytes: Option<Vec<u8>>,
+    triangle_count: Option<i32>,
+    is_watertight: Option<bool>,
+    bbox_x: Option<f64>,
+    bbox_y: Option<f64>,
+    bbox_z: Option<f64>,
+    volume: Option<f64>,
+    volume_source: Option<String>,
+    surface_area: Option<f64>,
+    surface_area_source: Option<String>,
+    kernel_version: Option<String>,
+    source_blake3: Option<String>,
+    source_format: Option<String>,
+    source_size_bytes: Option<i64>,
+    source_stored_bytes: Option<i64>,
+    source_zstd_level: Option<i16>,
+    l0_blake3: Option<String>,
+    l0_stored_bytes: Option<i64>,
+    created_us: i64,
+    updated_us: i64,
+}
+
 pub struct PgParts(pub PgPool);
 
 impl PgParts {
+    /// Everything the detail route shows about one part, in one query.
+    ///
+    /// Four LATERALs, the same shape and the same reasons as `page`'s: the revision
+    /// because a part may carry several, the thumbnail and the L0 rung because a revision
+    /// carries derivatives of different kinds and a plain join would fan out on them, and
+    /// the source because a revision missing its `file` row is exactly the part whose
+    /// owner most needs to open its page. The source LATERAL's `role = 'source'` filter
+    /// and its ordering are character for character `page`'s and `source_for_download`'s,
+    /// so the figures on a card, the figures on its detail page, and the bytes behind its
+    /// download link all describe one `file` row — `file` has no unique constraint on
+    /// `(revision_id, role)`, so that agreement is a choice rather than a property of the
+    /// schema.
+    ///
+    /// `None` is "no such part, or it is deleted", undistinguished, because the caller
+    /// turns both into one 404 — telling them apart would confirm that a part exists to
+    /// someone who cannot see it.
+    pub async fn detail(&self, part: PartId) -> Result<Option<PartDetailRow>, DbError> {
+        let row: Option<DetailColumns> = sqlx::query_as(
+            "SELECT p.id AS part_id, p.library_id, r.id AS revision_id, p.name, \
+                    p.part_number, p.source_path, r.rev_label, \
+                    d.thumb_bytes, d.kernel_version, \
+                    r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
+                    r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
+                    s.blake3 AS source_blake3, s.format AS source_format, \
+                    s.size_bytes AS source_size_bytes, \
+                    s.stored_bytes AS source_stored_bytes, \
+                    s.zstd_level AS source_zstd_level, \
+                    l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
+                    (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
+                    (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
+             FROM part p \
+             JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $2 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT dv.blake3, b.stored_bytes FROM derivative dv \
+                                JOIN blob b ON b.blake3 = dv.blake3 \
+                                WHERE dv.revision_id = r.id AND dv.kind = $3 \
+                                ORDER BY dv.created_at DESC, dv.id DESC LIMIT 1) l0 ON true \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.format, b.size_bytes, b.stored_bytes, b.zstd_level \
+                                FROM file f JOIN blob b ON b.blake3 = f.blake3 \
+                                WHERE f.revision_id = r.id AND f.role = 'source' \
+                                ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
+             WHERE p.id = $1 AND p.deleted_at IS NULL",
+        )
+        .bind(part.as_uuid())
+        // Off `DerivativeKind`, never a literal, for the reason `page` gives: a reader
+        // spelling a kind differently from the writer reads nothing while looking
+        // entirely correct.
+        .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(DerivativeKind::TessellationL0.as_str())
+        .fetch_optional(&self.0)
+        .await?;
+
+        let Some(c) = row else { return Ok(None) };
+        let source_hash = detail_hash("file.blake3", c.source_blake3)?;
+        Ok(Some(PartDetailRow {
+            id: PartId::from_uuid(c.part_id),
+            library: LibraryId::from_uuid(c.library_id),
+            revision: RevisionId::from_uuid(c.revision_id),
+            name: c.name,
+            part_number: c.part_number,
+            source_path: c.source_path,
+            rev_label: c.rev_label,
+            thumbnail_webp: c.thumb_bytes,
+            triangle_count: c
+                .triangle_count
+                .map(|t| {
+                    u32::try_from(t).map_err(|_| DbError::NegativeTriangleCount {
+                        column: "revision.triangle_count",
+                        value: t,
+                    })
+                })
+                .transpose()?,
+            is_watertight: c.is_watertight,
+            bbox_mm: match (c.bbox_x, c.bbox_y, c.bbox_z) {
+                (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                _ => None,
+            },
+            volume_mm3: c.volume,
+            volume_source: detail_provenance(c.volume_source)?,
+            surface_area_mm2: c.surface_area,
+            surface_area_source: detail_provenance(c.surface_area_source)?,
+            kernel_version: c.kernel_version,
+            source_hash,
+            source_format: c.source_format,
+            source_bytes: c
+                .source_size_bytes
+                .map(|v| bytes_column("blob.size_bytes", v))
+                .transpose()?,
+            stored_bytes: c
+                .source_stored_bytes
+                .map(|v| bytes_column("blob.stored_bytes", v))
+                .transpose()?,
+            // Keyed off the source row's presence, never off `zstd_level`'s — see
+            // `PartSummary::compressed` for the whole argument.
+            compressed: source_hash.map(|_| c.source_zstd_level.is_some_and(|l| l != 0)),
+            tessellation_l0: detail_hash("derivative.blake3", c.l0_blake3)?,
+            tessellation_l0_bytes: c
+                .l0_stored_bytes
+                .map(|v| bytes_column("blob.stored_bytes", v))
+                .transpose()?,
+            created_at: detail_stamp("part.created_at", c.created_us)?,
+            updated_at: detail_stamp("part.updated_at", c.updated_us)?,
+        }))
+    }
+
     /// Whether this library wants a thumbnail rendered at ingest (migration `0005`,
     /// default true). `None` means there is no such library.
     ///
@@ -1005,17 +1215,19 @@ impl PartRepository for PgParts {
             Option<i64>,
             Option<i64>,
             Option<i16>,
+            Option<String>,
             i64,
             i64,
         )> = sqlx::query_as(
             "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
-                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, \
+                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, l0.blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
              LEFT JOIN LATERAL (SELECT f.blake3, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -1031,6 +1243,10 @@ impl PartRepository for PgParts {
         // stopped spelling it out in task 5, and a reader spelling it differently from
         // the writer reads nothing while looking entirely correct.
         .bind(DerivativeKind::Thumbnail.as_str())
+        // Same rule as the line above: off `DerivativeKind`, never a literal. The two
+        // kinds are read by one query now, so a reader spelling either differently from
+        // the writer reads nothing while looking entirely correct.
+        .bind(DerivativeKind::TessellationL0.as_str())
         .fetch_all(&self.0)
         .await?;
 
@@ -1056,6 +1272,7 @@ impl PartRepository for PgParts {
                     source_bytes,
                     stored_bytes,
                     zstd_level,
+                    tessellation_l0,
                     created_us,
                     updated_us,
                 )| {
@@ -1074,6 +1291,18 @@ impl PartRepository for PgParts {
                         .map(|hex| {
                             BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
                                 column: "file.blake3",
+                                value: hex,
+                            })
+                        })
+                        .transpose()?;
+                    // Refused rather than dropped, same as the source hash above: a
+                    // derivative row whose `blake3` is not a digest is a corrupt row, and
+                    // reporting it as "this part has no rung" would hide the corruption
+                    // behind a state that looks ordinary.
+                    let tessellation_l0 = tessellation_l0
+                        .map(|hex| {
+                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                                column: "derivative.blake3",
                                 value: hex,
                             })
                         })
@@ -1111,6 +1340,7 @@ impl PartRepository for PgParts {
                             // Every figure on a mesh part is tessellated, so any is all.
                             approximate: true,
                             source_hash,
+                            tessellation_l0,
                             source_bytes: bytes("blob.size_bytes", source_bytes)?,
                             stored_bytes: bytes("blob.stored_bytes", stored_bytes)?,
                             compressed,

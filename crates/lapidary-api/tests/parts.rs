@@ -8,8 +8,8 @@ use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use lapidary_api::{AppState, Role, router};
-use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
-use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow};
+use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements};
+use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow, TessellationRow};
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path
@@ -558,5 +558,85 @@ async fn the_worker_role_does_not_serve_the_storage_route(pool: sqlx::PgPool) {
         json,
         serde_json::Value::Null,
         "the storage route is mounted on the worker, which no browser can reach"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_card_carries_the_l0_rung_hash_so_those_bytes_are_addressable(pool: sqlx::PgPool) {
+    // Every ingest since slice 3 has written an L0 glTF, reference-counted, and nothing
+    // carried its hash — so `GET /api/blob/{blake3}` had no possible caller and roughly
+    // 7.5 MB per 1,000 parts was written and unreachable. One field closes it.
+    let library = library();
+    let rung = BlobHash::from_bytes([0x7a; 32]);
+    let blob = StoredBlobRow {
+        hash: BlobHash::from_bytes([0x11; 32]),
+        size_bytes: 2_048,
+        stored_bytes: 1_024,
+        zstd_level: 3,
+    };
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library,
+            name: "LP-1042-03",
+            source_path: "brackets/LP-1042-03.stl",
+            blob: &blob,
+            measurements: &measurements(),
+            thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[TessellationRow {
+                kind: DerivativeKind::TessellationL0.as_str(),
+                blob: StoredBlobRow {
+                    hash: rung,
+                    size_bytes: 7_500,
+                    stored_bytes: 7_500,
+                    zstd_level: 0,
+                },
+                grid: Some(64),
+            }],
+        })
+        .await
+        .expect("seed part with a rung");
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["parts"][0]["tessellationL0"],
+        rung.to_hex(),
+        "the card must name the rung it has: {}",
+        json["parts"][0]
+    );
+    // The thumbnail is still inline and still separate — the two derivative LATERALs read
+    // different kinds off one revision, which is the thing a plain join would fan out on.
+    assert!(
+        json["parts"][0]["thumbnail"]
+            .as_str()
+            .expect("a thumbnail")
+            .starts_with("data:image/webp;base64,")
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_with_no_rung_says_so_rather_than_naming_bytes_that_do_not_exist(
+    pool: sqlx::PgPool,
+) {
+    // A part ingested before the LOD ladder, or one whose derive job has not run. `None`
+    // has to survive to the wire: a hash invented here would be a 404 the user meets
+    // later, at the point where they clicked something.
+    seed_part(
+        &pool,
+        library(),
+        0x22,
+        "LP-2001-00",
+        &[0x52, 0x49, 0x46, 0x46],
+    )
+    .await;
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json["parts"][0]["tessellationL0"].is_null(),
+        "got: {}",
+        json["parts"][0]["tessellationL0"]
     );
 }

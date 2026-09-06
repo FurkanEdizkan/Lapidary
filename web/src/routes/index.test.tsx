@@ -1,5 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
@@ -8,14 +15,33 @@ import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/ty
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
- * what lets these tests render it with no router in scope. The route component does the
- * `useSearch()` half; see `index.tsx`.
+ * what lets these tests drive it directly; the route component does the `useSearch()`
+ * half, see `index.tsx`.
+ *
+ * A router is in scope all the same, because the card's name is a `<Link>` to the detail
+ * route and `<Link>` reads router context — without a provider every one of these tests
+ * renders an empty body. The tree is synthetic rather than the real `routeTree.gen`: these
+ * tests want to hand `Index` a batch directly, and going through the real route would mean
+ * spelling it as a search param in forty places to test something `index.tsx` already
+ * covers. The detail route is stubbed so the link has a real target to resolve against.
  */
 function renderIndex(props: { batch?: string; client?: QueryClient } = {}) {
   const client = props.client ?? newClient()
+  const rootRoute = createRootRoute({ component: () => <Index batch={props.batch} /> })
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/parts/$partId',
+    component: () => null,
+  })
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([detailRoute]),
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
   return render(
     <QueryClientProvider client={client}>
-      <Index batch={props.batch} />
+      {/* The synthetic tree is not the registered one, so its types do not line up with
+          the global router registration. The cast is confined to this one line. */}
+      <RouterProvider router={router as never} />
     </QueryClientProvider>,
   )
 }
@@ -129,6 +155,7 @@ const MOTOR_MOUNT: PartCard = {
   thumbnail: WEBP_BLUE,
   triangleCount: 12486,
   approximate: true,
+  tessellationL0: null,
   sourceHash: '33237f7971cb1497a5417c667e9a459c240943c7378b44fcd4f6404590363895',
   sourceBytes: 624_384,
   storedBytes: 197_012,
@@ -146,6 +173,7 @@ const HEX_NUT: PartCard = {
   thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
   approximate: true,
+  tessellationL0: null,
   sourceHash: 'a0763a33d499b598864ddd26eeca15f6d9794ce44185883fd969888941de365d',
   sourceBytes: 99_284,
   storedBytes: 26_741,
@@ -170,6 +198,7 @@ const SHAFT_COUPLER: PartCard = {
   thumbnail: null,
   triangleCount: 7320,
   approximate: true,
+  tessellationL0: null,
   sourceHash: 'c6b1d88498005800fb68ccc2f54588d00bbc1603243fcef5ef8f8000d1be2a70',
   sourceBytes: 148_930,
   storedBytes: 148_930,
@@ -180,9 +209,92 @@ const SHAFT_COUPLER: PartCard = {
 
 const page = (parts: PartCard[]): PartsPage => ({ parts, next: null })
 
+/**
+ * The sentinel's observers, in the order the grid created them. jsdom implements no
+ * `IntersectionObserver` at all, so without this stub the grid throws on mount and every
+ * test in this file renders an error boundary — which is how it was found.
+ *
+ * Recorded rather than merely silenced: `scrollToEnd` below fires the callback, which is
+ * the only way to test that scrolling to the bottom fetches the next page. A stub that
+ * did nothing would let the paging break silently.
+ */
+let observers: { callback: IntersectionObserverCallback; disconnected: boolean }[] = []
+
+/** What the observer reports when its target scrolls into view. */
+function scrollToEnd() {
+  for (const observer of observers) {
+    if (!observer.disconnected) {
+      observer.callback([{ isIntersecting: true } as IntersectionObserverEntry], null as never)
+    }
+  }
+}
+
+/**
+ * The batch streams the page has opened. jsdom implements no `EventSource`, so without
+ * this the progress stream is a code path no test in this file can reach — and the first
+ * version of it shipped behind a `typeof EventSource === 'undefined'` guard that made the
+ * whole thing quietly inert here.
+ */
+let streams: {
+  url: string
+  onmessage: ((event: { data: string }) => void) | null
+  onerror: (() => void) | null
+  closed: boolean
+}[] = []
+
+/** What the server sends down an open stream. */
+function pushStatus(status: unknown) {
+  for (const stream of streams) {
+    if (!stream.closed) {
+      stream.onmessage?.({ data: JSON.stringify(status) })
+    }
+  }
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  observers = []
+  streams = []
+  vi.stubGlobal(
+    'EventSource',
+    class {
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      private entry: (typeof streams)[number]
+      constructor(url: string) {
+        this.entry = { url, onmessage: null, onerror: null, closed: false }
+        streams.push(this.entry)
+        // The handlers are assigned after construction, so the record reads them back
+        // off this object rather than copying them once.
+        Object.defineProperty(this.entry, 'onmessage', { get: () => this.onmessage })
+        Object.defineProperty(this.entry, 'onerror', { get: () => this.onerror })
+      }
+      close() {
+        this.entry.closed = true
+      }
+    },
+  )
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      private entry: { callback: IntersectionObserverCallback; disconnected: boolean }
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback, disconnected: false }
+        observers.push(this.entry)
+      }
+      observe() {}
+      unobserve() {}
+      // Honoured, not ignored: the grid disconnects on cleanup, and an observer that
+      // kept firing after that would let a real leak pass this suite.
+      disconnect() {
+        this.entry.disconnected = true
+      }
+      takeRecords() {
+        return []
+      }
+    },
+  )
 })
 
 // For these health-check states, the expected text is written out literally rather than
@@ -199,10 +311,14 @@ test('renders the connected state from a healthy response', async () => {
   expect(fetchMock).toHaveBeenCalledWith('/api/healthz')
 })
 
-test('renders the checking state while the request is in flight', () => {
+test('renders the checking state while the request is in flight', async () => {
+  // `findBy`, not `getBy`: the page mounts inside a RouterProvider, which resolves the
+  // route on a tick before anything paints — the same tick production has always had,
+  // since `main.tsx` has always rendered through one. The stub never settles, so the
+  // pending state this asserts persists indefinitely and awaiting it weakens nothing.
   stubFetch({})
   renderIndex()
-  expect(screen.getByText('Checking the server…')).toBeDefined()
+  expect(await screen.findByText('Checking the server…')).toBeDefined()
 })
 
 test('renders an actionable message when the server is unreachable', async () => {
@@ -265,10 +381,10 @@ test('the empty state offers both ways in, and each has a control behind it', as
 // only the second one is the empty state. Without this, a component that renders the
 // empty state during the request still passes every other test here, because the pages
 // they mock all resolve.
-test('does not claim the library is empty while the request is still in flight', () => {
+test('does not claim the library is empty while the request is still in flight', async () => {
   stubFetch({})
   renderIndex()
-  expect(screen.getByText(strings.parts.loading)).toBeDefined()
+  expect(await screen.findByText(strings.parts.loading)).toBeDefined()
   expect(screen.queryByText(strings.emptyLibrary.title)).toBeNull()
 })
 
@@ -456,7 +572,11 @@ test('says how much of the library is on screen when the whole of it fits', asyn
   expect(screen.getByText('Showing all 2 parts.')).toBeDefined()
 })
 
-test('says the grid is truncated when the server hands back another cursor', async () => {
+test('says how many parts are loaded so far when the server hands back another cursor', async () => {
+  // The copy this replaces said paging "arrives with the virtualized grid". It has
+  // arrived, so the sentence changed rather than the assertion being deleted: what a
+  // truncated grid must still never do is claim to be showing the whole library.
+  //
   // `next` non-null is the server's own "there is more behind this page" — a full page
   // hands back a cursor, a short one hands back null.
   const truncated: PartsPage = {
@@ -466,13 +586,42 @@ test('says the grid is truncated when the server hands back another cursor', asy
   stubFetch({ parts: ok(truncated) })
   renderIndex()
   await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(screen.getByText(strings.parts.showingSoFar(2))).toBeDefined()
+  expect(screen.queryByText(strings.parts.showingAll(2))).toBeNull()
+  // And there is a way to get the rest, for a keyboard user as well as a scrolling one.
+  expect(screen.getByRole('button', { name: strings.parts.loadMore })).toBeDefined()
+})
+
+test('scrolling to the end asks the server for the page after the cursor', async () => {
+  // The gap this whole change closes: `fetchParts` used to ask for one page and never
+  // ask for another, so a library of 1,000 showed 50 and the rest were unreachable. The
+  // assertion is on the URL, because "it fetched again" is also true of a refetch of the
+  // same page — what proves paging is that the second request carries the first page's
+  // cursor.
+  const cursor = '01931b6e-0000-7000-8000-0000000a0002'
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.startsWith('/api/libraries') && url.includes('/parts')) {
+      return url.includes('after=')
+        ? { ok: true, json: async () => page([HEX_NUT]) }
+        : { ok: true, json: async () => ({ parts: [MOTOR_MOUNT], next: cursor }) }
+    }
+    if (url.includes('/healthz')) return { ok: true, json: async () => HEALTHY }
+    return { ok: false, status: 404, json: async () => ({}) }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  scrollToEnd()
+
+  await screen.findByRole('article', { name: HEX_NUT.name })
   expect(
-    screen.getByText(
-      'Showing the first 2 parts. This library has more — paging through them arrives with the virtualized grid.',
-    ),
-  ).toBeDefined()
-  // And it must not also claim to be showing all of them.
-  expect(screen.queryByText('Showing all 2 parts.')).toBeNull()
+    fetchMock.mock.calls.some(([url]) => String(url).includes(`after=${cursor}`)),
+    `expected a request carrying the cursor, got: ${fetchMock.mock.calls.map(([u]) => u).join(', ')}`,
+  ).toBe(true)
+  // Both pages on screen at once, not the second replacing the first.
+  expect(screen.getByRole('article', { name: MOTOR_MOUNT.name })).toBeDefined()
+  expect(screen.getByText(strings.parts.showingAll(2))).toBeDefined()
 })
 
 test('does not count parts before the page has arrived, or when there are none', async () => {
@@ -1052,6 +1201,7 @@ const RECOVERED_BRACKET: PartCard = {
   revision: '01931b6e-0000-7000-8000-0000000b0006',
   name: 'Angle bracket, 40 x 40 x 3 mm',
   partNumber: 'LP-1042-03',
+  tessellationL0: null,
   sourceHash: null,
   sourceBytes: null,
   storedBytes: null,
@@ -1140,7 +1290,12 @@ test('a revision with no source file keeps its card and offers no download', asy
   // exists to forbid.
   const card = await screen.findByRole('article', { name: RECOVERED_BRACKET.name })
   expect(within(card).getByText(strings.download.noSource)).toBeDefined()
-  expect(within(card).queryByRole('link')).toBeNull()
+  // The DOWNLOAD link, by its accessible name, not "any link on this card": the card's
+  // name became a link to the part's detail page, so a bare `queryByRole('link')` now
+  // finds that one and would fail here for a reason that has nothing to do with sources.
+  expect(
+    within(card).queryByRole('link', { name: strings.download.originalFor(RECOVERED_BRACKET.name) }),
+  ).toBeNull()
   // No size line invented out of nulls either.
   expect(within(card).queryByText(/on disk/)).toBeNull()
 
@@ -1270,4 +1425,124 @@ test('finishing a scan re-reads what the library occupies', async () => {
   fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
 
   await waitFor(() => expect(storageReads).toBeGreaterThan(before))
+})
+
+test('a deep-scrolled grid does not refetch every page on every settle tick', async () => {
+  // Measured in Chrome against a 1,000-part library before this guard existed: eleven
+  // pages loaded meant eleven requests per tick, roughly 4.7 MB a second during a scan.
+  // And it bought nothing — each page keeps its own cursor, and parts arrive newest-first
+  // ahead of every cursor already held, so only the first page can gain anything.
+  const cursor = '01931b6e-0000-7000-8000-0000000a0002'
+  let partsRequests = 0
+  // The count climbs on every poll, which is what a running scan looks like and what
+  // makes the settle-effect fire again and again. A fixed count would make this test
+  // pass with the guard removed, because the effect would never re-run.
+  let ingested = 100
+  const running = () => ({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 400,
+    pending: 400 - (ingested += 10),
+    running: 1,
+    ingested,
+    skipped: 0,
+    rendered: 0,
+    scanned: 0,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: null,
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.includes('/jobs/')) return { ok: true, json: async () => running() }
+      if (url.includes('/parts')) {
+        partsRequests++
+        return url.includes('after=')
+          ? { ok: true, json: async () => page([HEX_NUT]) }
+          : { ok: true, json: async () => ({ parts: [MOTOR_MOUNT], next: cursor }) }
+      }
+      if (url.includes('/healthz')) return { ok: true, json: async () => HEALTHY }
+      return { ok: false, status: 404, json: async () => ({}) }
+    }),
+  )
+
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  scrollToEnd()
+  await screen.findByRole('article', { name: HEX_NUT.name })
+
+  // Two pages are loaded and the batch is still running. Every further poll settles more
+  // jobs, and none of them may pull page two again.
+  // Let several polls land, each settling more jobs than the last.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const afterPaging = partsRequests
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  expect(
+    partsRequests - afterPaging,
+    'a running batch must not refetch a grid the user has paged into',
+  ).toBe(0)
+})
+
+test('the progress line moves from the stream, which is what a hidden tab still gets', async () => {
+  // The freeze slice 5's handoff recorded: react-query does not poll a hidden document,
+  // so a user who dropped a thousand files and switched tabs came back to a line stopped
+  // where they left it. The assertion is that a status arriving down the stream — with no
+  // poll response behind it — moves the line.
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    // The poll never answers. Anything on screen came from the stream.
+    batch: () => new Promise(() => {}),
+  })
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await waitFor(() => expect(streams.length).toBe(1))
+  expect(streams[0]?.url).toContain('/jobs/01931b6e-0000-7000-8000-0000000b0001/events')
+
+  pushStatus({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 400,
+    pending: 250,
+    running: 1,
+    ingested: 149,
+    skipped: 0,
+    rendered: 0,
+    scanned: 1,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: null,
+  })
+
+  expect(await screen.findByText(strings.scan.running(148, 399))).toBeDefined()
+})
+
+test('a finished status closes the stream, so the browser does not re-open it forever', async () => {
+  // `EventSource` reconnects on its own, so a server that closes after the last event and
+  // a client that does not close in response is a connection re-opened forever against a
+  // batch that will never change again. Same hazard `refetchInterval` returning `false`
+  // closed for the poll, one layer down.
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])), batch: () => new Promise(() => {}) })
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await waitFor(() => expect(streams.length).toBe(1))
+
+  pushStatus({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 3,
+    pending: 0,
+    running: 0,
+    ingested: 3,
+    skipped: 0,
+    rendered: 0,
+    scanned: 0,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: '2026-09-06T10:00:09Z',
+  })
+
+  await waitFor(() => expect(streams[0]?.closed).toBe(true))
 })

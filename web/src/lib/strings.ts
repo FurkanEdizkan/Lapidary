@@ -101,6 +101,15 @@ export const strings = {
      * point of this string. A grid that silently shows the first 50 of 200 parts is a
      * measurement that lies by omission.
      */
+    /**
+     * Some of the library, with more to come. Deliberately not "showing 50 of 1,000":
+     * the server does not count the library to answer a page, and adding a count query to
+     * every grid request to render one number would be paying for it on every scroll.
+     * What the user needs to know is that there is more, and how to get it.
+     */
+    showingSoFar: (count: number) => `${count.toLocaleString('en-US')} parts so far.`,
+    loadMore: 'Load more',
+    loadingMore: 'Loading…',
     showingFirstPage: (count: number) =>
       `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },
@@ -164,6 +173,78 @@ export const strings = {
      * that ended outside the target, and neither is an error worth a red banner.
      */
     empty: 'That drop contained no files.',
+  },
+  detail: {
+    loading: 'Loading this part…',
+    /**
+     * Both a 404 and a network failure land here. They are one message because the
+     * remedy is one action: this page was reached from a grid that may be stale, and
+     * going back is what refreshes it.
+     */
+    failed:
+      'Could not open this part. It may have been deleted, or the api service may be unreachable — go back to the grid and try again.',
+    back: 'Back to the grid',
+    /**
+     * The badge every mesh-derived figure carries. `CLAUDE.md` makes it non-negotiable,
+     * and unlike the card's version this one is per figure: a part can carry an analytic
+     * volume beside a tessellated surface area from Phase 2 on, and one badge over the
+     * whole page would be wrong about one of them whichever way it is set.
+     */
+    approximate: '≈',
+    approximateTitle:
+      'Derived from tessellated geometry rather than read from an analytic CAD entity.',
+    exactTitle: 'Read from an analytic CAD entity.',
+    geometry: 'Geometry',
+    file: 'File',
+    size: 'Size',
+    identity: 'Identity',
+    triangles: 'Triangles',
+    /** The count alone: this row is already labelled, unlike the card's line, which
+     *  has to carry the word. Locale formatting belongs here rather than in the
+     *  component — a bare 'en-US' in a component is a string the translator never
+     *  sees, which is the whole rule. */
+    trianglesValue: (count: number) => count.toLocaleString('en-US'),
+    boundingBox: 'Bounding box',
+    /** Three axes in millimetres. Not a volume — a box a part has to fit inside. */
+    boundingBoxValue: (mm: readonly number[]) =>
+      mm.map((axis) => axis.toLocaleString('en-US', { maximumFractionDigits: 1 })).join(' × ') +
+      ' mm',
+    volume: 'Volume',
+    /**
+     * Shown instead of a number when the mesh is open. "Measurement must not lie"
+     * includes declining to measure: signed-volume integration over a non-watertight
+     * mesh produces a plausible number that means nothing, so ingest writes none and
+     * this says why rather than rendering a blank a user would read as zero.
+     */
+    volumeUnavailable: 'Not available — the mesh is not closed',
+    volumeValue: (mm3: number) =>
+      `${(mm3 / 1000).toLocaleString('en-US', { maximumFractionDigits: 2 })} cm³`,
+    surfaceArea: 'Surface area',
+    surfaceAreaValue: (mm2: number) =>
+      `${(mm2 / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })} cm²`,
+    watertight: 'Watertight',
+    watertightYes: 'Closed',
+    watertightNo: 'Open',
+    format: 'Format',
+    /** The path the part is known by, which since slice 6a is its identity in the
+     *  library — two parts called `bracket` in two folders are told apart by this. */
+    sourcePath: 'Path',
+    revision: 'Revision',
+    kernel: 'Measured by',
+    sourceHash: 'Source hash',
+    /**
+     * The L0 tessellation. Named for what it is to a user — the thing a viewer will
+     * paint — rather than "tessellation_l0", which is a column name.
+     */
+    preview3d: '3D preview data',
+    download3d: 'Download',
+    /** With the size, when it is known — a rung is worth knowing the weight of
+     *  before clicking, and it is the one figure that says how detailed it is. */
+    download3dSized: (stored: number) => `Download · ${bytes(stored)}`,
+    /** No rung: a part ingested before the LOD ladder, or one still in the queue. */
+    noPreview3d: 'Not generated yet',
+    /** A figure the database has no value for. Distinct from a refusal to measure. */
+    unknown: 'Unknown',
   },
   scan: {
     /**

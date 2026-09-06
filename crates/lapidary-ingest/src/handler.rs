@@ -132,7 +132,7 @@ impl WorkerHandler {
     ///
     /// [`index`]: Self::index
     /// [`ingest_blob`]: Self::ingest_blob
-    pub(crate) async fn ingest_one(
+    pub async fn ingest_one(
         &self,
         library: LibraryId,
         source_path: &str,

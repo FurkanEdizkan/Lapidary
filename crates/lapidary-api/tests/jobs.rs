@@ -165,3 +165,129 @@ async fn the_worker_role_does_not_serve_batch_status(pool: sqlx::PgPool) {
          makes this test able to tell apart"
     );
 }
+
+/// A batch with every job finished, which is what makes a stream end after one event.
+async fn seeded_finished_batch(pool: &sqlx::PgPool) -> BatchId {
+    let (batch, _) = PgJobs(pool.clone())
+        .enqueue_scan(seeded(), &["bracket-lp-1042-03.stl".to_owned()])
+        .await
+        .expect("enqueue");
+    sqlx::query(
+        "UPDATE job SET state = 'done', outcome = 'ingested', updated_at = now() \
+         WHERE batch_id = $1",
+    )
+    .bind(batch.as_uuid())
+    .execute(pool)
+    .await
+    .expect("settle the batch");
+    batch
+}
+
+/// Reads an SSE response body to completion, returning the `data:` payloads in order.
+///
+/// To completion, deliberately: the point of these tests is that the stream *ends*, and a
+/// reader that stopped at the first event would pass over a server that holds the
+/// connection open forever after a batch finishes.
+async fn events(pool: sqlx::PgPool, library: &str, batch: &str) -> Vec<serde_json::Value> {
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        },
+        Role::Api,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/libraries/{library}/jobs/{batch}/events"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream"),
+        "an EventSource will not read anything else"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("the stream ends on its own");
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|json| serde_json::from_str(json).expect("each event is a BatchStatus"))
+        .collect()
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_finished_batch_streams_its_status_once_and_then_ends(pool: sqlx::PgPool) {
+    // The stream must END, not merely stop sending. `EventSource` reconnects to a stream
+    // that goes quiet, so a server that holds the connection open on a finished batch is
+    // one the browser re-opens forever — the same leak `refetchInterval` returning `false`
+    // closed for the poll, one layer down. `to_bytes` above only returns because it ends.
+    let batch = seeded_finished_batch(&pool).await;
+
+    let sent = events(pool, SEEDED_LIBRARY, &batch.to_string()).await;
+
+    assert_eq!(sent.len(), 1, "one event, then the end: {sent:?}");
+    assert!(
+        sent[0]["finishedAt"].is_string(),
+        "and the final status is SENT rather than the stream just closing — the last \
+         number is the one that matters most: {}",
+        sent[0]
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_batch_that_does_not_exist_ends_the_stream_rather_than_hanging(pool: sqlx::PgPool) {
+    // A 404 is not available: the status line is already sent by the time the first read
+    // happens, and an `EventSource` cannot read a body anyway. Ending immediately hands
+    // the batch back to the client's fallback poll, which can say so properly.
+    let sent = events(pool, SEEDED_LIBRARY, "01931b6e-0000-7000-8000-00000000dead").await;
+    assert!(sent.is_empty(), "nothing to report: {sent:?}");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_batch_in_another_library_streams_nothing(pool: sqlx::PgPool) {
+    // Same reachability rule the polled route keeps, and for the same reason: a batch id
+    // is a uuid a caller might hold from anywhere, so the route is scoped under its
+    // library and the query filters on it. A stream that leaked another library's progress
+    // would be that check bypassed by a second route.
+    let batch = seeded_finished_batch(&pool).await;
+    let sent = events(
+        pool,
+        "01931b6e-0000-7000-8000-00000000beef",
+        &batch.to_string(),
+    )
+    .await;
+    assert!(sent.is_empty(), "leaked: {sent:?}");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_worker_role_serves_no_event_stream(pool: sqlx::PgPool) {
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        },
+        Role::Worker,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/libraries/{SEEDED_LIBRARY}/jobs/01931b6e-0000-7000-8000-000000000001/events"
+                ))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
