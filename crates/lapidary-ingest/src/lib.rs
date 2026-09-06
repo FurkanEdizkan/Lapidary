@@ -23,6 +23,7 @@
 
 mod derive;
 mod handler;
+mod migrate;
 mod scan;
 
 pub use handler::WorkerHandler;

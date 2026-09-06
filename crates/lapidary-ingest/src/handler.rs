@@ -149,6 +149,10 @@ impl JobHandler for WorkerHandler {
             // a scan finds belong in the batch the browser is already polling. See
             // `scan.rs`'s module doc.
             JobPayload::ScanDirectory => self.scan_directory(job.batch_id, job.library_id).await,
+            // The batch comes from the row for `scan_directory`'s reason, and the library
+            // for the same one: a migration re-enqueues itself until the library drains,
+            // and it has to land in the batch whoever started it is already polling.
+            JobPayload::MigrateStorage => self.migrate_storage(job.batch_id, job.library_id).await,
         }
     }
 }

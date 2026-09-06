@@ -16,16 +16,23 @@ pub enum JobState {
     Failed,
 }
 
-/// How a job finished. All four are successes: `Skipped` means this library already
+/// How a job finished. All five are successes: `Skipped` means this library already
 /// held this exact file, which is slice 1's hash short-circuit doing its job; `Rendered`
 /// means a `derive` job upserted the derivative it was asked to produce; `Scanned` means
-/// a `scan_directory` job walked the ingest mount and enqueued what it found.
+/// a `scan_directory` job walked the ingest mount and enqueued what it found; `Migrated`
+/// means a `migrate_storage` job moved a slice of an old content-addressed store into the
+/// model directories that replaced it.
 ///
 /// `Scanned` exists because the other three would each be a counter that lies. The
 /// database requires a finished job to say how it finished (`job_done_has_outcome`), and
 /// a scan job ingests nothing, skips nothing and renders nothing: reporting it as
 /// `Skipped` tells a user a file was "already here", `Rendered` makes the grid read the
 /// whole batch as a preview render, and `Ingested` claims a part that does not exist.
+///
+/// `Migrated` exists for the same reason one step further on: a `migrate_storage` run
+/// indexes nothing new — it moves bytes a part already had from the content-addressed
+/// store into that part's own directory. Reporting it as `Ingested` would put files a
+/// user already had into the "added" column of a batch they are watching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -34,6 +41,7 @@ pub enum Outcome {
     Skipped,
     Rendered,
     Scanned,
+    Migrated,
 }
 
 /// What a job carries, without its kind.
@@ -56,6 +64,18 @@ pub enum JobPayload {
     /// be wrong. See `lapidary_ingest::scan`'s module doc for why the walk is a job at
     /// all.
     ScanDirectory,
+    /// Move every source blob in this library out of the content-addressed store and into
+    /// its model's own directory, writing a `metadata.json` beside it.
+    ///
+    /// A job rather than part of migration `0008`, because sqlx runs a migration in one
+    /// transaction at startup and copying a corpus is neither transactional nor fast.
+    /// Resumable because the queue is: it selects the next batch of `file` rows whose
+    /// `storage_path` is still null, so a killed worker resumes where it stopped.
+    ///
+    /// No fields, for `ScanDirectory`'s reason: the library is the job row's own column,
+    /// and how much to do per run is the handler's policy rather than a number a caller
+    /// gets to write into a row that outlives the build that wrote it.
+    MigrateStorage,
 }
 
 /// The `derive` payload's shape, deserialised as a whole rather than field by field so a
@@ -70,12 +90,14 @@ impl JobPayload {
     pub const INGEST_FILE: &'static str = "ingest_file";
     pub const DERIVE: &'static str = "derive";
     pub const SCAN_DIRECTORY: &'static str = "scan_directory";
+    pub const MIGRATE_STORAGE: &'static str = "migrate_storage";
 
     pub fn kind(&self) -> &'static str {
         match self {
             JobPayload::IngestFile { .. } => Self::INGEST_FILE,
             JobPayload::Derive { .. } => Self::DERIVE,
             JobPayload::ScanDirectory => Self::SCAN_DIRECTORY,
+            JobPayload::MigrateStorage => Self::MIGRATE_STORAGE,
         }
     }
 
@@ -87,7 +109,7 @@ impl JobPayload {
             JobPayload::Derive { revision, produce } => {
                 serde_json::json!({ "revision": revision, "produce": produce })
             }
-            JobPayload::ScanDirectory => serde_json::json!({}),
+            JobPayload::ScanDirectory | JobPayload::MigrateStorage => serde_json::json!({}),
         }
     }
 
@@ -118,6 +140,9 @@ impl JobPayload {
             // names a directory walk, and refusing it would strand a scan over a key
             // this build does not use.
             Self::SCAN_DIRECTORY => Ok(JobPayload::ScanDirectory),
+            // Empty for the same reason, and read the same way: a `migrate_storage` row
+            // carries no payload at all, so there is nothing in it to be malformed.
+            Self::MIGRATE_STORAGE => Ok(JobPayload::MigrateStorage),
             other => Err(CoreError::UnknownJobKind {
                 kind: other.to_owned(),
             }),
@@ -344,6 +369,26 @@ mod tests {
         );
         assert_eq!(
             JobPayload::from_row("scan_directory", &serde_json::json!({ "path": "unused" }))
+                .expect("an unread key is not a malformed payload"),
+            p
+        );
+    }
+
+    /// Same shape as the `scan_directory` case above, and pinned for the same two
+    /// reasons: the kind is the COLUMN, and `from_row` must not start reading a payload it
+    /// does not use. A `migrate_storage` row written by a build that later learns to carry
+    /// a batch size in its payload must still name a storage migration to this one.
+    #[test]
+    fn a_migrate_storage_payload_is_empty_and_round_trips() {
+        let p = JobPayload::MigrateStorage;
+        assert_eq!(p.kind(), "migrate_storage");
+        assert_eq!(p.to_json(), serde_json::json!({}));
+        assert_eq!(
+            JobPayload::from_row("migrate_storage", &p.to_json()).expect("round trips"),
+            p
+        );
+        assert_eq!(
+            JobPayload::from_row("migrate_storage", &serde_json::json!({ "limit": 200 }))
                 .expect("an unread key is not a malformed payload"),
             p
         );

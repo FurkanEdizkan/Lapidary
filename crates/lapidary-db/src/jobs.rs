@@ -213,6 +213,7 @@ impl PgJobs {
             Outcome::Skipped => "skipped",
             Outcome::Rendered => "rendered",
             Outcome::Scanned => "scanned",
+            Outcome::Migrated => "migrated",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \

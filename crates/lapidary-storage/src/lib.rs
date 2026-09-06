@@ -171,6 +171,21 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StorageError> {
             source,
         });
     }
+
+    // The rename itself has to be durable, not only the bytes it renames. `sync_all` above
+    // puts the temp file's CONTENTS on disk; the directory entry that gives them their real
+    // name is a separate write, and a power cut between the two loses the file while the
+    // `file` row naming it survives — the exact failure this whole write-then-record
+    // ordering exists to prevent, one level up. The `migrate_storage` job is where it
+    // stops being theoretical: it unlinks the content-addressed copy once the row points
+    // at this one, so a lost rename there is the only copy.
+    //
+    // Best-effort, and it must be: Windows cannot open a directory as a file at all, and a
+    // filesystem that refuses the handle has still performed the rename. There is no
+    // portable way to assert this line from a test — no test here claims to.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
