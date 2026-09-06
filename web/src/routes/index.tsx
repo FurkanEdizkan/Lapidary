@@ -15,9 +15,16 @@ import {
   startScan,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import {
+  FolderTree,
+  MovePartDialog,
+  PART_DRAG_TYPE,
+  partDragPayload,
+} from '../components/FolderTree'
 import type {
   BatchId,
   BatchStatus,
+  FolderId,
   LibraryStorage,
   PartCard,
   PartId,
@@ -40,20 +47,41 @@ export const Route = createFileRoute('/')({
    * hands back nothing, so the poll below would simply never enable — silently, and
    * identically to there being no scan.
    */
-  validateSearch: (search: Record<string, unknown>): { batch?: string } => {
+  validateSearch: (search: Record<string, unknown>): { batch?: string; folderId?: string } => {
     const batch = search.batch
-    return typeof batch === 'string' && batch.length > 0 ? { batch } : {}
+    const folderId = search.folderId
+    return {
+      ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
+      // Absent, never empty. No category selected is the whole library, which the parts
+      // route spells as no parameter at all — so a selection that is cleared has to leave
+      // nothing behind rather than leave `?folderId=` behind.
+      ...(typeof folderId === 'string' && folderId.length > 0 ? { folderId } : {}),
+    }
   },
 })
 
 /**
- * Reads the search param and hands it to `Index` as a prop. `Index` takes the batch
- * rather than calling `useSearch` itself so it stays renderable without a router — which
- * is how `index.test.tsx` renders it.
+ * Reads the search params and hands them to `Index` as props. `Index` takes the batch and
+ * the selected category rather than calling `useSearch` itself so it stays renderable
+ * without a router — which is how `index.test.tsx` renders it.
+ *
+ * The selection lives in the URL for the reason every other filter does: it survives a
+ * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch } = Route.useSearch()
-  return <Index batch={batch} />
+  const { batch, folderId } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  return (
+    <Index
+      batch={batch}
+      folderId={folderId}
+      onSelectFolder={(folder) =>
+        void navigate({
+          search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
+        })
+      }
+    />
+  )
 }
 
 /**
@@ -128,7 +156,15 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
   return strings.scan.finished(status.ingested, status.skipped)
 }
 
-export function Index({ batch }: { batch?: string }) {
+export function Index({
+  batch,
+  folderId,
+  onSelectFolder,
+}: {
+  batch?: string
+  folderId?: string
+  onSelectFolder?: (folder: FolderId | null) => void
+}) {
   const queryClient = useQueryClient()
 
   /**
@@ -143,9 +179,13 @@ export function Index({ batch }: { batch?: string }) {
   const activeBatch = started?.id ?? batch
 
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
+  // The selected category is part of the key, not a filter applied after the fact: two
+  // categories are two different pages of two different sizes, and the invalidation the
+  // scan effect fires still reaches both — `['parts', library]` is a prefix of every one
+  // of them.
   const parts = useQuery({
-    queryKey: ['parts', DEFAULT_LIBRARY_ID],
-    queryFn: () => fetchParts(DEFAULT_LIBRARY_ID),
+    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
+    queryFn: () => fetchParts(DEFAULT_LIBRARY_ID, folderId),
   })
   const scan = useQuery({
     queryKey: ['batch', DEFAULT_LIBRARY_ID, activeBatch],
@@ -232,67 +272,79 @@ export function Index({ batch }: { batch?: string }) {
         : null
 
   return (
-    <section>
-      <ActionBar
-        // Three sources, most authoritative first, and `undefined` when none of them has
-        // an answer. The server's echo is the truth once it lands; `variables` is what this
-        // click asked for and covers the round trip, since react-query clears `data` the
-        // moment a mutation goes pending — without it the box springs back to its old
-        // position and sits there, disabled, for as long as the request takes, which reads
-        // as the click having been ignored. A click the server refused is dropped, because
-        // a value it rejected is not a position this library is in and there is now
-        // something true to fall back to: the `GET`, which is the starting position and
-        // the reason design §3.2's default is not. The default is what a library is set to
-        // until someone changes it, not what this one is set to.
-        autoThumbnail={
-          settings.data?.autoThumbnail ??
-          (settings.isError ? undefined : settings.variables) ??
-          librarySettings.data?.autoThumbnail
-        }
-        onAutoThumbnail={(on) => settings.mutate(on)}
-        settingsBusy={settings.isPending}
-        settingsNote={
-          settings.isError
-            ? strings.library.autoThumbnailFailed
-            : librarySettings.isError
-              ? strings.library.autoThumbnailUnknown
-              : null
-        }
-        onScan={() => scanNow.mutate()}
-        scanBusy={scanNow.isPending}
-        onSweep={() => sweep.mutate()}
-        sweepBusy={sweep.isPending}
-        note={note}
+    <section className="flex items-start gap-6">
+      {/*
+        The tree and the grid are siblings, and the drag between them needs nothing
+        shared: a card writes its identity into the drag payload and a category row
+        reads it back on drop, so neither holds state for the other.
+      */}
+      <FolderTree
+        library={DEFAULT_LIBRARY_ID}
+        selected={folderId ?? null}
+        onSelect={(folder) => onSelectFolder?.(folder)}
       />
-      {activeBatch === undefined ? null : (
-        <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
-      )}
-      {parts.isPending ? (
-        <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
-      ) : parts.isError ? (
-        <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
-      ) : parts.data.parts.length === 0 ? (
-        // An empty page and a page still in flight are different facts, so only a page
-        // that came back empty gets the empty state.
-        <EmptyLibrary />
-      ) : (
-        <>
-          <Grid
-            parts={parts.data.parts}
-            onRender={(part) => renderPart.mutate(part)}
-            busyPart={renderPart.isPending ? renderPart.variables : undefined}
-          />
-          <PageExtent page={parts.data} />
-          <StorageTotals storage={storage.data} isError={storage.isError} />
-        </>
-      )}
-      <p className="mt-6 text-sm text-[var(--color-muted)]">
-        {health.isPending
-          ? strings.health.checking
-          : health.isError
-            ? strings.health.failed
-            : strings.health.ok(health.data.database.major)}
-      </p>
+      <div className="min-w-0 flex-1">
+        <ActionBar
+          // Three sources, most authoritative first, and `undefined` when none of them has
+          // an answer. The server's echo is the truth once it lands; `variables` is what this
+          // click asked for and covers the round trip, since react-query clears `data` the
+          // moment a mutation goes pending — without it the box springs back to its old
+          // position and sits there, disabled, for as long as the request takes, which reads
+          // as the click having been ignored. A click the server refused is dropped, because
+          // a value it rejected is not a position this library is in and there is now
+          // something true to fall back to: the `GET`, which is the starting position and
+          // the reason design §3.2's default is not. The default is what a library is set to
+          // until someone changes it, not what this one is set to.
+          autoThumbnail={
+            settings.data?.autoThumbnail ??
+            (settings.isError ? undefined : settings.variables) ??
+            librarySettings.data?.autoThumbnail
+          }
+          onAutoThumbnail={(on) => settings.mutate(on)}
+          settingsBusy={settings.isPending}
+          settingsNote={
+            settings.isError
+              ? strings.library.autoThumbnailFailed
+              : librarySettings.isError
+                ? strings.library.autoThumbnailUnknown
+                : null
+          }
+          onScan={() => scanNow.mutate()}
+          scanBusy={scanNow.isPending}
+          onSweep={() => sweep.mutate()}
+          sweepBusy={sweep.isPending}
+          note={note}
+        />
+        {activeBatch === undefined ? null : (
+          <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
+        )}
+        {parts.isPending ? (
+          <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
+        ) : parts.isError ? (
+          <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
+        ) : parts.data.parts.length === 0 ? (
+          // An empty page and a page still in flight are different facts, so only a page
+          // that came back empty gets the empty state.
+          <EmptyLibrary />
+        ) : (
+          <>
+            <Grid
+              parts={parts.data.parts}
+              onRender={(part) => renderPart.mutate(part)}
+              busyPart={renderPart.isPending ? renderPart.variables : undefined}
+            />
+            <PageExtent page={parts.data} />
+            <StorageTotals storage={storage.data} isError={storage.isError} />
+          </>
+        )}
+        <p className="mt-6 text-sm text-[var(--color-muted)]">
+          {health.isPending
+            ? strings.health.checking
+            : health.isError
+              ? strings.health.failed
+              : strings.health.ok(health.data.database.major)}
+        </p>
+      </div>
     </section>
   )
 }
@@ -518,6 +570,32 @@ function Grid({
   )
 }
 
+/**
+ * The model's own directory on disk, as the wire carries it.
+ *
+ * Three states, and they are not the same fact: a path; `null`, meaning this model
+ * predates the folder layout and is still in the shared store; and `undefined`, meaning
+ * the field is not on the wire at all. The last two both show the migration-pending
+ * message, but only an explicit `null` withdraws the move — an older server that does not
+ * send the field is not a statement that this model cannot be moved.
+ *
+ * Read through an intersection because `PartCard` does not carry the field yet: the API
+ * lane adds it and ts-rs regenerates the binding at merge. The response is cast rather
+ * than validated regardless — `SourceFile` and `Measurements` narrow their fields with
+ * `typeof` for exactly that reason — so this narrows one more field of the value the
+ * server actually sent rather than declaring a shape of its own.
+ *
+ * ponytail: intersection here until the regenerated binding lands; then read
+ * `part.directory` directly and delete it. Nothing else in this file changes.
+ */
+function partDirectory(part: PartCard): string | null | undefined {
+  const value = (part as PartCard & { directory?: string | null }).directory
+  if (typeof value === 'string' && value.length > 0) {
+    return value
+  }
+  return value === null ? null : undefined
+}
+
 function Card({
   part,
   onRender,
@@ -528,9 +606,31 @@ function Card({
   busy: boolean
 }) {
   const nameId = `part-name-${part.id}`
+  const [moving, setMoving] = useState(false)
+  const directory = partDirectory(part)
+  // A model still in the shared store has no directory to rename, and the move route
+  // refuses it. The card withholds the move rather than letting the user discover that
+  // from a `409` — the same status the route uses for a name collision, which the UI
+  // would otherwise present as one.
+  const movable = directory !== null
   return (
     <article
       aria-labelledby={nameId}
+      draggable={movable}
+      onDragStart={(event) =>
+        event.dataTransfer.setData(
+          PART_DRAG_TYPE,
+          partDragPayload({ id: part.id, name: part.name }),
+        )
+      }
+      // Right-click opens the same chooser the button does, so the pointer gesture people
+      // expect from a file manager is there without being the only way in.
+      onContextMenu={(event) => {
+        if (movable) {
+          event.preventDefault()
+          setMoving(true)
+        }
+      }}
       className="ease-mechanical flex h-full flex-col overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5"
     >
       <div className="flex aspect-square items-center justify-center bg-[var(--color-bg)]">
@@ -561,17 +661,109 @@ function Card({
           as the sweep lands is harder to hit than one that stays put. The accessible name
           says which part, since the visible label is identical on every card.
         */}
-        <button
-          type="button"
-          onClick={() => onRender(part.id)}
-          disabled={busy}
-          aria-label={strings.render.partFor(part.name)}
-          className="ease-mechanical mt-2 self-start rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {strings.render.part}
-        </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onRender(part.id)}
+            disabled={busy}
+            aria-label={strings.render.partFor(part.name)}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.render.part}
+          </button>
+          {/*
+            The keyboard path to a move, and not a fallback: dragging a card into a
+            scrolled tree is a poor trackpad target and impossible without a pointer. A
+            model with no directory of its own gets the reason instead of a control that
+            would fail at the server.
+          */}
+          {movable ? (
+            <button
+              type="button"
+              onClick={() => setMoving(true)}
+              aria-label={strings.folders.moveToFor(part.name)}
+              className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.folders.moveTo}
+            </button>
+          ) : (
+            <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
+          )}
+        </div>
+        <ShowInFolder part={part} directory={directory} />
+        {moving ? (
+          <MovePartDialog
+            part={{ id: part.id, name: part.name }}
+            library={part.library}
+            onClose={() => setMoving(false)}
+          />
+        ) : null}
       </div>
     </article>
+  )
+}
+
+/**
+ * Where this model is on disk — shown, not opened.
+ *
+ * No browser opens a host file manager: `file://` navigation from a page is blocked
+ * everywhere, and a button that claimed otherwise would be a control that cannot work. So
+ * this reveals the path as selectable, copyable text and says why it is a path. A native
+ * reveal belongs to the Tauri shell, which has a host to ask.
+ *
+ * The path is never assembled here from category names. The server disambiguates
+ * colliding directory names — the second `cliff` becomes `cliff_a1b2c3` — and the client
+ * cannot know when it did, so a path joined from slugs would be confidently wrong exactly
+ * where it matters.
+ */
+function ShowInFolder({
+  part,
+  directory,
+}: {
+  part: PartCard
+  directory: string | null | undefined
+}) {
+  const [open, setOpen] = useState(false)
+  // Narrowed out here rather than in the JSX below: a `typeof x !== 'string'` inside a
+  // child expression puts the literal `'string'` in a position `no-bare-strings.test.ts`
+  // reads — correctly — as a label reaching the screen.
+  const path = typeof directory === 'string' ? directory : null
+  return (
+    <div className="mt-2 text-xs text-[var(--color-muted)]">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-label={strings.folders.showInFolderFor(part.name)}
+        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.folders.showInFolder}
+      </button>
+      {!open ? null : path === null ? (
+        <p className="mt-2">{strings.folders.directoryPending}</p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {/* `select-all` so one click takes the whole path, which is what a person does
+              with it — and `break-all` because a nested category path is longer than a
+              card is wide. */}
+          <code className="block font-mono break-all select-all text-[var(--color-text)]">
+            {path}
+          </code>
+          <button
+            type="button"
+            onClick={() => {
+              // Absent in an insecure context, and a rejected permission is not worth an
+              // error state: the path is on screen and selectable either way.
+              void navigator.clipboard?.writeText(path).catch(() => undefined)
+            }}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.folders.copyPath}
+          </button>
+          <p>{strings.folders.directoryHint}</p>
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -1,21 +1,30 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
+import { routeTree } from '../routeTree.gen'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, FolderNode, LibraryStorage, PartCard, PartsPage } from '../lib/types'
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
  * what lets these tests render it with no router in scope. The route component does the
  * `useSearch()` half; see `index.tsx`.
  */
-function renderIndex(props: { batch?: string; client?: QueryClient } = {}) {
+function renderIndex(
+  props: {
+    batch?: string
+    folderId?: string
+    onSelectFolder?: (folder: string | null) => void
+    client?: QueryClient
+  } = {},
+) {
   const client = props.client ?? newClient()
   return render(
     <QueryClientProvider client={client}>
-      <Index batch={props.batch} />
+      <Index batch={props.batch} folderId={props.folderId} onSelectFolder={props.onSelectFolder} />
     </QueryClientProvider>,
   )
 }
@@ -53,9 +62,17 @@ function stubFetch(routes: {
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
   scan?: () => Promise<StubResponse>
+  folders?: () => Promise<StubResponse>
+  move?: () => Promise<StubResponse>
+  folderDelete?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
+    // Above the settings rule below, which claims every `PATCH` there is. The move is a
+    // `PATCH` too, and answering it with a `LibrarySettings` body would leave a move test
+    // asserting against a shape it never asked for.
+    if (init?.method === 'PATCH' && url.startsWith('/api/parts/')) return (routes.move ?? pending)()
+    if (url.startsWith('/api/folders/')) return (routes.folderDelete ?? pending)()
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
     // is a prefix of every other library route.
     if (init?.method === 'PATCH') return (routes.settings ?? pending)()
@@ -64,8 +81,13 @@ function stubFetch(routes: {
     // earlier `includes('/parts')` rule would have answered with a page of the grid.
     if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
-    if (url.endsWith('/parts')) return (routes.parts ?? pending)()
+    // `endsWith` alone stops matching the moment the grid filters by a category, and the
+    // request then falls through to the bare-library rule — a settings body where a page
+    // of parts was expected.
+    if (url.endsWith('/parts') || url.includes('/parts?')) return (routes.parts ?? pending)()
     if (url.endsWith('/scan')) return (routes.scan ?? pending)()
+    // Before the bare-library rule, which every library route is a prefix of.
+    if (url.endsWith('/folders')) return (routes.folders ?? pending)()
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith('/storage')) return (routes.storage ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
@@ -1365,4 +1387,189 @@ test('finishing a scan re-reads what the library occupies', async () => {
   fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
 
   await waitFor(() => expect(storageReads).toBeGreaterThan(before))
+})
+
+/**
+ * The category tree beside the grid, and the one half of it that needs a real router: the
+ * selection is a search param, so proving it lands in the URL means rendering the route
+ * rather than the component. `FolderTree.test.tsx` covers everything that does not need
+ * one.
+ *
+ * `createMemoryHistory` rather than a stub: `routeTree.gen.ts` imports its routes plainly
+ * and `vitest.config.ts` does not load the router plugin, so the generated tree renders
+ * here as it ships.
+ */
+function renderApp(client: QueryClient = newClient()) {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  )
+  return router
+}
+
+const TERRAIN: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0001',
+  parentId: null,
+  name: 'Terrain',
+  partCount: 34,
+}
+const ROCKS: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0002',
+  parentId: TERRAIN.id,
+  name: 'Rocks',
+  partCount: 12,
+}
+
+/**
+ * A card as it arrives once a model has its own directory. Typed as an intersection
+ * because `PartCard` does not carry `directory` yet — the API lane adds the field and
+ * ts-rs regenerates the binding at merge, and until then the page reads it off the wire
+ * defensively, which is what these two fixtures exercise.
+ *
+ * The path is the server's, verbatim. It is never rebuilt here from category names: the
+ * server disambiguates colliding directory names and a client cannot know when it did.
+ */
+const CLIFF_FACE: PartCard & { directory: string } = {
+  id: '01931b6e-0000-7000-8000-0000000a0007',
+  library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0007',
+  name: 'Basalt cliff face, 180 mm span',
+  partNumber: 'LP-7710-C',
+  thumbnail: WEBP_BLUE,
+  triangleCount: 148_302,
+  approximate: true,
+  sourceHash: '5b8c1f2e9a47d0c3b6154e88f0a2d97361cc4e5b0f18a7d2946b3e5107cd82af',
+  sourceBytes: 7_412_880,
+  storedBytes: 2_104_331,
+  compressed: true,
+  createdAt: '2026-08-30T11:04:19Z',
+  updatedAt: '2026-08-30T11:04:19Z',
+  directory: '/var/lib/lapidary/libraries/default/Terrain/Rocks/basalt_cliff_face',
+}
+
+/** Ingested before the folder layout existed, so it is still in the shared store. */
+const OLD_BRACKET: PartCard & { directory: null } = {
+  id: '01931b6e-0000-7000-8000-0000000a0008',
+  library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0008',
+  name: 'Corner bracket, 40 x 40 mm, 4 mm wall',
+  partNumber: 'LP-2280-A',
+  thumbnail: WEBP_ORANGE,
+  triangleCount: 3204,
+  approximate: true,
+  sourceHash: 'e41d2b7c05986aa3f0d4b8172c9e5a63d081fb42c7e9503a186dd47b2c9f0e35',
+  sourceBytes: 212_004,
+  storedBytes: 64_118,
+  compressed: true,
+  createdAt: '2026-05-02T08:41:07Z',
+  updatedAt: '2026-05-02T08:41:07Z',
+  directory: null,
+}
+
+test('selecting a category puts it in the URL and asks the grid for that category', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    folders: ok([TERRAIN, ROCKS]),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  const router = renderApp()
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Rocks' }))
+
+  // In the URL, not in component state: the filter survives a reload and is a link
+  // someone can send.
+  await waitFor(() => expect(router.state.location.searchStr).toContain(`folderId=${ROCKS.id}`))
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+    ),
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.root }))
+  // Cleared means absent, never `?folderId=`: an absent parameter is what the route reads
+  // as the whole library.
+  await waitFor(() => expect(router.state.location.searchStr).not.toContain('folderId'))
+})
+
+test('a category in the URL filters the first request the grid makes', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    folders: ok([TERRAIN, ROCKS]),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex({ folderId: ROCKS.id })
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+    ),
+  )
+  // Unfiltered is a different request, not this one with an empty parameter.
+  expect(fetchMock).not.toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/parts`)
+})
+
+test('show in folder reveals the directory as copyable text and opens nothing', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.showInFolderFor(CLIFF_FACE.name) }),
+  )
+
+  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined()
+  expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined()
+  // No browser opens a host file manager, and `file://` navigation from a page is blocked
+  // everywhere — so nothing here pretends to. The path is text, and there is no link.
+  expect(document.querySelector('a[href^="file:"]')).toBeNull()
+
+  // jsdom has no clipboard, which is the same shape as an insecure context: the copy
+  // control must not throw there, and the path stays on screen either way.
+  fireEvent.click(within(card).getByRole('button', { name: strings.folders.copyPath }))
+  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined()
+})
+
+test('a model still in the shared store says so rather than showing an invented path', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([OLD_BRACKET])), folders: ok([TERRAIN]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: OLD_BRACKET.name })
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.showInFolderFor(OLD_BRACKET.name) }),
+  )
+
+  expect(within(card).getByText(strings.folders.directoryPending)).toBeDefined()
+  // And the move is withheld with its reason rather than offered and refused at the
+  // server with a 409 — the same status a name collision uses, which the UI would then
+  // present as one.
+  expect(
+    within(card).queryByRole('button', { name: strings.folders.moveToFor(OLD_BRACKET.name) }),
+  ).toBeNull()
+  expect(within(card).getByText(strings.folders.notMigrated)).toBeDefined()
+  expect(card.getAttribute('draggable')).toBe('false')
+})
+
+test('a card offers the move chooser, and is draggable for the tree to catch', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN, ROCKS]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  expect(card.getAttribute('draggable')).toBe('true')
+
+  // The keyboard path: a plain button on the card, no pointer gesture anywhere in it.
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.moveToFor(CLIFF_FACE.name) }),
+  )
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByText(strings.folders.moveTitle(CLIFF_FACE.name))).toBeDefined()
+  expect(
+    within(dialog).getByRole('button', { name: strings.folders.moveInto(ROCKS.name) }),
+  ).toBeDefined()
 })
