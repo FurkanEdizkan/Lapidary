@@ -3,6 +3,7 @@
 
 mod blob;
 mod derive;
+mod detail;
 mod download;
 mod error;
 mod health;
@@ -11,6 +12,7 @@ mod parts;
 mod scan;
 mod upload;
 
+pub use detail::PartDetail;
 pub use error::ApiError;
 pub use parts::{LibraryStorage, PartCard, PartsPage};
 pub use upload::{ChunkAccepted, UploadFile, UploadManifest, UploadPlan};
@@ -142,6 +144,9 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{id}/uploads/{blake3}",
                 put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
             )
+            // The page a card links to. `Role::Api`: it is the open path, reading
+            // rows and derivatives only — see `detail.rs`.
+            .route("/api/parts/{id}", get(detail::detail))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

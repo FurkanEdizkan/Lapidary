@@ -6,8 +6,8 @@ mod repo;
 
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
-    DerivativeBytes, DownloadSource, IngestRequest, PartRepository, PartRow, PgBlobs, PgIngest,
-    PgParts, StorageTotals, StoredBlobRow, TessellationRow,
+    DerivativeBytes, DownloadSource, IngestRequest, PartDetailRow, PartRepository, PartRow,
+    PgBlobs, PgIngest, PgParts, StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -73,6 +73,17 @@ pub enum DbError {
     )]
     CorruptBlobHash { column: &'static str, value: String },
 
+    /// A measurement's provenance column holds a word this build does not know.
+    ///
+    /// Refused rather than defaulted, and the direction of the refusal is the point:
+    /// defaulting to `tessellated` would label an analytic figure approximate, which is a
+    /// needless hedge, and defaulting to `analytic` would present a mesh-derived figure as
+    /// exact — which is the one thing `CLAUDE.md` says measurement must never do.
+    #[error(
+        "A measurement's provenance column holds `{value}`, which is neither `analytic` nor `tessellated`. Lapidary will not guess which one it meant — presenting a mesh-derived figure as exact is the one thing a measurement must never do. Check what else has write access to this database, then re-scan the part."
+    )]
+    UnknownProvenance { value: String },
+
     /// The two derivative shapes nothing can display. Both are refused by
     /// [`PgIngest::upsert_derivative`] before it opens a transaction, because both write
     /// a row that is valid, invisible and — since a row exists — invisible to
@@ -122,6 +133,7 @@ impl DbError {
             | DbError::TriangleCountTooLarge { .. }
             | DbError::NegativeByteCount { .. }
             | DbError::CorruptBlobHash { .. }
+            | DbError::UnknownProvenance { .. }
             | DbError::ThumbnailNotInline { .. }
             | DbError::EmptyDerivative { .. } => self.to_string(),
         }

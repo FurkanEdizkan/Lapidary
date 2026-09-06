@@ -1,5 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
@@ -8,14 +15,33 @@ import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/ty
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
- * what lets these tests render it with no router in scope. The route component does the
- * `useSearch()` half; see `index.tsx`.
+ * what lets these tests drive it directly; the route component does the `useSearch()`
+ * half, see `index.tsx`.
+ *
+ * A router is in scope all the same, because the card's name is a `<Link>` to the detail
+ * route and `<Link>` reads router context — without a provider every one of these tests
+ * renders an empty body. The tree is synthetic rather than the real `routeTree.gen`: these
+ * tests want to hand `Index` a batch directly, and going through the real route would mean
+ * spelling it as a search param in forty places to test something `index.tsx` already
+ * covers. The detail route is stubbed so the link has a real target to resolve against.
  */
 function renderIndex(props: { batch?: string; client?: QueryClient } = {}) {
   const client = props.client ?? newClient()
+  const rootRoute = createRootRoute({ component: () => <Index batch={props.batch} /> })
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/parts/$partId',
+    component: () => null,
+  })
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([detailRoute]),
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
   return render(
     <QueryClientProvider client={client}>
-      <Index batch={props.batch} />
+      {/* The synthetic tree is not the registered one, so its types do not line up with
+          the global router registration. The cast is confined to this one line. */}
+      <RouterProvider router={router as never} />
     </QueryClientProvider>,
   )
 }
@@ -129,6 +155,7 @@ const MOTOR_MOUNT: PartCard = {
   thumbnail: WEBP_BLUE,
   triangleCount: 12486,
   approximate: true,
+  tessellationL0: null,
   sourceHash: '33237f7971cb1497a5417c667e9a459c240943c7378b44fcd4f6404590363895',
   sourceBytes: 624_384,
   storedBytes: 197_012,
@@ -146,6 +173,7 @@ const HEX_NUT: PartCard = {
   thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
   approximate: true,
+  tessellationL0: null,
   sourceHash: 'a0763a33d499b598864ddd26eeca15f6d9794ce44185883fd969888941de365d',
   sourceBytes: 99_284,
   storedBytes: 26_741,
@@ -170,6 +198,7 @@ const SHAFT_COUPLER: PartCard = {
   thumbnail: null,
   triangleCount: 7320,
   approximate: true,
+  tessellationL0: null,
   sourceHash: 'c6b1d88498005800fb68ccc2f54588d00bbc1603243fcef5ef8f8000d1be2a70',
   sourceBytes: 148_930,
   storedBytes: 148_930,
@@ -199,10 +228,14 @@ test('renders the connected state from a healthy response', async () => {
   expect(fetchMock).toHaveBeenCalledWith('/api/healthz')
 })
 
-test('renders the checking state while the request is in flight', () => {
+test('renders the checking state while the request is in flight', async () => {
+  // `findBy`, not `getBy`: the page mounts inside a RouterProvider, which resolves the
+  // route on a tick before anything paints — the same tick production has always had,
+  // since `main.tsx` has always rendered through one. The stub never settles, so the
+  // pending state this asserts persists indefinitely and awaiting it weakens nothing.
   stubFetch({})
   renderIndex()
-  expect(screen.getByText('Checking the server…')).toBeDefined()
+  expect(await screen.findByText('Checking the server…')).toBeDefined()
 })
 
 test('renders an actionable message when the server is unreachable', async () => {
@@ -265,10 +298,10 @@ test('the empty state offers both ways in, and each has a control behind it', as
 // only the second one is the empty state. Without this, a component that renders the
 // empty state during the request still passes every other test here, because the pages
 // they mock all resolve.
-test('does not claim the library is empty while the request is still in flight', () => {
+test('does not claim the library is empty while the request is still in flight', async () => {
   stubFetch({})
   renderIndex()
-  expect(screen.getByText(strings.parts.loading)).toBeDefined()
+  expect(await screen.findByText(strings.parts.loading)).toBeDefined()
   expect(screen.queryByText(strings.emptyLibrary.title)).toBeNull()
 })
 
@@ -1052,6 +1085,7 @@ const RECOVERED_BRACKET: PartCard = {
   revision: '01931b6e-0000-7000-8000-0000000b0006',
   name: 'Angle bracket, 40 x 40 x 3 mm',
   partNumber: 'LP-1042-03',
+  tessellationL0: null,
   sourceHash: null,
   sourceBytes: null,
   storedBytes: null,
@@ -1140,7 +1174,12 @@ test('a revision with no source file keeps its card and offers no download', asy
   // exists to forbid.
   const card = await screen.findByRole('article', { name: RECOVERED_BRACKET.name })
   expect(within(card).getByText(strings.download.noSource)).toBeDefined()
-  expect(within(card).queryByRole('link')).toBeNull()
+  // The DOWNLOAD link, by its accessible name, not "any link on this card": the card's
+  // name became a link to the part's detail page, so a bare `queryByRole('link')` now
+  // finds that one and would fail here for a reason that has nothing to do with sources.
+  expect(
+    within(card).queryByRole('link', { name: strings.download.originalFor(RECOVERED_BRACKET.name) }),
+  ).toBeNull()
   // No size line invented out of nulls either.
   expect(within(card).queryByText(/on disk/)).toBeNull()
 

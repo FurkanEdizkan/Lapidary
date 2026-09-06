@@ -72,6 +72,11 @@ pub struct PartCard {
     /// what the card claimed (`DATA.md` §5.1) — holding it is not authorization to read
     /// it, exactly as `PartSummary.thumbnail` is not.
     pub source_hash: Option<BlobHash>,
+    /// The L0 tessellation's hash, carried verbatim from `PartSummary` for the reason
+    /// `source_hash` is: it is the only thing that makes those bytes addressable, and
+    /// `GET /api/blob/{blake3}` had no possible caller without it. Holding it is not
+    /// authorization — that route checks reachability before serving.
+    pub tessellation_l0: Option<BlobHash>,
     /// Ingested size and size on disk, from `PartSummary`. `number | null`, not
     /// `bigint`, for the reason given there: it is what serde puts on the wire.
     #[ts(type = "number | null")]
@@ -277,6 +282,7 @@ fn to_card(row: PartRow) -> PartCard {
         triangle_count: summary.triangle_count,
         approximate: summary.approximate,
         source_hash: summary.source_hash,
+        tessellation_l0: summary.tessellation_l0,
         source_bytes: summary.source_bytes,
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,

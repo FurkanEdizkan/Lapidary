@@ -6,6 +6,7 @@ import type {
   LibraryId,
   LibrarySettings,
   LibraryStorage,
+  PartDetail,
   PartId,
   PartsPage,
   RevisionId,
@@ -276,4 +277,37 @@ export async function commitUpload(
       body: JSON.stringify({ files } satisfies UploadManifest),
     }),
   )
+}
+
+/**
+ * `GET /api/parts/{id}` — one part, in full.
+ *
+ * The page a card links to. Its own request rather than a field on the grid's page: the
+ * bounding box, provenance and format a detail page shows would be paid for fifty times
+ * per grid page to be displayed once.
+ *
+ * A 404 is a real answer, and it is deliberately the same one for a deleted part and an id
+ * that names nothing — the route does not distinguish them, because doing so would confirm
+ * a part exists to someone who cannot see it.
+ */
+export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`)
+  if (!response.ok) {
+    throw new Error(`part detail returned ${response.status}`)
+  }
+  return (await response.json()) as PartDetail
+}
+
+/**
+ * `GET /api/blob/{blake3}` — derivative bytes by hash.
+ *
+ * A URL, not a fetch, exactly as `downloadUrl` is: the detail page renders it as an
+ * `<a href download>` and lets the browser do the transfer. Until the L0 rung's hash
+ * reached the client this route had no possible caller at all.
+ *
+ * Holding a hash is not authorization — the route checks that some part in some library
+ * still reaches these bytes before serving one.
+ */
+export function blobUrl(hash: BlobHash): string {
+  return `/api/blob/${encodeURIComponent(hash)}`
 }

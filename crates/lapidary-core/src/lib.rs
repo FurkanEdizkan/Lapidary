@@ -56,6 +56,7 @@ mod tests {
             triangle_count: Some(48_112),
             approximate: true,
             source_hash: Some(BlobHash::from_bytes([0x22; 32])),
+            tessellation_l0: Some(BlobHash::from_bytes([0x33; 32])),
             source_bytes: Some(204_800),
             stored_bytes: Some(91_204),
             compressed: Some(true),

@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -676,8 +676,20 @@ function Card({
         )}
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
+        {/*
+          The name is the link, not the whole card. A card holds a render button and a
+          download link already, and nesting those inside an anchor is invalid HTML that
+          browsers resolve by guessing. The name is also what a keyboard user tabs to and
+          what a screen reader announces for the card, so it is the right target.
+        */}
         <h2 id={nameId} className="text-sm leading-snug">
-          {part.name}
+          <Link
+            to="/parts/$partId"
+            params={{ partId: part.id }}
+            className="ease-mechanical duration-[var(--duration-fast)] hover:underline hover:underline-offset-2"
+          >
+            {part.name}
+          </Link>
         </h2>
         {part.partNumber === null ? null : (
           <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
