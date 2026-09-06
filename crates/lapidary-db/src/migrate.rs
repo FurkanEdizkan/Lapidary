@@ -12,8 +12,10 @@
 //! A model directory holds its file uncompressed, so moving one of those rows means the
 //! blob row has to say level 0 afterwards. Do that for one row while a sibling still points
 //! at the compressed content-addressed copy and the sibling's every read decodes bytes that
-//! were never encoded. There is no ordering of per-row moves that avoids it: the level is
-//! one column shared by rows that would need two different values.
+//! were never encoded. Migration `0012` is what stops that being unsurvivable — readers of
+//! a file follow `file.zstd_level` now, so a sibling keeps its own recorded level whatever
+//! the blob row says — but the *old copy* is still one file for the whole group, and only
+//! this batching knows when the last row has stopped needing it.
 //!
 //! So [`PgStorageMigration::pending_sources`] selects a page of *hashes* and returns every
 //! un-migrated `file` row for each of them — including rows in other libraries, which the
@@ -422,8 +424,13 @@ impl HashClaim {
         let ids: Vec<Uuid> = moved.iter().map(|(id, _)| *id).collect();
         let paths: Vec<String> = moved.iter().map(|(_, path)| path.clone()).collect();
 
+        // `zstd_level = 0` moves with `storage_path`, in the same statement, because they
+        // are one fact: the copy this row now names was written `Compression::AsIs`.
+        // Splitting them would leave a window — and, worse, a crash — in which a row points
+        // at a raw file while still recording the legacy copy's level, which is exactly the
+        // stale-level hazard migration `0012` exists to close.
         sqlx::query(
-            "UPDATE file SET storage_path = t.path \
+            "UPDATE file SET storage_path = t.path, zstd_level = 0 \
                FROM unnest($1::uuid[], $2::text[]) AS t(id, path) \
               WHERE file.id = t.id AND file.storage_path IS NULL",
         )
@@ -435,6 +442,11 @@ impl HashClaim {
         // Level 0 and `stored_bytes = size_bytes` together, because a row saying it is
         // uncompressed while reporting a compressed size on disk is a row that contradicts
         // itself — and `DATA.md` §1.1's storage panel reads the second column.
+        //
+        // Still worth writing since migration `0012` moved the level readers follow onto
+        // `file`: this column is what an un-migrated *sibling* row reads, and dropping it
+        // to 0 here is what records that the old copy is gone. The reap below only runs
+        // when there is no such sibling, so the two agree.
         sqlx::query("UPDATE blob SET zstd_level = 0, stored_bytes = size_bytes WHERE blake3 = $1")
             .bind(&self.hex)
             .execute(&mut *self.tx)

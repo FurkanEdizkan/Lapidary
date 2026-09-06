@@ -68,7 +68,7 @@ pub struct DownloadSource {
     /// Migration `0008`'s comment states the rule and how long it holds — for as long as
     /// `migrate_storage` takes to drain every library, which is hours on a real corpus.
     pub storage_path: Option<String>,
-    /// `blob.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
+    /// `file.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
     /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
     /// a `COALESCE` could not serve a zstd frame as the file, because
     /// `SourceReader::get` decodes on `is_some_and(|level| level != 0)` and reads `None`
@@ -83,6 +83,10 @@ pub struct DownloadSource {
     /// The hazard the retracted wording described is real but belongs to spec §2.7: a
     /// *recorded* `0` written over zstd bytes during slice 7's rewrite window. Nothing
     /// about `None` produces it.
+    ///
+    /// `file`, not `blob`, since migration `0012`. The per-hash column could not describe a
+    /// hash that has a zstd-3 legacy copy and a raw model file at once, which is every hash
+    /// a scan re-meets during the migration window.
     pub zstd_level: Option<i16>,
 }
 
@@ -610,9 +614,15 @@ async fn insert_part_chain(
     .execute(&mut **tx)
     .await?;
 
+    // `zstd_level` is recorded on the file row and not read back off `blob` (migration
+    // `0012`): the blob row is per-hash and a hash can have a compressed legacy copy and a
+    // raw model file at the same time, all through the migration window. `record` and
+    // `link_existing` both arrive here, and both pass the level `put_at` reported for the
+    // write they just did — so `link_existing` records the truth about its own file
+    // instead of inheriting whatever the shared row happened to say.
     sqlx::query(
-        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, storage_path) \
-         VALUES ($1, $2, 'source', $3, $4, $5, $6)",
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, storage_path, \
+         zstd_level) VALUES ($1, $2, 'source', $3, $4, $5, $6, $7)",
     )
     .bind(Uuid::now_v7())
     .bind(revision)
@@ -620,6 +630,7 @@ async fn insert_part_chain(
     .bind(req.blob.hash.to_hex())
     .bind(req.blob.size_bytes as i64)
     .bind(req.storage_path)
+    .bind(req.blob.zstd_level)
     .execute(&mut **tx)
     .await?;
 
@@ -877,11 +888,17 @@ impl PgParts {
     /// the user deleted, and a download URL held from before the delete must not outlive
     /// it. A deleted part is not browsable, so it is not downloadable either.
     ///
-    /// `zstd_level` comes from the `blob` row joined off the same `file` row that carried
-    /// the hash — never from `Compression::for_source_format`. That is ingest-time policy
-    /// and slice 7 is about to move it, so a reader that re-derived it would start serving
-    /// zstd frames as files the day the policy changed (spec §2.5). It is passed through as
-    /// the nullable column it is; see [`DownloadSource::zstd_level`].
+    /// `zstd_level` comes off the `file` row itself — never from
+    /// `Compression::for_source_format`. That is ingest-time policy and slice 7 is about to
+    /// move it, so a reader that re-derived it would start serving zstd frames as files the
+    /// day the policy changed (spec §2.5). It is passed through as the nullable column it
+    /// is; see [`DownloadSource::zstd_level`].
+    ///
+    /// The `file` row and not the `blob` row, since migration `0012`: one hash can have a
+    /// zstd-3 copy at the old content-addressed path and a raw copy in a model directory at
+    /// the same time — that is the whole migration window — and the per-hash column cannot
+    /// answer for both. `blob` is not joined here at all any more; nothing else on this
+    /// route reads it.
     ///
     /// `storage_path` rides along the same way, for the same reason: the route picks its
     /// read by this column, not by guessing from `zstd_level` or from anything else on the
@@ -897,10 +914,9 @@ impl PgParts {
     ) -> Result<Option<DownloadSource>, DbError> {
         #[allow(clippy::type_complexity)]
         let row: Option<(String, String, String, Option<String>, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, p.name, f.storage_path, b.zstd_level FROM file f \
+            "SELECT f.blake3, f.format, p.name, f.storage_path, f.zstd_level FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
-             JOIN blob b ON b.blake3 = f.blake3 \
              WHERE f.revision_id = $1 AND f.role = 'source' AND p.deleted_at IS NULL \
              ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
         )
@@ -1308,7 +1324,7 @@ impl PartRepository for PgParts {
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, b.size_bytes, b.stored_bytes, f.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
@@ -1384,11 +1400,11 @@ impl PartRepository for PgParts {
                     // one is not a download this card describes at all: `download.rs`
                     // answers 500 for it rather than serving anything (spec §2.5.1), so
                     // reporting `false` is the display field declining to be the place a
-                    // data error surfaces. Reachable in production, not only by a direct
-                    // UPDATE — `link_existing` leaves an existing `blob` row alone and
-                    // tessellation blobs carry `zstd_level NULL`, so bytes byte-identical
-                    // to a derivative arrive as a source file over one. See
-                    // `PartSummary::compressed`.
+                    // data error surfaces. Reachable only from outside `insert_part_chain`
+                    // now that migration `0012` records the level on the `file` row: every
+                    // row this crate writes carries the level `put_at` reported for it,
+                    // including `link_existing`'s, which used to inherit whatever the
+                    // shared `blob` row said. See `PartSummary::compressed`.
                     let compressed = source_hash
                         .as_ref()
                         .map(|_| zstd_level.is_some_and(|level| level != 0));

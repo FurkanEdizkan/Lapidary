@@ -1204,14 +1204,17 @@ async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool)
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: sqlx::PgPool) {
-    // Built through the path that actually produces this state rather than by an UPDATE
-    // over `blob`, because whether it is reachable at all is half of what is being
-    // asserted. `insert_part_chain` writes every tessellation blob with `zstd_level
-    // NULL`, and the ingest handler routes bytes it already holds to `link_existing`,
-    // which leaves that row exactly as it found it. So a file whose bytes are
-    // byte-identical to an existing rung lands as a `role = 'source'` row over a
-    // NULL-level blob. Contrived under an STL-only scan; not unreachable.
+async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: sqlx::PgPool) {
+    // The other shape of the shared-column problem, and the one that used to reach the
+    // download route as a 500. `insert_part_chain` writes every tessellation blob with
+    // `zstd_level NULL`, and the ingest handler routes bytes it already holds to
+    // `link_existing`, which leaves that row exactly as it found it — so a file whose
+    // bytes are byte-identical to an existing rung lands as a `role = 'source'` row over
+    // a NULL-level blob. Contrived under an STL-only scan; not unreachable.
+    //
+    // Since migration `0012` the level is on the `file` row, so the source row records the
+    // 0 that `put_at` reported for the file it actually wrote, and the rung's blob row is
+    // still left exactly as it was found.
     let ingest = PgIngest(pool.clone());
     let rungs = [rung("tessellation_l0", 0xe6, Some(32))];
     ingest
@@ -1286,19 +1289,116 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
          is a different fact and is asserted next door"
     );
 
-    // The other half of that decision. The card declines to be where a data error
-    // surfaces; the download route is where it surfaces, and refuses to serve the bytes
-    // rather than reading them raw (spec §2.5.1). Asserted here because this fixture is
-    // the proof that the 500 is reachable from an ordinary ingest.
     let download = parts
         .source_for_download(only_revision(&pool, clip).await)
         .await
         .expect("query")
         .expect("a live part has something to download");
     assert_eq!(
-        download.zstd_level, None,
-        "the unrecorded level the download route answers 500 for, reached without \
-         corrupting a single row by hand"
+        download.zstd_level,
+        Some(0),
+        "the level of the file this ingest wrote, not the rung blob row's absence of \
+         one -- the unrecorded level this route answers 500 for is no longer something \
+         an ordinary ingest can produce"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_duplicate_ingested_mid_migration_records_its_own_level_not_the_legacy_blobs(
+    pool: sqlx::PgPool,
+) {
+    // The migration window, which spec §5.2 calls a supported state and not an edge case:
+    // one hash, one `blob` row at level 3, and a `file` row still at the old
+    // content-addressed path. A scan then meets a file whose bytes are identical at a
+    // *different* `source_path`, so `library_holds` does not short-circuit it, and the
+    // handler writes it uncompressed into its own model directory and calls
+    // `link_existing`.
+    //
+    // Both rows read through the same `blob` row and need different answers: the legacy
+    // copy really is zstd-3 and the model file really is raw. No value of
+    // `blob.zstd_level` serves both, which is why the level is recorded per `file` row.
+    let ingest = PgIngest(pool.clone());
+    let shared = blob_row(0xf1);
+    let legacy = ingest
+        .record(IngestRequest {
+            folder: None,
+            // Null: the bytes are still at `blobs/ab/cd/<hash>`, compressed at 3, and
+            // `migrate_storage` has not reached them.
+            storage_path: None,
+            library: library(),
+            name: "Cliff face, LP-7712-04",
+            source_path: "terrain/cliff-face-lp-7712-04.stl",
+            blob: &shared,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp-cliff"),
+        })
+        .await
+        .expect("records the un-migrated part these bytes arrived as");
+
+    // Exactly what the handler builds on the `link_existing` branch: the level `put_at`
+    // reports for a `Compression::AsIs` write, and the sizes of the raw file on disk.
+    let raw = StoredBlobRow {
+        hash: shared.hash,
+        size_bytes: 204_800,
+        stored_bytes: 204_800,
+        zstd_level: 0,
+    };
+    let duplicate = ingest
+        .link_existing(IngestRequest {
+            folder: None,
+            storage_path: Some("libraries/default/rocks/cliff-face-lp-7712-04"),
+            library: library(),
+            name: "Cliff face, LP-7712-04 (rocks pack)",
+            source_path: "rocks/cliff-face-lp-7712-04.stl",
+            blob: &raw,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp-cliff"),
+        })
+        .await
+        .expect("links a second part onto bytes the database already holds");
+
+    let parts = PgParts(pool.clone());
+
+    let raw_download = parts
+        .source_for_download(only_revision(&pool, duplicate).await)
+        .await
+        .expect("query")
+        .expect("a live part has something to download");
+    assert_eq!(
+        raw_download.zstd_level,
+        Some(0),
+        "the file this ingest wrote is raw, so the download must read it raw -- a level \
+         off the shared `blob` row would zstd-decode an STL and 500"
+    );
+
+    let legacy_download = parts
+        .source_for_download(only_revision(&pool, legacy).await)
+        .await
+        .expect("query")
+        .expect("the un-migrated part still has something to download");
+    assert_eq!(
+        legacy_download.zstd_level,
+        Some(3),
+        "and the un-migrated row is untouched: its bytes really are zstd-3 at the old \
+         path, so a fix that rewrote the shared column would break this one instead"
+    );
+
+    let page = parts.page(library(), None, None, 10).await.expect("page");
+    let card = page
+        .iter()
+        .find(|row| row.summary.id == duplicate)
+        .map(|row| &row.summary)
+        .expect("the linked part is in the page");
+    assert_eq!(
+        card.compressed,
+        Some(false),
+        "and the card says what the file is, not what the shared row used to say"
     );
 }
 
@@ -1792,20 +1892,23 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
     assert_eq!(
         source.zstd_level,
         Some(3),
-        "the level the bytes were actually written at, read off `blob` rather than \
-         re-derived from the format"
+        "the level the bytes were actually written at, read off the `file` row rather \
+         than re-derived from the format"
     );
 
-    // Ruling T1-A, as corrected. `zstd_level` is nullable and NULL is real — every
-    // derivative blob is written that way — so a source blob with no level means nobody
-    // recorded how those bytes were stored, and that unknown must reach the route intact.
-    // Not because a `COALESCE` would serve a zstd frame as the file: it would not,
-    // `SourceReader::get` reads `None` and `Some(0)` identically. Because the route can
-    // only refuse an unrecorded level with a message naming it (spec §2.5.1) if the
-    // unknown survives the query. Every fixture in this file writes level 3, so without
-    // this leg the assertion above passes just as well against the COALESCE.
-    sqlx::query("UPDATE blob SET zstd_level = NULL WHERE blake3 = $1")
-        .bind(blob.hash.to_hex())
+    // Ruling T1-A, as corrected. `zstd_level` is nullable and NULL is real, so a source
+    // file with no level means nobody recorded how those bytes were stored, and that
+    // unknown must reach the route intact. Not because a `COALESCE` would serve a zstd
+    // frame as the file: it would not, `SourceReader::get` reads `None` and `Some(0)`
+    // identically. Because the route can only refuse an unrecorded level with a message
+    // naming it (spec §2.5.1) if the unknown survives the query. Every fixture in this
+    // file writes level 3, so without this leg the assertion above passes just as well
+    // against the COALESCE.
+    //
+    // Cleared on `file`, not on `blob`, since migration `0012` moved the column readers
+    // follow — and clearing `blob` here would now prove nothing at all.
+    sqlx::query("UPDATE file SET zstd_level = NULL WHERE revision_id = $1 AND role = 'source'")
+        .bind(revision.as_uuid())
         .execute(&pool)
         .await
         .expect("clear the recorded level");

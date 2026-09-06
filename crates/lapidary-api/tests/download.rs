@@ -634,11 +634,11 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // Cleared directly, because this test is about the route's answer and not about how
-    // the row got that way — lapidary-db's
-    // `a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed` covers the ingest
-    // path that produces one. Spec §2.5.1. Reading it raw would be a guess that happens
-    // to be wrong here, since the bytes on disk are a zstd frame.
-    sqlx::query("UPDATE blob SET zstd_level = NULL WHERE blake3 = $1")
+    // the row got that way. Since migration `0012` no ingest path produces one — the level
+    // is written on the `file` row from what `put_at` reported — so this is now a row from
+    // outside, which is exactly the case spec §2.5.1's refusal is for. Reading it raw would
+    // be a guess that happens to be wrong here, since the bytes on disk are a zstd frame.
+    sqlx::query("UPDATE file SET zstd_level = NULL WHERE blake3 = $1 AND role = 'source'")
         .bind(seeded.hash.to_hex())
         .execute(&pool)
         .await

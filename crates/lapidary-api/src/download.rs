@@ -96,14 +96,13 @@ pub async fn original(
         None => return missing_variant(),
     }
 
-    // Spec §2.5.1. Ingest records a concrete level for every source blob it writes and
-    // NULL for every derivative — which does not make a NULL reached here a row from
-    // outside. `link_existing` leaves an existing `blob` row alone, so bytes
-    // byte-identical to a tessellation rung land as a source file over a NULL-level blob,
-    // and lapidary-db's `a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed`
-    // builds exactly that. Either way nobody recorded how these bytes were written:
-    // reading them raw would serve something and hope, and refusing names the one thing
-    // an operator can go and look at.
+    // Spec §2.5.1. Since migration `0012` the level is recorded on the `file` row, by the
+    // same transaction that inserts it, from what `put_at` reported — so every row ingest
+    // writes has one, including `link_existing`'s, which used to inherit the shared `blob`
+    // row's and could name a level the file on disk was never written at. A NULL reaching
+    // here is a row from outside that path: nobody recorded how these bytes were written,
+    // reading them raw would serve something and hope, and refusing names the one thing an
+    // operator can go and look at.
     let Some(zstd_level) = source.zstd_level else {
         return unrecorded_level(&source.hash, source.storage_path.as_deref());
     };
