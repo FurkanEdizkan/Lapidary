@@ -1,112 +1,228 @@
-# Folder tree and moves — location becomes a thing you can change
+# Storage layout and folders — a store the user can open in a file manager
 
 **Status:** design, awaiting owner review. **Branch:** `worktree-folder-tree-design`,
 cut from `feat/corpus-and-upload` at `f210d96`.
 
-**This is the slice `handler.rs:50` named.** Slice 6a deferred rename detection with the
-words *"closing that needs a source-path column and the slice that owns incremental
-directory sync"*. `part.source_path` is that column and it landed in `0007`. This slice
-owns the other half: a part's **location** becomes a first-class, mutable, auditable thing,
-separate from the path it was ingested under.
+**This is the slice `handler.rs:50` named**, plus a storage-layout reversal that arrived
+with it. Slice 6a deferred rename detection to *"the slice that owns incremental directory
+sync"* and made `part.source_path` its prerequisite. This slice owns location: where a model
+lives becomes a real directory the user can open, and a thing they can change.
 
-**Exit:** scan a nested corpus and the grid shows the directory tree it came from; drag a
-part into another folder and it stays there across a re-scan of the original directory.
+**Exit:** scan a nested corpus, then open the storage folder in a file manager and find one
+directory per model holding its file, its metadata and its images — and move a model to
+another category in the UI and find it moved on disk, with a re-scan of the original
+directory leaving it where the user put it.
 
 ---
 
-## 0. Where this sits
+## 0. Where this sits, and what it reverses
 
-The owner asked for a storage lifecycle covering seven things. Measured against the real
-corpus (`/mnt/Storage2/All/STL Files`, 320 GB) they decompose into five sub-projects, and
-this is the first:
+Five sub-projects came out of the owner's storage-lifecycle request. This is the first:
 
 | # | Sub-project | Status |
 |---|---|---|
-| **1** | **Folder tree + moves** | **this spec** |
+| **1** | **Storage layout, folder tree, moves** | **this spec** |
 | 2 | Archive extraction ingest (zip / tar.xz / 7z) | not specified |
-| 3 | Storage root, relocation, re-adoption | not specified |
+| 3 | Storage root relocation and re-adoption | not specified — but §2 is its foundation |
 | 4 | Cold tiering + compression opt-out | `DATA.md` §1.3, unbuilt |
 | 5 | Purge, quarantine, permanent delete | `DATA.md` §1.6, unbuilt |
 
-**A decision sub-project 3 inherits, recorded here so it is not discovered late.** The owner
-has chosen a **user-owned host directory** for the storage root, picked on first run, so the
-store survives deleting the app. That reverses a written decision — `deploy/compose.yaml`
-says of the blob volume: *"Named, not a bind mount: these are our data, not the user's
-files, and deleting the compose project must not take a host directory with it."* That
-comment, and `docs/DATA.md` §1.1's layout, both need updating when sub-project 3 is
-specified. Nothing in *this* slice depends on which way that goes: folders are database
-rows, and blobs stay content-addressed wherever the root lives.
+**Two written decisions are reversed here, both on the owner's explicit instruction, both
+stated so nobody re-derives the old ones from the docs.**
 
-This slice is first because the other four need somewhere to put things. The measurement
-that settled the order, and which belongs in the record:
+1. **The blob store is a user-owned host directory, not a named volume.**
+   `deploy/compose.yaml` says of the volume: *"Named, not a bind mount: these are our data,
+   not the user's files, and deleting the compose project must not take a host directory
+   with it."* The owner wants the inverse — a directory they own that outlives the app.
+2. **Source files are path-addressed, not content-addressed.** `DATA.md` §1.1 puts every
+   blob at `blobs/ab/cd/<hash>`. The owner wants *"a single folder for each model ingested,
+   with its own name … every metadata file inside the folder, every image inside the folder
+   of a model, so when a user wants to look at it they can go into its specific folder."*
 
-- **288.6 GB of the 320 GB corpus (90.2%) sits inside 737 archives** — 122 GB zip, 96 GB
-  tar.xz, 50 GB rar, 20 GB 7z. Sub-project 2 is the largest single win, and extracting a
-  2.7 GB zip holding 58 STLs under `supported/`/`unsupported/` needs a folder model to
-  land in or it produces 58 rootless parts.
-- **Cold tiering reclaims ~1.5%.** Measured on four representative binary STLs near the
-  p50 of 8.1 MB: zstd `-3` gives 1.46×, `-19` gives 2.10× — a real **30.1% gain over
-  ingest level**, but applied to the 23 GB of loose STL it is ~4.8 GB of 320 GB. Worth
-  building; not worth building first. (`DATA.md` §1.2's "~2–2.5× for binary STL" describes
-  `-19`. Ingest writes `-3`, which measures 1.46×. The doc reads as though ingest gets the
-  higher number.)
+`compose.yaml`'s comment and `DATA.md` §1.1 both need rewriting when this ships. They are
+not wrong about anything except which goal won.
 
-## 1. The split: `source_path` is identity, `folder_id` is location
+**What the reversal costs, stated plainly:** identical bytes in two models are two copies on
+disk. Source dedup is gone. That is the price of a browsable store and it is not
+recoverable by cleverness — a store cannot both be one file per model and one file per
+distinct content. Measured against the corpus this is a real but bounded cost: 1,614 loose
+STLs holding some cross-pack duplication, not the 90% of bytes that sit in archives
+(sub-project 2).
 
-**`part.source_path` does not change. Ever.** It is the ingest identity key that `0007`
-just made load-bearing, and `0003_jobs.sql:52` records what depends on it agreeing with
-`PgBlobs::library_holds`. Mutating it on a move would mean a re-scan of the original
-directory no longer recognises the file, re-ingests it as a second part, and reports
-success — silent duplication, which is the same shape of lie 6a exists to refuse.
+**What survives untouched, because it is easy to think it does not:** `CLAUDE.md`'s *"Hash
+first, always. BLAKE3 before anything else in ingest. A known hash short-circuits the whole
+pipeline."* That rule is about ingest ordering and the re-scan short-circuit, and both still
+hold — `PgBlobs::library_holds` keys on `(library_id, source_path, blake3)` and none of
+those three change. Hashing still happens first, a re-scan still settles as `Skipped`
+without re-reading, and the download route still verifies bytes against the stored hash.
+Only the *filename the bytes are written under* changes.
 
-So location moves to its own column:
+**Ordering, from measuring the real corpus** (`/mnt/Storage2/All/STL Files`, 320 GB):
+**288.6 GB — 90.2% — sits inside 737 archives** the app cannot read, so sub-project 2 is the
+largest single win and needs this layout to extract into. Cold tiering measures a genuine
+**30.1% gain** of zstd `-19` over `-3` on representative binary STLs, but applied to the
+23 GB of loose STL it reclaims ~4.8 GB, **1.5% of the corpus**. Worth building; not first.
+
+## 1. The layout
+
+```
+<storage-root>/                        chosen on first run; app-owned, user-browsable
+  lapidary.toml                        app config, user-editable
+  libraries/
+    default/                           one directory per library
+      Terrain/                         category folders — the tree of §3
+        Rocks/
+          cliff/                       one directory per model
+            cliff.stl                  the source, under its original filename
+            metadata.json              part + revision facts, human-readable
+            images/
+              thumbnail.webp
+              render-01.webp
+  cache/
+    blobs/ab/cd/<blake3>               derivatives only. Content-addressed. Evictable.
+```
+
+**`libraries/<slug>/` exists even though there is one library today.** Two libraries each
+holding a `Terrain` category would collide at the root, and retrofitting the level later
+means moving every file in the store. Cheap now, expensive later.
+
+**`cache/` is a stated assumption, and the review gate is where to reject it.** The owner
+named metadata and images as belonging inside the model folder and said nothing about glTF
+LODs or `structure.json`. Those are treated here as cache, not user-facing content, for
+three reasons: `DATA.md` §1.5 already calls them regenerable and freely evictable;
+`/api/blob/{blake3}` can only promise `Cache-Control: immutable` because its URL contains
+the hash of what it returns, which path-addressing would break for the viewer's hot path;
+and `CLAUDE.md`'s rule that *"derivative cache eviction … must never read as data loss"*
+becomes self-evident when the directory is literally named `cache/`. **If derivatives should
+also live in the model folder, this section is what to reject** — it is the difference
+between rewriting half of `lapidary-storage` and all of it.
+
+**`metadata.json` is what makes the store self-describing**, and it is the whole of
+sub-project 3's re-adoption story. It carries enough to rebuild the rows: the part's id,
+library, display name, part number, classification, `source_path` and `metadata_json`; each
+revision's label, origin, measured values and their provenance columns; and each file's
+role, format, `blake3`, size and on-disk name. Delete the database and the store still
+describes itself. There is no separate manifest directory, because a manifest that is not
+beside the thing it describes is a manifest that goes stale.
+
+**Which one wins on divergence:** the database is authoritative while the app runs;
+`metadata.json` is authoritative for re-adoption into an empty database. Reconciling a store
+a user has edited by hand is Phase 4's watcher and a non-goal here (§10).
+
+## 2. Naming a model's directory
+
+The display name cannot be the directory name. Slice 6a decided two parts called `bracket`
+are the truth and `source_path` tells them apart — but two directories called `bracket/`
+inside one category are not a naming preference, they are impossible.
+
+**The rule:** slugify the part name; if that directory already exists in the target
+category, append `_` and the first six hex characters of the source `blake3`.
+
+- `cliff` → `cliff/`
+- a second `cliff` → `cliff_a1b2c3/`
+
+**Directory names are cosmetic, not identity.** Nothing parses them — the database stores
+the real relative path in `file.storage_path`, and re-adoption reads `metadata.json` inside
+each directory rather than the directory's name. That is what lets the naming optimise for a
+human reading a file manager instead of for machine round-tripping, and it means a
+re-ingest that assigns a different suffix breaks nothing.
+
+**Slugging rules, which exist because this store must survive Windows** (the agent binary
+and the Tauri shell both target it):
+
+- Unicode is preserved. Turkish part names contain ğ, ş and ı, `DATA.md` §5.1 already
+  handles them in `Content-Disposition`, and every filesystem this ships on stores UTF-8.
+  Stripping them would make the folder unreadable to the person who named the part.
+- Path separators, control characters, and the characters Windows reserves (`< > : " | ? *`)
+  are replaced with `-`.
+- Trailing dots and spaces are trimmed — Windows silently drops them, so `bracket.` and
+  `bracket` would become the same directory after a round trip through a Windows client.
+- The reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) get a
+  `_` suffix. A model legitimately called `AUX` is not hypothetical in a parts library.
+
+## 3. Identity, location, and the two things called "moving"
+
+**`part.source_path` does not change. Ever.** It is the ingest identity key `0007` made
+load-bearing, and `0003_jobs.sql:52` records that it must agree with
+`PgBlobs::library_holds`. Mutating it on a move means a re-scan of the original directory
+stops recognising the file, ingests it a second time, and reports success — the silent
+duplication 6a exists to refuse.
 
 | | Column | Mutable? | Means |
 |---|---|---|---|
-| Identity | `part.source_path` | **no** | where this file was when we first saw it |
-| Location | `part.folder_id` | yes | where the user has since decided it lives |
+| Identity | `part.source_path` | **no** | where the file was when we first saw it, in the *ingest* directory |
+| Location | `part.folder_id` | yes | which category the user has since put it in |
+| Bytes | `file.storage_path` | yes | where it actually sits in the *store* |
 
-At ingest they agree: `folder_id` is seeded from `source_path`'s directory. After a move
-they diverge, and that divergence is the feature.
+Three columns, three jobs. `source_path` and `storage_path` are different things and the
+names must stay distinct: the first names a directory the app only ever reads, the second
+names one it owns.
 
-**The discriminating case, which §9 tests:** ingest `Terrain/rock.stl`; move it to
-`Bases/`; re-scan. `library_holds(library, 'Terrain/rock.stl', hash)` still matches on the
-unchanged `source_path`, the file settles as `Outcome::Skipped`, and the part stays in
-`Bases/`. Not resurrected, not duplicated, not moved back. This falls out of the split for
-free, which is the argument that the split is the right one.
+**The discriminating case, which §8 tests:** ingest `Terrain/rock.stl`; move it to `Bases/`;
+re-scan. `library_holds` matches on the unchanged `source_path`, the file settles as
+`Outcome::Skipped`, and the model stays in `Bases/` on disk and in the grid.
 
-**Two different things are both called "moving", and they share no code.** Said here once
-so the relocation job does not drift into this slice:
+**Both kinds of move now touch bytes, and they differ in scale, not in kind.** The previous
+draft of this spec claimed a folder move was "one UPDATE, zero bytes". That was true when
+folders were database rows and is false now.
 
-- **A folder move is logical.** One `UPDATE`, zero bytes. Blobs are content-addressed and
-  live at `blobs/ab/cd/<hash>` regardless of which folder the user has put the part in.
-- **A storage-root relocation is physical.** Every blob, one at a time, resumable. That is
-  sub-project 3 and is not in this spec.
+- **Moving a model** renames one directory: `libraries/default/Terrain/Rocks/cliff/` →
+  `libraries/default/Bases/cliff/`.
+- **Moving a category** renames one directory and every model under it comes with it, for
+  free, because they are inside it.
+- **Relocating the storage root** is still sub-project 3: every file, resumable.
 
-## 2. Schema — migration `0008_folders.sql`
+A same-filesystem rename is atomic and O(1) regardless of subtree size, so even moving a
+category holding 412 models is one syscall.
+
+## 4. Keeping the database and the disk in agreement
+
+A move is a filesystem rename plus a row update, and either can fail. **Rename first, inside
+the transaction, and commit only if it succeeded**; a failed rename rolls the transaction
+back and nothing moved. The window that remains is a rename that succeeds and a commit that
+then fails, leaving the disk ahead of the database.
+
+**That window is survivable, and `metadata.json` is why.** Every model directory identifies
+itself, so a reconciliation pass can always work out what a directory is regardless of where
+it sits or what the database last recorded. This is the same reasoning that makes ingest's
+blob reap safe: prefer a recoverable inconsistency over a distributed transaction.
+
+The reverse ordering — commit then rename — was rejected because its failure leaves the
+database pointing at a path that does not exist, which every read then hits. A disk that is
+ahead of the database is a repair job; a database that is ahead of the disk is a broken
+grid.
+
+## 5. Schema — migration `0008_folders.sql`
 
 ```sql
 create table folder (
   id          uuid primary key,                        -- uuid v7
   library_id  uuid not null references library(id),
   parent_id   uuid references folder(id),              -- null = library root
-  name        text not null,
+  name        text not null,                           -- display name
+  slug        text not null,                           -- the on-disk directory name
   created_at  timestamptz not null default now(),
-  deleted_at  timestamptz,                             -- soft, like part
+  deleted_at  timestamptz,
   constraint folder_name_unique_per_parent
-    unique nulls not distinct (library_id, parent_id, name)
+    unique nulls not distinct (library_id, parent_id, name),
+  constraint folder_slug_unique_per_parent
+    unique nulls not distinct (library_id, parent_id, slug)
 );
 
 create index folder_library_parent on folder (library_id, parent_id);
 
 alter table part add column folder_id uuid references folder(id);   -- null = library root
 create index part_folder_id on part (folder_id);
+
+-- Where the bytes actually are, relative to the storage root. Nullable only until the
+-- backfill in 5.1 runs within this same migration.
+alter table file add column storage_path text;
 ```
 
-**`nulls not distinct` is not decoration.** PostgreSQL treats NULLs as distinct in a unique
-constraint by default, so a plain `unique (library_id, parent_id, name)` would silently
-permit two root folders both named `Terrain` — the exact case a corpus scan hits first.
-Verified against the project's own PostgreSQL 18.6 container rather than asserted:
+**`nulls not distinct` is load-bearing, not decoration.** PostgreSQL treats NULLs as distinct
+in a unique constraint by default, so a plain `unique (library_id, parent_id, name)` silently
+permits two root categories both named `Terrain` — the first thing a corpus scan produces.
+Verified against the project's own PostgreSQL 18.6 rather than asserted:
 
 ```
 === two ROOT folders named Terrain (parent_id NULL) — second must be REFUSED ===
@@ -114,39 +230,39 @@ ERROR:  duplicate key value violates unique constraint "folder_name_unique_per_p
 DETAIL:  Key (library_id, parent_id, name)=(0193…0001, null, Terrain) already exists.
 
 === same name under DIFFERENT parents — must be ALLOWED ===
-INSERT 0 1   (Terrain/Rocks)
-INSERT 0 1   (Bases/Rocks)
+INSERT 0 1   (Terrain/Rocks)     INSERT 0 1   (Bases/Rocks)
 
 === get-or-create under concurrency: ON CONFLICT DO NOTHING must not raise ===
 INSERT 0 0
 ```
 
-**`null` means library root for both columns**, and there is deliberately no seeded root
-row per library. A synthetic root would need a nullable `parent_id` for itself anyway, so
-it buys nothing and costs a seed that every future library-creation path has to remember.
-Listing the root is `where folder_id is null`, matching `where parent_id is null`.
+**`name` and `slug` are both unique per parent and both are needed.** `name` is what the user
+typed and what the grid shows; `slug` is what the filesystem got after §2's rules ran. Two
+categories named `Rocks?` and `Rocks*` are distinct names that slug to the same directory,
+so without the second constraint the tree is legal and the disk is not.
 
-**`folder_id` stays nullable** — `null` is the library root, so a part at depth 0 needs no
-row to point at. But it does need a backfill, for a reason that is easy to get wrong.
+**`blob.ref_count` keeps its meaning and loses an implication.** It still counts how many
+`file` rows reference a hash. What it no longer implies is one copy on disk — two models
+holding identical bytes are two `file` rows, `ref_count` 2, and two files. The consequence
+lands on sub-project 5: purge deletes a `storage_path`, and only decrements `ref_count`.
+Written down here because a purge that deletes "the blob" would take another model's file.
 
-### 2.1 The backfill, and why skipping it strands every existing library
+### 5.1 The backfill, and why skipping it strands every existing library
 
-The tempting claim is that every pre-`0008` part sits at the library root by construction.
-**That was true before slice 6a and is false after it.** 6a made the scan recursive, so
-every part ingested since carries a nested `source_path` like `Terrain/Rocks/rock.stl`.
-(Only rows predating 6a are flat — `0007`'s backfill reconstructed them as `name || '.' ||
-format`, a single segment.)
+The tempting claim is that every pre-`0008` part sits at the library root. **That was true
+before slice 6a and is false after it.** 6a made the scan recursive, so every part ingested
+since carries a nested `source_path` like `Terrain/Rocks/rock.stl`. Only rows predating 6a
+are flat, because `0007` rebuilt them as `name || '.' || format`.
 
-That would be a cosmetic problem if a later scan repaired it. It does not, and the reason is
-§3: folders are created only for files that actually ingest. Re-scanning a library whose
-parts are already present settles every file as `Outcome::Skipped`, so no folder is ever
-created and **the library is permanently flat with no way for the user to fix it.** The
-backfill is the only thing standing between an existing corpus and that state.
+That would be cosmetic if a later scan repaired it. It does not, and §6 is why: folders are
+created only for files that actually ingest, so re-scanning a library whose parts are
+already present settles every file as `Skipped`, creates nothing, and **leaves the library
+permanently flat with no user-reachable repair.**
 
-It splits each `source_path`'s directory portion and get-or-creates the tree level by level,
-in a bounded loop sharing the scan's cap of 16. Validated against PostgreSQL 18.6 on a
-fixture holding one flat row and five nested ones, including the same folder name under two
-different parents — the case a naive path-keyed backfill collapses into one row:
+The backfill splits each `source_path`'s directory portion and get-or-creates the tree level
+by level, bounded at the scan's own cap of 16. Validated against PostgreSQL 18.6 on a fixture
+holding one flat row and five nested ones, including the same folder name under two different
+parents — the case a naive path-keyed backfill collapses into one row:
 
 ```
 === folders created (path, depth) ===          === each part and the folder it landed in ===
@@ -158,119 +274,112 @@ different parents — the case a naive path-keyed backfill collapses into one ro
                                                 Terrain/rock.stl               | Terrain
 ```
 
-`Terrain/Rocks` and `Bases/Rocks` are two rows, and the flat row lands at the root. A
-level-by-level loop rather than one recursive CTE because a CTE cannot insert rows and then
-reference the ids it just generated as the next level's parents.
+A level-by-level loop rather than one recursive CTE, because a CTE cannot insert rows and
+then use the ids it just generated as the next level's parents.
 
-## 3. The scan creates folders
+**This migration also moves files**, which the validated SQL above does not cover and which
+makes it unlike every migration before it. Existing blobs sit at `blobs/ab/cd/<hash>` and
+have to land in per-model directories with a `metadata.json` written beside them. That is a
+data migration, not a schema one: it runs as a job with progress, it is resumable, and it
+**copies before it deletes** so an interrupted run never loses a file. `file.storage_path`
+goes `NOT NULL` only once it completes. An operator who stops it halfway has a store that is
+half-migrated and entirely readable.
+
+## 6. The scan creates categories
 
 `WorkerHandler::scan_directory` already yields `/`-separated relative paths capped at
-`MAX_DEPTH = 16`. Ingest splits the path's directory portion and get-or-creates one folder
-row per segment, then sets `part.folder_id` to the last.
+`MAX_DEPTH = 16`. Ingest splits the directory portion, get-or-creates one `folder` row and
+one real directory per segment, creates the model's own directory per §2, writes the source
+file, `metadata.json` and any images into it, and sets `part.folder_id`.
 
-**Get-or-create is `insert … on conflict do nothing` followed by a select**, not a
-select-then-insert. Two workers scanning concurrently genuinely race the same directory —
-`0003_jobs.sql` records the same race for parts — and the constraint is what makes it safe.
-The validation above confirms `on conflict do nothing` returns `INSERT 0 0` rather than
-raising.
+**Get-or-create is `insert … on conflict do nothing` then select**, not select-then-insert.
+Two workers scanning concurrently genuinely race the same directory, and the constraint is
+what makes it safe. `mkdir -p` is idempotent and races harmlessly, so the filesystem half
+needs no coordination the database half does not already provide.
 
-**Folders are created only for files that are actually ingested**, after the
-`library_holds` short-circuit, not before it. Creating them during the walk would mean a
-re-scan of a directory whose parts have all been moved away silently re-creates the
-now-empty original folders on every scan.
+**Categories are created only for files that actually ingest**, after the `library_holds`
+short-circuit. Creating them during the walk would mean a re-scan of a directory whose models
+have all been moved away silently re-creates the now-empty originals on every scan — on disk
+as well as in the database. This is also what makes §5.1's backfill mandatory: a library
+ingested between 6a and `0008` never reaches this code path again.
 
-This is what makes §2.1's backfill mandatory rather than a convenience: a library ingested
-between 6a and `0008` has nested paths and no folders, and because every re-scan of it
-settles as `Skipped`, this code path never runs for those parts again.
+## 7. Moving, renaming, deleting
 
-**A failed part insert may leak an empty folder row.** Accepted, not fixed: folder creation
-sits outside the part's transaction, and the cost of the leak is an empty folder the user
-can delete. Wrapping the walk's folder writes into each file's transaction would serialise
-concurrent workers on the shared parent rows for no benefit a user can perceive.
+`PATCH /api/parts/{id} { folderId }` moves a model. `PATCH /api/folders/{id} { name?,
+parentId? }` renames or moves a category. Both follow §4's ordering and write a `part_move`
+row (§9).
 
-## 4. Moving a part
+**A name collision warns; a directory collision cannot.** The two are now different
+questions and both answers are kept:
 
-`PATCH /api/parts/{id}` with `{ folderId }`. One `UPDATE`, plus a bump to the existing
-`part.updated_at`, plus one `part_move` row (§6).
+- **Display name** — allowed, with a warning. 6a decided two parts named `bracket` are the
+  truth. The API answers `409` naming the existing part; the client re-sends with
+  `acknowledgeDuplicate: true`.
+- **Directory name** — never a conflict, because §2's suffix rule resolves it without asking.
+  The second `cliff` becomes `cliff_a1b2c3/` and the user is not consulted about a detail
+  they did not choose.
+- **Category rename into a collision** — plain `409`, no override. A category's path is its
+  whole identity; there is no `source_path` to tell two `Terrain`s apart.
 
-**Collision warns, it does not refuse.** Slice 6a decided two parts named `bracket` are the
-truth and the path is what tells them apart; refusing a move on a name collision would
-contradict that, and would refuse an arrangement that is already legal on disk. So the API
-answers a `409` naming the existing part, and the client re-sends with `{ folderId,
-acknowledgeDuplicate: true }`. One extra round trip, only on the collision path.
+**A category cannot move into its own descendant.** Checked with a bounded ancestor walk
+before the write, at the same 16 the scan uses, and validated against the live database:
 
-**Parts and folders differ here, deliberately.** Two parts named `bracket` in one folder are
-disambiguated by `source_path`. Two folders named `Terrain` under one parent are not
-disambiguated by anything — the folder path *is* a folder's whole identity — so a folder
-rename into a collision is a plain `409` refusal with no override. The asymmetry is the
-point, not an inconsistency.
+```
+=== is Cliffs a descendant of Terrain? (must be TRUE -> refuse) ===   would_cycle: t, walked 3
+=== is Terrain a descendant of Cliffs? (must be FALSE -> allow) ===   would_cycle: f, walked 1
+```
 
-## 5. Folder management, and the boundary it stops at
+A recursive CTE rather than `petgraph`, which `FEATURES.md` names for the build graph: this
+is an ancestor walk of one node, not cycle detection over a DAG, and it belongs beside the
+write it guards. On disk the same move would be `mv Terrain Terrain/Rocks/Cliffs/Terrain`,
+which the kernel refuses too — but by then the row is written, so the check goes first.
 
-Create, rename, move and delete, per the owner's answer.
+**Parenting across libraries is refused** with a `409`. A cross-row invariant no constraint
+can express, so it is a check at the write.
 
-**The boundary, stated for the review gate because it is an interpretation and not a
-quotation.** The owner wrote *"full folder management only on the allowed storage folder"*.
-Read here as: the app may fully manage folders **within its own library and store**, and
-must never create, rename, move or delete a directory in the user's source library. That
-reading is already structurally true — `deploy/compose.yaml` mounts the ingest directory
-`:ro` precisely so ingest cannot modify what it was pointed at — and this slice does not
-weaken it. If the intended reading was instead that folders should be **real directories on
-disk inside the storage root**, this spec is wrong at the root and should be rejected here,
-not patched: it would replace content-addressed storage with a mirrored tree, which
-forfeits dedup (`ref_count`) and turns every folder move into a byte move.
+**Delete is soft, and cascades through subcategories.** `folder.deleted_at` on the category
+and every descendant, `part.deleted_at` on every model in any of them. Deleting `Terrain`
+while it holds `Terrain/Rocks/Cliffs` must not leave `Rocks` alive and unreachable.
 
-- **Create** — `POST /api/libraries/{id}/folders { parentId, name }`. Empty folders are
-  legal; the user asked to be able to organise before ingesting.
-- **Rename** — `PATCH /api/folders/{id} { name }`. A label change. No `source_path` is
-  touched, no blob moves, no part row changes.
-- **Move** — `PATCH /api/folders/{id} { parentId }`. **Refused if it would cycle.** A
-  folder moved into its own descendant orphans the subtree and makes the tree query loop.
-  Checked with an ancestor walk before the update, bounded at the same 16 the scan uses,
-  and validated against the live database:
+**Nothing is removed from disk.** A soft-deleted model keeps its directory exactly where it
+is; only its visibility changes. This is `DATA.md` §1.6 step 1, and steps 2 and 3 — purge and
+quarantine — are sub-project 5. Per `CLAUDE.md`'s rule that we never delete user data
+implicitly, the confirmation says three things and the wording is a product requirement:
 
-  ```
-  === is Cliffs a descendant of Terrain? (must be TRUE -> refuse move) ===
-   would_cycle | walked
-   t           |      3
-  === is Terrain a descendant of Cliffs? (must be FALSE -> allow) ===
-   would_cycle | walked
-   f           |      1
-  ```
+1. The count: *"Delete Terrain? The 412 models inside will be moved to deleted."*
+2. What is untouched: *"Nothing is removed from your storage folder."* True, and true because
+   this action never touches a file.
+3. That it is reversible.
 
-  A recursive CTE rather than `petgraph`, which `FEATURES.md` names for the build graph:
-  this needs an ancestor walk of one node, not cycle detection over a whole DAG, and the
-  check belongs beside the write it guards.
-- **Delete** — soft, and it **cascades through subfolders**. `folder.deleted_at` on the
-  folder and every descendant, `part.deleted_at` on every part in any of them. Deleting
-  `Terrain` when it holds `Terrain/Rocks/Cliffs` must not leave `Rocks` alive and
-  unreachable, which is what a one-level delete produces. The same bounded ancestor walk
-  as the move check, run downward.
+All three go through `src/lib/strings.ts`, which `web/src/no-bare-strings.test.ts` gates.
 
-A folder's `parentId` on create, and on move, must name a folder **in the same library**.
-Cross-library parenting is refused with a `409`, not silently accepted — `folder.library_id`
-would then disagree with its parent's and the tree query would return a subtree from
-another library. The constraint cannot express this (it is a cross-row invariant), so it is
-a check at the write.
+## 8. Testing
 
-Every tree and grid read filters `deleted_at is null`, on folders as well as parts. A
-soft-deleted folder is invisible in the sidebar and its parts are invisible in the grid,
-which is what soft delete means everywhere else in this schema.
+1. **A move survives a re-scan.** Ingest `Terrain/rock.stl`, move to `Bases/`, re-scan.
+   Assert: one part, `folder_id` is `Bases`, `source_path` unchanged, outcome `Skipped`, and
+   the directory is on disk under `Bases/`. *If only one test is written, it is this one.*
+2. **Two models with the same name get distinct directories** — `cliff/` and `cliff_a1b2c3/`,
+   both with correct `metadata.json`, and the grid shows both named `cliff`.
+3. **A slug collision from distinct names is refused** — `Rocks?` and `Rocks*` slug alike.
+4. **Reserved and hostile names survive a round trip** — `AUX`, `bracket.`, a name with `:`
+   and one with `ğ`. Assert the directory exists and re-reads.
+5. **Two root categories cannot share a name** — the `nulls not distinct` case, which a plain
+   unique constraint passes silently and wrongly.
+6. **Same name under different parents is legal** — `Terrain/Rocks` and `Bases/Rocks`.
+7. **Concurrent get-or-create does not raise** — two workers, one directory, one row.
+8. **A category cannot move into its own descendant.**
+9. **A failed rename leaves the database untouched** — inject an `EACCES` on the rename and
+   assert the row still points at the original path and the model still opens.
+10. **Deleting a category cascades to subcategories and touches no file** — assert every
+    descendant is hidden and every file is still on disk and still readable.
+11. **The `0008` backfill rebuilds the tree and moves the files** — seed a library the way
+    6a's scan leaves it, run it, assert the tree of §5.1 *and* that every source is now at
+    its `storage_path` with a `metadata.json` beside it. Then **re-scan and assert nothing
+    changed** — that half catches a backfill that works once and then misbehaves.
+12. **An interrupted backfill loses no file** — kill it midway, assert every source is
+    readable at either its old or its new path, and that resuming completes.
 
-**Delete obeys `CLAUDE.md`'s rule that we never delete user data implicitly**, which here
-means three things and the wording is a product requirement, not a nicety:
-
-1. The confirmation names the count: *"Delete Terrain? The 412 parts inside will be moved
-   to deleted."*
-2. It states what is untouched: *"Your original files are not affected, and nothing is
-   removed from disk."* True, and it is true because this action never decrements
-   `ref_count` and never reaches a blob.
-3. It states that it is reversible. Soft delete is reversible indefinitely per `DATA.md`
-   §1.6 step 1. **Purge and quarantine are steps 2 and 3 and are sub-project 5.** This
-   slice must not grow a permanent-delete button; the confirmation that names unrecoverable
-   history belongs with the action that actually destroys something.
-
-## 6. Move history
+## 9. Move history
 
 ```sql
 create table part_move (
@@ -281,102 +390,72 @@ create table part_move (
   moved_at     timestamptz not null default now(),
   moved_by     uuid
 );
-
 create index part_move_part_id on part_move (part_id, moved_at desc);
 ```
 
 The owner asked to *"track their location like git … so we can version them"*. **A move is
 not a revision.** A revision is an immutable content-addressed snapshot (`DATA.md` §6); a
-move changes no bytes, so it has no content to address and would produce a revision
-identical to its parent in every measured column. Recording moves as revisions would make
-the version history strip — which shows volume deltas between revisions — display a run of
-zero-delta entries that are not design changes. So moves are an audit log, queried by
-`GET /api/parts/{id}/moves`, and the version history strip does not show them.
+move changes no bytes, so it would produce a revision identical to its parent in every
+measured column, and the version history strip — which shows volume deltas — would fill with
+zero-delta entries that are not design changes. So moves are an audit log, read at
+`GET /api/parts/{id}/moves`, and the history strip does not show them.
 
-**Folder-move history is not recorded.** Moving a folder changes the folder's `parent_id`,
-not any part's `folder_id`, so it cannot honestly be written as `part_move` rows — a row
-with `from_folder = to_folder` would be a lie. A `folder_move` table is the obvious
-addition and is deliberately deferred until someone asks for it: the request was to track
-where a *part* has been.
+**Category-move history is not recorded.** Moving a category changes its `parent_id`, not any
+part's `folder_id`, so writing `part_move` rows for it would mean rows whose `from` and `to`
+are equal. A `folder_move` table is the obvious addition, deferred until asked for.
 
-## 7. API surface
+## 10. API surface
 
-All of it on `lapidary-api`. Nothing here reads a source file or invokes the kernel, so the
-open-path boundary and `FORBIDDEN_PAIRS` are untouched — these are row reads and row
-writes, the same class as the existing `auto_thumbnail` setter.
+All on `lapidary-api`. Nothing here invokes the kernel. It does now *write* source files,
+which the open path previously never did — but `lapidary-api` still never constructs a
+`SourceStore`, because moving a directory is not reading a source file's contents. **If the
+rename helper ends up needing `SourceStore`, that is the signal this belongs in
+`lapidary-ingest` instead**, and `cargo xtask check-deploy` will say so before CI does.
 
 ```
 GET    /api/libraries/{id}/folders        → the tree, one query
 POST   /api/libraries/{id}/folders        { parentId, name }
-PATCH  /api/folders/{id}                  { name? , parentId? }
-DELETE /api/folders/{id}                  → soft, cascades to parts
+PATCH  /api/folders/{id}                  { name?, parentId? }
+DELETE /api/folders/{id}                  → soft, cascades
 PATCH  /api/parts/{id}                    { folderId, acknowledgeDuplicate? }
 GET    /api/parts?folderId=…              → existing grid, filtered
 GET    /api/parts/{id}/moves              → history, newest first
 ```
 
-`GET /folders` returns the whole tree in one response rather than a lazy per-level fetch. At
-corpus scale the tree is hundreds of rows, not hundreds of thousands, and a lazy tree costs
-a round trip per expand on the one interaction that has to feel instant. Revisit if a
-library ever exceeds ~10k folders.
+The tree comes back whole rather than lazily per level: at corpus scale it is hundreds of
+rows, and a lazy tree costs a round trip per expand on the one interaction that must feel
+instant. Revisit past ~10k categories.
 
-Types via `ts-rs` as everywhere else; `web/src/bindings` is generated and CI-gated.
+## 11. Frontend
 
-## 8. Frontend
-
-A folder tree beside the existing grid. Selecting a folder filters the grid through the
-existing keyset pagination — `folderId` becomes another typed search param on the TanStack
-Router route, so the filter is in the URL and survives a reload like every other filter.
+A category tree beside the existing grid; selecting one filters the grid through the existing
+keyset pagination, with `folderId` as a typed TanStack Router search param so the filter
+lives in the URL and survives a reload.
 
 Per `CLAUDE.md`: dark only; motion 120/180/280 ms on `cubic-bezier(0.2, 0, 0, 1)`, transform
-and opacity only, `prefers-reduced-motion` respected; **no bare user-facing strings** — the
-collision warning, the delete confirmation and the tree's empty state all go through
-`src/lib/strings.ts`, which `web/src/no-bare-strings.test.ts` already enforces.
+and opacity only, `prefers-reduced-motion` respected; no bare user-facing strings.
 
-Drag a card onto a folder to move it. Drag is an affordance, not the only path: a
-context-menu "Move to…" exists because drag-and-drop into a scrolled tree is a poor target
-on a trackpad and unusable with a keyboard.
+Drag a card onto a category to move it, and a context-menu *"Move to…"* beside it — drag into
+a scrolled tree is a poor trackpad target and unusable from a keyboard.
 
-## 9. Testing
+**One addition the layout earns: a "Show in folder" action** on the model detail card,
+revealing its directory. The whole point of this layout is that the user can go and look, and
+an app that hides the path is an app that did not need the layout.
 
-The named cases, each of which fails if the design is wrong rather than if a helper is:
+## 12. Not in this slice
 
-1. **A move survives a re-scan.** Ingest `Terrain/rock.stl`, move to `Bases/`, re-scan the
-   same directory. Asserts: one part, `folder_id` still `Bases`, `source_path` still
-   `Terrain/rock.stl`, outcome `Skipped`. *This is the test that proves the split; if only
-   one test is written, it is this one.*
-2. **Two root folders cannot share a name** — the `nulls not distinct` case, which a plain
-   unique constraint passes silently and wrongly.
-3. **Same name under different parents is legal** — `Terrain/Rocks` and `Bases/Rocks`.
-4. **Concurrent get-or-create does not raise** — two workers, one directory, one folder row.
-5. **A folder cannot move into its own descendant** — the ancestor walk refuses it.
-6. **A part move into a name collision answers 409, then succeeds on acknowledge.**
-7. **A folder rename into a collision answers 409 with no override** — the asymmetry in §4.
-8. **Deleting a folder soft-deletes its parts and touches no blob** — assert `ref_count` and
-   `stored_bytes` unchanged, and the blob still readable by hash.
-9. **Deleting a folder cascades through subfolders** — delete `Terrain` holding
-   `Terrain/Rocks/Cliffs`; assert no descendant folder and no part in any of them is left
-   visible. The one-level bug passes every other test in this list.
-10. **A folder cannot be parented into another library** — `409`, and the tree of the second
-    library is unchanged.
-11. **A scan of a nested fixture builds the tree it came from** — depths 1 through 4, using
-    real names from the corpus (`Terrain/Rocks/Cliffs`, `Bases/`), never `Folder 1`.
-12. **The `0008` backfill rebuilds the tree from existing nested `source_path` rows** —
-    seed a library the way 6a's scan leaves it (flat rows *and* nested ones, with the same
-    folder name under two parents), run the migration, assert the tree of §2.1. Then
-    **re-scan and assert the tree is unchanged** — that second half is what catches a
-    backfill that works but leaves `library_holds` re-creating or duplicating folders.
-
-## 10. Not in this slice
-
-Named so they do not drift in:
-
-- **Rename/move detection on re-scan** — same bytes at a new path still produces a second
-  part sharing one blob. 6a deferred it and it stays deferred; it needs incremental
-  directory sync, which is its own decision about what a disappeared file means.
-- **Archive extraction** (sub-project 2), **storage root and relocation** (3), **cold
-  tiering and compression opt-out** (4), **purge, quarantine and permanent delete** (5).
-- **Folder-move history**, per §6.
-- **Folder-scoped permissions.** There is no principal until Phase 8.
-- **Smart/virtual folders** — `FEATURES.md` has saved filters at Phase 5 and they are a
-  different object: a query, not a location.
+- **Reconciling a store the user edited by hand.** They may edit freely, so paths *will* go
+  stale. Detecting that is Phase 4's watcher, which `DATA.md` §6.2 already specifies down to
+  the debounce and the Windows buffer-overflow rescan. Named here, designed there.
+- **Rename/move detection on re-scan** — same bytes at a new ingest path still produces a
+  second part. 6a deferred it; it needs incremental directory sync and a decision about what
+  a disappeared file means.
+- **ELK.** Search is `tsvector` + `pg_trgm` at Phase 2 (`FEATURES.md`); an industrial search
+  layer is Phase 8+ and putting it in an MVP slice would be scope creep. Recorded because the
+  owner raised it, not because it is planned here.
+- **Multi-user.** No principal exists until Phase 8, so `moved_by` is written null.
+- **Archive extraction** (2), **root relocation and re-adoption** (3), **tiering and
+  compression opt-out** (4), **purge and permanent delete** (5).
+- **Category-move history**, per §9.
+- **Smart/virtual folders** — `FEATURES.md` has saved filters at Phase 5; a query is not a
+  location.
