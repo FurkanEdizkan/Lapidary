@@ -28,8 +28,12 @@ that uses it is building for a caller that does not exist.
 `ROADMAP.md:84` is amended by this slice to say what remains there, rather than leaving
 two documents disagreeing. Part F of the plan carries the amendment.
 
-**The stale number.** The plan's Part D says `blob.ref_count` is "never written". That was
-true when it was written and is not true now:
+**The stale number, and a correction to this section.** This slice was begun on the
+assumption that `blob.ref_count` is never written. It is written, and — checked while
+amending the docs below — **no document ever said otherwise.** An earlier draft of this
+section attributed the claim to the plan of 2026-09-05, and the plan does not contain it;
+neither does any other file under `docs/`. The stale text was a working note of mine, not a
+document, and citing it as one was the error. What the audit found stands:
 
 | column | written today? | by what |
 |---|---|---|

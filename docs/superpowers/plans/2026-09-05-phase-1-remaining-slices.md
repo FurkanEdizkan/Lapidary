@@ -112,3 +112,33 @@ demand".
 | `deploy.resources.limits` verified under Docker only | `CLAUDE.md` commits to Podman too. Worth one check before relying on the ceilings |
 | Throughput is half slice 3's, from the ceilings | Expected and reversible via `LAPIDARY_WORKER_CONCURRENCY`. Slice 4 should *improve* it — two clustering passes and a render per file disappear |
 | `HandlerError` has no `Display` | Slice 4 adds a job kind and will touch its error paths |
+
+---
+
+## Amendment, 2026-09-06: what actually shipped
+
+This plan stops at slice 6 and its "What exists today" table describes 2026-09-05. Both are
+left as written — the table is the evidence for why the re-cut happened, and rewriting it
+would destroy the record. What follows is what the table would say now.
+
+**Every row in it has moved.** Putting a file in is a browser drag-and-drop with a resumable
+chunked upload (6a); getting a file out is `GET /api/revisions/{id}/download` (5); storage
+use is a panel (5); the grid pages and holds a thousand parts (6b); parts have their own
+page (6b). "Everything the UI can do" is no longer a short list.
+
+**Two slices were re-cut again on measurement, both times because the premise was wrong.**
+
+- **6a** was planned around a virtualized grid. Measuring first showed the grid page is
+  16 ms warm at 1,000 parts against an 80 ms budget, and that `fetchParts` never paged at
+  all — 950 of 1,000 parts were unreachable. Paging became the requirement.
+- **6b** inherited that finding and shipped the paging, the detail route and live fill.
+
+**Slice 7 is not in this document and is not a Phase 1 slice in `ROADMAP.md` either.** It is
+the storage lifecycle — delete, restore, purge, quarantine, the reaper — pulled forward from
+Phase 4 on the owner's priority call, because a library you can add to and never remove from
+was the more pressing gap. Its design is
+`specs/2026-09-06-phase-1-slice-7-storage-lifecycle-design.md`, whose §0 records the scope
+split and the roadmap amendment that went with it.
+
+**Of the risks listed above:** `HandlerError` gained a `Display` impl in 6b. The rest are
+still open, and the CI one has grown rather than shrunk.

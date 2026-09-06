@@ -1,6 +1,8 @@
 //! The offline Ed25519 licence file: `max_workers` and a grace period. A contractual
-//! and support boundary, not technical DRM. Implementation lands in Phase 1;
-//! see docs/DATA.md.
+//! and support boundary, not technical DRM.
+//!
+//! Empty. Implementation lands in **Phase 8** (`ROADMAP.md`), with the fleet. See
+//! `docs/DATA.md`.
 
 use thiserror::Error;
 

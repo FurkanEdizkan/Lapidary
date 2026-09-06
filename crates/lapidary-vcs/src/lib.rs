@@ -1,6 +1,8 @@
 //! Versioning: immutable content-addressed snapshots, a lineage DAG, and pessimistic
 //! locks — Perforce-shaped, not Git-shaped. No merges, no branches.
-//! Implementation lands in Phase 1; see docs/DATA.md.
+//!
+//! Empty. Implementation lands in **Phase 4** (`ROADMAP.md`), the phase the roadmap
+//! calls the differentiator. See `docs/DATA.md` §4.
 
 use thiserror::Error;
 

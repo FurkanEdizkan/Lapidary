@@ -1,5 +1,8 @@
 //! Automatic format negotiation: slicers get 3MF/STL, CAD gets STEP, the viewer gets
-//! glTF. Implementation lands in Phase 1; see docs/DATA.md.
+//! glTF.
+//!
+//! Empty. Implementation lands in **Phase 4** (`ROADMAP.md`), beside the `Target` trait
+//! and the round-trip the format negotiation exists to serve. See `docs/DATA.md` §5.
 
 use thiserror::Error;
 
