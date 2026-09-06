@@ -28,8 +28,17 @@ this is the first:
 | 4 | Cold tiering + compression opt-out | `DATA.md` §1.3, unbuilt |
 | 5 | Purge, quarantine, permanent delete | `DATA.md` §1.6, unbuilt |
 
-It is first because the other four need somewhere to put things. The measurement that
-settled the order, and which belongs in the record:
+**A decision sub-project 3 inherits, recorded here so it is not discovered late.** The owner
+has chosen a **user-owned host directory** for the storage root, picked on first run, so the
+store survives deleting the app. That reverses a written decision — `deploy/compose.yaml`
+says of the blob volume: *"Named, not a bind mount: these are our data, not the user's
+files, and deleting the compose project must not take a host directory with it."* That
+comment, and `docs/DATA.md` §1.1's layout, both need updating when sub-project 3 is
+specified. Nothing in *this* slice depends on which way that goes: folders are database
+rows, and blobs stay content-addressed wherever the root lives.
+
+This slice is first because the other four need somewhere to put things. The measurement
+that settled the order, and which belongs in the record:
 
 - **288.6 GB of the 320 GB corpus (90.2%) sits inside 737 archives** — 122 GB zip, 96 GB
   tar.xz, 50 GB rar, 20 GB 7z. Sub-project 2 is the largest single win, and extracting a
@@ -117,9 +126,41 @@ row per library. A synthetic root would need a nullable `parent_id` for itself a
 it buys nothing and costs a seed that every future library-creation path has to remember.
 Listing the root is `where folder_id is null`, matching `where parent_id is null`.
 
-**`folder_id` stays nullable rather than `NOT NULL` after a backfill.** Every pre-0008 part
-is at the library root by construction, so a backfill would write the same `null` the
-column already defaults to. Nothing to reconstruct, no `NOT NULL` to earn.
+**`folder_id` stays nullable** — `null` is the library root, so a part at depth 0 needs no
+row to point at. But it does need a backfill, for a reason that is easy to get wrong.
+
+### 2.1 The backfill, and why skipping it strands every existing library
+
+The tempting claim is that every pre-`0008` part sits at the library root by construction.
+**That was true before slice 6a and is false after it.** 6a made the scan recursive, so
+every part ingested since carries a nested `source_path` like `Terrain/Rocks/rock.stl`.
+(Only rows predating 6a are flat — `0007`'s backfill reconstructed them as `name || '.' ||
+format`, a single segment.)
+
+That would be a cosmetic problem if a later scan repaired it. It does not, and the reason is
+§3: folders are created only for files that actually ingest. Re-scanning a library whose
+parts are already present settles every file as `Outcome::Skipped`, so no folder is ever
+created and **the library is permanently flat with no way for the user to fix it.** The
+backfill is the only thing standing between an existing corpus and that state.
+
+It splits each `source_path`'s directory portion and get-or-creates the tree level by level,
+in a bounded loop sharing the scan's cap of 16. Validated against PostgreSQL 18.6 on a
+fixture holding one flat row and five nested ones, including the same folder name under two
+different parents — the case a naive path-keyed backfill collapses into one row:
+
+```
+=== folders created (path, depth) ===          === each part and the folder it landed in ===
+ Bases                |     1                   Bases/Rocks/base-rock.stl      | Bases/Rocks
+ Bases/Rocks          |     2                   Bases/round-32mm.stl           | Bases
+ Terrain              |     1                   bracket.stl                    | (library root)
+ Terrain/Rocks        |     2                   Terrain/Rocks/Cliffs/spire.stl | Terrain/Rocks/Cliffs
+ Terrain/Rocks/Cliffs |     3                   Terrain/Rocks/cliff.stl        | Terrain/Rocks
+                                                Terrain/rock.stl               | Terrain
+```
+
+`Terrain/Rocks` and `Bases/Rocks` are two rows, and the flat row lands at the root. A
+level-by-level loop rather than one recursive CTE because a CTE cannot insert rows and then
+reference the ids it just generated as the next level's parents.
 
 ## 3. The scan creates folders
 
@@ -137,6 +178,10 @@ raising.
 `library_holds` short-circuit, not before it. Creating them during the walk would mean a
 re-scan of a directory whose parts have all been moved away silently re-creates the
 now-empty original folders on every scan.
+
+This is what makes §2.1's backfill mandatory rather than a convenience: a library ingested
+between 6a and `0008` has nested paths and no folders, and because every re-scan of it
+settles as `Skipped`, this code path never runs for those parts again.
 
 **A failed part insert may leak an empty folder row.** Accepted, not fixed: folder creation
 sits outside the part's transaction, and the cost of the leak is an empty folder the user
@@ -316,6 +361,11 @@ The named cases, each of which fails if the design is wrong rather than if a hel
     library is unchanged.
 11. **A scan of a nested fixture builds the tree it came from** — depths 1 through 4, using
     real names from the corpus (`Terrain/Rocks/Cliffs`, `Bases/`), never `Folder 1`.
+12. **The `0008` backfill rebuilds the tree from existing nested `source_path` rows** —
+    seed a library the way 6a's scan leaves it (flat rows *and* nested ones, with the same
+    folder name under two parents), run the migration, assert the tree of §2.1. Then
+    **re-scan and assert the tree is unchanged** — that second half is what catches a
+    backfill that works but leaves `library_holds` re-creating or duplicating folders.
 
 ## 10. Not in this slice
 
