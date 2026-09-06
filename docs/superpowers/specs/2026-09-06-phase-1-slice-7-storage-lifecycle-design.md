@@ -194,11 +194,23 @@ DELETE FROM blob b WHERE b.blake3 = $1
   AND NOT EXISTS (SELECT 1 FROM derivative d WHERE d.blake3 = b.blake3)
 ```
 
-The `NOT EXISTS` pair is the safety property from §1, and it is deliberately redundant with
-`ref_count`: it is the reason a counter this slice cannot fully audit is still safe to
-ship. If a row appeared since quarantine — the bytes were re-ingested, `link_existing`
-pointed a new `file` row at them — the `DELETE` matches nothing, and the reaper clears
-`quarantined_at` instead. Re-ingest un-quarantines by existing.
+**Corrected while building this.** The `NOT EXISTS` pair was specified above as the
+safety property. It is not, and the mutation proof is what showed it: dropping it for
+`ref_count = 0` does not lose bytes, because `file.blake3` and `derivative.blake3` are both
+foreign keys to `blob` and the `DELETE` of a referenced row raises a constraint violation
+instead. **The schema is the safety property.** That is a better place for it than a
+`WHERE` clause, and it holds against a reaper written by someone who never read this
+document.
+
+What the pair actually buys is *availability*: the whole sweep is one transaction, so one
+wrongly-quarantined blob would otherwise roll back every legitimate removal beside it, and
+would do it again every hour forever — quarantine silently stops collecting anything, and
+the only symptom is a log line. With the pair, that row is declined, the second statement
+clears its flag, and the sweep collects everything else in the same run.
+
+Either way, a row that appeared since quarantine — the bytes were re-ingested,
+`link_existing` pointed a new `file` row at them — is not removed, and the reaper clears
+`quarantined_at`. Re-ingest un-quarantines by existing.
 
 **On day one the reaper removes nothing.** No row is 30 days old. The destructive path is
 proved by tests with the cutoff injected, never by a wall clock — a test that waits 30 days

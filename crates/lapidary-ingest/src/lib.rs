@@ -23,6 +23,7 @@
 
 mod derive;
 mod handler;
+pub mod reap;
 mod scan;
 mod seed;
 

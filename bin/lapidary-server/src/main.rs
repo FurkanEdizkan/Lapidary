@@ -296,8 +296,26 @@ fn spawn_worker(
     let handler = std::sync::Arc::new(lapidary_ingest::WorkerHandler {
         db: db.clone(),
         ingest_dir,
-        blob_root,
+        blob_root: blob_root.clone(),
     });
+
+    // The quarantine sweep rides along with the worker rather than getting a process or a
+    // job kind of its own. It is a timer with no row to lease and nothing to report, and
+    // the worker is the only role that may open a source-bytes handle to unlink with.
+    //
+    // Not awaited by `main` the way the job loop is: it holds no leases, so a process that
+    // exits mid-sweep leaves nothing behind — the sweep's own transaction either committed
+    // or rolled back, and the next start picks up where it left off an hour later.
+    tracing::info!(
+        quarantine_days = lapidary_ingest::reap::QUARANTINE.as_secs() / 86_400,
+        "quarantine sweep starting"
+    );
+    tokio::spawn(lapidary_ingest::reap::run(
+        db.clone(),
+        blob_root,
+        shutdown.clone(),
+    ));
+
     Ok(tokio::spawn(async move {
         if let Err(error) =
             lapidary_jobs::run(lapidary_db::PgJobs(db), handler, worker_config, shutdown).await

@@ -251,6 +251,119 @@ impl PgBlobs {
         Ok(())
     }
 
+    /// Step three of the three: remove bytes nothing has pointed at for `older_than`.
+    ///
+    /// This is the only code in Lapidary that destroys user data, and it is written on the
+    /// assumption that everything upstream of it may be wrong.
+    ///
+    /// # It does not consult `ref_count`, and the `NOT EXISTS` pair is not why that is safe
+    ///
+    /// The counter is a hint. It is maintained by arithmetic on the ingest paths, and
+    /// [`PgParts::purge`]'s recompute can itself miss a row committed while it waited for a
+    /// lock. Both can be wrong, so nothing here reads it.
+    ///
+    /// What actually makes a referenced blob unremovable is neither this query nor that
+    /// counter: it is `file.blake3` and `derivative.blake3`, both foreign keys to `blob`.
+    /// A `DELETE` of a referenced row raises a constraint violation whatever this `WHERE`
+    /// clause says, and the bytes survive because the statement never succeeds. Written
+    /// down because it is easy to believe the clause below is the guard and quietly weaken
+    /// it — it is not, and the schema is.
+    ///
+    /// What the `NOT EXISTS` pair buys is that such a row is *declined* rather than
+    /// *failed on*. The whole sweep is one transaction, so one wrongly-quarantined blob
+    /// would otherwise roll back every legitimate removal beside it — and would do so
+    /// again every hour, forever, since nothing about the bad row heals on its own.
+    /// Quarantine would silently stop collecting anything at all. The pair is an
+    /// availability property, and the second statement below is what heals the row.
+    ///
+    /// So: a drifted-high counter means a blob never enters quarantine — wasted disk. A
+    /// drifted-low one means a blob enters quarantine it should not have, and this declines
+    /// it and clears the flag. Bytes are not lost in either direction.
+    ///
+    /// # A blob that came back is un-quarantined, whatever its clock says
+    ///
+    /// Re-ingesting quarantined bytes points a new `file` row at them, and that alone
+    /// undoes the quarantine — the second statement below clears the flag for every
+    /// reachable blob, not only for ones past the cutoff. Re-ingest un-quarantines by
+    /// existing, and a person who deleted something by mistake and re-scanned the folder
+    /// does not have to know this column exists.
+    ///
+    /// # The unlink happens before the commit, and that ordering is load-bearing
+    ///
+    /// `remove` is called while this transaction still holds the deleted `blob` row, which
+    /// is what makes a concurrent re-ingest of the same bytes safe: an ingest linking to
+    /// this hash blocks on the row and, once the delete commits, fails its own transaction
+    /// on `file.blake3`'s foreign key rather than committing a `file` row for bytes that
+    /// have just been unlinked. Its job retries, finds no `blob` row, and writes the bytes
+    /// again. Unlinking after the commit would leave that window open.
+    ///
+    /// The cost of the ordering is the opposite failure: an unlink that succeeds followed
+    /// by a commit that does not would leave a row naming bytes that are gone. So a failing
+    /// `remove` aborts the whole sweep — the row and the bytes both survive, and the next
+    /// hour tries again. Losing bytes is worse than keeping them, every time.
+    pub async fn reap(
+        &self,
+        older_than: std::time::Duration,
+        // `String` rather than an error type of the caller's, because this crate must not
+        // depend on `lapidary-storage` to describe a failure to unlink a file. The message
+        // is the caller's; all this does is carry it out through `DbError`.
+        mut remove: impl FnMut(&BlobHash) -> Result<(), String>,
+    ) -> Result<ReapReport, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        let doomed: Vec<(String, i64)> = sqlx::query_as(
+            "DELETE FROM blob b \
+             WHERE b.quarantined_at < now() - make_interval(secs => $1) \
+               AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3) \
+               AND NOT EXISTS (SELECT 1 FROM derivative d WHERE d.blake3 = b.blake3) \
+             RETURNING b.blake3, b.stored_bytes",
+        )
+        .bind(older_than.as_secs_f64())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut removed = Vec::with_capacity(doomed.len());
+        let mut bytes = 0u64;
+        for (hex, stored_bytes) in &doomed {
+            let hash = BlobHash::parse_hex(hex).map_err(|_| DbError::CorruptBlobHash {
+                column: "blob.blake3",
+                value: hex.clone(),
+            })?;
+            remove(&hash).map_err(|message| DbError::ReapRemove {
+                hash: hex.clone(),
+                message,
+            })?;
+            removed.push(hash);
+            bytes += *stored_bytes as u64;
+        }
+
+        // The other half, and it is not conditional on the cutoff: bytes somebody pointed
+        // at again stop being candidates the moment they are pointed at, not thirty days
+        // later. `ref_count` is recomputed here for the same reason purge recomputes it —
+        // this is the one sweep that looks at every quarantined blob, so it is the cheapest
+        // place to correct a counter that drifted.
+        let revived: Vec<String> = sqlx::query_scalar(
+            "WITH counts AS ( \
+                 SELECT b.blake3, \
+                        (SELECT count(*) FROM file f WHERE f.blake3 = b.blake3) \
+                      + (SELECT count(*) FROM derivative d WHERE d.blake3 = b.blake3) AS actual \
+                 FROM blob b WHERE b.quarantined_at IS NOT NULL \
+             ) \
+             UPDATE blob b SET quarantined_at = NULL, ref_count = c.actual \
+             FROM counts c WHERE b.blake3 = c.blake3 AND c.actual > 0 \
+             RETURNING b.blake3",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(ReapReport {
+            removed,
+            bytes,
+            un_quarantined: revived.len() as u32,
+        })
+    }
+
     /// Is this derivative reachable — does any part in any library that exists point at
     /// these bytes?
     ///
@@ -385,6 +498,21 @@ pub enum Purged {
     /// deletion the product rule forbids.
     NotDeletedYet,
     Done(PurgeReport),
+}
+
+/// What one sweep of [`PgBlobs::reap`] did.
+///
+/// `removed` carries the hashes rather than a count because the operator log wants them:
+/// this is the one place bytes leave for good, and "removed 3 blobs" is not something
+/// anyone can check afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReapReport {
+    /// Blobs whose rows and bytes are both gone.
+    pub removed: Vec<BlobHash>,
+    /// What those blobs occupied — `stored_bytes`, so it is the space actually recovered.
+    pub bytes: u64,
+    /// Quarantined blobs something points at again. Their clocks are cleared, not paused.
+    pub un_quarantined: u32,
 }
 
 pub struct PgIngest(pub PgPool);
