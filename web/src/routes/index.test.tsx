@@ -1573,3 +1573,19 @@ test('a card offers the move chooser, and is draggable for the tree to catch', a
     within(dialog).getByRole('button', { name: strings.folders.moveInto(ROCKS.name) }),
   ).toBeDefined()
 })
+
+test('right-clicking a card opens the same chooser the button does', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN, ROCKS]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  // The pointer gesture a file manager would give you, opening the same chooser rather
+  // than a menu of its own — so neither path can drift from the other.
+  fireEvent.contextMenu(card)
+
+  expect(
+    within(await screen.findByRole('dialog')).getByRole('button', {
+      name: strings.folders.moveInto(ROCKS.name),
+    }),
+  ).toBeDefined()
+})

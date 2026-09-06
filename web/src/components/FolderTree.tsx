@@ -371,13 +371,14 @@ export function MovePartDialog({
   return (
     <Dialog title={strings.folders.moveTitle(part.name)} onClose={onClose}>
       <ul className="mt-3 max-h-72 space-y-1 overflow-y-auto">
-        <MoveRow
-          name={strings.folders.root}
-          depth={0}
-          busy={move.isPending}
-          onMove={() => start(part, null)}
-          autoFocus
-        />
+        <li>
+          <MoveRow
+            name={strings.folders.root}
+            depth={0}
+            busy={move.isPending}
+            onMove={() => start(part, null)}
+          />
+        </li>
         {folders.isPending ? (
           <li className="text-sm text-[var(--color-muted)]">{strings.folders.loading}</li>
         ) : folders.isError ? (
@@ -399,8 +400,15 @@ export function MovePartDialog({
       ) : refused ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveRefused}</p>
       ) : null}
+      {/*
+        Focus lands on cancel, never on a target: every other control here files the model
+        somewhere, and a chooser that acts on Enter before a category is picked moves it
+        somewhere nobody chose.
+      */}
       <div className="mt-4 flex justify-end">
-        <DialogButton onClick={onClose}>{strings.folders.cancel}</DialogButton>
+        <DialogButton onClick={onClose} autoFocus>
+          {strings.folders.cancel}
+        </DialogButton>
       </div>
     </Dialog>
   )
@@ -457,13 +465,11 @@ function MoveRow({
   depth,
   busy,
   onMove,
-  autoFocus,
 }: {
   name: string
   depth: number
   busy: boolean
   onMove: () => void
-  autoFocus?: boolean
 }) {
   return (
     <div
@@ -475,7 +481,6 @@ function MoveRow({
         type="button"
         onClick={onMove}
         disabled={busy}
-        autoFocus={autoFocus}
         aria-label={strings.folders.moveInto(name)}
         className="ease-mechanical shrink-0 rounded border border-[var(--color-border)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
