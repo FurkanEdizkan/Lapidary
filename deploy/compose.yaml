@@ -62,7 +62,12 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # The same blob store the worker writes, mounted read-write rather than :ro.
+      # The user's own storage root — a bind-mounted host directory, not a named volume.
+      # The whole point of this layout (docs/DATA.md §1.1) is that a user can open it in
+      # a file manager and find a model by name; a named volume they cannot locate on
+      # disk would defeat that. `z`, lowercase — see the ingest mount below for why.
+      #
+      # Same host directory the worker writes into, mounted read-write rather than :ro.
       #
       # Slice 1's grid does not actually read this yet — thumbnails are small enough to
       # live inline in Postgres as `derivative.thumbnail_webp` (DATA.md §1.5), so a page
@@ -76,7 +81,7 @@ services:
       # `WorkerRole` token, and `DerivativeStore` — all `lapidary-api` can construct —
       # cannot reach them. A read-only mount would break the derivative cache writes the
       # api legitimately needs while adding nothing that boundary does not already give.
-      - lapidary-blobs:/var/lib/lapidary:Z
+      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
 
   worker:
     # Resource ceiling. Lapidary must run on a modest workstation, not only on
@@ -133,19 +138,22 @@ services:
       # still lands six real parts in the grid; point LAPIDARY_INGEST_DIR at your own
       # folder to scan that instead.
       #
-      # `z`, lowercase, not `Z`. This is the one BIND mount in the file — the two named
-      # volumes above are ours and carry `:Z` — and on an SELinux-enforcing host
-      # (Fedora, RHEL, the platform the README recommends Podman for) a bind mount with
-      # no label gets the worker EACCES on every file, so the documented first-run curl
-      # answers 500 with a directory the operator can read perfectly well themselves.
-      # The difference between the two flags matters here and only here: `Z` relabels
-      # the directory with a private, per-container label, and this directory belongs to
-      # the *user* — it is their parts folder, possibly their whole CAD library, and
-      # possibly shared with other containers. Taking exclusive ownership of it to read
-      # it once would be a worse bug than the one being fixed. `z` applies a shared
-      # label, which is what a read-only source directory wants.
+      # `z`, lowercase, not `Z`. This is one of two bind mounts in the file now — the
+      # storage root below (and api's mount of that same host directory) is the other —
+      # and on an SELinux-enforcing host (Fedora, RHEL, the platform the README
+      # recommends Podman for) a bind mount with no label gets the worker EACCES on
+      # every file, so the documented first-run curl answers 500 with a directory the
+      # operator can read perfectly well themselves. The difference between the two
+      # flags matters here: `Z` relabels the directory with a private, per-container
+      # label, and this directory belongs to the *user* — it is their parts folder (or,
+      # below, their storage root), possibly shared with other programs open on the same
+      # files. Taking exclusive ownership of it just to read or write it once would be a
+      # worse bug than the one being fixed. `z` applies a shared label, which is what a
+      # directory that remains the user's, not ours, wants — whether we only read it
+      # (here) or read and write it (the storage root below). Only `lapidary-db` is
+      # still a named volume.
       - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
-      - lapidary-blobs:/var/lib/lapidary:Z
+      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
 
   web:
     # Resource ceiling. Lapidary must run on a modest workstation, not only on
@@ -165,11 +173,12 @@ services:
       - "3000:8080"
 
 volumes:
+  # Postgres data only. Named, not a bind mount: opaque relational storage nobody needs
+  # to open in a file manager, and deleting the compose project must not take it with it
+  # either. The storage root (api and worker's `/var/lib/lapidary` mounts, above) is a
+  # bind mount instead, precisely so a user CAN find it on disk — see the comment on
+  # api's volumes for why. A bind-mounted host directory comes up owned by whatever
+  # created it, not by deploy/Containerfile's `lapidary` user, so an operator pointing
+  # `LAPIDARY_STORAGE_ROOT` at a fresh directory must make sure it is writable by the
+  # container.
   lapidary-db:
-  # Content-addressed blobs and derivatives, shared by worker (writes source bytes) and
-  # api (reads and caches derivatives). Named, not a bind mount: these are our data, not
-  # the user's files, and deleting the compose project must not take a host directory
-  # with it. deploy/Containerfile creates /var/lib/lapidary owned by the `lapidary` user
-  # so a freshly created volume inherits that ownership instead of coming up root-owned
-  # and unwritable to a container that does not run as root.
-  lapidary-blobs:
