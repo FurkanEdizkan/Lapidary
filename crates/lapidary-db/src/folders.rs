@@ -148,16 +148,77 @@ impl PgFolders {
         Ok(done.rows_affected() == 1)
     }
 
+    /// Move `folder` under `parent` (or to the library root if `None`), refusing a move
+    /// that would put it inside its own subtree.
+    ///
+    /// The refusal has to be atomic with the write, not a `would_cycle` call the caller
+    /// makes first: check-then-act across two round trips is not atomic. Two concurrent
+    /// `reparent` calls can each read `would_cycle == false` and then both commit — A
+    /// under B and B under A, each individually "checked" and each wrong the instant the
+    /// other lands. So this opens its own transaction, takes a `pg_advisory_xact_lock`
+    /// keyed on the folder's `library_id` (serializing concurrent moves within that
+    /// library — a lock scoped to the whole database would block an unrelated library's
+    /// scan for no reason), re-runs the ancestry check inside that lock, and only then
+    /// writes. A self-parent (`reparent(x, Some(x))`) is refused by this same path: the
+    /// ancestry walk's base row is the proposed parent itself, so `folder == new_parent`
+    /// matches on the first row without needing a special case.
     pub async fn reparent(
         &self,
         folder: FolderId,
         parent: Option<FolderId>,
     ) -> Result<bool, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        // Not `library_of`: that filters `deleted_at IS NULL`, and a soft-deleted folder
+        // must still resolve here so the UPDATE below runs exactly as it always has for
+        // one (unfiltered) — this SELECT exists only to name a lock key, not to gate
+        // the move.
+        let library: Option<Uuid> =
+            sqlx::query_scalar("SELECT library_id FROM folder WHERE id = $1")
+                .bind(folder.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(library) = library else {
+            return Ok(false);
+        };
+
+        // One lock, keyed by library so two libraries' moves never contend. Held for the
+        // rest of this transaction and released automatically at commit or rollback —
+        // nothing to unlock by hand.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(library.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        if let Some(new_parent) = parent {
+            // Same query as `would_cycle`, run inside this transaction rather than
+            // `&self.0`'s pool so it reads the state as of right now, under the lock just
+            // taken — a stale read here is exactly the race this method exists to close.
+            let would_cycle: bool = sqlx::query_scalar(
+                "WITH RECURSIVE up AS ( \
+                 SELECT id, parent_id, 1 AS depth FROM folder WHERE id = $1 \
+                 UNION ALL \
+                 SELECT f.id, f.parent_id, up.depth + 1 FROM folder f \
+                 JOIN up ON f.id = up.parent_id WHERE up.depth < $3) \
+                 SELECT coalesce(bool_or(id = $2), false) FROM up",
+            )
+            .bind(new_parent.as_uuid())
+            .bind(folder.as_uuid())
+            .bind(MAX_DEPTH)
+            .fetch_one(&mut *tx)
+            .await?;
+            if would_cycle {
+                return Err(DbError::WouldCreateCycle { folder, new_parent });
+            }
+        }
+
         let done = sqlx::query("UPDATE folder SET parent_id = $2 WHERE id = $1")
             .bind(folder.as_uuid())
             .bind(parent.map(|p| p.as_uuid()))
-            .execute(&self.0)
+            .execute(&mut *tx)
             .await?;
+
+        tx.commit().await?;
         Ok(done.rows_affected() == 1)
     }
 

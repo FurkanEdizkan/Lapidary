@@ -17,7 +17,7 @@ pub use sqlx::PgPool;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
-use lapidary_core::RevisionId;
+use lapidary_core::{FolderId, RevisionId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -91,6 +91,19 @@ pub enum DbError {
         kind: &'static str,
         revision: RevisionId,
     },
+
+    /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
+    /// the per-library advisory lock and runs the ancestry check — never by a caller's own
+    /// prior call to `would_cycle`. Two callers can each observe `would_cycle == false` and
+    /// then both commit, each moving one folder under the other; only a check made
+    /// atomically with the write closes that window.
+    #[error(
+        "Moving folder {folder} under {new_parent} would put it inside its own subtree, which stops it from being a tree at all. Choose a parent that is not {folder} itself or anything already inside it."
+    )]
+    WouldCreateCycle {
+        folder: FolderId,
+        new_parent: FolderId,
+    },
 }
 
 impl DbError {
@@ -125,7 +138,8 @@ impl DbError {
             | DbError::NegativeByteCount { .. }
             | DbError::CorruptBlobHash { .. }
             | DbError::ThumbnailNotInline { .. }
-            | DbError::EmptyDerivative { .. } => self.to_string(),
+            | DbError::EmptyDerivative { .. }
+            | DbError::WouldCreateCycle { .. } => self.to_string(),
         }
     }
 }
