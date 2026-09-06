@@ -8,6 +8,7 @@
 //! job has already touched.
 
 use lapidary_core::manifest::ModelManifest;
+use lapidary_core::slug::disambiguate;
 use lapidary_core::{BatchId, BlobHash, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome};
 use lapidary_db::{
     IngestRequest, JobRow, PgFolders, PgIngest, PgPool, PgStorageMigration, StoredBlobRow,
@@ -874,4 +875,377 @@ async fn a_category_whose_disambiguated_slug_is_taken_too_does_not_stall_the_lib
         "the category keeps the slug it had rather than colliding with a sibling"
     );
     downloads_as(&pool, store.path(), "Terrain/Rocks?/cliff.stl", CLIFF).await;
+}
+
+// Everything below reconstructs ONE interleaving: a second `migrate_storage` runner acting
+// on rows a first runner has written but not yet committed.
+//
+// It is built out of blocking, never out of timing. The winner is stopped inside `settle`
+// by a row lock this test holds on the `blob` row that `settle` updates — so its `file`
+// UPDATE is applied and uncommitted, and under MVCC the loser's own `pending_sources`
+// legitimately reads those rows as still NULL. That is the stale row set the defect turns
+// on, produced by Postgres rather than by the test. `tokio::join!` reproduces this
+// interleaving only by luck, which is why nothing here waits on a clock.
+
+/// The store-relative directory `model_dir_for` gives a part called `cliff` under `category`
+/// when a directory of that name is already taken.
+fn disambiguated(category: &str, hash: &BlobHash) -> String {
+    format!(
+        "libraries/default/{category}/{}",
+        disambiguate("cliff", hash)
+    )
+}
+
+/// Record a `storage_path` on a seeded part, the way an earlier migration run would have.
+/// A row that carries one is not in anybody's page.
+async fn mark_migrated(pool: &PgPool, source_path: &str, storage_path: &str) {
+    let updated = sqlx::query(
+        "UPDATE file SET storage_path = $2 WHERE revision_id IN ( \
+           SELECT r.id FROM revision r JOIN part p ON p.id = r.part_id \
+            WHERE p.source_path = $1)",
+    )
+    .bind(source_path)
+    .bind(storage_path)
+    .execute(pool)
+    .await
+    .expect("records the path an earlier run wrote");
+    assert_eq!(updated.rows_affected(), 1, "{source_path} is one file row");
+}
+
+/// How many backends in THIS test's database are waiting on a lock, right now.
+///
+/// `pg_stat_clear_snapshot()` first, and it is not optional: Postgres freezes the activity
+/// snapshot at the first `pg_stat_activity` read in a transaction, and the connection asking
+/// here is holding one open for the length of the test. Without the clear, every later poll
+/// re-reads the answer the first one got and a loop waiting for the number to rise never
+/// ends. `datname = current_database()` because `#[sqlx::test]` runs the suite in parallel
+/// against one cluster, and a wait belonging to another test's database is not ours to see.
+async fn lock_waiters(holder: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> i64 {
+    sqlx::query("SELECT pg_stat_clear_snapshot()")
+        .execute(&mut **holder)
+        .await
+        .expect("drops this transaction's cached view of who is doing what");
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity \
+          WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    )
+    .fetch_one(&mut **holder)
+    .await
+    .expect("asks what is waiting")
+}
+
+/// Block until `waiters` backends are waiting on a lock.
+///
+/// A state poll, not a delay: the condition is a fact about the server, and the loop exists
+/// only because there is no way to be notified of it.
+async fn wait_for_lock_waiters(holder: &mut sqlx::Transaction<'_, sqlx::Postgres>, waiters: i64) {
+    for _ in 0..600 {
+        if lock_waiters(holder).await >= waiters {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("no runner ever blocked on the lock this test holds");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_second_runner_may_not_reap_a_move_the_first_committed(pool: PgPool) {
+    // The data-loss case, end to end. Two runners resolve the SAME model directory —
+    // `model_dir_for` disambiguates on the shared blob hash, so both land on
+    // `cliff_<hash6>` whenever plain `cliff` is already taken — and the second one fails
+    // partway through the group. Its reap then removes the file, the manifest and the
+    // directory that the first runner's committed row names, and the first runner has
+    // already unlinked the content-addressed copy. The bytes are at neither path: the
+    // module doc calls that forbidden.
+    let store = tempfile::tempdir().expect("store");
+
+    // Two parts in one category both called `cliff` is what `disambiguate` exists for. This
+    // one is a bracket exported alongside the rock; an earlier run already moved it, so its
+    // row names a path and no page contains it — it is here only to own `Terrain/Rocks/cliff`.
+    let taken = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks/cliff.step",
+        BRACKET,
+        Compression::AsIs,
+    )
+    .await;
+    let taken_dir = store.path().join("libraries/default/Terrain/Rocks/cliff");
+    std::fs::create_dir_all(&taken_dir).expect("the directory an earlier run wrote");
+    std::fs::write(taken_dir.join("cliff.step"), BRACKET).expect("with its file in it");
+    std::fs::remove_file(store.path().join(cas_rel(&taken))).expect("and its old copy gone");
+    mark_migrated(
+        &pool,
+        "Terrain/Rocks/cliff.step",
+        "libraries/default/Terrain/Rocks/cliff/cliff.step",
+    )
+    .await;
+
+    // The group: one blob, two parts, deduplicated by ingest before the store became a
+    // folder tree.
+    let hash = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+    let shared = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Boulders/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+    assert_eq!(hash, shared, "one blob, two file rows");
+
+    // The reap only reaches a committed file if the converging row is written BEFORE the
+    // one that fails, and the group is ordered by `file.id` — uuidv7, so by creation.
+    // Asserted rather than assumed, because a silent flip would make this test pass by
+    // testing nothing.
+    let page = PgStorageMigration(pool.clone())
+        .pending_sources(seeded(), 10)
+        .await
+        .expect("reads the page");
+    assert_eq!(
+        page.iter()
+            .map(|row| row.source_path.as_str())
+            .collect::<Vec<_>>(),
+        ["Terrain/Rocks/cliff.stl", "Terrain/Boulders/cliff.stl"]
+    );
+
+    // Stop the winner inside `settle`, between its `file` UPDATE and its commit.
+    let mut holder = pool.begin().await.expect("a connection of its own");
+    sqlx::query("SELECT blake3 FROM blob WHERE blake3 = $1 FOR NO KEY UPDATE")
+        .bind(hash.to_hex())
+        .fetch_one(&mut *holder)
+        .await
+        .expect("locks the blob row settle updates");
+    let winner = tokio::spawn({
+        let handler = handler_over(&pool, store.path());
+        async move { handler.handle(&migrate_job(seeded())).await }
+    });
+    wait_for_lock_waiters(&mut holder, 1).await;
+
+    let committed = format!("{}/cliff.stl", disambiguated("Terrain/Rocks", &hash));
+    assert!(
+        store.path().join(&committed).exists(),
+        "the winner has written both rows and is parked in its settle"
+    );
+
+    // The loser's second row has to fail. Any error at all takes the reap arm — a full
+    // volume, a permission — and a plain file where its directory must go is the one that
+    // is the same on every machine. The winner already wrote `Boulders/cliff`, so the loser
+    // disambiguates to `cliff_<hash6>` there and finds this.
+    std::fs::write(
+        store.path().join(disambiguated("Terrain/Boulders", &hash)),
+        b"",
+    )
+    .expect("puts something in the way of the loser's second row");
+
+    // The loser: a real run, reading rows the winner has not committed.
+    let _ = handler_over(&pool, store.path())
+        .handle(&migrate_job(seeded()))
+        .await;
+
+    holder.rollback().await.expect("lets the winner commit");
+    assert_eq!(
+        winner
+            .await
+            .expect("the winner's task")
+            .expect("the winner migrates"),
+        Outcome::Migrated
+    );
+
+    assert_eq!(
+        storage_path_of(&pool, "Terrain/Rocks/cliff.stl")
+            .await
+            .as_deref(),
+        Some(committed.as_str())
+    );
+    assert!(
+        store.path().join(&committed).exists(),
+        "the file a committed row names was reaped by a second runner"
+    );
+    assert!(
+        store
+            .path()
+            .join(disambiguated("Terrain/Rocks", &hash))
+            .join("metadata.json")
+            .exists(),
+        "and its manifest with it"
+    );
+    assert!(
+        !store.path().join(cas_rel(&hash)).exists(),
+        "the old copy went when the winner settled, which is what makes the reap permanent"
+    );
+    // Through the download route, at the level the row records: the check a half-migrated
+    // store fails and a raw read cannot make.
+    downloads_as(&pool, store.path(), "Terrain/Rocks/cliff.stl", CLIFF).await;
+    downloads_as(&pool, store.path(), "Terrain/Boulders/cliff.stl", CLIFF).await;
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_second_runner_leaves_no_duplicate_model_directory(pool: PgPool) {
+    // The same stale view, one step earlier. A second runner that re-processes a row the
+    // first has committed sees the first's directory, disambiguates around it without asking
+    // whose it is, writes a complete second copy of the file and the manifest — and then
+    // settles nothing, because the row already holds a path. A whole model directory on the
+    // volume that no database row names.
+    let store = tempfile::tempdir().expect("store");
+    let hash = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+
+    let mut holder = pool.begin().await.expect("a connection of its own");
+    sqlx::query("SELECT blake3 FROM blob WHERE blake3 = $1 FOR NO KEY UPDATE")
+        .bind(hash.to_hex())
+        .fetch_one(&mut *holder)
+        .await
+        .expect("locks the blob row settle updates");
+    let winner = tokio::spawn({
+        let handler = handler_over(&pool, store.path());
+        async move { handler.handle(&migrate_job(seeded())).await }
+    });
+    wait_for_lock_waiters(&mut holder, 1).await;
+
+    // Spawned, not awaited: a loser that gets as far as its own `settle` parks on the same
+    // row lock this test is holding, so waiting for it here would wait forever. Either it
+    // skipped the hash and finished, or it is queued behind the winner — both are terminal.
+    let loser = tokio::spawn({
+        let handler = handler_over(&pool, store.path());
+        async move { handler.handle(&migrate_job(seeded())).await }
+    });
+    while !loser.is_finished() && lock_waiters(&mut holder).await < 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    holder.rollback().await.expect("lets them both finish");
+    winner
+        .await
+        .expect("the winner's task")
+        .expect("the winner migrates");
+    let _ = loser.await.expect("the loser's task");
+
+    let mut in_category: Vec<String> =
+        std::fs::read_dir(store.path().join("libraries/default/Terrain/Rocks"))
+            .expect("reads the category")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+    in_category.sort();
+    assert_eq!(
+        in_category,
+        ["cliff"],
+        "a second runner wrote a duplicate model directory that no row names"
+    );
+    downloads_as(&pool, store.path(), "Terrain/Rocks/cliff.stl", CLIFF).await;
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
+    // The claim on its own, without a file in sight: what `Ok(None)` means, and that the
+    // hash comes back when the claim ends — by settling, and by being dropped, which is the
+    // path a failed copy loop takes and the reason its reap is safe.
+    let store = tempfile::tempdir().expect("store");
+    let hash = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+    let migrations = PgStorageMigration(pool.clone());
+
+    let held = migrations
+        .claim_hash(&hash)
+        .await
+        .expect("asks")
+        .expect("nothing else holds this hash");
+    assert_eq!(held.rows().len(), 1, "the row that still says NULL");
+    assert!(
+        migrations.claim_hash(&hash).await.expect("asks").is_none(),
+        "a second runner is told the hash is taken rather than queueing behind a file copy"
+    );
+
+    // A row ingested WHILE a claim is open cannot widen it. Today's ingest writes the file
+    // into its model directory and records the path in one request (`handler.rs` builds a
+    // single `IngestRequest` with `storage_path: Some(..)` for both `record` and
+    // `link_existing`), so no path in this build creates a null-`storage_path` row for a
+    // blob a migration is holding. That is what lets `migrate_storage` re-slug the libraries
+    // its PAGE names and still trust the claim's re-read: the claim can only ever see fewer
+    // rows than the page, never one from a library the re-slug pre-pass did not cover.
+    let other = second_library(&pool).await;
+    let blob = StoredBlobRow {
+        hash,
+        size_bytes: CLIFF.len() as u64,
+        stored_bytes: CLIFF.len() as u64,
+        zstd_level: 0,
+    };
+    PgIngest(pool.clone())
+        .link_existing(IngestRequest {
+            library: other,
+            name: "cliff",
+            source_path: "Cliffs/cliff.stl",
+            folder: None,
+            storage_path: Some("libraries/terrain packs/cliff/cliff.stl"),
+            blob: &blob,
+            measurements: &measurements(),
+            thumbnail_webp: None,
+            kernel_version: "lapidary-mesh 0.1.0",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("ingests a part that shares the blob being migrated");
+
+    let settled = held.settle(&[]).await.expect("settles nothing and commits");
+    assert!(
+        !settled,
+        "a row that shares this blob still reads it, so the old copy stays"
+    );
+    let after = migrations
+        .claim_hash(&hash)
+        .await
+        .expect("asks")
+        .expect("the hash came back with the transaction that held it");
+    assert_eq!(
+        after
+            .rows()
+            .iter()
+            .map(|row| row.source_path.as_str())
+            .collect::<Vec<_>>(),
+        ["Terrain/Rocks/cliff.stl"],
+        "the claim re-reads un-migrated rows only, so a row ingested since is not in it"
+    );
+
+    // Dropped rather than settled: the transaction rolls back and the lock goes with it.
+    // sqlx rolls a dropped transaction back on the connection as it returns to the pool, so
+    // this asks until it has, rather than assuming the drop finished the round trip.
+    drop(after);
+    for attempt in 0.. {
+        if migrations.claim_hash(&hash).await.expect("asks").is_some() {
+            break;
+        }
+        assert!(attempt < 200, "a dropped claim never released its hash");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }
