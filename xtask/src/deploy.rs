@@ -67,6 +67,9 @@ const ARG_EXPANSION: &str = "${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
 /// the code somewhere the check still rejects.
 const DOWNLOAD_MODULE: &str = "crates/lapidary-api/src/download.rs";
 
+/// The single file `SourceRelocator` is allowed in — the part-move route.
+const RELOCATE_MODULE: &str = "crates/lapidary-api/src/moves.rs";
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
     /// A `deploy/compose.yaml` service sets `SERVER_FEATURES` but is not in
@@ -117,6 +120,10 @@ pub enum Violation {
     /// `SourceReader`. Handing a user the exact bytes they asked for is a download; every
     /// other route in `lapidary-api` is the open path and reads derivatives only.
     OpenPathNamesSourceReaderOutsideDownload { path: String },
+    /// A file under `crates/lapidary-api/src/` that is not `src/moves.rs` itself names
+    /// `SourceRelocator`. A rename is the one filesystem operation the open path may
+    /// perform, and only from the one route that does it.
+    OpenPathNamesSourceRelocatorOutsideMoves { path: String },
 }
 
 impl std::fmt::Display for Violation {
@@ -253,6 +260,15 @@ impl std::fmt::Display for Violation {
                  read into {DOWNLOAD_MODULE} — that path exactly, so splitting the route \
                  into a download/ directory or naming a second module after it does not \
                  widen the exemption — or use DerivativeStore."
+            ),
+            Violation::OpenPathNamesSourceRelocatorOutsideMoves { path } => write!(
+                f,
+                "{path} names SourceRelocator. It is allowed only in {RELOCATE_MODULE}, the \
+                 part-move route, which renames a model's directory and reads nothing. A \
+                 second module reaching for it is how a narrow capability becomes a wide \
+                 one by copy-paste — move the rename behind the move route, or if the new \
+                 caller needs a file's contents it needs SourceStore and belongs in \
+                 lapidary-ingest."
             ),
         }
     }
@@ -646,8 +662,15 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     violations
 }
 
-/// Rules 4 and 5, over the same file list: `lapidary-api` must never name `SourceStore`,
-/// and may name `SourceReader` only in `crates/lapidary-api/src/download.rs`.
+/// Rules 4, 5 and 6, over the same file list: `lapidary-api` must never name
+/// `SourceStore`, may name `SourceReader` only in `crates/lapidary-api/src/download.rs`,
+/// and may name `SourceRelocator` only in `crates/lapidary-api/src/moves.rs`.
+///
+/// Rule 6 is rule 5's argument again, one handle narrower: `SourceRelocator` has no
+/// `WorkerRole` gate either, because a rename reads no bytes and invokes no kernel — see
+/// its doc in `lapidary-storage` for why that earns it a route in the open path rather
+/// than a trip through the worker's job queue. Nothing but this grep keeps that route to
+/// the one file allowed to hold it.
 ///
 /// Rule 5 exists because `SourceReader` has no `WorkerRole` gate — spec
 /// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2 chose a read-only handle over
@@ -677,11 +700,13 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
 ///
 /// Rule 5 is textual in the same way and evadable by the same move, demonstrably:
 /// `pub(crate) use lapidary_storage::SourceReader as Bytes;` in `download.rs`, then `Bytes`
-/// used from an open-path file, is green here. Both rules are lints against the mistake,
-/// not seals against someone routing around them on purpose. A future reader should not
-/// treat a green run as proof no source bytes are reachable, only as proof that nothing
-/// under `crates/lapidary-api/src/` names `SourceStore` directly, and that nothing but
-/// `crates/lapidary-api/src/download.rs` names `SourceReader` directly.
+/// used from an open-path file, is green here. Rule 6 is textual for the same reason and
+/// the same way around it exists for `SourceReader`. All three rules are lints against
+/// the mistake, not seals against someone routing around them on purpose. A future reader
+/// should not treat a green run as proof no source bytes are reachable, only as proof that
+/// nothing under `crates/lapidary-api/src/` names `SourceStore` directly, that nothing but
+/// `crates/lapidary-api/src/download.rs` names `SourceReader` directly, and that nothing
+/// but `crates/lapidary-api/src/moves.rs` names `SourceRelocator` directly.
 pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
     let names_source_store = api_sources
         .iter()
@@ -693,7 +718,19 @@ pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violati
         .map(
             |(path, _)| Violation::OpenPathNamesSourceReaderOutsideDownload { path: path.clone() },
         );
-    names_source_store.chain(reader_outside_download).collect()
+    let relocator_outside_moves = api_sources
+        .iter()
+        .filter(|(path, body)| {
+            body.contains("SourceRelocator")
+                && !std::path::Path::new(path).ends_with(RELOCATE_MODULE)
+        })
+        .map(
+            |(path, _)| Violation::OpenPathNamesSourceRelocatorOutsideMoves { path: path.clone() },
+        );
+    names_source_store
+        .chain(reader_outside_download)
+        .chain(relocator_outside_moves)
+        .collect()
 }
 
 /// The single file `SourceReader` is allowed in. `Path::ends_with` is *component-wise*,
@@ -1337,5 +1374,42 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             "use lapidary_storage::DerivativeStore;\n".to_owned(),
         )];
         assert_eq!(check_open_path_boundary(&sources), vec![]);
+    }
+
+    #[test]
+    fn source_relocator_is_allowed_in_the_move_route_and_nowhere_else() {
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/moves.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/parts.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+            // A string-suffix test on the whole path would let this one through, the same
+            // way bulk_download.rs would slip past a suffix test on DOWNLOAD_MODULE.
+            (
+                "crates/lapidary-api/src/bulk_moves.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+        ];
+        let violations = check_open_path_boundary(&sources);
+        assert_eq!(
+            violations,
+            vec![
+                Violation::OpenPathNamesSourceRelocatorOutsideMoves {
+                    path: "crates/lapidary-api/src/parts.rs".to_owned()
+                },
+                Violation::OpenPathNamesSourceRelocatorOutsideMoves {
+                    path: "crates/lapidary-api/src/bulk_moves.rs".to_owned()
+                },
+            ]
+        );
+        let msg = violations[0].to_string();
+        assert!(
+            msg.contains("parts.rs"),
+            "names the file that broke it: {msg}"
+        );
     }
 }

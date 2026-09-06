@@ -1,9 +1,11 @@
-//! Content-addressed blob storage. Three handles, deliberately:
+//! Content-addressed blob storage. Four handles, deliberately:
 //!
 //! `DerivativeStore` reads and writes derivatives — thumbnails, tessellations — and both
 //! roles hold one. `SourceStore` reaches the ingested source bytes and requires a
 //! `WorkerRole` token to construct. `SourceReader` reads those same bytes and can do
 //! nothing else — its own doc says why that is not a hole in the rule below.
+//! `SourceRelocator` moves a source directory and touches no content at all — its own doc
+//! says why a rename earns a fourth handle rather than reusing one of the other three.
 //!
 //! This is the type half of "the **open** path never touches a source file" — a rule
 //! about *opening*: the grid, the viewer, the detail card, the interactive path that
@@ -40,6 +42,9 @@ pub enum StorageError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("{detail}")]
+    PathRefused { detail: String },
 }
 
 /// Proof the holder is running in the worker role. Zero-sized and unconstructible except
@@ -331,6 +336,60 @@ impl SourceReader {
     }
 }
 
+/// Move a model or category directory, and nothing else.
+///
+/// The third handle onto source paths, and deliberately the narrowest: no read, no write
+/// of contents, no delete. It exists because a move is a rename plus a row update, and
+/// neither `SourceStore` (which demands a `WorkerRole`) nor `SourceReader` (read-only) can
+/// rename.
+///
+/// Giving `lapidary-api` this rather than routing an O(1) syscall through the job queue is
+/// a decision the spec argues (§10): the open-path boundary exists so the interactive path
+/// never *parses* a source file to draw something, and a rename parses nothing, reads no
+/// bytes and invokes no kernel. `xtask/src/deploy.rs` keeps it to one module, the same way
+/// it keeps `SourceReader` to `download.rs`.
+///
+/// If this ever grows a method that reads or writes contents, it has become `SourceStore`
+/// and the route belongs in `lapidary-ingest`.
+pub struct SourceRelocator {
+    root: PathBuf,
+}
+
+impl SourceRelocator {
+    pub fn open(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// Resolve a store-relative path, refusing anything that would leave the root.
+    fn resolve(&self, rel: &str) -> Result<PathBuf, StorageError> {
+        lapidary_core::slug::reject_escaping_path(rel).map_err(|e| StorageError::PathRefused {
+            detail: e.to_string(),
+        })?;
+        Ok(self.root.join(rel))
+    }
+
+    pub fn create_dir(&self, rel: &str) -> Result<(), StorageError> {
+        let path = self.resolve(rel)?;
+        std::fs::create_dir_all(&path).map_err(|source| StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        })
+    }
+
+    /// A same-filesystem rename: atomic, and O(1) however large the subtree. The parent of
+    /// `to` must exist — the caller creates the category before moving into it.
+    pub fn rename(&self, from: &str, to: &str) -> Result<(), StorageError> {
+        let from_path = self.resolve(from)?;
+        let to_path = self.resolve(to)?;
+        std::fs::rename(&from_path, &to_path).map_err(|source| StorageError::Io {
+            path: from_path.display().to_string(),
+            source,
+        })
+    }
+}
+
 /// A missing file is success: the reap's job is that the bytes are not on disk
 /// afterwards, and a `put` that failed before its rename leaves nothing to remove.
 fn remove_blob(root: &Path, hash: &BlobHash) -> Result<(), StorageError> {
@@ -616,6 +675,76 @@ mod tests {
         assert_eq!(
             s.get(&stored.hash, Compression::Zstd).expect("reads"),
             bytes
+        );
+    }
+
+    #[test]
+    fn a_relocator_moves_a_directory_and_its_contents() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let r = SourceRelocator::open(dir.path());
+        r.create_dir("libraries/default/Terrain/cliff")
+            .expect("mkdir");
+        std::fs::write(
+            dir.path().join("libraries/default/Terrain/cliff/cliff.stl"),
+            b"solid\n",
+        )
+        .expect("write");
+        r.create_dir("libraries/default/Bases").expect("mkdir");
+
+        r.rename(
+            "libraries/default/Terrain/cliff",
+            "libraries/default/Bases/cliff",
+        )
+        .expect("rename");
+
+        assert!(
+            dir.path()
+                .join("libraries/default/Bases/cliff/cliff.stl")
+                .exists()
+        );
+        assert!(!dir.path().join("libraries/default/Terrain/cliff").exists());
+    }
+
+    #[test]
+    fn a_relocator_refuses_a_path_that_escapes_the_root() {
+        // The whole point of the narrow handle: it cannot be talked into touching
+        // anything outside the store. Asserting the variant, not just `is_err()`, matters
+        // here: an unguarded `from` or `to` still fails, but with a filesystem ENOENT
+        // (neither "a" nor "../a" exists in a fresh temp dir), not the guard's own error —
+        // `is_err()` alone would pass just as well against a relocator missing the check
+        // on either argument.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let r = SourceRelocator::open(dir.path());
+        assert!(matches!(
+            r.create_dir("../escaped"),
+            Err(StorageError::PathRefused { .. })
+        ));
+        assert!(
+            matches!(r.rename("../a", "b"), Err(StorageError::PathRefused { .. })),
+            "the guard must run on `from`"
+        );
+        assert!(
+            matches!(
+                r.rename("a", "/etc/lapidary"),
+                Err(StorageError::PathRefused { .. })
+            ),
+            "the guard must run on `to` as well as `from`"
+        );
+    }
+
+    #[test]
+    fn renaming_a_missing_directory_says_which_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let r = SourceRelocator::open(dir.path());
+        let err = r
+            .rename(
+                "libraries/default/Terrain/gone",
+                "libraries/default/Bases/gone",
+            )
+            .expect_err("must fail");
+        assert!(
+            err.to_string().contains("Terrain/gone"),
+            "names the path: {err}"
         );
     }
 }
