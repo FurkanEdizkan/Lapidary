@@ -514,3 +514,60 @@ async fn a_purged_part_leaves_no_rows_behind_it(pool: sqlx::PgPool) {
         StatusCode::NOT_FOUND
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_removed_list_is_the_only_route_back_to_a_deleted_part(pool: sqlx::PgPool) {
+    // Without `?state=removed` a removal is a one-way door: every other read path filters
+    // `deleted_at`, so nothing in the product could name the part again to restore it.
+    // "We never delete user data implicitly" is not satisfied by a removal nobody can find.
+    let gone = seed(
+        &pool,
+        0xa1,
+        "Bracket, LP-1042-03",
+        "mounting/LP-1042-03.stl",
+    )
+    .await;
+    seed(&pool, 0xa2, "Impeller, LP-5501-02", "pumps/LP-5501-02.stl").await;
+
+    let removed_uri = format!("/api/libraries/{SEEDED_LIBRARY}/parts?state=removed");
+    let (status, json) = call(pool.clone(), "GET", &removed_uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["parts"].as_array().expect("an array").len(),
+        0,
+        "nothing is removed yet"
+    );
+
+    assert_eq!(
+        call(pool.clone(), "DELETE", &format!("/api/parts/{gone}"))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+
+    let (_, json) = call(pool.clone(), "GET", &removed_uri).await;
+    let parts = json["parts"].as_array().expect("an array");
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0]["name"], "Bracket, LP-1042-03");
+    // The path, not only the name. Two parts can share a name and the purge confirmation
+    // on this list names one of them — see `strings.removal.purgeConfirm`.
+    assert_eq!(parts[0]["sourcePath"], "mounting/LP-1042-03.stl");
+    assert_eq!(
+        grid_names(&pool).await,
+        vec!["Impeller, LP-5501-02"],
+        "and the two lists are disjoint: the library never shows a removed part"
+    );
+
+    // An unknown value is the library, not a 400. The grid is a read whose wrong answer is
+    // visible immediately, and 400ing a typo'd query string turns a bookmark that used to
+    // work into an error page.
+    let (status, json) = call(
+        pool.clone(),
+        "GET",
+        &format!("/api/libraries/{SEEDED_LIBRARY}/parts?state=banana"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["parts"].as_array().expect("an array").len(), 1);
+    assert_eq!(json["parts"][0]["name"], "Impeller, LP-5501-02");
+}

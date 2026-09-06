@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as RemovedRouteImport } from './routes/removed'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RemovedRoute = RemovedRouteImport.update({
+  id: '/removed',
+  path: '/removed',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PartsPartIdRoute = PartsPartIdRouteImport.update({
@@ -25,27 +31,31 @@ const PartsPartIdRoute = PartsPartIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/parts/$partId'
+  fullPaths: '/' | '/removed' | '/parts/$partId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/parts/$partId'
-  id: '__root__' | '/' | '/parts/$partId'
+  to: '/' | '/removed' | '/parts/$partId'
+  id: '__root__' | '/' | '/removed' | '/parts/$partId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  RemovedRoute: typeof RemovedRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/removed': {
+      id: '/removed'
+      path: '/removed'
+      fullPath: '/removed'
+      preLoaderRoute: typeof RemovedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/parts/$partId': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  RemovedRoute: RemovedRoute,
   PartsPartIdRoute: PartsPartIdRoute,
 }
 export const routeTree = rootRouteImport

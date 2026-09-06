@@ -13,7 +13,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{BatchId, BatchStatus, BlobHash, LibraryId, MeshMeasurements, PartId};
-use lapidary_db::{IngestRequest, PartRepository, PgIngest, PgParts, StoredBlobRow};
+use lapidary_db::{IngestRequest, PartRepository, PgIngest, PgParts, Shows, StoredBlobRow};
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path
@@ -531,7 +531,7 @@ async fn a_batch_is_enqueued_under_the_parts_own_library_and_no_other(pool: sqlx
 
     // The seeded library also gained no part, so nothing was written across the boundary.
     let rows = PgParts(pool)
-        .page(library(), None, 50)
+        .page(library(), None, 50, Shows::Live)
         .await
         .expect("reads the grid");
     assert!(rows.is_empty());

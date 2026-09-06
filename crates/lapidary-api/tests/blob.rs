@@ -322,3 +322,56 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
         "a hash this route refuses to serve must not be touchable by asking for it"
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::PgPool) {
+    // Carried from slice 6a as an open item, and slice 7 is where it lands because
+    // `last_accessed_at` is a lifecycle column: Phase 4's tiering job reads it to decide
+    // what to move to cold storage, and a client that checks a blob is present is a client
+    // using that blob. Tiering out bytes in active use because the only requests for them
+    // were HEADs is the failure this prevents, before there is a job to prevent it for.
+    //
+    // Nothing had to be written to make it true. `axum::routing::get` answers HEAD with the
+    // same handler and strips the body, so the touch was always on this path — this test
+    // exists because that is a property of a routing helper, invisible at the call site,
+    // and swapping `get` for an explicit `on(MethodFilter::GET, ...)` would silently take
+    // it away.
+    let root = tempfile::tempdir().expect("temp dir");
+    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: root.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+    };
+    assert_eq!(last_read_us(&pool, &hash).await, None);
+
+    let response = router(state, Role::Api)
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/blob/{}", hash.to_hex()))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::ETAG)
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("\"{}\"", hash.to_hex()).as_str()),
+        "a HEAD answers with the headers a GET would, which is what it is for"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .expect("body reads");
+    assert!(body.is_empty(), "HEAD carries no body");
+    assert!(
+        last_read_us(&pool, &hash).await.is_some(),
+        "a HEAD is somebody using these bytes, and the column that decides what gets \
+         tiered out has to know it"
+    );
+}

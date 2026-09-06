@@ -585,6 +585,18 @@ function ActionBar({
       >
         {strings.render.sweep}
       </button>
+      {/*
+        A link and not a button: the removed list is a place, not an action, and it is the
+        only route back to a part somebody removed. Its absence would make removing a
+        one-way door — every other read path filters `deleted_at`, so nothing else in this
+        app can name a removed part again.
+      */}
+      <Link
+        to="/removed"
+        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+      >
+        {strings.removal.removedTitle}
+      </Link>
       {settingsNote === null ? null : (
         <span className="text-sm text-[var(--color-muted)]">{settingsNote}</span>
       )}

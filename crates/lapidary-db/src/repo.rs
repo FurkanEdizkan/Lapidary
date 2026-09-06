@@ -69,6 +69,23 @@ pub struct StorageTotals {
     pub derivative_bytes: u64,
 }
 
+/// Which side of `deleted_at` a page reads.
+///
+/// A parameter rather than a second method, because the two pages are the same query with
+/// one predicate flipped and a duplicate of four LATERALs would drift the moment either
+/// side gained a column. A parameter rather than a `bool` for the ordinary reason: `page(
+/// library, after, limit, true)` does not say what `true` selects, and this is a call site
+/// where guessing wrong shows a user the wrong parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// The library as it stands. What the grid asks for.
+    Live,
+    /// Parts a person removed and has not purged. The only route back to a soft-deleted
+    /// part — without it, delete is a trap, because every other read path filters these
+    /// out and nothing would list an id to restore.
+    Removed,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
@@ -80,6 +97,7 @@ pub trait PartRepository: Send + Sync {
         library: LibraryId,
         after: Option<lapidary_core::PartId>,
         limit: u16,
+        shows: Shows,
     ) -> Result<Vec<PartRow>, DbError>;
 }
 
@@ -1489,6 +1507,7 @@ impl PartRepository for PgParts {
         library: LibraryId,
         after: Option<PartId>,
         limit: u16,
+        shows: Shows,
     ) -> Result<Vec<PartRow>, DbError> {
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -1528,6 +1547,7 @@ impl PartRepository for PgParts {
             Uuid,
             String,
             Option<String>,
+            String,
             Option<Vec<u8>>,
             Option<i32>,
             Option<bool>,
@@ -1539,7 +1559,8 @@ impl PartRepository for PgParts {
             i64,
             i64,
         )> = sqlx::query_as(
-            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
+            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
+                    d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
                     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, l0.blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
@@ -1552,7 +1573,7 @@ impl PartRepository for PgParts {
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-             WHERE p.library_id = $1 AND p.deleted_at IS NULL \
+             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
         )
@@ -1567,6 +1588,10 @@ impl PartRepository for PgParts {
         // kinds are read by one query now, so a reader spelling either differently from
         // the writer reads nothing while looking entirely correct.
         .bind(DerivativeKind::TessellationL0.as_str())
+        // The predicate is `(deleted_at IS NOT NULL) = $6` rather than two branches of
+        // SQL, so both pages are provably the same query: a column added to one is added
+        // to the other, and the removed list cannot quietly fall behind the grid.
+        .bind(shows == Shows::Removed)
         .fetch_all(&self.0)
         .await?;
 
@@ -1585,6 +1610,7 @@ impl PartRepository for PgParts {
                     revision,
                     name,
                     part_number,
+                    source_path,
                     thumb_bytes,
                     triangles,
                     _watertight,
@@ -1652,6 +1678,7 @@ impl PartRepository for PgParts {
                             revision: RevisionId::from_uuid(revision),
                             name,
                             part_number,
+                            source_path,
                             // The hash is not carried in slice 1: thumbnails arrive inline
                             // and the grid renders them directly. A hash-addressed
                             // thumbnail endpoint arrives with the viewer.

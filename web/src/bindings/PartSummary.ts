@@ -21,6 +21,17 @@ export type PartSummary = { id: PartId, library: LibraryId,
  */
 revision: RevisionId, name: string, partNumber: string | null, 
 /**
+ * The path this part is known by, which since slice 6a is its identity in the
+ * library — two parts called `bracket` in two folders are one name and two paths.
+ *
+ * Carried on the summary and not only on `PartDetail` because the removed list needs
+ * it: that page names a part in a purge confirmation, purge is the one irreversible
+ * action in the product, and a confirmation reading "Purge “bracket” permanently?"
+ * against two identically named parts is a confirmation that cannot be answered
+ * correctly.
+ */
+sourcePath: string, 
+/**
  * The thumbnail derivative's content hash, not a URL. Holding it is not
  * authorization to read it — the API still checks tenant and part reachability.
  */
