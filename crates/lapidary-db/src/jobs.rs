@@ -157,8 +157,7 @@ impl PgJobs {
     }
 
     /// One fresh `migrate_storage` job for `library`, under a batch of its own, unless
-    /// `library` already has one pending or running -- or unless a concurrent caller
-    /// wins the race to create the first one.
+    /// `library` already has one pending or running.
     ///
     /// This is the worker startup guard (`bin/lapidary-server`, worker role only): for
     /// every library `PgStorageMigration::libraries_needing_migration` still finds
@@ -166,38 +165,22 @@ impl PgJobs {
     /// never has to hand-write `INSERT INTO job`. It is also what the optional manual
     /// trigger route (`lapidary_ingest::migrate::migrate`) calls.
     ///
-    /// A single statement, not a read then a write -- deliberately, and it has to be
-    /// for the property this exists to guarantee: two workers booting at the same
-    /// instant against the same un-migrated library each take their own READ COMMITTED
-    /// snapshot before either commits, so a bare `WHERE NOT EXISTS` here is NOT
-    /// race-free by itself. Verified by hand against a real Postgres 18.6 before this
-    /// was written, including the tempting-looking fix of wrapping the check in an
-    /// advisory lock taken INSIDE THIS SAME STATEMENT (a CTE calling
-    /// `pg_advisory_xact_lock` ahead of the `INSERT ... SELECT`, both part of one
-    /// INSERT): that specific shape is not race-free either. Blocking on a lock
-    /// mid-statement does not give the rest of that same statement a fresher snapshot --
-    /// the whole statement, including a `WHERE NOT EXISTS` evaluated after the block,
-    /// still reads the snapshot it started with, so the loser's check comes back
-    /// "nothing exists yet" even though the winner has, by then, already committed.
-    /// This is NOT a claim that an advisory lock cannot close the race by any means --
-    /// one taken as its OWN, separate statement before the insert (`PgFolders::reparent`'s
-    /// shape: one statement to lock, a later one to read and write within the same
-    /// transaction) does close it, since that later statement gets a fresh snapshot once
-    /// the lock is granted. That shape was set aside here because it protects only a
-    /// caller that remembers to take the lock, where a unique index protects every
-    /// caller. `job_migrate_storage_pending_per_library` (migration 0010) is the actual
-    /// guarantee this method relies on: `ON CONFLICT ... DO NOTHING` only has something
-    /// to conflict with because that index exists, and Postgres makes the loser's INSERT
-    /// wait on the winner's uncommitted row and then discard itself once the winner
-    /// commits -- no stale snapshot involved, because unique-index conflict checking is
-    /// not an MVCC read.
+    /// The `WHERE NOT EXISTS` check below is best-effort, not race-free, and there is no
+    /// unique constraint backing it (migration 0011 removed the one that used to). Under
+    /// READ COMMITTED, two workers booting at the same instant against the same
+    /// un-migrated library each take their own snapshot before either commits, so both
+    /// can see "nothing exists yet" and both insert -- a library can briefly hold two
+    /// pending `migrate_storage` rows. That is acceptable: a redundant queue row is
+    /// wasteful, not harmful, because the second runner finds the work already claimed
+    /// at the execution boundary in `lapidary-ingest` and terminates rather than
+    /// repeating it. `any_pending`-shaped checks (see `reenqueue_migration_if_absent`)
+    /// are live reads, so a chain that keeps re-checking stops re-enqueueing itself once
+    /// the library is actually drained. The safety of two migrations running at once for
+    /// the same library is established at that execution boundary, not by this check.
     ///
-    /// The `WHERE NOT EXISTS` clause is still load-bearing, just not for that race: it
-    /// checks `state IN ('pending', 'running')`, where the index (see its migration for
-    /// why) covers `'pending'` alone. Removing this clause would still leave the
-    /// concurrency race closed by the index, but a library whose migration is already
-    /// RUNNING -- with no pending successor queued yet -- would no longer be recognised,
-    /// and this method would queue a second, redundant chain beside it.
+    /// Checks `state IN ('pending', 'running')`, not `'pending'` alone: a library whose
+    /// migration is already RUNNING, with no pending successor queued yet, must still be
+    /// recognised, or this method would queue a second, redundant chain beside it.
     ///
     /// Returns the batch this job was queued under, or `None` if nothing was queued.
     pub async fn enqueue_migration_if_absent(
@@ -211,8 +194,6 @@ impl PgJobs {
                  SELECT 1 FROM job \
                   WHERE kind = 'migrate_storage' AND library_id = $1 \
                     AND state IN ('pending', 'running')) \
-             ON CONFLICT (library_id) WHERE kind = 'migrate_storage' AND state = 'pending' \
-                 DO NOTHING \
              RETURNING batch_id",
         )
         .bind(library.as_uuid())
@@ -232,10 +213,9 @@ impl PgJobs {
         Ok(batch)
     }
 
-    /// `migrate_storage`'s own re-enqueue arm, guarded the same way
-    /// `enqueue_migration_if_absent` is, and backed by the same
-    /// `job_migrate_storage_pending_per_library` index -- but checking
-    /// `state = 'pending'` ONLY, never `'running'`.
+    /// `migrate_storage`'s own re-enqueue arm, checked the same way
+    /// `enqueue_migration_if_absent` is -- but checking `state = 'pending'` ONLY, never
+    /// `'running'`.
     ///
     /// That difference is not an oversight. The caller of this method IS the currently
     /// RUNNING `migrate_storage` job for `library` -- a `NOT EXISTS` that also excluded
@@ -245,11 +225,18 @@ impl PgJobs {
     /// `lapidary_jobs::worker`'s shutdown-grace release can put this same job's own row
     /// back to `'pending'` while this handler is still finishing in the background (see
     /// that module's `SHUTDOWN_GRACE` doc), and a second worker can reclaim an expired
-    /// lease and run this same re-enqueue concurrently. Either way, without this guard
-    /// the plain `INSERT` this replaced would throw the index's unique violation
-    /// straight into the caller, which `lapidary_ingest::migrate` would then report as
-    /// "could not queue the next batch" -- true of a database outage, and false of a
-    /// benign double-enqueue this method exists to make harmless instead.
+    /// lease and run this same re-enqueue concurrently.
+    ///
+    /// The check is best-effort, not race-free, and there is no unique constraint behind
+    /// it (migration 0011 removed the one that used to back `enqueue_migration_if_absent`
+    /// and this method alike). Two concurrent callers can each see nothing pending under
+    /// READ COMMITTED and each insert, so the library can briefly hold two pending
+    /// `migrate_storage` rows. That is acceptable: the second runner finds the work
+    /// already done at the execution boundary in `lapidary-ingest` and terminates rather
+    /// than repeating it, and this is a live read on every re-enqueue, not a one-time
+    /// check, so a chain stops re-enqueueing itself once the library is actually
+    /// drained. The safety of two migrations running at once for the same library is
+    /// established at that execution boundary, not here.
     ///
     /// Inserts into `batch` -- the chain's own, existing batch -- rather than minting a
     /// fresh one, for `enqueue_into`'s reason: the browser (or whatever else is
@@ -268,8 +255,6 @@ impl PgJobs {
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM job \
                   WHERE kind = 'migrate_storage' AND library_id = $2 AND state = 'pending') \
-             ON CONFLICT (library_id) WHERE kind = 'migrate_storage' AND state = 'pending' \
-                 DO NOTHING \
              RETURNING id",
         )
         .bind(batch.as_uuid())
@@ -291,8 +276,14 @@ impl PgJobs {
     /// running -- whichever row already existed (or a concurrent caller just created)
     /// when `enqueue_migration_if_absent` returned `None`. Every row in one migration's
     /// chain shares its first row's `batch_id` (`reenqueue_migration_if_absent` always
-    /// inserts into the SAME batch, never a fresh one), so picking any one active row's
-    /// batch id is unambiguous -- there is exactly one live chain per library at a time.
+    /// inserts into the SAME batch, never a fresh one), so ordinarily there is exactly
+    /// one live chain per library and picking any one active row's batch id is
+    /// unambiguous. `enqueue_migration_if_absent` and `reenqueue_migration_if_absent`
+    /// are both best-effort (see their doc comments), so a library can briefly hold two
+    /// pending rows under two different batches; this query has no `ORDER BY` and
+    /// `LIMIT 1`s whichever one Postgres returns first in that window. Reporting either
+    /// batch id is fine here -- both chains resolve at the execution boundary, and an
+    /// operator polling either sees real progress, not a 404.
     ///
     /// Exists for the manual trigger route (`lapidary_ingest::migrate::migrate`): a
     /// `queued: 0` response still needs a real batch id to hand back when a migration
@@ -427,21 +418,6 @@ impl PgJobs {
     ///
     /// `AND state = 'running'` -- see `complete`'s doc comment for why: the same
     /// stale-writer guard applies here too.
-    ///
-    /// `AND NOT (kind = 'migrate_storage' AND EXISTS (...))` guards against a second
-    /// collision `job_migrate_storage_pending_per_library` (migration 0010) can throw,
-    /// one an `INSERT ... ON CONFLICT DO NOTHING` cannot resolve because this is an
-    /// UPDATE: if this row is a `migrate_storage` job and its library already has a
-    /// pending successor -- queued by another attempt at the SAME job racing this one,
-    /// or by a worker that reclaimed its expired lease -- moving THIS row to `pending`
-    /// too would put two pending rows under one library and abort with a raw `23505`.
-    /// Skipping it here is not a compromise: that library's continuation is already
-    /// queued, so leaving this row `running` to lapse by lease expiry -- exactly what
-    /// happens to any job whose worker vanishes -- is the correct outcome. See
-    /// `release_leases` below for why this cannot simply be scoped to `kind <>
-    /// 'migrate_storage'` in the caller instead: a single `UPDATE` can touch rows of
-    /// every kind at once, and a raw constraint violation aborts the WHOLE statement,
-    /// not just the offending row.
     pub async fn reschedule(
         &self,
         id: JobId,
@@ -453,12 +429,7 @@ impl PgJobs {
                             run_after = now() + make_interval(secs => $3), \
                             last_error = $2, leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
-             WHERE id = $1 AND state = 'running' \
-               AND NOT (job.kind = 'migrate_storage' AND EXISTS ( \
-                   SELECT 1 FROM job successor \
-                    WHERE successor.kind = 'migrate_storage' \
-                      AND successor.library_id = job.library_id \
-                      AND successor.state = 'pending'))",
+             WHERE id = $1 AND state = 'running'",
         )
         .bind(id.as_uuid())
         .bind(reason)
@@ -474,52 +445,15 @@ impl PgJobs {
     /// which is what lease expiry is for -- the two paths are separate because only one
     /// of them can run cleanup code.
     ///
-    /// One `UPDATE`, every kind this worker holds, at once -- which is exactly why the
-    /// `migrate_storage` exclusions below (see `reschedule`'s doc for the pending-
-    /// successor half of the reasoning) have to live in this statement rather than in a
-    /// second pass over just that kind: a `migrate_storage` row that cannot become
-    /// `pending` colliding with `job_migrate_storage_pending_per_library` (migration
-    /// 0010) would abort this UPDATE in its entirety, silently leaving every OTHER job
-    /// of any kind this worker held -- an `ingest_file` mid-scan, a `derive` mid-render
-    /// -- leased and un-released, degrading a graceful shutdown into the crash path for
-    /// all of them, not just the one migration.
-    ///
-    /// Fix round 2: excluding a row with a pending successor is not enough on its own.
-    /// This worker can hold TWO `running` `migrate_storage` rows for the SAME library at
-    /// once, with no pending row yet -- `reenqueue_migration_if_absent` fires
-    /// `pg_notify` on success, and this worker's own dequeue loop (default concurrency
-    /// 4) can claim and start running the fresh successor on another slot before the
-    /// predecessor's `complete()` call lands, or before a `Transient` retry lands, or
-    /// while the predecessor is still legitimately busy past `SHUTDOWN_GRACE` on a large
-    /// corpus. Releasing BOTH in the same `UPDATE` would move two rows for one library
-    /// to `pending` in one statement -- a self-collision against the same index, from
-    /// this statement alone, with no pending successor involved at all. The second
-    /// `EXISTS` below closes that: it excludes a `migrate_storage` row whenever ANOTHER
-    /// `running` `migrate_storage` row for the same library, held by this SAME worker,
-    /// sorts before it (`id` is uuidv7 and therefore time-ordered, so this is a stable,
-    /// deterministic "oldest wins" tie-break, not an arbitrary one) -- so at most ONE
-    /// such row moves per library per call. The rest stay `running` to lapse by lease
-    /// expiry, for the identical reason the pending-successor exclusion already gives:
-    /// their work is either already queued or about to be, so losing the lease costs
-    /// nothing a retry does not already cover.
+    /// One `UPDATE`, every kind this worker holds, at once: a graceful shutdown should
+    /// not leave any of it -- an `ingest_file` mid-scan, a `derive` mid-render, a
+    /// `migrate_storage` mid-move -- leased and waiting out its lease when a single pass
+    /// could hand all of it back immediately.
     pub async fn release_leases(&self, worker_id: &str) -> Result<u64, DbError> {
         let result = sqlx::query(
             "UPDATE job SET state = 'pending', run_after = now(), leased_by = NULL, \
                             lease_expires_at = NULL, updated_at = now() \
-             WHERE leased_by = $1 AND state = 'running' \
-               AND NOT (job.kind = 'migrate_storage' AND ( \
-                   EXISTS ( \
-                       SELECT 1 FROM job successor \
-                        WHERE successor.kind = 'migrate_storage' \
-                          AND successor.library_id = job.library_id \
-                          AND successor.state = 'pending') \
-                   OR EXISTS ( \
-                       SELECT 1 FROM job other \
-                        WHERE other.kind = 'migrate_storage' \
-                          AND other.library_id = job.library_id \
-                          AND other.state = 'running' \
-                          AND other.leased_by = $1 \
-                          AND other.id < job.id)))",
+             WHERE leased_by = $1 AND state = 'running'",
         )
         .bind(worker_id)
         .execute(&self.0)
