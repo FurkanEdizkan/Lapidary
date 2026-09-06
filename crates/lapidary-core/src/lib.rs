@@ -13,7 +13,7 @@ pub mod slug;
 pub use approximate::Approximate;
 pub use derivative::DerivativeKind;
 pub use error::CoreError;
-pub use ids::{BatchId, BlobHash, JobId, LibraryId, PartId, RevisionId};
+pub use ids::{BatchId, BlobHash, FolderId, JobId, LibraryId, PartId, RevisionId};
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeshMeasurements, Provenance};
 pub use part::{LibraryMode, PartSummary};
