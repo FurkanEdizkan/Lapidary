@@ -598,15 +598,19 @@ async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool
 
 /// Task 8b's own opening line: an operator could only start a `migrate_storage` job by
 /// hand-writing `INSERT INTO job` -- and nothing stopped them from writing it twice for
-/// the same library. `0010_migrate_storage_startup_guard.sql` adds a unique index that a
-/// database in exactly that state would otherwise fail to create at all
-/// (`CREATE UNIQUE INDEX` refuses to build over an existing duplicate), taking a
-/// deployment down at its next upgrade for having used the very workaround this task
-/// exists to remove. The migration de-duplicates first for exactly this reason.
+/// the same library. `0010_migrate_storage_startup_guard.sql` added a unique index that a
+/// database in exactly that state would otherwise have failed to create at all
+/// (`CREATE UNIQUE INDEX` refuses to build over an existing duplicate), so it
+/// de-duplicated first, keeping the oldest pending row per library.
+///
+/// Fix round 3: the index itself is gone (`0011_drop_migrate_storage_pending_index.sql`)
+/// -- it only ever constrained `pending` rows, never the concurrent *execution* it was
+/// believed to guard, and the guards it forced into `release_leases` and `reschedule`
+/// cost more correctness than the deduplication bought. The de-duplication in `0010`
+/// still ran and is still worth pinning; the index it built is not, and must be absent
+/// once `0011` has applied too.
 #[sqlx::test(migrations = false)]
-async fn migration_0010_de_duplicates_pending_migrations_hand_written_before_the_guard_existed(
-    pool: PgPool,
-) {
+async fn migration_0010_de_duplicates_pending_migrations_and_0011_drops_its_index(pool: PgPool) {
     let migrator = sqlx::migrate!("./migrations");
     migrator
         .run_to(9, &pool)
@@ -649,10 +653,13 @@ async fn migration_0010_de_duplicates_pending_migrations_hand_written_before_the
         "three hand-written rows exist before 0010 runs"
     );
 
+    // Runs every remaining migration, 0010 and 0011 alike -- this is the same
+    // round-trip point 4 of the round-3 brief asks for, just entered from a database
+    // that already holds duplicates rather than an empty one.
     migrator
         .run(&pool)
         .await
-        .expect("0010 must not fail against a database already holding duplicates");
+        .expect("0010 must not fail against a database already holding duplicates, and 0011 must not fail after it");
 
     let survivors: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
@@ -665,7 +672,7 @@ async fn migration_0010_de_duplicates_pending_migrations_hand_written_before_the
     assert_eq!(
         survivors,
         vec![oldest.expect("set in the loop above")],
-        "exactly the oldest pending row must survive"
+        "0010's de-duplication still ran: exactly the oldest pending row survives"
     );
 
     let index_exists: bool = sqlx::query_scalar(
@@ -676,8 +683,8 @@ async fn migration_0010_de_duplicates_pending_migrations_hand_written_before_the
     .await
     .expect("checks pg_indexes");
     assert!(
-        index_exists,
-        "0010 must still create the index it exists for"
+        !index_exists,
+        "0011 must have dropped the index 0010 created"
     );
 }
 
