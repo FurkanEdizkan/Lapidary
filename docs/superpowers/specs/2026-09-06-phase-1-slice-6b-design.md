@@ -84,13 +84,41 @@ The card keeps its own intrinsic size so the scrollbar does not jump as cards en
 leave — that is what `contain-intrinsic-size` is for, and omitting it is the mistake that
 makes `content-visibility` look broken.
 
-**This is a decision to re-measure, not to trust.** §7 records the number it has to beat; if
-1,000 cards are not interactive with the CSS rule alone, the virtualizer is the answer and
-the rule was one line to try first.
+**Measured in Chrome, on the 1,000-part bench, cold both ways** — the page reloaded and
+every card loaded fresh, because a warmed page has already rendered everything and reports
+a 1.5× difference that means nothing:
+
+| Full-page scroll pass, 1,000 cards | Cold |
+|---|---|
+| `content-visibility: auto` | **8.8 ms** |
+| `content-visibility: visible` | **128.4 ms** |
+
+14.6× for one CSS property, no dependency, and the grid stays a plain CSS grid. The
+virtualizer is not needed and is not added.
+
+**`contain-intrinsic-size` is 26rem, and the first guess was wrong.** 20rem came from
+measuring a card before its thumbnail had loaded; a rendered card is 415 px, uniformly
+across all 1,000, and the placeholder under-reported the page height by 23% — exactly the
+scrollbar jump that makes `content-visibility` look broken. At 26rem the placeholder height
+is within **0.2%** of the real one. The leading `auto` means the browser substitutes each
+card's real size once it has rendered it, so the figure only has to be close for the first
+paint.
 
 **`MAX_LIMIT` stays 100.** Ten requests for a thousand parts at 428 kB each is a scroll that
 never stalls, and a larger page buys a longer first paint for a screen that shows twenty
 cards.
+
+**The live-fill refetch is gated on how deep the grid is, and that came out of a
+measurement too.** `invalidateQueries` on an infinite query refetches *every page it
+holds*, so the settle-effect that fills the grid during a scan pulled eleven pages on every
+tick once a user had paged eleven deep — roughly 4.7 MB a second, measured in Chrome. And
+it bought nothing: each page keeps its own cursor, parts arrive newest-first ahead of every
+cursor already held, so only the first page can gain anything.
+
+So the grid live-fills while it is on its first page, and a grid the user has paged into
+waits for the batch to finish and refreshes once. Trimming the cache to one page would be
+the other way to make it cheap, and it snaps a reading user back to the top of a library
+they were scrolled into.
 
 ## 3. The rung hash stops being dead bytes
 
@@ -195,8 +223,9 @@ Numbers, because §1 shows this slice's premise was wrong once already:
   regress it.
 - **All 1,000 parts reachable** by scrolling, and the count on screen agrees with the
   library.
-- **1,000 cards in the DOM stay interactive.** Measured in a real browser, not asserted.
-  If `content-visibility: auto` does not carry it, §2 says the virtualizer is the answer.
+- **1,000 cards in the DOM stay interactive.** Measured in a real browser, not asserted:
+  8.8 ms for a full-page scroll pass against 128.4 ms without the CSS rule. Met, and the
+  virtualizer is not needed.
 - **The progress line moves on a hidden tab**, which is the one thing the poll cannot do
   and the reason SSE is in this slice.
 - **`GET /api/blob/{blake3}` has a caller** — the detail route shows the L0 rung.

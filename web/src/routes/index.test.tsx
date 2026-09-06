@@ -209,9 +209,50 @@ const SHAFT_COUPLER: PartCard = {
 
 const page = (parts: PartCard[]): PartsPage => ({ parts, next: null })
 
+/**
+ * The sentinel's observers, in the order the grid created them. jsdom implements no
+ * `IntersectionObserver` at all, so without this stub the grid throws on mount and every
+ * test in this file renders an error boundary — which is how it was found.
+ *
+ * Recorded rather than merely silenced: `scrollToEnd` below fires the callback, which is
+ * the only way to test that scrolling to the bottom fetches the next page. A stub that
+ * did nothing would let the paging break silently.
+ */
+let observers: { callback: IntersectionObserverCallback; disconnected: boolean }[] = []
+
+/** What the observer reports when its target scrolls into view. */
+function scrollToEnd() {
+  for (const observer of observers) {
+    if (!observer.disconnected) {
+      observer.callback([{ isIntersecting: true } as IntersectionObserverEntry], null as never)
+    }
+  }
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  observers = []
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      private entry: { callback: IntersectionObserverCallback; disconnected: boolean }
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback, disconnected: false }
+        observers.push(this.entry)
+      }
+      observe() {}
+      unobserve() {}
+      // Honoured, not ignored: the grid disconnects on cleanup, and an observer that
+      // kept firing after that would let a real leak pass this suite.
+      disconnect() {
+        this.entry.disconnected = true
+      }
+      takeRecords() {
+        return []
+      }
+    },
+  )
 })
 
 // For these health-check states, the expected text is written out literally rather than
@@ -489,7 +530,11 @@ test('says how much of the library is on screen when the whole of it fits', asyn
   expect(screen.getByText('Showing all 2 parts.')).toBeDefined()
 })
 
-test('says the grid is truncated when the server hands back another cursor', async () => {
+test('says how many parts are loaded so far when the server hands back another cursor', async () => {
+  // The copy this replaces said paging "arrives with the virtualized grid". It has
+  // arrived, so the sentence changed rather than the assertion being deleted: what a
+  // truncated grid must still never do is claim to be showing the whole library.
+  //
   // `next` non-null is the server's own "there is more behind this page" — a full page
   // hands back a cursor, a short one hands back null.
   const truncated: PartsPage = {
@@ -499,13 +544,42 @@ test('says the grid is truncated when the server hands back another cursor', asy
   stubFetch({ parts: ok(truncated) })
   renderIndex()
   await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(screen.getByText(strings.parts.showingSoFar(2))).toBeDefined()
+  expect(screen.queryByText(strings.parts.showingAll(2))).toBeNull()
+  // And there is a way to get the rest, for a keyboard user as well as a scrolling one.
+  expect(screen.getByRole('button', { name: strings.parts.loadMore })).toBeDefined()
+})
+
+test('scrolling to the end asks the server for the page after the cursor', async () => {
+  // The gap this whole change closes: `fetchParts` used to ask for one page and never
+  // ask for another, so a library of 1,000 showed 50 and the rest were unreachable. The
+  // assertion is on the URL, because "it fetched again" is also true of a refetch of the
+  // same page — what proves paging is that the second request carries the first page's
+  // cursor.
+  const cursor = '01931b6e-0000-7000-8000-0000000a0002'
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.startsWith('/api/libraries') && url.includes('/parts')) {
+      return url.includes('after=')
+        ? { ok: true, json: async () => page([HEX_NUT]) }
+        : { ok: true, json: async () => ({ parts: [MOTOR_MOUNT], next: cursor }) }
+    }
+    if (url.includes('/healthz')) return { ok: true, json: async () => HEALTHY }
+    return { ok: false, status: 404, json: async () => ({}) }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  scrollToEnd()
+
+  await screen.findByRole('article', { name: HEX_NUT.name })
   expect(
-    screen.getByText(
-      'Showing the first 2 parts. This library has more — paging through them arrives with the virtualized grid.',
-    ),
-  ).toBeDefined()
-  // And it must not also claim to be showing all of them.
-  expect(screen.queryByText('Showing all 2 parts.')).toBeNull()
+    fetchMock.mock.calls.some(([url]) => String(url).includes(`after=${cursor}`)),
+    `expected a request carrying the cursor, got: ${fetchMock.mock.calls.map(([u]) => u).join(', ')}`,
+  ).toBe(true)
+  // Both pages on screen at once, not the second replacing the first.
+  expect(screen.getByRole('article', { name: MOTOR_MOUNT.name })).toBeDefined()
+  expect(screen.getByText(strings.parts.showingAll(2))).toBeDefined()
 })
 
 test('does not count parts before the page has arrived, or when there are none', async () => {
@@ -1309,4 +1383,62 @@ test('finishing a scan re-reads what the library occupies', async () => {
   fireEvent.click(await screen.findByRole('button', { name: strings.scan.start }))
 
   await waitFor(() => expect(storageReads).toBeGreaterThan(before))
+})
+
+test('a deep-scrolled grid does not refetch every page on every settle tick', async () => {
+  // Measured in Chrome against a 1,000-part library before this guard existed: eleven
+  // pages loaded meant eleven requests per tick, roughly 4.7 MB a second during a scan.
+  // And it bought nothing — each page keeps its own cursor, and parts arrive newest-first
+  // ahead of every cursor already held, so only the first page can gain anything.
+  const cursor = '01931b6e-0000-7000-8000-0000000a0002'
+  let partsRequests = 0
+  // The count climbs on every poll, which is what a running scan looks like and what
+  // makes the settle-effect fire again and again. A fixed count would make this test
+  // pass with the guard removed, because the effect would never re-run.
+  let ingested = 100
+  const running = () => ({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 400,
+    pending: 400 - (ingested += 10),
+    running: 1,
+    ingested,
+    skipped: 0,
+    rendered: 0,
+    scanned: 0,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: null,
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.includes('/jobs/')) return { ok: true, json: async () => running() }
+      if (url.includes('/parts')) {
+        partsRequests++
+        return url.includes('after=')
+          ? { ok: true, json: async () => page([HEX_NUT]) }
+          : { ok: true, json: async () => ({ parts: [MOTOR_MOUNT], next: cursor }) }
+      }
+      if (url.includes('/healthz')) return { ok: true, json: async () => HEALTHY }
+      return { ok: false, status: 404, json: async () => ({}) }
+    }),
+  )
+
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  scrollToEnd()
+  await screen.findByRole('article', { name: HEX_NUT.name })
+
+  // Two pages are loaded and the batch is still running. Every further poll settles more
+  // jobs, and none of them may pull page two again.
+  // Let several polls land, each settling more jobs than the last.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const afterPaging = partsRequests
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  expect(
+    partsRequests - afterPaging,
+    'a running batch must not refetch a grid the user has paged into',
+  ).toBe(0)
 })

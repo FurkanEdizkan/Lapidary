@@ -101,6 +101,15 @@ export const strings = {
      * point of this string. A grid that silently shows the first 50 of 200 parts is a
      * measurement that lies by omission.
      */
+    /**
+     * Some of the library, with more to come. Deliberately not "showing 50 of 1,000":
+     * the server does not count the library to answer a page, and adding a count query to
+     * every grid request to render one number would be paying for it on every scroll.
+     * What the user needs to know is that there is more, and how to get it.
+     */
+    showingSoFar: (count: number) => `${count.toLocaleString('en-US')} parts so far.`,
+    loadMore: 'Load more',
+    loadingMore: 'Loading…',
     showingFirstPage: (count: number) =>
       `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },

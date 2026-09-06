@@ -42,8 +42,15 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
  * trip. Keyset paging (`after`, `limit`) is left for the slice that virtualizes the
  * grid; asking for a page and rendering it is the whole of slice 1.
  */
-export async function fetchParts(library: LibraryId): Promise<PartsPage> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts`)
+export async function fetchParts(
+  library: LibraryId,
+  after?: PartId,
+): Promise<PartsPage> {
+  // Keyset, not offset: `after` is the previous page's last id, and the server orders by
+  // id descending. Omitted entirely rather than sent empty — the route reads its absence
+  // as "from the top", and `after=` would be a parse error.
+  const query = after === undefined ? '' : `?after=${encodeURIComponent(after)}`
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${query}`)
   if (!response.ok) {
     throw new Error(`parts returned ${response.status}`)
   }
