@@ -195,3 +195,22 @@ test('a folder drop reads past the hundredth entry', async () => {
   expect(picked[0]!.path).toBe('parts/p0.stl')
   expect(picked[249]!.path).toBe('parts/p249.stl')
 })
+
+test('a re-drop of a folder this library already holds sends and commits nothing', async () => {
+  // The path `strings.upload.nothingToDo` exists for, and the one a user hits by dropping
+  // the same folder twice. Nothing is transferred and the manifest is empty, which the
+  // route answers `202 { queued: 0 }` to — a success with no batch to poll. A client that
+  // threw here, or a route that refused an empty manifest, would turn the most ordinary
+  // repeat gesture in the app into a failure banner.
+  const picked = [pick('brackets/a.stl', 'aaaa'), pick('brackets/b.stl', 'bbbb')]
+  const calls = stubApi({ have: picked.map((p) => p.path) })
+
+  const result = await uploadFiles(LIBRARY, picked, () => {})
+
+  expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(0)
+  const commits = calls.filter((call) => call.url.includes('/uploads/commit'))
+  expect(commits).toHaveLength(1)
+  expect((commits[0]!.body as { files: unknown[] }).files).toEqual([])
+  expect(result.accepted.queued).toBe(0)
+  expect(result.alreadyHere).toBe(2)
+})

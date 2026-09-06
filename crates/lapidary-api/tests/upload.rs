@@ -455,3 +455,19 @@ async fn a_chunk_past_the_limit_is_refused_in_words_rather_than_by_the_framework
         "must not be axum's own rejection text, got: {message}"
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn committing_nothing_is_a_success_with_no_batch_to_watch(pool: sqlx::PgPool) {
+    // Re-dropping a folder this library already holds. The probe puts every file in
+    // `have`, so the client commits an empty manifest — and this must be `202` with
+    // `queued: 0`, the same "success with nothing to poll" a thumbnail sweep answers when
+    // nothing is missing. A 500 or a 400 here turns an unchanged re-drop into a failure
+    // banner, and the copy that says "every file is already in this library" would never
+    // be reachable.
+    let server = server(pool);
+    let (status, json) = server.commit(serde_json::json!([])).await;
+
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
+    assert_eq!(accepted.queued, 0);
+}
