@@ -979,11 +979,21 @@ impl PgParts {
     /// writes the second role. The card figures and this total describe the same set, and
     /// this clause is what keeps that true.
     ///
-    /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
-    /// feeds sits over that grid, and a total counting parts the grid does not show could
-    /// not be checked against it. Their bytes are still on the volume until a purge, so
-    /// whichever slice adds delete owns telling an operator about the difference — today
-    /// nothing writes `deleted_at`, so the two answers are the same answer.
+    /// **Soft-deleted parts are counted.** This is a total of bytes on the volume, and a
+    /// soft delete does not move a file: `soft_delete_subtree` sets `deleted_at` and stops,
+    /// `DATA.md` §1.6's purge is the separate, explicit action that frees anything. The
+    /// earlier rule — exclude them, matching [`PartRepository::page`], so the panel can be
+    /// checked against the grid below it — was written while nothing wrote `deleted_at` at
+    /// all, which made the two answers identical and the choice free. It stopped being
+    /// free the moment a category could be deleted: the figure fell by exactly the bytes
+    /// still sitting on disk, on the same screen as a confirmation promising that nothing
+    /// had been removed from the storage folder. `CLAUDE.md` puts that failure the other
+    /// way round — cache eviction must never read as data loss — and this is the same
+    /// mistake mirrored, a delete that reads as reclaimed space.
+    ///
+    /// So the panel and the grid now answer two different questions on purpose, and only
+    /// one of them is about what is on disk. What a purge frees is a figure whichever slice
+    /// builds purge owns; it is not this one.
     pub async fn storage_totals(
         &self,
         library: LibraryId,
@@ -993,16 +1003,15 @@ impl PgParts {
         let row: Option<(i64, i64)> = sqlx::query_as(
             "SELECT (SELECT coalesce(sum(f.size_bytes), 0)::bigint FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL \
-             AND f.role = 'source'), \
+             WHERE p.library_id = l.id AND f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL)) \
+             WHERE p.library_id = l.id)) \
              + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
              FROM derivative d JOIN revision r ON r.id = d.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+             WHERE p.library_id = l.id) \
              FROM library l WHERE l.id = $1",
         )
         .bind(library.as_uuid())

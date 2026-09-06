@@ -2434,6 +2434,53 @@ async fn a_file_row_of_another_role_is_not_part_of_the_source_total(pool: sqlx::
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn soft_deleting_a_part_leaves_the_storage_total_where_it_was(pool: sqlx::PgPool) {
+    // The panel answers one question -- what is on the volume -- and a soft delete puts
+    // nothing on the volume and takes nothing off it. The dialog that hides a category
+    // says so in as many words ("nothing is removed from your storage folder and no file
+    // moves on disk"), and it renders on the same screen as this figure, so a total that
+    // dropped by exactly the bytes still sitting there would be contradicting the sentence
+    // beside it. `DATA.md` §1.6's purge is the action that moves this number down.
+    let ingest = PgIngest(pool.clone());
+    let id = seed_part(
+        &ingest,
+        library(),
+        "Impeller, LP-5501-02",
+        0xf4,
+        Some(b"webp-impeller"),
+    )
+    .await;
+
+    let parts = PgParts(pool.clone());
+    let before = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_ne!(
+        (before.source_bytes, before.derivative_bytes),
+        (0, 0),
+        "the fixture has to cost something, or the comparison below proves nothing"
+    );
+
+    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
+        .bind(id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("soft-delete the part, exactly as `soft_delete_subtree` does");
+
+    let after = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_eq!(
+        after, before,
+        "a soft-deleted part's file is still on disk, so it is still in the total"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn an_empty_library_costs_nothing_and_an_absent_one_has_no_answer(pool: sqlx::PgPool) {
     let parts = PgParts(pool.clone());
     let empty = parts
