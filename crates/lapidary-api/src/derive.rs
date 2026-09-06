@@ -236,7 +236,7 @@ fn no_such_library_read() -> Response {
 /// A part id that resolves to nothing. A deleted part answers this too, and honestly: it
 /// is gone from every view the grid offers, and re-rendering it would produce a preview
 /// nothing displays.
-fn no_such_part() -> Response {
+pub(crate) fn no_such_part() -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({

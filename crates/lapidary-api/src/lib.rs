@@ -8,6 +8,7 @@ mod download;
 mod error;
 mod health;
 mod jobs;
+mod lifecycle;
 mod parts;
 mod scan;
 mod upload;
@@ -151,9 +152,15 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{id}/uploads/{blake3}",
                 put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
             )
-            // The page a card links to. `Role::Api`: it is the open path, reading
-            // rows and derivatives only — see `detail.rs`.
-            .route("/api/parts/{id}", get(detail::detail))
+            // The page a card links to, and the two steps that take the card away and
+            // bring it back. One route entry rather than two: `DELETE` on the thing
+            // `GET` returns is the same resource, and giving the removal a verb of its
+            // own in the path would invite a second one that forgets to be soft.
+            .route(
+                "/api/parts/{id}",
+                get(detail::detail).delete(lifecycle::remove),
+            )
+            .route("/api/parts/{id}/restore", post(lifecycle::restore))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

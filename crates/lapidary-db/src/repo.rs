@@ -896,6 +896,49 @@ impl PgParts {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Step one of the three: hide the part, touch no bytes.
+    ///
+    /// One `UPDATE`, and that it is only one is a property of what came before rather
+    /// than luck — [`PartRepository::page`], [`PgParts::detail`], [`PgParts::library_of`],
+    /// [`PgBlobs::source_for_download`] and [`PgParts::storage_totals`] all already filter
+    /// `deleted_at IS NULL`, so setting the column removes the part from the grid, its own
+    /// page, its download and the library's totals at once.
+    ///
+    /// [`PgBlobs::library_holds`] is the deliberate exception and must stay one: it is
+    /// what makes a re-scan of a deleted path a no-op instead of a resurrection. See its
+    /// own doc comment.
+    ///
+    /// `WHERE deleted_at IS NULL` makes this idempotent in the direction that matters —
+    /// deleting an already-deleted part reports `false` rather than moving its timestamp
+    /// forward and quietly extending how long it has been gone.
+    ///
+    /// Returns whether a row matched, for [`PgParts::set_auto_thumbnail`]'s reason.
+    pub async fn soft_delete(&self, part: PartId) -> Result<bool, DbError> {
+        let result =
+            sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
+                .bind(part.as_uuid())
+                .execute(&self.0)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Undo of [`PgParts::soft_delete`], and explicit for the same reason delete is: we do
+    /// not un-delete implicitly either. A scan that found the file again will not do this
+    /// — a person has to ask.
+    ///
+    /// Nothing needs restoring but the column. Delete left the revisions, files,
+    /// derivatives and blobs exactly where they were, which is the whole point of it being
+    /// soft.
+    pub async fn restore(&self, part: PartId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(part.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Which library owns `part`. `None` when there is no such part, or when it is
     /// soft-deleted.
     ///
