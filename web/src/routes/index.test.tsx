@@ -871,7 +871,7 @@ test('a batch whose jobs all settle as migrated reads as a migration, not a scan
 
   renderIndex({ batch: BATCH_ID })
 
-  expect(await screen.findByText(strings.migrate.finished)).toBeTruthy()
+  expect(await screen.findByText(strings.migrate.finished(0))).toBeTruthy()
   // Neither of the other two kinds' copy leaked in — `scan.finished` would call three
   // moved files "added", and `render.finished` would call them rendered previews. Not a
   // bare `/preview/i` check: the action bar's own static copy ("Generate missing
@@ -879,6 +879,89 @@ test('a batch whose jobs all settle as migrated reads as a migration, not a scan
   // assertion fire on correct output.
   expect(screen.queryByText(/Scan complete/)).toBeNull()
   expect(screen.queryByText(strings.render.finished(3))).toBeNull()
+})
+
+/**
+ * The copy a migration failure gets, and the copy it must never get.
+ *
+ * `strings.migrate` used to carry only `running` and `finished`, so a `migrate_storage`
+ * job that failed fell through to `strings.scan` and told an operator that "1 file could
+ * not be read. It will not appear in the grid" — about a model that already exists, is
+ * already in the grid, and whose bytes were never touched. A migration relocates a file a
+ * part already has; the worst a failure can do is leave it where it was. Wording a
+ * non-destructive failure as data loss is the one class of copy mistake this product
+ * treats as a correctness bug, so both halves are pinned here: the migration wording
+ * present, and the scan wording absent.
+ *
+ * The completion line is checked in the same test because the two are one sentence to a
+ * reader: `finished` asserted "this library's files are now in their model folders"
+ * regardless of `failedTotal`, so a migration that moved four steps out of five claimed
+ * every file was home directly beside a line saying one was not.
+ */
+test('a failed migration is not described in the words a failed scan uses', async () => {
+  const reason =
+    'The stored copy of Basalt cliff face, 180 mm span does not match the hash recorded \
+for it — it reads as 4f6a91c2… where the database says 8b30d5ae… . The blob may have been \
+corrupted or written by something other than Lapidary; re-scan this part from its source \
+file. Nothing was moved or removed.'
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 5,
+        pending: 0,
+        running: 0,
+        migrating: 5,
+        migrated: 4,
+        failedTotal: 1,
+        failed: [{ path: '', reason, attempts: 3 }],
+        finishedAt: '2026-09-06T10:14:02.116Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.failed(1))).toBeTruthy()
+  // The sentence this whole finding is about: existing models described as about to
+  // vanish from a grid they are already in.
+  expect(screen.queryByText(strings.scan.failed(1))).toBeNull()
+  // And the completion line qualified by the failure rather than talking over it.
+  expect(screen.getByText(strings.migrate.finished(1))).toBeTruthy()
+  expect(screen.queryByText(strings.migrate.finished(0))).toBeNull()
+  // The reason itself still reaches the screen, which is where "1 step" gets its detail.
+  expect(screen.getByText(strings.failure.line('', reason))).toBeTruthy()
+})
+
+/**
+ * The other half of the same fall-through. A status poll that stops answering rendered
+ * `scan.unknown` — "No scan with that id has run in this library" — to an operator who
+ * never started a scan: nothing on this page can start a migration, the worker queues it
+ * at boot, and the batch is one this browser was only ever watching.
+ *
+ * The poll has to succeed once before it can fail as a migration: `kind` is read off the
+ * counters, so a first request that errors has nothing to read and falls back to `scan`,
+ * which is correct there — a mistyped `?batch=` id genuinely is a scan id as far as
+ * anything here can tell.
+ */
+test('a migration whose status stops answering does not report a scan nobody started', async () => {
+  let calls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      calls += 1
+      return calls === 1
+        ? { ok: true, json: async () => batchStatus({ total: 4, pending: 3, running: 1, migrating: 4 }) }
+        : { ok: false, status: 404 }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.running)).toBeTruthy()
+  // Past the 1000 ms poll interval: the second request is the one that fails.
+  expect(await screen.findByText(strings.migrate.unknown, {}, { timeout: 4000 })).toBeTruthy()
+  expect(screen.queryByText(strings.scan.unknown)).toBeNull()
 })
 
 // The converse, pinned beside the test above so the two cannot drift: adding a third

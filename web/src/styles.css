@@ -21,12 +21,20 @@
   color: var(--color-text);
 }
 
+/*
+  Transform and opacity only, per CLAUDE.md — `translate` is the first of those two and not
+  a third property. Tailwind 4 compiles `-translate-y-px` and `-translate-y-0.5` to the
+  independent `translate` property rather than to a `transform` function, so a list naming
+  only `transform` transitioned nothing any hover lift in this app actually changes: every
+  one of them snapped, under comments claiming 120 ms. Naming both is what makes those
+  comments true.
+*/
 *,
 *::before,
 *::after {
   transition-timing-function: var(--ease-mechanical);
   transition-duration: var(--duration-base);
-  transition-property: transform, opacity;
+  transition-property: transform, translate, opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {

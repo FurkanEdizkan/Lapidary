@@ -151,7 +151,10 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     return strings.render.finished(status.rendered)
   }
   if (kind === 'migrate') {
-    return strings.migrate.finished
+    // The failure count, so the sentence can stop claiming every file arrived when the
+    // line beside it says some did not. `scan.finished` and `render.finished` both report
+    // what happened and let the failure line qualify them; this used to assert a total.
+    return strings.migrate.finished(status.failedTotal)
   }
   return strings.scan.finished(status.ingested, status.skipped)
 }
@@ -460,7 +463,15 @@ function ScanProgress({
   // Picked once, out here: a `kind === 'render' ? … : …` inside JSX puts the discriminator
   // itself in a child expression, where `no-bare-strings.test.ts` reads it — correctly —
   // as a bare literal reaching the screen.
-  const copy = kind === 'render' ? strings.render : strings.scan
+  //
+  // All three kinds, and `migrate` is not a fall-through to `scan`'s copy. A failed
+  // migration used to render "3 files could not be read. They will not appear in the grid"
+  // about models that already exist and are already in the grid, and a status poll that
+  // failed rendered "No scan with that id has run in this library" to an operator who
+  // never started a scan. A non-destructive failure worded as data loss is the one class of
+  // mistake this product treats as a correctness bug.
+  const copy =
+    kind === 'render' ? strings.render : kind === 'migrate' ? strings.migrate : strings.scan
   if (isError) {
     return <p className="mb-4 max-w-prose text-[var(--color-muted)]">{copy.unknown}</p>
   }
@@ -665,6 +676,15 @@ function Card({
           )}
         </div>
         <ShowInFolder part={part} directory={directory} />
+        {/*
+          Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
+          This card is `overflow-hidden hover:-translate-y-0.5`, Tailwind emits that lift as
+          the `translate` property, and an element with a `translate` other than `none` is a
+          containing block for fixed-position descendants — so a dialog rendered in the
+          card's own subtree resolved its `fixed inset-0` against the card and was clipped
+          to it for as long as the pointer stayed over the card. Nothing here may hoist that
+          markup back out of the portal.
+        */}
         {moving ? (
           <MovePartDialog
             part={{ id: part.id, name: part.name }}

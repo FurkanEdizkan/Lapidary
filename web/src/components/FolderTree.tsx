@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useId, useState, type DragEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { deleteFolder, fetchFolders, movePart, type MoveRefusalReason } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
@@ -87,7 +88,13 @@ function useMovePart(library: LibraryId, onMoved?: () => void) {
   const [duplicate, setDuplicate] = useState<{ part: DraggedPart; folderId: FolderId | null } | null>(
     null,
   )
-  const [refusal, setRefusal] = useState<TerminalRefusal | null>(null)
+  // The target rides along with the reason. The sidebar renders a refusal under the row it
+  // was dropped on rather than at the foot of the whole tree, and the row is the only thing
+  // that says which category the sentence is about.
+  const [refusal, setRefusal] = useState<{
+    reason: TerminalRefusal
+    folderId: FolderId | null
+  } | null>(null)
   const move = useMutation({
     mutationFn: (input: { part: DraggedPart; folderId: FolderId | null; acknowledge: boolean }) =>
       movePart(input.part.id, input.folderId, input.acknowledge),
@@ -98,7 +105,7 @@ function useMovePart(library: LibraryId, onMoved?: () => void) {
           setRefusal(null)
         } else {
           setDuplicate(null)
-          setRefusal(outcome.reason)
+          setRefusal({ reason: outcome.reason, folderId: input.folderId })
         }
         return
       }
@@ -153,13 +160,42 @@ export function FolderTree({
   const queryClient = useQueryClient()
   const { move, duplicate, refusal, start, confirm, dismiss } = useMovePart(library)
   const [pendingDelete, setPendingDelete] = useState<FolderNode | null>(null)
+  /**
+   * What a finished delete has to say, when it has something to say. Held at the level of
+   * the tree rather than under a row, because both messages are about a row that is on its
+   * way out: the refetch this same handler fires is what takes it off screen.
+   */
+  const [deleteOutcome, setDeleteOutcome] = useState<string | null>(null)
 
   const remove = useMutation({
     mutationFn: (folder: FolderNode) => deleteFolder(folder.id),
-    onSuccess: (_result, folder) => {
+    // What the last delete had to say is not about this one.
+    onMutate: () => setDeleteOutcome(null),
+    onSuccess: (result, folder) => {
       setPendingDelete(null)
+      // Fired for the refusal too, and that is the point of handling it: a `404` means the
+      // category is already gone, so the row still on screen is the stale thing and the
+      // tree is what has to be re-read.
       void queryClient.invalidateQueries({ queryKey: ['folders', library] })
       void queryClient.invalidateQueries({ queryKey: ['parts', library] })
+      if (result.kind === 'refused') {
+        setDeleteOutcome(strings.folders.deleteGone)
+      } else {
+        // `foldersHidden` counts the category along with its descendants, so the one is
+        // taken off before it is compared against a subcategory count that never included
+        // it. Both figures are checked against what the confirmation actually claimed —
+        // that count was read when the dialog opened, and the library can move underneath
+        // an open dialog.
+        const subcategories = result.foldersHidden === null ? null : Math.max(result.foldersHidden - 1, 0)
+        const differs =
+          (result.partsHidden !== null && result.partsHidden !== folder.partCount) ||
+          (subcategories !== null && subcategories !== subcategoryCount(folders.data ?? [], folder.id))
+        setDeleteOutcome(
+          differs
+            ? strings.folders.deleteCountsDiffered(result.partsHidden ?? 0, subcategories ?? 0)
+            : null,
+        )
+      }
       // The delete cascades through subcategories (design §7), so the filter has to be
       // dropped for a descendant too — otherwise the grid keeps asking about a category
       // that is gone and shows nothing, with no visible reason why.
@@ -177,6 +213,28 @@ export function FolderTree({
     }
   }
 
+  /**
+   * The note that belongs under one row, if any belongs under this one.
+   *
+   * Under the row, not at the foot of the `<nav>`: a refusal is about the category it was
+   * dropped on, and the previous version rendered it arbitrarily far from that row, below
+   * however many hundred categories the library has. The failed delete is anchored the same
+   * way because the row it names is still there — a refused delete is not, which is why its
+   * copy is the one message held at the level of the tree.
+   */
+  const noteFor = (folder: FolderId | null): string | null => {
+    if (move.isError && (move.variables?.folderId ?? null) === folder) {
+      return strings.folders.moveFailed
+    }
+    if (refusal !== null && refusal.folderId === folder) {
+      return refusalMessage(refusal.reason)
+    }
+    if (remove.isError && folder !== null && remove.variables?.id === folder) {
+      return strings.folders.deleteFailed
+    }
+    return null
+  }
+
   return (
     <nav aria-label={strings.folders.title} className="w-56 shrink-0">
       <h2 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -190,6 +248,7 @@ export function FolderTree({
             onSelect={() => onSelect(null)}
             onDrop={(event) => drop(event, null)}
           />
+          <RowNote note={noteFor(null)} />
         </li>
       </ul>
       {folders.isPending ? (
@@ -207,16 +266,10 @@ export function FolderTree({
           onSelect={onSelect}
           onDropPart={drop}
           onDelete={setPendingDelete}
+          noteFor={noteFor}
         />
       )}
-      {move.isError ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveFailed}</p>
-      ) : refusal !== null ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{refusalMessage(refusal)}</p>
-      ) : null}
-      {remove.isError ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.deleteFailed}</p>
-      ) : null}
+      <RowNote note={deleteOutcome} />
       {duplicate === null ? null : (
         <DuplicateDialog
           name={duplicate.part.name}
@@ -228,6 +281,7 @@ export function FolderTree({
       {pendingDelete === null ? null : (
         <DeleteDialog
           folder={pendingDelete}
+          subcategories={subcategoryCount(folders.data ?? [], pendingDelete.id)}
           busy={remove.isPending}
           onConfirm={() => remove.mutate(pendingDelete)}
           onCancel={() => setPendingDelete(null)}
@@ -254,6 +308,36 @@ function isWithin(folders: readonly FolderNode[], node: FolderId, root: FolderId
   return false
 }
 
+/**
+ * How many categories sit under `root`, not counting `root` itself.
+ *
+ * `FolderNode` carries a part count and no folder count, and the delete confirmation has to
+ * name both — `soft_delete_subtree` marks every descendant folder deleted as well. The tree
+ * is already in hand, so this is a walk over what one request answered rather than a second
+ * request per folder, and it reuses `isWithin` so there is one definition of "under" here
+ * and not two that can disagree.
+ */
+function subcategoryCount(folders: readonly FolderNode[], root: FolderId): number {
+  return folders.filter((folder) => folder.id !== root && isWithin(folders, folder.id, root)).length
+}
+
+/**
+ * A failure, rendered where the thing that failed is.
+ *
+ * `role="alert"` because a note nobody is looking at is a note nobody gets: a keyboard user
+ * pressing "Move here" has no reason to be reading the foot of the sidebar, and every one of
+ * these was a plain muted `<p>` that announced nothing. `alert` rather than `status` — each
+ * of these says an action did not happen, which is not a progress update.
+ */
+function RowNote({ note }: { note: string | null }) {
+  if (note === null) return null
+  return (
+    <p role="alert" className="mt-1 text-sm text-[var(--color-muted)]">
+      {note}
+    </p>
+  )
+}
+
 function FolderLevel({
   folders,
   parentId,
@@ -262,6 +346,7 @@ function FolderLevel({
   onSelect,
   onDropPart,
   onDelete,
+  noteFor,
 }: {
   folders: readonly FolderNode[]
   parentId: FolderId | null
@@ -270,6 +355,7 @@ function FolderLevel({
   onSelect: (folder: FolderId) => void
   onDropPart: (event: DragEvent<HTMLElement>, folder: FolderId) => void
   onDelete: (folder: FolderNode) => void
+  noteFor: (folder: FolderId) => string | null
 }) {
   const children = folders
     .filter((folder) => folder.parentId === parentId)
@@ -296,16 +382,23 @@ function FolderLevel({
               costs no layout, and it comes back on keyboard focus as well as on hover —
               a control that only exists under a pointer is a control a keyboard cannot
               reach.
+
+              Transparent means untappable, and on a touch screen it means neither. An
+              invisible control that still takes taps is a delete nobody meant to press,
+              so `pointer-events` follows the opacity; and a device with no hover has no
+              way to reveal it at all, so `pointer-coarse` shows it outright rather than
+              leaving the row's only destructive action unreachable there.
             */}
             <button
               type="button"
               onClick={() => onDelete(folder)}
               aria-label={strings.folders.deleteFor(folder.name)}
-              className="ease-mechanical rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 focus-visible:opacity-100"
+              className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
             >
               {strings.folders.deleteAction}
             </button>
           </div>
+          <RowNote note={noteFor(folder.id)} />
           <FolderLevel
             folders={folders}
             parentId={folder.id}
@@ -314,6 +407,7 @@ function FolderLevel({
             onSelect={onSelect}
             onDropPart={onDropPart}
             onDelete={onDelete}
+            noteFor={noteFor}
           />
         </li>
       ))}
@@ -322,15 +416,30 @@ function FolderLevel({
 }
 
 /**
+ * Does this drag carry one of our cards? `types` rather than `getData`: a browser withholds
+ * the payload for the whole of a drag and hands over only the type list, which is exactly
+ * the question being asked. Written defensively because a synthetic drag in a test carries
+ * whatever the test put on it.
+ */
+function carriesPart(event: DragEvent<HTMLElement>): boolean {
+  const types: readonly string[] | undefined = event.dataTransfer?.types
+  return types?.includes(PART_DRAG_TYPE) ?? false
+}
+
+/**
  * One row: the filter, and the drop target for a dragged card.
  *
  * `onDragOver` calls `preventDefault()` because that is what marks an element as willing
  * to accept a drop — without it the browser never fires `drop` at all, and jsdom will not
- * notice the omission.
+ * notice the omission. It calls it only for our own type: doing it unconditionally
+ * advertised every category as a drop target for anything a desktop can drag — a file, a
+ * URL, a text selection — so the row lifted, took the drop, and discarded it in silence.
  *
  * The affordance is 120 ms on transform and opacity, per `CLAUDE.md`: the row lifts while
- * a card is over it. The border colour changes with it and is not animated — the global
- * transition property list is `transform, opacity` and nothing here widens it.
+ * a card is over it. Tailwind emits `-translate-y-px` as the `translate` property, so
+ * `styles.css` transitions `translate` alongside `transform` — without it every lift in
+ * the app snapped, including this one. The border colour changes with it and is not
+ * animated; nothing here widens that list to colours.
  */
 function FolderButton({
   name,
@@ -350,6 +459,7 @@ function FolderButton({
       onClick={onSelect}
       aria-current={selected ? 'true' : undefined}
       onDragOver={(event) => {
+        if (!carriesPart(event)) return
         event.preventDefault()
         setOver(true)
       }}
@@ -425,11 +535,15 @@ export function MovePartDialog({
           />
         )}
       </ul>
-      {move.isError ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.moveFailed}</p>
-      ) : refusal !== null ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{refusalMessage(refusal)}</p>
-      ) : null}
+      <RowNote
+        note={
+          move.isError
+            ? strings.folders.moveFailed
+            : refusal !== null
+              ? refusalMessage(refusal.reason)
+              : null
+        }
+      />
       {/*
         Focus lands on cancel, never on a target: every other control here files the model
         somewhere, and a chooser that acts on Enter before a category is picked moves it
@@ -552,16 +666,23 @@ function DuplicateDialog({
  * The destructive confirmation, which has to say what it destroys — and, here, what it
  * does not. This is a soft delete: the models inside are marked deleted and hidden, every
  * byte stays where it is on disk, and neither this nor `DATA.md` §1.6's purge is the
- * other. The count comes from `FolderNode.partCount`, which the one tree request already
- * carried, and it counts the whole subtree because the delete cascades through it.
+ * other.
+ *
+ * Two counts, because a delete takes two kinds of thing. The models come from
+ * `FolderNode.partCount`, which the one tree request already carried and which counts the
+ * whole subtree; the subcategories are counted off that same tree. Naming only the models
+ * let a category holding twelve empty subcategories confirm with "No models are inside it"
+ * and then take twelve rows off the sidebar.
  */
 function DeleteDialog({
   folder,
+  subcategories,
   busy,
   onConfirm,
   onCancel,
 }: {
   folder: FolderNode
+  subcategories: number
   busy: boolean
   onConfirm: () => void
   onCancel: () => void
@@ -569,7 +690,7 @@ function DeleteDialog({
   return (
     <Dialog title={strings.folders.deleteTitle(folder.name)} onClose={onCancel}>
       <p className="mt-2 text-sm text-[var(--color-muted)]">
-        {strings.folders.deleteBody(folder.partCount)}
+        {strings.folders.deleteBody(folder.partCount, subcategories)}
       </p>
       <div className="mt-4 flex justify-end gap-2">
         <DialogButton onClick={onCancel} autoFocus>
@@ -583,11 +704,36 @@ function DeleteDialog({
   )
 }
 
+/** Everything inside the box that a Tab can land on. `:not([disabled])` is the point. */
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 /**
- * The shell every dialog here shares. `role="dialog"` + `aria-modal`, Escape closes, and
- * the caller autofocuses whichever control the safe answer is — cancel where the action is
- * destructive, confirm where it is not. No focus trap: that needs an inert background or a
- * library, and neither belongs in this slice.
+ * The shell every dialog here shares: `role="dialog"` + `aria-modal`, Escape, a focus trap
+ * and a portal. The caller autofocuses whichever control the safe answer is — cancel where
+ * the action is destructive, confirm where it is not.
+ *
+ * **Portaled to `<body>`, and that is a layout fix before it is an accessibility one.** A
+ * card is `overflow-hidden hover:-translate-y-0.5`; Tailwind 4 emits `-translate-y-*` as
+ * the `translate` property, and a `translate` other than `none` makes an element a
+ * containing block for fixed-position descendants (CSS Transforms 2 §3, which names
+ * `translate` alongside `transform`). Rendered inside the card, this overlay's `fixed
+ * inset-0` therefore resolved against the card's padding box and was clipped to it for as
+ * long as the pointer stayed on the card — a squashed panel inside an 11rem card that
+ * snapped to a full-viewport modal when the mouse left. The keyboard path never showed it,
+ * because a keyboard never hovers. jsdom computes no layout, so no test here can see it
+ * either; the fix is structural, and the portal is what makes it structural.
+ *
+ * **Escape is listened for on the document, not on the overlay.** Pressing an action
+ * disables the button that had focus, a disabled button loses it, and focus falls to
+ * `<body>` — which is not a descendant of the overlay, so an `onKeyDown` there stops
+ * receiving keys and the dialog becomes keyboard-undismissable exactly when a request is
+ * in flight or has just been refused. The document hears the key wherever focus went.
+ *
+ * **The trap is Tab-shaped rather than `inert`-shaped** for the same reason: `inert` on
+ * the background needs a wrapper this component does not own, while wrapping Tab at the
+ * two ends of the box — and pulling focus back in when it is nowhere — is the whole of
+ * what `aria-modal="true"` is currently asserting and nothing was enforcing.
  */
 function Dialog({
   title,
@@ -599,17 +745,93 @@ function Dialog({
   children: ReactNode
 }) {
   const titleId = useId()
-  return (
-    <div
-      className="fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') onClose()
-      }}
-    >
+  const box = useRef<HTMLDivElement>(null)
+  // Every caller passes an inline arrow, so `onClose` is a new function each render. Read
+  // through a ref rather than depending on it: an effect keyed on the callback would tear
+  // down and re-run on every render, and its cleanup would throw focus back at the trigger
+  // while the dialog was still open.
+  const close = useRef(onClose)
+  useEffect(() => {
+    close.current = onClose
+  })
+
+  /**
+   * Whatever had focus when this dialog was written, read during render and not in an
+   * effect: React applies `autoFocus` in the commit phase, before any effect here runs, so
+   * an effect reading `document.activeElement` finds the dialog's own cancel button and
+   * would then "restore" focus to a control it is about to unmount.
+   */
+  const opener = useRef<Element | null>(null)
+  if (opener.current === null) {
+    opener.current = document.activeElement
+  }
+
+  useEffect(() => {
+    const node = box.current
+    // A fallback, never a preference: `autoFocus` has already run by now and put focus on
+    // the safe control. This only fires when nothing inside took it.
+    if (node !== null && !node.contains(document.activeElement)) {
+      node.focus()
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        close.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const active = document.activeElement
+      const current = node
+      if (current === null) return
+      const focusable = Array.from(current.querySelectorAll<HTMLElement>(FOCUSABLE))
+      if (!current.contains(active) || active === current) {
+        // Focus is not on a control in here: either outside the dialog altogether, or on
+        // the box itself, which is where it is parked while every control is disabled by
+        // the action one of them started. Put it on a control rather than making the user
+        // tab in from the top of the document.
+        ;(focusable[0] ?? current).focus()
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (first === undefined || last === undefined) return
+      if (event.shiftKey && active === first) {
+        last.focus()
+        event.preventDefault()
+      } else if (!event.shiftKey && active === last) {
+        first.focus()
+        event.preventDefault()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      // Back to whatever opened this. A dialog that closes onto `<body>` costs a keyboard
+      // user their place in the page, and there is no reason for them to hunt for it.
+      const trigger = opener.current
+      if (trigger instanceof HTMLElement && document.contains(trigger)) {
+        trigger.focus()
+      }
+    }
+  }, [])
+
+  return createPortal(
+    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6">
       <div
+        ref={box}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        // Focusable only programmatically: it holds focus while every control inside is
+        // disabled, which is the window in which focus would otherwise be nowhere.
+        tabIndex={-1}
+        onBlur={(event) => {
+          const current = box.current
+          if (current !== null && !current.contains(event.relatedTarget)) {
+            current.focus()
+          }
+        }}
         className="w-full max-w-md rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
       >
         <h2 id={titleId} className="text-sm font-medium">
@@ -617,7 +839,8 @@ function Dialog({
         </h2>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

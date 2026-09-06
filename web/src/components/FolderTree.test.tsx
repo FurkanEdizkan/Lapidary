@@ -34,6 +34,35 @@ const FASTENERS: FolderNode = {
   name: 'Fasteners',
   partCount: 7,
 }
+/** One model and no children: the singular branch of the delete confirmation. */
+const CABLE_CLIPS: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0004',
+  parentId: null,
+  name: 'Cable clips',
+  partCount: 1,
+}
+/**
+ * No models and two subcategories, which is the shape the delete copy used to lie about:
+ * "No models are inside it. Nothing is removed…", and then two rows leave the sidebar.
+ */
+const ENCLOSURES: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0005',
+  parentId: null,
+  name: 'Enclosures',
+  partCount: 0,
+}
+const VENTS: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0006',
+  parentId: ENCLOSURES.id,
+  name: 'Vent grilles',
+  partCount: 0,
+}
+const LIDS: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0007',
+  parentId: ENCLOSURES.id,
+  name: 'Snap-fit lids',
+  partCount: 0,
+}
 
 /** The model being moved, in the shape a drag payload and the chooser both take. */
 const CLIFF = {
@@ -102,9 +131,23 @@ function renderTree(selected: FolderId | null = null) {
   return { onSelect }
 }
 
-/** What a card puts on the drag, read back the way a folder row reads it. */
+/**
+ * What a card puts on the drag, read back the way a folder row reads it.
+ *
+ * `types` as well as `getData`, because that is the pair a real drag exposes: the payload
+ * is withheld until the drop, and the type list is all `dragover` can read — which is where
+ * a row decides whether it is a target at all.
+ */
 const draggingCliff = {
-  dataTransfer: { getData: (type: string) => (type === PART_DRAG_TYPE ? partDragPayload(CLIFF) : '') },
+  dataTransfer: {
+    types: [PART_DRAG_TYPE],
+    getData: (type: string) => (type === PART_DRAG_TYPE ? partDragPayload(CLIFF) : ''),
+  },
+}
+
+/** A drag from outside the app: files off a desktop, carrying nothing of ours. */
+const draggingFiles = {
+  dataTransfer: { types: ['Files'], getData: () => '' },
 }
 
 const moveCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
@@ -142,7 +185,11 @@ test('dropping a card on a category files it there, and ignores anything else dr
   renderTree()
 
   const rocks = await screen.findByRole('button', { name: 'Rocks' })
-  fireEvent.dragOver(rocks)
+  // `fireEvent` returns false when a handler called `preventDefault()`, and calling it on
+  // `dragover` is the only thing that marks an element as willing to take a drop. jsdom
+  // fires `drop` either way, so without this the call could be deleted and every drag test
+  // here would stay green while drag-to-move stopped working in every real browser.
+  expect(fireEvent.dragOver(rocks, draggingCliff)).toBe(false)
   fireEvent.drop(rocks, draggingCliff)
 
   await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
@@ -157,8 +204,12 @@ test('dropping a card on a category files it there, and ignores anything else dr
     acknowledgeDuplicate: false,
   })
 
-  // Text dragged in from another window carries no payload of ours and moves nothing.
-  fireEvent.drop(rocks, { dataTransfer: { getData: () => '' } })
+  // Files dragged in from a desktop are not offered a target at all: `preventDefault()` is
+  // withheld, so the browser never fires a drop here and the row does not advertise itself
+  // as somewhere to put them. The drop below is what jsdom will deliver regardless, and it
+  // moves nothing either.
+  expect(fireEvent.dragOver(rocks, draggingFiles)).toBe(true)
+  fireEvent.drop(rocks, draggingFiles)
   await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
 })
 
@@ -290,8 +341,11 @@ test('a 409 with a reason this client does not recognise is a dead end too', asy
   expect(screen.getByText(strings.folders.moveRefused)).toBeDefined()
 })
 
-test('the delete confirmation names the models in the subtree and what stays on disk', async () => {
-  const fetchMock = stubFetch({ folders: ok([TERRAIN, ROCKS]), folderDelete: ok(null) })
+test('the delete confirmation names the models, the subcategories, and what stays on disk', async () => {
+  const fetchMock = stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    folderDelete: ok({ foldersHidden: 2, partsHidden: TERRAIN.partCount }),
+  })
   renderTree()
 
   fireEvent.click(
@@ -300,19 +354,131 @@ test('the delete confirmation names the models in the subtree and what stays on 
 
   const dialog = screen.getByRole('dialog')
   expect(within(dialog).getByText(strings.folders.deleteTitle(TERRAIN.name))).toBeDefined()
-  // The count itself is on screen — a generic "Are you sure?" is what this requirement
-  // exists to rule out — and it is the subtree count, because the delete cascades.
-  expect(dialog.textContent).toContain(String(TERRAIN.partCount))
-  expect(within(dialog).getByText(strings.folders.deleteBody(TERRAIN.partCount))).toBeDefined()
+  const body = dialog.textContent ?? ''
+  // Literal wording, deliberately, and not `deleteBody(TERRAIN.partCount)` again: an
+  // assertion that renders the copy through the same function that produced it passes
+  // just as happily over copy that has been gutted. Every phrase below is one this
+  // confirmation cannot lose without changing what it promises.
+  //
+  // The counts are both on screen — a generic "Are you sure?" is what this requirement
+  // exists to rule out — and the model count is the subtree count, because the delete
+  // cascades through subcategories exactly as the subcategory count says it does.
+  expect(body).toContain('34 models and 1 subcategory are inside it')
+  expect(body).toContain('counting every level')
   // Soft delete, and the copy has to keep it apart from a purge and from cache eviction:
-  // the models are hidden, and nothing leaves the storage folder.
-  expect(dialog.textContent).toContain('nothing is removed from your storage folder')
-  expect(dialog.textContent).not.toMatch(/delete[sd]? the files|erase|remove the files/i)
+  // the models are marked deleted and hidden, and nothing leaves the storage folder.
+  expect(body).toContain('marks them deleted')
+  expect(body).toContain('hides them from the grid')
+  expect(body).toContain('hides the subcategory under it')
+  expect(body).toContain('nothing is removed from your storage folder')
+  expect(body).toContain('no file moves on disk')
+  expect(body).not.toMatch(/delete[sd]? the files|erase|remove the files/i)
 
   fireEvent.click(within(dialog).getByRole('button', { name: strings.folders.deleteConfirm }))
   await waitFor(() =>
     expect(fetchMock).toHaveBeenCalledWith(`/api/folders/${TERRAIN.id}`, { method: 'DELETE' }),
   )
+})
+
+/**
+ * The two branches nothing rendered before, which is how both of them came to be wrong.
+ *
+ * The singular was an explicit requirement and was written correctly; it was simply never
+ * exercised. The empty category was not: `soft_delete_subtree` marks every descendant
+ * FOLDER deleted as well, so a category holding nothing but subcategories confirmed with
+ * "No models are inside it. Nothing is removed…" and then took every one of those rows off
+ * the sidebar — a destructive confirmation naming none of what it destroys.
+ */
+test('the singular reads as one, and an empty category still names the subcategories that go', async () => {
+  stubFetch({ folders: ok([CABLE_CLIPS, ENCLOSURES, VENTS, LIDS]) })
+  renderTree()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(CABLE_CLIPS.name) }),
+  )
+  const one = screen.getByRole('dialog').textContent ?? ''
+  expect(one).toContain('1 model and no subcategories are inside it')
+  expect(one).toContain('marks that model deleted and hides it from the grid')
+  expect(one).not.toContain('1 models')
+  expect(one).not.toContain('them from the grid')
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.cancel }),
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.deleteFor(ENCLOSURES.name) }))
+  const empty = screen.getByRole('dialog').textContent ?? ''
+  // Two subcategories, neither holding a model, and the dialog says so rather than
+  // reporting the category as empty.
+  expect(empty).toContain('No models and 2 subcategories are inside it')
+  expect(empty).toContain('hides this category and the subcategories under it')
+  expect(empty).toContain('nothing is removed from your storage folder')
+})
+
+/**
+ * A `404 noSuchFolder` is an answer, not an outage — the same shape as the move's `409`,
+ * off the same route family and the same `refused` helper. Throwing on it landed the user
+ * on "Check that the api service is running, then try again", which is wrong in both
+ * halves: the service answered, and a retry can only 404 again.
+ */
+test('a category that is already gone says so instead of blaming the api service', async () => {
+  const fetchMock = stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    folderDelete: async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({
+        reason: 'noSuchFolder',
+        message: 'There is no category with that id. It may have been deleted.',
+      }),
+    }),
+  })
+  renderTree()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
+  )
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.deleteConfirm }),
+  )
+
+  expect(await screen.findByText(strings.folders.deleteGone)).toBeDefined()
+  expect(screen.queryByText(strings.folders.deleteFailed)).toBeNull()
+  // Announced, not merely present in the DOM somewhere.
+  expect(screen.getByRole('alert').textContent).toBe(strings.folders.deleteGone)
+  // And the row that is already gone is on its way off screen: the tree is re-read rather
+  // than left showing a category the server says does not exist.
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/folders'))).toHaveLength(2),
+  )
+})
+
+/**
+ * The count in the confirmation is read when it opens, and the library can move underneath
+ * an open dialog. The route answers `{ foldersHidden, partsHidden }` precisely so the
+ * caller can check what it warned about against what happened; the previous version threw
+ * that body away.
+ */
+test('a delete that hid different numbers than it promised reports the ones that happened', async () => {
+  stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    // A scan filed seven more models under Terrain, and two more subcategories with them,
+    // between the dialog opening and the confirm landing.
+    folderDelete: ok({ foldersHidden: 4, partsHidden: 41 }),
+  })
+  renderTree()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
+  )
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.deleteConfirm }),
+  )
+
+  // `foldersHidden` counts the category itself along with its descendants, so four rows
+  // hidden is three subcategories — the dialog had named one.
+  const note = await screen.findByText(strings.folders.deleteCountsDiffered(41, 3))
+  expect(note.textContent).toContain('41 models and 3 subcategories were hidden')
+  expect(note.getAttribute('role')).toBe('alert')
 })
 
 test('deleting the category the grid is filtered to clears the filter', async () => {
@@ -374,6 +540,129 @@ test('the chooser asks about a collision too, and keeps the target it was given'
 
   await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(2))
   expect(moveBody(fetchMock, 1)).toEqual({ folderId: TERRAIN.id, acknowledgeDuplicate: true })
+})
+
+/**
+ * Focus, which no test here used to read at all — every `autoFocus` in this file could have
+ * been deleted and all of them stayed green.
+ *
+ * Two claims, and the second is the one that was broken: a dialog takes focus onto the safe
+ * control when it opens, and hands it back to whatever opened it when it closes. Landing on
+ * `<body>` costs a keyboard user their place in a sidebar that is hundreds of rows long.
+ */
+test('the delete confirmation takes focus onto cancel and hands it back to the row that opened it', async () => {
+  stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    folderDelete: ok({ foldersHidden: 2, partsHidden: TERRAIN.partCount }),
+  })
+  renderTree()
+
+  const trigger = await screen.findByRole('button', {
+    name: strings.folders.deleteFor(TERRAIN.name),
+  })
+  // A real activation focuses the control first; `fireEvent.click` does not, and the
+  // trigger is precisely what focus has to come back to.
+  trigger.focus()
+  fireEvent.click(trigger)
+
+  const dialog = screen.getByRole('dialog')
+  const cancel = within(dialog).getByRole('button', { name: strings.folders.cancel })
+  // Cancel, never the destructive control: this dialog's safe answer is to do nothing.
+  expect(document.activeElement).toBe(cancel)
+
+  fireEvent.click(cancel)
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(document.activeElement).toBe(trigger)
+})
+
+/**
+ * The break the findings describe: pressing an action disables the button that had focus,
+ * a disabled button loses focus, and focus falls to `<body>` — which is not a descendant of
+ * the overlay, so an `onKeyDown` there stops receiving keys and the dialog becomes
+ * keyboard-undismissable exactly while a request is in flight or has just been refused.
+ *
+ * Both halves are pinned. Focus is pulled back into the dialog rather than left nowhere,
+ * and Escape is heard even when the key event never touches the overlay's own subtree —
+ * which is what an overlay-mounted handler could not do and a document-mounted one can.
+ */
+test('a chooser whose rows are all disabled keeps focus, and Escape still closes it', async () => {
+  stubFetch({ folders: ok([TERRAIN]), move: pending })
+  const onClose = vi.fn()
+  render(
+    <QueryClientProvider client={newClient()}>
+      <MovePartDialog part={CLIFF} library={LIBRARY} onClose={onClose} />
+    </QueryClientProvider>,
+  )
+
+  const terrain = await screen.findByRole('button', { name: strings.folders.moveInto(TERRAIN.name) })
+  terrain.focus()
+  expect(document.activeElement).toBe(terrain)
+  fireEvent.click(terrain)
+  // The move never settles, so every row stays disabled — the window this finding is about.
+  await waitFor(() => expect(terrain.hasAttribute('disabled')).toBe(true))
+  // jsdom does not blur an element it disables; a browser does, and this is the state a
+  // browser leaves behind.
+  terrain.blur()
+
+  const dialog = screen.getByRole('dialog')
+  expect(dialog.contains(document.activeElement)).toBe(true)
+  expect(document.activeElement).not.toBe(document.body)
+
+  // Dispatched outside the overlay on purpose: a handler mounted on the overlay hears
+  // nothing here, which is exactly how Escape used to die with the focus.
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalled()
+})
+
+/**
+ * `aria-modal="true"` asserts a modality, and nothing was enforcing it: Tab from the last
+ * control walked into the next card's buttons behind an opaque scrim, still activatable.
+ * The portal is half the fix — the dialog is no longer a descendant of the card it was
+ * opened from — and this is the other half.
+ */
+test('Tab stays inside the dialog and comes back when focus has fallen out of it', async () => {
+  stubFetch({ folders: ok([TERRAIN, ROCKS]), folderDelete: pending })
+  renderTree()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
+  )
+  const dialog = screen.getByRole('dialog')
+  const cancel = within(dialog).getByRole('button', { name: strings.folders.cancel })
+  const confirm = within(dialog).getByRole('button', { name: strings.folders.deleteConfirm })
+
+  confirm.focus()
+  fireEvent.keyDown(document, { key: 'Tab' })
+  expect(document.activeElement).toBe(cancel)
+
+  fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+  expect(document.activeElement).toBe(confirm)
+
+  // Focus on the box itself — the shape a disabled control leaves behind — and the next
+  // Tab returns it to a control instead of making the user walk in from the top of the
+  // page.
+  dialog.focus()
+  fireEvent.keyDown(document, { key: 'Tab' })
+  expect(document.activeElement).toBe(cancel)
+})
+
+/**
+ * A refusal that nobody is looking at is a refusal nobody gets. Every one of these notes
+ * was a plain muted `<p>` at the foot of the whole `<nav>` — no role, no announcement, and
+ * arbitrarily far from the row that was dropped on.
+ */
+test('a refused move is announced, and under the row it was refused for', async () => {
+  stubFetch({ folders: ok([TERRAIN, ROCKS]), move: conflict('crossLibrary') })
+  renderTree()
+
+  const rocks = await screen.findByRole('button', { name: 'Rocks' })
+  fireEvent.drop(rocks, draggingCliff)
+
+  const alert = await screen.findByRole('alert')
+  expect(alert.textContent).toBe(strings.folders.crossLibraryRefusal)
+  // The row it belongs to, not the bottom of the sidebar: the note is inside the list item
+  // for the category that refused the drop.
+  expect(alert.closest('li')?.contains(rocks)).toBe(true)
 })
 
 test('a library with no categories says so instead of showing an empty tree', async () => {

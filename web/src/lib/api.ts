@@ -247,19 +247,30 @@ const KNOWN_MOVE_REFUSAL_REASONS: readonly string[] = [
   'noSuchFolder',
 ]
 
-async function moveRefusalReason(response: Response): Promise<MoveRefusalReason> {
+/**
+ * The `reason` a refusal names itself with, or `undefined` for a body that carries none
+ * and for one that is not JSON at all. Shared by the move's `409` and the delete's `404`:
+ * both come off `folders.rs`'s one `refused` helper, and a client that reads the field on
+ * one route and discards it on the other reports "already deleted" as a server outage.
+ */
+async function refusalReason(response: Response): Promise<string | undefined> {
   try {
     const body: unknown = await response.json()
     const reason =
       body !== null && typeof body === 'object' ? (body as { reason?: unknown }).reason : undefined
-    return typeof reason === 'string' && KNOWN_MOVE_REFUSAL_REASONS.includes(reason)
-      ? (reason as MoveRefusalReason)
-      : 'unknown'
+    return typeof reason === 'string' ? reason : undefined
   } catch {
-    // A `409` with a body that is not JSON at all — no more readable than one with an
-    // unrecognised `reason`, and not a reason to guess `duplicateName`.
-    return 'unknown'
+    return undefined
   }
+}
+
+async function moveRefusalReason(response: Response): Promise<MoveRefusalReason> {
+  const reason = await refusalReason(response)
+  // A `409` with an unrecognised reason, or none, or a body that is not JSON at all — no
+  // more readable than each other, and none of them a reason to guess `duplicateName`.
+  return reason !== undefined && KNOWN_MOVE_REFUSAL_REASONS.includes(reason)
+    ? (reason as MoveRefusalReason)
+    : 'unknown'
 }
 
 /**
@@ -300,17 +311,62 @@ export async function movePart(
 }
 
 /**
+ * What a delete actually did, as the route counts it. `foldersHidden` counts the category
+ * itself along with its descendants — `soft_delete_subtree` reports `rows_affected` over
+ * the whole subtree — so a leaf category with no models answers `{ foldersHidden: 1,
+ * partsHidden: 0 }`. Subtracting the one is the caller's job, and the one place that
+ * compares these against what the confirmation warned about says so where it does it.
+ *
+ * `null` where a figure did not arrive, never 0. A body this client could not read is not
+ * evidence that nothing was hidden, and the caller compares these against the counts its
+ * confirmation showed — a missing figure read as 0 would report every successful delete as
+ * having done something other than what it warned about.
+ */
+export type FolderDeleted = {
+  kind: 'deleted'
+  foldersHidden: number | null
+  partsHidden: number | null
+}
+
+/**
  * `DELETE /api/folders/{id}` — soft-delete a category and everything under it.
  *
  * Soft, and cascading: the category, its subcategories and the models in any of them are
  * marked deleted. Nothing leaves the disk — `DATA.md` §1.6's purge is a separate,
  * explicit action, and evicting the derivative cache is a third thing again. The
  * confirmation this route sits behind is where that distinction is spelled out for a user.
+ *
+ * `404 noSuchFolder` is an answer and not a failure, the same way the move's `409` is: the
+ * category was already deleted somewhere else, nothing here is broken, and retrying can
+ * only ask about the same missing row again. Throwing on it landed the user on "check that
+ * the api service is running", which is wrong in both halves.
+ *
+ * Only a 404 that names itself gets that treatment. A bare 404 — a proxy that lost the
+ * route, a server that is not ours — carries no `reason` and still throws, because
+ * "already deleted" is a claim about the library that a misrouted request cannot support.
  */
-export async function deleteFolder(folder: FolderId): Promise<void> {
+export async function deleteFolder(
+  folder: FolderId,
+): Promise<FolderDeleted | { kind: 'refused'; reason: 'noSuchFolder' }> {
   const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, { method: 'DELETE' })
+  if (response.status === 404 && (await refusalReason(response)) === 'noSuchFolder') {
+    return { kind: 'refused', reason: 'noSuchFolder' }
+  }
   if (!response.ok) {
     throw new Error(`folder delete returned ${response.status}`)
+  }
+  // Read defensively rather than cast: a `200` whose body is empty, null or not JSON is
+  // still a delete that happened, and the counts are a bonus the caller can do without.
+  const body: unknown = await response.json().catch(() => null)
+  const counted = (field: 'foldersHidden' | 'partsHidden'): number | null => {
+    if (body === null || typeof body !== 'object') return null
+    const value = (body as Record<string, unknown>)[field]
+    return typeof value === 'number' ? value : null
+  }
+  return {
+    kind: 'deleted',
+    foldersHidden: counted('foldersHidden'),
+    partsHidden: counted('partsHidden'),
   }
 }
 

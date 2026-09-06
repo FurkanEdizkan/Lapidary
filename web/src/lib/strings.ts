@@ -33,6 +33,31 @@ function bytes(value: number): string {
   return `${scaled.toLocaleString('en-US', { maximumFractionDigits: digits })} ${BYTE_UNITS[unit]}`
 }
 
+/**
+ * The two things a category holds, counted and named. Separate builders rather than one
+ * sentence per combination: the delete confirmation has to state both, and nine hand-
+ * written variants is nine places for one of them to go missing — which is exactly how the
+ * subcategories dropped out of that copy in the first place.
+ */
+function countedModels(count: number): string {
+  if (count === 0) return 'no models'
+  return count === 1 ? '1 model' : `${count.toLocaleString('en-US')} models`
+}
+
+function countedSubcategories(count: number): string {
+  if (count === 0) return 'no subcategories'
+  return count === 1 ? '1 subcategory' : `${count.toLocaleString('en-US')} subcategories`
+}
+
+/**
+ * The counted phrases above read mid-sentence as well as at the head of one — "no models"
+ * has to stay lowercase where a sentence has already started — so the one place that opens
+ * a sentence with one raises its first letter itself.
+ */
+function opensSentence(clause: string): string {
+  return clause.charAt(0).toUpperCase() + clause.slice(1)
+}
+
 export const strings = {
   appName: 'Lapidary',
   health: {
@@ -231,10 +256,42 @@ export const strings = {
    * No column on a `job` row counts files actually moved, so there is nothing honest to
    * put a number to yet — the fix is copy that does not claim a count it does not have,
    * not a number that quietly means something else.
+   *
+   * `failed` and `unknown` exist for the reason `render`'s do: without them the progress
+   * line falls back to `scan`'s, and `scan.failed` says the files "will not appear in the
+   * grid" — about models that already exist, are already in the grid, and whose bytes were
+   * never at risk. A migration moves a file a part already has; the worst it can do is
+   * leave that file where it was.
    */
   migrate: {
     running: 'Moving files into their model folders…',
-    finished: "Move complete — this library's files are now in their model folders.",
+    /**
+     * `failedTotal` is 0 for the whole batch or it is not, and the line below reports
+     * which — the number itself belongs to `failed`, and the sentence here must not go on
+     * claiming every file arrived while that line says some did not.
+     */
+    finished: (failed: number) =>
+      failed === 0
+        ? "Move complete — this library's files are now in their model folders."
+        : 'Move finished, but not every file could be moved. The ones that could are in their model folders; the rest are still in the shared store, and every model is still listed.',
+    /**
+     * Counted in steps, not in files, and that is the same measurement rule the doc above
+     * spells out: one failed `migrate_storage` job is one run over a page of up to 200
+     * hashes, so calling it a file would report 200 files as 1. What matters more than the
+     * unit is what a migration failure is NOT — nothing was deleted, nothing left the
+     * grid, and the models involved still open from where they always were.
+     */
+    failed: (count: number) =>
+      count === 1
+        ? '1 step of the move could not be finished. Those files stay where they already were — nothing was removed and every model is still listed.'
+        : `${count.toLocaleString('en-US')} steps of the move could not be finished. Those files stay where they already were — nothing was removed and every model is still listed.`,
+    /**
+     * The migration's status cannot be read back. Reachable only after a poll has already
+     * identified this batch as a migration, so the work is genuinely on the server and
+     * genuinely continues — the advice is to reload, not to check what was typed.
+     */
+    unknown:
+      'Could not read how the file move is going. It was queued by the server and continues there; reload to pick it up again.',
   },
   /**
    * Why a job failed, as the handler wrote it. `scan.failed` and `render.failed` above
@@ -375,9 +432,16 @@ export const strings = {
     deleteFor: (name: string) => `Delete the category ${name}`,
     deleteTitle: (name: string) => `Delete ${name}?`,
     /**
-     * What a delete actually does, counted. The requirement is that a destructive
-     * confirmation names what it affects, and `FolderNode.partCount` is subtree-inclusive
-     * because the delete cascades through subcategories.
+     * What a delete actually does, counted — in models AND in subcategories, because
+     * `soft_delete_subtree` marks every descendant folder deleted as well. Naming only the
+     * models is how a category holding twelve empty subcategories used to read "No models
+     * are inside it. Nothing is removed…" and then take twelve rows off the sidebar. The
+     * requirement is that a destructive confirmation names what it affects, and half of
+     * what this one affects is the tree itself.
+     *
+     * `FolderNode.partCount` is subtree-inclusive for the same reason; the subcategory
+     * count is the caller's own walk of the tree it already has, excluding the category
+     * being deleted, so the two numbers count different things and neither counts twice.
      *
      * Deliberately NOT the plan's "The N models inside will be moved to deleted": that
      * reads at a glance as files being relocated on disk, which is the exact confusion
@@ -389,18 +453,58 @@ export const strings = {
      * promises an action the app does not have is the same class of lie as a mesh figure
      * presented as analytic.
      */
-    deleteBody: (parts: number) =>
-      parts === 0
-        ? 'No models are inside it. Nothing is removed from your storage folder and no file moves on disk.'
-        : parts === 1
-          ? '1 model is inside it, counting every subcategory. Deleting marks that model deleted and hides it from the grid — nothing is removed from your storage folder and no file moves on disk.'
-          : `${parts.toLocaleString('en-US')} models are inside it, counting every subcategory. Deleting marks them deleted and hides them from the grid — nothing is removed from your storage folder and no file moves on disk.`,
+    deleteBody: (parts: number, subcategories: number = 0) => {
+      const inside =
+        parts === 0 && subcategories === 0
+          ? 'Nothing is inside it — no models, no subcategories.'
+          : `${opensSentence(countedModels(parts))} and ${countedSubcategories(subcategories)} are inside it, counting every level.`
+      const subcategoriesGo =
+        subcategories === 0
+          ? ''
+          : subcategories === 1
+            ? ', and hides the subcategory under it'
+            : ', and hides the subcategories under it'
+      const action =
+        parts === 0
+          ? subcategories === 0
+            ? 'Deleting hides this category'
+            : subcategories === 1
+              ? 'Deleting hides this category and the subcategory under it'
+              : 'Deleting hides this category and the subcategories under it'
+          : parts === 1
+            ? `Deleting marks that model deleted and hides it from the grid${subcategoriesGo}`
+            : `Deleting marks them deleted and hides them from the grid${subcategoriesGo}`
+      return `${inside} ${action}; nothing is removed from your storage folder and no file moves on disk.`
+    },
     deleteConfirm: 'Delete category',
     deleteFailed:
       'Could not delete this category. Check that the api service is running, then try again.',
+    /**
+     * `404 noSuchFolder` — the category was already deleted, by someone else or in another
+     * tab, and this sidebar had not noticed. Not `deleteFailed`: the service answered, and
+     * "try again" could only ask about the same missing category a second time. The tree is
+     * refetched underneath this note, so the row it names is on its way out as it is read.
+     */
+    deleteGone:
+      'That category is already gone — it was deleted somewhere else while this list was on screen. Nothing changed just now, and the list has been reloaded.',
+    /**
+     * The counts the confirmation showed were read when it opened; the ones here came back
+     * with the delete. They disagree when the library moved underneath the open dialog, and
+     * a confirmation that named a number owes the user the real one when it turns out to
+     * have been a different number.
+     */
+    deleteCountsDiffered: (parts: number, subcategories: number) =>
+      `The category changed while the confirmation was open: ${countedModels(parts)} and ${countedSubcategories(subcategories)} were hidden, not the numbers shown. Nothing was removed from your storage folder.`,
     cancel: 'Cancel',
-    showInFolder: 'Show in folder',
-    showInFolderFor: (name: string) => `Show the folder ${name} is stored in`,
+    /**
+     * Not "Show in folder": that is the reveal-in-Finder idiom, and every OS that has it
+     * opens a file manager with the file selected. This control expands a panel of text.
+     * Borrowing the label promises the gesture, and the body copy immediately below it
+     * exists to explain that the gesture is not available — a label should not need the
+     * paragraph under it to take back what it said.
+     */
+    showInFolder: 'Show storage path',
+    showInFolderFor: (name: string) => `Show the storage path for ${name}`,
     /**
      * The path, and why it is a path rather than a button. No browser opens a host file
      * manager — `file://` links are blocked everywhere — so this shows where to look
