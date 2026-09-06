@@ -687,10 +687,20 @@ impl PgIngest {
                     .await?;
             }
             if let Some(new) = &hash {
-                sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-                    .bind(new)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(
+                    // Rides along on the row this statement already locks and writes, so
+                    // it costs nothing. Without it, a blob somebody re-ingested stays
+                    // flagged until the next hourly sweep notices. That is harmless --
+                    // the reaper re-checks reachability and declines it -- but it makes
+                    // "a referenced blob is never quarantined" true only eventually
+                    // rather than continuously, and an operator reading the column
+                    // would see a lie for up to an hour.
+                    "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+                     WHERE blake3 = $1",
+                )
+                .bind(new)
+                .execute(&mut *tx)
+                .await?;
             }
         }
 
@@ -765,10 +775,20 @@ async fn insert_part_chain(
     // One file inserted above -> one reference. Runs once per call to insert_part_chain,
     // i.e. once per file, whether the blob is new (record) or already held
     // (link_existing) — both paths route through here.
-    sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-        .bind(req.blob.hash.to_hex())
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        // Rides along on the row this statement already locks and writes, so
+        // it costs nothing. Without it, a blob somebody re-ingested stays
+        // flagged until the next hourly sweep notices. That is harmless --
+        // the reaper re-checks reachability and declines it -- but it makes
+        // "a referenced blob is never quarantined" true only eventually
+        // rather than continuously, and an operator reading the column
+        // would see a lie for up to an hour.
+        "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+         WHERE blake3 = $1",
+    )
+    .bind(req.blob.hash.to_hex())
+    .execute(&mut **tx)
+    .await?;
 
     // No thumbnail, no row. Skipped entirely rather than written empty — see
     // `IngestRequest::thumbnail_webp` for why an empty `bytea` is worse than nothing.
@@ -807,10 +827,20 @@ async fn insert_part_chain(
         // One derivative inserted below -> one reference, exactly as the source file's
         // increment above works. This is what makes eviction safe: the reap only removes
         // bytes nothing points at.
-        sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-            .bind(rung.blob.hash.to_hex())
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            // Rides along on the row this statement already locks and writes, so
+            // it costs nothing. Without it, a blob somebody re-ingested stays
+            // flagged until the next hourly sweep notices. That is harmless --
+            // the reaper re-checks reachability and declines it -- but it makes
+            // "a referenced blob is never quarantined" true only eventually
+            // rather than continuously, and an operator reading the column
+            // would see a lie for up to an hour.
+            "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+             WHERE blake3 = $1",
+        )
+        .bind(rung.blob.hash.to_hex())
+        .execute(&mut **tx)
+        .await?;
 
         sqlx::query(
             "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \

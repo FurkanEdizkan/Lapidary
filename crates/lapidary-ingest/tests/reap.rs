@@ -163,13 +163,17 @@ async fn a_blob_something_points_at_again_is_un_quarantined_rather_than_removed(
         report.removed.is_empty(),
         "bytes a part points at must survive their own cutoff: {report:?}"
     );
-    assert_eq!(report.un_quarantined, 1);
+    assert!(bytes_exist(blob_root.path(), 0xc1));
     assert_eq!(
         quarantined(&pool, 0xc1).await,
         Some(false),
-        "and the clock is cleared, not merely ignored — re-ingest un-quarantines"
+        "and the clock is cleared, not merely ignored"
     );
-    assert!(bytes_exist(blob_root.path(), 0xc1));
+    // `un_quarantined` is 0 here and that is not a weaker result: the ingest above already
+    // cleared the flag on the row it was incrementing anyway, so the sweep found nothing
+    // left to clear. The sweep's own clearing still matters for a flag no ingest touched —
+    // `one_wrongly_quarantined_blob_does_not_stop_the_sweep` is where that is asserted.
+    assert_eq!(report.un_quarantined, 0);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -278,4 +282,28 @@ async fn one_wrongly_quarantined_blob_does_not_stop_the_sweep(pool: PgPool) {
         Some(false),
         "and the bad row heals: it is un-quarantined, so it is not a candidate next hour"
     );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn re_ingesting_quarantined_bytes_clears_the_flag_without_waiting_for_a_sweep(pool: PgPool) {
+    // Found by running the thing rather than by a test: re-scanning a purged file brought
+    // the part back and put `ref_count` at 1, and the blob stayed flagged until the next
+    // hourly sweep. Never unsafe — the reaper re-checks reachability and declines a
+    // referenced blob — but it left "a referenced blob is never quarantined" true only
+    // eventually, and an operator reading the column would have seen a lie for an hour.
+    //
+    // The fix rides on the `ref_count + 1` statement that every ingest already runs against
+    // that row, so it costs nothing.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let part = seed_part(&pool, blob_root.path(), 0xf1, "brackets/LP-1042-03.stl").await;
+    retire(&pool, part).await;
+    assert_eq!(quarantined(&pool, 0xf1).await, Some(true));
+
+    seed_part(&pool, blob_root.path(), 0xf1, "brackets/LP-1042-03.stl").await;
+    assert_eq!(
+        quarantined(&pool, 0xf1).await,
+        Some(false),
+        "the flag must be gone the moment the reference exists, not an hour later"
+    );
+    assert!(bytes_exist(blob_root.path(), 0xf1));
 }
