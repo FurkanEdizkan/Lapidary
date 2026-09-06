@@ -18,14 +18,20 @@ const RESERVED: &[&str] = &[
 const HOSTILE: &[char] = &['/', '\\', '<', '>', ':', '"', '|', '?', '*'];
 
 /// Filesystem component limit (ext4, NTFS and APFS all cap a single path component at
-/// 255 bytes) minus the widest thing that lands on top of a capped name: the seven-byte
-/// `_a1b2c3` disambiguation suffix. That headroom also covers the one-byte `_` a reserved
-/// device name gets appended, so one budget serves both call sites below.
+/// 255 bytes) minus BOTH suffixes that can land on the same string, not just the wider
+/// one on its own. A reserved stem is not a reason a name skips disambiguation: two parts
+/// both literally named `AUX`, with different hashes, both take the reserved branch in
+/// `slugify` below *and* both still need `disambiguate`'s suffix to tell their directories
+/// apart. So the budget has to leave room for the one-byte reserved `_` and the
+/// seven-byte `_a1b2c3` disambiguation suffix stacked, not either alone:
+/// `255 - 1 - 7 = 247`. That is exactly zero slack in the worst case —
+/// `247 (this cap) + 1 (\`_\`) + 7 (\`_a1b2c3\`) = 255` — so do not round this back up to
+/// `255 - 7` on the assumption the two suffixes are alternatives; they are not.
 ///
-/// `MAX_CHARS` alone does not bound this: 120 characters of a three-byte CJK script is
-/// 360 bytes, and four-byte emoji make it worse. Both limits are enforced together —
-/// whichever is reached first stops the cut.
-const MAX_BYTES: usize = 255 - 7;
+/// `MAX_CHARS` alone does not bound this either: 120 characters of a three-byte CJK
+/// script is 360 bytes, and four-byte emoji make it worse. Both limits are enforced
+/// together — whichever is reached first stops the cut.
+const MAX_BYTES: usize = 255 - 8;
 
 /// A legibility cap for one- and two-byte scripts, so an ASCII or Turkish name is not cut
 /// far short of `MAX_BYTES` just because a byte budget alone would allow it to run on.
@@ -220,18 +226,36 @@ mod tests {
     }
 
     #[test]
-    fn a_reserved_name_with_a_long_tail_still_respects_the_cap_after_the_suffix() {
-        // `format!("{trimmed}_")` adds one character on top of an already-capped name;
-        // the result must still be bounded, not grow with however long the untruncated
-        // tail happened to be.
-        let out = slugify(&("AUX.".to_owned() + &"x".repeat(300)));
-        assert_eq!(
-            out.chars().count(),
-            MAX_CHARS + 1,
-            "the capped name plus its `_` suffix, not the untruncated tail: {out:?}"
+    fn a_reserved_name_with_a_multibyte_tail_still_fits_after_disambiguation() {
+        // The reserved `_` and `disambiguate`'s `_a1b2c3` are not alternatives -- they
+        // stack. Two parts both literally named `AUX`, with different hashes, both take
+        // the reserved branch below and then both still need disambiguating. An
+        // all-ASCII tail (the previous version of this test) never reaches the byte cap
+        // and never calls `disambiguate`, so it pins nothing about this case; this one
+        // does both, with `MAX_BYTES` chosen so the total never crosses the real 255-byte
+        // filesystem component limit.
+        let hash = crate::BlobHash::from_bytes([
+            0xa1, 0xb2, 0xc3, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+            0xdd, 0xee, 0xff, 0x00,
+        ]);
+
+        let slug = slugify(&("AUX.".to_owned() + &"😀".repeat(100)));
+        assert!(
+            slug.starts_with("AUX."),
+            "must still take the reserved branch: {slug:?}"
         );
-        assert!(out.starts_with("AUX."));
-        assert!(out.ends_with('_'));
+        assert!(
+            slug.ends_with('_'),
+            "must still carry the reserved suffix: {slug:?}"
+        );
+
+        let disambiguated = disambiguate(&slug, &hash);
+        assert!(
+            disambiguated.len() <= 255,
+            "{} bytes exceeds the filesystem's 255-byte component limit: {disambiguated:?}",
+            disambiguated.len()
+        );
     }
 
     #[test]
