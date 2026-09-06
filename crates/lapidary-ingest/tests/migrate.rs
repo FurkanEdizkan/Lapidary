@@ -310,6 +310,28 @@ async fn an_interrupted_migration_loses_no_file(pool: PgPool) {
         std::fs::read(store.path().join(&settled)).expect("the recorded path holds the file"),
         CLIFF
     );
+
+    // What an interruption costs, stated rather than discovered. `model_dir_for` decides a
+    // model's directory by asking whether that name is already taken, and the copy the
+    // interrupted run left behind takes it — so the resumed run disambiguates and the
+    // interrupted copy stays as a duplicate. It is bounded at one per file that was in
+    // flight when the worker died, and the name is deterministic (it keys on the source
+    // hash), so a second interruption lands on the same directory rather than a third.
+    // Never a loss: both directories hold the whole file.
+    assert!(
+        settled.starts_with("libraries/default/Terrain/cliff_"),
+        "the resumed run does not overwrite the interrupted attempt: {settled}"
+    );
+    assert_eq!(
+        std::fs::read(
+            store
+                .path()
+                .join("libraries/default/Terrain/cliff/cliff.stl")
+        )
+        .expect("the interrupted attempt is left behind"),
+        CLIFF,
+        "a duplicate a re-adoption walk will report, not a truncated file"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
