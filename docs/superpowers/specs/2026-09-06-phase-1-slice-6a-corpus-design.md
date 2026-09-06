@@ -149,22 +149,129 @@ header carries this too, because that is where someone will meet it.
 
 ## 4. Upload from the browser
 
-`DATA.md` §5.2 is already binding and is not re-derived here:
+`DATA.md` §5.2 states the contract — client-side BLAKE3, a probe, resumable chunks, a
+server-side re-verification, `webkitdirectory` for folders — and is not re-derived here.
+What it does not say is *where the uploaded bytes land*, and that is this task's whole
+design problem: `check_open_path_boundary` forbids `lapidary-api` from naming
+`SourceStore` at all, and the worker's `/ingest` mount is read-only. Neither process has
+an obvious place to put a file.
 
-- BLAKE3 in WASM on the client, **before** transferring.
-- `POST /api/uploads/probe { hashes: [...] } → { have, need }`, so re-importing a library
-  transfers only what is new. `PgBlobs::library_holds` already answers this per file.
-- **Resumable chunked transfer is mandatory.** Chunk-with-offset; a 2 GB file over a VPN
-  as one POST fails at 90%.
-- **The server re-verifies the assembled BLAKE3 against the client's claim before
-  committing.** Never trust the client hash — it is the dedup key, and a wrong one
-  silently corrupts another user's part.
-- Folder upload via `webkitdirectory` and `DataTransferItem.webkitGetAsEntry()`. The
-  relative path the browser reports is the `source_path` of §2, which is what makes an
-  uploaded folder and a scanned folder the same thing in the database.
+### 4.1 The api writes the blob; the worker reads it back out
 
-The upload route lands on `Role::Api`; it writes bytes and enqueues, and it never invokes
-the kernel, so the open-path rule and `check-deploy`'s boundary are untouched.
+The shape this rejects is a shared staging volume the worker also mounts, with
+`IngestFile` learning a second root to join against. That buys a mount, a payload
+discriminator, and a new failure mode — the worker opening a file the api has not
+finished writing — in order to move bytes the api is already sitting on.
+`deploy/compose.yaml` mounts `lapidary-blobs` on `api` **read-write** today, with a
+comment saying that is deliberate and that it is not a hole in the open-path rule,
+because *the boundary is a type, not a mount flag*.
+
+So: the api writes the source blob into the CAS and enqueues
+`JobPayload::IngestBlob { blake3, source_path }`. The worker reads those bytes back with
+the `SourceStore` it already holds, meshes them, and writes the rows. `job.kind` is the
+discriminator column and carries no CHECK constraint — `0003_jobs.sql` constrains `state`
+and `outcome` and nothing else — so a new kind needs no migration.
+
+**`SourceWriter` is the mirror of slice 5's `SourceReader`, and inherits its rule.** A
+handle over the source half of the CAS that can only *write*: no `get`, no `remove`, no
+`WorkerRole` to construct. The reasoning is the same one recorded on `SourceReader` and
+comes out the other way round: gating this behind `WorkerRole` would hand the api `get`
+and `remove` on every source blob in order to buy a `put`, and read is the half of that
+type worth spending a token on when the caller already holds the bytes in its own request
+body. `check_open_path_boundary` gains one symmetric clause — `lapidary-api` may name
+`SourceWriter` only in `crates/lapidary-api/src/upload.rs` — for the reason the
+`SourceReader` clause exists: a write handle in one named route is a decision, the same
+handle in six files is the mistake arrived at by copy-paste.
+
+`SourceWriter::put_file` takes the staged file, the hash the client claimed, and streams
+one into the other — hashing, compressing and writing in a single pass. **The
+verification lives here, not in the route**, because "store these bytes and they must
+hash to X" is the content-addressed store's own invariant, and because a route that
+verified separately would read a 2 GB file twice. A mismatch writes nothing: the temp
+file is removed and `StorageError::HashMismatch` names both digests.
+
+### 4.2 The orphan this creates, and the row that closes it
+
+`ingest_one` writes the source blob immediately before its transaction and reaps it if
+that transaction fails — an ordering `handler.rs`'s module doc and
+`docs/prototype-notes.md` both exist to protect, because the Node prototype's exact bug
+was a successful blob write followed by a failed insert with no cleanup.
+
+This split moves the two halves into different processes and puts a queue between them.
+Between the api's commit and the worker's job there are bytes on disk that no `part` row
+points at, and if the job fails permanently — an unparseable STL, a library deleted
+underneath it — nothing ever reaps them. That is a new orphan class, and the reap-on-
+failure trick cannot reach it: the failing process did not write the bytes and must not
+assume it may delete them.
+
+**So the api inserts the `blob` row, `ref_count = 0`, in the same commit that writes the
+bytes.** Slice 7's reference-counted reaper is defined over exactly that: a `blob` row
+whose count is zero is collectable, and an orphan with no row at all is invisible to it
+forever. One INSERT now is the difference between a known orphan and a leak.
+
+It also makes the worker's arm shorter rather than longer. `ingest_one` already branches
+on `blobs.exists(&hash)`, and an uploaded blob's row makes that branch true — so the
+existing `link_existing` path runs, which skips the blob insert, writes the part chain,
+and on failure reaps **only the rungs it produced itself**, never the source blob. That
+is precisely the correct behaviour here, reached without a special case.
+
+### 4.3 The staging area is a file, and the hash is the session id
+
+The client computes BLAKE3 before transferring, so it already holds the one identifier
+both sides agree on. A chunk goes to `PUT /api/libraries/{id}/uploads/{blake3}?offset=N`
+and appends to `<upload_dir>/<library>/<blake3>.part`.
+
+This is what makes resumability cost nothing. There is no session table, no session id,
+no expiry sweep and no in-memory map: **the staging file's length is the session state.**
+Resuming is `offset = length`; a wrong offset is a `409` carrying the length the server
+actually has, so a client that lost track is told, not guessed at. An api restart loses
+nothing as long as `upload_dir` is a volume, and degrades to a re-transfer if it is not —
+which is the same answer a session table would give with a schema attached.
+
+`blake3` is parsed with `BlobHash::parse_hex` before it reaches the filesystem: 64
+characters, lowercase, hex. There is no traversal to defend against because there is no
+string from the client in that path at all.
+
+The library scopes the staging directory, which is not a permission check — there is no
+authentication in Phase 1 — but removes the question. Two libraries uploading the same
+bytes cannot interleave into one another's partial file and fail each other's
+verification.
+
+Three routes, and that is the whole surface:
+
+- `POST /api/libraries/{id}/uploads/probe` — `{ files: [{ path, blake3 }] }` answers
+  `{ have, needRows, needBytes }`. `have` is `PgBlobs::library_holds` — this library
+  already indexes these bytes at this path, so there is nothing to do. `needRows` is
+  `PgBlobs::exists` — some library holds the bytes, so only the rows are missing and the
+  transfer is skipped entirely. `needBytes` is the rest. Three lists rather than
+  `DATA.md`'s two, because the second win is the larger one: re-importing a folder into a
+  *new* library transfers nothing.
+- `PUT /api/libraries/{id}/uploads/{blake3}?offset=N` — one chunk, raw body, answers the
+  new length.
+- `POST /api/libraries/{id}/uploads/commit` — `{ files: [{ path, blake3 }] }`, one batch
+  for the whole folder, `202` with the batch id the grid already polls. Committing per
+  file would give a folder of 500 parts 500 progress bars.
+
+### 4.4 The path is checked at both doors, for two different reasons
+
+`reject_escaping_path` guards `ingest_one` against a payload that would escape the
+`ingest_dir` join. The upload path never joins anything — but a client-supplied
+`source_path` goes straight into `part.source_path`, and from there into a
+`Content-Disposition` filename on the download route. Different surface, same refusal.
+
+The predicate moves to `lapidary-core` as `path_escapes`, and each caller keeps its own
+error type and its own wording. One predicate, two doors: a guard on the caller rather
+than on the door is the shape that leaves a sibling caller unprotected.
+
+### 4.5 Not in this task
+
+The browser half — WASM BLAKE3, the drop target, `webkitdirectory` — is the commit after
+this one. The server half is testable with `curl` and is where the boundary decisions
+live, so it lands first and alone.
+
+A staging file with no commit behind it is never swept. It is a `.part` in a volume, it
+holds no row, and no route reads it; slice 7 owns reclaiming disk, and a sweep written
+now would be a second reaper to keep in step with the real one.
 
 ## 5. Out of scope
 

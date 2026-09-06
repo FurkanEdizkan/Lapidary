@@ -80,3 +80,79 @@ pub struct PartSummary {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+/// Would this relative source path leave the directory it is relative to?
+///
+/// Two callers ask, for two different failures, which is why the predicate lives here
+/// rather than beside either of them. `lapidary-ingest` joins the path onto the ingest
+/// mount, and `Path::join` resolves nothing and refuses nothing: `ingest_dir.join(
+/// "/etc/passwd")` *is* `/etc/passwd`, and `../../etc/passwd` walks out of the mount.
+/// `lapidary-api`'s upload route joins nothing at all — it writes the string into
+/// `part.source_path`, from where the download route spells it into a
+/// `Content-Disposition` filename. Different surface, same refusal, and a guard written
+/// on one caller is a guard the other never gets.
+///
+/// A Windows-style prefix (`C:\`, `\\server\share`) is caught by `is_absolute` on
+/// Windows and is a harmless literal filename elsewhere.
+///
+/// Empty escapes too. It joins to the ingest directory itself, which reads as a
+/// directory and fails later with a confusing I/O error instead of the real reason, and
+/// as a `source_path` it names a part nobody can identify.
+pub fn path_escapes(source_path: &str) -> bool {
+    let path = std::path::Path::new(source_path);
+    source_path.is_empty()
+        || path.is_absolute()
+        || path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        })
+}
+
+/// The source format, lowercase and without a dot, taken from a source path.
+///
+/// Two crates ask now. `lapidary-ingest` writes the answer into `file.format` and hands
+/// it to the kernel; `lapidary-api`'s upload route asks `Compression::for_source_format`
+/// whether the bytes are worth compressing. Nothing forces those two to agree — the level
+/// actually used is recorded on the `blob` row and read back from there — but one
+/// definition is cheaper than a second that only looks the same.
+///
+/// An extension the kernel has no parser for reaches `process` and comes back as a
+/// per-file `Permanent` failure naming the format; the scan admits only `stl`, `obj` and
+/// `3mf`, so that path is reachable today only through an upload or a hand-written job.
+pub fn source_format(source_path: &str) -> String {
+    std::path::Path::new(source_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::path_escapes;
+
+    #[test]
+    fn an_ordinary_nested_path_does_not_escape() {
+        assert!(!path_escapes("brackets/steel/LP-1042-03.stl"));
+        assert!(!path_escapes("bracket.stl"));
+        // A leading `./` is a CurDir component, which resolves to the same directory.
+        assert!(!path_escapes("./bracket.stl"));
+        // `..` as part of a name is not a `..` component.
+        assert!(!path_escapes("v..2/bracket.stl"));
+    }
+
+    #[test]
+    fn absolute_and_parent_paths_escape() {
+        assert!(path_escapes("/etc/passwd"));
+        assert!(path_escapes("../../etc/passwd"));
+        assert!(path_escapes("brackets/../../etc/passwd"));
+        assert!(path_escapes(".."));
+    }
+
+    #[test]
+    fn the_empty_path_escapes() {
+        assert!(path_escapes(""));
+    }
+}

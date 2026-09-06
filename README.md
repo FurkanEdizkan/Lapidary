@@ -19,14 +19,14 @@ that will ship.
 
 `rust-rewrite` now runs: the first slice of Phase 1 ingests a directory of STL files and
 renders them as a grid of cards with real thumbnails. Everything else in the list below is
-still ahead — no viewer, no search, no versioning, no queue, and the scan is synchronous
-and non-recursive.
+still ahead — no viewer, no search and no versioning. The scan is a background job and
+walks nested directories; files can also be uploaded from the browser.
 
 ## What it does
 
 - **Ingest** — drop a folder of STL, 3MF, OBJ, STEP or IGES. Content-addressed and
-  deduplicated. Today the scan is a synchronous request; the queue that makes it
-  non-blocking and crash-resumable is slice 2.
+  deduplicated. Today: STL, 3MF and OBJ, from a mounted directory or a browser upload,
+  through a crash-resumable job queue. STEP and IGES need the CAD kernel and are Phase 2.
 - **Triage** — a fast virtualized grid with real thumbnails, full-text and part-number
   search, faceted filters.
 - **Inspect** — a 3D viewer with measurement that snaps to analytic B-rep entities, so

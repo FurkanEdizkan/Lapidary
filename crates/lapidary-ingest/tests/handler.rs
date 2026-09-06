@@ -227,6 +227,141 @@ async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail
     assert_eq!(decoded.width(), 512, "the thumbnail is a real 512px render");
 }
 
+/// A `JobRow` shaped exactly as `lapidary-api`'s upload commit writes one: the kind is
+/// the column, and the payload names bytes already in the store rather than a file on the
+/// ingest mount.
+fn blob_job(hash: BlobHash, source_path: &str) -> JobRow {
+    let payload = JobPayload::IngestBlob {
+        blake3: hash,
+        source_path: source_path.to_owned(),
+    };
+    JobRow {
+        id: JobId::new(),
+        batch_id: BatchId::new(),
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    }
+}
+
+/// The api's half of an upload, without the api: verify and store the bytes, then record
+/// the `blob` row with a zero count. Both halves, because the worker arm under test reads
+/// the level off that row and would otherwise decode a zstd frame as an STL.
+async fn upload_into(pool: &PgPool, blob_root: &Path, bytes: &[u8]) -> BlobHash {
+    let staging = tempfile::tempdir().expect("temp dir");
+    let staged = staging.path().join("upload.part");
+    std::fs::write(&staged, bytes).expect("stages the upload");
+    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+    let stored = lapidary_storage::SourceWriter::open(blob_root)
+        .put_file(&staged, &hash, lapidary_storage::Compression::Zstd)
+        .expect("stores");
+    lapidary_db::PgBlobs(pool.clone())
+        .record_unreferenced(&StoredBlobRow {
+            hash: stored.hash,
+            size_bytes: stored.size_bytes,
+            stored_bytes: stored.stored_bytes,
+            zstd_level: stored.zstd_level,
+        })
+        .await
+        .expect("records the blob");
+    hash
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPool) {
+    // The other end of the upload route. The api wrote these bytes and this job is all
+    // that connects them to a part -- and `ingest_dir` deliberately points at nothing,
+    // because an upload must not need the mount at all.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+
+    let outcome = handler
+        .handle(&blob_job(hash, "brackets/steel/LP-1042-03.stl"))
+        .await
+        .expect("ingests");
+    assert_eq!(outcome, Outcome::Ingested);
+
+    // The path the browser reported is the part's identity, and the stem is what a
+    // person reads -- the same two facts a scanned file lands with, which is what makes
+    // an uploaded folder and a scanned folder the same thing here.
+    let (name, source_path, tri): (String, String, i32) = sqlx::query_as(
+        "SELECT p.name, p.source_path, r.triangle_count \
+         FROM part p JOIN revision r ON r.part_id = p.id \
+         WHERE p.library_id = $1",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("the part landed");
+    assert_eq!(name, "LP-1042-03");
+    assert_eq!(source_path, "brackets/steel/LP-1042-03.stl");
+    assert!(tri > 0, "the kernel meshed the bytes it read back out");
+
+    // The blob's row was the api's, and the ingest linked to it rather than writing a
+    // second one -- `link_existing`, reached through the existing `exists` question.
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE blake3 = $1")
+        .bind(hash.to_hex())
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    assert_eq!(blobs, 1);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool: PgPool) {
+    // Nothing wrote the bytes or the row, so the level needed to decode them does not
+    // exist. Permanent: the row is written in the same request that writes the bytes, so
+    // its absence is not a race that resolves, and three retries would say the same thing
+    // three times.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
+
+    let err = handler
+        .handle(&blob_job(hash, "brackets/LP-1042-03.stl"))
+        .await
+        .expect_err("there is nothing to ingest");
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "expected a permanent failure, got: {err:?}"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
+    // The path never reaches a filesystem on this arm -- it becomes `part.source_path`,
+    // and from there a Content-Disposition filename. The api refuses it first; this is
+    // the guard on the door rather than on the caller, so a job enqueued any other way
+    // meets it too.
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+
+    let err = handler
+        .handle(&blob_job(hash, "../../etc/passwd"))
+        .await
+        .expect_err("an escaping path is refused");
+    assert!(
+        matches!(err, HandlerError::Permanent { .. }),
+        "expected a permanent failure, got: {err:?}"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");

@@ -188,6 +188,69 @@ impl PgBlobs {
         Ok(found.is_some())
     }
 
+    /// The stored form of a blob: its sizes and the level it was written at.
+    ///
+    /// `zstd_level` is the reason this exists. A reader that re-derived compression from
+    /// the file's extension would hand out zstd frames as though they were the file the
+    /// day ingest-time policy changed — `SourceReader::get` says so at length — and the
+    /// upload path makes that gap wider than a re-scan ever did: the api chooses the
+    /// level, in another process, on a build that may not be this one, and the worker
+    /// decodes what it finds one job later.
+    ///
+    /// `None` means no such row, which the caller must not confuse with bytes it can
+    /// read: the row is what makes a blob known.
+    pub async fn blob(&self, hash: &BlobHash) -> Result<Option<StoredBlobRow>, DbError> {
+        let row: Option<(i64, i64, Option<i16>)> = sqlx::query_as(
+            "SELECT size_bytes, stored_bytes, zstd_level FROM blob WHERE blake3 = $1",
+        )
+        .bind(hash.to_hex())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(
+            row.map(|(size_bytes, stored_bytes, zstd_level)| StoredBlobRow {
+                hash: *hash,
+                size_bytes: size_bytes as u64,
+                stored_bytes: stored_bytes as u64,
+                // The column is nullable and reads as uncompressed, exactly like level 0 —
+                // `0002_parts.sql`, and the same collapse `SourceReader` makes.
+                zstd_level: zstd_level.unwrap_or(0),
+            }),
+        )
+    }
+
+    /// Record bytes that are on disk but that nothing references yet, `ref_count = 0`.
+    ///
+    /// The upload route's, and only the upload route's. Every other producer of source
+    /// bytes writes the blob and the part chain within one call — `PgIngest::record`
+    /// inserts this same row inside the transaction that creates the part, and reaps the
+    /// bytes if it fails, which is the ordering `docs/prototype-notes.md` exists to
+    /// protect.
+    ///
+    /// Upload cannot do that: the api writes the bytes and the *worker* writes the rows,
+    /// one job later. Between the two there are bytes on disk that no `part` points at,
+    /// and if that job fails permanently nothing ever reaps them — the failing process
+    /// did not write the bytes and must not assume it may delete them. A `blob` row with
+    /// a zero count is what makes those bytes *known* rather than lost: slice 7's
+    /// reference-counted reaper is defined over exactly that row, and an orphan with no
+    /// row at all is invisible to it forever.
+    ///
+    /// `ON CONFLICT DO NOTHING` for the same reason it is there in `record`: an upload of
+    /// bytes some library already holds must not disturb the count on the row that
+    /// library's parts are keeping alive.
+    pub async fn record_unreferenced(&self, blob: &StoredBlobRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blake3) DO NOTHING",
+        )
+        .bind(blob.hash.to_hex())
+        .bind(blob.size_bytes as i64)
+        .bind(blob.stored_bytes as i64)
+        .bind(blob.zstd_level)
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
     /// Is this derivative reachable — does any part in any library that exists point at
     /// these bytes?
     ///

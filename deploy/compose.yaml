@@ -56,6 +56,12 @@ services:
       # where GET /api/blob/{blake3} reads a rung from, and a router with that route and
       # no root to read from would answer 500 for every part anyone opened.
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
+      # Names the second mount below, and required for the api role since uploads: a
+      # partial upload is assembled here and only enters the blob store once its bytes
+      # have been verified against the hash the browser claimed. Deliberately not a
+      # subdirectory of LAPIDARY_BLOB_ROOT — everything under that root is
+      # content-addressed and complete, and a half-transferred file is neither.
+      LAPIDARY_UPLOAD_DIR: /var/lib/lapidary-uploads
     depends_on:
       db:
         condition: service_healthy
@@ -71,12 +77,20 @@ services:
       # viewer), and those are read from, and cached into, this store.
       #
       # Read-write is deliberate and is not a hole in "the open path never touches a
-      # source file". That boundary is a type, not a mount flag: `lapidary-storage`
-      # exposes source bytes only through `SourceStore::open`, which demands a
-      # `WorkerRole` token, and `DerivativeStore` — all `lapidary-api` can construct —
-      # cannot reach them. A read-only mount would break the derivative cache writes the
-      # api legitimately needs while adding nothing that boundary does not already give.
+      # source file". That boundary is a type, not a mount flag: `SourceStore` — the
+      # handle that can read, write and reap any source blob — demands a `WorkerRole`
+      # token this crate cannot obtain, and the two narrow handles it can construct do
+      # exactly one thing each, in exactly one named route each, enforced by
+      # `cargo xtask check-deploy`. A read-only mount would break both the derivative
+      # cache writes and the upload commit the api legitimately needs, while adding
+      # nothing that boundary does not already give.
       - lapidary-blobs:/var/lib/lapidary:Z
+      # Partial uploads, and only the api's: the worker mounts nothing here and serves no
+      # upload route. Separate from the blob volume so a half-transferred file is never
+      # inside a store whose whole contract is that everything in it is complete, and so
+      # an operator reclaiming abandoned transfers is looking at a volume that holds
+      # nothing else.
+      - lapidary-uploads:/var/lib/lapidary-uploads:Z
 
   worker:
     # Resource ceiling. Lapidary must run on a modest workstation, not only on
@@ -173,3 +187,9 @@ volumes:
   # so a freshly created volume inherits that ownership instead of coming up root-owned
   # and unwritable to a container that does not run as root.
   lapidary-blobs:
+  # Chunks in flight. Named for the same reason the blob volume is — our data, not the
+  # user's files — and persistent on purpose: the staged file's length is what a resuming
+  # upload asks for, so a volume is what makes an api restart cost nothing instead of a
+  # re-transfer. Nothing sweeps it yet; slice 7 owns reclaiming disk, and a second reaper
+  # written now would be one to keep in step with the real one.
+  lapidary-uploads:

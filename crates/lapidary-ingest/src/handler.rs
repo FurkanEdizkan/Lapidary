@@ -71,13 +71,13 @@
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
 use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-use lapidary_core::{BlobHash, DerivativeKind, JobPayload, LibraryId, Outcome};
+use lapidary_core::{BlobHash, DerivativeKind, JobPayload, LibraryId, Outcome, source_format};
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgIngest, PgParts, PgPool, StoredBlobRow,
     TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
-use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
+use lapidary_storage::{Compression, DerivativeStore, SourceReader, SourceStore, WorkerRole};
 use std::path::{Path as FsPath, PathBuf};
 
 pub struct WorkerHandler {
@@ -112,13 +112,26 @@ impl JobHandler for WorkerHandler {
             // a scan finds belong in the batch the browser is already polling. See
             // `scan.rs`'s module doc.
             JobPayload::ScanDirectory => self.scan_directory(job.batch_id, job.library_id).await,
+            JobPayload::IngestBlob {
+                blake3,
+                source_path,
+            } => self.ingest_blob(job.library_id, blake3, &source_path).await,
         }
     }
 }
 
 impl WorkerHandler {
-    /// One file, start to finish. See this module's doc for the ordering, why each step
-    /// is where it is, and the full reasoning behind the library-and-name short-circuit.
+    /// One file on the ingest mount, start to finish. See this module's doc for the
+    /// ordering, why each step is where it is, and the full reasoning behind the
+    /// library-and-path short-circuit.
+    ///
+    /// Steps 1 and 2 only. Everything from the short-circuit onwards is [`index`], which
+    /// this shares with [`ingest_blob`] — the two differ in where the bytes come from and
+    /// in nothing else, and a second copy of the pipeline is a second place for the
+    /// reap rules to drift.
+    ///
+    /// [`index`]: Self::index
+    /// [`ingest_blob`]: Self::ingest_blob
     pub(crate) async fn ingest_one(
         &self,
         library: LibraryId,
@@ -129,20 +142,8 @@ impl WorkerHandler {
         // `../../etc/passwd` would escape the mount and `/etc/passwd` would replace it
         // outright. `DATA.md` §5.4 already states this rule for archive entries; it
         // belongs on every path that reaches a filesystem from a payload.
-        //
-        // The scan produces no such path, so today this guards a door nobody has opened.
-        // Upload opens it, and a guard added with the door is a guard nobody remembers to
-        // add.
         reject_escaping_path(source_path)?;
         let path = self.ingest_dir.join(source_path);
-        let kernel = MeshKernel;
-        let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
-        // First production use. No `WorkerRole` proof: derivatives are readable by both
-        // roles, which is what lets `lapidary-api` serve a rung without ever being able
-        // to name `SourceStore`.
-        let derivatives = DerivativeStore::open(&self.blob_root);
-        let blobs = PgBlobs(self.db.clone());
-        let ingest = PgIngest(self.db.clone());
 
         // 1. Read bytes. A missing file may mean the mount is not ready yet, so this is
         // Transient rather than Permanent -- unlike every step below it, this one has
@@ -153,6 +154,84 @@ impl WorkerHandler {
 
         // 2. BLAKE3 -- hash first, always. Everything below branches on this.
         let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+        self.index(library, source_path, bytes, hash).await
+    }
+
+    /// One blob already in the store, start to finish: the upload route's half of the
+    /// pipeline.
+    ///
+    /// The api wrote these bytes and verified them against the hash the client claimed
+    /// (`SourceWriter::put_file`), and inserted the `blob` row that keeps them from being
+    /// an invisible orphan while this job waits. So steps 1 and 2 are a read back out of
+    /// the store rather than off the mount, and nothing here re-decides the hash: it is
+    /// the row's primary key and the name of the file the bytes were read from.
+    ///
+    /// `SourceReader` rather than `SourceStore`, though this crate may construct either:
+    /// this arm never writes a source blob and never reaps one — the bytes were not its
+    /// to write — and the read-only handle is the one that says so. Its `zstd_level`
+    /// comes from the `blob` row for the reason its own doc gives, which matters more
+    /// here than anywhere: the api chose that level, in another process, possibly on
+    /// another build.
+    ///
+    /// See the slice 6a design, §4.1 and §4.2.
+    pub(crate) async fn ingest_blob(
+        &self,
+        library: LibraryId,
+        hash: BlobHash,
+        source_path: &str,
+    ) -> Result<Outcome, HandlerError> {
+        // Not a filesystem join here — the path never touches one — but it becomes
+        // `part.source_path`, and from there a `Content-Disposition` filename on the
+        // download route. Same refusal, different surface. See `path_escapes`.
+        reject_escaping_path(source_path)?;
+
+        // A blob row this job cannot find is Permanent: the row is written in the same
+        // request that wrote the bytes, so its absence is not a race that resolves, and
+        // the level needed to decode the file is only in that row.
+        let stored = PgBlobs(self.db.clone())
+            .blob(&hash)
+            .await
+            .map_err(classify_db)?
+            .ok_or_else(|| HandlerError::Permanent {
+                message: format!(
+                    "The uploaded bytes for {source_path} are no longer in the blob store. \
+                     The upload may have been rolled back after this job was queued; \
+                     upload the file again."
+                ),
+            })?;
+
+        let bytes = SourceReader::open(&self.blob_root)
+            .get(&hash, Some(stored.zstd_level))
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Could not read the uploaded bytes for {source_path}: {e}"),
+            })?;
+
+        self.index(library, source_path, bytes, hash).await
+    }
+
+    /// Steps 3 through 6: short-circuit, kernel, rungs, and the one transaction.
+    ///
+    /// Both byte sources land here with the same two facts — these bytes, and their hash
+    /// — and everything below depends on nothing else about where they came from. Step 5
+    /// still asks `blobs.exists(&hash)` rather than being told: for an upload the answer
+    /// is always yes, because the api inserted the row, and that is exactly the branch
+    /// that links without writing and reaps no source blob. The right behaviour arrived
+    /// at by the existing question rather than by a new flag.
+    async fn index(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        bytes: Vec<u8>,
+        hash: BlobHash,
+    ) -> Result<Outcome, HandlerError> {
+        let kernel = MeshKernel;
+        let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
+        // First production use. No `WorkerRole` proof: derivatives are readable by both
+        // roles, which is what lets `lapidary-api` serve a rung without ever being able
+        // to name `SourceStore`.
+        let derivatives = DerivativeStore::open(&self.blob_root);
+        let blobs = PgBlobs(self.db.clone());
+        let ingest = PgIngest(self.db.clone());
         let name = part_name(source_path);
 
         // 3. The same file, seen again -- same library, same name, same bytes --
@@ -368,16 +447,7 @@ pub(crate) fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
 /// Empty is refused too. It joins to `ingest_dir` itself, which reads as a directory and
 /// would fail later with a confusing I/O error instead of the real reason.
 fn reject_escaping_path(source_path: &str) -> Result<(), HandlerError> {
-    let path = FsPath::new(source_path);
-    let escapes = source_path.is_empty()
-        || path.is_absolute()
-        || path.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::ParentDir | std::path::Component::RootDir
-            )
-        });
-    if escapes {
+    if lapidary_core::path_escapes(source_path) {
         return Err(HandlerError::Permanent {
             message: format!(
                 "Refused the file path {source_path:?}: it points outside the ingest \
@@ -398,18 +468,6 @@ pub(crate) fn part_name(file_name: &str) -> &str {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or(file_name)
-}
-
-/// The source format, lowercase and without a dot, taken from the file name the scan
-/// selected. An extension the kernel has no parser for reaches `process` and comes back as
-/// a per-file `Permanent` failure naming the format -- the scan admits only `stl`, `obj`
-/// and `3mf`, so that path is reachable today only by enqueueing a job by hand.
-pub(crate) fn source_format(file_name: &str) -> String {
-    FsPath::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
 }
 
 /// A database error, sorted into "try again" and "never". Almost every `DbError` a

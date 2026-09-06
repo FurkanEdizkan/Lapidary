@@ -94,7 +94,7 @@ pub async fn original(
     Path(revision): Path<RevisionId>,
     query: Result<Query<DownloadQuery>, QueryRejection>,
 ) -> Response {
-    let AppState { db, blob_root } = state;
+    let AppState { db, blob_root, .. } = state;
     let source = match PgParts(db.clone()).source_for_download(revision).await {
         Ok(Some(source)) => source,
         Ok(None) => return no_such_revision(),

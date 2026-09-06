@@ -40,6 +40,11 @@ pub enum StorageError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error(
+        "These bytes do not match the hash they were uploaded under: expected {expected}, got {actual}. The transfer was corrupted, or the file changed while it was being sent. Upload it again."
+    )]
+    HashMismatch { expected: String, actual: String },
 }
 
 /// Proof the holder is running in the worker role. Zero-sized and unconstructible except
@@ -59,6 +64,7 @@ impl WorkerRole {
     }
 }
 
+#[derive(Debug)]
 pub struct StoredBlob {
     pub hash: BlobHash,
     pub size_bytes: u64,
@@ -121,18 +127,6 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         }
     }
 
-    // Write to a uniquely-named temp file in the *same* directory as the final path, then
-    // rename into place. A same-directory rename is atomic on POSIX filesystems — readers
-    // see either the old state (nothing, since this is a new blob) or the complete new
-    // file, never a partial write. A temp file in a different directory (e.g. the system
-    // temp dir) could sit on a different filesystem, where rename degrades to a copy and
-    // loses that guarantee.
-    let tmp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        hash.to_hex(),
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
     // Compressed straight into the temp file rather than into a `Vec` first. `encode_all`
     // allocated a second full copy of the file and held it alongside the caller's slice
     // for the whole write: on the 380 MB STL in the owner's corpus that is 380 MB plus
@@ -140,23 +134,77 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
     // uncompressed branch had the same shape for no reason at all — `bytes.to_vec()`
     // copied the slice only to hand it straight to `write`.
     //
-    // `stored_bytes` now comes from the file rather than from a buffer's length, which is
-    // the same number by a shorter route: it is what the blob actually occupies.
-    let write_result = (|| -> std::io::Result<u64> {
+    // `stored_bytes` comes from the file rather than from a buffer's length, which is the
+    // same number by a shorter route: it is what the blob actually occupies.
+    //
+    // Nothing to verify: the hash was computed from these exact bytes ten lines up.
+    let stored_bytes = stage_and_rename(
+        &path,
+        |file| {
+            if compress {
+                zstd::stream::copy_encode(bytes, file, INGEST_LEVEL)?;
+            } else {
+                std::io::Write::write_all(file, bytes)?;
+            }
+            Ok(hash)
+        },
+        None,
+    )?;
+
+    Ok(StoredBlob {
+        hash,
+        size_bytes: bytes.len() as u64,
+        stored_bytes,
+        zstd_level: if compress { INGEST_LEVEL as i16 } else { 0 },
+    })
+}
+
+/// Write into a uniquely-named temp file in the *same* directory as `path`, then rename
+/// it into place. Both blob writers go through here.
+///
+/// A same-directory rename is atomic on POSIX filesystems — a reader sees either the old
+/// state (nothing, since this is a new blob) or the complete new file, never a partial
+/// write. A temp file in a different directory, the system temp dir being the obvious
+/// mistake, could sit on a different filesystem, where rename degrades to a copy and
+/// loses that guarantee.
+///
+/// `fill` writes the bytes and returns the hash they actually had. `expect` is the hash a
+/// caller *promised* those bytes would have, checked here rather than by the caller
+/// because the check has to land between the write and the rename: verifying afterwards
+/// means a blob that failed verification was, for a moment, the blob at that path, and
+/// verifying beforehand means reading the source twice. A mismatch removes the temp file
+/// and stores nothing.
+///
+/// The temp file is named for the *destination* hash in both cases. For an unverified
+/// write that is the hash of the bytes; for a verified one it is the claim, which is the
+/// only path the bytes could ever land at, so a mismatch leaves no stray file anywhere
+/// else. `TMP_COUNTER` disambiguates two writers racing the same blob, so they collide
+/// only (harmlessly) on which rename wins.
+fn stage_and_rename(
+    path: &Path,
+    fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<BlobHash>,
+    expect: Option<&BlobHash>,
+) -> Result<u64, StorageError> {
+    let parent = path.parent().unwrap_or(path);
+    let tmp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("blob"),
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let written = (|| -> std::io::Result<(BlobHash, u64)> {
         let mut file = std::fs::File::create(&tmp_path)?;
-        if compress {
-            zstd::stream::copy_encode(bytes, &mut file, INGEST_LEVEL)?;
-        } else {
-            std::io::Write::write_all(&mut file, bytes)?;
-        }
+        let actual = fill(&mut file)?;
         // Before the rename, so a reader that observes the renamed path observes complete
         // bytes rather than whatever the page cache had flushed.
         file.sync_all()?;
-        file.metadata().map(|m| m.len())
+        let len = file.metadata()?.len();
+        Ok((actual, len))
     })();
 
-    let stored_bytes = match write_result {
-        Ok(len) => len,
+    let (actual, stored_bytes) = match written {
+        Ok(pair) => pair,
         Err(source) => {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(StorageError::Io {
@@ -166,20 +214,99 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         }
     };
 
-    if let Err(source) = std::fs::rename(&tmp_path, &path) {
+    if let Some(expected) = expect
+        && actual != *expected
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(StorageError::HashMismatch {
+            expected: expected.to_hex(),
+            actual: actual.to_hex(),
+        });
+    }
+
+    if let Err(source) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(StorageError::Io {
             path: path.display().to_string(),
             source,
         });
     }
+    Ok(stored_bytes)
+}
+
+/// A file on disk into the blob store, hashing, compressing and writing in one pass.
+///
+/// The caller has bytes it did not produce — an upload — so it names the hash it was
+/// promised and this refuses to store anything else. Reading the file to hash it and then
+/// reading it again to compress it would be two passes over as much as 2 GB for a check
+/// the single pass already makes.
+///
+/// `size_bytes` is the staged file's length, not a running count, because the two must
+/// agree and the filesystem is the authority on one of them.
+fn write_blob_from_file(
+    root: &Path,
+    staged: &Path,
+    expect: &BlobHash,
+    compress: bool,
+) -> Result<StoredBlob, StorageError> {
+    let path = blob_path(root, expect);
+    let parent = path.parent().unwrap_or(root);
+    std::fs::create_dir_all(parent).map_err(|source| StorageError::Io {
+        path: parent.display().to_string(),
+        source,
+    })?;
+
+    let size_bytes = std::fs::metadata(staged)
+        .map_err(|source| StorageError::Io {
+            path: staged.display().to_string(),
+            source,
+        })?
+        .len();
+
+    // Unlike `write_blob`, an existing blob at this path is *not* an early return: the
+    // claim has not been checked yet, and answering "already stored" to bytes that hash
+    // to something else would let a client register any path against any blob it can
+    // name. Content addressing is not authorization, and a claim is not a hash. The
+    // rename below is a no-op overwrite in that case, of identical bytes.
+    let stored_bytes = stage_and_rename(
+        &path,
+        |file| {
+            let source = std::fs::File::open(staged)?;
+            let mut reader = HashingReader {
+                inner: std::io::BufReader::new(source),
+                hasher: blake3::Hasher::new(),
+            };
+            if compress {
+                zstd::stream::copy_encode(&mut reader, file, INGEST_LEVEL)?;
+            } else {
+                std::io::copy(&mut reader, file)?;
+            }
+            Ok(BlobHash::from_bytes(*reader.hasher.finalize().as_bytes()))
+        },
+        Some(expect),
+    )?;
 
     Ok(StoredBlob {
-        hash,
-        size_bytes: bytes.len() as u64,
+        hash: *expect,
+        size_bytes,
         stored_bytes,
         zstd_level: if compress { INGEST_LEVEL as i16 } else { 0 },
     })
+}
+
+/// Hashes what passes through it. The point is that the bytes are hashed on their way
+/// into the compressor rather than on a separate pass over the same file.
+struct HashingReader<R> {
+    inner: R,
+    hasher: blake3::Hasher,
+}
+
+impl<R: std::io::Read> std::io::Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.hasher.update(&buf[..read]);
+        Ok(read)
+    }
 }
 
 /// Distinguish "no blob at this path" from every other I/O failure. Collapsing every
@@ -411,6 +538,54 @@ impl SourceReader {
     }
 }
 
+/// Source bytes, write-only: no `get`, no `remove`, and no `WorkerRole` to construct.
+///
+/// The mirror of [`SourceReader`], and it exists for the mirror reason. `lapidary-api`'s
+/// upload route holds bytes a user just handed it and has to put them somewhere; the
+/// worker's `/ingest` mount is read-only, and staging them on a volume the worker also
+/// mounts would buy a mount, a second root for `IngestFile` to join against, and the
+/// failure mode of the worker opening a file the api has not finished writing — all to
+/// move bytes the api is already sitting on. `deploy/compose.yaml` mounts the blob volume
+/// on `api` read-write today, deliberately, because the boundary is a type and not a
+/// mount flag.
+///
+/// Not `SourceStore`, for the reason `SourceReader` is not: gating this behind
+/// `WorkerRole` would hand the api `get` and `remove` on every source blob in the store in
+/// order to buy a single `put`. Read is the half worth spending a token on when the caller
+/// already holds the bytes in its own request body.
+///
+/// What keeps that from spreading, exactly as next door: `xtask/src/deploy.rs`'s
+/// `check_open_path_boundary` allows `lapidary-api` to name this type in `upload.rs` and
+/// nowhere else. See `docs/superpowers/specs/2026-09-06-phase-1-slice-6a-corpus-design.md`
+/// §4.1.
+pub struct SourceWriter {
+    root: PathBuf,
+}
+
+impl SourceWriter {
+    pub fn open(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// Store a staged file under the hash it was uploaded as, refusing it if the bytes
+    /// disagree.
+    ///
+    /// The verification is not the caller's to skip: the hash is the dedup key for the
+    /// whole store, so a wrong one accepted here silently attaches one library's part to
+    /// another library's bytes. `DATA.md` §5.2 states it as a rule and this is where the
+    /// rule is enforced, in one pass over the file rather than two.
+    pub fn put_file(
+        &self,
+        staged: &Path,
+        expect: &BlobHash,
+        compression: Compression,
+    ) -> Result<StoredBlob, StorageError> {
+        write_blob_from_file(&self.root, staged, expect, compression.compresses())
+    }
+}
+
 /// A missing file is success: the reap's job is that the bytes are not on disk
 /// afterwards, and a `put` that failed before its rename leaves nothing to remove.
 fn remove_blob(root: &Path, hash: &BlobHash) -> Result<(), StorageError> {
@@ -433,6 +608,101 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = SourceStore::open(dir.path(), &WorkerRole::assume());
         (dir, store)
+    }
+
+    /// A staged file, as the upload route produces one.
+    fn staged(dir: &tempfile::TempDir, bytes: &[u8]) -> PathBuf {
+        let path = dir.path().join("staged.part");
+        std::fs::write(&path, bytes).expect("staged file writes");
+        path
+    }
+
+    #[test]
+    fn a_staged_file_stores_under_the_hash_it_claims_and_reads_back() {
+        let (dir, _s) = store();
+        let bytes = b"solid bracket-lp-1042-03\nendsolid bracket-lp-1042-03\n";
+        let path = staged(&dir, bytes);
+        let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+
+        let writer = SourceWriter::open(dir.path());
+        let stored = writer
+            .put_file(&path, &hash, Compression::Zstd)
+            .expect("a truthful claim stores");
+        assert_eq!(stored.hash, hash);
+        assert_eq!(stored.size_bytes, bytes.len() as u64);
+
+        // The reader is the worker's half: same root, same hash, the level off the
+        // returned row rather than re-derived from a file extension.
+        let read = SourceReader::open(dir.path())
+            .get(&hash, Some(stored.zstd_level))
+            .expect("the blob reads back");
+        assert_eq!(
+            read, bytes,
+            "the bytes must survive the compression round trip"
+        );
+    }
+
+    #[test]
+    fn a_staged_file_that_does_not_match_its_claim_stores_nothing() {
+        let (dir, _s) = store();
+        let path = staged(&dir, b"these are not the bytes that were promised");
+        // A hash of something else entirely — the shape of a corrupted transfer, and the
+        // shape of a client trying to attach its own path to another library's blob.
+        let claimed = BlobHash::from_bytes(*blake3::hash(b"the promised bytes").as_bytes());
+
+        let err = SourceWriter::open(dir.path())
+            .put_file(&path, &claimed, Compression::Zstd)
+            .expect_err("a false claim is refused");
+        assert!(
+            matches!(err, StorageError::HashMismatch { .. }),
+            "expected a hash mismatch, got: {err}"
+        );
+
+        // The point of the refusal: nothing was stored under the claimed hash, and no
+        // temp file was left beside it. A blob that failed verification must never have
+        // existed at that path even briefly.
+        assert!(
+            SourceReader::open(dir.path())
+                .get(&claimed, Some(3))
+                .is_err(),
+            "the claimed hash must name nothing"
+        );
+        let shard = dir.path().join("blobs").join(&claimed.to_hex()[0..2]);
+        let leftovers: Vec<_> = std::fs::read_dir(&shard)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|shard| std::fs::read_dir(shard.path()))
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a refused write must leave no temp file behind, found: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn an_uncompressed_staged_file_stores_verbatim() {
+        // 3MF is already a deflate ZIP, so `Compression::AsIs` is the branch a real
+        // upload of one takes -- and it is a different code path through `put_file`.
+        let (dir, _s) = store();
+        let bytes = b"PK\x03\x04 not really a 3mf, but the branch is the point";
+        let path = staged(&dir, bytes);
+        let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+
+        let stored = SourceWriter::open(dir.path())
+            .put_file(&path, &hash, Compression::AsIs)
+            .expect("stores");
+        assert_eq!(stored.zstd_level, 0);
+        assert_eq!(stored.stored_bytes, bytes.len() as u64);
+        assert_eq!(
+            SourceReader::open(dir.path())
+                .get(&hash, None)
+                .expect("reads back"),
+            bytes
+        );
     }
 
     #[test]

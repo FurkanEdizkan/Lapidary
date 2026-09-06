@@ -9,12 +9,14 @@ mod health;
 mod jobs;
 mod parts;
 mod scan;
+mod upload;
 
 pub use error::ApiError;
 pub use parts::{LibraryStorage, PartCard, PartsPage};
+pub use upload::{ChunkAccepted, UploadFile, UploadManifest, UploadPlan};
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use lapidary_db::PgPool;
 
 #[derive(Clone)]
@@ -29,6 +31,14 @@ pub struct AppState {
     /// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2), so `cargo xtask check-deploy`
     /// is what holds that line, by rejecting any other file that names it.
     pub blob_root: std::path::PathBuf,
+    /// Where a partial upload is assembled before it is verified and moved into the blob
+    /// store. Never the blob root: everything under that root is content-addressed and
+    /// complete, and a half-transferred file is neither.
+    ///
+    /// The `api` role's alone — the worker mounts nothing here and never reads it. See
+    /// `upload.rs`'s module doc for why the staged file, and not a session table, is the
+    /// upload's state.
+    pub upload_dir: std::path::PathBuf,
 }
 
 /// Which process this is. `api` serves the open path and must never link the CAD kernel:
@@ -101,6 +111,17 @@ pub fn router(state: AppState, role: Role) -> Router {
             // route the api serves. It enqueues a `scan_directory` job and walks
             // nothing — see `scan.rs`.
             .route("/api/libraries/{id}/scan", post(scan::scan))
+            // Upload, in three. `Role::Api` for the same reason the scan trigger above
+            // is — nothing proxies a browser to the worker — and additionally because
+            // this is the process that mounts the blob volume read-write. See
+            // `upload.rs`.
+            .route("/api/libraries/{id}/uploads/probe", post(upload::probe))
+            .route("/api/libraries/{id}/uploads/commit", post(upload::commit))
+            // Below `probe` and `commit` so those two literal segments win over the
+            // `{blake3}` capture. axum's router prefers a static segment over a dynamic
+            // one regardless of order, but reading them in this order should not require
+            // knowing that.
+            .route("/api/libraries/{id}/uploads/{blake3}", put(upload::chunk))
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(
                 "/api/libraries/{id}/thumbnails",

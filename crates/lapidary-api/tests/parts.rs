@@ -83,6 +83,7 @@ async fn get_page(
         AppState {
             db: pool,
             blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         Role::Api,
     );
@@ -418,6 +419,7 @@ async fn get_storage(
         AppState {
             db: pool,
             blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         },
         role,
     );
