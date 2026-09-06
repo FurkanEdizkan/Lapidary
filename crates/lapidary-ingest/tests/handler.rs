@@ -1529,7 +1529,7 @@ async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: P
         match handler.handle(&job_for(escape)).await {
             Err(HandlerError::Permanent { message }) => {
                 assert!(
-                    message.contains("outside the ingest directory"),
+                    message.contains("outside the directory it belongs to"),
                     "the message must say what was wrong with {escape:?}: {message}"
                 );
             }

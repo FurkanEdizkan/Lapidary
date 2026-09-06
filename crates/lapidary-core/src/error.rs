@@ -32,4 +32,10 @@ pub enum CoreError {
         "\"{kind}\" is not a job kind this build knows. A newer Lapidary may have written it; check that every worker and api container is running the same version."
     )]
     UnknownJobKind { kind: String },
+
+    #[error(
+        "Refused the path {got:?}: it points outside the directory it belongs to. Paths \
+         stored by Lapidary are relative and may not contain `..` or start at the root."
+    )]
+    PathEscapes { got: String },
 }

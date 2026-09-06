@@ -7,6 +7,7 @@ mod ids;
 mod job;
 mod measurement;
 mod part;
+pub mod slug;
 
 pub use approximate::Approximate;
 pub use derivative::DerivativeKind;

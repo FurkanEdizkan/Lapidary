@@ -127,13 +127,21 @@ impl WorkerHandler {
         // The payload is a path relative to `ingest_dir`, and since slice 6a it may have
         // more than one segment. `Path::join` resolves nothing and refuses nothing, so
         // `../../etc/passwd` would escape the mount and `/etc/passwd` would replace it
-        // outright. `DATA.md` §5.4 already states this rule for archive entries; it
-        // belongs on every path that reaches a filesystem from a payload.
+        // outright. `lapidary_core::slug::reject_escaping_path` is the shared guard for
+        // this rule — see its own doc for why.
         //
         // The scan produces no such path, so today this guards a door nobody has opened.
         // Upload opens it, and a guard added with the door is a guard nobody remembers to
         // add.
-        reject_escaping_path(source_path)?;
+        //
+        // `Permanent`, not `Transient`: a payload holds the same bytes on every attempt,
+        // so three retries of a traversal would produce three identical refusals and only
+        // delay an answer already available.
+        lapidary_core::slug::reject_escaping_path(source_path).map_err(|e| {
+            HandlerError::Permanent {
+                message: e.to_string(),
+            }
+        })?;
         let path = self.ingest_dir.join(source_path);
         let kernel = MeshKernel;
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
@@ -352,41 +360,6 @@ pub(crate) fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
             );
         }
     }
-}
-
-/// Refuse a relative path that would leave `ingest_dir`.
-///
-/// Absolute paths and `..` segments both escape a `Path::join`, which resolves nothing and
-/// refuses nothing: `ingest_dir.join("/etc/passwd")` *is* `/etc/passwd`, and
-/// `ingest_dir.join("../../etc/passwd")` walks out of the mount. A Windows-style prefix
-/// (`C:\`, `\\server\share`) is caught by the same `is_absolute` check on Windows and is
-/// harmless as a literal filename elsewhere.
-///
-/// `Permanent`, because a payload holds the same bytes on every attempt: three retries of
-/// a traversal produce three identical refusals and delay an answer already available.
-///
-/// Empty is refused too. It joins to `ingest_dir` itself, which reads as a directory and
-/// would fail later with a confusing I/O error instead of the real reason.
-fn reject_escaping_path(source_path: &str) -> Result<(), HandlerError> {
-    let path = FsPath::new(source_path);
-    let escapes = source_path.is_empty()
-        || path.is_absolute()
-        || path.components().any(|c| {
-            matches!(
-                c,
-                std::path::Component::ParentDir | std::path::Component::RootDir
-            )
-        });
-    if escapes {
-        return Err(HandlerError::Permanent {
-            message: format!(
-                "Refused the file path {source_path:?}: it points outside the ingest \
-                 directory. Paths are relative to the ingest mount and may not be \
-                 absolute or contain `..`."
-            ),
-        });
-    }
-    Ok(())
 }
 
 /// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
