@@ -109,7 +109,9 @@ impl WorkerHandler {
                         "could not move a blob into its model directory; its bytes are \
                          still readable where they were"
                     );
-                    refused.get_or_insert(error);
+                    if displaces(refused.as_ref(), &error) {
+                        refused = Some(error);
+                    }
                 }
             }
         }
@@ -416,6 +418,23 @@ impl WorkerHandler {
     }
 }
 
+/// Whether `next` should replace the refusal this run is already holding.
+///
+/// The first refusal stands, except that a permanent one displaces a transient one. It
+/// matters only when a run makes no progress at all, because then the refusal it returns is
+/// what decides whether the queue retries — and three backoffs spent rediscovering a corrupt
+/// blob is exactly the delay `classify_db` already refuses to introduce for a guard refusal.
+fn displaces(refused: Option<&HandlerError>, next: &HandlerError) -> bool {
+    matches!(
+        (refused, next),
+        (None, _)
+            | (
+                Some(HandlerError::Transient { .. }),
+                HandlerError::Permanent { .. }
+            )
+    )
+}
+
 /// Remove a model directory this job wrote for a move that then failed before anything was
 /// committed. `handler::reap_source`'s rule, plus the manifest, because a directory that
 /// still holds one cannot be removed and a retry would then disambiguate around it.
@@ -465,5 +484,46 @@ fn manifest_for(row: &PendingSource, file_name: &str) -> ModelManifest {
                 file_name: file_name.to_owned(),
             }],
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transient() -> HandlerError {
+        HandlerError::Transient {
+            message: "the volume went away".to_owned(),
+        }
+    }
+
+    fn permanent() -> HandlerError {
+        HandlerError::Permanent {
+            message: "the blob does not match its hash".to_owned(),
+        }
+    }
+
+    /// A run where several hashes refuse reports one of them, and which one decides whether
+    /// the queue spends three backoffs rediscovering an answer it already had.
+    #[test]
+    fn a_permanent_refusal_displaces_a_transient_one_but_not_the_other_way() {
+        assert!(
+            displaces(None, &transient()),
+            "the first refusal always stands"
+        );
+        assert!(displaces(None, &permanent()));
+        assert!(
+            displaces(Some(&transient()), &permanent()),
+            "a refusal that will never succeed must not wait behind one that might"
+        );
+        assert!(
+            !displaces(Some(&permanent()), &transient()),
+            "and must not then be displaced back"
+        );
+        assert!(
+            !displaces(Some(&transient()), &transient()),
+            "otherwise the reported refusal changes for no reason between two equal ones"
+        );
+        assert!(!displaces(Some(&permanent()), &permanent()));
     }
 }

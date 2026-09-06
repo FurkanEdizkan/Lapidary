@@ -113,7 +113,11 @@ impl PgStorageMigration {
     /// content-addressed store, and every un-migrated `file` row that names one of them.
     ///
     /// Ordered by hash and then by file id, so the caller can group consecutive rows without
-    /// a map, and so two runs over the same store see the same order.
+    /// a map, and so two runs over the same store see the same order. The sort is on the hex
+    /// TEXT while the caller compares parsed `BlobHash`es, and that is sound under any
+    /// collation for the only reason it needs to be: equal strings sort adjacently. If it
+    /// ever stopped being true, one hash would settle as two groups and the second would read
+    /// the old copy at the level the first had already dropped to 0.
     pub async fn pending_sources(
         &self,
         library: LibraryId,
