@@ -539,13 +539,24 @@ mod tests {
         assert_eq!(scan.status(), StatusCode::ACCEPTED);
     }
 
-    // The other half of the same regression this fix round is closing: the api role's
-    // router (no merge at all) must still never serve /scan. lapidary-api's own test
-    // suite already proves this crate has no route reaching ingest under any role; this
-    // pins it at the composition site in this file too, where a future edit could
-    // accidentally merge lapidary-ingest's router into the Api arm as well.
+    // The other half of the same regression: `lapidary-ingest`'s router must never be
+    // merged into the Api arm, where it would drag the kernel into the api image.
+    //
+    // Until slice 5 that was pinned by asserting the api role 404s on /scan at all.
+    // `0a9f32d` gave `lapidary-api` its own scan route — an enqueue that walks nothing —
+    // so a 404 there no longer means what it meant, and this test asserted the old
+    // behaviour for three commits while the suite was reported green.
+    //
+    // The two handlers are still told apart, by the one place they differ: for a library
+    // id that names nothing, `lapidary_api::scan` probes first and answers a clean 404,
+    // while `lapidary_ingest::scan` enqueues blind, trips `job.library_id`'s foreign key
+    // and answers 500 through `enqueue_failed`. So a bogus id is the discriminator, and
+    // the seeded id proves the api's own route is mounted at all.
+    //
+    // The 500 is not a guess: removing the probe from `lapidary_api::scan` was run as the
+    // mutation for this test, and the assertion below failed with 500 against 404.
     #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-    async fn the_api_role_router_does_not_serve_scan(pool: sqlx::PgPool) {
+    async fn the_api_role_router_serves_its_own_scan_and_not_ingests(pool: sqlx::PgPool) {
         let app = router(
             AppState {
                 db: pool,
@@ -554,7 +565,10 @@ mod tests {
             },
             Role::Api,
         );
-        let response = app
+
+        // Mounted: the browser's scan button has a route to reach.
+        let seeded = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -564,6 +578,20 @@ mod tests {
             )
             .await
             .expect("responds");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(seeded.status(), StatusCode::ACCEPTED);
+
+        // And it is *this crate's* handler. `lapidary_ingest::scan` would answer 202
+        // here, because it never asks whether the library exists.
+        let absent = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/libraries/01931b6e-0000-7000-8000-00000000dead/scan")
+                    .body(Body::empty())
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(absent.status(), StatusCode::NOT_FOUND);
     }
 }
