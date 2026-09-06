@@ -266,8 +266,12 @@ export const strings = {
    */
   storage: {
     /**
-     * Both totals are bytes on disk after compression, deduplicated — bytes two parts
-     * share are counted once, because that is what the volume holds.
+     * Both totals are bytes on disk, and the two halves are counted differently because
+     * the store holds them differently: one source file per part, counted per part, since
+     * a browsable store keeps a copy inside each model's own folder; derivatives
+     * deduplicated, because those are still content-addressed and genuinely shared.
+     * `PgParts::storage_totals` is where that accounting is written down, including what
+     * it leaves out.
      */
     totals: (source: number, derivative: number, ratio: number | null) =>
       // `typeof`, not `=== null`: the response is cast rather than validated, so a field

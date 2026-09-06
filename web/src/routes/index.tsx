@@ -457,10 +457,10 @@ function PageExtent({ page }: { page: PartsPage }) {
  * What the whole library occupies, under the page that shows part of it.
  *
  * Rendered only where the grid has cards: a line of zeroes over an empty library says
- * nothing the empty state has not already said better. Both totals are bytes on disk
- * after compression and deduplicated — `PgParts::storage_totals` is where that
- * accounting is written down — and the ratio arrives computed rather than divided here,
- * so a second reader cannot report the same library the other way up.
+ * nothing the empty state has not already said better. Both totals are bytes on disk —
+ * source files counted one per part, derivatives deduplicated, and `PgParts::storage_totals`
+ * is where that accounting is written down — and the ratio arrives computed rather than
+ * divided here, so a second reader cannot report the same library the other way up.
  */
 function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError: boolean }) {
   if (isError) {

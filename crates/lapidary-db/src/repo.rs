@@ -73,6 +73,30 @@ pub struct DownloadSource {
 /// What one library occupies, by storage class. Bytes on disk, not ingested sizes — see
 /// [`PgParts::storage_totals`], which is the only thing that builds one.
 ///
+/// Exactly what is counted, because the two halves are counted differently and a reader
+/// comparing this panel to `du` needs to know which difference they are looking at:
+///
+/// - **`source_bytes`** — one file per part, at the size that file occupies. Source bytes
+///   are path-addressed and uncompressed since the store became a folder tree, so two
+///   parts holding identical bytes are two files and are counted twice. Deduplication of
+///   source bytes is gone by design (spec §0), and a total that still deduplicated them
+///   would under-report a duplicated library by the duplication factor.
+/// - **`derivative_bytes`** — rungs on disk, deduplicated, plus inline thumbnails from
+///   Postgres. Derivatives are still content-addressed and genuinely shared, so bytes two
+///   revisions point at are counted once, which is what `du` would report for them.
+///
+/// **Not counted: `metadata.json`.** This is a total of the files a library's *models* are
+/// made of, not of every byte in its directory tree. Each manifest is on the order of a
+/// kilobyte against a model's megabytes — 1,614 of them on the owner's measured corpus is
+/// under 0.01% of it — and counting them would mean recording each manifest's length in a
+/// column written for the purpose, for a figure nobody would see move. Named here rather
+/// than left silent, because the gap is real and someone will eventually run `du`.
+///
+/// One caveat with an end date: a `file` row whose `storage_path` is still NULL has bytes
+/// at the old content-addressed path, possibly compressed, and is counted at its
+/// uncompressed size. Those rows over-report until the `migrate_storage` job drains them,
+/// and the job's completion is what closes it.
+///
 /// No ratio here: it is one division over these two numbers, and a third field carrying
 /// it would be a second place for the same fact to be computed differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -844,12 +868,24 @@ impl PgParts {
     /// bytes for an id that names nothing — the same distinction
     /// [`PgParts::auto_thumbnail`] draws, and for the same reason.
     ///
-    /// Both blob totals are `stored_bytes`, never `size_bytes`: the question is what is
-    /// on the volume, and spec §4 wants a figure Phase D's tiering work can be judged
-    /// against. They are summed over `blob` rows selected by `IN (subquery)`, so a blob
-    /// two parts share is counted once — which is what `ref_count` exists for and what
-    /// `du` would report. Summing over `file` rows instead would count identical STLs
-    /// twice and inflate a deduplicated library.
+    /// The two halves are summed differently, and the asymmetry is the whole accounting.
+    /// See [`StorageTotals`] for what each figure includes.
+    ///
+    /// **Derivatives** are summed over `blob` rows selected by `IN (subquery)`, so bytes
+    /// two revisions share are counted once — what `ref_count` exists for and what `du`
+    /// would report. `stored_bytes`, never `size_bytes`: the question is what is on the
+    /// volume, and spec §4 wants a figure Phase D's tiering work can be judged against.
+    ///
+    /// **Sources** are summed over `file` rows, at `size_bytes`, and that inversion is
+    /// deliberate. It was the derivative shape until the store became a folder tree, and
+    /// it under-reported the moment it stopped being true that one `blob` row meant one
+    /// file on disk: three parts sharing a hash are three files now (spec §0 —
+    /// deduplication of source bytes is gone by design), and the blob-shaped sum reported
+    /// one of them. A review measured 5,005 B against 7,173 B actually on disk on a
+    /// four-part corpus, and the gap widens with duplication. `size_bytes` rather than
+    /// `stored_bytes` because a source file is written uncompressed, so the ingested size
+    /// *is* the size on disk; a row still awaiting `migrate_storage` is the documented
+    /// exception, and it over-reports rather than hiding bytes.
     ///
     /// Inline thumbnails are added to the derivative total from `octet_length`, because
     /// they are derivative bytes this library costs whatever holds them — `DATA.md` §1.5
@@ -879,11 +915,10 @@ impl PgParts {
         // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
         // i64 — hence the `::bigint` casts, not decoration.
         let row: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
-             WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
+            "SELECT (SELECT coalesce(sum(f.size_bytes), 0)::bigint FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
              WHERE p.library_id = l.id AND p.deleted_at IS NULL \
-             AND f.role = 'source')), \
+             AND f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
@@ -901,7 +936,7 @@ impl PgParts {
             return Ok(None);
         };
         Ok(Some(StorageTotals {
-            source_bytes: bytes_column("blob.stored_bytes", source)?,
+            source_bytes: bytes_column("file.size_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
         }))
     }

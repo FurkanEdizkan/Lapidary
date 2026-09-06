@@ -2062,10 +2062,81 @@ async fn a_source_hash_that_is_not_a_digest_is_reported_with_what_to_do(pool: sq
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(pool: sqlx::PgPool) {
+async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx::PgPool) {
+    // The regression this pins is an under-report, which is the direction that looks fine:
+    // the panel reads a plausible number and the volume fills up anyway. Source bytes stop
+    // being deduplicated the moment ingest writes one file per model (spec §0), so a total
+    // summed over `blob` rows reports one copy of bytes that are on disk twice.
+    //
+    // Shaped exactly as ingest writes them today, unlike the fixture below it: each part
+    // carries its own `storage_path`, and the blob is uncompressed, so `size_bytes` is
+    // what the file occupies.
+    let shared = StoredBlobRow {
+        hash: BlobHash::from_bytes([0xe4; 32]),
+        size_bytes: 204_800,
+        stored_bytes: 204_800,
+        zstd_level: 0,
+    };
+    let ingest = PgIngest(pool.clone());
+    ingest
+        .record(IngestRequest {
+            folder: None,
+            storage_path: Some("libraries/default/Terrain/cliff/cliff.stl"),
+            library: library(),
+            name: "cliff",
+            source_path: "Terrain/cliff.stl",
+            blob: &shared,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("records the first part");
+    ingest
+        .link_existing(IngestRequest {
+            folder: None,
+            storage_path: Some("libraries/default/Bases/cliff/cliff.stl"),
+            library: library(),
+            name: "cliff",
+            source_path: "Bases/cliff.stl",
+            blob: &shared,
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("the same bytes under a second part, in its own directory");
+
+    let totals = PgParts(pool.clone())
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("the seeded library exists");
+    assert_eq!(
+        totals.source_bytes,
+        204_800 * 2,
+        "two files on disk, two files in the total — the blob-shaped sum this replaced \
+         reported 204,800 for a library holding 409,600, and the gap widens with every \
+         duplicate a corpus carries"
+    );
+    assert_eq!(
+        totals.derivative_bytes, 0,
+        "no rungs and no previews in this fixture: the source half is what is under test"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at_all(
+    pool: sqlx::PgPool,
+) {
     // Three things this fixture is built to catch, and no single-part library shows any
-    // of them: bytes two parts share counted twice, inline previews left out of the
-    // derivative total entirely, and another library's bytes swept into this one's.
+    // of them: derivative bytes two parts share counted twice, inline previews left out
+    // of the derivative total entirely, and another library's bytes swept into this
+    // one's.
     let shared = StoredBlobRow {
         hash: BlobHash::from_bytes([0xd1; 32]),
         size_bytes: 204_800,
@@ -2091,7 +2162,8 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .await
         .expect("records the first part");
     // The same bytes under a second part — a duplicate STL scanned from another folder,
-    // which is the ordinary case `link_existing` exists for. One file on disk.
+    // which is the ordinary case `link_existing` exists for. Two files on disk since the
+    // store became a folder tree: one blob ROW, two model directories.
     ingest
         .link_existing(IngestRequest {
             folder: None,
@@ -2133,9 +2205,10 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .expect("totals")
         .expect("the seeded library exists");
     assert_eq!(
-        totals.source_bytes, 91_204,
-        "one blob, two parts: the bytes are on disk once, and summing `file` rows \
-         instead of `blob` rows would report 182,408 for a library holding 91,204"
+        totals.source_bytes,
+        204_800 * 2,
+        "one blob row, two parts, two files: source bytes are path-addressed now, so the \
+         old blob-shaped sum would report one part's worth for a library holding two"
     );
     let inline = i64::try_from("webp-bracket".len() + "webp-spare".len()).expect("fits");
     assert_eq!(
@@ -2158,7 +2231,9 @@ async fn the_library_total_counts_shared_bytes_once_and_inline_previews_at_all(p
         .await
         .expect("totals")
         .expect("the second library exists");
-    assert_eq!(theirs.source_bytes, blob_row(0xd9).stored_bytes);
+    // `size_bytes`, not `stored_bytes`: their one part is one file on disk, at the size
+    // the file occupies.
+    assert_eq!(theirs.source_bytes, blob_row(0xd9).size_bytes);
     assert_eq!(
         theirs.derivative_bytes,
         u64::try_from("webp-impeller".len()).expect("fits")
@@ -2220,8 +2295,8 @@ async fn a_file_row_of_another_role_is_not_part_of_the_source_total(pool: sqlx::
     );
     assert_eq!(
         after.source_bytes,
-        blob_row(0xf1).stored_bytes,
-        "and it is still the source blob's bytes, not zero and not the sum of both"
+        blob_row(0xf1).size_bytes,
+        "and it is still the source file's bytes, not zero and not the sum of both"
     );
 }
 

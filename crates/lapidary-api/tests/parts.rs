@@ -451,12 +451,13 @@ async fn seed_sized_part(
     format: &str,
     blob: StoredBlobRow,
     thumbnail_webp: &[u8],
+    storage_path: &str,
 ) {
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
             folder: None,
-            storage_path: None,
+            storage_path: Some(storage_path),
             library: library(),
             name,
             source_path: name,
@@ -473,9 +474,11 @@ async fn seed_sized_part(
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: sqlx::PgPool) {
-    // A compressed STL and an `AsIs` 3MF, so the source total is a sum of two different
-    // stored sizes rather than a doubled one — a route reporting `size_bytes` would read
-    // 266,094 here instead of 152,498.
+    // Two parts of visibly different sizes, so the source total is a sum rather than a
+    // doubled one — a route reading one part's bytes twice, or reporting only the larger,
+    // could not produce 266,094. Both are shaped as ingest writes them since the store
+    // became a folder tree: one file per part at its own path, uncompressed, so
+    // `size_bytes` is what the file occupies.
     seed_sized_part(
         &pool,
         0xe1,
@@ -484,10 +487,11 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
         StoredBlobRow {
             hash: BlobHash::from_bytes([0xe1; 32]),
             size_bytes: 204_800,
-            stored_bytes: 91_204,
-            zstd_level: 3,
+            stored_bytes: 204_800,
+            zstd_level: 0,
         },
         b"webp-bracket",
+        "libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl",
     )
     .await;
     seed_sized_part(
@@ -502,6 +506,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
             zstd_level: 0,
         },
         b"webp-impeller",
+        "libraries/default/impeller-lp-5501-02/impeller-lp-5501-02.3mf",
     )
     .await;
 
@@ -509,7 +514,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     assert_eq!(status, StatusCode::OK);
     let source = json["sourceBytes"].as_u64().expect("a JSON number");
     let derivative = json["derivativeBytes"].as_u64().expect("a JSON number");
-    assert_eq!(source, 91_204 + 61_294);
+    assert_eq!(source, 204_800 + 61_294);
     assert_eq!(
         derivative,
         ("webp-bracket".len() + "webp-impeller".len()) as u64,
@@ -527,7 +532,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     );
     assert!(
         ratio < 1.0,
-        "two previews against 149 KB of sources is a small fraction; a ratio above 1 \
+        "two previews against 260 KB of sources is a small fraction; a ratio above 1 \
          here would mean the division is inverted: {ratio}"
     );
 }

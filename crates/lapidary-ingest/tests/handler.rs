@@ -324,6 +324,54 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         .await
         .expect("counts");
     assert_eq!(parts, 1, "the race must not produce two parts");
+
+    // The half this test did not check until a review restored the bug and watched it stay
+    // green: the LOSER must not reap. Both workers write the same `storage_path`, so the
+    // file the winner's committed row points at is the file the loser just wrote -- reaping
+    // it on the way to `Skipped` deletes a part that ingested perfectly well, and every
+    // assertion above still passes while it happens. The outcome and the row count cannot
+    // see it, so this crosses to the filesystem and re-hashes the bytes.
+    let (storage_path, blake3): (Option<String>, String) =
+        sqlx::query_as("SELECT storage_path, blake3 FROM file WHERE role = 'source'")
+            .fetch_one(&pool)
+            .await
+            .expect("the winner's file row");
+    let storage_path = storage_path.expect("the winner recorded where its bytes went");
+    let on_disk = std::fs::read(blob_root.path().join(&storage_path))
+        .unwrap_or_else(|e| panic!("the winner's bytes must still be at {storage_path}: {e}"));
+    assert_eq!(
+        BlobHash::from_bytes(*blake3::hash(&on_disk).as_bytes()).to_hex(),
+        blake3,
+        "the bytes on disk must still be the bytes the winning row recorded"
+    );
+
+    // The rungs are where the loser's reap bites deterministically. Both workers meshed
+    // the same file, so both produced the same rung bytes and both saw `blobs.exists`
+    // answer false for them -- the loser therefore holds every one of the winner's rungs
+    // in its own reapable list. Reaping them on the way to `Skipped` leaves the winner's
+    // `derivative` rows pointing at bytes that are no longer there, and every assertion
+    // above this one still passes while it happens.
+    let rungs: Vec<String> =
+        sqlx::query_scalar("SELECT blake3 FROM derivative WHERE blake3 IS NOT NULL")
+            .fetch_all(&pool)
+            .await
+            .expect("the winner's hash-addressed derivatives");
+    // Verified by restoring the bug: with the guard flipped to an unconditional reap this
+    // goes red on the runs where the two handlers genuinely overlap, and stays green on
+    // the runs where the scheduler serialises them -- in which case the second job
+    // short-circuits at `library_holds` and never writes anything to reap. It is never
+    // falsely red, and forcing the overlap would mean a test hook in the pipeline.
+    assert!(!rungs.is_empty(), "the ingest wrote at least one rung");
+    for hash in rungs {
+        let path = blob_root
+            .path()
+            .join(format!("blobs/{}/{}/{hash}", &hash[0..2], &hash[2..4]));
+        assert!(
+            path.exists(),
+            "a derivative row points at {hash}, which is not on disk: the losing worker \
+             reaped bytes the winning row still serves"
+        );
+    }
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
