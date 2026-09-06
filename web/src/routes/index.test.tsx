@@ -157,6 +157,7 @@ const MOTOR_MOUNT: PartCard = {
   sourceBytes: 624_384,
   storedBytes: 197_012,
   compressed: true,
+  directory: 'libraries/default/Motors/NEMA 17 motor mount, 42 mm face',
   createdAt: '2026-08-14T09:12:44Z',
   updatedAt: '2026-08-14T09:12:44Z',
 }
@@ -174,6 +175,7 @@ const HEX_NUT: PartCard = {
   sourceBytes: 99_284,
   storedBytes: 26_741,
   compressed: true,
+  directory: 'libraries/default/Fasteners/Hex nut M8, DIN 934',
   createdAt: '2026-08-14T09:12:51Z',
   updatedAt: '2026-08-14T09:12:51Z',
 }
@@ -198,6 +200,7 @@ const SHAFT_COUPLER: PartCard = {
   sourceBytes: 148_930,
   storedBytes: 148_930,
   compressed: false,
+  directory: 'libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm',
   createdAt: '2026-08-14T09:13:02Z',
   updatedAt: '2026-08-14T09:13:02Z',
 }
@@ -1426,13 +1429,16 @@ const ROCKS: FolderNode = {
 }
 
 /**
- * A card as it arrives once a model has its own directory. Typed as an intersection
- * because `PartCard` does not carry `directory` yet — the API lane adds the field and
- * ts-rs regenerates the binding at merge, and until then the page reads it off the wire
- * defensively, which is what these two fixtures exercise.
+ * A card as it arrives once a model has its own directory. The intersection narrows
+ * `PartCard.directory` from `string | null` to the one case each fixture is for, so the
+ * assertions below can name `CLIFF_FACE.directory` directly instead of re-narrowing a
+ * value the fixture already fixed.
  *
- * The path is the server's, verbatim. It is never rebuilt here from category names: the
- * server disambiguates colliding directory names and a client cannot know when it did.
+ * The path is the server's, verbatim, and store-relative — it names a place inside the
+ * storage volume, not a path on the reader's machine, because the api serving it is in a
+ * container and does not know what that volume is mounted as outside one. It is never
+ * rebuilt here from category names either: the server disambiguates colliding directory
+ * names and a client cannot know when it did.
  */
 const CLIFF_FACE: PartCard & { directory: string } = {
   id: '01931b6e-0000-7000-8000-0000000a0007',
@@ -1449,7 +1455,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   compressed: true,
   createdAt: '2026-08-30T11:04:19Z',
   updatedAt: '2026-08-30T11:04:19Z',
-  directory: '/var/lib/lapidary/libraries/default/Terrain/Rocks/basalt_cliff_face',
+  directory: 'libraries/default/Terrain/Rocks/basalt_cliff_face',
 }
 
 /** Ingested before the folder layout existed, so it is still in the shared store. */

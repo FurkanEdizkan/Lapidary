@@ -19,11 +19,18 @@ pub struct FolderRow {
     pub parent_id: Option<FolderId>,
     pub name: String,
     pub slug: String,
+    /// Live parts in this folder **and every folder under it**. Subtree-inclusive because
+    /// a delete cascades through subcategories, so a count that stopped at the folder
+    /// itself would understate what the confirmation is about to hide. Counts only
+    /// `deleted_at IS NULL` rows, for the same reason: the number beside a category has to
+    /// be the number of cards the grid shows for it, or the dialog contradicts the screen
+    /// next to it.
+    pub part_count: i64,
 }
 
 /// Matches `scan.rs`'s `MAX_DEPTH`. Real trees do not cycle, but a bound keeps a corrupt
 /// `parent_id` from looping the walk forever.
-const MAX_DEPTH: i32 = 16;
+pub(crate) const MAX_DEPTH: i32 = 16;
 
 pub struct PgFolders(pub PgPool);
 
@@ -70,21 +77,78 @@ impl PgFolders {
         Ok(FolderId::from_uuid(found))
     }
 
+    /// Create a category the user asked for, refusing a name a sibling already holds.
+    ///
+    /// Not `get_or_create`: that one exists for the scan, which races itself over
+    /// directories it did not invent and wants the row either way. A person typing a name
+    /// into a form is making a claim about a category that does not exist yet, and handing
+    /// them back somebody else's folder as if they had made it is the quieter of the two
+    /// wrong answers. So the collision is an error here and a no-op there, and both lean
+    /// on the same constraint.
+    pub async fn create(
+        &self,
+        library: LibraryId,
+        parent: Option<FolderId>,
+        name: &str,
+        slug: &str,
+    ) -> Result<FolderId, DbError> {
+        let id = FolderId::new();
+        sqlx::query(
+            "INSERT INTO folder (id, library_id, parent_id, name, slug) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id.as_uuid())
+        .bind(library.as_uuid())
+        .bind(parent.map(|p| p.as_uuid()))
+        .bind(name)
+        .bind(slug)
+        .execute(&self.0)
+        .await
+        .map_err(|err| collision(name, slug, err))?;
+        Ok(id)
+    }
+
+    /// The whole tree of one library, flat, each node carrying its subtree part count.
+    ///
+    /// One recursive CTE for every node's count, not one query per node: the sidebar reads
+    /// this once and the delete confirmation reads the count off the node it already has,
+    /// so a per-folder count query would be N round trips for a panel that is one request.
+    /// `down` pairs every folder with each of its descendants (itself included, which is
+    /// what makes the count subtree-*inclusive*), and the aggregate below counts live parts
+    /// per root.
+    ///
+    /// The descent is not filtered on `deleted_at`: a soft-deleted subfolder's parts were
+    /// soft-deleted with it by `soft_delete_subtree`, so they fall out at the part filter
+    /// anyway, and filtering the walk as well would only add a way for the two rules to
+    /// disagree. The roots are filtered, because a deleted folder is not a row this returns.
     pub async fn tree(&self, library: LibraryId) -> Result<Vec<FolderRow>, DbError> {
-        let rows: Vec<(Uuid, Option<Uuid>, String, String)> = sqlx::query_as(
-            "SELECT id, parent_id, name, slug FROM folder \
-             WHERE library_id = $1 AND deleted_at IS NULL ORDER BY name",
+        let rows: Vec<(Uuid, Option<Uuid>, String, String, i64)> = sqlx::query_as(
+            "WITH RECURSIVE down AS ( \
+             SELECT id AS root, id, 1 AS depth FROM folder \
+             WHERE library_id = $1 AND deleted_at IS NULL \
+             UNION ALL \
+             SELECT d.root, f.id, d.depth + 1 FROM folder f \
+             JOIN down d ON f.parent_id = d.id WHERE d.depth < $2), \
+             counts AS ( \
+             SELECT d.root, count(p.id) AS n FROM down d \
+             JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL \
+             GROUP BY d.root) \
+             SELECT f.id, f.parent_id, f.name, f.slug, coalesce(c.n, 0) \
+             FROM folder f LEFT JOIN counts c ON c.root = f.id \
+             WHERE f.library_id = $1 AND f.deleted_at IS NULL ORDER BY f.name",
         )
         .bind(library.as_uuid())
+        .bind(MAX_DEPTH)
         .fetch_all(&self.0)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, parent_id, name, slug)| FolderRow {
+            .map(|(id, parent_id, name, slug, part_count)| FolderRow {
                 id: FolderId::from_uuid(id),
                 parent_id: parent_id.map(FolderId::from_uuid),
                 name,
                 slug,
+                part_count,
             })
             .collect())
     }
@@ -138,13 +202,17 @@ impl PgFolders {
         Ok(found.map(LibraryId::from_uuid))
     }
 
+    /// Rename in place. The two sibling-uniqueness constraints come back as
+    /// [`DbError::FolderNameTaken`] and [`DbError::FolderSlugTaken`] rather than as a raw
+    /// database error — see [`collision`].
     pub async fn rename(&self, folder: FolderId, name: &str, slug: &str) -> Result<bool, DbError> {
         let done = sqlx::query("UPDATE folder SET name = $2, slug = $3 WHERE id = $1")
             .bind(folder.as_uuid())
             .bind(name)
             .bind(slug)
             .execute(&self.0)
-            .await?;
+            .await
+            .map_err(|err| collision(name, slug, err))?;
         Ok(done.rows_affected() == 1)
     }
 
@@ -173,12 +241,17 @@ impl PgFolders {
         // must still resolve here so the UPDATE below runs exactly as it always has for
         // one (unfiltered) — this SELECT exists only to name a lock key, not to gate
         // the move.
-        let library: Option<Uuid> =
-            sqlx::query_scalar("SELECT library_id FROM folder WHERE id = $1")
+        //
+        // The name and slug come along because the UPDATE at the end can violate the same
+        // two sibling-uniqueness constraints a rename can — moving `Terrain` under a parent
+        // that already holds a `Terrain` is a collision reached by the other route — and
+        // [`collision`] needs them to say which folder is in the way.
+        let row: Option<(Uuid, String, String)> =
+            sqlx::query_as("SELECT library_id, name, slug FROM folder WHERE id = $1")
                 .bind(folder.as_uuid())
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some(library) = library else {
+        let Some((library, name, slug)) = row else {
             return Ok(false);
         };
 
@@ -216,7 +289,8 @@ impl PgFolders {
             .bind(folder.as_uuid())
             .bind(parent.map(|p| p.as_uuid()))
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(|err| collision(&name, &slug, err))?;
 
         tx.commit().await?;
         Ok(done.rows_affected() == 1)
@@ -260,5 +334,34 @@ impl PgFolders {
 
         tx.commit().await?;
         Ok((folders, parts))
+    }
+}
+
+/// Name the sibling that is in the way, instead of handing back a raw constraint failure.
+///
+/// Two constraints, two different things to tell the user, and `0008_folders.sql` says why
+/// both exist: `folder_name_unique_per_parent` is the one a person can see — a sibling
+/// already carries this name — while `folder_slug_unique_per_parent` catches the pair that
+/// looks distinct on screen and is not on disk, `Rocks?` and `Rocks*` both wanting the
+/// directory `Rocks-`. A message that said only "that name is taken" for the second would
+/// be telling the user something they can check and find false.
+///
+/// Anything else passes through untouched: this reads the constraint name off the error the
+/// same way `lapidary-ingest`'s `classify_write` does, and a violation of some other
+/// constraint is not a collision this function knows how to describe.
+fn collision(name: &str, slug: &str, err: sqlx::Error) -> DbError {
+    let constraint = match &err {
+        sqlx::Error::Database(db) => db.constraint(),
+        _ => None,
+    };
+    match constraint {
+        Some("folder_name_unique_per_parent") => DbError::FolderNameTaken {
+            name: name.to_owned(),
+        },
+        Some("folder_slug_unique_per_parent") => DbError::FolderSlugTaken {
+            name: name.to_owned(),
+            slug: slug.to_owned(),
+        },
+        _ => DbError::Query(err),
     }
 }

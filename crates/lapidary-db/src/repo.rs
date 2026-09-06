@@ -16,6 +16,16 @@ use uuid::Uuid;
 pub struct PartRow {
     pub summary: PartSummary,
     pub thumbnail_webp: Option<Vec<u8>>,
+    /// The model's own directory in the store, relative to the storage root — the parent
+    /// of `file.storage_path`, never an absolute host path, because the api runs in a
+    /// container and the path the container sees is not the path the user's file manager
+    /// would open.
+    ///
+    /// `None` means the same thing `storage_path` being NULL means: this part predates the
+    /// folder layout and its bytes are still content-addressed, with no directory of its
+    /// own to show or to rename. Here for the same reason `thumbnail_webp` is — it is a
+    /// wire concern of the grid, not a fact `PartSummary` should carry into the viewer.
+    pub directory: Option<String>,
 }
 
 /// Everything a `derive` job needs to re-read a revision's source bytes.
@@ -111,15 +121,53 @@ pub struct StorageTotals {
     pub derivative_bytes: u64,
 }
 
+/// What a part looks like to the move route, before it moves.
+///
+/// The three location facts kept apart, exactly as migration `0008` insists: `folder` is
+/// the mutable category, `directory`/`storage_path` are where the bytes actually sit, and
+/// `source_path` — the immutable identity — is deliberately absent, because a move must
+/// never read it, let alone write it.
+#[derive(Debug, Clone)]
+pub struct MoveSource {
+    pub library: LibraryId,
+    pub folder: Option<FolderId>,
+    /// `part.name` — what a colliding sibling in the target category would share.
+    pub name: String,
+    /// `file.storage_path` for the latest revision's source file, `None` while the part is
+    /// still content-addressed and the storage migration has not reached it.
+    pub storage_path: Option<String>,
+    /// The parent of `storage_path`: the model's own directory, which is what a move
+    /// renames. `None` for exactly the same rows.
+    pub directory: Option<String>,
+    /// The source hash, which `disambiguate` needs to name a colliding destination
+    /// directory the same way ingest would.
+    pub source_hash: Option<BlobHash>,
+}
+
+/// One row of a part's move history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveRow {
+    pub from_folder: Option<FolderId>,
+    pub to_folder: Option<FolderId>,
+    pub moved_at: jiff::Timestamp,
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
 pub trait PartRepository: Send + Sync {
     /// One keyset page of grid rows, newest first. `after` is the previous page's last
     /// id.
+    ///
+    /// `folder` filters to one category **and everything under it**; `None` is the whole
+    /// library. Subtree-inclusive rather than exact-match because the sidebar's parent
+    /// categories are real places a user clicks: a tree that showed nothing for `Terrain`
+    /// while `Terrain/Rocks` held forty models would be hiding its own contents, and the
+    /// count beside the row would contradict the grid next to it.
     async fn page(
         &self,
         library: LibraryId,
+        folder: Option<FolderId>,
         after: Option<lapidary_core::PartId>,
         limit: u16,
     ) -> Result<Vec<PartRow>, DbError>;
@@ -992,6 +1040,193 @@ impl PgParts {
             .map(|(id,)| RevisionId::from_uuid(id))
             .collect())
     }
+
+    /// Everything the move route has to know before it can decide where a part goes.
+    ///
+    /// One query rather than four, and the same LATERALs the grid page uses, so the
+    /// directory a move renames is the directory the card showed. `Ok(None)` is "no such
+    /// live part" — a deleted or unknown id — which the route answers 404 for.
+    pub async fn move_source(&self, part: PartId) -> Result<Option<MoveSource>, DbError> {
+        // Five columns off three tables, read positionally and mapped into `MoveSource`
+        // immediately below — the same shape (and the same allow) the grid page uses.
+        #[allow(clippy::type_complexity)]
+        let row: Option<(Uuid, Option<Uuid>, String, Option<String>, Option<String>)> =
+            sqlx::query_as(
+                "SELECT p.library_id, p.folder_id, p.name, s.storage_path, s.blake3 \
+                 FROM part p \
+                 LEFT JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
+                                    ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+                 LEFT JOIN LATERAL (SELECT f.storage_path, f.blake3 FROM file f \
+                                    WHERE f.revision_id = r.id AND f.role = 'source' \
+                                    ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
+                 WHERE p.id = $1 AND p.deleted_at IS NULL",
+            )
+            .bind(part.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
+
+        row.map(|(library, folder, name, storage_path, blake3)| {
+            let source_hash = blake3
+                .map(|hex| {
+                    BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                        column: "file.blake3",
+                        value: hex,
+                    })
+                })
+                .transpose()?;
+            Ok(MoveSource {
+                library: LibraryId::from_uuid(library),
+                folder: folder.map(FolderId::from_uuid),
+                name,
+                directory: storage_path.as_deref().and_then(model_directory),
+                storage_path,
+                source_hash,
+            })
+        })
+        .transpose()
+    }
+
+    /// Is another live part in `folder` already called `name`?
+    ///
+    /// Two exclusions that both have to be there. `except` drops the part being moved, so
+    /// re-filing a model into the category it is already in is a no-op rather than a
+    /// collision with itself. `deleted_at IS NULL` drops a soft-deleted namesake, which is
+    /// invisible everywhere else and must not block a move on the strength of a row nobody
+    /// can see.
+    ///
+    /// `IS NOT DISTINCT FROM` for the folder, because the library root is NULL and `=` is
+    /// never true against it — the same reason `PgFolders::get_or_create` uses it.
+    pub async fn name_taken_in_folder(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        name: &str,
+        except: PartId,
+    ) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT exists(SELECT 1 FROM part \
+             WHERE library_id = $1 AND folder_id IS NOT DISTINCT FROM $2 \
+               AND name = $3 AND id <> $4 AND deleted_at IS NULL)",
+        )
+        .bind(library.as_uuid())
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(name)
+        .bind(except.as_uuid())
+        .fetch_one(&self.0)
+        .await?)
+    }
+
+    /// File a part under a different category, moving its directory on the way.
+    ///
+    /// **`rename` runs inside the transaction, and the commit happens only if it
+    /// succeeded.** A failed rename rolls the rows back and nothing moved. The remaining
+    /// window is a rename that succeeds and a commit that then fails, which leaves the disk
+    /// ahead of the database — repairable, because `metadata.json` makes every model
+    /// directory self-identifying. The reverse order was considered and rejected: its
+    /// failure leaves the database naming a path that does not exist, and every subsequent
+    /// read hits it. A disk ahead of the database is a repair job; a database ahead of the
+    /// disk is a broken grid.
+    ///
+    /// `rename` is a closure rather than a storage handle because this crate cannot hold
+    /// one: `lapidary-db` and `lapidary-storage` are both L1, and `cargo xtask check-layers`
+    /// forbids an edge between them. So the caller — `lapidary-api`'s `moves.rs`, the one
+    /// file allowed to name `SourceRelocator` — passes the filesystem half in, and its
+    /// error text arrives here as a `String` for [`DbError::RenameFailed`].
+    ///
+    /// Every `file` row under the old directory is re-pointed, not only the latest
+    /// revision's source: the rename moves the whole directory, so a second revision's file
+    /// sitting beside the first would otherwise be left naming a path that no longer
+    /// exists. `starts_with`, not `LIKE`: a model directory disambiguated to `cliff_a1b2c3`
+    /// contains `_`, which `LIKE` reads as a wildcard.
+    pub async fn move_to_folder<F>(
+        &self,
+        part: PartId,
+        from: Option<FolderId>,
+        to: Option<FolderId>,
+        old_directory: &str,
+        new_directory: &str,
+        rename: F,
+    ) -> Result<(), DbError>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let mut tx = self.0.begin().await?;
+
+        sqlx::query("UPDATE part SET folder_id = $2, updated_at = now() WHERE id = $1")
+            .bind(part.as_uuid())
+            .bind(to.map(|f| f.as_uuid()))
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "UPDATE file SET storage_path = $2 || substring(storage_path from length($3) + 1) \
+             WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1) \
+               AND starts_with(storage_path, $3 || '/')",
+        )
+        .bind(part.as_uuid())
+        .bind(new_directory)
+        .bind(old_directory)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO part_move (id, part_id, from_folder, to_folder) \
+             VALUES (gen_random_uuid(), $1, $2, $3)",
+        )
+        .bind(part.as_uuid())
+        .bind(from.map(|f| f.as_uuid()))
+        .bind(to.map(|f| f.as_uuid()))
+        .execute(&mut *tx)
+        .await?;
+
+        if let Err(detail) = rename() {
+            // Explicit, not by drop: a rollback that only happens because the transaction
+            // fell out of scope is a rollback nobody can see in this function.
+            tx.rollback().await?;
+            return Err(DbError::RenameFailed { detail });
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Where this part has been filed, newest first. The audit trail migration `0008`
+    /// created the `part_move` table for.
+    pub async fn moves(&self, part: PartId) -> Result<Vec<MoveRow>, DbError> {
+        let rows: Vec<(Option<Uuid>, Option<Uuid>, i64)> = sqlx::query_as(
+            "SELECT from_folder, to_folder, \
+                    (extract(epoch FROM moved_at) * 1000000)::bigint AS moved_us \
+             FROM part_move WHERE part_id = $1 ORDER BY moved_at DESC, id DESC",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(from, to, moved_us)| {
+                Ok(MoveRow {
+                    from_folder: from.map(FolderId::from_uuid),
+                    to_folder: to.map(FolderId::from_uuid),
+                    moved_at: jiff::Timestamp::from_microsecond(moved_us).map_err(|_| {
+                        DbError::TimestampOutOfRange {
+                            column: "part_move.moved_at",
+                            value: moved_us,
+                        }
+                    })?,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The directory holding a stored file, as the store-relative path it is written with.
+///
+/// `None` for a path with no separator at all, which no `storage_path` this code writes
+/// has — every one is `libraries/<library>/<category…>/<model>/<file>` — but a row edited
+/// by hand could, and a directory guessed from one would be worse than none.
+fn model_directory(storage_path: &str) -> Option<String> {
+    storage_path
+        .rsplit_once('/')
+        .map(|(directory, _file)| directory.to_owned())
 }
 
 #[async_trait::async_trait]
@@ -999,6 +1234,7 @@ impl PartRepository for PgParts {
     async fn page(
         &self,
         library: LibraryId,
+        folder: Option<FolderId>,
         after: Option<PartId>,
         limit: u16,
     ) -> Result<Vec<PartRow>, DbError> {
@@ -1033,6 +1269,14 @@ impl PartRepository for PgParts {
         // property of the schema. `blob` is joined inside the LATERAL because both sizes
         // must come off one row: `file.size_bytes` duplicates `blob.size_bytes`, and a
         // card built from one of each would report a ratio between two tables.
+        //
+        // The folder filter is the recursive CTE at the top, and it is inline here rather
+        // than a separate "give me the descendants" call for one reason: the descent and
+        // the page are one question — "the cards in this category" — and splitting them
+        // would put query composition in `lapidary-api` (an id list bound into a filter) or
+        // give the tree two descent implementations to keep in step. `down` is empty and
+        // costs nothing when `$5` is NULL, and the `IS NULL` guard beside it is what makes
+        // an absent filter mean the whole library.
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
             Uuid,
@@ -1047,23 +1291,30 @@ impl PartRepository for PgParts {
             Option<i64>,
             Option<i64>,
             Option<i16>,
+            Option<String>,
             i64,
             i64,
         )> = sqlx::query_as(
-            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
+            "WITH RECURSIVE down AS ( \
+             SELECT id, 1 AS depth FROM folder WHERE id = $5 \
+             UNION ALL \
+             SELECT f.id, down.depth + 1 FROM folder f \
+             JOIN down ON f.parent_id = down.id WHERE down.depth < $6) \
+             SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
-                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, \
+                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, b.size_bytes, b.stored_bytes, b.zstd_level \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.library_id = $1 AND p.deleted_at IS NULL \
                AND ($2::uuid IS NULL OR p.id < $2) \
+               AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down)) \
              ORDER BY p.id DESC LIMIT $3",
         )
         .bind(library.as_uuid())
@@ -1073,6 +1324,8 @@ impl PartRepository for PgParts {
         // stopped spelling it out in task 5, and a reader spelling it differently from
         // the writer reads nothing while looking entirely correct.
         .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(crate::folders::MAX_DEPTH)
         .fetch_all(&self.0)
         .await?;
 
@@ -1098,6 +1351,7 @@ impl PartRepository for PgParts {
                     source_bytes,
                     stored_bytes,
                     zstd_level,
+                    storage_path,
                     created_us,
                     updated_us,
                 )| {
@@ -1170,6 +1424,7 @@ impl PartRepository for PgParts {
                             )?,
                         },
                         thumbnail_webp: thumb_bytes,
+                        directory: storage_path.as_deref().and_then(model_directory),
                     })
                 },
             )

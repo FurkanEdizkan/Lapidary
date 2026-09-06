@@ -570,32 +570,6 @@ function Grid({
   )
 }
 
-/**
- * The model's own directory on disk, as the wire carries it.
- *
- * Three states, and they are not the same fact: a path; `null`, meaning this model
- * predates the folder layout and is still in the shared store; and `undefined`, meaning
- * the field is not on the wire at all. The last two both show the migration-pending
- * message, but only an explicit `null` withdraws the move — an older server that does not
- * send the field is not a statement that this model cannot be moved.
- *
- * Read through an intersection because `PartCard` does not carry the field yet: the API
- * lane adds it and ts-rs regenerates the binding at merge. The response is cast rather
- * than validated regardless — `SourceFile` and `Measurements` narrow their fields with
- * `typeof` for exactly that reason — so this narrows one more field of the value the
- * server actually sent rather than declaring a shape of its own.
- *
- * ponytail: intersection here until the regenerated binding lands; then read
- * `part.directory` directly and delete it. Nothing else in this file changes.
- */
-function partDirectory(part: PartCard): string | null | undefined {
-  const value = (part as PartCard & { directory?: string | null }).directory
-  if (typeof value === 'string' && value.length > 0) {
-    return value
-  }
-  return value === null ? null : undefined
-}
-
 function Card({
   part,
   onRender,
@@ -607,7 +581,7 @@ function Card({
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
-  const directory = partDirectory(part)
+  const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
   // from a `409` — the same status the route uses for a name collision, which the UI
@@ -721,7 +695,7 @@ function ShowInFolder({
   directory,
 }: {
   part: PartCard
-  directory: string | null | undefined
+  directory: string | null
 }) {
   const [open, setOpen] = useState(false)
   // Narrowed out here rather than in the JSX below: a `typeof x !== 'string'` inside a

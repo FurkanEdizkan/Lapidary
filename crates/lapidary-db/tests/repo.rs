@@ -340,7 +340,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     }
 
     let page = PgParts(pool.clone())
-        .page(library(), None, 2)
+        .page(library(), None, None, 2)
         .await
         .expect("page");
     assert_eq!(page.len(), 2, "limit is honoured");
@@ -360,7 +360,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     );
 
     let next = PgParts(pool.clone())
-        .page(library(), Some(page[1].summary.id), 2)
+        .page(library(), None, Some(page[1].summary.id), 2)
         .await
         .expect("second page");
     assert_eq!(
@@ -395,7 +395,10 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
         .await
         .expect("soft delete");
 
-    let page = PgParts(pool).page(library(), None, 50).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 50)
+        .await
+        .expect("page");
     assert!(
         page.is_empty(),
         "delete is soft, but soft-deleted parts are still hidden"
@@ -446,7 +449,10 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
     .await
     .expect("insert the newer revision's own derivative");
 
-    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 10)
+        .await
+        .expect("page");
     assert_eq!(page.len(), 1, "still one part");
     assert_eq!(
         page[0].summary.triangle_count,
@@ -537,7 +543,10 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
     .await
     .expect("insert a same-revision derivative of a different kind");
 
-    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 10)
+        .await
+        .expect("page");
     assert_eq!(
         page.len(),
         1,
@@ -581,7 +590,7 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
         .expect("corrupt the column directly");
 
     let err = PgParts(pool)
-        .page(library(), None, 10)
+        .page(library(), None, None, 10)
         .await
         .expect_err("a negative triangle count must be reported, not reinterpreted");
     match err {
@@ -995,7 +1004,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
         .expect("records");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, 10)
+        .page(library(), None, None, 10)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "a part with no preview is still a part");
@@ -1082,7 +1091,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .expect("records the AsIs source");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, 10)
+        .page(library(), None, None, 10)
         .await
         .expect("page");
     assert_eq!(page.len(), 2);
@@ -1170,7 +1179,7 @@ async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool)
     .expect("a newer source row and a newer row of another role");
 
     let parts = PgParts(pool.clone());
-    let page = parts.page(library(), None, 10).await.expect("page");
+    let page = parts.page(library(), None, None, 10).await.expect("page");
     assert_eq!(page.len(), 1, "three file rows are still one part");
     let card = &page[0].summary;
     let download = parts
@@ -1259,7 +1268,7 @@ async fn a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed(pool: s
     );
 
     let parts = PgParts(pool.clone());
-    let page = parts.page(library(), None, 10).await.expect("page");
+    let page = parts.page(library(), None, None, 10).await.expect("page");
     let card = page
         .iter()
         .find(|row| row.summary.id == clip)
@@ -1316,7 +1325,7 @@ async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx:
         .expect("corrupt the column directly");
 
     let err = PgParts(pool)
-        .page(library(), None, 10)
+        .page(library(), None, None, 10)
         .await
         .expect_err("a negative size must be reported, not reinterpreted");
     match err {
@@ -1360,7 +1369,7 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
     .expect("removes the source file row");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, 10)
+        .page(library(), None, None, 10)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "the part is still in the grid");
@@ -1434,7 +1443,10 @@ async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(poo
          produce these bytes and can never be regenerated from it"
     );
 
-    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 10)
+        .await
+        .expect("page");
     assert_eq!(
         page[0].thumbnail_webp.as_deref(),
         Some(b"second render".as_slice()),
@@ -1871,7 +1883,10 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
         "the newer revision, not the one the part was ingested with"
     );
 
-    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 10)
+        .await
+        .expect("page");
     assert_eq!(page.len(), 1, "still one part");
     assert_eq!(
         page[0].summary.triangle_count,
@@ -2001,7 +2016,10 @@ async fn an_empty_inline_derivative_is_refused_rather_than_written(pool: sqlx::P
         other => panic!("expected EmptyDerivative, got {other:?}"),
     }
 
-    let page = PgParts(pool).page(library(), None, 10).await.expect("page");
+    let page = PgParts(pool)
+        .page(library(), None, None, 10)
+        .await
+        .expect("page");
     assert_eq!(
         page[0].thumbnail_webp, None,
         "the grid must still read \"no preview yet\", not zero bytes it will render as a \

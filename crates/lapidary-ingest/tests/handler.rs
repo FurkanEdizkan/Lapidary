@@ -1019,7 +1019,7 @@ async fn a_library_that_declines_to_render_gets_no_thumbnail_and_still_fills_the
     );
 
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10)
+        .page(seeded(), None, None, 10)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "a part with no preview is still a part");
@@ -1053,7 +1053,7 @@ async fn a_derive_job_fills_the_missing_thumbnail_and_reports_rendered(pool: PgP
 
     assert_eq!(thumbnail_rows(&pool).await, 1);
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10)
+        .page(seeded(), None, None, 10)
         .await
         .expect("page");
     let thumb = page[0]
