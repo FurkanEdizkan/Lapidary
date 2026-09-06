@@ -363,7 +363,24 @@ impl WorkerHandler {
             if !siblings.insert(slug.clone()) {
                 let id = row.id.as_uuid().simple().to_string();
                 slug = format!("{slug}_{}", &id[id.len() - 6..]);
-                siblings.insert(slug.clone());
+                if !siblings.insert(slug.clone()) {
+                    // Both the target and its disambiguated form are already held by
+                    // siblings that legitimately slug to them. Leaving this one alone costs
+                    // one category a hostile directory name; renaming it anyway raises a
+                    // bare `folder_slug_unique_per_parent` violation that propagates out of
+                    // `migrate_storage` before a single file moves, stalling the whole
+                    // library's migration behind a message no operator can act on.
+                    tracing::warn!(
+                        folder = %row.id,
+                        name = %row.name,
+                        wanted = %slug,
+                        "left a category's slug as it is: the name it slugs to, and its \
+                         disambiguated form, are both already taken by sibling categories. \
+                         Rename one of them and start the migration again to give this one \
+                         a filesystem-safe directory"
+                    );
+                    continue;
+                }
             }
             changes.push((row.id, row.name.clone(), row.slug.clone(), slug));
         }

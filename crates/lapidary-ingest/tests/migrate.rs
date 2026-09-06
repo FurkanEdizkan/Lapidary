@@ -14,7 +14,7 @@ use lapidary_db::{
 };
 use lapidary_ingest::WorkerHandler;
 use lapidary_jobs::JobHandler;
-use lapidary_storage::{Compression, SourceStore, WorkerRole};
+use lapidary_storage::{Compression, SourceReader, SourceStore, WorkerRole};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -222,7 +222,7 @@ async fn migrate_storage_moves_a_cas_blob_into_a_model_directory(pool: PgPool) {
     assert_eq!(manifest.revisions[0].files[0].blake3, hash);
 }
 
-/// Make the row update fail, and only it.
+/// Make the row update fail, and only for paths matching `pattern`.
 ///
 /// The kill switch this suite needs sits at exactly one seam: the bytes are written and
 /// the transaction that would record them has not committed. A `CHECK` on `storage_path`
@@ -230,17 +230,50 @@ async fn migrate_storage_moves_a_cas_blob_into_a_model_directory(pool: PgPool) {
 /// is NULL rather than false, so adding the constraint validates the table without
 /// refusing anything already in it. Borrowed from `tests/handler.rs`'s `refuse_this_file`,
 /// which is why this job needed no copy-only entry point of its own to be interruptible.
-async fn refuse_the_row_update(pool: &PgPool) {
-    // `AssertSqlSafe` because `ALTER TABLE` takes no bind parameters; the statement is a
-    // literal, never anything read back out of the database.
-    sqlx::query(sqlx::AssertSqlSafe(
+///
+/// `pattern` is what lets one test refuse ONE library's rows while another library's row in
+/// the same transaction would have been perfectly acceptable — the only way to observe
+/// whether that transaction really is one transaction.
+async fn refuse_the_row_update(pool: &PgPool, pattern: &str) {
+    // `AssertSqlSafe` because `ALTER TABLE` takes no bind parameters; `pattern` is a literal
+    // from the call sites below, never anything read back out of the database.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "ALTER TABLE file ADD CONSTRAINT file_storage_path_refused \
-         CHECK (storage_path NOT LIKE 'libraries/%')"
-            .to_owned(),
-    ))
+         CHECK (storage_path NOT LIKE '{pattern}')"
+    )))
     .execute(pool)
     .await
     .expect("adds the refusing constraint");
+}
+
+/// Read a migrated file the way the download route reads it: through `SourceReader::get_at`
+/// at the level the `blob` row records, then check the digest.
+///
+/// Not `fs::read`. A raw read bypasses both the decode and the hash — which is precisely
+/// what a half-settled group corrupts: the row says level 0, the file on disk is still a
+/// zstd frame, and only a reader that follows the recorded level can tell.
+async fn downloads_as(pool: &PgPool, store: &Path, source_path: &str, expected: &[u8]) {
+    let (rel, hex, level): (Option<String>, String, Option<i16>) = sqlx::query_as(
+        "SELECT f.storage_path, f.blake3, b.zstd_level FROM file f \
+         JOIN revision r ON r.id = f.revision_id \
+         JOIN part p ON p.id = r.part_id \
+         JOIN blob b ON b.blake3 = f.blake3 WHERE p.source_path = $1",
+    )
+    .bind(source_path)
+    .fetch_one(pool)
+    .await
+    .expect("reads the file row");
+    let rel = rel.unwrap_or_else(|| panic!("{source_path} has no storage_path to read"));
+
+    let bytes = SourceReader::open(store)
+        .get_at(&rel, level)
+        .unwrap_or_else(|e| panic!("the download route reads {source_path} back: {e}"));
+    assert_eq!(bytes, expected, "{source_path} reads back as itself");
+    assert_eq!(
+        BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes()),
+        BlobHash::parse_hex(&hex).expect("a stored hash parses"),
+        "{source_path} passes the digest check the download route makes"
+    );
 }
 
 async fn allow_the_row_update(pool: &PgPool) {
@@ -266,7 +299,7 @@ async fn an_interrupted_migration_loses_no_file(pool: PgPool) {
     .await;
     let handler = handler_over(&pool, store.path());
 
-    refuse_the_row_update(&pool).await;
+    refuse_the_row_update(&pool, "libraries/%").await;
     handler
         .handle(&migrate_job(seeded()))
         .await
@@ -695,4 +728,150 @@ async fn a_blob_that_does_not_match_its_hash_is_refused_rather_than_copied(pool:
         std::fs::read(&cas).expect("the old copy is untouched"),
         BRACKET
     );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn settling_one_shared_blob_is_all_or_nothing(pool: PgPool) {
+    // THE test for why this job batches on a hash. `two_libraries_sharing_one_blob_settle_together`
+    // proves both rows are SELECTED; this proves they are RECORDED together, which is a
+    // different claim and the one the design rests on. A per-file settle passes that test
+    // and fails this one.
+    //
+    // What a per-file settle does when the second row's write fails: the first row commits,
+    // `blob.zstd_level` goes to 0, and the second row is left NULL pointing at a
+    // content-addressed copy that is still a zstd frame. Downloading it decodes nothing and
+    // fails on the digest — and it is *permanently* unmigratable, because a resumed run
+    // reads that same blob at the level 0 the first row installed, gets the compressed
+    // bytes raw, and the BLAKE3 guard refuses them `Permanent` on every future attempt.
+    let store = tempfile::tempdir().expect("store");
+    let other = second_library(&pool).await;
+    let hash = seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+    seed_cas_part(
+        &pool,
+        store.path(),
+        other,
+        "Cliffs/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+
+    // Refuses ONLY the second library's row. The seeded library's row in the same
+    // transaction would have been accepted, so anything that survives is something that
+    // committed on its own.
+    refuse_the_row_update(&pool, "libraries/terrain packs/%").await;
+    let handler = handler_over(&pool, store.path());
+    handler
+        .handle(&migrate_job(seeded()))
+        .await
+        .expect_err("one row of the group was refused, so the group was refused");
+
+    let (level, storage_paths): (Option<i16>, i64) = sqlx::query_as(
+        "SELECT (SELECT zstd_level FROM blob WHERE blake3 = $1), \
+                (SELECT count(*) FROM file WHERE blake3 = $1 AND storage_path IS NOT NULL)",
+    )
+    .bind(hash.to_hex())
+    .fetch_one(&pool)
+    .await
+    .expect("reads the blob and its file rows");
+    assert_eq!(
+        level,
+        Some(3),
+        "the level describes bytes both rows still read, so it cannot move while one of \
+         them has not"
+    );
+    assert_eq!(
+        storage_paths, 0,
+        "neither row may be recorded when the other could not be"
+    );
+    assert!(
+        store.path().join(cas_rel(&hash)).exists(),
+        "and the copy they both still read is untouched"
+    );
+
+    // Resuming converges. Both rows land, and both read back through the level the row
+    // records — which is the check a half-settled group fails and a raw read cannot make.
+    allow_the_row_update(&pool).await;
+    assert_eq!(
+        handler
+            .handle(&migrate_job(seeded()))
+            .await
+            .expect("resumes"),
+        Outcome::Migrated
+    );
+    downloads_as(&pool, store.path(), "Terrain/Rocks/cliff.stl", CLIFF).await;
+    downloads_as(&pool, store.path(), "Cliffs/cliff.stl", CLIFF).await;
+    let level: Option<i16> = sqlx::query_scalar("SELECT zstd_level FROM blob WHERE blake3 = $1")
+        .bind(hash.to_hex())
+        .fetch_one(&pool)
+        .await
+        .expect("reads the blob row");
+    assert_eq!(
+        level,
+        Some(0),
+        "one row, and now it is true of both readers"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_category_whose_disambiguated_slug_is_taken_too_does_not_stall_the_library(pool: PgPool) {
+    // Adversarial, and the only reason it is worth a test is the size of the failure: a
+    // re-slug that insisted here would raise a bare `folder_slug_unique_per_parent`
+    // violation out of `migrate_storage` BEFORE a single file moved, stalling the whole
+    // library's migration behind a message naming a constraint.
+    let store = tempfile::tempdir().expect("store");
+    seed_cas_part(
+        &pool,
+        store.path(),
+        seeded(),
+        "Terrain/Rocks?/cliff.stl",
+        CLIFF,
+        Compression::Zstd,
+    )
+    .await;
+
+    let folders = PgFolders(pool.clone());
+    let terrain: Uuid = sqlx::query_scalar("SELECT id FROM folder WHERE name = 'Terrain'")
+        .fetch_one(&pool)
+        .await
+        .expect("the back-filled parent");
+    let terrain = Some(lapidary_core::FolderId::from_uuid(terrain));
+    let hostile: Uuid = sqlx::query_scalar("SELECT id FROM folder WHERE name = 'Rocks?'")
+        .fetch_one(&pool)
+        .await
+        .expect("the category that wants re-slugging");
+
+    // A sibling literally named `Rocks-` takes the target slug, and one named after the
+    // disambiguated form takes the fallback. Both slug to themselves, so both are already
+    // correct and neither moves.
+    let id = hostile.simple().to_string();
+    let taken = format!("Rocks-_{}", &id[id.len() - 6..]);
+    for name in ["Rocks-".to_owned(), taken.clone()] {
+        folders
+            .get_or_create(seeded(), terrain, &name, &name)
+            .await
+            .expect("seeds a sibling that already holds the slug");
+    }
+
+    assert_eq!(
+        handler_over(&pool, store.path())
+            .handle(&migrate_job(seeded()))
+            .await
+            .expect("the files still move"),
+        Outcome::Migrated
+    );
+    assert_eq!(
+        slug_of(&pool, "Rocks?").await,
+        "Rocks?",
+        "the category keeps the slug it had rather than colliding with a sibling"
+    );
+    downloads_as(&pool, store.path(), "Terrain/Rocks?/cliff.stl", CLIFF).await;
 }
