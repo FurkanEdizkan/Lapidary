@@ -52,6 +52,7 @@ mod tests {
             revision: RevisionId::new(),
             name: "Bearing block, 608ZZ".to_owned(),
             part_number: Some("LP-1042-03".to_owned()),
+            source_path: "bearings/608ZZ-block.stl".to_owned(),
             thumbnail: Some(BlobHash::from_bytes([0x11; 32])),
             triangle_count: Some(48_112),
             approximate: true,

@@ -9,6 +9,7 @@ import type {
   PartDetail,
   PartId,
   PartsPage,
+  PurgeResult,
   RevisionId,
   ScanAccepted,
   UploadFile,
@@ -45,16 +46,62 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
 export async function fetchParts(
   library: LibraryId,
   after?: PartId,
+  state?: 'removed',
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
   // as "from the top", and `after=` would be a parse error.
-  const query = after === undefined ? '' : `?after=${encodeURIComponent(after)}`
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${query}`)
+  const query = new URLSearchParams()
+  if (after !== undefined) query.set('after', after)
+  if (state !== undefined) query.set('state', state)
+  const suffix = query.size === 0 ? '' : `?${query}`
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
     throw new Error(`parts returned ${response.status}`)
   }
   return (await response.json()) as PartsPage
+}
+
+/**
+ * `DELETE /api/parts/{id}` — remove a part from the library.
+ *
+ * Not a deletion, and the whole client is built so nobody has to take that on trust: the
+ * part reappears intact from {@link restorePart}, its bytes never moved, and the only
+ * thing that changed is a column. See `strings.removal` for the wording rules this pairs
+ * with.
+ */
+export async function removePart(part: PartId): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error(`remove returned ${response.status}`)
+  }
+}
+
+/** `POST /api/parts/{id}/restore` — undo of {@link removePart}, indefinitely available. */
+export async function restorePart(part: PartId): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/restore`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error(`restore returned ${response.status}`)
+  }
+}
+
+/**
+ * `POST /api/parts/{id}/purge` — the permanent one, and only for a part already removed.
+ *
+ * The route answers 409 for a live part rather than purging it, so a client cannot make
+ * this the first click even by accident. The returned counts are of blobs entering
+ * quarantine, never of bytes freed: nothing is freed today.
+ */
+export async function purgePart(part: PartId): Promise<PurgeResult> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/purge`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error(`purge returned ${response.status}`)
+  }
+  return (await response.json()) as PurgeResult
 }
 
 /**

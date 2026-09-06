@@ -4,7 +4,7 @@ use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
     RevisionId,
 };
-use lapidary_db::{IngestRequest, JobRow, PartRepository, PgIngest, PgParts, StoredBlobRow};
+use lapidary_db::{IngestRequest, JobRow, PartRepository, PgIngest, PgParts, Shows, StoredBlobRow};
 use lapidary_ingest::WorkerHandler;
 use lapidary_jobs::{HandlerError, JobHandler};
 use sqlx::PgPool;
@@ -1037,7 +1037,7 @@ async fn a_library_that_declines_to_render_gets_no_thumbnail_and_still_fills_the
     );
 
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10)
+        .page(seeded(), None, 10, Shows::Live)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "a part with no preview is still a part");
@@ -1071,7 +1071,7 @@ async fn a_derive_job_fills_the_missing_thumbnail_and_reports_rendered(pool: PgP
 
     assert_eq!(thumbnail_rows(&pool).await, 1);
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10)
+        .page(seeded(), None, 10, Shows::Live)
         .await
         .expect("page");
     let thumb = page[0]
@@ -1674,4 +1674,116 @@ async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: P
             ),
         }
     }
+}
+
+/// Slice 7, and the first thing anyone will try: delete a part, leave the file on disk,
+/// scan again.
+///
+/// Nothing may come back. A scan that resurrects a deleted part makes delete useless — the
+/// next scan undoes every removal a person made — and un-deleting implicitly is the same
+/// class of surprise as deleting implicitly. Restore is a button, not a side effect.
+///
+/// The two branches reach that answer by different routes and both are asserted, because
+/// they are separately breakable:
+///
+/// - unchanged bytes take the hash short-circuit, which works only because
+///   `PgBlobs::library_holds` deliberately does not filter `deleted_at`;
+/// - changed bytes get past it and violate `part_source_path_unique_per_library`, which
+///   `classify_write` maps to `Skipped`.
+///
+/// Neither behaviour is new in slice 7 — both fall out of what slice 6a built — and that
+/// is exactly why they are pinned here. Nothing else fails if either one silently stops
+/// holding.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let part = sqlx::query_scalar::<_, Uuid>("SELECT id FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("the one part");
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(lapidary_core::PartId::from_uuid(part))
+            .await
+            .expect("soft delete"),
+    );
+
+    // Branch one: the file on disk is untouched, so the hash matches and `library_holds`
+    // answers yes for a path whose part is deleted.
+    assert_eq!(
+        handler
+            .handle(&job_for(BRACKET))
+            .await
+            .expect("the re-scan succeeds"),
+        Outcome::Skipped,
+        "unchanged bytes must short-circuit, not re-ingest"
+    );
+    assert!(
+        still_deleted(&pool, part).await,
+        "the hash short-circuit must not clear deleted_at"
+    );
+
+    // Branch two: the file changed on disk, so the hash no longer matches and the insert
+    // is actually attempted. `spacer` rather than a truncation of the bracket, so this is
+    // a real mesh the pipeline gets all the way through — a file that fails to parse would
+    // reach `Skipped` for the wrong reason entirely.
+    stage(
+        ingest_dir.path(),
+        BRACKET,
+        include_bytes!("../../../fixtures/spacer-lp-2001-00.stl"),
+    );
+    assert_eq!(
+        handler
+            .handle(&job_for(BRACKET))
+            .await
+            .expect("the re-scan succeeds"),
+        Outcome::Skipped,
+        "changed bytes must hit the path-unique constraint and settle as Skipped"
+    );
+    assert!(
+        still_deleted(&pool, part).await,
+        "the constraint path must not clear deleted_at either"
+    );
+
+    assert_eq!(
+        part_count(&pool).await,
+        1,
+        "and neither branch may insert a second part at the same path"
+    );
+
+    // Branch two is the one that can leak. It gets past the short-circuit, writes the
+    // changed file's blob and its rung, and only then loses to the constraint — so the
+    // `Skipped` it settles as has bytes behind it that nothing will ever reference. The
+    // failure reap already collects them, and this is what says so: the store holds the
+    // original part's source and rung, and nothing else.
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("blob count");
+    assert_eq!(
+        blobs, 2,
+        "the first part's source and its one rung, and no more"
+    );
+    assert_eq!(
+        all_files(&blob_root.path().join("blobs")).len(),
+        2,
+        "a re-scan of a changed file at a deleted path must not orphan its bytes on disk"
+    );
+}
+
+async fn still_deleted(pool: &PgPool, part: Uuid) -> bool {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM part WHERE id = $1 AND deleted_at IS NOT NULL")
+        .bind(part)
+        .fetch_optional(pool)
+        .await
+        .expect("deleted_at reads")
+        .is_some()
 }

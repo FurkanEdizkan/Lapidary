@@ -28,6 +28,10 @@ sqlx.workspace = true
 # The one place this pipeline knowingly leaves bytes behind (a reap that itself fails)
 # logs it — see the record() error arm in handler.rs.
 tracing.workspace = true
+# reap.rs is a timer rather than a job: it sleeps, it selects on a cancellation token, and
+# it needs no queue row to do either.
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 # tests/scan.rs decodes the stored thumbnail rather than checking its byte length: a

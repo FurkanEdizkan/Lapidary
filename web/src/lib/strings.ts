@@ -246,6 +246,65 @@ export const strings = {
     /** A figure the database has no value for. Distinct from a refusal to measure. */
     unknown: 'Unknown',
   },
+  /**
+   * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:
+   * *"We never delete user data implicitly. Delete is soft. Purge is separate and
+   * explicit. Blobs quarantine 30 days before removal. Derivative cache eviction is a
+   * different action with different wording and must never read as data loss."*
+   *
+   * Three actions with three vocabularies, and the differences are load-bearing:
+   *
+   * - **Remove** never says "delete". It is reversible indefinitely and touches no bytes,
+   *   so language that implies destruction would make people hesitate over an action that
+   *   costs nothing — and would spend the alarm that purge actually needs.
+   * - **Purge** says "permanently", names the part, and is never reachable in one click
+   *   from the library. It is the only word here that means what it says.
+   * - **Eviction** (Phase 4, with the tiering job) says "free cache space" and never
+   *   "delete": it removes only bytes we produced and can reproduce, which is why it is
+   *   the one of the three that needs no undo. Its strings live here when it ships;
+   *   the boundary is written down now so the second one does not borrow the first one's
+   *   words.
+   *
+   * No number here is ever labelled "freed". A purge frees nothing on the day it runs.
+   */
+  removal: {
+    remove: 'Remove from library',
+    /** Said before the click, so the reassurance arrives when the hesitation does. */
+    removeHint: 'Hidden from the library. Nothing on disk changes, and you can restore it.',
+    removing: 'Removing…',
+    removeFailed: 'Could not remove this part. Nothing changed — try again.',
+    restore: 'Restore',
+    restoring: 'Restoring…',
+    restoreFailed: 'Could not restore this part. It is still removed — try again.',
+    /** The list is the only route back to a removed part: every other read path filters
+     *  them out, so without this delete would be a one-way door. */
+    removedTitle: 'Removed parts',
+    removedEmpty: 'Nothing has been removed from this library.',
+    removedLead:
+      'These are hidden from the library and still on disk. Restore one at any time, or purge it to start the 30-day countdown before its bytes are removed.',
+    backToLibrary: 'Back to the library',
+    removedCount: (count: number) =>
+      count === 1 ? '1 removed part' : `${count.toLocaleString('en-US')} removed parts`,
+    purge: 'Purge permanently',
+    /**
+     * Names the part by its *path*, not its name, because a confirmation that cannot be
+     * answered correctly is worse than none: since slice 6a the path is what tells two
+     * parts called `bracket` apart, and this is the one irreversible action in the
+     * product. The second sentence is the one fact that makes this survivable, and it is
+     * stated as a deadline rather than a promise of recovery — there is no restore button
+     * after this, only a hash and an operator.
+     */
+    purgeConfirm: (sourcePath: string) =>
+      `Purge “${sourcePath}” permanently? Its part, revision and file records are removed now. Bytes nothing else uses are kept for 30 days, then deleted.`,
+    purging: 'Purging…',
+    purgeFailed: 'Could not purge this part. Nothing was removed — try again.',
+    /** Deliberately not "freed". Nothing is freed today; these bytes are waiting. */
+    purgedNothing: 'Purged. Its bytes are still in use by another part and were kept.',
+    purgedQuarantined: (blobs: number, stored: number) =>
+      blobs === 1
+        ? `Purged. 1 file (${bytes(stored)}) is kept for 30 days, then deleted.`
+        : `Purged. ${blobs.toLocaleString('en-US')} files (${bytes(stored)}) are kept for 30 days, then deleted.`,
+  },
   scan: {
     /**
      * Before the walk finishes there is no file count to report — the worker is still
@@ -419,6 +478,18 @@ export const strings = {
       typeof ratio !== 'number'
         ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
         : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
+    /**
+     * Appended when the library holds removed parts, and the wording is the point: they
+     * are *still on disk*, not freed. Without this clause the totals above fall the moment
+     * somebody removes a part and the volume does not, which reads as a saving — the one
+     * reading `CLAUDE.md` says this area must never produce.
+     *
+     * Says nothing about quarantined bytes, which have no library to belong to: a purge
+     * removes the part chain, so those blobs are counted by no library's panel. That gap
+     * is real and is recorded in the slice 7 design; it closes with Phase 4's
+     * instance-wide storage view.
+     */
+    removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
   },

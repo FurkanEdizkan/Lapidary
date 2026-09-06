@@ -22,6 +22,13 @@ export type PartCard = { id: PartId, library: LibraryId,
  */
 revision: RevisionId, name: string, partNumber: string | null, 
 /**
+ * The path this part is known by — its identity since slice 6a, carried verbatim
+ * from `PartSummary`. The removed list names a part by this in its purge
+ * confirmation, because two parts can share a name and only one of them is the one
+ * being destroyed.
+ */
+sourcePath: string, 
+/**
  * `data:image/webp;base64,<...>`. `None` when the part's latest revision has no
  * thumbnail derivative.
  */

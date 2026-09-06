@@ -25,7 +25,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{BlobHash, LibraryId, PartId, RevisionId};
-use lapidary_db::{DbError, PartRepository, PartRow, PgParts};
+use lapidary_db::{DbError, PartRepository, PartRow, PgParts, Shows};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -57,6 +57,11 @@ pub struct PartCard {
     pub revision: RevisionId,
     pub name: String,
     pub part_number: Option<String>,
+    /// The path this part is known by — its identity since slice 6a, carried verbatim
+    /// from `PartSummary`. The removed list names a part by this in its purge
+    /// confirmation, because two parts can share a name and only one of them is the one
+    /// being destroyed.
+    pub source_path: String,
     /// `data:image/webp;base64,<...>`. `None` when the part's latest revision has no
     /// thumbnail derivative.
     pub thumbnail: Option<String>,
@@ -124,6 +129,17 @@ pub struct LibraryStorage {
     /// this is the figure that made slice 4's 92.5% drop legible (spec §4), and a second
     /// consumer dividing the other way would report the same library twice, differently.
     pub derivative_ratio: Option<f64>,
+    /// What this library's removed parts still occupy on the volume.
+    ///
+    /// Shown only when non-zero. It exists so the panel does not report a removal as a
+    /// saving: the two totals above exclude soft-deleted parts, so without this figure the
+    /// number falls the moment somebody removes a part and the disk does not.
+    ///
+    /// Quarantined bytes are deliberately absent and are not merely missing — see
+    /// `PgParts::storage_totals` for why a quarantined blob has no library to be counted
+    /// against.
+    #[ts(type = "number")]
+    pub removed_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +154,19 @@ pub struct PageQuery {
     /// than saturating.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     limit: Option<i64>,
+    /// `?state=removed` lists the parts a person deleted and has not purged; anything
+    /// else, including absent, lists the library.
+    ///
+    /// A string rather than `?removed=true`, because this is the axis a third value joins
+    /// when Phase 2 adds revision states — `state=draft` reads as one more value of a
+    /// dimension, where `draft=true` beside `removed=true` reads as two independent
+    /// booleans that can both be set and mean nothing together.
+    ///
+    /// An unknown value shows the library rather than failing. The grid is a read, the
+    /// wrong answer is visible immediately, and 400ing a typo'd query string would take a
+    /// bookmark that used to work and turn it into an error page.
+    #[serde(default)]
+    state: Option<String>,
 }
 
 /// Treats an empty query-string value the same as an absent key. `#[serde(default)]`
@@ -162,11 +191,15 @@ where
 /// `GET /api/libraries/{id}/parts?after=&limit=` — the grid's one read. Keyset paged,
 /// newest first, thumbnails inline.
 pub async fn page(
-    State(state): State<AppState>,
+    State(app): State<AppState>,
     Path(library): Path<LibraryId>,
     query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Response {
-    let PageQuery { after, limit } = match query {
+    let PageQuery {
+        after,
+        limit,
+        state,
+    } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
     };
@@ -181,7 +214,13 @@ pub async fn page(
         .unwrap_or(i64::from(DEFAULT_LIMIT))
         .clamp(1, i64::from(MAX_LIMIT)) as u16;
 
-    match PgParts(state.db).page(library, after, limit).await {
+    let shows = if state.as_deref() == Some("removed") {
+        Shows::Removed
+    } else {
+        Shows::Live
+    };
+
+    match PgParts(app.db).page(library, after, limit, shows).await {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -209,6 +248,7 @@ pub async fn storage(State(state): State<AppState>, Path(library): Path<LibraryI
         Ok(Some(totals)) => Json(LibraryStorage {
             source_bytes: totals.source_bytes,
             derivative_bytes: totals.derivative_bytes,
+            removed_bytes: totals.removed_bytes,
             // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
             // library; a ratio is a display figure and does not need more than that.
             derivative_ratio: (totals.source_bytes > 0)
@@ -276,6 +316,7 @@ fn to_card(row: PartRow) -> PartCard {
         revision: summary.revision,
         name: summary.name,
         part_number: summary.part_number,
+        source_path: summary.source_path,
         thumbnail: row
             .thumbnail_webp
             .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),

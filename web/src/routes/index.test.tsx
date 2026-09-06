@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   RouterProvider,
@@ -151,6 +151,7 @@ const MOTOR_MOUNT: PartCard = {
   library: DEFAULT_LIBRARY_ID,
   revision: '01931b6e-0000-7000-8000-0000000b0001',
   name: 'NEMA 17 motor mount, 42 mm face',
+  sourcePath: 'motors/nema17/LP-3105-A-mount.stl',
   partNumber: 'LP-3105-A',
   thumbnail: WEBP_BLUE,
   triangleCount: 12486,
@@ -169,6 +170,7 @@ const HEX_NUT: PartCard = {
   library: DEFAULT_LIBRARY_ID,
   revision: '01931b6e-0000-7000-8000-0000000b0002',
   name: 'Hex nut M8, DIN 934',
+  sourcePath: 'fasteners/nuts/DIN934-M8-A2.stl',
   partNumber: 'DIN934-M8-A2',
   thumbnail: WEBP_ORANGE,
   triangleCount: 1984,
@@ -194,6 +196,7 @@ const SHAFT_COUPLER: PartCard = {
   library: DEFAULT_LIBRARY_ID,
   revision: '01931b6e-0000-7000-8000-0000000b0003',
   name: 'Flexible shaft coupler, 5 mm to 8 mm',
+  sourcePath: 'couplers/LP-4420-B.stl',
   partNumber: 'LP-4420-B',
   thumbnail: null,
   triangleCount: 7320,
@@ -1217,6 +1220,9 @@ const LIBRARY_STORAGE: LibraryStorage = {
   sourceBytes: 12_480_000,
   derivativeBytes: 5_718_866,
   derivativeRatio: 5_718_866 / 12_480_000,
+  // Nothing removed, which is every library until somebody removes something — and the
+  // case where the panel must say nothing about it rather than "0 B removed".
+  removedBytes: 0,
 }
 
 // The download is a plain anchor on purpose: the browser reads `Content-Disposition`,
@@ -1545,4 +1551,33 @@ test('a finished status closes the stream, so the browser does not re-open it fo
   })
 
   await waitFor(() => expect(streams[0]?.closed).toBe(true))
+})
+
+test('the storage panel says removed bytes are still on disk, and says nothing when there are none', async () => {
+  // The panel's two totals exclude removed parts, so without this clause a removal reads
+  // as a saving: the number falls and the volume does not. `CLAUDE.md` forbids exactly
+  // that reading, and this is the only place in the app a figure could produce it.
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({ ...LIBRARY_STORAGE, removedBytes: 2_400_000 }),
+  })
+  renderIndex()
+
+  const panel = await screen.findByText(/removed, still on disk/)
+  expect(panel.textContent).toMatch(/2\.4 MB removed, still on disk/)
+  // Never the other word. The bytes are waiting, not recovered.
+  expect(panel.textContent).not.toMatch(/freed|recovered|saved/i)
+
+  // And nothing at all when there is nothing removed, which is every library until
+  // somebody removes something. A permanent "0 B removed" would be noise on all of them.
+  cleanup()
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex()
+  await screen.findByRole('article', { name: MOTOR_MOUNT.name })
+  expect(screen.queryByText(/removed, still on disk/)).toBeNull()
 })

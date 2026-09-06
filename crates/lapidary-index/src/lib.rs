@@ -1,5 +1,8 @@
 //! Metadata extraction plus full-text search via `tsvector` and `pg_trgm`.
-//! Implementation lands in Phase 1; see docs/DATA.md.
+//!
+//! Empty. Implementation lands in **Phase 2** (`ROADMAP.md`), with CAD ingest — the
+//! phase whose exit criterion is finding `A1234-56-B` by the fragment `1234`. See
+//! `docs/DATA.md` §3.
 
 use thiserror::Error;
 

@@ -7,7 +7,8 @@ mod repo;
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
     DerivativeBytes, DownloadSource, IngestRequest, PartDetailRow, PartRepository, PartRow,
-    PgBlobs, PgIngest, PgParts, StorageTotals, StoredBlobRow, TessellationRow,
+    PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, Shows, StorageTotals,
+    StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -93,6 +94,17 @@ pub enum DbError {
     )]
     ThumbnailNotInline { revision: RevisionId },
 
+    /// The reaper could not unlink a blob it had already removed the row for.
+    ///
+    /// Aborts the sweep, which rolls the row deletion back — so the row and the bytes both
+    /// survive and the next sweep tries again. The alternative, carrying on, would leave a
+    /// `blob` row naming bytes that are not there, and keeping bytes nobody wants costs
+    /// disk where losing bytes somebody wanted costs the thing Lapidary is for.
+    #[error(
+        "Quarantined blob {hash} could not be removed from the blob store: {message}. Nothing was deleted — the sweep was rolled back and will try again. Check the blob store's permissions and free space."
+    )]
+    ReapRemove { hash: String, message: String },
+
     #[error(
         "The {kind} for revision {revision} was offered as zero bytes, and an empty derivative is worse than none: it reaches the grid as a broken image where \"no preview yet\" belongs. Write no derivative at all, or re-render and write the bytes that produces."
     )]
@@ -135,7 +147,10 @@ impl DbError {
             | DbError::CorruptBlobHash { .. }
             | DbError::UnknownProvenance { .. }
             | DbError::ThumbnailNotInline { .. }
-            | DbError::EmptyDerivative { .. } => self.to_string(),
+            | DbError::EmptyDerivative { .. }
+            // Never reaches a client: the reaper runs on a timer in the worker, with no
+            // request behind it. It is here so the operator log gets the full text.
+            | DbError::ReapRemove { .. } => self.to_string(),
         }
     }
 }

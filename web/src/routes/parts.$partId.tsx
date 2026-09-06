@@ -1,6 +1,6 @@
-import { Link, createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { blobUrl, downloadUrl, fetchPartDetail } from '../lib/api'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { DEFAULT_LIBRARY_ID, blobUrl, downloadUrl, fetchPartDetail, removePart } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { Approximate, PartDetail } from '../lib/types'
 
@@ -74,13 +74,25 @@ function Detail({ part }: { part: PartDetail }) {
           {part.partNumber === null ? null : (
             <p className="mt-1 text-sm text-[var(--color-muted)]">{part.partNumber}</p>
           )}
-          <a
-            href={downloadUrl(part.revision)}
-            download
-            className="ease-mechanical mt-4 inline-block rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
-            {strings.download.original}
-          </a>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <a
+              href={downloadUrl(part.revision)}
+              download
+              className="ease-mechanical inline-block rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.download.original}
+            </a>
+            <Remove part={part} />
+          </div>
+          {/*
+            The reassurance sits beside the button rather than behind a confirmation
+            dialog. Removing is reversible and touches nothing on disk, so a modal would
+            spend on this action the alarm that purge is going to need — and purge is one
+            deliberate step further away, on the removed list this sends you to.
+          */}
+          <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+            {strings.removal.removeHint}
+          </p>
         </div>
       </header>
 
@@ -217,6 +229,49 @@ function Figure<T>({
         <span className="ml-1 text-[var(--color-muted)]">{strings.detail.approximate}</span>
       ) : null}
     </span>
+  )
+}
+
+/**
+ * The first of the three steps, and the only one reachable from a part's own page.
+ *
+ * On success this navigates to the grid rather than staying: every read path filters
+ * `deleted_at`, so this route would 404 on the next render and show "could not open this
+ * part" for a part the user just successfully removed. Leaving is the honest response to a
+ * page that no longer describes anything.
+ *
+ * No confirmation dialog. The action is reversible indefinitely, changes nothing on disk,
+ * and `strings.removal.removeHint` says so next to the button before it is pressed —
+ * confirming it would teach people to click through the dialog that purge actually needs.
+ */
+function Remove({ part }: { part: PartDetail }) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const remove = useMutation({
+    mutationFn: () => removePart(part.id),
+    onSuccess: async () => {
+      // Both lists change: this part leaves the grid and joins the removed list. Awaited
+      // so the navigation lands on a grid that has already dropped the card, rather than
+      // showing it for one frame and then blinking it away.
+      await queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+      await navigate({ to: '/' })
+    },
+  })
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => remove.mutate()}
+        disabled={remove.isPending}
+        className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {remove.isPending ? strings.removal.removing : strings.removal.remove}
+      </button>
+      {remove.isError ? (
+        <span className="text-xs text-[var(--color-muted)]">{strings.removal.removeFailed}</span>
+      ) : null}
+    </>
   )
 }
 

@@ -67,6 +67,34 @@ pub struct DownloadSource {
 pub struct StorageTotals {
     pub source_bytes: u64,
     pub derivative_bytes: u64,
+    /// What this library's *removed* parts still occupy.
+    ///
+    /// Zero until somebody removes something, and the reason it exists at all is that the
+    /// two figures above deliberately exclude soft-deleted parts: without this, removing a
+    /// part would drop the panel's total by its size while the disk was unchanged, which
+    /// is the panel telling a user bytes were freed. `CLAUDE.md` forbids exactly that
+    /// reading, and `strings.removal` is written around never producing it.
+    ///
+    /// A blob shared with a live part is counted here *and* above, because it is genuinely
+    /// serving both and purging the removed part would not reclaim it.
+    pub removed_bytes: u64,
+}
+
+/// Which side of `deleted_at` a page reads.
+///
+/// A parameter rather than a second method, because the two pages are the same query with
+/// one predicate flipped and a duplicate of four LATERALs would drift the moment either
+/// side gained a column. A parameter rather than a `bool` for the ordinary reason: `page(
+/// library, after, limit, true)` does not say what `true` selects, and this is a call site
+/// where guessing wrong shows a user the wrong parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// The library as it stands. What the grid asks for.
+    Live,
+    /// Parts a person removed and has not purged. The only route back to a soft-deleted
+    /// part — without it, delete is a trap, because every other read path filters these
+    /// out and nothing would list an id to restore.
+    Removed,
 }
 
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
@@ -80,6 +108,7 @@ pub trait PartRepository: Send + Sync {
         library: LibraryId,
         after: Option<lapidary_core::PartId>,
         limit: u16,
+        shows: Shows,
     ) -> Result<Vec<PartRow>, DbError>;
 }
 
@@ -251,6 +280,119 @@ impl PgBlobs {
         Ok(())
     }
 
+    /// Step three of the three: remove bytes nothing has pointed at for `older_than`.
+    ///
+    /// This is the only code in Lapidary that destroys user data, and it is written on the
+    /// assumption that everything upstream of it may be wrong.
+    ///
+    /// # It does not consult `ref_count`, and the `NOT EXISTS` pair is not why that is safe
+    ///
+    /// The counter is a hint. It is maintained by arithmetic on the ingest paths, and
+    /// [`PgParts::purge`]'s recompute can itself miss a row committed while it waited for a
+    /// lock. Both can be wrong, so nothing here reads it.
+    ///
+    /// What actually makes a referenced blob unremovable is neither this query nor that
+    /// counter: it is `file.blake3` and `derivative.blake3`, both foreign keys to `blob`.
+    /// A `DELETE` of a referenced row raises a constraint violation whatever this `WHERE`
+    /// clause says, and the bytes survive because the statement never succeeds. Written
+    /// down because it is easy to believe the clause below is the guard and quietly weaken
+    /// it — it is not, and the schema is.
+    ///
+    /// What the `NOT EXISTS` pair buys is that such a row is *declined* rather than
+    /// *failed on*. The whole sweep is one transaction, so one wrongly-quarantined blob
+    /// would otherwise roll back every legitimate removal beside it — and would do so
+    /// again every hour, forever, since nothing about the bad row heals on its own.
+    /// Quarantine would silently stop collecting anything at all. The pair is an
+    /// availability property, and the second statement below is what heals the row.
+    ///
+    /// So: a drifted-high counter means a blob never enters quarantine — wasted disk. A
+    /// drifted-low one means a blob enters quarantine it should not have, and this declines
+    /// it and clears the flag. Bytes are not lost in either direction.
+    ///
+    /// # A blob that came back is un-quarantined, whatever its clock says
+    ///
+    /// Re-ingesting quarantined bytes points a new `file` row at them, and that alone
+    /// undoes the quarantine — the second statement below clears the flag for every
+    /// reachable blob, not only for ones past the cutoff. Re-ingest un-quarantines by
+    /// existing, and a person who deleted something by mistake and re-scanned the folder
+    /// does not have to know this column exists.
+    ///
+    /// # The unlink happens before the commit, and that ordering is load-bearing
+    ///
+    /// `remove` is called while this transaction still holds the deleted `blob` row, which
+    /// is what makes a concurrent re-ingest of the same bytes safe: an ingest linking to
+    /// this hash blocks on the row and, once the delete commits, fails its own transaction
+    /// on `file.blake3`'s foreign key rather than committing a `file` row for bytes that
+    /// have just been unlinked. Its job retries, finds no `blob` row, and writes the bytes
+    /// again. Unlinking after the commit would leave that window open.
+    ///
+    /// The cost of the ordering is the opposite failure: an unlink that succeeds followed
+    /// by a commit that does not would leave a row naming bytes that are gone. So a failing
+    /// `remove` aborts the whole sweep — the row and the bytes both survive, and the next
+    /// hour tries again. Losing bytes is worse than keeping them, every time.
+    pub async fn reap(
+        &self,
+        older_than: std::time::Duration,
+        // `String` rather than an error type of the caller's, because this crate must not
+        // depend on `lapidary-storage` to describe a failure to unlink a file. The message
+        // is the caller's; all this does is carry it out through `DbError`.
+        mut remove: impl FnMut(&BlobHash) -> Result<(), String>,
+    ) -> Result<ReapReport, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        let doomed: Vec<(String, i64)> = sqlx::query_as(
+            "DELETE FROM blob b \
+             WHERE b.quarantined_at < now() - make_interval(secs => $1) \
+               AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3) \
+               AND NOT EXISTS (SELECT 1 FROM derivative d WHERE d.blake3 = b.blake3) \
+             RETURNING b.blake3, b.stored_bytes",
+        )
+        .bind(older_than.as_secs_f64())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut removed = Vec::with_capacity(doomed.len());
+        let mut bytes = 0u64;
+        for (hex, stored_bytes) in &doomed {
+            let hash = BlobHash::parse_hex(hex).map_err(|_| DbError::CorruptBlobHash {
+                column: "blob.blake3",
+                value: hex.clone(),
+            })?;
+            remove(&hash).map_err(|message| DbError::ReapRemove {
+                hash: hex.clone(),
+                message,
+            })?;
+            removed.push(hash);
+            bytes += bytes_column("blob.stored_bytes", *stored_bytes)?;
+        }
+
+        // The other half, and it is not conditional on the cutoff: bytes somebody pointed
+        // at again stop being candidates the moment they are pointed at, not thirty days
+        // later. `ref_count` is recomputed here for the same reason purge recomputes it —
+        // this is the one sweep that looks at every quarantined blob, so it is the cheapest
+        // place to correct a counter that drifted.
+        let revived: Vec<String> = sqlx::query_scalar(
+            "WITH counts AS ( \
+                 SELECT b.blake3, \
+                        (SELECT count(*) FROM file f WHERE f.blake3 = b.blake3) \
+                      + (SELECT count(*) FROM derivative d WHERE d.blake3 = b.blake3) AS actual \
+                 FROM blob b WHERE b.quarantined_at IS NOT NULL \
+             ) \
+             UPDATE blob b SET quarantined_at = NULL, ref_count = c.actual \
+             FROM counts c WHERE b.blake3 = c.blake3 AND c.actual > 0 \
+             RETURNING b.blake3",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(ReapReport {
+            removed,
+            bytes,
+            un_quarantined: revived.len() as u32,
+        })
+    }
+
     /// Is this derivative reachable — does any part in any library that exists point at
     /// these bytes?
     ///
@@ -356,6 +498,50 @@ impl PgBlobs {
         .await?;
         Ok(found.is_some())
     }
+}
+
+/// What [`PgParts::purge`] did, so a caller can say it truthfully.
+///
+/// The counts are of *blobs entering quarantine*, not of bytes freed, and the
+/// difference is the point: purging a part frees nothing today. Its bytes sit where
+/// they were for thirty days, reachable by hash and restorable, and only then are they
+/// removed. A route that reported "12.4 MB freed" would be describing something that
+/// has not happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PurgeReport {
+    /// Blobs this purge left with nothing pointing at them.
+    pub quarantined: u32,
+    /// What those blobs occupy on disk — `stored_bytes`, the compressed figure, since
+    /// that is the space that will actually come back.
+    pub quarantined_bytes: u64,
+}
+
+/// Purging a part that cannot be purged, told apart — a caller has something different
+/// to say about each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purged {
+    /// No part with that id.
+    NoSuchPart,
+    /// The part is live. Purge is the *second* step and refuses to be the first: a
+    /// single call that both hid a part and destroyed its chain would be the implicit
+    /// deletion the product rule forbids.
+    NotDeletedYet,
+    Done(PurgeReport),
+}
+
+/// What one sweep of [`PgBlobs::reap`] did.
+///
+/// `removed` carries the hashes rather than a count because the operator log wants them:
+/// this is the one place bytes leave for good, and "removed 3 blobs" is not something
+/// anyone can check afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReapReport {
+    /// Blobs whose rows and bytes are both gone.
+    pub removed: Vec<BlobHash>,
+    /// What those blobs occupied — `stored_bytes`, so it is the space actually recovered.
+    pub bytes: u64,
+    /// Quarantined blobs something points at again. Their clocks are cleared, not paused.
+    pub un_quarantined: u32,
 }
 
 pub struct PgIngest(pub PgPool);
@@ -501,10 +687,20 @@ impl PgIngest {
                     .await?;
             }
             if let Some(new) = &hash {
-                sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-                    .bind(new)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(
+                    // Rides along on the row this statement already locks and writes, so
+                    // it costs nothing. Without it, a blob somebody re-ingested stays
+                    // flagged until the next hourly sweep notices. That is harmless --
+                    // the reaper re-checks reachability and declines it -- but it makes
+                    // "a referenced blob is never quarantined" true only eventually
+                    // rather than continuously, and an operator reading the column
+                    // would see a lie for up to an hour.
+                    "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+                     WHERE blake3 = $1",
+                )
+                .bind(new)
+                .execute(&mut *tx)
+                .await?;
             }
         }
 
@@ -579,10 +775,20 @@ async fn insert_part_chain(
     // One file inserted above -> one reference. Runs once per call to insert_part_chain,
     // i.e. once per file, whether the blob is new (record) or already held
     // (link_existing) — both paths route through here.
-    sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-        .bind(req.blob.hash.to_hex())
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        // Rides along on the row this statement already locks and writes, so
+        // it costs nothing. Without it, a blob somebody re-ingested stays
+        // flagged until the next hourly sweep notices. That is harmless --
+        // the reaper re-checks reachability and declines it -- but it makes
+        // "a referenced blob is never quarantined" true only eventually
+        // rather than continuously, and an operator reading the column
+        // would see a lie for up to an hour.
+        "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+         WHERE blake3 = $1",
+    )
+    .bind(req.blob.hash.to_hex())
+    .execute(&mut **tx)
+    .await?;
 
     // No thumbnail, no row. Skipped entirely rather than written empty — see
     // `IngestRequest::thumbnail_webp` for why an empty `bytea` is worse than nothing.
@@ -621,10 +827,20 @@ async fn insert_part_chain(
         // One derivative inserted below -> one reference, exactly as the source file's
         // increment above works. This is what makes eviction safe: the reap only removes
         // bytes nothing points at.
-        sqlx::query("UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = $1")
-            .bind(rung.blob.hash.to_hex())
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            // Rides along on the row this statement already locks and writes, so
+            // it costs nothing. Without it, a blob somebody re-ingested stays
+            // flagged until the next hourly sweep notices. That is harmless --
+            // the reaper re-checks reachability and declines it -- but it makes
+            // "a referenced blob is never quarantined" true only eventually
+            // rather than continuously, and an operator reading the column
+            // would see a lie for up to an hour.
+            "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
+             WHERE blake3 = $1",
+        )
+        .bind(rung.blob.hash.to_hex())
+        .execute(&mut **tx)
+        .await?;
 
         sqlx::query(
             "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
@@ -896,6 +1112,175 @@ impl PgParts {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Step one of the three: hide the part, touch no bytes.
+    ///
+    /// One `UPDATE`, and that it is only one is a property of what came before rather
+    /// than luck — [`PartRepository::page`], [`PgParts::detail`], [`PgParts::library_of`],
+    /// [`PgBlobs::source_for_download`] and [`PgParts::storage_totals`] all already filter
+    /// `deleted_at IS NULL`, so setting the column removes the part from the grid, its own
+    /// page, its download and the library's totals at once.
+    ///
+    /// [`PgBlobs::library_holds`] is the deliberate exception and must stay one: it is
+    /// what makes a re-scan of a deleted path a no-op instead of a resurrection. See its
+    /// own doc comment.
+    ///
+    /// `WHERE deleted_at IS NULL` makes this idempotent in the direction that matters —
+    /// deleting an already-deleted part reports `false` rather than moving its timestamp
+    /// forward and quietly extending how long it has been gone.
+    ///
+    /// Returns whether a row matched, for [`PgParts::set_auto_thumbnail`]'s reason.
+    pub async fn soft_delete(&self, part: PartId) -> Result<bool, DbError> {
+        let result =
+            sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
+                .bind(part.as_uuid())
+                .execute(&self.0)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Undo of [`PgParts::soft_delete`], and explicit for the same reason delete is: we do
+    /// not un-delete implicitly either. A scan that found the file again will not do this
+    /// — a person has to ask.
+    ///
+    /// Nothing needs restoring but the column. Delete left the revisions, files,
+    /// derivatives and blobs exactly where they were, which is the whole point of it being
+    /// soft.
+    pub async fn restore(&self, part: PartId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL",
+        )
+        .bind(part.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Step two of the three: remove the part chain, and leave the bytes alone.
+    ///
+    /// # The reference update recomputes rather than decrementing
+    ///
+    /// `ref_count` is maintained by arithmetic everywhere else — `+1` per `file` and
+    /// `derivative` row in [`insert_part_chain`], moved on rung replacement in
+    /// [`PgParts::record_derivative`]. This is the one place that does not do that, and it
+    /// is deliberate: a counter maintained only by increments and decrements is a counter
+    /// that drifts, and the drift is invisible until something acts on it. The thing that
+    /// acts on it is the reaper, and what it does is delete bytes.
+    ///
+    /// So the destructive path refuses to trust the number. It recomputes each affected
+    /// hash from what actually points at it, which makes any accumulated drift self-heal
+    /// the moment a purge touches that blob.
+    ///
+    /// A concurrent ingest of the same bytes is *not* fully excluded by this, and the
+    /// honest version is worth writing down. The `UPDATE` takes the same `blob` row lock
+    /// ingest's `ref_count + 1` takes, so the two serialize on the write — but the count
+    /// itself is computed by a CTE evaluated under the statement's own snapshot, so a
+    /// `file` row that another transaction commits while this one waits for the lock can
+    /// be missed. The recompute would then land on zero for bytes something does point at.
+    ///
+    /// That is survivable, and it is survivable by design rather than by luck: reaching
+    /// zero sets `quarantined_at`, which starts a thirty-day clock and removes nothing.
+    /// [`PgBlobs::reap`] re-asks reachability inside the transaction that would delete the
+    /// bytes, and a blob with a `file` row is not removed — it is un-quarantined. The
+    /// layering is the point. This statement is allowed to be wrong; the one that destroys
+    /// data is not, so it does not rely on this one being right.
+    ///
+    /// # Order matters twice
+    ///
+    /// The doomed hashes are collected *before* the chain is deleted, because afterwards
+    /// there is no path from the part to its blobs. And the chain comes down child-first:
+    /// nothing in `0002_parts.sql` declares `ON DELETE CASCADE`, which is a property worth
+    /// keeping — a stray `DELETE FROM part` should fail loudly on a foreign key rather
+    /// than quietly take four tables with it.
+    pub async fn purge(&self, part: PartId) -> Result<Purged, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        // `FOR UPDATE` holds the part row for the whole transaction, so two purges of the
+        // same part cannot both pass the gate below and double-count the recompute.
+        let state: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT (extract(epoch FROM deleted_at) * 1000000)::bigint FROM part \
+             WHERE id = $1 FOR UPDATE",
+        )
+        .bind(part.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await?;
+        match state {
+            None => return Ok(Purged::NoSuchPart),
+            Some(None) => return Ok(Purged::NotDeletedYet),
+            Some(Some(_)) => {}
+        }
+
+        let doomed: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT h FROM ( \
+                 SELECT f.blake3 AS h FROM file f \
+                 JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1 \
+                 UNION ALL \
+                 SELECT d.blake3 FROM derivative d \
+                 JOIN revision r ON r.id = d.revision_id \
+                 WHERE r.part_id = $1 AND d.blake3 IS NOT NULL \
+             ) hashes",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for statement in [
+            "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
+            "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
+            "DELETE FROM revision WHERE part_id = $1",
+            "DELETE FROM part WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(part.as_uuid())
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Recompute and quarantine in one statement, so a hash cannot be counted correct
+        // and left un-quarantined by a failure between two of them.
+        //
+        // `quarantined_at` is cleared when the count comes back above zero, which is what
+        // makes re-ingesting quarantined bytes un-quarantine them: `link_existing` points
+        // a new `file` row at a blob whose clock was running, and the next purge that
+        // touches it stops that clock. `coalesce` on the other branch is what stops a
+        // second purge from restarting a clock that is already running.
+        let sizes: Vec<Option<i64>> = sqlx::query_scalar(
+            "WITH counts AS ( \
+                 SELECT h AS blake3, \
+                        (SELECT count(*) FROM file f WHERE f.blake3 = h) \
+                      + (SELECT count(*) FROM derivative d WHERE d.blake3 = h) AS actual \
+                 FROM unnest($1::text[]) AS h \
+             ) \
+             UPDATE blob b SET \
+                 ref_count = c.actual, \
+                 quarantined_at = CASE WHEN c.actual = 0 \
+                                       THEN coalesce(b.quarantined_at, now()) \
+                                       ELSE NULL END \
+             FROM counts c \
+             WHERE b.blake3 = c.blake3 \
+             RETURNING CASE WHEN c.actual = 0 THEN b.stored_bytes ELSE NULL END",
+        )
+        .bind(&doomed)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // One row came back per hash the purge touched; the `NULL`s are the ones another
+        // part still points at, which are exactly the blobs that must not be counted as
+        // entering quarantine.
+        let entering: Vec<i64> = sizes.into_iter().flatten().collect();
+        let mut quarantined_bytes = 0u64;
+        for stored in &entering {
+            // `bytes_column`, never `as u64`: a negative row would otherwise reach a person
+            // as 18 exabytes entering quarantine instead of saying the row is wrong.
+            quarantined_bytes += bytes_column("blob.stored_bytes", *stored)?;
+        }
+        Ok(Purged::Done(PurgeReport {
+            quarantined: entering.len() as u32,
+            quarantined_bytes,
+        }))
+    }
+
     /// Which library owns `part`. `None` when there is no such part, or when it is
     /// soft-deleted.
     ///
@@ -1082,18 +1467,29 @@ impl PgParts {
     /// writes the second role. The card figures and this total describe the same set, and
     /// this clause is what keeps that true.
     ///
-    /// Soft-deleted parts are excluded, matching [`PartRepository::page`]. The panel this
-    /// feeds sits over that grid, and a total counting parts the grid does not show could
-    /// not be checked against it. Their bytes are still on the volume until a purge, so
-    /// whichever slice adds delete owns telling an operator about the difference — today
-    /// nothing writes `deleted_at`, so the two answers are the same answer.
+    /// Soft-deleted parts are excluded from the first two figures, matching
+    /// [`PartRepository::page`]. The panel this feeds sits over that grid, and a total
+    /// counting parts the grid does not show could not be checked against it.
+    ///
+    /// Slice 7 is the slice this comment used to defer to -- "whichever slice adds delete
+    /// owns telling an operator about the difference" -- and `removed_bytes` is that
+    /// telling. Without it, removing a part drops the panel by its size while the volume is
+    /// unchanged, which reads as bytes freed and is the one thing `CLAUDE.md` says this
+    /// area must never read as.
+    ///
+    /// **Quarantined bytes are not here, and cannot be.** A purge removes the part chain,
+    /// so a quarantined blob has no `file` row, no `revision`, no `part` and therefore no
+    /// library: the figure is library-less by construction rather than merely
+    /// unimplemented. It belongs to an instance-wide storage view, which arrives with
+    /// Phase 4's tiering job. Until then a purge does drop this panel while the bytes wait
+    /// out their thirty days -- recorded in the slice 7 design, section 2.
     pub async fn storage_totals(
         &self,
         library: LibraryId,
     ) -> Result<Option<StorageTotals>, DbError> {
         // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
         // i64 — hence the `::bigint` casts, not decoration.
-        let row: Option<(i64, i64)> = sqlx::query_as(
+        let row: Option<(i64, i64, i64)> = sqlx::query_as(
             "SELECT (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
@@ -1106,18 +1502,32 @@ impl PgParts {
              + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
              FROM derivative d JOIN revision r ON r.id = d.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+             WHERE b.blake3 IN (SELECT f.blake3 FROM file f \
+             JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
+             AND f.role = 'source' \
+             UNION SELECT d.blake3 FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
+             AND d.blake3 IS NOT NULL)) \
+             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
+             FROM derivative d JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL) \
              FROM library l WHERE l.id = $1",
         )
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((source, derivative)) = row else {
+        let Some((source, derivative, removed)) = row else {
             return Ok(None);
         };
         Ok(Some(StorageTotals {
             source_bytes: bytes_column("blob.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+            removed_bytes: bytes_column("blob.stored_bytes", removed)?,
         }))
     }
 
@@ -1169,6 +1579,7 @@ impl PartRepository for PgParts {
         library: LibraryId,
         after: Option<PartId>,
         limit: u16,
+        shows: Shows,
     ) -> Result<Vec<PartRow>, DbError> {
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -1208,6 +1619,7 @@ impl PartRepository for PgParts {
             Uuid,
             String,
             Option<String>,
+            String,
             Option<Vec<u8>>,
             Option<i32>,
             Option<bool>,
@@ -1219,7 +1631,8 @@ impl PartRepository for PgParts {
             i64,
             i64,
         )> = sqlx::query_as(
-            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, d.thumb_bytes, \
+            "SELECT p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
+                    d.thumb_bytes, \
                     r.triangle_count, r.is_watertight, \
                     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, l0.blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
@@ -1232,7 +1645,7 @@ impl PartRepository for PgParts {
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-             WHERE p.library_id = $1 AND p.deleted_at IS NULL \
+             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                AND ($2::uuid IS NULL OR p.id < $2) \
              ORDER BY p.id DESC LIMIT $3",
         )
@@ -1247,6 +1660,10 @@ impl PartRepository for PgParts {
         // kinds are read by one query now, so a reader spelling either differently from
         // the writer reads nothing while looking entirely correct.
         .bind(DerivativeKind::TessellationL0.as_str())
+        // The predicate is `(deleted_at IS NOT NULL) = $6` rather than two branches of
+        // SQL, so both pages are provably the same query: a column added to one is added
+        // to the other, and the removed list cannot quietly fall behind the grid.
+        .bind(shows == Shows::Removed)
         .fetch_all(&self.0)
         .await?;
 
@@ -1265,6 +1682,7 @@ impl PartRepository for PgParts {
                     revision,
                     name,
                     part_number,
+                    source_path,
                     thumb_bytes,
                     triangles,
                     _watertight,
@@ -1332,6 +1750,7 @@ impl PartRepository for PgParts {
                             revision: RevisionId::from_uuid(revision),
                             name,
                             part_number,
+                            source_path,
                             // The hash is not carried in slice 1: thumbnails arrive inline
                             // and the grid renders them directly. A hash-addressed
                             // thumbnail endpoint arrives with the viewer.

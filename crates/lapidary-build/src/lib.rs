@@ -1,5 +1,7 @@
-//! The build graph of manufacturing process steps. Implementation lands in Phase 1;
-//! see docs/DATA.md.
+//! The build graph of manufacturing process steps.
+//!
+//! Empty. Implementation lands in **Phase 7** (`ROADMAP.md`), which is the phase named
+//! after it. See `docs/DATA.md`.
 
 use thiserror::Error;
 
