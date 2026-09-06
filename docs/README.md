@@ -81,6 +81,13 @@ this one owns. Committing it would fork the skills, which is what moving them ou
   columns cannot be indexed.
 - `blob.last_accessed_at` is updated in batches every 5 minutes, not per read.
 - Bundle ZIPs use STORE, not DEFLATE.
-- Thumbnails under 64 KB live in Postgres as `bytea`, deliberately.
+- Thumbnails under 64 KB live in Postgres as `bytea`, deliberately — there is no
+  `images/` directory in the store, and no config file in it either.
+- The derivative cache is `<storage-root>/blobs/`, a sibling of `libraries/`, not
+  `cache/blobs/` as the slice spec drew it. This is the one entry in this list that is a
+  gap rather than a decision: `DATA.md` §1.1 says what the name costs and why renaming it
+  is a follow-up.
+- `blob.quarantined_at` is a column with nothing behind it yet. Soft delete is built;
+  purge, quarantine and the 30-day sweep are design (`DATA.md` §1.6).
 - The file watcher lives in the native `lapidary agent` binary, never in a container —
   inotify does not propagate through Docker Desktop bind mounts on macOS or Windows.
