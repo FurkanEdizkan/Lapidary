@@ -18,15 +18,38 @@ Treating these the same is the most common way this kind of app becomes slow and
 | **Preview** | thumbnails | 5 – 60 KB | Yes, cheaply | **Hot** |
 
 ```
-/var/lib/lapidary/          (named volume)
-  blobs/ab/cd/abcdef01…     content-addressed, 2-level hex sharding
-  workspace/                agent checkout dir (agent host only)
-  quarantine/               ref_count=0, 30-day hold before removal
+<storage-root>/                        chosen on first run; app-owned, user-browsable
+  lapidary.toml                        app config, user-editable
+  libraries/default/
+    Terrain/Rocks/cliff/               one directory per model, named after the part
+      cliff.stl                        the source, under its original filename
+      metadata.json                    part + revision facts, human-readable
+      images/thumbnail.webp
+  cache/
+    blobs/ab/cd/<blake3>                derivatives only, content-addressed, evictable
 ```
 
-Two-level sharding gives 65,536 buckets, keeping any directory under ~2k entries at a
-million blobs. **BLAKE3**, not SHA-256 — ingest is hash-bound before it is anything else.
-Blobs never live in Postgres, with one deliberate exception (§1.5).
+**Sources are path-addressed now, not content-addressed.** Each ingested model gets its
+own directory named after the part, under a folder tree mirroring the ingest directory's
+own nesting — `Terrain/Rocks/cliff/` for a file ingested at `Terrain/Rocks/cliff.stl`.
+This reverses the rule that stood here: every source used to land at
+`blobs/ab/cd/<hash>` so identical bytes anywhere in a library shared one file. The owner
+wants the opposite — a folder a user can open in a file manager and find their model by
+name, not by hash.
+
+**The cost, stated plainly: source deduplication is gone.** Two identical files ingested
+at two source paths are now two files on disk. That is the price of a browsable store,
+and it is not recoverable by cleverness — a store cannot be both one file per model and
+one file per distinct content. **`CLAUDE.md`'s "Hash first, always" still holds:** BLAKE3
+is still computed before anything else in ingest, and a known `(library_id, source_path,
+blake3)` still short-circuits a re-scan of the same path. Only the filename the bytes are
+written under changed; which paths dedupe against which did not.
+
+**Content addressing survives for `cache/` only** — derivatives, which are evictable and
+rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,
+keeping any cache directory under ~2k entries at a million derivatives, still keyed on
+**BLAKE3**, not SHA-256. Blobs never live in Postgres, with one deliberate exception
+(§1.5).
 
 ### 1.2 Compression — per-role first, per-age second
 
@@ -100,8 +123,11 @@ than any compression decision above.
 1. **Delete** — sets `deleted_at`, hides the part. Nothing touches disk. Reversible
    indefinitely.
 2. **Purge** — separate, explicitly worded action. Decrements `ref_count`.
-3. **Quarantine** — `ref_count = 0` moves the blob to `quarantine/` for 30 days.
-   Reachable by hash, invisible in UI, restorable. Only then removed.
+3. **Quarantine** — `ref_count = 0` sets `blob.quarantined_at`, not a move to a
+   `quarantine/` directory: the bytes stay exactly where they already are. Restoring
+   needs no path rewrite, and no reader needs a second lookup location on the hot path
+   to serve a case that is meant to be rare. Reachable by hash, invisible in UI,
+   restorable. Only then removed, after 30 days.
 
 ---
 
