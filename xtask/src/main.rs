@@ -584,6 +584,7 @@ fn check_strings() -> Result<()> {
     }
 
     let mut violations = Vec::new();
+    let mut matched = Vec::new();
     for (path, contents) in &sources {
         // Report relative to the workspace root, matching how EXEMPT's entries and every
         // other check in this crate name a file, and so this check's own output stays
@@ -591,26 +592,24 @@ fn check_strings() -> Result<()> {
         let relative = path
             .strip_prefix(&format!("{}/", root.display()))
             .unwrap_or(path);
-        violations.extend(
-            strings::check_source(relative, contents)
-                .map_err(|e| anyhow::anyhow!(e))
-                .with_context(|| format!("Could not scan {relative}"))?,
-        );
+        let scan = strings::check_source(relative, contents)
+            .map_err(|e| anyhow::anyhow!(e))
+            .with_context(|| format!("Could not scan {relative}"))?;
+        violations.extend(scan.violations);
+        matched.extend(scan.matched);
     }
 
-    if violations.is_empty() {
-        println!(
-            "string literal check OK — no mangled continuations found ({} source file(s) checked)",
-            sources.len()
-        );
-        Ok(())
-    } else {
+    if !violations.is_empty() {
         eprintln!(
             "String literal check failed ({} problem(s)):\n",
             violations.len()
         );
         for v in &violations {
             eprintln!("  {v}");
+            // The exemption key, printed beside the violation, so excusing something
+            // legitimate is a copy-paste rather than a second run with a hand-written
+            // helper.
+            eprintln!("      content: \"{}\"", v.content);
         }
         eprintln!(
             "\nEach of these is a string literal containing a run of three or more space \
@@ -619,13 +618,47 @@ fn check_strings() -> Result<()> {
              the text before Rust ever sees it) strips the backslash and newline but not the \
              following line's indentation. `cargo fmt --check` does not look inside string \
              literals, so this passes fmt, clippy and every test silently — this check is what \
-             catches it. Fix the message (collapse it to one line, or use a real `\\`-continuation \
-             written directly rather than generated), or if the spacing is genuinely \
-             intentional (a YAML/Dockerfile fixture, reproduced external output), add a narrow, \
-             commented entry to EXEMPT in xtask/src/strings.rs naming exactly this file and line."
+             catches it. Fix the message (collapse it to one line, or use a real \
+             `\\`-continuation written directly rather than generated), or if the spacing is \
+             genuinely intentional (a YAML/Dockerfile fixture, reproduced external output), add \
+             a narrow, commented entry to EXEMPT in xtask/src/strings.rs with the file and the \
+             `content` digest printed above. That digest keys on the literal's own text, so an \
+             exemption survives every edit except one to the literal it excuses — which is \
+             exactly when someone should look at whether it still applies."
         );
         bail!("string literal check failed")
     }
+
+    // An exemption that excused nothing is a claim about a literal that no longer exists in
+    // that form. A failure rather than a warning: the point of keeping this list narrow is
+    // that a reader can trust every entry describes real code, and an entry nobody can tell
+    // is dead makes the next one harder to judge. The line-keyed version could not report
+    // this at all — a stale entry and a literal that had merely moved looked identical.
+    let unused = strings::unused(&matched);
+    if !unused.is_empty() {
+        eprintln!(
+            "String literal check failed ({} stale exemption(s)):\n",
+            unused.len()
+        );
+        for entry in &unused {
+            eprintln!("  {} — {}", entry.file, entry.reason);
+        }
+        eprintln!(
+            "\nEach of these names a literal that no longer exists with that content: it was \
+             rewritten, deleted, or moved to another file. Remove the entry. If the literal is \
+             still there and still legitimately space-bearing, its text changed — re-run this \
+             check and copy the new `content` digest it prints beside the violation."
+        );
+        bail!("string literal check failed")
+    }
+
+    println!(
+        "string literal check OK — no mangled continuations found, {} exemption(s) all live \
+         ({} source file(s) checked)",
+        strings::EXEMPT.len(),
+        sources.len()
+    );
+    Ok(())
 }
 
 /// Read the workspace graph from `cargo metadata` and apply the layering rule.
