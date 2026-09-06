@@ -647,6 +647,37 @@ test('Tab stays inside the dialog and comes back when focus has fallen out of it
 })
 
 /**
+ * A delete that fails leaves its confirmation open, so the failure belongs in the dialog
+ * the user is looking at rather than on a row behind the scrim — and the row's own note
+ * from an earlier action has to get out of the way, since a mutation's error state lives
+ * until its own next run and would otherwise be the only thing that ever spoke for that
+ * row.
+ */
+test('a delete that fails says so in the dialog, and clears what the row said before', async () => {
+  stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    move: conflict('crossLibrary'),
+    folderDelete: async () => ({ ok: false, status: 500 }),
+  })
+  renderTree()
+
+  const terrain = await screen.findByRole('button', { name: 'Terrain' })
+  fireEvent.drop(terrain, draggingCliff)
+  expect(await screen.findByText(strings.folders.crossLibraryRefusal)).toBeDefined()
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }))
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.deleteConfirm }),
+  )
+
+  const dialog = await screen.findByRole('dialog')
+  expect(await within(dialog).findByText(strings.folders.deleteFailed)).toBeDefined()
+  // Still open, because nothing was deleted and the confirmation is where the retry is.
+  expect(within(dialog).getByRole('button', { name: strings.folders.deleteConfirm })).toBeDefined()
+  expect(screen.queryByText(strings.folders.crossLibraryRefusal)).toBeNull()
+})
+
+/**
  * A refusal that nobody is looking at is a refusal nobody gets. Every one of these notes
  * was a plain muted `<p>` at the foot of the whole `<nav>` — no role, no announcement, and
  * arbitrarily far from the row that was dropped on.

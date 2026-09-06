@@ -922,7 +922,7 @@ file. Nothing was moved or removed.'
   })
   renderIndex({ batch: BATCH_ID })
 
-  expect(await screen.findByText(strings.migrate.failed(1))).toBeTruthy()
+  expect(await screen.findByText(strings.migrate.failed())).toBeTruthy()
   // The sentence this whole finding is about: existing models described as about to
   // vanish from a grid they are already in.
   expect(screen.queryByText(strings.scan.failed(1))).toBeNull()

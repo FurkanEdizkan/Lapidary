@@ -132,6 +132,16 @@ function useMovePart(library: LibraryId, onMoved?: () => void) {
       }
     },
     dismiss: () => setDuplicate(null),
+    /**
+     * Drop the last refusal without starting anything. A mutation's error state lives until
+     * its own next run, so a move that was refused keeps its note on that row forever —
+     * including under a later delete of the same row, whose failure would then be the thing
+     * nobody is told about. Whatever acts on a row next clears what the last action said.
+     */
+    forget: () => {
+      setRefusal(null)
+      move.reset()
+    },
   }
 }
 
@@ -158,7 +168,7 @@ export function FolderTree({
 }) {
   const folders = useFolders(library)
   const queryClient = useQueryClient()
-  const { move, duplicate, refusal, start, confirm, dismiss } = useMovePart(library)
+  const { move, duplicate, refusal, start, confirm, dismiss, forget } = useMovePart(library)
   const [pendingDelete, setPendingDelete] = useState<FolderNode | null>(null)
   /**
    * What a finished delete has to say, when it has something to say. Held at the level of
@@ -169,8 +179,13 @@ export function FolderTree({
 
   const remove = useMutation({
     mutationFn: (folder: FolderNode) => deleteFolder(folder.id),
-    // What the last delete had to say is not about this one.
-    onMutate: () => setDeleteOutcome(null),
+    // What the last action on this row had to say is not about this one. Both halves
+    // matter: a refused move keeps its note until the move mutation runs again, so without
+    // this a delete that fails on the same row would be the silent one.
+    onMutate: () => {
+      setDeleteOutcome(null)
+      forget()
+    },
     onSuccess: (result, folder) => {
       setPendingDelete(null)
       // Fired for the refusal too, and that is the point of handling it: a `404` means the
@@ -218,9 +233,12 @@ export function FolderTree({
    *
    * Under the row, not at the foot of the `<nav>`: a refusal is about the category it was
    * dropped on, and the previous version rendered it arbitrarily far from that row, below
-   * however many hundred categories the library has. The failed delete is anchored the same
-   * way because the row it names is still there — a refused delete is not, which is why its
-   * copy is the one message held at the level of the tree.
+   * however many hundred categories the library has.
+   *
+   * Only the move's notes. A delete that fails leaves its confirmation open, so its note
+   * belongs inside that dialog — a row behind an opaque scrim is not where the action
+   * happened. A delete that is refused closes it, and that note is the one held at the
+   * level of the tree.
    */
   const noteFor = (folder: FolderId | null): string | null => {
     if (move.isError && (move.variables?.folderId ?? null) === folder) {
@@ -228,9 +246,6 @@ export function FolderTree({
     }
     if (refusal !== null && refusal.folderId === folder) {
       return refusalMessage(refusal.reason)
-    }
-    if (remove.isError && folder !== null && remove.variables?.id === folder) {
-      return strings.folders.deleteFailed
     }
     return null
   }
@@ -283,6 +298,7 @@ export function FolderTree({
           folder={pendingDelete}
           subcategories={subcategoryCount(folders.data ?? [], pendingDelete.id)}
           busy={remove.isPending}
+          note={remove.isError ? strings.folders.deleteFailed : null}
           onConfirm={() => remove.mutate(pendingDelete)}
           onCancel={() => setPendingDelete(null)}
         />
@@ -678,12 +694,14 @@ function DeleteDialog({
   folder,
   subcategories,
   busy,
+  note,
   onConfirm,
   onCancel,
 }: {
   folder: FolderNode
   subcategories: number
   busy: boolean
+  note: string | null
   onConfirm: () => void
   onCancel: () => void
 }) {
@@ -692,6 +710,12 @@ function DeleteDialog({
       <p className="mt-2 text-sm text-[var(--color-muted)]">
         {strings.folders.deleteBody(folder.partCount, subcategories)}
       </p>
+      {/*
+        A delete that fails leaves this dialog open, so this is where the failure has to be
+        said — and said out loud, since the user is looking at a confirmation that appears
+        to have done nothing.
+      */}
+      <RowNote note={note} />
       <div className="mt-4 flex justify-end gap-2">
         <DialogButton onClick={onCancel} autoFocus>
           {strings.folders.cancel}

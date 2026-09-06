@@ -275,16 +275,20 @@ export const strings = {
         ? "Move complete — this library's files are now in their model folders."
         : 'Move finished, but not every file could be moved. The ones that could are in their model folders; the rest are still in the shared store, and every model is still listed.',
     /**
-     * Counted in steps, not in files, and that is the same measurement rule the doc above
-     * spells out: one failed `migrate_storage` job is one run over a page of up to 200
-     * hashes, so calling it a file would report 200 files as 1. What matters more than the
-     * unit is what a migration failure is NOT — nothing was deleted, nothing left the
-     * grid, and the models involved still open from where they always were.
+     * Uncounted, alone among the three `failed` strings, and deliberately so. The number
+     * the progress line has is `failedTotal`, which counts `migrate_storage` JOBS — each a
+     * run over a page of up to 200 hashes — so printing it as files would report 200 files
+     * as 1, the measurement mistake the doc above is entirely about. Naming a unit of its
+     * own instead ("2 steps") only moves the problem: nothing else on screen says what a
+     * step is, while the failure lines directly below this one name the parts and say what
+     * happened to each. Those lines are the count, and they are already rendered.
+     *
+     * What the sentence is for is the part no list conveys: a migration failure is not a
+     * loss. Nothing was deleted, nothing left the grid, and the models involved still open
+     * from where they always did.
      */
-    failed: (count: number) =>
-      count === 1
-        ? '1 step of the move could not be finished. Those files stay where they already were — nothing was removed and every model is still listed.'
-        : `${count.toLocaleString('en-US')} steps of the move could not be finished. Those files stay where they already were — nothing was removed and every model is still listed.`,
+    failed: () =>
+      'Not every file could be moved — the failures are listed below. Those files stay where they already were: nothing was removed, and every model is still listed.',
     /**
      * The migration's status cannot be read back. Reachable only after a poll has already
      * identified this batch as a migration, so the work is genuinely on the server and
