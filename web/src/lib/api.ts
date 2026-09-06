@@ -318,3 +318,14 @@ export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
 export function blobUrl(hash: BlobHash): string {
   return `/api/blob/${encodeURIComponent(hash)}`
 }
+
+/**
+ * `GET /api/libraries/{library}/jobs/{batch}/events` — the same `BatchStatus`, streamed.
+ *
+ * The URL only; opening the `EventSource` belongs to the component that has to close it
+ * again. Exported so the one place that builds this path is the same file every other
+ * route path is built in.
+ */
+export function batchEventsUrl(library: LibraryId, batch: BatchId): string {
+  return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`
+}

@@ -229,10 +229,52 @@ function scrollToEnd() {
   }
 }
 
+/**
+ * The batch streams the page has opened. jsdom implements no `EventSource`, so without
+ * this the progress stream is a code path no test in this file can reach — and the first
+ * version of it shipped behind a `typeof EventSource === 'undefined'` guard that made the
+ * whole thing quietly inert here.
+ */
+let streams: {
+  url: string
+  onmessage: ((event: { data: string }) => void) | null
+  onerror: (() => void) | null
+  closed: boolean
+}[] = []
+
+/** What the server sends down an open stream. */
+function pushStatus(status: unknown) {
+  for (const stream of streams) {
+    if (!stream.closed) {
+      stream.onmessage?.({ data: JSON.stringify(status) })
+    }
+  }
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   observers = []
+  streams = []
+  vi.stubGlobal(
+    'EventSource',
+    class {
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      private entry: (typeof streams)[number]
+      constructor(url: string) {
+        this.entry = { url, onmessage: null, onerror: null, closed: false }
+        streams.push(this.entry)
+        // The handlers are assigned after construction, so the record reads them back
+        // off this object rather than copying them once.
+        Object.defineProperty(this.entry, 'onmessage', { get: () => this.onmessage })
+        Object.defineProperty(this.entry, 'onerror', { get: () => this.onerror })
+      }
+      close() {
+        this.entry.closed = true
+      }
+    },
+  )
   vi.stubGlobal(
     'IntersectionObserver',
     class {
@@ -1441,4 +1483,66 @@ test('a deep-scrolled grid does not refetch every page on every settle tick', as
     partsRequests - afterPaging,
     'a running batch must not refetch a grid the user has paged into',
   ).toBe(0)
+})
+
+test('the progress line moves from the stream, which is what a hidden tab still gets', async () => {
+  // The freeze slice 5's handoff recorded: react-query does not poll a hidden document,
+  // so a user who dropped a thousand files and switched tabs came back to a line stopped
+  // where they left it. The assertion is that a status arriving down the stream — with no
+  // poll response behind it — moves the line.
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    // The poll never answers. Anything on screen came from the stream.
+    batch: () => new Promise(() => {}),
+  })
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await waitFor(() => expect(streams.length).toBe(1))
+  expect(streams[0]?.url).toContain('/jobs/01931b6e-0000-7000-8000-0000000b0001/events')
+
+  pushStatus({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 400,
+    pending: 250,
+    running: 1,
+    ingested: 149,
+    skipped: 0,
+    rendered: 0,
+    scanned: 1,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: null,
+  })
+
+  expect(await screen.findByText(strings.scan.running(148, 399))).toBeDefined()
+})
+
+test('a finished status closes the stream, so the browser does not re-open it forever', async () => {
+  // `EventSource` reconnects on its own, so a server that closes after the last event and
+  // a client that does not close in response is a connection re-opened forever against a
+  // batch that will never change again. Same hazard `refetchInterval` returning `false`
+  // closed for the poll, one layer down.
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])), batch: () => new Promise(() => {}) })
+  renderIndex({ batch: '01931b6e-0000-7000-8000-0000000b0001' })
+  await waitFor(() => expect(streams.length).toBe(1))
+
+  pushStatus({
+    batchId: '01931b6e-0000-7000-8000-0000000b0001',
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 3,
+    pending: 0,
+    running: 0,
+    ingested: 3,
+    skipped: 0,
+    rendered: 0,
+    scanned: 0,
+    failedTotal: 0,
+    failed: [],
+    startedAt: '2026-09-06T10:00:00Z',
+    finishedAt: '2026-09-06T10:00:09Z',
+  })
+
+  await waitFor(() => expect(streams[0]?.closed).toBe(true))
 })

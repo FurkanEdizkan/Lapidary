@@ -98,6 +98,13 @@ pub fn router(state: AppState, role: Role) -> Router {
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),
             )
+            // The same status, streamed, so the progress line keeps moving on a hidden
+            // tab — which is the one thing a poll cannot do. The route above stays as the
+            // client's fallback; see `jobs.rs`.
+            .route(
+                "/api/libraries/{library}/jobs/{batch}/events",
+                get(jobs::batch_events),
+            )
             // The library's own settings and the two trigger routes. `Role::Api` out of
             // necessity, not preference: nothing proxies a browser to the worker, so
             // mounting these there would make them unreachable from the UI that exists to

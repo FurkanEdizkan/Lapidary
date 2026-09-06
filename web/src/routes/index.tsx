@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
+  batchEventsUrl,
   downloadUrl,
   fetchBatchStatus,
   fetchHealth,
@@ -154,8 +155,48 @@ export function Index({ batch }: { batch?: string }) {
     // The poll stops itself. A batch that finishes while the tab is backgrounded must not
     // leave a closed laptop asking about a completed scan forever — spec §11's last risk,
     // which is easy to forget and so has its own test.
+    //
+    // It is also the *fallback* now rather than the only path: the stream below writes
+    // into this same cache entry, and a browser polls nothing on a hidden document. The
+    // poll is kept because `EventSource` fails in ways a page cannot see — a proxy that
+    // buffers `text/event-stream` breaks it silently — and because every progress test in
+    // this suite is written against it.
     refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
   })
+
+  /**
+   * The same status, streamed, so the progress line keeps moving on a hidden tab.
+   *
+   * `2026-09-05-phase-1-slice-5-HANDOFF.md` recorded the freeze this closes: react-query
+   * does not poll a hidden document, so a user who dropped a thousand files and switched
+   * tabs came back to a line stopped where they left it. A browser keeps an `EventSource`
+   * open on a hidden tab.
+   *
+   * It writes into the poll's cache entry rather than into state of its own, so there is
+   * one status on the page and not two that can disagree. Whichever arrives last wins,
+   * which is correct: both read the same row.
+   */
+  useEffect(() => {
+    if (activeBatch === undefined) {
+      return
+    }
+    const source = new EventSource(batchEventsUrl(DEFAULT_LIBRARY_ID, activeBatch))
+    source.onmessage = (event) => {
+      const status = JSON.parse(event.data) as BatchStatus
+      queryClient.setQueryData(['batch', DEFAULT_LIBRARY_ID, activeBatch], status)
+      // The server closes after the last event, and `EventSource` answers a closed stream
+      // by reconnecting — forever, on a batch that will never change again. Closing from
+      // this side is what stops that, and it is the same hazard `refetchInterval`
+      // returning `false` closes for the poll.
+      if (status.finishedAt != null) {
+        source.close()
+      }
+    }
+    // An error is not reported to the page beyond this: `EventSource` cannot read a status
+    // code or a body. Closing hands the batch back to the poll above, which can.
+    source.onerror = () => source.close()
+    return () => source.close()
+  }, [activeBatch, queryClient])
 
   const kind: BatchKind = started?.kind ?? ((scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
 
