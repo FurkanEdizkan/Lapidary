@@ -87,14 +87,75 @@ fn blob_path(root: &Path, hash: &BlobHash) -> PathBuf {
 /// never collide on the temp file, only (harmlessly) on which one's rename wins.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, StorageError> {
-    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
-    let path = blob_path(root, &hash);
-    let parent = path.parent().unwrap_or(root);
+/// Resolve a store-relative path, refusing anything that would leave the root.
+///
+/// `Path::join` resolves nothing and refuses nothing, so every path that reaches this
+/// store from *data* — a library slug, a category tree, a slugified part name — goes
+/// through here. A path derived from a hash cannot escape and does not.
+fn resolve(root: &Path, rel: &str) -> Result<PathBuf, StorageError> {
+    lapidary_core::slug::reject_escaping_path(rel).map_err(|e| StorageError::PathRefused {
+        detail: e.to_string(),
+    })?;
+    Ok(root.join(rel))
+}
+
+/// Put `payload` at `path`, creating the directories above it: a uniquely-named temp file
+/// in the *same* directory, flushed to disk, then an atomic rename.
+///
+/// A same-directory rename is atomic on POSIX filesystems — readers see either the old
+/// state or the complete new file, never a partial write. A temp file in a different
+/// directory (e.g. the system temp dir) could sit on a different filesystem, where rename
+/// degrades to a copy and loses that guarantee.
+///
+/// `sync_all` before the rename, because the whole ingest ordering rests on the bytes
+/// being on disk before a row points at them: a rename that lands before its contents are
+/// durable turns a power cut into a `file` row naming an empty file. One discipline, both
+/// callers — the content-addressed [`write_blob`] and the path-addressed
+/// [`SourceStore::put_at`] — so neither can drift into a weaker one.
+fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StorageError> {
+    use std::io::Write;
+
+    let parent = path.parent().ok_or_else(|| StorageError::PathRefused {
+        detail: format!("{} names no directory to write into", path.display()),
+    })?;
     std::fs::create_dir_all(parent).map_err(|source| StorageError::Io {
         path: parent.display().to_string(),
         source,
     })?;
+
+    let tmp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("blob"),
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(payload)?;
+        file.sync_all()
+    };
+    if let Err(source) = write() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(StorageError::Io {
+            path: tmp_path.display().to_string(),
+            source,
+        });
+    }
+    if let Err(source) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, StorageError> {
+    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+    let path = blob_path(root, &hash);
 
     // Content addressing means the bytes at `path` are already correct if it exists — the
     // hash is a function of the content, so writing again would be pure waste. It would
@@ -126,41 +187,8 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         }
     }
 
-    let payload = if compress {
-        zstd::encode_all(bytes, INGEST_LEVEL).map_err(|source| StorageError::Io {
-            path: path.display().to_string(),
-            source,
-        })?
-    } else {
-        bytes.to_vec()
-    };
-
-    // Write to a uniquely-named temp file in the *same* directory as the final path, then
-    // rename into place. A same-directory rename is atomic on POSIX filesystems — readers
-    // see either the old state (nothing, since this is a new blob) or the complete new
-    // file, never a partial write. A temp file in a different directory (e.g. the system
-    // temp dir) could sit on a different filesystem, where rename degrades to a copy and
-    // loses that guarantee.
-    let tmp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        hash.to_hex(),
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    if let Err(source) = std::fs::write(&tmp_path, &payload) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(StorageError::Io {
-            path: tmp_path.display().to_string(),
-            source,
-        });
-    }
-    if let Err(source) = std::fs::rename(&tmp_path, &path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(StorageError::Io {
-            path: path.display().to_string(),
-            source,
-        });
-    }
+    let payload = compressed(bytes, compress, &path)?;
+    write_atomic(&path, &payload)?;
 
     Ok(StoredBlob {
         hash,
@@ -168,6 +196,23 @@ fn write_blob(root: &Path, bytes: &[u8], compress: bool) -> Result<StoredBlob, S
         stored_bytes: payload.len() as u64,
         zstd_level: if compress { INGEST_LEVEL as i16 } else { 0 },
     })
+}
+
+/// The bytes as they go to disk. Borrowed when nothing compresses them — a source file is
+/// up to 2 GiB and copying it to hand it to a writer is a copy nobody asked for.
+fn compressed<'a>(
+    bytes: &'a [u8],
+    compress: bool,
+    path: &Path,
+) -> Result<std::borrow::Cow<'a, [u8]>, StorageError> {
+    if !compress {
+        return Ok(std::borrow::Cow::Borrowed(bytes));
+    }
+    let packed = zstd::encode_all(bytes, INGEST_LEVEL).map_err(|source| StorageError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(std::borrow::Cow::Owned(packed))
 }
 
 /// Distinguish "no blob at this path" from every other I/O failure. Collapsing every
@@ -279,8 +324,105 @@ impl SourceStore {
         write_blob(&self.root, bytes, compression.compresses())
     }
 
+    /// Write source bytes at a store-relative path — `libraries/<lib>/<category…>/<model>/
+    /// cliff.stl`, where [`SourceStore::put`] writes `blobs/ab/cd/<hash>`. Ingest's writer
+    /// since the store became a folder the user opens in a file manager.
+    ///
+    /// `rel` is built from data — a library slug, a category tree, a slugified part name —
+    /// so it is refused if it would leave the root, and the bytes go down through the same
+    /// temp-file-then-`sync_all`-then-rename discipline `put` uses. Nothing about the
+    /// hash changed: the returned [`StoredBlob`] still carries it, because `file.blake3`
+    /// and re-adoption both still verify bytes against it. Only the name they are written
+    /// under is different.
+    ///
+    /// Unlike `put` there is no "already stored" short-circuit, and there cannot be: a
+    /// path says nothing about the content at it, so the only way to know whether these
+    /// bytes are there is to write them.
+    pub fn put_at(
+        &self,
+        rel: &str,
+        bytes: &[u8],
+        compression: Compression,
+    ) -> Result<StoredBlob, StorageError> {
+        let path = resolve(&self.root, rel)?;
+        let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+        let payload = compressed(bytes, compression.compresses(), &path)?;
+        write_atomic(&path, &payload)?;
+        Ok(StoredBlob {
+            hash,
+            size_bytes: bytes.len() as u64,
+            stored_bytes: payload.len() as u64,
+            zstd_level: if compression.compresses() {
+                INGEST_LEVEL as i16
+            } else {
+                0
+            },
+        })
+    }
+
     pub fn get(&self, hash: &BlobHash, compression: Compression) -> Result<Vec<u8>, StorageError> {
         read_blob(&self.root, hash, compression.compresses())
+    }
+
+    /// Read source bytes back from `file.storage_path`.
+    ///
+    /// `zstd_level` is the level recorded on the `blob` row, never
+    /// `Compression::for_source_format` — the same rule, and the same reasoning,
+    /// [`SourceReader::get`] states: ingest-time policy is a moving target, and a reader
+    /// that re-derived it would hand out a zstd frame as though it were the file the day
+    /// the policy moved. `None` is the column's nullable absence and reads as
+    /// uncompressed, exactly like level 0.
+    pub fn get_at(&self, rel: &str, zstd_level: Option<i16>) -> Result<Vec<u8>, StorageError> {
+        let path = resolve(&self.root, rel)?;
+        let raw = std::fs::read(&path).map_err(|source| StorageError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if zstd_level.is_some_and(|level| level != 0) {
+            zstd::decode_all(raw.as_slice()).map_err(|source| StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            })
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// Reap a source file written for a transaction that then failed — the path-addressed
+    /// half of [`SourceStore::remove`], and held to the same rule: this removes bytes no
+    /// part ever referenced, never content a library member could see. A missing file is
+    /// success, because the reap's job is that the bytes are not there afterwards.
+    pub fn remove_at(&self, rel: &str) -> Result<(), StorageError> {
+        let path = resolve(&self.root, rel)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            }),
+        }
+    }
+
+    /// Remove a model directory the same failed write created, if nothing is left in it.
+    ///
+    /// Non-recursive on purpose. An empty directory left behind is an orphan a re-adoption
+    /// walk reports and skips, and worse, one the next attempt at this same file walks
+    /// around — it sees the directory, decides the name is taken, and disambiguates,
+    /// so a transient database error would rename a model permanently. A directory that
+    /// still holds something is a directory another writer is using, and a reap that
+    /// removes one of those is the data loss reaping exists to prevent: `remove_dir`
+    /// refuses it, and this reports rather than insists.
+    pub fn remove_dir_if_empty(&self, rel: &str) -> Result<(), StorageError> {
+        let path = resolve(&self.root, rel)?;
+        match std::fs::remove_dir(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StorageError::Io {
+                path: path.display().to_string(),
+                source,
+            }),
+        }
     }
 
     /// Reap a blob written for a transaction that then failed. Not user-facing deletion —
@@ -362,12 +504,10 @@ impl SourceRelocator {
         }
     }
 
-    /// Resolve a store-relative path, refusing anything that would leave the root.
+    /// Resolve a store-relative path, refusing anything that would leave the root. The
+    /// same guard `SourceStore`'s path-addressed methods run — see [`resolve`].
     fn resolve(&self, rel: &str) -> Result<PathBuf, StorageError> {
-        lapidary_core::slug::reject_escaping_path(rel).map_err(|e| StorageError::PathRefused {
-            detail: e.to_string(),
-        })?;
-        Ok(self.root.join(rel))
+        resolve(&self.root, rel)
     }
 
     pub fn create_dir(&self, rel: &str) -> Result<(), StorageError> {
@@ -676,6 +816,111 @@ mod tests {
             s.get(&stored.hash, Compression::Zstd).expect("reads"),
             bytes
         );
+    }
+
+    #[test]
+    fn a_source_file_lands_at_the_path_it_was_given_under_its_own_name() {
+        // The whole reversal in one assertion: bytes reachable by opening a folder, not
+        // by knowing a hash. The directories above it are created on the way.
+        let (dir, s) = store();
+        let rel = "libraries/default/Terrain/Rocks/cliff/cliff.stl";
+        let stored = s
+            .put_at(rel, b"solid cliff\n", Compression::AsIs)
+            .expect("put_at");
+
+        assert_eq!(
+            std::fs::read(dir.path().join(rel)).expect("reads"),
+            b"solid cliff\n",
+            "the file a user opens in a file manager is the file we ingested"
+        );
+        assert_eq!(stored.zstd_level, 0);
+        assert_eq!(stored.size_bytes, stored.stored_bytes);
+        // The hash is still computed and still returned: `file.blake3` and re-adoption
+        // both verify against it, whatever name the bytes are stored under.
+        assert_eq!(
+            s.get_at(rel, Some(stored.zstd_level)).expect("get_at"),
+            b"solid cliff\n"
+        );
+        assert_eq!(
+            stored.hash,
+            BlobHash::from_bytes(*blake3::hash(b"solid cliff\n").as_bytes())
+        );
+        // No temp file survives the rename.
+        let leftovers: Vec<_> =
+            std::fs::read_dir(dir.path().join("libraries/default/Terrain/Rocks/cliff"))
+                .expect("read dir")
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .filter(|name| name != "cliff.stl")
+                .collect();
+        assert!(
+            leftovers.is_empty(),
+            "left a temp file behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn a_compressed_source_file_round_trips_through_the_level_it_recorded() {
+        // Reading back must follow the recorded level rather than re-deriving one from
+        // the format — the rule `SourceReader::get` states, applied to the path-addressed
+        // reader the derive job uses.
+        let (_dir, s) = store();
+        let rel = "libraries/default/Bases/round-32mm/round-32mm.stl";
+        let bytes = b"solid round-32mm\n".repeat(64);
+        let stored = s.put_at(rel, &bytes, Compression::Zstd).expect("put_at");
+        assert!(stored.stored_bytes < stored.size_bytes);
+        assert_eq!(
+            s.get_at(rel, Some(stored.zstd_level)).expect("get_at"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn a_reaped_model_directory_leaves_nothing_and_takes_nothing_that_is_not_ours() {
+        // The failed-transaction path. The file goes, the empty directory goes with it —
+        // an empty directory left behind would make the retry think the name is taken and
+        // rename the model — but a directory holding somebody else's file stays exactly
+        // as it is.
+        let (dir, s) = store();
+        let model = "libraries/default/Terrain/Rocks/cliff";
+        let rel = format!("{model}/cliff.stl");
+        s.put_at(&rel, b"solid cliff\n", Compression::AsIs)
+            .expect("put_at");
+
+        s.remove_at(&rel).expect("reaps the file");
+        s.remove_dir_if_empty(model).expect("reaps the directory");
+        assert!(!dir.path().join(model).exists());
+
+        // Twice is success: a reap's job is that the bytes are gone afterwards.
+        s.remove_at(&rel).expect("a missing file is success");
+        s.remove_dir_if_empty(model)
+            .expect("a missing directory is success");
+
+        // And a directory another writer is using is refused, not emptied.
+        s.put_at(&rel, b"solid cliff\n", Compression::AsIs)
+            .expect("put_at");
+        assert!(s.remove_dir_if_empty(model).is_err());
+        assert!(dir.path().join(&rel).exists());
+    }
+
+    #[test]
+    fn a_path_addressed_write_cannot_be_talked_out_of_the_store() {
+        let (_dir, s) = store();
+        assert!(matches!(
+            s.put_at("../escape.stl", b"x", Compression::AsIs),
+            Err(StorageError::PathRefused { .. })
+        ));
+        assert!(matches!(
+            s.get_at("/etc/passwd", None),
+            Err(StorageError::PathRefused { .. })
+        ));
+        assert!(matches!(
+            s.remove_at("../../etc/passwd"),
+            Err(StorageError::PathRefused { .. })
+        ));
+        assert!(matches!(
+            s.remove_dir_if_empty("../.."),
+            Err(StorageError::PathRefused { .. })
+        ));
     }
 
     #[test]
