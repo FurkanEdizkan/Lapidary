@@ -35,7 +35,8 @@ pub enum CoreError {
 
     #[error(
         "Refused the path {got:?}: it points outside the directory it belongs to. Paths \
-         stored by Lapidary are relative and may not contain `..` or start at the root."
+         stored by Lapidary are relative and may not contain `..` or start at the root. A \
+         normal scan or upload never produces one; check whatever enqueued this job."
     )]
     PathEscapes { got: String },
 }

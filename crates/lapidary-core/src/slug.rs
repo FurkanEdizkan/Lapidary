@@ -17,8 +17,21 @@ const RESERVED: &[&str] = &[
 /// control characters.
 const HOSTILE: &[char] = &['/', '\\', '<', '>', ':', '"', '|', '?', '*'];
 
-/// 120 chars, not 255 bytes: leaves room for `_a1b2c3` inside the smallest component limit
-/// we ship against, and counts characters so a multi-byte name is not silently halved.
+/// Filesystem component limit (ext4, NTFS and APFS all cap a single path component at
+/// 255 bytes) minus the widest thing that lands on top of a capped name: the seven-byte
+/// `_a1b2c3` disambiguation suffix. That headroom also covers the one-byte `_` a reserved
+/// device name gets appended, so one budget serves both call sites below.
+///
+/// `MAX_CHARS` alone does not bound this: 120 characters of a three-byte CJK script is
+/// 360 bytes, and four-byte emoji make it worse. Both limits are enforced together —
+/// whichever is reached first stops the cut.
+const MAX_BYTES: usize = 255 - 7;
+
+/// A legibility cap for one- and two-byte scripts, so an ASCII or Turkish name is not cut
+/// far short of `MAX_BYTES` just because a byte budget alone would allow it to run on.
+/// Counts characters, not bytes, so a multi-byte name is not silently halved — but it is
+/// `MAX_BYTES`, not this, that actually protects the filesystem's component limit for a
+/// wider script; see the loop in `slugify` that enforces both at once.
 const MAX_CHARS: usize = 120;
 
 pub fn slugify(name: &str) -> String {
@@ -33,22 +46,36 @@ pub fn slugify(name: &str) -> String {
         })
         .collect();
 
-    let trimmed = replaced.trim().trim_end_matches(['.', ' ']).trim();
+    // Truncate first, bounded on characters and bytes at once, before any trimming.
+    // Trimming first and then cutting at a character count can slice a chunk out of the
+    // middle of the trimmed string and expose a trailing dot or space that was never at
+    // the end of the input — e.g. `"bracket ".repeat(20)`, trimmed then cut at 120 chars,
+    // used to end in a literal space that trimming had already passed by once.
+    let mut capped = String::new();
+    for (chars_taken, c) in replaced.chars().enumerate() {
+        if chars_taken >= MAX_CHARS || capped.len() + c.len_utf8() > MAX_BYTES {
+            break;
+        }
+        capped.push(c);
+    }
 
-    let capped: String = trimmed.chars().take(MAX_CHARS).collect();
+    // Trim what the cut may have exposed, not just what the input carried: an input that
+    // is all dots or spaces past the cut point trims to empty here, and the check below
+    // catches that the same way it catches a short all-dots input — one fallback, not two.
+    let trimmed = capped.trim().trim_end_matches(['.', ' ']).trim();
 
-    if capped.is_empty() {
+    if trimmed.is_empty() {
         return "unnamed".to_owned();
     }
 
     // Windows reserves the *stem*, so `AUX.stl` is refused too. Compare before any
     // extension.
-    let stem = capped.split('.').next().unwrap_or(&capped);
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
     if RESERVED.iter().any(|r| r.eq_ignore_ascii_case(stem)) {
-        return format!("{capped}_");
+        return format!("{trimmed}_");
     }
 
-    capped
+    trimmed.to_owned()
 }
 
 /// The suffix that resolves a directory collision. Deterministic, so the same model
@@ -148,6 +175,63 @@ mod tests {
             240,
             "120 two-byte chars — proves chars were counted, not bytes"
         );
+    }
+
+    #[test]
+    fn truncation_does_not_re_expose_a_trailing_space() {
+        // Reviewer-reproduced against the previous trim-then-cap order: cutting at a
+        // character count after trimming can land the cut on a character that was safely
+        // inside the string, exposing a trailing space the earlier trim had already
+        // removed once.
+        let out = slugify(&"bracket ".repeat(20));
+        assert!(
+            !out.ends_with(' '),
+            "must not end in a space after the cut: {out:?}"
+        );
+    }
+
+    #[test]
+    fn an_all_dots_name_past_the_cap_still_falls_back_to_unnamed() {
+        // The cut can turn a name that had one real character into a string of nothing
+        // but dots — the same shape as a short all-dots input, and it must land on the
+        // same fallback rather than returning "".
+        assert_eq!(slugify(&(".".repeat(130) + "x")), "unnamed");
+    }
+
+    #[test]
+    fn the_cap_bounds_bytes_as_well_as_characters() {
+        // 120 three-byte CJK characters would be 360 bytes — well past a 255-byte
+        // filesystem component limit. The byte bound must cut this well short of the
+        // character bound instead of only counting characters.
+        let out = slugify(&"件".repeat(200));
+        assert!(
+            out.len() <= MAX_BYTES,
+            "{} bytes exceeds the {MAX_BYTES}-byte budget",
+            out.len()
+        );
+
+        // Four-byte characters (emoji) are the same story, tighter still.
+        let out = slugify(&"😀".repeat(200));
+        assert!(
+            out.len() <= MAX_BYTES,
+            "{} bytes exceeds the {MAX_BYTES}-byte budget",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn a_reserved_name_with_a_long_tail_still_respects_the_cap_after_the_suffix() {
+        // `format!("{trimmed}_")` adds one character on top of an already-capped name;
+        // the result must still be bounded, not grow with however long the untruncated
+        // tail happened to be.
+        let out = slugify(&("AUX.".to_owned() + &"x".repeat(300)));
+        assert_eq!(
+            out.chars().count(),
+            MAX_CHARS + 1,
+            "the capped name plus its `_` suffix, not the untruncated tail: {out:?}"
+        );
+        assert!(out.starts_with("AUX."));
+        assert!(out.ends_with('_'));
     }
 
     #[test]
