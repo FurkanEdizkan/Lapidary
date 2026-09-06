@@ -5,6 +5,7 @@ mod derivative;
 mod error;
 mod ids;
 mod job;
+mod manifest;
 mod measurement;
 mod part;
 pub mod slug;
