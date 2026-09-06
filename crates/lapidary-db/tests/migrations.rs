@@ -367,3 +367,212 @@ async fn the_source_path_backfill_reconstructs_the_filename_a_flat_scan_used(poo
          name where there is none — never NULL, which NOT NULL would have refused"
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_root_folders_with_one_name_are_refused(pool: PgPool) {
+    // NULLs are distinct in a unique constraint by default, so a plain
+    // unique(library_id, parent_id, name) would silently allow this — and a corpus scan
+    // produces it on the first two top-level directories.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let insert = |id: Uuid, name: &'static str, slug: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO folder (id, library_id, parent_id, name, slug) \
+                 VALUES ($1, $2, NULL, $3, $4)",
+            )
+            .bind(id)
+            .bind(library)
+            .bind(name)
+            .bind(slug)
+            .execute(&pool)
+            .await
+        }
+    };
+    insert(Uuid::now_v7(), "Terrain", "Terrain")
+        .await
+        .expect("the first inserts");
+    let err = insert(Uuid::now_v7(), "Terrain", "Terrain")
+        .await
+        .expect_err("the second must not");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.constraint()),
+        Some("folder_name_unique_per_parent")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_distinct_names_that_slug_alike_are_refused(pool: PgPool) {
+    // "Rocks?" and "Rocks*" are different names and the same directory.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let insert = |id: Uuid, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO folder (id, library_id, parent_id, name, slug) \
+                 VALUES ($1, $2, NULL, $3, 'Rocks-')",
+            )
+            .bind(id)
+            .bind(library)
+            .bind(name)
+            .execute(&pool)
+            .await
+        }
+    };
+    insert(Uuid::now_v7(), "Rocks?")
+        .await
+        .expect("the first inserts");
+    let err = insert(Uuid::now_v7(), "Rocks*")
+        .await
+        .expect_err("the second must not");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.constraint()),
+        Some("folder_slug_unique_per_parent")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
+    // Slice 6a made the scan recursive, so parts ingested since carry nested source_paths.
+    // Without this backfill they are stranded flat forever: folders are only created for
+    // files that actually ingest, and a re-scan settles every one of them as Skipped.
+    //
+    // This test seeds the table the way 6a leaves it, runs 0008's backfill by hand against
+    // the already-migrated pool, and asserts the tree. Because sqlx has already run the
+    // migration on an empty database, the rows are inserted first and the backfill's
+    // statement is re-executed here.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    for (name, path) in [
+        ("bracket-lp-1042-03", "bracket-lp-1042-03.stl"),
+        ("rock", "Terrain/rock.stl"),
+        ("cliff", "Terrain/Rocks/cliff.stl"),
+        ("spire", "Terrain/Rocks/Cliffs/spire.stl"),
+        ("round-32mm", "Bases/round-32mm.stl"),
+        ("base-rock", "Bases/Rocks/base-rock.stl"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1,$2,$3,$4)")
+            .bind(Uuid::now_v7())
+            .bind(library)
+            .bind(name)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("seeds a part");
+    }
+
+    sqlx::query(include_str!("../backfill/0008_backfill.sql"))
+        .execute(&pool)
+        .await
+        .expect("the backfill runs");
+
+    let paths: Vec<String> = sqlx::query_scalar(
+        "WITH RECURSIVE t AS (
+           SELECT id, name::text AS path FROM folder WHERE parent_id IS NULL
+           UNION ALL SELECT f.id, t.path||'/'||f.name FROM folder f JOIN t ON f.parent_id = t.id)
+         SELECT path FROM t ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("reads the tree");
+
+    assert_eq!(
+        paths,
+        vec![
+            "Bases",
+            "Bases/Rocks",
+            "Terrain",
+            "Terrain/Rocks",
+            "Terrain/Rocks/Cliffs"
+        ],
+        "Terrain/Rocks and Bases/Rocks are two folders, not one"
+    );
+
+    let root_parts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM part WHERE folder_id IS NULL AND source_path NOT LIKE '%/%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(root_parts, 1, "the flat part stays at the library root");
+
+    // Beyond the brief: the tree existing is not proof every nested part actually got
+    // filed into it. Dropping the backfill's final UPDATE leaves this tree intact and
+    // every nested part unfiled -- the two assertions above would still pass.
+    let unfiled: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE folder_id IS NULL")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(
+        unfiled, 1,
+        "only the flat part stays unfiled; all five nested parts must get a folder_id"
+    );
+}
+
+/// Beyond the brief: the test above seeds parts into a database `0008` has already
+/// migrated and re-runs the backfill statement by hand. It never exercises the copy of
+/// that same statement appended to `0008_folders.sql` itself -- every `sqlx::test` above
+/// migrates an *empty* database, so on that path `_dirs` is empty, `maxlvl` is null, the
+/// loop never runs, and the inline copy is a no-op in every test in this file.
+///
+/// The real upgrade path is a database that already has parts with nested source_paths
+/// (written by slice 6a's recursive scan) when `0008` runs against it. This drives that
+/// path directly: migrate up to `0007`, seed the parts, then run `0008` for real and
+/// check the tree it leaves behind matches the hand-run backfill above.
+#[sqlx::test(migrations = false)]
+async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(7, &pool)
+        .await
+        .expect("migrations up to 0007 apply");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    for (name, path) in [
+        ("bracket-lp-1042-03", "bracket-lp-1042-03.stl"),
+        ("rock", "Terrain/rock.stl"),
+        ("cliff", "Terrain/Rocks/cliff.stl"),
+        ("spire", "Terrain/Rocks/Cliffs/spire.stl"),
+        ("round-32mm", "Bases/round-32mm.stl"),
+        ("base-rock", "Bases/Rocks/base-rock.stl"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1,$2,$3,$4)")
+            .bind(Uuid::now_v7())
+            .bind(library)
+            .bind(name)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("seeds a part before 0008 runs");
+    }
+
+    migrator
+        .run(&pool)
+        .await
+        .expect("0008 applies against an already-populated database");
+
+    let paths: Vec<String> = sqlx::query_scalar(
+        "WITH RECURSIVE t AS (SELECT id, name::text AS path FROM folder WHERE parent_id IS NULL \
+         UNION ALL SELECT f.id, t.path||'/'||f.name FROM folder f JOIN t ON f.parent_id = t.id) \
+         SELECT path FROM t ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("reads the tree");
+    assert_eq!(
+        paths,
+        vec![
+            "Bases",
+            "Bases/Rocks",
+            "Terrain",
+            "Terrain/Rocks",
+            "Terrain/Rocks/Cliffs"
+        ],
+        "the real migration backfills a pre-populated database the same way"
+    );
+
+    let unfiled: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE folder_id IS NULL")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(unfiled, 1, "only the flat part stays unfiled");
+}
