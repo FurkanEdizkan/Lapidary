@@ -134,13 +134,13 @@ pub fn router(state: AppState, role: Role) -> Router {
             // `{blake3}` capture. axum's router prefers a static segment over a dynamic
             // one regardless of order, but reading them in this order should not require
             // knowing that.
-            // The default 2 MB limit would reject every chunk the client sends. The
-            // layer sits one byte above the handler's own check so that ours is the one
-            // that fires: axum's rejection is a line of plain text, and the handler
-            // answers with a sentence saying to send smaller chunks.
+            // The default 2 MB limit would reject every chunk the client sends. This
+            // layer is the *only* size guard on the route — the handler takes the
+            // rejection rather than measuring a body it has already buffered — and
+            // rewrites its message. See `upload::refuse_chunk`.
             .route(
                 "/api/libraries/{id}/uploads/{blake3}",
-                put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES + 1)),
+                put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
             )
             .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
             .route(

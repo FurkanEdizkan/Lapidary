@@ -47,6 +47,7 @@ use crate::AppState;
 use crate::derive::{accept, internal_error, no_such_library};
 use axum::Json;
 use axum::body::Bytes;
+use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -187,25 +188,27 @@ pub async fn chunk(
     State(state): State<AppState>,
     Path((library, hex)): Path<(LibraryId, String)>,
     Query(query): Query<ChunkQuery>,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let hash = match BlobHash::parse_hex(&hex) {
         Ok(hash) => hash,
         Err(err) => return bad_request(err.to_string()),
     };
-    if body.len() > MAX_CHUNK_BYTES {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(serde_json::json!({
-                "message": format!(
-                    "That chunk is larger than the {} MB limit. Send the file in smaller \
-                     chunks.",
-                    MAX_CHUNK_BYTES / 1024 / 1024
-                )
-            })),
-        )
-            .into_response();
-    }
+    // The size limit is `DefaultBodyLimit` on this route and not a length test here,
+    // because a test here has already lost: reading the body to measure it is the memory
+    // the limit exists to bound. What this arm does is replace the rejection's message.
+    // axum answers "Failed to buffer the request body: length limit exceeded", which
+    // names our framework rather than the caller's mistake and says nothing about what
+    // to send instead.
+    //
+    // An earlier version kept a `body.len() > MAX_CHUNK_BYTES` check with the layer set
+    // one byte above it, so that ours would fire "first". It fired for exactly one body
+    // size and every genuinely oversized chunk got axum's line -- which a live 35 MB PUT
+    // is what showed.
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => return refuse_chunk(&rejection),
+    };
 
     let path = staged_path(&state.upload_dir, library, &hash);
     let offset = query.offset;
@@ -225,6 +228,29 @@ pub async fn chunk(
                 .into_response()
         }
     }
+}
+
+/// A chunk the server would not read at all.
+///
+/// Only one rejection is reachable in practice — the body over `MAX_CHUNK_BYTES` — but
+/// the others (a client that hung up mid-body, an unreadable stream) are real and get a
+/// sentence rather than being flattened into the size message, which would tell someone
+/// whose connection dropped to send smaller chunks.
+fn refuse_chunk(rejection: &BytesRejection) -> Response {
+    let (status, message) = match rejection {
+        BytesRejection::FailedToBufferBody(FailedToBufferBody::LengthLimitError(_)) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "That chunk is larger than the {} MB limit. Send the file in smaller chunks.",
+                MAX_CHUNK_BYTES / 1024 / 1024
+            ),
+        ),
+        other => (
+            StatusCode::BAD_REQUEST,
+            format!("Could not read that chunk: {other}. Send it again."),
+        ),
+    };
+    (status, Json(serde_json::json!({ "message": message }))).into_response()
 }
 
 /// Why a chunk was not appended. Separate from the handler so the blocking half can be

@@ -433,21 +433,25 @@ async fn a_realistic_chunk_is_not_refused_as_too_large(pool: sqlx::PgPool) {
 async fn a_chunk_past_the_limit_is_refused_in_words_rather_than_by_the_framework(
     pool: sqlx::PgPool,
 ) {
-    // The layer sits one byte above the handler's check so this message, and not axum's
-    // plain-text rejection, is what a client reads. Both are 413; only one says what to
-    // do about it.
+    // Comfortably past the limit, not one byte past it. The version this replaces sent
+    // exactly `limit + 1`, which was the only size at which the handler's own length
+    // check could fire — every genuinely oversized chunk got axum's "Failed to buffer the
+    // request body: length limit exceeded" instead, which names our framework rather than
+    // the caller's mistake. A live 35 MB PUT is what showed it; the test did not, because
+    // it was measuring the one-byte window the check still owned.
     let server = server(pool);
-    let too_big = vec![0x2eu8; 16 * 1024 * 1024 + 1];
-    let hash = BlobHash::from_bytes(*blake3::hash(&too_big).as_bytes());
+    let far_too_big = vec![0x2eu8; 40 * 1024 * 1024];
+    let hash = BlobHash::from_bytes(*blake3::hash(&far_too_big).as_bytes());
 
-    let (status, json) = server.chunk(&hash, 0, &too_big).await;
+    let (status, json) = server.chunk(&hash, 0, &far_too_big).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let message = json["message"].as_str().expect("a message");
     assert!(
-        json["message"]
-            .as_str()
-            .expect("a message")
-            .contains("smaller chunks"),
-        "must say what to do, got: {}",
-        json["message"]
+        message.contains("smaller chunks"),
+        "must say what to do, got: {message}"
+    );
+    assert!(
+        !message.contains("buffer"),
+        "must not be axum's own rejection text, got: {message}"
     );
 }
