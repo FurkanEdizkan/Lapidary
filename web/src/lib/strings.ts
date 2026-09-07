@@ -965,6 +965,18 @@ export const strings = {
       'The picture could not be stored. Check that the api service is running, then try again.',
     /** Where a fetched image came from, so a chosen picture reads differently from a pulled one. */
     from: (url: string) => `From ${url}`,
+    /**
+     * The other way in. Named for what it does rather than "paste a link", because the
+     * distinction that matters is that the picture is *copied* — the server fetches it once
+     * and stores it, so it keeps working after the page it came from changes, and looking at
+     * a card never sends a request to somebody else's server.
+     */
+    addFromUrl: 'Add from a link',
+    fetch: 'Fetch',
+    fetching: 'Fetching…',
+    cancelUrl: 'Cancel',
+    urlLabel: 'Address of the picture',
+    urlPlaceholder: 'https://example.com/bracket.jpg',
   },
   quickLook: {
     /**

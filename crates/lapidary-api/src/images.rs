@@ -39,7 +39,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use lapidary_core::{PartId, PartImageId};
 use lapidary_db::{PgBlobs, PgParts};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use ts_rs::TS;
 
@@ -360,24 +360,64 @@ pub async fn upload(
     Path(part): Path<PartId>,
     body: axum::body::Bytes,
 ) -> Response {
-    let normalized = match normalize(&body) {
-        Ok(image) => image,
-        Err(err) => return refused(&err),
-    };
+    match normalize(&body) {
+        Ok(image) => store(state, part, image, "uploaded", None).await,
+        Err(err) => refused(&err),
+    }
+}
 
+/// `POST /api/parts/{id}/images/from-url` — attach a picture by pasting its address.
+///
+/// **The fetch is the whole risk and it lives in [`crate::fetch`]**, which resolves, checks
+/// the address against every private range, pins it, and follows redirects one hop at a time
+/// re-checking each — `DATA.md` §4.1. What arrives back here is bytes from a place this
+/// server was willing to ask, and nothing more: they go through exactly the same
+/// [`normalize`] every uploaded file does, because bytes fetched from the internet are no
+/// more trustworthy than bytes somebody hands you.
+///
+/// **Fetched once, then served from our own copy.** `source_url` is recorded so a person can
+/// see they did not choose the picture themselves and so a broken one can be re-fetched — it
+/// is never used to load the image. Hotlinking leaks a referrer on every grid scroll and
+/// breaks the day the host rotates a URL (`0015_part_images_and_sources.sql`).
+///
+/// In an air-gapped install this route simply fails, which is correct: uploading always
+/// works, and that is the path `DATA.md` §4 puts first for exactly this reason.
+pub async fn from_url(
+    State(state): State<AppState>,
+    Path(part): Path<PartId>,
+    Json(body): Json<FetchImageRequest>,
+) -> Response {
+    let bytes = match crate::fetch::fetch_image(&body.url).await {
+        Ok(bytes) => bytes,
+        Err(err) => return not_fetched(&err),
+    };
+    match normalize(&bytes) {
+        Ok(image) => store(state, part, image, "url_supplied", Some(body.url)).await,
+        Err(err) => refused(&err),
+    }
+}
+
+/// Put a normalized image where it belongs and write its gallery row.
+///
+/// Shared by both routes, so "inline under 64 KB, blob above it" and the order the two
+/// writes happen in are decided once. `origin` and `source_url` are the only things the two
+/// callers disagree about.
+async fn store(
+    state: AppState,
+    part: PartId,
+    image: NormalizedImage,
+    origin: &str,
+    source_url: Option<String>,
+) -> Response {
     // Inline or blob, decided by size and nothing else. The blob is written before the row
     // that references it: bytes on disk with no row are collected by the sweep, where a row
     // pointing at bytes that were never written is an image that renders as a broken box.
-    let stored_at = (normalized.width, normalized.height);
-    let bytes = if normalized.webp.len() < INLINE_LIMIT {
-        lapidary_db::ImageBytes::Inline(&normalized.webp)
+    let blob = if image.webp.len() < INLINE_LIMIT {
+        None
     } else {
-        match lapidary_storage::DerivativeStore::open(&state.blob_root).put(&normalized.webp) {
+        match lapidary_storage::DerivativeStore::open(&state.blob_root).put(&image.webp) {
             Ok(stored) => {
                 // `StoredBlob` is the store's answer; `StoredBlobRow` is the row shape.
-                // Written before the gallery row that references it: bytes with no row are
-                // collected by the sweep, where a row pointing at bytes nobody wrote is an
-                // image that renders as a broken box forever.
                 let row = lapidary_db::StoredBlobRow {
                     hash: stored.hash,
                     size_bytes: stored.size_bytes,
@@ -387,13 +427,7 @@ pub async fn upload(
                 if let Err(err) = PgBlobs(state.db.clone()).record_unreferenced(&row).await {
                     return internal_error(&err, "recording an image blob failed");
                 }
-                return finish(
-                    state,
-                    part,
-                    lapidary_db::ImageBytes::Blob(&row.hash),
-                    stored_at,
-                )
-                .await;
+                Some(row.hash)
             }
             Err(err) => {
                 tracing::error!(error = %err, "could not write an image to the store");
@@ -401,24 +435,17 @@ pub async fn upload(
             }
         }
     };
-    finish(state, part, bytes, stored_at).await
-}
 
-/// The insert both branches end at, so the transaction that takes a blob's reference is
-/// written once.
-async fn finish(
-    state: AppState,
-    part: PartId,
-    bytes: lapidary_db::ImageBytes<'_>,
-    (width, height): (u32, u32),
-) -> Response {
     match PgParts(state.db)
         .add_part_image(
             part,
             lapidary_db::NewPartImage {
-                bytes,
-                origin: "uploaded",
-                source_url: None,
+                bytes: match &blob {
+                    Some(hash) => lapidary_db::ImageBytes::Blob(hash),
+                    None => lapidary_db::ImageBytes::Inline(&image.webp),
+                },
+                origin,
+                source_url: source_url.as_deref(),
             },
         )
         .await
@@ -426,7 +453,15 @@ async fn finish(
         // The size is in the answer because the resize is silent otherwise. An image over
         // `MAX_EDGE_PX` is scaled down on the way in — correct, and not something to do to
         // somebody's photograph without telling them what they got.
-        Ok(id) => (StatusCode::CREATED, Json(StoredImage { id, width, height })).into_response(),
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(StoredImage {
+                id,
+                width: image.width,
+                height: image.height,
+            }),
+        )
+            .into_response(),
         Err(err) => internal_error(&err, "attaching an image failed"),
     }
 }
@@ -490,6 +525,39 @@ pub struct PartImage {
     /// Where it came from, for one that was fetched. Shown so a person can tell an image
     /// they chose from one that was pulled in for them.
     pub source_url: Option<String>,
+}
+
+/// The address to fetch from. An object rather than a bare string so that the crop and fit
+/// fields, which live on the row and not in the bytes, have somewhere to go later.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchImageRequest {
+    pub url: String,
+}
+
+/// A fetch that did not happen, with the status that says whose problem it is.
+///
+/// **`422` for the refusals and `502` for the failures**, and the split is the useful one: a
+/// `422` means the address will never work and pasting it again will not help, while a `502`
+/// means the other end did not answer this time. `NotPublic` is a `422` rather than a `403`
+/// — nothing was forbidden to *this* caller, the address is simply not one we fetch from.
+fn not_fetched(err: &crate::fetch::FetchError) -> Response {
+    use crate::fetch::FetchError as F;
+    let status = match err {
+        F::NotFetchable | F::NotPublic | F::TooManyRedirects | F::BadRedirect => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        F::NotAnImage { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        F::TimedOut => StatusCode::GATEWAY_TIMEOUT,
+        F::Unresolvable | F::NotOk { .. } | F::Unreachable { .. } => StatusCode::BAD_GATEWAY,
+    };
+    (
+        status,
+        Json(serde_json::json!({ "message": err.to_string() })),
+    )
+        .into_response()
 }
 
 /// A refusal a person can act on, with the status that matches which kind it is.

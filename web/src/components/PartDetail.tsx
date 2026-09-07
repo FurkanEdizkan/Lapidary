@@ -240,14 +240,19 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
   const [refusal, setRefusal] = useState<string | null>(null)
   /** What the last accepted upload was stored at, so a silent resize is not silent. */
   const [stored, setStored] = useState<{ width: number; height: number } | null>(null)
+  /** The address being pasted, when one is. `null` means the field is not open. */
+  const [url, setUrl] = useState<string | null>(null)
 
   const images = useQuery({
     queryKey: ['part-images', part],
     queryFn: () => fetchPartImages(part),
   })
 
+  // One mutation for both ways in, because the server answers both the same way: a stored
+  // size, or a sentence saying what was wrong with what it was given. A second mutation
+  // would be a second copy of the refusal handling below.
   const add = useMutation({
-    mutationFn: (file: File) => uploadPartImage(part, file),
+    mutationFn: (source: File | string) => uploadPartImage(part, source),
     onMutate: () => {
       setRefusal(null)
       setStored(null)
@@ -258,6 +263,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
         return
       }
       setStored({ width: result.stored.width, height: result.stored.height })
+      setUrl(null)
       void queryClient.invalidateQueries({ queryKey: ['part-images', part] })
     },
   })
@@ -282,32 +288,86 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
           ))}
         </ul>
       )}
+      <div className="flex flex-wrap items-center gap-2">
+        {/*
+          Hidden, and driven by the button beside it: a bare file input is unstyleable across
+          browsers and announces itself as "Choose file", which is not what this does. The
+          button carries the label and the input carries the capability.
+        */}
+        <input
+          ref={picker}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            if (file !== undefined) add.mutate(file)
+            // Cleared so that picking the same file twice in a row fires `change` the second
+            // time: without this, a failed upload could not be retried with the same file.
+            event.target.value = ''
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => picker.current?.click()}
+          disabled={add.isPending}
+          className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {add.isPending ? strings.images.adding : strings.images.add}
+        </button>
+        {url !== null ? null : (
+          <button
+            type="button"
+            onClick={() => {
+              setRefusal(null)
+              setUrl('')
+            }}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.images.addFromUrl}
+          </button>
+        )}
+      </div>
       {/*
-        Hidden, and driven by the button beside it: a bare file input is unstyleable across
-        browsers and announces itself as "Choose file", which is not what this does. The
-        button carries the label and the input carries the capability.
+        A real `<form>`, so Enter submits it — pasting an address and pressing Enter is what
+        a person will do, and an input with a button beside it silently does nothing. The
+        browser's own `type="url"` validity check is deliberately not leaned on: the refusals
+        that matter are about where the address points, and only the server can know those.
       */}
-      <input
-        ref={picker}
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        hidden
-        onChange={(event) => {
-          const file = event.target.files?.[0]
-          if (file !== undefined) add.mutate(file)
-          // Cleared so that picking the same file twice in a row fires `change` the second
-          // time: without this, a failed upload could not be retried with the same file.
-          event.target.value = ''
-        }}
-      />
-      <button
-        type="button"
-        onClick={() => picker.current?.click()}
-        disabled={add.isPending}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {add.isPending ? strings.images.adding : strings.images.add}
-      </button>
+      {url === null ? null : (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const trimmed = url.trim()
+            if (trimmed !== '') add.mutate(trimmed)
+          }}
+        >
+          <input
+            type="url"
+            value={url}
+            autoFocus
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder={strings.images.urlPlaceholder}
+            aria-label={strings.images.urlLabel}
+            className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+          />
+          <button
+            type="submit"
+            disabled={add.isPending || url.trim() === ''}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {add.isPending ? strings.images.fetching : strings.images.fetch}
+          </button>
+          <button
+            type="button"
+            onClick={() => setUrl(null)}
+            className="rounded px-2 py-1 text-xs text-[var(--color-muted)]"
+          >
+            {strings.images.cancelUrl}
+          </button>
+        </form>
+      )}
       {refusal === null ? null : (
         <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
           {refusal}

@@ -64,6 +64,31 @@ pub struct KernelOutput {
     /// one rung. Consumers search by `.lod` now.
     pub tessellations: Vec<Tessellation>,
     pub entities: Vec<Entity>,
+    /// Derivatives that were asked for and could not be made, with the reason.
+    ///
+    /// **A derivative is not the part.** The mesh parsed — measurements are above and are
+    /// real — and one of the pictures we wanted to draw of it could not be drawn. Returning
+    /// that as an error made it indistinguishable from "this file is not readable", and the
+    /// caller's only option was to fail the ingest and lose the model.
+    ///
+    /// Measured on a real corpus before this existed: one file in 1,095 clusters to zero
+    /// triangles, and it was absent from the library rather than present with no preview.
+    /// `ROADMAP.md`'s Phase 1 exit criterion asks for the opposite in as many words.
+    ///
+    /// Empty is the ordinary case. A caller that ignores this field still gets a correct
+    /// `KernelOutput`; one that reports it tells an operator which picture is missing and
+    /// why.
+    pub unproduced: Vec<Unproduced>,
+}
+
+/// A derivative that could not be made, and why not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unproduced {
+    pub kind: DerivativeKind,
+    /// The `CadError`'s own sentence. Carried as text rather than as the error, because by
+    /// the time a caller sees this the failure is a fact about one derivative rather than
+    /// something to branch on.
+    pub reason: String,
 }
 
 #[derive(Debug, Error)]
@@ -88,8 +113,13 @@ pub enum CadError {
     )]
     MalformedMesh { format: String, detail: String },
 
+    /// Raised by both the thumbnail rasterizer and the glTF writer, which is why the
+    /// wording no longer says "thumbnail": it claimed one for years while `glb.rs` raised it
+    /// too, so a rung that could not be written was reported as a thumbnail that could not
+    /// be drawn. Which derivative it was is `Unproduced::kind`, recorded where the caller
+    /// asked for it and therefore knows.
     #[error(
-        "Could not render a thumbnail — {detail}. The file parsed, so the geometry itself may be degenerate; open it in your CAD tool to check."
+        "Could not produce this view of the mesh — {detail}. The file parsed, so the geometry itself may be degenerate; open it in your CAD tool to check."
     )]
     Unrenderable { detail: String },
 

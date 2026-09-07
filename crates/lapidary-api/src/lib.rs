@@ -6,6 +6,7 @@ mod derive;
 mod detail;
 mod download;
 mod error;
+mod fetch;
 mod folders;
 mod health;
 mod images;
@@ -220,6 +221,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                         axum::extract::DefaultBodyLimit::max(images::MAX_INPUT_BYTES),
                     ),
                 )
+                // The same gallery, filled from an address instead of a file. A separate
+                // route rather than a mode on the one above because the bodies are different
+                // shapes — raw bytes there, a JSON object here — and because the risk is
+                // different: this is the only route in the application that makes an
+                // outbound request, and it should be legible as that from the route table.
+                .route("/api/parts/{id}/images/from-url", post(images::from_url))
                 .route(
                     "/api/libraries/{id}/thumbnails",
                     post(derive::library_thumbnails),

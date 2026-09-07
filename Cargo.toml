@@ -64,6 +64,25 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 # pulls in a decoder for every format the crate knows, which is a dozen parsers of
 # untrusted bytes reachable from an upload route, for formats nobody will upload.
 # `CLAUDE.md`: pin everything, fewer moving parts.
+# The outbound HTTP client, and the only one in this workspace: `hyper` here is axum's
+# server. `DATA.md` §4.1 is what it exists for, and shapes the feature list.
+#
+# `rustls-tls-native-roots`, not `webpki-roots`: `deploy/Containerfile` already installs
+# `ca-certificates` into the runtime image on purpose, so the roots are there and are
+# updated by base-image updates rather than by a Rust dependency bump. Bundling a second
+# copy would also need CDLA-Permissive-2.0 added to `deny.toml`'s allow-list — a licence
+# allowance bought for a root store the image already has.
+#
+# `default-features = false`, so no `native-tls` and therefore no OpenSSL system
+# dependency in a container that deliberately has none. `charset` and `cookies` are
+# absent because this fetches images from a URL somebody pasted; it is not a browser.
+# The URL parser reqwest already uses, named directly because `fetch.rs` joins a relative
+# `Location` against the current URL and must not hand-roll that.
+url = "2.5.7"
+reqwest = { version = "0.12.24", default-features = false, features = [
+  "rustls-tls-native-roots",
+  "http2",
+] }
 image = { version = "0.25.10", default-features = false, features = ["webp", "png", "jpeg"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 # Only lapidary-db, and only to name log::LevelFilter for sqlx's ConnectOptions — sqlx

@@ -3,6 +3,7 @@ import type {
   BatchStatus,
   BlobHash,
   ChunkAccepted,
+  FetchImageRequest,
   FolderId,
   FolderNode,
   FolderPatch,
@@ -567,32 +568,45 @@ export async function fetchPartImages(part: PartId): Promise<PartImage[]> {
 }
 
 /**
- * `POST /api/parts/{id}/images` — attach a picture.
+ * Attach a picture to a part — from a file, or from an address.
  *
- * The `File` is the whole body, sent as-is. No `FormData`: the route takes one field and
- * reads the file's own header rather than any type we could declare, so a multipart
- * envelope would be a second format for it to parse and nothing gained.
+ * **One function for both, because the answer is the same shape.** A `File` goes to
+ * `POST …/images` as the whole body: no `FormData`, because the route takes one field and
+ * reads the file's own header rather than any type we could declare, so a multipart envelope
+ * would be a second format for it to parse and nothing gained. A string goes to
+ * `POST …/images/from-url` as JSON, and the server fetches it — resolving the address and
+ * checking it against every private range itself, which is precisely why this cannot be done
+ * from the browser.
  *
- * The refusals — too large, not an image, too small — are answers rather than failures, and
- * come back with the server's own sentence. That prose is written for the person who picked
- * the file and names the limit it broke, which a generic "upload failed" could not.
+ * The refusals — too large, not an image, too small, an address we will not fetch from — are
+ * answers rather than failures, and come back with the server's own sentence. That prose is
+ * written for the person who picked the file or pasted the link and names what was wrong
+ * with it, which a generic "upload failed" could not.
  */
 export async function uploadPartImage(
   part: PartId,
-  file: File,
+  source: File | string,
 ): Promise<{ kind: 'stored'; stored: StoredImage } | { kind: 'refused'; message: string }> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images`, {
-    method: 'POST',
-    body: file,
-  })
+  const base = `/api/parts/${encodeURIComponent(part)}/images`
+  const response =
+    typeof source === 'string'
+      ? await fetch(`${base}/from-url`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: source } satisfies FetchImageRequest),
+        })
+      : await fetch(base, { method: 'POST', body: source })
   if (response.ok) {
     // The size it was stored at, which is how the caller can say so: an image over the
     // server's bound is scaled down on the way in, and that is not a thing to do to
     // somebody's photograph without telling them.
     return { kind: 'stored', stored: (await response.json()) as StoredImage }
   }
-  // 413, 415 and 422 are the three the route uses for "your file, not our fault".
-  if ([400, 413, 415, 422].includes(response.status)) {
+  // 413, 415 and 422 are what both routes use for "your file, not our fault"; 502 and 504
+  // are the two only the fetch can answer — the address was fine and the other end did not
+  // come back. Those carry a sentence too, and throwing past it would replace "that host
+  // could not be found" with "something went wrong".
+  if ([400, 413, 415, 422, 502, 504].includes(response.status)) {
     const body: unknown = await response.json().catch(() => null)
     const message =
       body !== null && typeof body === 'object'

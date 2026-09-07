@@ -41,7 +41,8 @@ preview yet" plus a working `POST /api/libraries/{id}/thumbnails` where it does 
 re-dropping the same folder completes in seconds via hash short-circuit, and grid page
 load is under 80 ms warm.
 
-**Measured 2026-09-07. Three clauses of four pass; the fourth does not.**
+**Measured 2026-09-07. Three clauses passed as measured; the fourth failed, was fixed, and
+passes on re-run.**
 
 Corpus: `Bases/` from the owner's own library — **1,095 STL files, 15.67 GB**, nested two
 to six directories deep, no basename collisions. A real folder rather than a generated one.
@@ -53,20 +54,28 @@ PostgreSQL 18.6 in a container, worker concurrency 4).
 | A folder of 1,000 STLs in | **130.3 s** for 1,095 files / 15.67 GB — 8.4 files/s, ~120 MB/s | pass |
 | Re-drop completes in seconds via hash short-circuit | **40.1 s**, 1,094 skipped, **0 re-ingested** | pass |
 | Grid page load under 80 ms warm | **5.3 ms** median at page size 50 (p95 5.9 ms, 2.4 MB body). At 500: **54.7 ms** median, 28.8 MB body | pass |
-| Every part appears | **1,094 of 1,095** | **fail** |
+| Every part appears | **1,094 of 1,095** at measurement; **1,095 of 1,095** after the fix below | pass, after a fix |
 
-**The one that fails, precisely.** `Trench battlefield-80mm(B).stl` is a degenerate mesh —
-it parses, and clustering leaves it with no triangles, so the rasterizer cannot make a
-thumbnail. That is a real property of the file and the error says so in the terms
-`CLAUDE.md` asks for. But the *ingest job* fails with it, so **no part row is created** and
-the model is absent from the library entirely.
+**The one that failed, and what it turned out to be.** `Trench battlefield-80mm(B).stl` is
+635,470 triangles that parse cleanly and cluster to nothing. `MeshKernel::process` produced
+each requested derivative with `?`, so a derivative that could not be made came back
+indistinguishable from "this file is not readable" — the ingest job failed, **no part row
+was written**, and the model was absent from the library. The criterion asks for the
+opposite in as many words, and the machinery for it already existed: `auto_thumbnail =
+false` leaves a part with no thumbnail and the grid renders "No preview yet". Only a
+*failed* derivative was fatal where a *skipped* one was not.
 
-The criterion anticipates exactly this case and asks for the opposite: a part that appears
-with "No preview yet" and a working `POST /api/libraries/{id}/thumbnails` to try again. The
-machinery for that already exists and is what `auto_thumbnail = false` uses — a *skipped*
-render leaves a part with no thumbnail and the grid handles it. Only a *failed* render is
-fatal, and it should not be: losing the model because its picture could not be drawn is the
-wrong way round.
+Fixed in `490ba34`. Parsing stays fatal — a mesh nobody can read has no measurements and no
+part to hang them on — and a derivative that cannot be made is recorded in
+`KernelOutput::unproduced` with its kind and reason, which the handler logs at `warn`.
+Re-run against the same file afterwards: **ingested, one part, 635,470 triangles.**
+
+And the measurement corrected its own diagnosis. `CadError::Unrenderable` is raised by the
+thumbnail rasterizer *and* the glTF writer, and its message said "Could not render a
+thumbnail" for both — so this was written up as a thumbnail failure. It was the **L0
+tessellation rung**. The re-run's log names `tessellation_l0`, and the part carries a
+perfectly good thumbnail. The wording is about a view of the mesh now, and which view is
+recorded where the caller asked for it.
 
 Timing note: the two figures above measure the **scan** path — the worker walking a mounted
 directory — rather than a browser drop, which hashes client-side and uploads. Both reach the

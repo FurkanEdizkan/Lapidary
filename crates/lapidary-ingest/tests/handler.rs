@@ -2197,3 +2197,86 @@ async fn a_rescan_after_a_move_creates_no_folder_and_no_directory(pool: PgPool) 
         "a re-scan must not re-create a directory the user emptied"
     );
 }
+
+/// A binary STL of one degenerate triangle: three vertices at the same point.
+///
+/// Well formed — header, count and record are all valid — and with no extent, so no picture
+/// can be made of it. This is the shape of the one file in 1,095 that failed the measured
+/// exit-criterion run against the owner's own corpus. Built rather than committed, so it can
+/// be read.
+fn zero_extent_stl() -> Vec<u8> {
+    let mut bytes = vec![0u8; 80];
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    for _ in 0..12 {
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes
+}
+
+/// **The Phase 1 exit criterion's fourth clause, at the level that decides it.**
+///
+/// *"every part appears — with a thumbnail where the library renders them automatically, and
+/// with 'No preview yet' … where it does not"*. It did not: a mesh no picture could be made
+/// of failed the ingest job, so no part row was written and the model was absent from the
+/// library entirely. Measured, on a real corpus, at one file in 1,095.
+///
+/// A derivative is not the part. The mesh parses, the measurements are real, and losing the
+/// model because its preview could not be drawn is the wrong way round.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_model_no_picture_can_be_made_of_is_still_ingested(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join("degenerate.stl"), zero_extent_stl())
+        .expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    assert_eq!(
+        handler
+            .handle(&job_for("degenerate.stl"))
+            .await
+            .expect("a file that parses is ingested, whatever can be drawn of it"),
+        Outcome::Ingested,
+        "not Failed: the criterion asks for the part to appear"
+    );
+    assert_eq!(
+        parts_in(&pool, seeded()).await,
+        1,
+        "and it is in the library, which is the whole of what was wrong"
+    );
+
+    // No thumbnail row, which is exactly the state the grid renders as "No preview yet" —
+    // the same state a library with `auto_thumbnail = false` produces, and which
+    // `POST /api/libraries/{id}/thumbnails` exists to have another go at.
+    let thumbnails: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM derivative d JOIN revision r ON r.id = d.revision_id \
+         JOIN part p ON p.id = r.part_id \
+         WHERE p.library_id = $1 AND d.kind = 'thumbnail'",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(thumbnails, 0, "no preview yet, rather than no part");
+}
+
+/// The other half, so the change is not "nothing is fatal any more": a file that does not
+/// parse still fails, because a mesh nobody can read has no measurements and no part to
+/// hang them on.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_that_does_not_parse_still_fails_and_creates_no_part(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        ingest_dir.path().join("notes.stl"),
+        b"LP-1042-03 revision notes: chamfer the mounting face.\n",
+    )
+    .expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    assert!(
+        handler.handle(&job_for("notes.stl")).await.is_err(),
+        "an unreadable file is still an error"
+    );
+    assert_eq!(parts_in(&pool, seeded()).await, 0);
+}

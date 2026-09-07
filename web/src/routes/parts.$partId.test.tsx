@@ -230,3 +230,85 @@ test('a refused picture shows the reason the server gave', async () => {
     'That image is 16×16, and the smallest side must be at least 64 pixels.',
   )
 })
+
+/**
+ * The other way in, end to end through the client: the address goes to `/from-url` as JSON
+ * and the gallery is re-read. What this pins down is the *route* — sending the URL to the
+ * upload route as a raw body would reach a server that tried to decode it as an image and
+ * refused it with a sentence about file formats, which is a confusing way to be told the
+ * client posted to the wrong place.
+ */
+test('pasting an address posts it to the fetch route and shows the picture', async () => {
+  stub(PART)
+  let posted: { url: string } | null = null
+  let gallery: unknown[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (url.endsWith('/images/from-url')) {
+        posted = JSON.parse(init?.body ?? '{}') as { url: string }
+        gallery = [
+          {
+            id: '01931b6e-0000-7000-8000-0000000000ff',
+            src: 'data:image/webp;base64,UklGRg==',
+            origin: 'url_supplied',
+            sourceUrl: posted.url,
+          },
+        ]
+        return { ok: true, status: 201, json: async () => ({ id: 'x', width: 900, height: 600 }) }
+      }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => gallery }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.images.addFromUrl }))
+  fireEvent.change(screen.getByRole('textbox', { name: strings.images.urlLabel }), {
+    target: { value: 'https://example.com/idler-pulley.jpg' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: strings.images.fetch }))
+
+  const picture = await screen.findByAltText(strings.images.alt(PART.name, 0))
+  expect(picture.getAttribute('title')).toBe(
+    strings.images.from('https://example.com/idler-pulley.jpg'),
+  )
+  expect(posted).toEqual({ url: 'https://example.com/idler-pulley.jpg' })
+})
+
+/**
+ * **The refusal a person will actually hit**, and the reason `uploadPartImage` treats these
+ * statuses as answers rather than failures: the server's sentence explains that the address
+ * points inside a private network, which "the picture could not be stored" could not.
+ */
+test('an address the server will not fetch from keeps the explanation it gave', async () => {
+  stub(PART)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.endsWith('/images/from-url')) {
+        return {
+          ok: false,
+          status: 422,
+          json: async () => ({
+            message: 'That address is not one this server will fetch from.',
+          }),
+        }
+      }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.images.addFromUrl }))
+  fireEvent.change(screen.getByRole('textbox', { name: strings.images.urlLabel }), {
+    target: { value: 'http://169.254.169.254/latest/meta-data/' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: strings.images.fetch }))
+
+  expect(await screen.findByRole('alert')).toHaveProperty(
+    'textContent',
+    'That address is not one this server will fetch from.',
+  )
+})
