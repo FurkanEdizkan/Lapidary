@@ -857,6 +857,46 @@ export const strings = {
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
+  search: {
+    label: 'Search this library',
+    placeholder: 'Search by name or part number',
+    /**
+     * The chip that appears when a search runs inside a selected category.
+     *
+     * It is a **disclosure**, not a control that narrows: the sidebar has already narrowed
+     * the grid, and a search that quietly kept that narrowing without saying so is how
+     * somebody concludes a part is missing. Dismissing it widens to the whole library and
+     * keeps the query.
+     */
+    inCategory: (name: string) => `in ${name}`,
+    /**
+     * When the category's name is not known yet — it comes from the folder tree, a different
+     * query from the grid's, so there is a window where the chip must exist and cannot name
+     * anything. The first version fell back to `folders.title` and rendered "in Categories",
+     * which is the sidebar's heading and means nothing here.
+     */
+    inThisCategory: 'in this category',
+    widen: 'Search the whole library instead',
+    /**
+     * Zero results, and deliberately not `emptyLibrary.body` — "This library is empty. Drop
+     * a folder of models above" is false and alarming over a library of 1,700 parts, and the
+     * user did not empty anything, they typed something.
+     */
+    noMatches: (query: string) => `Nothing matches ${query}.`,
+    /**
+     * The same, narrowed — and this is the one that matters. A query that finds nothing
+     * *inside a category* must say the search was narrowed, or the reasonable conclusion is
+     * that the part is not in the library at all.
+     */
+    noMatchesInCategory: (query: string, category: string) =>
+      `Nothing in ${category} matches ${query}. It may be filed somewhere else.`,
+    /**
+     * Under two characters a trigram index cannot be used at all — a trigram is three
+     * characters — so the query would be a sequential scan by construction. The box accepts
+     * the keystroke and simply does not run yet.
+     */
+    keepTyping: 'Keep typing — searches start at two characters.',
+  },
   images: {
     /**
      * A photograph shows what a render cannot: the finish, the colour, the thing next to a

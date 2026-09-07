@@ -209,6 +209,19 @@ pub struct PageQuery {
     /// bookmark that used to work and turn it into an error page.
     #[serde(default)]
     state: Option<String>,
+    /// Free text to search for. Absent, empty or whitespace is the unfiltered grid.
+    ///
+    /// A parameter on this route rather than a `/search` route of its own. A separate one
+    /// would duplicate the limit clamp, `empty_str_as_none`, the `Shows` mapping, the
+    /// folder filter, `to_card` and the `next` computation — and hand the front end a
+    /// second `useInfiniteQuery` to keep in step with the first. It answers the same
+    /// question about the same library and returns the same cards.
+    ///
+    /// Empty means absent for the same reason `after` does: `` `…&q=${term}` `` is the
+    /// natural shape of a URL before anything is typed, and 400ing a bookmark somebody
+    /// cleared the box on would be answering a read with an error page.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    q: Option<String>,
 }
 
 /// Treats an empty query-string value the same as an absent key. `#[serde(default)]`
@@ -242,6 +255,7 @@ pub async fn page(
         folder_id,
         limit,
         state,
+        q,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
@@ -263,10 +277,24 @@ pub async fn page(
         Shows::Live
     };
 
-    match PgParts(app.db)
-        .page(library, folder_id, after, limit, shows)
-        .await
-    {
+    // Trimmed, then checked for emptiness: a box holding three spaces is a box nobody has
+    // typed in, and searching for them would answer an empty grid to somebody who thinks
+    // they cleared it.
+    let query = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let repository = PgParts(app.db);
+    let result = match query {
+        Some(q) => {
+            repository
+                .search(library, folder_id, q, after, limit, shows)
+                .await
+        }
+        None => {
+            repository
+                .page(library, folder_id, after, limit, shows)
+                .await
+        }
+    };
+    match result {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -464,7 +492,8 @@ fn bad_query(rejection: &QueryRejection) -> Response {
                 "Could not read the query string: {rejection}. `after` must be a part id \
                  from a previous page (or omitted/empty for the first page); `folderId` \
                  must be a category id from this library's folder tree (or omitted for the \
-                 whole library); `limit` must be a whole number."
+                 whole library); `limit` must be a whole number; `q` is free text and is \
+                 never a reason to land here."
             )
         })),
     )
