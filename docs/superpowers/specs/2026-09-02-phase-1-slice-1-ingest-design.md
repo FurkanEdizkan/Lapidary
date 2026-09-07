@@ -1,7 +1,7 @@
 # Phase 1, slice 1 — local ingest to a visible grid
 
 **Date:** 2026-09-02
-**Status:** design approved, not yet planned
+**Status:** shipped (`518dfb5`). Kept as the record of what was decided and why.
 **Phase:** 1 (Ingest and grid), first of five slices
 **Predecessor:** Phase 0a, complete — see `docs/superpowers/plans/2026-09-01-phase-0a-verification.md`
 

@@ -1,7 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { deleteFolder, fetchFolders, movePart, type MoveRefusalReason } from '../lib/api'
+import {
+  createFolder,
+  deleteFolder,
+  fetchFolders,
+  movePart,
+  renameFolder,
+  type FolderWriteRefusal,
+  type MoveRefusalReason,
+} from '../lib/api'
 import { strings } from '../lib/strings'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
 
@@ -171,11 +179,51 @@ export function FolderTree({
   const { move, duplicate, refusal, start, confirm, dismiss, forget } = useMovePart(library)
   const [pendingDelete, setPendingDelete] = useState<FolderNode | null>(null)
   /**
+   * Whether the create dialog is open. A boolean and not a parent id: the new category goes
+   * under whatever the sidebar has selected, which is state this component already has and
+   * which the dialog's own title names — so holding a second copy of it here would be two
+   * answers to "where does this go" that a click between opening and confirming could
+   * disagree about.
+   */
+  const [creating, setCreating] = useState(false)
+  const [renaming, setRenaming] = useState<FolderNode | null>(null)
+  /** A refused create or rename, shown inside the dialog that caused it — see `note` below. */
+  const [writeRefusal, setWriteRefusal] = useState<string | null>(null)
+  /**
    * What a finished delete has to say, when it has something to say. Held at the level of
    * the tree rather than under a row, because both messages are about a row that is on its
    * way out: the refetch this same handler fires is what takes it off screen.
    */
   const [deleteOutcome, setDeleteOutcome] = useState<string | null>(null)
+
+  /**
+   * Create and rename share everything after the request: both invalidate the same tree,
+   * both keep their dialog open on a refusal so the user can edit what they typed, and both
+   * close it on success. Written once and given the two mutation functions rather than
+   * twice — the halves that differ are the request and the dialog, and neither is here.
+   */
+  const written = (close: () => void) => ({
+    onMutate: () => setWriteRefusal(null),
+    onSuccess: (result: { kind: 'written' } | { kind: 'refused'; reason: FolderWriteRefusal }) => {
+      if (result.kind === 'refused') {
+        setWriteRefusal(folderWriteMessage(result.reason))
+        return
+      }
+      close()
+      void queryClient.invalidateQueries({ queryKey: ['folders', library] })
+    },
+  })
+
+  const add = useMutation({
+    mutationFn: (name: string) => createFolder(library, selected, name),
+    ...written(() => setCreating(false)),
+  })
+
+  const rename = useMutation({
+    mutationFn: ({ folder, name }: { folder: FolderNode; name: string }) =>
+      renameFolder(folder.id, name),
+    ...written(() => setRenaming(null)),
+  })
 
   const remove = useMutation({
     mutationFn: (folder: FolderNode) => deleteFolder(folder.id),
@@ -252,9 +300,24 @@ export function FolderTree({
 
   return (
     <nav aria-label={strings.folders.title} className="w-56 shrink-0">
-      <h2 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {strings.folders.title}
-      </h2>
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <h2 className="text-xs tracking-wider text-[var(--color-muted)] uppercase">
+          {strings.folders.title}
+        </h2>
+        {/*
+          Always visible, unlike the per-row delete and rename. Those are actions on a row
+          you are already pointing at; this is the only way to get a first category into an
+          empty library, and a control that appears on hover is one an empty sidebar never
+          reveals.
+        */}
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="ease-mechanical rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.folders.newCategory}
+        </button>
+      </div>
       <ul className="space-y-0.5">
         <li>
           <FolderButton
@@ -281,6 +344,7 @@ export function FolderTree({
           onSelect={onSelect}
           onDropPart={drop}
           onDelete={setPendingDelete}
+          onRename={setRenaming}
           noteFor={noteFor}
         />
       )}
@@ -291,6 +355,37 @@ export function FolderTree({
           busy={move.isPending}
           onConfirm={confirm}
           onCancel={dismiss}
+        />
+      )}
+      {!creating ? null : (
+        <NameDialog
+          title={strings.folders.createTitle(
+            folders.data?.find((folder) => folder.id === selected)?.name ?? null,
+          )}
+          confirm={strings.folders.createConfirm}
+          initial=""
+          busy={add.isPending}
+          note={writeRefusal ?? (add.isError ? strings.folders.createFailed : null)}
+          onConfirm={(name) => add.mutate(name)}
+          onCancel={() => {
+            setCreating(false)
+            setWriteRefusal(null)
+          }}
+        />
+      )}
+      {renaming === null ? null : (
+        <NameDialog
+          title={strings.folders.renameTitle(renaming.name)}
+          confirm={strings.folders.renameConfirm}
+          initial={renaming.name}
+          hint={strings.folders.renameKeepsDirectory(renaming.slug)}
+          busy={rename.isPending}
+          note={writeRefusal ?? (rename.isError ? strings.folders.renameFailed : null)}
+          onConfirm={(name) => rename.mutate({ folder: renaming, name })}
+          onCancel={() => {
+            setRenaming(null)
+            setWriteRefusal(null)
+          }}
         />
       )}
       {pendingDelete === null ? null : (
@@ -354,6 +449,26 @@ function RowNote({ note }: { note: string | null }) {
   )
 }
 
+/**
+ * The wording for a refused create or rename. Beside `refusalMessage` and deliberately not
+ * merged with it: these are different routes refusing different things, and one switch over
+ * a nine-value union would be a switch where most arms are unreachable from most callers.
+ */
+function folderWriteMessage(reason: FolderWriteRefusal): string {
+  switch (reason) {
+    case 'nameTaken':
+      return strings.folders.nameTaken
+    case 'slugTaken':
+      return strings.folders.slugTaken
+    case 'emptyName':
+      return strings.folders.emptyName
+    case 'gone':
+      return strings.folders.writeGone
+    case 'unknown':
+      return strings.folders.writeUnknown
+  }
+}
+
 function FolderLevel({
   folders,
   parentId,
@@ -362,6 +477,7 @@ function FolderLevel({
   onSelect,
   onDropPart,
   onDelete,
+  onRename,
   noteFor,
 }: {
   folders: readonly FolderNode[]
@@ -371,6 +487,7 @@ function FolderLevel({
   onSelect: (folder: FolderId) => void
   onDropPart: (event: DragEvent<HTMLElement>, folder: FolderId) => void
   onDelete: (folder: FolderNode) => void
+  onRename: (folder: FolderNode) => void
   noteFor: (folder: FolderId) => string | null
 }) {
   const children = folders
@@ -407,6 +524,14 @@ function FolderLevel({
             */}
             <button
               type="button"
+              onClick={() => onRename(folder)}
+              aria-label={strings.folders.renameFor(folder.name)}
+              className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+            >
+              {strings.folders.renameAction}
+            </button>
+            <button
+              type="button"
               onClick={() => onDelete(folder)}
               aria-label={strings.folders.deleteFor(folder.name)}
               className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
@@ -423,6 +548,7 @@ function FolderLevel({
             onSelect={onSelect}
             onDropPart={onDropPart}
             onDelete={onDelete}
+            onRename={onRename}
             noteFor={noteFor}
           />
         </li>
@@ -724,6 +850,84 @@ function DeleteDialog({
           {strings.folders.deleteConfirm}
         </DialogButton>
       </div>
+    </Dialog>
+  )
+}
+
+/**
+ * One text field, a confirm and a cancel — the whole of both create and rename.
+ *
+ * One component and not two, because the difference between them is the title, the button
+ * label, what the field starts with and one extra sentence; everything else — the trim, the
+ * disabled-while-empty confirm, Enter to submit, where a refusal is shown — is identical,
+ * and two copies of it would be two places for those to drift.
+ *
+ * **Confirm is autofocused here, where `DeleteDialog` autofocuses cancel.** The rule is the
+ * same in both: focus the safe answer. Naming a category is not destructive and the field is
+ * where a user is going anyway; a delete is, so it opens on the way out.
+ *
+ * The field is a real `<form>` so that Enter submits, which is what anyone typing a name
+ * expects and what a bare `<input>` beside a `<button>` does not give.
+ */
+function NameDialog({
+  title,
+  confirm,
+  initial,
+  hint,
+  busy,
+  note,
+  onConfirm,
+  onCancel,
+}: {
+  title: string
+  confirm: string
+  initial: string
+  hint?: string
+  busy: boolean
+  note: string | null
+  onConfirm: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(initial)
+  // Trimmed here and again at the server. Here so the confirm cannot be pressed on a name
+  // made of spaces; there because the client is not what decides what a valid name is.
+  const trimmed = name.trim()
+  return (
+    <Dialog title={title} onClose={onCancel}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (trimmed !== '' && !busy) onConfirm(trimmed)
+        }}
+      >
+        <input
+          type="text"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          aria-label={strings.folders.createLabel}
+          autoFocus
+          className="mt-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+        />
+        {hint === undefined ? null : (
+          <p className="mt-2 text-xs text-[var(--color-muted)]">{hint}</p>
+        )}
+        <RowNote note={note} />
+        <div className="mt-4 flex justify-end gap-2">
+          <DialogButton onClick={onCancel}>{strings.folders.cancel}</DialogButton>
+          {/*
+            `type="submit"` so the form's own handler runs for both Enter and the click, and
+            there is one path into `onConfirm` rather than two that could disagree about the
+            trim.
+          */}
+          <button
+            type="submit"
+            disabled={busy || trimmed === ''}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {confirm}
+          </button>
+        </div>
+      </form>
     </Dialog>
   )
 }

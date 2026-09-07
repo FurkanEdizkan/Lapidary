@@ -5,10 +5,12 @@ import type {
   ChunkAccepted,
   FolderId,
   FolderNode,
+  FolderPatch,
   LibraryId,
   LibrarySettings,
   LibraryStorage,
   MovePart,
+  NewFolder,
   PartDetail,
   PartId,
   PartsPage,
@@ -43,8 +45,9 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
 /**
  * `GET /api/libraries/{id}/parts` — the grid's one read. Thumbnails arrive inline as
  * `data:` URLs, so a page of cards costs this single request and no per-card round
- * trip. Keyset paging (`after`, `limit`) is left for the slice that virtualizes the
- * grid; asking for a page and rendering it is the whole of slice 1.
+ * trip. Keyset paged on `after`: the grid holds pages in a `useInfiniteQuery` and asks
+ * for the next one from the last id it has, so no page can be skipped or repeated by a
+ * part arriving while somebody is scrolling — which an offset would allow.
  *
  * `folderId` filters the page to one category **and everything under it** — the route's
  * filter is subtree-inclusive, so selecting `Terrain` shows what is in `Terrain/Rocks`
@@ -425,6 +428,99 @@ export async function deleteFolder(
     foldersHidden: counted('foldersHidden'),
     partsHidden: counted('partsHidden'),
   }
+}
+
+/**
+ * How `folders.rs` refuses a create or a rename, plus the shape of a body without a reason.
+ *
+ * Separate from `MoveRefusalReason` because these are different routes refusing different
+ * things, and folding them into one union would offer every caller four reasons it can
+ * never see. `'unknown'` covers an old server and a value this client does not recognise,
+ * for the same reason it does there.
+ *
+ * `renamedAfterMove` and `wouldCycle` are deliberately absent: both need a `parentId`, and
+ * neither function below ever sends one. If a client here ever grows a reparent, they come
+ * back with it — and `renamedAfterMove` needs the test `folders.rs:283` never got.
+ */
+export type FolderWriteRefusal = 'nameTaken' | 'slugTaken' | 'emptyName' | 'gone' | 'unknown'
+
+const KNOWN_FOLDER_REFUSALS: readonly string[] = ['nameTaken', 'slugTaken', 'emptyName']
+
+/**
+ * `noSuchLibrary` and `noSuchFolder` both mean "the thing you named is not there any more",
+ * and a user can do exactly one thing about either: reload. They arrive as `gone` rather
+ * than as two reasons that would need two sentences saying the same thing.
+ */
+async function folderRefusal(response: Response): Promise<FolderWriteRefusal> {
+  const reason = await refusalReason(response)
+  if (reason === 'noSuchLibrary' || reason === 'noSuchFolder') return 'gone'
+  return reason !== undefined && KNOWN_FOLDER_REFUSALS.includes(reason)
+    ? (reason as FolderWriteRefusal)
+    : 'unknown'
+}
+
+/** A write that the route answered rather than failed. Both functions below return it. */
+export type FolderWritten = { kind: 'written' } | { kind: 'refused'; reason: FolderWriteRefusal }
+
+/**
+ * `POST /api/libraries/{id}/folders` — create one category.
+ *
+ * The slug is not sent and cannot be: `folders.rs:143` derives it with `slugify`, which is
+ * the one place that decides what a filesystem may hold, and a client that could name the
+ * directory could name one outside the store.
+ *
+ * `409` and `400` are answers, not failures — a name a sibling already holds is something
+ * the user fixes by typing a different one, and throwing would put "check that the api
+ * service is running" in front of a typo.
+ */
+export async function createFolder(
+  library: LibraryId,
+  parentId: FolderId | null,
+  name: string,
+): Promise<FolderWritten> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/folders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parentId, name } satisfies NewFolder),
+  })
+  if (response.status === 409 || response.status === 400 || response.status === 404) {
+    return { kind: 'refused', reason: await folderRefusal(response) }
+  }
+  if (!response.ok) {
+    throw new Error(`folder create returned ${response.status}`)
+  }
+  return { kind: 'written' }
+}
+
+/**
+ * `PATCH /api/folders/{id}` — change a category's name, and nothing else.
+ *
+ * **The body is `{ name }` and must stay that way.** `FolderPatch.parentId` is optional and
+ * nullable, and the two are different requests: omitted means "do not move it", `null`
+ * means "move it to the library root". A rename built by spreading an object that happens
+ * to carry `parentId: null` would move every renamed category to the root — silently, and
+ * on every rename. Sending one field also keeps this away from `409 renamedAfterMove`
+ * (`folders.rs:283`), the both-fields branch no client has ever exercised and no test
+ * covers.
+ *
+ * **The directory on disk does not follow the name.** `folder.slug` is the category's
+ * address, allocated once at creation; `folder.name` is its label (`DATA.md` §1.1). The
+ * dialog that calls this has to say so, because the store is meant to be opened in a file
+ * manager and a person fixing a spelling will otherwise go looking for the fixed one.
+ */
+export async function renameFolder(folder: FolderId, name: string): Promise<FolderWritten> {
+  const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name } satisfies FolderPatch),
+  })
+  if (response.status === 409 || response.status === 400 || response.status === 404) {
+    return { kind: 'refused', reason: await folderRefusal(response) }
+  }
+  if (!response.ok) {
+    throw new Error(`folder rename returned ${response.status}`)
+  }
+  return { kind: 'written' }
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */

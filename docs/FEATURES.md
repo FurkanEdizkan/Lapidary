@@ -18,7 +18,19 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Mesh formats: STL, 3MF, OBJ | 1 |
 | Folder tree per library, mirrored on disk — one directory per part | 1 |
 | Move a part between folders; renames its directory, `source_path` unchanged | 1 |
-| Move history per part, newest first | 1 |
+| Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
+<!--
+  The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
+  with the folder tree and answers correctly. What was decided on 2026-09-07 is that
+  **nothing displays it**, and that is a product call rather than an oversight: a "moved
+  from" line in the inspector is history about a thing whose current location the card
+  already shows, and nobody asked where a part used to be.
+
+  Recorded here so the next reader does not file it as unfinished. The route stays, and so
+  does its `[]` answer for a part id that names nothing — which is the same answer as "this
+  part has never moved", deliberately, because nothing acts differently on the two. If a UI
+  ever reads it, that 404 starts to matter and belongs in the same change.
+-->
 | B-rep formats: STEP, IGES | 2 |
 | Failed-file drawer with actionable errors and per-file retry | 2 |
 | Watched-folder ingest (agent) | 4 |

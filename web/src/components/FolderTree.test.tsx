@@ -20,18 +20,21 @@ const TERRAIN: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0001',
   parentId: null,
   name: 'Terrain',
+  slug: 'Terain',
   partCount: 34,
 }
 const ROCKS: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0002',
   parentId: TERRAIN.id,
   name: 'Rocks',
+  slug: 'Rocks',
   partCount: 12,
 }
 const FASTENERS: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0003',
   parentId: null,
   name: 'Fasteners',
+  slug: 'Fasteners',
   partCount: 7,
 }
 /** One model and no children: the singular branch of the delete confirmation. */
@@ -39,6 +42,7 @@ const CABLE_CLIPS: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0004',
   parentId: null,
   name: 'Cable clips',
+  slug: 'Cable clips',
   partCount: 1,
 }
 /**
@@ -49,18 +53,21 @@ const ENCLOSURES: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0005',
   parentId: null,
   name: 'Enclosures',
+  slug: 'Enclosures',
   partCount: 0,
 }
 const VENTS: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0006',
   parentId: ENCLOSURES.id,
   name: 'Vent grilles',
+  slug: 'Vent grilles',
   partCount: 0,
 }
 const LIDS: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0007',
   parentId: ENCLOSURES.id,
   name: 'Snap-fit lids',
+  slug: 'Snap-fit lids',
   partCount: 0,
 }
 
@@ -104,12 +111,20 @@ function stubFetch(routes: {
   folders?: () => Promise<StubResponse>
   move?: () => Promise<StubResponse>
   folderDelete?: () => Promise<StubResponse>
+  folderCreate?: () => Promise<StubResponse>
+  folderPatch?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
+    // Before the bare `/folders` arm: a create is a POST to the same path the tree is a
+    // GET of, so order is what tells them apart and not the URL.
+    if (url.endsWith('/folders') && init?.method === 'POST') return (routes.folderCreate ?? pending)()
     if (url.endsWith('/folders')) return (routes.folders ?? pending)()
     if (url.startsWith('/api/parts/') && init?.method === 'PATCH') return (routes.move ?? pending)()
     if (url.startsWith('/api/folders/') && init?.method === 'DELETE') {
       return (routes.folderDelete ?? pending)()
+    }
+    if (url.startsWith('/api/folders/') && init?.method === 'PATCH') {
+      return (routes.folderPatch ?? pending)()
     }
     return Promise.reject(new Error(`unstubbed request: ${url}`))
   })
@@ -704,4 +719,125 @@ test('a library with no categories says so instead of showing an empty tree', as
   // The unfiltered library is still a target, so a model can always be filed back out of
   // a category.
   expect(screen.getByRole('button', { name: strings.folders.root })).toBeDefined()
+})
+
+/** The body of the first request made with `method`, parsed. */
+function bodyOf(fetchMock: ReturnType<typeof stubFetch>, method: string): unknown {
+  const call = fetchMock.mock.calls.find(
+    ([, init]) => (init as { method?: string } | undefined)?.method === method,
+  )
+  return JSON.parse(((call?.[1] as { body?: string } | undefined)?.body ?? 'null') as string)
+}
+
+/** The dialog's one text field, and the value a user would have typed into it. */
+const nameField = () => screen.getByRole('textbox', { name: strings.folders.createLabel })
+const typeName = (value: string) => fireEvent.change(nameField(), { target: { value } })
+
+test('creates a category under the one that is selected', async () => {
+  const fetchMock = stubFetch({
+    folders: ok([TERRAIN, ROCKS]),
+    folderCreate: ok({ ...ROCKS, id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0009', name: 'Scree' }),
+  })
+  renderTree(TERRAIN.id)
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.newCategory }))
+  // The title is where the destination is stated. One control whose target moves with the
+  // sidebar selection owes the user that answer before they type into it.
+  expect(
+    screen.getByRole('heading', { name: strings.folders.createTitle('Terrain') }),
+  ).toBeTruthy()
+
+  typeName('Scree')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.createConfirm }))
+
+  await waitFor(() =>
+    expect(bodyOf(fetchMock, 'POST')).toEqual({ parentId: TERRAIN.id, name: 'Scree' }),
+  )
+})
+
+test('creates at the library root when no category is selected', async () => {
+  const fetchMock = stubFetch({
+    folders: ok([TERRAIN]),
+    folderCreate: ok({ ...TERRAIN, id: '01a06b30-4c11-7a92-8f03-6d1e5c9a000a', name: 'Fasteners' }),
+  })
+  renderTree(null)
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.newCategory }))
+  expect(screen.getByRole('heading', { name: strings.folders.createTitle(null) })).toBeTruthy()
+  typeName('Fasteners')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.createConfirm }))
+
+  await waitFor(() =>
+    expect(bodyOf(fetchMock, 'POST')).toEqual({ parentId: null, name: 'Fasteners' }),
+  )
+})
+
+/**
+ * **The trap this test exists for.** `FolderPatch.parentId` is optional *and* nullable, and
+ * the two are different requests: omitted means "leave it where it is", `null` means "move
+ * it to the library root". A rename body built by spreading an object that carries a
+ * `parentId` key at all — or written from a mental model where absent and null are the same
+ * thing — moves every renamed category to the root, silently, on every rename.
+ *
+ * So the body is asserted by deep equality and not by looking for `name` in it: this has to
+ * fail on an *extra* key, which `toMatchObject` would let through.
+ */
+test('a rename sends the name alone and never a parent', async () => {
+  const fetchMock = stubFetch({ folders: ok([TERRAIN, ROCKS]), folderPatch: ok({}) })
+  renderTree()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Rocks') }))
+  typeName('Boulders')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
+
+  await waitFor(() => expect(bodyOf(fetchMock, 'PATCH')).toEqual({ name: 'Boulders' }))
+})
+
+/**
+ * The rename dialog names the folder on disk, and it has to read that off `slug` rather than
+ * off the name it is about to replace. `TERRAIN`'s slug is `Terain` — created with the typo,
+ * renamed to fix it, folder unchanged — which is exactly the state `DATA.md` §1.1 makes
+ * ordinary, and the one a dialog printing `folder.name` would get wrong while looking
+ * correct against every other fixture here.
+ */
+test('the rename dialog names the folder on disk, not the category', async () => {
+  stubFetch({ folders: ok([TERRAIN, ROCKS]) })
+  renderTree()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Terrain') }))
+  expect(screen.getByText(strings.folders.renameKeepsDirectory('Terain'))).toBeTruthy()
+})
+
+/**
+ * A refusal keeps the dialog open with what the user typed still in it: editing that name is
+ * the one thing they can do about this, and closing the dialog would throw it away.
+ *
+ * `slugTaken` specifically, because the rename decision is what made it reachable this way —
+ * a sibling renamed away from `Rocks` still occupies that folder, so the *name* is free and
+ * the *directory* is not.
+ */
+test('a refused rename keeps the dialog open and says which refusal it was', async () => {
+  stubFetch({ folders: ok([TERRAIN, ROCKS]), folderPatch: conflict('slugTaken') })
+  renderTree()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Rocks') }))
+  typeName('Scree')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
+
+  const note = await screen.findByRole('alert')
+  expect(note.textContent).toBe(strings.folders.slugTaken)
+  expect((nameField() as HTMLInputElement).value).toBe('Scree')
+})
+
+/** A name of nothing but spaces is not a name, and the confirm cannot be pressed on one. */
+test('the confirm stays disabled until the name has something in it', async () => {
+  stubFetch({ folders: ok([TERRAIN]) })
+  renderTree()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.newCategory }))
+  const create = screen.getByRole('button', { name: strings.folders.createConfirm })
+  expect((create as HTMLButtonElement).disabled).toBe(true)
+
+  typeName('   ')
+  expect((create as HTMLButtonElement).disabled).toBe(true)
 })

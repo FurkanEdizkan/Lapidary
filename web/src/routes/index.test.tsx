@@ -854,8 +854,9 @@ test("a per-file failure names the file alongside the reason", async () => {
 });
 
 // The server caps `failed` at 100 while `failedTotal` is the real number. A list that
-// simply stops is a measurement that lies by omission, which is the same fault the
-// truncated grid needs `parts.showingFirstPage` for.
+// simply stops is a measurement that lies by omission — the same fault `showingSoFar`
+// avoids on the grid by saying there is more rather than letting a page read as the whole
+// library.
 test("a failure list capped by the server says how many it is not showing", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
@@ -2025,12 +2026,14 @@ const TERRAIN: FolderNode = {
   id: "01a06b30-4c11-7a92-8f03-6d1e5c9a0001",
   parentId: null,
   name: "Terrain",
+  slug: "Terain",
   partCount: 34,
 };
 const ROCKS: FolderNode = {
   id: "01a06b30-4c11-7a92-8f03-6d1e5c9a0002",
   parentId: TERRAIN.id,
   name: "Rocks",
+  slug: "Rocks",
   partCount: 12,
 };
 
