@@ -41,6 +41,40 @@ preview yet" plus a working `POST /api/libraries/{id}/thumbnails` where it does 
 re-dropping the same folder completes in seconds via hash short-circuit, and grid page
 load is under 80 ms warm.
 
+**Measured 2026-09-07. Three clauses of four pass; the fourth does not.**
+
+Corpus: `Bases/` from the owner's own library — **1,095 STL files, 15.67 GB**, nested two
+to six directories deep, no basename collisions. A real folder rather than a generated one.
+Ingested into a library of its own on the development machine (12 cores, 15 GB RAM,
+PostgreSQL 18.6 in a container, worker concurrency 4).
+
+| Clause | Measured | Verdict |
+|---|---|---|
+| A folder of 1,000 STLs in | **130.3 s** for 1,095 files / 15.67 GB — 8.4 files/s, ~120 MB/s | pass |
+| Re-drop completes in seconds via hash short-circuit | **40.1 s**, 1,094 skipped, **0 re-ingested** | pass |
+| Grid page load under 80 ms warm | **5.3 ms** median at page size 50 (p95 5.9 ms, 2.4 MB body). At 500: **54.7 ms** median, 28.8 MB body | pass |
+| Every part appears | **1,094 of 1,095** | **fail** |
+
+**The one that fails, precisely.** `Trench battlefield-80mm(B).stl` is a degenerate mesh —
+it parses, and clustering leaves it with no triangles, so the rasterizer cannot make a
+thumbnail. That is a real property of the file and the error says so in the terms
+`CLAUDE.md` asks for. But the *ingest job* fails with it, so **no part row is created** and
+the model is absent from the library entirely.
+
+The criterion anticipates exactly this case and asks for the opposite: a part that appears
+with "No preview yet" and a working `POST /api/libraries/{id}/thumbnails` to try again. The
+machinery for that already exists and is what `auto_thumbnail = false` uses — a *skipped*
+render leaves a part with no thumbnail and the grid handles it. Only a *failed* render is
+fatal, and it should not be: losing the model because its picture could not be drawn is the
+wrong way round.
+
+Timing note: the two figures above measure the **scan** path — the worker walking a mounted
+directory — rather than a browser drop, which hashes client-side and uploads. Both reach the
+same ingest pipeline after the bytes are in reach; the drop adds transfer and client-side
+BLAKE3 that this run did not measure. And "interactive immediately" was observed rather than
+timed: the grid answered throughout the ingest, which is what the job queue is for, but no
+number was taken for it.
+
 ---
 
 ## Phase 2 — CAD ingest and search
