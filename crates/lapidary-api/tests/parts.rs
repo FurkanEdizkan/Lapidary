@@ -278,11 +278,11 @@ async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: sqlx::PgPool) {
-    // MAX_LIMIT is 100 (see parts.rs) — seed one more than that so a correctly-capped
-    // page (exactly 100) is distinguishable from an uncapped one (all 101, since
-    // nothing caps below the row count once the bound is defeated) with a small, fast
-    // fixture rather than needing tens of thousands of rows.
-    for i in 0..101u16 {
+    // One row more than `MAX_LIMIT`, which is what makes a correctly-capped page
+    // distinguishable from an uncapped one: below the cap, nothing caps below the row
+    // count, so both would look identical. The fixture grew with the ceiling — 501 rows
+    // rather than 101 — and that is the price of the assertion actually meaning something.
+    for i in 0..501u16 {
         seed_part(
             &pool,
             library(),
@@ -307,7 +307,7 @@ async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: 
 
     // A limit far past MAX_LIMIT: the request must not 400 (the field used to be a
     // `u16`, which fails to deserialize a value this large *before* the clamp below
-    // ever runs), and the page must be capped at exactly MAX_LIMIT (100), not the 101
+    // ever runs), and the page must be capped at exactly MAX_LIMIT (500), not the 501
     // rows that actually exist and not `limit`'s raw value.
     let (status2, huge_page) = get_page(pool, SEEDED_LIBRARY, "limit=100000").await;
     assert_eq!(
@@ -318,8 +318,8 @@ async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: 
     let parts = huge_page["parts"].as_array().expect("array");
     assert_eq!(
         parts.len(),
-        100,
-        "capped at MAX_LIMIT even though 101 rows exist and the client asked for 100000"
+        500,
+        "capped at MAX_LIMIT even though 501 rows exist and the client asked for 100000"
     );
     assert!(
         huge_page["next"].is_string(),

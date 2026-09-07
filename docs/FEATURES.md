@@ -41,7 +41,15 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Feature | Phase |
 |---|---|
 | Virtualized part grid, keyset pagination | 1 |
-| Page size 50/100/250/500 and card density, both persisted per library | 1 |
+| Page size 50/100/250/500 and card density, both persisted per viewer, per library | 1 |
+<!--
+  "per library" was the original wording and would have meant a column. There is no user
+  table, no session table and no auth in Phase 1, so a column would make one operator's
+  choice everybody's — and be wrong the moment auth arrives. These live in the browser's own
+  storage keyed by library id: each library remembers its own setting, which is the intent,
+  and the memory is that browser's, which is the limit. Amended rather than left to read as
+  met by something narrower than it says.
+-->
 | Thumbnails inline from Postgres `bytea`, rendered at ingest or on demand per library | 1 |
 | Full-text search over names, tags, materials | 1 |
 | Trigram search for part numbers and filenames | 1 |

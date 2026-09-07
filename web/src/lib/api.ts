@@ -65,6 +65,7 @@ export async function fetchParts(
   state?: 'removed',
   folderId?: FolderId | null,
   q?: string,
+  limit?: number,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -79,6 +80,11 @@ export async function fetchParts(
   // an empty one would work — but a URL carrying a parameter that means nothing is a URL
   // that reads as a search nobody ran.
   if (typeof q === 'string' && q.length > 0) query.set('q', q)
+  // Always sent when the caller has one, including the value that happens to match the
+  // route's own default. Omitting it there would mean this client knowing what the server's
+  // default is — a second copy of a number, in a different language, that goes wrong
+  // silently the day somebody changes one of them. The grid has a page size; it says so.
+  if (typeof limit === 'number') query.set('limit', String(limit))
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {

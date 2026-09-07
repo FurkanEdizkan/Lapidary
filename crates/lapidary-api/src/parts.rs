@@ -36,7 +36,18 @@ const DEFAULT_LIMIT: u16 = 50;
 /// The hard ceiling on `limit`, regardless of what the query string asks for. Trusting
 /// an unbounded `limit` is a trivial way to make one request materialise an entire
 /// library — thumbnails and all — into memory.
-const MAX_LIMIT: u16 = 100;
+///
+/// Raised from 100 to 500 so the grid can offer the page sizes `FEATURES.md` names:
+/// 50, 100, 250 and 500. The ceiling is still a ceiling — 500 is a number somebody chose,
+/// not the absence of one — and it is what bounds the cost of a single request.
+///
+/// **What 500 actually costs, since the point of the limit is the memory:** a page carries
+/// its thumbnails inline as `data:` URLs, and a thumbnail is capped at `MAX_THUMB_BYTES`
+/// (64 KB) by the rasterizer. So the worst case is around 32 MB of preview bytes in one
+/// response, base64'd to roughly 43 MB on the wire — inside the api container's 512 MB
+/// limit, and slow enough on a bad connection that it is a choice a user makes rather than
+/// a default they get.
+const MAX_LIMIT: u16 = 500;
 
 /// One grid card — the wire shape, deliberately not `PartSummary`.
 ///
