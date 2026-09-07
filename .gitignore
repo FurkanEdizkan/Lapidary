@@ -55,3 +55,11 @@ Thumbs.db
 # itself, which is the same accident the .rar rule above records, one order of magnitude
 # larger. Never committed, never needed.
 /.claude/worktrees/
+
+# The impeccable design detector's engine: a 16 MB platform-specific binary that
+# `npx impeccable install` fetches per machine. Its own hooks are written
+# `[ ! -f <binary> ] || <binary> hook`, so an absent engine is a no-op rather than a
+# broken session — which is what makes leaving it out of the tree safe. The skill, its
+# reference material and its hooks are committed; only the compiled linux-x64 artefact
+# is not, because a binary in git is forever and this one is wrong on any other arch.
+.claude/skills/impeccable/scripts/bin/
