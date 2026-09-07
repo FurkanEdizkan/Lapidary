@@ -1,7 +1,7 @@
 use crate::DbError;
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartSummary,
-    Provenance, RevisionId,
+    BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartImageId,
+    PartSummary, Provenance, RevisionId,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -2452,4 +2452,166 @@ impl PartRepository for PgParts {
             )
             .collect()
     }
+}
+
+/// One image in a part's gallery, as a reader gets it.
+///
+/// `bytes` or `hash`, never both and never neither — `part_image_inline_or_blob` is what
+/// makes that the database's opinion. Which one a row uses is a size decision made when it
+/// was written (`DATA.md` §1.5's 64 KB line) and not a fact about the image, so a reader
+/// takes whichever is there.
+#[derive(Debug)]
+pub struct PartImageRow {
+    pub id: PartImageId,
+    /// Inline WebP, for an image small enough to travel with the row.
+    pub inline_webp: Option<Vec<u8>>,
+    /// The content-addressed blob, for one that is not.
+    pub hash: Option<BlobHash>,
+    pub origin: String,
+    pub source_url: Option<String>,
+    pub position: i32,
+}
+
+/// A part's gallery, and what goes into it.
+impl PgParts {
+    /// Every image for one part, in gallery order.
+    ///
+    /// `position` then `id`, matching `part_image_part_id_position_idx`: two images written
+    /// at the same position get a stable order rather than whatever the heap hands back,
+    /// which is what stops a gallery reshuffling itself between two reads of the same page.
+    pub async fn part_images(&self, part: PartId) -> Result<Vec<PartImageRow>, DbError> {
+        /// `part_image` as it comes off the wire: id, inline bytes, hash, origin, source
+        /// URL, position. Named because six columns of mostly-optionals is exactly the
+        /// shape clippy asks to be given a name, and because the order is the SELECT's.
+        type GalleryRow = (
+            Uuid,
+            Option<Vec<u8>>,
+            Option<String>,
+            String,
+            Option<String>,
+            i32,
+        );
+
+        let rows: Vec<GalleryRow> = sqlx::query_as(
+            "SELECT id, image_webp, blake3, origin, source_url, position \
+                 FROM part_image WHERE part_id = $1 ORDER BY position, id",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter()
+            .map(|(id, inline_webp, hex, origin, source_url, position)| {
+                let hash = hex
+                    .map(|hex| {
+                        BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                            column: "part_image.blake3",
+                            value: hex,
+                        })
+                    })
+                    .transpose()?;
+                Ok(PartImageRow {
+                    id: PartImageId::from_uuid(id),
+                    inline_webp,
+                    hash,
+                    origin,
+                    source_url,
+                    position,
+                })
+            })
+            .collect()
+    }
+
+    /// Add one image to the end of a part's gallery.
+    ///
+    /// **The blob half takes a reference**, which is the whole reason this is a transaction:
+    /// `record_unreferenced` puts bytes on disk at `ref_count = 0`, and a sweep that ran
+    /// between that and the `part_image` row would find a blob nothing references and
+    /// quarantine an image somebody had just uploaded. Inserting the row and taking the
+    /// count in one transaction is what closes that window.
+    ///
+    /// `position` is read and incremented inside the same transaction for a smaller version
+    /// of the same reason: two uploads racing would otherwise both read the same maximum and
+    /// land on top of each other.
+    pub async fn add_part_image(
+        &self,
+        part: PartId,
+        image: NewPartImage<'_>,
+    ) -> Result<PartImageId, DbError> {
+        let mut tx = self.0.begin().await?;
+
+        let next: i32 = sqlx::query_scalar(
+            "SELECT coalesce(max(position), -1) + 1 FROM part_image WHERE part_id = $1",
+        )
+        .bind(part.as_uuid())
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let id = PartImageId::new();
+        let (inline, hex) = match image.bytes {
+            ImageBytes::Inline(bytes) => (Some(bytes), None),
+            ImageBytes::Blob(hash) => (None, Some(hash.to_hex())),
+        };
+        sqlx::query(
+            "INSERT INTO part_image (id, part_id, image_webp, blake3, origin, source_url, position) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(id.as_uuid())
+        .bind(part.as_uuid())
+        .bind(inline)
+        .bind(&hex)
+        .bind(image.origin)
+        .bind(image.source_url)
+        .bind(next)
+        .execute(&mut *tx)
+        .await?;
+
+        if hex.is_some() {
+            sqlx::query("UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL WHERE blake3 = $1")
+                .bind(&hex)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Whether any gallery references these bytes.
+    ///
+    /// The other half of `derivative_is_reachable`, and it exists for the same rule:
+    /// `CLAUDE.md` says content addressing is not authorization, so `GET /api/blob/{hash}`
+    /// has to ask whether anything in this instance points at a hash before serving it.
+    /// Without this, an image blob would be on disk and unreachable — served to nobody,
+    /// including the person who uploaded it.
+    pub async fn image_is_reachable(&self, hash: &BlobHash) -> Result<bool, DbError> {
+        let reachable: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM part_image WHERE blake3 = $1)")
+                .bind(hash.to_hex())
+                .fetch_one(&self.0)
+                .await?;
+        Ok(reachable)
+    }
+}
+
+/// Where an image's bytes are. Exactly one, matching `part_image_inline_or_blob`.
+#[derive(Debug)]
+pub enum ImageBytes<'a> {
+    /// Small enough to live on the row (`DATA.md` §1.5's 64 KB line).
+    Inline(&'a [u8]),
+    /// Already written to the content-addressed store, and recorded in `blob`.
+    Blob(&'a BlobHash),
+}
+
+/// What [`PgParts::add_part_image`] needs to write a gallery row.
+#[derive(Debug)]
+pub struct NewPartImage<'a> {
+    pub bytes: ImageBytes<'a>,
+    /// `uploaded`, `url_supplied`, `og_fetched` or `rendered` — `part_image_known_origin`
+    /// is what refuses anything else, so a typo here is a failed insert rather than a value
+    /// no reader understands.
+    pub origin: &'a str,
+    /// Where it was fetched from, for one that was. Never used to load the image: our own
+    /// copy is what is served, because hotlinking leaks a referrer on every grid scroll.
+    pub source_url: Option<&'a str>,
 }

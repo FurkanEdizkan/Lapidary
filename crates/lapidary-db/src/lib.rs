@@ -10,9 +10,10 @@ pub use folders::{FolderRow, PgFolders};
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
-    DerivativeBytes, DownloadSource, IngestRequest, MoveRow, MoveSource, PartDetailRow,
-    PartRepository, PartRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport,
-    RevisionSource, Shows, StorageTotals, StoredBlobRow, TessellationRow,
+    DerivativeBytes, DownloadSource, ImageBytes, IngestRequest, InstanceStorage, MoveRow,
+    MoveSource, NewPartImage, PartDetailRow, PartImageRow, PartRepository, PartRow, PgBlobs,
+    PgIngest, PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows, StorageTotals,
+    StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as

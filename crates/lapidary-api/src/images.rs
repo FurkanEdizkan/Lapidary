@@ -28,8 +28,20 @@
 //! The output is bytes and a size, and nothing here writes anything. Where those bytes go —
 //! inline under 64 KB, a blob above — is `part_image`'s rule and the caller's business.
 
+use crate::AppState;
+use crate::derive::internal_error;
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use image::{DynamicImage, ImageFormat, ImageReader, Limits};
+use lapidary_core::{PartId, PartImageId};
+use lapidary_db::{PgBlobs, PgParts};
+use serde::Serialize;
 use std::io::Cursor;
+use ts_rs::TS;
 
 /// The largest input we will look at, before decoding.
 ///
@@ -313,4 +325,175 @@ mod tests {
             ImageError::Undecodable
         ));
     }
+}
+
+/// Below this an image travels on its row; above it, it goes to the content-addressed
+/// store. `DATA.md` §1.5's line, and the same one `derivative` already uses — one rule in
+/// the store about small images rather than two.
+const INLINE_LIMIT: usize = 64 * 1024;
+
+/// `POST /api/parts/{id}/images` — attach a picture to a part.
+///
+/// The body is the file, raw. Not multipart: there is one field, and a multipart parser is
+/// a second format to read from an untrusted source in a route whose whole job is being
+/// careful about that. Not the chunked uploader either — that exists for 2 GB CAD files
+/// over a VPN, and an image is capped at 10 MB, so a resumable protocol for it would be
+/// machinery with no failure to survive.
+///
+/// The declared content type is ignored on purpose. [`normalize`] reads the file's own
+/// header, because the header is the only part of this request the sender does not choose.
+pub async fn upload(
+    State(state): State<AppState>,
+    Path(part): Path<PartId>,
+    body: axum::body::Bytes,
+) -> Response {
+    let normalized = match normalize(&body) {
+        Ok(image) => image,
+        Err(err) => return refused(&err),
+    };
+
+    // Inline or blob, decided by size and nothing else. The blob is written before the row
+    // that references it: bytes on disk with no row are collected by the sweep, where a row
+    // pointing at bytes that were never written is an image that renders as a broken box.
+    let stored_at = (normalized.width, normalized.height);
+    let bytes = if normalized.webp.len() < INLINE_LIMIT {
+        lapidary_db::ImageBytes::Inline(&normalized.webp)
+    } else {
+        match lapidary_storage::DerivativeStore::open(&state.blob_root).put(&normalized.webp) {
+            Ok(stored) => {
+                // `StoredBlob` is the store's answer; `StoredBlobRow` is the row shape.
+                // Written before the gallery row that references it: bytes with no row are
+                // collected by the sweep, where a row pointing at bytes nobody wrote is an
+                // image that renders as a broken box forever.
+                let row = lapidary_db::StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                };
+                if let Err(err) = PgBlobs(state.db.clone()).record_unreferenced(&row).await {
+                    return internal_error(&err, "recording an image blob failed");
+                }
+                return finish(
+                    state,
+                    part,
+                    lapidary_db::ImageBytes::Blob(&row.hash),
+                    stored_at,
+                )
+                .await;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "could not write an image to the store");
+                return refused(&ImageError::Unencodable);
+            }
+        }
+    };
+    finish(state, part, bytes, stored_at).await
+}
+
+/// The insert both branches end at, so the transaction that takes a blob's reference is
+/// written once.
+async fn finish(
+    state: AppState,
+    part: PartId,
+    bytes: lapidary_db::ImageBytes<'_>,
+    (width, height): (u32, u32),
+) -> Response {
+    match PgParts(state.db)
+        .add_part_image(
+            part,
+            lapidary_db::NewPartImage {
+                bytes,
+                origin: "uploaded",
+                source_url: None,
+            },
+        )
+        .await
+    {
+        // The size is in the answer because the resize is silent otherwise. An image over
+        // `MAX_EDGE_PX` is scaled down on the way in — correct, and not something to do to
+        // somebody's photograph without telling them what they got.
+        Ok(id) => (StatusCode::CREATED, Json(StoredImage { id, width, height })).into_response(),
+        Err(err) => internal_error(&err, "attaching an image failed"),
+    }
+}
+
+/// `GET /api/parts/{id}/images` — the gallery, in order.
+///
+/// An inline image comes back as a `data:` URL, exactly as a thumbnail does on a card: it
+/// is already in the row, and a second request for bytes we are holding would be a round
+/// trip bought with nothing. A blob comes back as its `/api/blob/{hash}` URL, which is
+/// cached immutably and shared between every part that points at it.
+pub async fn list(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
+    match PgParts(state.db).part_images(part).await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| PartImage {
+                    id: row.id,
+                    src: match (row.inline_webp, row.hash) {
+                        (Some(bytes), _) => {
+                            format!("data:image/webp;base64,{}", BASE64.encode(bytes))
+                        }
+                        (None, Some(hash)) => format!("/api/blob/{}", hash.to_hex()),
+                        // The CHECK constraint makes this unreachable; an empty string is
+                        // what an `<img>` renders as nothing rather than as a broken box.
+                        (None, None) => String::new(),
+                    },
+                    origin: row.origin,
+                    source_url: row.source_url,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => internal_error(&err, "reading a part's gallery failed"),
+    }
+}
+
+/// What an upload produced: the id to address it by, and the size it was stored at.
+///
+/// The size is here because the resize is otherwise invisible. A photograph over
+/// `MAX_EDGE_PX` on its long edge is scaled down on the way in, and a person who attached a
+/// 4000-pixel picture is owed the sentence saying what is now on the card.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredImage {
+    pub id: PartImageId,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One image, ready to render. `src` is a `data:` URL or a blob route — the caller does not
+/// need to know which, and the distinction is a storage decision rather than a fact about
+/// the picture.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PartImage {
+    pub id: PartImageId,
+    pub src: String,
+    /// `uploaded`, `url_supplied`, `og_fetched` or `rendered`.
+    pub origin: String,
+    /// Where it came from, for one that was fetched. Shown so a person can tell an image
+    /// they chose from one that was pulled in for them.
+    pub source_url: Option<String>,
+}
+
+/// A refusal a person can act on, with the status that matches which kind it is.
+///
+/// `413` for too large and `415` for the wrong kind of file, because those are what those
+/// statuses mean; `422` for an image that is a real image and still not one we will store.
+/// A caller reading only the status still learns something true.
+fn refused(err: &ImageError) -> Response {
+    let status = match err {
+        ImageError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        ImageError::NotAnImage => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ImageError::Undecodable | ImageError::TooSmall { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ImageError::Unencodable => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(serde_json::json!({ "message": err.to_string() })),
+    )
+        .into_response()
 }
