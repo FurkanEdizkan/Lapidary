@@ -342,7 +342,12 @@ async fn the_source_path_backfill_reconstructs_the_filename_a_flat_scan_used(poo
     .await
     .expect("file inserts");
 
-    migrator.run(&pool).await.expect("0007 applies");
+    // `run_to(7)`, not `run`: this test is about `0007` and applying everything after it
+    // was incidental. It stopped being harmless when `0015` arrived — the fixture above is a
+    // database that never ran `migrate_storage`, so its file row has no `storage_path`, and
+    // `0015` refuses exactly that. Which is the guard working, not a conflict to route
+    // around: an operator with this database is told to drain the job first.
+    migrator.run_to(7, &pool).await.expect("0007 applies");
 
     let backfilled: Vec<(String, String)> =
         sqlx::query_as("SELECT name, source_path FROM part WHERE library_id = $1 ORDER BY name")
