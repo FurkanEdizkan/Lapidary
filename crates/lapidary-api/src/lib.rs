@@ -47,6 +47,19 @@ pub struct AppState {
     /// `upload.rs`'s module doc for why the staged file, and not a session table, is the
     /// upload's state.
     pub upload_dir: std::path::PathBuf,
+    /// Where the storage root is **on the host**, if the deployment has said so.
+    ///
+    /// This process cannot work it out. `blob_root` above is where the store is mounted
+    /// *inside the container* — `/var/lib/lapidary` under `deploy/compose.yaml` — and that
+    /// path exists nowhere on the machine the user is sitting at. So the one thing the UI
+    /// needs to turn `libraries/default/Rocks/cliff/cliff.stl` into something a person can
+    /// paste into a file manager is a fact only the operator has.
+    ///
+    /// `None` unless `LAPIDARY_HOST_STORAGE_ROOT` is set to an absolute path, and the UI
+    /// then shows the store-relative path exactly as it did before. Never a guess: a
+    /// confidently wrong absolute path is worse than an honest relative one, which is the
+    /// same rule `ShowInFolder` already follows about not joining a path out of slugs.
+    pub host_storage_root: Option<String>,
 }
 
 /// Which process this is. `api` serves the open path and must never link the CAD kernel:
@@ -99,6 +112,10 @@ pub fn router(state: AppState, role: Role) -> Router {
             // What that page of cards costs, summed. `Role::Api` with the grid it totals
             // — see `parts.rs`.
             .route("/api/libraries/{id}/storage", get(parts::storage))
+            // What the whole store holds, and where it is. Not under `/api/libraries/{id}`
+            // because two of its figures belong to no library and its derivative total is
+            // deliberately not what adding the libraries up gives.
+            .route("/api/storage", get(parts::instance_storage))
             .route(
                 "/api/libraries/{library}/jobs/{batch}",
                 get(jobs::batch_status),

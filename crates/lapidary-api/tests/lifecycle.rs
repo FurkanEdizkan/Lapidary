@@ -30,6 +30,7 @@ fn state(pool: sqlx::PgPool) -> AppState {
         // what makes that a real assertion rather than a coincidence.
         blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     }
 }
 

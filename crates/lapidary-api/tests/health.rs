@@ -16,6 +16,7 @@ async fn healthz_reports_ok_and_the_postgres_major_version(pool: sqlx::PgPool) {
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -53,6 +54,7 @@ async fn healthz_says_what_broke_and_what_to_do_when_the_database_is_gone(pool: 
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -95,6 +97,7 @@ async fn unknown_routes_are_not_found(pool: sqlx::PgPool) {
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -118,6 +121,7 @@ async fn health_is_served_in_both_roles(pool: sqlx::PgPool) {
                 db: pool.clone(),
                 blob_root: blob_root(),
                 upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+                host_storage_root: None,
             },
             role,
         );
@@ -159,6 +163,7 @@ async fn the_scan_trigger_is_on_the_api_role_and_only_there(pool: sqlx::PgPool) 
                 db: pool.clone(),
                 blob_root: blob_root(),
                 upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+                host_storage_root: None,
             },
             role,
         );
@@ -183,6 +188,7 @@ async fn the_worker_role_does_not_serve_the_grid(pool: sqlx::PgPool) {
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Worker,
     );
@@ -213,6 +219,7 @@ async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );

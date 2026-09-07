@@ -2681,3 +2681,133 @@ async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: 
          kept for a table that no longer points at a part is a delete nobody can justify"
     );
 }
+
+/// The instance total is not the sum of the library totals, and this is the shape that
+/// makes them differ.
+///
+/// A derivative blob two libraries both point at is charged in full to each of them by
+/// `storage_totals` — correct for a panel answering "what does this library cost me", and
+/// double counting for one answering "what is on this disk". `instance_storage` counts it
+/// once, which is what `du` would report for it.
+///
+/// Written as an inequality against the fold rather than as a bare number, because a
+/// number would pass just as happily if both queries were wrong in the same direction.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_instance_total_counts_a_shared_derivative_once_where_two_libraries_each_count_it(
+    pool: sqlx::PgPool,
+) {
+    let ingest = PgIngest(pool.clone());
+    let other = second_library(&pool).await;
+    let rung = rung_blob(0x77);
+
+    // One rung, two libraries: the same tessellation reached from two parts. Content
+    // addressing is what makes that one file, and the reason it survived the folder tree.
+    for (library, name, source, seed) in [
+        (
+            library(),
+            "Vee block, LP-3072-02",
+            "vee-block-lp-3072-02.stl",
+            0xa1,
+        ),
+        (
+            other,
+            "Vee block, LP-3072-02",
+            "vee-block-lp-3072-02.stl",
+            0xa2,
+        ),
+    ] {
+        ingest
+            .record(IngestRequest {
+                folder: None,
+                storage_path: None,
+                library,
+                name,
+                source_path: source,
+                blob: &blob_row(seed),
+                measurements: &watertight(),
+                kernel_version: "mesh stl-1+glb-1+cpu-1",
+                format: "stl",
+                tessellations: &[TessellationRow {
+                    kind: "tessellation_l0",
+                    blob: rung_blob(0x77),
+                    grid: None,
+                }],
+                thumbnail_webp: None,
+            })
+            .await
+            .expect("records a part pointing at the shared rung");
+    }
+
+    let parts = PgParts(pool.clone());
+    let mine = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("library");
+    let theirs = parts
+        .storage_totals(other)
+        .await
+        .expect("totals")
+        .expect("library");
+    let instance = parts.instance_storage().await.expect("instance totals");
+
+    assert_eq!(
+        mine.derivative_bytes, rung.stored_bytes,
+        "each library is charged the whole rung, which is what a per-library panel means"
+    );
+    assert_eq!(theirs.derivative_bytes, rung.stored_bytes);
+    assert_eq!(
+        instance.derivative_bytes, rung.stored_bytes,
+        "and the instance is charged it once — the file exists once"
+    );
+    assert!(
+        instance.derivative_bytes < mine.derivative_bytes + theirs.derivative_bytes,
+        "which is the whole reason this is its own query and not a fold over the libraries"
+    );
+
+    // Sources are path-addressed and genuinely two files, so they do add up. Asserted so
+    // that a future dedup of the source half cannot pass this test silently.
+    assert_eq!(
+        instance.source_bytes,
+        mine.source_bytes + theirs.source_bytes,
+        "one file per model, so nothing is shared to count twice"
+    );
+}
+
+/// Quarantined bytes are on the disk and belong to no library, so an instance total that
+/// omitted them would under-report by everything anyone had purged in the last thirty days
+/// — and no other panel in the application can show them (`DATA.md` §1.6).
+#[sqlx::test(migrations = "./migrations")]
+async fn purged_bytes_waiting_out_the_hold_are_in_the_instance_total_and_no_library_total(
+    pool: sqlx::PgPool,
+) {
+    let ingest = PgIngest(pool.clone());
+    let parts = PgParts(pool.clone());
+    let part = seed_part(&ingest, library(), "Hex spacer, M4x20", 0xb4, None).await;
+    let before = parts.instance_storage().await.expect("instance totals");
+
+    parts.soft_delete(part).await.expect("removes the part");
+    parts.purge(part).await.expect("purges it");
+
+    let after = parts.instance_storage().await.expect("instance totals");
+    let library_total = parts
+        .storage_totals(library())
+        .await
+        .expect("totals")
+        .expect("library");
+
+    assert_eq!(
+        after.source_bytes, 0,
+        "the part is gone, so it is nobody's live bytes any more"
+    );
+    assert_eq!(
+        after.quarantined_bytes, before.source_bytes,
+        "and its bytes are here instead — still on the disk, for thirty days"
+    );
+    assert_eq!(
+        library_total.source_bytes + library_total.removed_bytes,
+        0,
+        "no library can be charged for them: the part that said which library is the part \
+         that was purged"
+    );
+}

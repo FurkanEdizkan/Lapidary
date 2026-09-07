@@ -36,6 +36,21 @@ struct Config {
     // `api` role reads it, and only when someone uploads, so it is `Option` for the
     // same reason and checked in the `Role::Api` arm below rather than here.
     upload_dir: Option<PathBuf>,
+    /// Where `blob_root` is mounted **from**, on the host.
+    ///
+    /// Nothing in this process reads a file through it, and nothing should: it exists to be
+    /// *shown*. `blob_root` is where the store is inside the container, and under
+    /// `deploy/compose.yaml` that is `/var/lib/lapidary` — a path that exists on no machine
+    /// anyone is sitting at. The store's whole layout is built on being openable in a file
+    /// manager (`DATA.md` §1.1), and the path a person needs for that is a fact only the
+    /// deployment has. `deploy/compose.yaml` passes the `LAPIDARY_STORAGE_ROOT` the operator
+    /// already sets, so this is a variable they usually do not have to think about.
+    ///
+    /// Ignored unless absolute. A relative value — `../storage`, which is what compose
+    /// falls back to — is resolved against `deploy/`, and this process has no idea where
+    /// that is; prefixing it onto a model's path would produce something that looks like an
+    /// answer and is not.
+    host_storage_root: Option<PathBuf>,
     /// Where the bundled example parts live, so a first run is never an empty grid.
     ///
     /// Deliberately not `ingest_dir`, even though `deploy/compose.yaml` defaults that to
@@ -193,6 +208,8 @@ fn worker_router(
             // puts all three behind `Role::Api`. An unreachable path is the honest value
             // for a field this role never reads.
             upload_dir: PathBuf::new(),
+            // The worker serves no route that shows a path to anybody.
+            host_storage_root: None,
         },
         Role::Worker,
     );
@@ -520,6 +537,14 @@ async fn main() -> Result<()> {
                         db,
                         blob_root,
                         upload_dir,
+                        // Absolute or nothing — see the field's doc. A relative path here
+                        // is compose's unset default rather than an operator's choice, and
+                        // showing it as though it were one is the mistake this guards.
+                        host_storage_root: config
+                            .host_storage_root
+                            .as_ref()
+                            .filter(|path| path.is_absolute())
+                            .map(|path| path.display().to_string()),
                     },
                     Role::Api,
                 ),
@@ -703,6 +728,7 @@ mod tests {
                 // This test asks only which routes mount; it never reaches the store or
                 // stages an upload.
                 blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
+                host_storage_root: None,
                 upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             },
             Role::Api,

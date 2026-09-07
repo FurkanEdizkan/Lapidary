@@ -40,6 +40,7 @@ async fn get_status(
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         role,
     );
@@ -194,6 +195,7 @@ async fn events(pool: sqlx::PgPool, library: &str, batch: &str) -> Vec<serde_jso
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -275,6 +277,7 @@ async fn the_worker_role_serves_no_event_stream(pool: sqlx::PgPool) {
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Worker,
     );

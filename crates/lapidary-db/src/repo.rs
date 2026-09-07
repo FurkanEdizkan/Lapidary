@@ -26,6 +26,14 @@ pub struct PartRow {
     /// own to show or to rename. Here for the same reason `thumbnail_webp` is — it is a
     /// wire concern of the grid, not a fact `PartSummary` should carry into the viewer.
     pub directory: Option<String>,
+    /// `file.storage_path` itself — the directory above with the model's filename back on.
+    ///
+    /// Both, rather than one and a split: the directory is what a *move* renames, and the
+    /// full path is what the card *shows*. Deriving either from the other in the client
+    /// would put a second definition of "the parent of a model file" in TypeScript beside
+    /// [`model_directory`]'s here, and the client is the side that cannot know when the
+    /// filename was disambiguated.
+    pub storage_path: Option<String>,
 }
 
 /// Everything a `derive` job needs to re-read a revision's source bytes.
@@ -145,6 +153,32 @@ pub struct StorageTotals {
     /// A blob shared with a live part is counted here *and* above, because it is genuinely
     /// serving both and purging the removed part would not reclaim it.
     pub removed_bytes: u64,
+}
+
+/// What the whole store holds, across every library — the figure a person means by "how
+/// much space is this taking".
+///
+/// Four numbers rather than one, because they behave differently and a single total would
+/// hide the two that surprise people: `removed_bytes` is still on the disk and comes back
+/// if the part is restored, and `quarantined_bytes` is on the disk *and* belongs to no
+/// library, so it appears in no other panel in the application.
+///
+/// See [`PgParts::instance_storage`] for what is deliberately not counted, and why the
+/// route serves a real directory walk beside these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstanceStorage {
+    /// Every live model file, at what it occupies. One file per model, never deduplicated —
+    /// source dedup ended with the folder tree (`DATA.md` §1.1).
+    pub source_bytes: u64,
+    /// Rungs on disk plus inline thumbnails from Postgres, **each blob counted once** however
+    /// many revisions or libraries point at it.
+    pub derivative_bytes: u64,
+    /// What soft-deleted parts still occupy. Nothing has left the disk; a restore brings
+    /// them back, and only a purge starts the clock that removes them.
+    pub removed_bytes: u64,
+    /// Purged, inside the thirty-day hold, on the disk and belonging to no library. The one
+    /// figure this application can report nowhere else.
+    pub quarantined_bytes: u64,
 }
 
 /// Which side of `deleted_at` a page reads.
@@ -1859,6 +1893,59 @@ impl PgParts {
         }))
     }
 
+    /// What the whole instance occupies, across every library and including what no
+    /// library can be charged for.
+    ///
+    /// **Not the sum of [`Self::storage_totals`] over the libraries**, and the difference is
+    /// the reason this is its own query rather than a fold. Derivatives are still
+    /// content-addressed and genuinely shared, so a blob two libraries both point at is
+    /// charged in full to each of them there — correct for a panel answering "what does
+    /// this library cost me", and double counting for one answering "what is on this disk".
+    /// Here every blob is counted once.
+    ///
+    /// Quarantined bytes appear here and nowhere else. They are library-less by
+    /// construction (`DATA.md` §1.6): a quarantined blob is keyed by hash, and the part
+    /// that would have said which library it belonged to is the part that was purged. That
+    /// is exactly why a per-library panel cannot show them and an instance-wide one must —
+    /// they are bytes on the disk, for up to thirty days, that no other figure admits to.
+    ///
+    /// **Still not `du`, and the caller is expected to say so.** `metadata.json` beside
+    /// every model is not counted (the same omission `StorageTotals` documents, for the
+    /// same reason: a per-manifest length column written for a figure nobody would see
+    /// move), and neither is anything a person dropped into the store themselves. The
+    /// route pairs this with a real walk of the root for exactly that reason.
+    pub async fn instance_storage(&self) -> Result<InstanceStorage, DbError> {
+        // One row, four scalar subqueries, same `::bigint` casts as `storage_totals` and
+        // for the same reason: `sum()` over bigint is `numeric`, which sqlx will not decode
+        // into i64.
+        let (source, derivative, removed, quarantined): (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+             (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
+              FROM file f JOIN revision r ON r.id = f.revision_id \
+              JOIN part p ON p.id = r.part_id \
+              WHERE p.deleted_at IS NULL AND f.role = 'source'), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)) \
+             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint FROM derivative d), \
+             (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
+              FROM file f JOIN revision r ON r.id = f.revision_id \
+              JOIN part p ON p.id = r.part_id \
+              WHERE p.deleted_at IS NOT NULL AND f.role = 'source'), \
+             (SELECT coalesce(sum(q.stored_bytes), 0)::bigint FROM quarantined_file q) \
+             + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+                WHERE b.quarantined_at IS NOT NULL)",
+        )
+        .fetch_one(&self.0)
+        .await?;
+
+        Ok(InstanceStorage {
+            source_bytes: bytes_column("file.stored_bytes", source)?,
+            derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+            removed_bytes: bytes_column("file.stored_bytes", removed)?,
+            quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
+        })
+    }
+
     /// Every revision in `library` with no generated derivative of `kind` — the set a
     /// sweep enqueues a `derive` job for.
     ///
@@ -2330,6 +2417,7 @@ impl PartRepository for PgParts {
                         },
                         thumbnail_webp: thumb_bytes,
                         directory: storage_path.as_deref().and_then(model_directory),
+                        storage_path,
                     })
                 },
             )

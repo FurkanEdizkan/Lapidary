@@ -62,6 +62,17 @@ services:
       # subdirectory of LAPIDARY_BLOB_ROOT — everything under that root is
       # content-addressed and complete, and a half-transferred file is neither.
       LAPIDARY_UPLOAD_DIR: /var/lib/lapidary-uploads
+      # The same value as the mount below, told to the process rather than only to the
+      # runtime. Nothing reads a file through it: the api reads the store at
+      # LAPIDARY_BLOB_ROOT, which is a path inside this container and exists on nobody's
+      # machine. This is what the card shows when it says where a model is, and the store's
+      # whole layout is built on that being somewhere a person can actually open.
+      #
+      # Ignored by the binary unless absolute, which is why the fallback below is harmless:
+      # `../storage` is resolved against deploy/ by compose and means nothing to a process
+      # that cannot see deploy/. Set LAPIDARY_STORAGE_ROOT to an absolute path — which
+      # .env.example already recommends for other reasons — and the paths appear.
+      LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
     depends_on:
       db:
         condition: service_healthy

@@ -86,6 +86,7 @@ async fn get_page(
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -422,6 +423,7 @@ async fn get_storage(
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         role,
     );
@@ -821,4 +823,135 @@ async fn a_part_with_no_rung_says_so_rather_than_naming_bytes_that_do_not_exist(
         "got: {}",
         json["parts"][0]["tessellationL0"]
     );
+}
+
+/// GETs `/api/storage` through an api router whose store is `root` and whose deployment
+/// claims `host` as the host path.
+async fn get_instance_storage(
+    pool: sqlx::PgPool,
+    root: std::path::PathBuf,
+    host: Option<&str>,
+    query: &str,
+) -> (StatusCode, serde_json::Value) {
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: root,
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: host.map(str::to_owned),
+        },
+        Role::Api,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/storage{query}"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body reads");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// The walk is not free, so it is not the default — and its absence is `null` rather than
+/// `0`, because "nobody asked" and "the store is empty" are different facts and a panel
+/// rendering the second for the first would report an empty disk.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_on_disk_total_is_absent_until_it_is_asked_for(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store to walk");
+    std::fs::write(store.path().join("cliff.stl"), vec![0u8; 4096]).expect("writes a model");
+
+    let (status, without) =
+        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        without["onDiskBytes"],
+        serde_json::Value::Null,
+        "not asked for, so not answered — and not answered as zero"
+    );
+
+    let (_, with) =
+        get_instance_storage(pool, store.path().to_path_buf(), None, "?onDisk=true").await;
+    assert_eq!(
+        with["onDiskBytes"], 4096,
+        "asked for, and it is the real size of what is in the directory"
+    );
+}
+
+/// The walk counts what a `du` would: files no database row knows about.
+///
+/// This is the whole reason it exists beside the tracked figures. `metadata.json` sits
+/// beside every model and is deliberately in no total (`StorageTotals`' own doc says so),
+/// and anything a person dropped into the store is in none either — so the two numbers
+/// differ, and a user comparing the panel to their disk should see both rather than
+/// discover the gap themselves.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_on_disk_total_counts_bytes_no_row_accounts_for(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store to walk");
+    let model = store.path().join("libraries/default/vee-block-lp-3072-02");
+    std::fs::create_dir_all(&model).expect("model directory");
+    std::fs::write(model.join("vee-block-lp-3072-02.stl"), vec![0u8; 9684]).expect("the model");
+    std::fs::write(model.join("metadata.json"), vec![0u8; 918]).expect("its manifest");
+
+    let (_, body) =
+        get_instance_storage(pool, store.path().to_path_buf(), None, "?onDisk=true").await;
+
+    assert_eq!(
+        body["onDiskBytes"],
+        9684 + 918,
+        "the manifest is on the disk, so the disk figure has it — nested directories and all"
+    );
+    assert_eq!(
+        body["sourceBytes"], 0,
+        "and no row describes any of it, which is exactly the gap worth showing"
+    );
+}
+
+/// A relative host root is compose's unset fallback, not an operator's answer, and
+/// resolving it needs a working directory this process does not have. Reporting it would
+/// hand somebody `../storage/libraries/…` to paste into a file manager.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_host_root_is_reported_only_when_the_deployment_gave_an_absolute_one(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let (_, told) = get_instance_storage(
+        pool.clone(),
+        store.path().to_path_buf(),
+        Some("/srv/lapidary-storage"),
+        "",
+    )
+    .await;
+    assert_eq!(told["hostStorageRoot"], "/srv/lapidary-storage");
+
+    let (_, untold) = get_instance_storage(pool, store.path().to_path_buf(), None, "").await;
+    assert_eq!(
+        untold["hostStorageRoot"],
+        serde_json::Value::Null,
+        "unset means the card shows the store-relative path, exactly as before"
+    );
+}
+
+/// A storage root that is not there yet is a fresh install, not a fault. The tracked
+/// figures are still true and the route still answers them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_store_that_does_not_exist_yet_answers_the_tracked_figures_anyway(pool: sqlx::PgPool) {
+    let (status, body) = get_instance_storage(
+        pool,
+        std::path::PathBuf::from("/nonexistent-storage-root"),
+        None,
+        "?onDisk=true",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "a missing store is not a 500");
+    assert_eq!(body["onDiskBytes"], serde_json::Value::Null);
+    assert_eq!(body["sourceBytes"], 0);
+    assert_eq!(body["quarantinedBytes"], 0);
 }

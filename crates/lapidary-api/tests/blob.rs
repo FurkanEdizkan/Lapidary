@@ -133,6 +133,7 @@ async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sq
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -165,6 +166,7 @@ async fn a_blob_on_disk_that_no_derivative_references_is_not_found(pool: sqlx::P
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -188,6 +190,7 @@ async fn an_unknown_hash_is_not_found_with_the_same_body(pool: sqlx::PgPool) {
         db: pool,
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     let (unreferenced_status, _, unreferenced_body) =
@@ -211,6 +214,7 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Worker,
     );
@@ -231,6 +235,7 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -267,6 +272,7 @@ async fn reading_a_blob_twice_moves_the_timestamp_forward(pool: sqlx::PgPool) {
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     let (first_status, _, _) = get(router(state.clone(), Role::Api), &hash.to_hex()).await;
@@ -302,6 +308,7 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
         db: pool.clone(),
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     // Refused after the reachability check, when the bytes turn out not to be there.
@@ -344,6 +351,7 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
     assert_eq!(last_read_us(&pool, &hash).await, None);
 

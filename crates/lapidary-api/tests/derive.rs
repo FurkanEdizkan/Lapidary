@@ -105,6 +105,7 @@ async fn send(
             db: pool,
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         role,
     );
