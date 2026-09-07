@@ -1,0 +1,312 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-07T22:51:56.547503+00:00",
+  "title": "Design System: Lapidary",
+  "extensions": {
+    "colorMeta": {
+      "anodised-black": {
+        "role": "neutral",
+        "displayName": "Anodised Black",
+        "canonical": "oklch(0.1541 0.0046 264.4)",
+        "purpose": "The unlit bench: page ground, and the inside of an image well before its render loads.",
+        "tonalRamp": [
+          "oklch(0.15 0.0046 264.4)",
+          "oklch(0.264 0.0046 264.4)",
+          "oklch(0.379 0.0046 264.4)",
+          "oklch(0.493 0.0046 264.4)",
+          "oklch(0.607 0.0046 264.4)",
+          "oklch(0.721 0.0046 264.4)",
+          "oklch(0.836 0.0046 264.4)",
+          "oklch(0.95 0.0046 264.4)"
+        ]
+      },
+      "machined-slate": {
+        "role": "neutral",
+        "displayName": "Machined Slate",
+        "canonical": "oklch(0.1954 0.0087 264.4)",
+        "purpose": "Every raised surface — tiles, dialogs, inputs, the standing button. One step up from the ground, never two.",
+        "tonalRamp": [
+          "oklch(0.15 0.0087 264.4)",
+          "oklch(0.264 0.0087 264.4)",
+          "oklch(0.379 0.0087 264.4)",
+          "oklch(0.493 0.0087 264.4)",
+          "oklch(0.607 0.0087 264.4)",
+          "oklch(0.721 0.0087 264.4)",
+          "oklch(0.836 0.0087 264.4)",
+          "oklch(0.95 0.0087 264.4)"
+        ]
+      },
+      "scribe-line": {
+        "role": "neutral",
+        "displayName": "Scribe Line",
+        "canonical": "oklch(0.2722 0.0119 264.4)",
+        "purpose": "Hairline borders and dividers on chrome only. A scribed mark, not a drawn box.",
+        "tonalRamp": [
+          "oklch(0.15 0.0119 264.4)",
+          "oklch(0.264 0.0119 264.4)",
+          "oklch(0.379 0.0119 264.4)",
+          "oklch(0.493 0.0119 264.4)",
+          "oklch(0.607 0.0119 264.4)",
+          "oklch(0.721 0.0119 264.4)",
+          "oklch(0.836 0.0119 264.4)",
+          "oklch(0.95 0.0119 264.4)"
+        ]
+      },
+      "chalk": {
+        "role": "neutral",
+        "displayName": "Chalk",
+        "canonical": "oklch(0.9306 0.0058 264.5)",
+        "purpose": "Primary text, reserved for what the user is reading right now.",
+        "tonalRamp": [
+          "oklch(0.15 0.0058 264.5)",
+          "oklch(0.264 0.0058 264.5)",
+          "oklch(0.379 0.0058 264.5)",
+          "oklch(0.493 0.0058 264.5)",
+          "oklch(0.607 0.0058 264.5)",
+          "oklch(0.721 0.0058 264.5)",
+          "oklch(0.836 0.0058 264.5)",
+          "oklch(0.95 0.0058 264.5)"
+        ]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "oklch(0.7069 0.0179 259.4)",
+        "purpose": "Secondary text, which is most text. Labels, metadata, resting controls.",
+        "tonalRamp": [
+          "oklch(0.15 0.0179 259.4)",
+          "oklch(0.264 0.0179 259.4)",
+          "oklch(0.379 0.0179 259.4)",
+          "oklch(0.493 0.0179 259.4)",
+          "oklch(0.607 0.0179 259.4)",
+          "oklch(0.721 0.0179 259.4)",
+          "oklch(0.836 0.0179 259.4)",
+          "oklch(0.95 0.0179 259.4)"
+        ]
+      },
+      "layout-blue": {
+        "role": "primary",
+        "displayName": "Layout Blue",
+        "canonical": "oklch(0.7287 0.1398 258.1)",
+        "purpose": "The machinist's marking dye. Live interaction only — dragging, focus, selection. Never at rest.",
+        "tonalRamp": [
+          "oklch(0.15 0.1398 258.1)",
+          "oklch(0.264 0.1398 258.1)",
+          "oklch(0.379 0.1398 258.1)",
+          "oklch(0.493 0.1398 258.1)",
+          "oklch(0.607 0.1398 258.1)",
+          "oklch(0.721 0.1398 258.1)",
+          "oklch(0.836 0.1398 258.1)",
+          "oklch(0.95 0.1398 258.1)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The horizon. Library name, empty-state headline. At most one per viewport."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "A part's own name on its detail page."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Tile captions, dialog titles, the name of a thing in a list."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Prose, helper text, refusals. Capped at 70ch."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Section headings and metadata keys, uppercase and tracked."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Machine identity: paths, hashes, part numbers. Selectable and exact."
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "0 16px 48px rgba(0, 0, 0, 0.6)",
+        "purpose": "Dialogs, popovers and menus only, always over a scrim. The only shadow in the system; a tile or button carrying one is a defect."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-mechanical",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "The only easing. Decisive out, settled in."
+      },
+      {
+        "name": "duration-fast",
+        "value": "120ms",
+        "purpose": "State changes on controls: hover lift, label colour, metadata reveal."
+      },
+      {
+        "name": "duration-base",
+        "value": "180ms",
+        "purpose": "The global default on every transition; tile lift and larger surface changes."
+      },
+      {
+        "name": "transition-property",
+        "value": "transform, translate, opacity",
+        "purpose": "The only animatable properties. `translate` is named separately because Tailwind 4 compiles lift utilities to the independent property, and a list naming only `transform` animates nothing."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "grid-2col",
+        "value": "560px"
+      },
+      {
+        "name": "detail-stack",
+        "value": "640px"
+      },
+      {
+        "name": "rail-drawer",
+        "value": "768px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Part Tile",
+      "kind": "card",
+      "refersTo": "card-part",
+      "description": "The signature component: a render on the unlit ground, its name beneath, metadata only on hover or focus.",
+      "html": "<article class=\"ds-tile\" tabindex=\"0\"><div class=\"ds-tile-well\"><svg viewBox=\"0 0 64 64\" width=\"96\" height=\"96\" aria-hidden=\"true\"><path d=\"M12 40 L32 14 L52 40 Z\" fill=\"#3a3f47\"/><path d=\"M12 40 L32 52 L52 40 Z\" fill=\"#2a2e35\"/></svg></div><div class=\"ds-tile-body\"><p class=\"ds-tile-name\">vee-block-lp-3072-02</p><p class=\"ds-tile-meta\">192 triangles · 9.7 kB</p></div></article>",
+      "css": ".ds-tile{background:#131519;border-radius:10px;border:0;overflow:hidden;width:220px;transition:translate .12s cubic-bezier(.2,0,0,1);outline:none}.ds-tile:hover,.ds-tile:focus-visible{translate:0 -1px}.ds-tile:focus-visible{box-shadow:0 0 0 2px #6ea8fe}.ds-tile-well{aspect-ratio:1;background:#0b0c0e;display:flex;align-items:center;justify-content:center}.ds-tile-body{padding:12px}.ds-tile-name{margin:0;font:600 .875rem/1.3 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;color:#e6e8ec}.ds-tile-meta{margin:4px 0 0;font:400 .75rem/1.4 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;color:#9aa1ac;opacity:0;transition:opacity .12s cubic-bezier(.2,0,0,1)}.ds-tile:hover .ds-tile-meta,.ds-tile:focus-visible .ds-tile-meta{opacity:1}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "The workhorse control. Hairline, transparent at rest, label lifts to Chalk on hover.",
+      "html": "<button class=\"ds-btn-quiet\">Render preview</button>",
+      "css": ".ds-btn-quiet{background:transparent;color:#9aa1ac;border:1px solid #24272d;border-radius:4px;padding:4px 8px;font:500 .75rem/1.2 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;cursor:pointer;transition:translate .12s cubic-bezier(.2,0,0,1),opacity .12s cubic-bezier(.2,0,0,1)}.ds-btn-quiet:hover{color:#e6e8ec;translate:0 -1px}.ds-btn-quiet:focus-visible{outline:2px solid #6ea8fe;outline-offset:2px}.ds-btn-quiet:disabled{opacity:.5;translate:none;cursor:default}"
+    },
+    {
+      "name": "Standing Button",
+      "kind": "button",
+      "refersTo": "button-standing",
+      "description": "The one action a screen is about. Filled, Chalk label, at most one per region.",
+      "html": "<button class=\"ds-btn-standing\">Download</button>",
+      "css": ".ds-btn-standing{background:#131519;color:#e6e8ec;border:1px solid #24272d;border-radius:4px;padding:6px 12px;font:400 .875rem/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;cursor:pointer;transition:translate .12s cubic-bezier(.2,0,0,1)}.ds-btn-standing:hover{translate:0 -1px}.ds-btn-standing:focus-visible{outline:2px solid #6ea8fe;outline-offset:2px}"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip-filter",
+      "description": "A pill narrowing a result set. Selected takes a Layout Blue outline and always carries a dismiss.",
+      "html": "<span class=\"ds-chip ds-chip-selected\">in Brackets<button class=\"ds-chip-x\" aria-label=\"Clear category filter\">×</button></span>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:6px;background:#131519;color:#9aa1ac;border:1px solid transparent;border-radius:9999px;padding:6px 14px;font:400 .875rem/1.2 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif}.ds-chip-selected{color:#e6e8ec;border-color:#6ea8fe}.ds-chip-x{background:none;border:0;color:inherit;cursor:pointer;font-size:1rem;line-height:1;padding:0}.ds-chip-x:focus-visible{outline:2px solid #6ea8fe;outline-offset:2px;border-radius:2px}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-text",
+      "description": "Border goes Layout Blue on focus and a ring appears outside it.",
+      "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Search by name or part number\" aria-label=\"Search parts\">",
+      "css": ".ds-input{background:#131519;color:#e6e8ec;border:1px solid #24272d;border-radius:4px;padding:6px 8px;font:400 .875rem/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;width:280px}.ds-input::placeholder{color:#9aa1ac}.ds-input:focus{outline:none;border-color:#6ea8fe;box-shadow:0 0 0 2px #6ea8fe}"
+    },
+    {
+      "name": "Section Label",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Uppercase tracked label. What lets a 12px string read as structure rather than as small text.",
+      "html": "<h3 class=\"ds-label\">Geometry</h3>",
+      "css": ".ds-label{margin:0 0 8px;font:500 .75rem/1.2 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#9aa1ac}"
+    },
+    {
+      "name": "Dialog",
+      "kind": "custom",
+      "refersTo": "dialog-surface",
+      "description": "The one place a shadow is permitted, paired with a scrim that does most of the work.",
+      "html": "<div class=\"ds-scrim\"><div class=\"ds-dialog\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Remove part\"><h2 class=\"ds-dialog-title\">Remove from library</h2><p class=\"ds-dialog-body\">Hidden from the library. Nothing on disk changes, and you can restore it.</p></div></div>",
+      "css": ".ds-scrim{background:rgba(0,0,0,.6);padding:24px;display:flex;align-items:center;justify-content:center;border-radius:8px}.ds-dialog{background:#131519;border:1px solid #24272d;border-radius:10px;padding:16px;max-width:420px;box-shadow:0 16px 48px rgba(0,0,0,.6)}.ds-dialog-title{margin:0;font:600 .875rem/1.3 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;color:#e6e8ec}.ds-dialog-body{margin:8px 0 0;font:400 .875rem/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;color:#9aa1ac;max-width:70ch}"
+    },
+    {
+      "name": "Mono Value",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "A pasteable machine string: selectable, exact, never middle-elided.",
+      "html": "<code class=\"ds-mono\">267353115ef79445be0a0e6e9af2cf7c6eea25fd8fd7bdd7517c992f3f1dcafd</code>",
+      "css": ".ds-mono{font:400 .75rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;color:#e6e8ec;word-break:break-all;user-select:all;display:block}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lit Bench",
+    "overview": "A machinist's bench under a single task lamp. The parts are lit; the bench is not. Every surface exists to be the unlit surround for a rendered object — the ground is near-black, the chrome is grey on grey, and the only saturated colour appears when you are doing something. The register is quiet, precise and unhurried: trust is earned by being exact rather than emphatic, which is why secondary text outnumbers primary roughly fourteen to one. The one place the system permits weight is the display line, because a wall of identical tiles needs a horizon.",
+    "keyCharacteristics": [
+      "Near-black ground; the render is the only lit thing on the page",
+      "Two type voices only — a heavy display horizon and a quiet body",
+      "One saturated colour, reserved for live interaction",
+      "Flat by tonal layering; no shadow except beneath an overlay",
+      "Image tiles borderless and edge-to-edge; chrome tiles hairlined",
+      "Motion is mechanical: transform and opacity, 120/180 ms, always reduced-motion aware"
+    ],
+    "rules": [
+      {
+        "name": "The Marking Dye Rule",
+        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, loading. If a screenshot taken at rest contains any Layout Blue, that is a defect. Its rarity is what makes it readable without a legend.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two-Greys Rule",
+        "body": "Text is Chalk or Graphite and nothing between. A third text grey is how a hierarchy becomes a gradient nobody can parse.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Step Up Rule",
+        "body": "A surface may sit exactly one tonal step above its parent. Two stacked panels get a scribe line between them, not two lightnesses.",
+        "section": "colors"
+      },
+      {
+        "name": "The Copyable Mono Rule",
+        "body": "Anything a user might paste into another program is set in mono and is selectable, never elided with an ellipsis in the middle.",
+        "section": "typography"
+      },
+      {
+        "name": "The Self-Hosted Font Rule",
+        "body": "Lapidary ships into air-gapped deployments. Inter is self-hosted from the bundle, subset to Latin + Latin Extended-A so Turkish renders without a second file.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Horizon Rule",
+        "body": "Exactly one Display line per viewport. A second is not a hierarchy, it is a competition.",
+        "section": "typography"
+      },
+      {
+        "name": "The Unlit Bench Rule",
+        "body": "Surfaces do not cast shadows, because the light is on the parts, not on the furniture. The only shadow is the one an overlay throws by being in front of the page rather than in it.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Frameless Picture Rule",
+        "body": "Never put a border on a tile whose content is an image. The image is the edge.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do keep Layout Blue (#6ea8fe) for live interaction only. A resting screenshot containing it is a defect.",
+      "Do set every pasteable string — path, hash, part number — in mono, selectable, never middle-elided.",
+      "Do give every part tile its metadata on hover and on :focus-visible, so the keyboard reaches everything the mouse does.",
+      "Do ship one Display line per viewport and let it be genuinely heavy (900, -0.02em).",
+      "Do label every mesh-derived measurement as approximate wherever it appears, including inside dialogs and tooltips.",
+      "Do self-host Inter, subset to Latin + Latin Extended-A, so Turkish and an air-gapped install both work.",
+      "Do route every user-facing string through web/src/lib/strings.ts."
+    ],
+    "donts": [
+      "Don't put a border on an image tile. The image is its own edge.",
+      "Don't add a box-shadow to anything that is not an overlay above a scrim.",
+      "Don't introduce a third text grey, a second accent hue, or a fourth radius.",
+      "Don't use a font weight between 500 and 900 — the gap between the body voice and the display voice is the hierarchy.",
+      "Don't let colour alone carry a state. Every state has a second cue.",
+      "Don't word an eviction so it reads as deletion, or a removal so it reads as a saving.",
+      "Don't animate anything but transform, translate and opacity, and never past 180ms for a state change."
+    ]
+  }
+}
