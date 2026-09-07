@@ -440,15 +440,32 @@ part_source(
 
 part_image(
   id uuid PRIMARY KEY, part_id uuid NOT NULL,
-  blake3 text,                          -- always cached locally, never hotlinked
+  blake3 text, image_webp bytea,        -- always cached locally, never hotlinked
   origin text NOT NULL,                 -- uploaded|url_supplied|og_fetched|rendered
-  source_url text, is_primary boolean, created_at timestamptz
+  source_url text, position integer, created_at timestamptz,
+  fit text, focus_x double precision, focus_y double precision
 );
 ```
 
+Two deviations from that sketch, both built and both deliberate. **`position`, not
+`is_primary`** — owner decision, 2026-09-05: a part carries an ordered gallery, user images
+first and generated views appended after them, which a boolean could not express. And
+**bytes inline or in a blob**, whichever the 64 KB line in §1.5 says, so there is one rule in
+the store about small images rather than two.
+
+`fit`, `focus_x` and `focus_y` are `0019`, and they are CSS's `object-fit` and
+`object-position`: the framing is applied by the browser at display time and the stored WebP
+is never re-encoded, so adjusting it is free and reversible.
+
 `part_source.license` is not bureaucracy — half of hobbyist STL libraries are
-non-commercial, and a user selling prints needs to see that on the card. Nobody else
+non-commercial, and a user selling prints needs to see that before they print. Nobody else
 surfaces it.
+
+**It is on the detail page and the quick-look, not the grid card.** That is a change from
+what this section originally said, and the reason is the grid query's 16-column `FromRow`
+ceiling: reworking the tuple every other column on a card already fits inside, to put a
+sentence on a tile somebody is scanning at a glance, is the wrong trade. The quick-look is
+one click from the card and is where the decision to print is actually made.
 
 ### 3.3 Search — identifiers and prose need different indexes
 

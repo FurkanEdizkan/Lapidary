@@ -55,6 +55,9 @@ export function PartPage({ partId }: { partId: string }) {
       ) : (
         <Detail
           part={part.data}
+          // The page, not the dialog, is where a form that takes typing belongs — the same
+          // line `actions` draws below.
+          recordable
           actions={
             <>
               <Remove part={part.data} />

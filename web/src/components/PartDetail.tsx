@@ -124,7 +124,7 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
  * Nothing here fetches anything. Pasting a product page records the link; the application
  * has exactly one route that makes an outbound request and this is not it.
  */
-function Sources({ part }: { part: PartId }) {
+function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -168,6 +168,9 @@ function Sources({ part }: { part: PartId }) {
   })
 
   const recorded = sources.data ?? []
+  // Nothing recorded and no way to record it here: a heading over an empty space says less
+  // than the space it takes. The full page still offers the button.
+  if (recorded.length === 0 && !recordable) return null
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -215,7 +218,7 @@ function Sources({ part }: { part: PartId }) {
           ))}
         </ul>
       )}
-      {open ? (
+      {!recordable ? null : open ? (
         <form
           className="max-w-lg space-y-2"
           onSubmit={(event) => {
@@ -297,7 +300,24 @@ const SOURCE_FIELDS = [
  * requires a mesh-derived number to be labelled wherever it appears. A dialog with its own
  * `<dl>` would be one refactor away from dropping that.
  */
-export function Detail({ part, actions }: { part: PartDetailData; actions?: ReactNode }) {
+export function Detail({
+  part,
+  actions,
+  recordable = false,
+}: {
+  part: PartDetailData
+  actions?: ReactNode
+  /**
+   * Whether the source *form* is offered. Off by default, which is the quick-look, and on
+   * for the full page — the same line `actions` draws, for the same reason: seven fields
+   * inside a dialog that closes on Escape is a half-typed form somebody loses to a reflex.
+   *
+   * The list is shown either way, because reading a licence is the reason to look. And the
+   * gallery's own controls stay in both: picking a file holds no typed state to lose, which
+   * is the distinction, not "does it change the part".
+   */
+  recordable?: boolean
+}) {
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
@@ -334,7 +354,7 @@ export function Detail({ part, actions }: { part: PartDetailData; actions?: Reac
 
       <Gallery part={part.id} name={part.name} />
 
-      <Sources part={part.id} />
+      <Sources part={part.id} recordable={recordable} />
 
       <Section title={strings.detail.geometry}>
         <Row label={strings.detail.triangles}>
