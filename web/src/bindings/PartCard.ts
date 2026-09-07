@@ -72,13 +72,31 @@ compressed: boolean | null,
  * would name a filesystem the user is not looking at. The Tauri shell is what will
  * eventually have a host to ask.
  *
- * `directory`, not `storagePath`: this names a directory, not the file inside it, and
- * a field named for a path a caller could then try to download would be a small lie
- * of the kind measurement rules already forbid.
+ * Kept beside `storagePath` below rather than derived from it, because the two answer
+ * different questions and one of them is a *move* target: this is what the move route
+ * renames, and what the card offers to move. Deriving it in the client would put a
+ * second definition of "the parent of a model file" in TypeScript, next to
+ * `model_directory`'s in Rust.
  *
  * `None` is a real state and not a missing value — the part predates the folder layout
  * and its bytes are still content-addressed, so it has no directory to show and cannot
  * be moved until `migrate_storage` reaches it. The card says so rather than offering a
  * move that the route would refuse.
  */
-directory: string | null, createdAt: string, updatedAt: string, };
+directory: string | null, 
+/**
+ * The model's file, path and all: `libraries/default/Terrain/rock/rock.stl`.
+ *
+ * The `directory` above with the filename back on, and the client cannot reconstruct
+ * it: `model_dir_for` disambiguates a colliding model name — the second `cliff` becomes
+ * `cliff_a1b2c3` — so a path joined from a part's name would be confidently wrong
+ * exactly where a person is most likely to be looking for it.
+ *
+ * Shown, never opened. No browser navigates a `file://` URL from a page, so this is
+ * selectable text; and prefixed with `InstanceStorageView::host_storage_root` when the
+ * deployment has said where the store is, which is what makes it a path somebody can
+ * paste into a file manager rather than one they have to work out.
+ *
+ * `None` alongside `directory`, and for the same reason.
+ */
+storagePath: string | null, createdAt: string, updatedAt: string, };

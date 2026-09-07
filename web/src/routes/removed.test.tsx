@@ -50,6 +50,7 @@ const MOUNTING: PartCard = {
   // Removed, and still where it was: a soft delete moves no file, so the removed list
   // shows the same directory the grid did.
   directory: "libraries/default/mounting/lp-1042-03",
+  storagePath: "libraries/default/mounting/lp-1042-03/lp-1042-03.stl",
 };
 
 const SPARES: PartCard = {

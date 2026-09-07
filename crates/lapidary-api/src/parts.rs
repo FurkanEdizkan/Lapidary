@@ -98,15 +98,31 @@ pub struct PartCard {
     /// would name a filesystem the user is not looking at. The Tauri shell is what will
     /// eventually have a host to ask.
     ///
-    /// `directory`, not `storagePath`: this names a directory, not the file inside it, and
-    /// a field named for a path a caller could then try to download would be a small lie
-    /// of the kind measurement rules already forbid.
+    /// Kept beside `storagePath` below rather than derived from it, because the two answer
+    /// different questions and one of them is a *move* target: this is what the move route
+    /// renames, and what the card offers to move. Deriving it in the client would put a
+    /// second definition of "the parent of a model file" in TypeScript, next to
+    /// `model_directory`'s in Rust.
     ///
     /// `None` is a real state and not a missing value — the part predates the folder layout
     /// and its bytes are still content-addressed, so it has no directory to show and cannot
     /// be moved until `migrate_storage` reaches it. The card says so rather than offering a
     /// move that the route would refuse.
     pub directory: Option<String>,
+    /// The model's file, path and all: `libraries/default/Terrain/rock/rock.stl`.
+    ///
+    /// The `directory` above with the filename back on, and the client cannot reconstruct
+    /// it: `model_dir_for` disambiguates a colliding model name — the second `cliff` becomes
+    /// `cliff_a1b2c3` — so a path joined from a part's name would be confidently wrong
+    /// exactly where a person is most likely to be looking for it.
+    ///
+    /// Shown, never opened. No browser navigates a `file://` URL from a page, so this is
+    /// selectable text; and prefixed with `InstanceStorageView::host_storage_root` when the
+    /// deployment has said where the store is, which is what makes it a path somebody can
+    /// paste into a file manager rather than one they have to work out.
+    ///
+    /// `None` alongside `directory`, and for the same reason.
+    pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -290,6 +306,140 @@ pub async fn storage(State(state): State<AppState>, Path(library): Path<LibraryI
     }
 }
 
+/// What the whole store holds, and where it is.
+///
+/// The question `LibraryStorage` cannot answer. That one is per library and deliberately
+/// **not** `du`: it charges a blob two libraries share to both of them, and it can show
+/// quarantined bytes to nobody because a quarantined blob is keyed by hash and the part
+/// that said which library it belonged to is the part that was purged. So a person adding
+/// up the panels and comparing the result to their disk finds a discrepancy, and
+/// `PgParts::storage_totals`'s own doc predicts it: *"someone will eventually run `du`."*
+///
+/// This is the answer to that, and it reports both halves rather than picking one:
+/// `tracked*` is what the database knows, exactly and instantly; `on_disk_bytes` is a real
+/// walk of the root, which is the number `du` gives. Neither is wrong and they do not
+/// agree, and the difference is what a person actually wants to see.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceStorageView {
+    /// Every live model file across every library. One file per model, no deduplication.
+    #[ts(type = "number")]
+    pub source_bytes: u64,
+    /// Rungs **on the storage volume**, each blob counted once however many libraries point
+    /// at it — where the per-library figure charges it to each of them in full.
+    #[ts(type = "number")]
+    pub derivative_bytes: u64,
+    /// Thumbnails, which are in Postgres and not on the volume.
+    ///
+    /// Separate so that the figures above can be compared with `on_disk_bytes` and add up.
+    /// Folded in, the tracked total exceeds a walk of the storage root by exactly this
+    /// amount — measured at 5,745,760 bytes on the library this was written against — and
+    /// a panel reporting more tracked than present reads as bytes having gone missing.
+    #[ts(type = "number")]
+    pub inline_preview_bytes: u64,
+    /// Soft-deleted parts. On the disk, and back the moment somebody restores them.
+    #[ts(type = "number")]
+    pub removed_bytes: u64,
+    /// Purged and inside the thirty-day hold. Bytes no per-library panel can admit to.
+    #[ts(type = "number")]
+    pub quarantined_bytes: u64,
+    /// A real walk of the storage root, or `None` when one was not asked for.
+    ///
+    /// Behind `?onDisk=true` because it costs a `stat` per file: instant on the 156-part
+    /// library this was written against, seconds on a corpus. The default answer is the
+    /// one that is free.
+    #[ts(type = "number | null")]
+    pub on_disk_bytes: Option<u64>,
+    /// Where the store is **on the host**, when the deployment has said.
+    ///
+    /// `None` unless `LAPIDARY_HOST_STORAGE_ROOT` names an absolute path, and the reason is
+    /// that this process genuinely cannot work it out. The api sees the store at
+    /// `/var/lib/lapidary`, which is a bind mount and a path that exists nowhere on the
+    /// machine the user is sitting at. Reporting it would be worse than reporting nothing:
+    /// they would paste it into a file manager and find no such directory.
+    pub host_storage_root: Option<String>,
+}
+
+/// `GET /api/storage` — the instance total, and where the store is.
+///
+/// Instance-wide and so not under `/api/libraries/{id}`: two of the four figures below
+/// belong to no library, and the derivative figure is deliberately *not* what you get by
+/// adding the libraries up.
+pub async fn instance_storage(
+    State(state): State<AppState>,
+    Query(query): Query<InstanceStorageQuery>,
+) -> Response {
+    let totals = match PgParts(state.db).instance_storage().await {
+        Ok(totals) => totals,
+        Err(err) => return internal_error(&err, "instance storage query failed"),
+    };
+
+    // Walked before the response is built and only when asked. A failure here is not a
+    // failure of the route: the four tracked figures are still true, and an operator whose
+    // storage root has become unreadable is better served by seeing them plus a missing
+    // walk than by a 500 that hides them.
+    let on_disk = query.on_disk.unwrap_or(false).then(|| {
+        walk_bytes(&state.blob_root).unwrap_or_else(|err| {
+            tracing::warn!(
+                root = %state.blob_root.display(),
+                error = %err,
+                "could not walk the storage root for an on-disk total; reporting the \
+                 tracked figures without it"
+            );
+            None
+        })
+    });
+
+    Json(InstanceStorageView {
+        source_bytes: totals.source_bytes,
+        derivative_bytes: totals.derivative_bytes,
+        inline_preview_bytes: totals.inline_preview_bytes,
+        removed_bytes: totals.removed_bytes,
+        quarantined_bytes: totals.quarantined_bytes,
+        on_disk_bytes: on_disk.flatten(),
+        host_storage_root: state.host_storage_root.clone(),
+    })
+    .into_response()
+}
+
+/// `?onDisk=true` asks for the walk. Anything else, including absent, does not.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceStorageQuery {
+    #[serde(default)]
+    on_disk: Option<bool>,
+}
+
+/// Every byte under `root`, following no symlinks.
+///
+/// `metadata` and not `symlink_metadata` would follow a link out of the store and count a
+/// file that is not ours — or loop. This walks what is actually there, which is the whole
+/// point of the figure: it is the one number that includes `metadata.json`, a stray file
+/// somebody dropped in, and anything a crash left behind.
+///
+/// Returns `Ok(None)` for a root that is not there yet, which is a fresh install rather
+/// than a fault.
+fn walk_bytes(root: &std::path::Path) -> std::io::Result<Option<u64>> {
+    if !root.exists() {
+        return Ok(None);
+    }
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(Some(total))
+}
+
 /// The storage route's `404`. Its own message rather than `derive.rs`'s: that one tells a
 /// writer nothing was changed, which is an answer to a question a reader did not ask.
 fn no_such_library() -> Response {
@@ -359,6 +509,7 @@ fn to_card(row: PartRow) -> PartCard {
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,
         directory: row.directory,
+        storage_path: row.storage_path,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

@@ -118,14 +118,24 @@ function stubFetch(routes: {
   folders?: () => Promise<StubResponse>;
   move?: () => Promise<StubResponse>;
   folderDelete?: () => Promise<StubResponse>;
+  instanceStorage?: () => Promise<StubResponse>;
+  partDetail?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    // Before the per-library storage rule: this one has no library in its path, and the
+    // two would otherwise be told apart only by which substring was tested first.
+    if (url.startsWith("/api/storage"))
+      return (routes.instanceStorage ?? pending)();
     // Above the settings rule below, which claims every `PATCH` there is. The move is a
     // `PATCH` too, and answering it with a `LibrarySettings` body would leave a move test
     // asserting against a shape it never asked for.
     if (init?.method === "PATCH" && url.startsWith("/api/parts/"))
       return (routes.move ?? pending)();
+    // A bare GET of one part: what the quick-look and the detail page both ask for, under
+    // the same query key. Below the PATCH rule so a move is never answered with a detail.
+    if (url.startsWith("/api/parts/") && init?.method === undefined)
+      return (routes.partDetail ?? pending)();
     if (url.startsWith("/api/folders/"))
       return (routes.folderDelete ?? pending)();
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
@@ -219,6 +229,7 @@ const MOTOR_MOUNT: PartCard = {
   storedBytes: 197_012,
   compressed: true,
   directory: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face",
+  storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
   createdAt: "2026-08-14T09:12:44Z",
   updatedAt: "2026-08-14T09:12:44Z",
 };
@@ -240,6 +251,7 @@ const HEX_NUT: PartCard = {
   storedBytes: 26_741,
   compressed: true,
   directory: "libraries/default/Fasteners/Hex nut M8, DIN 934",
+  storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
   createdAt: "2026-08-14T09:12:51Z",
   updatedAt: "2026-08-14T09:12:51Z",
 };
@@ -268,6 +280,7 @@ const SHAFT_COUPLER: PartCard = {
   storedBytes: 148_930,
   compressed: false,
   directory: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm",
+  storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
   createdAt: "2026-08-14T09:13:02Z",
   updatedAt: "2026-08-14T09:13:02Z",
 };
@@ -2068,6 +2081,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   createdAt: "2026-08-30T11:04:19Z",
   updatedAt: "2026-08-30T11:04:19Z",
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
+  storagePath: "libraries/default/Terrain/Rocks/basalt_cliff_face/basalt_cliff_face.stl",
 };
 
 /** Ingested before the folder layout existed, so it is still in the shared store. */
@@ -2090,6 +2104,7 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   createdAt: "2026-05-02T08:41:07Z",
   updatedAt: "2026-05-02T08:41:07Z",
   directory: null,
+  storagePath: null,
 };
 
 test("selecting a category puts it in the URL and asks the grid for that category", async () => {
@@ -2142,11 +2157,20 @@ test("a category in the URL filters the first request the grid makes", async () 
   );
 });
 
-test("show in folder reveals the directory as copyable text and opens nothing", async () => {
+/**
+ * The store-relative case: the deployment has not said where the store is, so the path
+ * shown is the one within it, and the copy says how to get the rest.
+ *
+ * The **file**, not its directory. "Where is this model" is answered by the path to the
+ * model — and the filename is the half a client cannot reconstruct, because the server
+ * disambiguates a colliding model name and only it knows when it did.
+ */
+test("show in folder reveals the model's own path as copyable text and opens nothing", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
     folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage(null)),
   });
   renderIndex();
 
@@ -2157,8 +2181,10 @@ test("show in folder reveals the directory as copyable text and opens nothing", 
     }),
   );
 
-  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined();
+  expect(within(card).getByText(cliffPath())).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined();
+  // The one sentence that says what to change to get a full path. Shown only here.
+  expect(within(card).getByText(strings.folders.directoryPartial)).toBeDefined();
   // No browser opens a host file manager, and `file://` navigation from a page is blocked
   // everywhere — so nothing here pretends to. The path is text, and there is no link.
   expect(document.querySelector('a[href^="file:"]')).toBeNull();
@@ -2168,7 +2194,59 @@ test("show in folder reveals the directory as copyable text and opens nothing", 
   fireEvent.click(
     within(card).getByRole("button", { name: strings.folders.copyPath }),
   );
-  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined();
+  expect(within(card).getByText(cliffPath())).toBeDefined();
+});
+
+/**
+ * And the case the whole feature is for: the deployment named an absolute host root, so
+ * what is on screen is a path that will actually open.
+ *
+ * The prefix is joined once, here, from a value the server sent — never assembled from
+ * category names, which is the mistake `ShowInFolder`'s own doc has always refused.
+ */
+test("a deployment that says where the store is gets the full path on the card", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([CLIFF_FACE])),
+    folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage("/srv/lapidary-storage")),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  fireEvent.click(
+    within(card).getByRole("button", {
+      name: strings.folders.showInFolderFor(CLIFF_FACE.name),
+    }),
+  );
+
+  expect(
+    await within(card).findByText(`/srv/lapidary-storage/${cliffPath()}`),
+  ).toBeDefined();
+  expect(within(card).getByText(strings.folders.directoryHintAbsolute)).toBeDefined();
+  // The "set the variable" sentence is about a state this deployment is not in.
+  expect(within(card).queryByText(strings.folders.directoryPartial)).toBeNull();
+});
+
+/** A trailing slash on the root must not produce a doubled separator in the path. */
+test("a host root with a trailing slash still joins to one separator", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([CLIFF_FACE])),
+    folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage("/srv/lapidary-storage/")),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  fireEvent.click(
+    within(card).getByRole("button", {
+      name: strings.folders.showInFolderFor(CLIFF_FACE.name),
+    }),
+  );
+  expect(
+    await within(card).findByText(`/srv/lapidary-storage/${cliffPath()}`),
+  ).toBeDefined();
 });
 
 test("a model still in the shared store says so rather than showing an invented path", async () => {
@@ -2280,4 +2358,231 @@ test("an empty category with its name not loaded still does not claim the librar
 
   expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
   expect(screen.getByText(strings.emptyLibrary.categoryBody(null))).toBeDefined();
+});
+
+/** `GET /api/storage`'s body, with only the field these tests care about varied. */
+function instanceStorage(hostStorageRoot: string | null) {
+  return {
+    sourceBytes: 150406654,
+    derivativeBytes: 7555924,
+    inlinePreviewBytes: 5745760,
+    removedBytes: 0,
+    quarantinedBytes: 0,
+    onDiskBytes: null,
+    hostStorageRoot,
+  };
+}
+
+/**
+ * `CLIFF_FACE.storagePath` narrowed once. The field is nullable on the wire — a part that
+ * predates the folder layout has neither a path nor a directory — and this fixture is not
+ * one, so the assertion says so here instead of at four call sites.
+ */
+function cliffPath(): string {
+  const path = CLIFF_FACE.storagePath;
+  if (path === null) throw new Error("the CLIFF_FACE fixture has a storage path");
+  return path;
+}
+
+/**
+ * The whole store, under the one library's line — including the two figures no per-library
+ * panel can carry.
+ *
+ * `quarantinedBytes` is the one that matters: a purge removes the part chain, so those
+ * bytes belong to no library and appear in no other number this application renders. They
+ * are on the disk for thirty days regardless, and a storage panel that could not mention
+ * them was under-reporting by everything anybody had purged.
+ */
+test("the instance panel reports quarantined bytes, which no library total can", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({
+      sourceBytes: 9684,
+      derivativeBytes: 4096,
+      removedBytes: 0,
+      derivativeRatio: 0.42,
+    }),
+    instanceStorage: ok({
+      sourceBytes: 9684,
+      derivativeBytes: 4096,
+      inlinePreviewBytes: 512,
+      removedBytes: 0,
+      quarantinedBytes: 12976,
+      onDiskBytes: null,
+      hostStorageRoot: null,
+    }),
+  });
+  renderIndex();
+
+  expect(
+    await screen.findByText(strings.storage.everything(9684, 4096, 512, 0, 12976)),
+  ).toBeDefined();
+  // And the library's own line still says nothing about them, which is why the other exists.
+  expect(screen.getByText(strings.storage.totals(9684, 4096, 0.42))).toBeDefined();
+});
+
+/**
+ * The walk is opt-in, and its answer names the gap rather than leaving it to be found.
+ *
+ * `metadata.json` sits beside every model and is deliberately counted by nothing, so the
+ * disk figure is legitimately larger than the tracked one. A panel showing both without
+ * saying why would just relocate the confusion it exists to prevent.
+ */
+test("measuring the disk asks the server to walk it and explains the difference", async () => {
+  const tracked = {
+    sourceBytes: 9684,
+    derivativeBytes: 4096,
+    // In Postgres, so deliberately absent from what the walk is compared against — which
+    // is the whole reason the field is separate.
+    inlinePreviewBytes: 5745760,
+    removedBytes: 0,
+    quarantinedBytes: 0,
+    hostStorageRoot: null,
+  };
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    // First call has no walk; the second, after the button, carries one.
+    // One response per call, in order: the first load asks for no walk, and the click
+    // re-queries with one. A single stub could not tell the two apart.
+    instanceStorage: (() => {
+      const bodies = [
+        { ...tracked, onDiskBytes: null },
+        { ...tracked, onDiskBytes: 9684 + 4096 + 918 },
+      ];
+      let call = 0;
+      return async (): Promise<StubResponse> => ({
+        ok: true,
+        json: async () => bodies[Math.min(call++, bodies.length - 1)],
+      });
+    })(),
+  });
+  renderIndex();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: strings.storage.measureOnDisk }),
+  );
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith("/api/storage?onDisk=true"),
+  );
+  expect(
+    await screen.findByText(strings.storage.onDisk(9684 + 4096 + 918, 9684 + 4096)),
+  ).toBeDefined();
+});
+
+/** What `GET /api/parts/{id}` answers for the card these tests click. */
+const MOTOR_MOUNT_DETAIL = {
+  id: MOTOR_MOUNT.id,
+  library: MOTOR_MOUNT.library,
+  revision: MOTOR_MOUNT.revision,
+  revLabel: "1",
+  name: MOTOR_MOUNT.name,
+  partNumber: MOTOR_MOUNT.partNumber,
+  sourcePath: MOTOR_MOUNT.sourcePath,
+  thumbnail: MOTOR_MOUNT.thumbnail,
+  triangleCount: MOTOR_MOUNT.triangleCount,
+  isWatertight: true,
+  // Mesh-derived, so `Figure` must label it — which is what proves the dialog renders the
+  // detail page's own component rather than a second `<dl>` of its own.
+  bboxMm: { value: [61, 42, 18.5], approximate: true },
+  volumeMm3: { value: 21478.5, approximate: true },
+  surfaceAreaMm2: { value: 9804.25, approximate: true },
+  kernelVersion: "mesh stl-1+cpu-1",
+  sourceHash: MOTOR_MOUNT.sourceHash,
+  sourceFormat: "stl",
+  sourceBytes: MOTOR_MOUNT.sourceBytes,
+  storedBytes: MOTOR_MOUNT.storedBytes,
+  compressed: MOTOR_MOUNT.compressed,
+  tessellationL0: null,
+  tessellationL0Bytes: null,
+  createdAt: MOTOR_MOUNT.createdAt,
+  updatedAt: MOTOR_MOUNT.updatedAt,
+};
+
+/**
+ * Clicking a card opens it in place, and what opens is the detail page's own article —
+ * asserted through the approximate label, which only `Figure` renders. A dialog with its
+ * own `<dl>` would pass a "shows the volume" test and fail this one.
+ */
+test("clicking a card opens the part in place, rendered by the detail page's own component", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  fireEvent.click(card);
+
+  const dialog = await screen.findByRole("dialog");
+  // `find`, not `get`: the panel opens immediately and fills when the detail arrives, which
+  // is the point of opening it immediately.
+  expect((await within(dialog).findAllByText(strings.detail.approximate)).length).toBeGreaterThan(0);
+  expect(
+    within(dialog).getByRole("link", { name: strings.quickLook.fullPage }),
+  ).toBeDefined();
+});
+
+/**
+ * The card is not an anchor and its click is filtered rather than its markup reshaped, so
+ * every control it already carries has to keep working. This is the assertion that the
+ * filter is real: pressing a button inside the card must do that button's job and nothing
+ * else.
+ *
+ * `closest` and not a target comparison, because a click can land on a label inside a
+ * button — which is a click on the button as far as the user is concerned.
+ */
+test("a control inside a card does its own job and does not open the panel", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partThumbnail: ok({ batchId: "01931b6e-0000-7000-8000-0000000000ff" }),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  fireEvent.click(
+    within(card).getByRole("button", { name: strings.render.partFor(MOTOR_MOUNT.name) }),
+  );
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+/** The name is still a real link, so a keyboard and a middle click both still reach the page. */
+test("the card's name is still a link to the full page", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const link = within(card).getByRole("link", { name: MOTOR_MOUNT.name });
+  expect(link.getAttribute("href")).toBe(`/parts/${MOTOR_MOUNT.id}`);
+});
+
+/**
+ * The panel shows the part; it does not offer to change it.
+ *
+ * `Detail` is shared with the page, and the page hands it a remove button through the
+ * `actions` slot. This asserts the slot is genuinely how that arrives — the first version
+ * rendered the hint *inside* `Detail`, so the quick-look told people they could restore a
+ * model from a panel that offered no way to remove one. Visible immediately in a browser
+ * and to no test, which is why there is one now.
+ */
+test("the quick-look shows the part without offering to remove it", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+  });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("article", { name: MOTOR_MOUNT.name }));
+  const dialog = await screen.findByRole("dialog");
+  // Waited for, so the assertion is about a filled panel and not an empty one.
+  await within(dialog).findAllByText(strings.detail.approximate);
+
+  expect(within(dialog).queryByText(strings.removal.removeHint)).toBeNull();
+  expect(within(dialog).queryByRole("button", { name: strings.removal.remove })).toBeNull();
 });

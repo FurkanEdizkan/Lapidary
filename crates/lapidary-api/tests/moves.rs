@@ -91,6 +91,7 @@ fn app(pool: sqlx::PgPool, store: &std::path::Path) -> axum::Router {
             db: pool,
             blob_root: store.to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     )

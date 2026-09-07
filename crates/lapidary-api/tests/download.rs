@@ -309,6 +309,7 @@ async fn a_compressed_source_comes_back_byte_identical(pool: sqlx::PgPool) {
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -355,6 +356,7 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -402,6 +404,7 @@ async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: s
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -477,6 +480,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -512,6 +516,7 @@ async fn bytes_at_a_folder_path_that_do_not_hash_truncate_the_download(pool: sql
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -546,6 +551,7 @@ async fn a_turkish_name_is_percent_encoded_in_one_half_and_degraded_in_the_other
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -573,6 +579,7 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
         db: pool,
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     let (converted, _, converted_body) = get(
@@ -614,6 +621,7 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -644,6 +652,7 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     // Delete is soft, and a download URL is held by whoever was last shown the grid: the
@@ -699,6 +708,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -748,6 +758,7 @@ async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -822,6 +833,7 @@ async fn a_file_larger_than_the_stream_buffer_still_comes_back_byte_identical(po
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -857,6 +869,7 @@ async fn the_worker_role_does_not_serve_downloads(pool: sqlx::PgPool) {
             db: pool,
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Worker,
     );
@@ -877,6 +890,7 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
         db: pool,
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     };
 
     // The one shape that reaches the handler as a `QueryRejection`, and the reason that
@@ -924,6 +938,7 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );
@@ -977,6 +992,7 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
             db: pool.clone(),
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
         },
         Role::Api,
     );

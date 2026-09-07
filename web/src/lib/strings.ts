@@ -568,12 +568,64 @@ export const strings = {
      *
      * Says nothing about quarantined bytes, which have no library to belong to: a purge
      * removes the part chain, so those blobs are counted by no library's panel. That gap
-     * is real and is recorded in the slice 7 design; it closes with Phase 4's
-     * instance-wide storage view.
+     * is real, was recorded in the slice 7 design as closing with Phase 4 — and is closed
+     * instead by `everything` below, which is the panel that *can* report them.
      */
     removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
+
+    /**
+     * The whole store, across every library, and the two figures no per-library line can
+     * carry: `removed` is on the disk until somebody purges it, and `quarantined` is on the
+     * disk *and* belongs to no library at all, because the part that would have said which
+     * one is the part that was purged.
+     *
+     * Both clauses are conditional for the reason `removed` above is: a permanent
+     * "0 B quarantined" is noise on every installation where nobody has purged anything,
+     * and the moment one exists it is bytes nothing else in the application admits to.
+     */
+    everything: (
+      source: number,
+      derivative: number,
+      inline: number,
+      removed: number,
+      quarantined: number,
+    ) =>
+      `Everything: ${bytes(source + derivative + inline + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of generated views, ${bytes(inline)} of thumbnails in the database${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} purged and waiting out its 30 days` : ''}.`,
+    /**
+     * The walk is opt-in because it costs the server a look at every file. Worded as the
+     * question it answers rather than as the work it does — "measure" is what the user
+     * wants; that it is a directory walk is our problem.
+     */
+    measureOnDisk: 'Measure what is actually on disk',
+    measuring: 'Measuring…',
+    /**
+     * The two numbers side by side, and the gap named rather than left to be noticed.
+     *
+     * The tracked figures count what the database knows about: one row per model file, one
+     * per derivative. The disk also holds a `metadata.json` beside every model — deliberately
+     * counted by nothing, because a per-manifest length column would be a figure nobody
+     * would ever see move — plus anything a person has put in the folder themselves, which
+     * is a thing this layout invites. So the disk number is the larger one, and the
+     * difference is not an error.
+     */
+    /**
+     * `tracked` here is the part of the figures above that is genuinely *in the storage
+     * folder* — so not the thumbnails, which are in Postgres. Measured on a real library
+     * before this was written: folding them in put the tracked total 5.7 MB above a walk of
+     * the store, which reads as bytes having gone missing rather than as a category error.
+     *
+     * The disk is then legitimately the larger of the two, by the `metadata.json` beside
+     * every model (deliberately counted by nothing) plus whatever the owner has put in the
+     * folder — which this layout invites them to do.
+     */
+    onDisk: (disk: number, tracked: number) =>
+      disk >= tracked
+        ? `On disk: ${bytes(disk)} in the storage folder. That is ${bytes(disk - tracked)} more than the models and views above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real. Thumbnails are not in this figure: they live in the database.`
+        : `On disk: ${bytes(disk)} in the storage folder, which is ${bytes(tracked - disk)} less than the models and views above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
+    onDiskFailed:
+      'Could not measure the storage folder. The figures above still stand — they come from the database, not from the disk.',
   },
   /**
    * The category tree beside the grid, moving models between categories, and the folder a
@@ -719,9 +771,25 @@ export const strings = {
      * manager — `file://` links are blocked everywhere — so this shows where to look
      * instead of pretending to a capability the web build does not have. A native reveal
      * belongs to the Tauri shell.
+     *
+     * Two versions, because there are two truths to tell. With `LAPIDARY_HOST_STORAGE_ROOT`
+     * set to an absolute path the server can say where the store really is, and what is on
+     * screen is a path that will open — so the copy stops apologising and just says to
+     * paste it. Without it the path is store-relative, the user has to know where their own
+     * store is, and pretending otherwise would be the confidently-wrong answer this whole
+     * feature refuses to give.
      */
     directoryHint:
       'A browser cannot open a file manager, so this is the path rather than a button. Copy it and open it where your files are.',
+    directoryHintAbsolute:
+      'A browser cannot open a file manager, so this is the path rather than a button. Copy it and paste it into yours.',
+    /**
+     * Shown under a store-relative path, once, where a person is looking at exactly the
+     * thing it would fix. Names the variable rather than describing it: somebody editing
+     * `deploy/.env` needs the string to search for.
+     */
+    directoryPartial:
+      'This is the path inside your storage folder. Set LAPIDARY_STORAGE_ROOT to an absolute path in deploy/.env and the full path appears here instead.',
     /**
      * `directory` is null: this model predates the folder layout and still lives in the
      * shared store. Wording taken from the move route's own refusal, so the two places a
@@ -788,6 +856,23 @@ export const strings = {
       'That category is no longer there — it was deleted somewhere else while this was open. Reload and try again.',
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
+  },
+  quickLook: {
+    /**
+     * The card opens a panel rather than navigating, because scanning a library means
+     * looking at one part and then the next one — and a round trip through a full page and
+     * the back button for each of them is the thing that makes a library tiring to go
+     * through.
+     */
+    openFor: (name: string) => `Open ${name}`,
+    /**
+     * Out to the real page. The dialog is for a look; the page is where the controls that
+     * change something live, and it is a URL that can be shared and bookmarked.
+     */
+    fullPage: 'Open the full page',
+    loading: 'Loading…',
+    failed:
+      'Could not open this part. Check that the api service is running, then try again.',
   },
   emptyLibrary: {
     title: 'Nothing here yet',

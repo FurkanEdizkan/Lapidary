@@ -21,6 +21,7 @@ fn state(pool: sqlx::PgPool) -> AppState {
         db: pool,
         blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
     }
 }
 

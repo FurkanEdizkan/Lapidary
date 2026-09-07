@@ -6,6 +6,7 @@ import type {
   FolderId,
   FolderNode,
   FolderPatch,
+  InstanceStorageView,
   LibraryId,
   LibrarySettings,
   LibraryStorage,
@@ -521,6 +522,23 @@ export async function renameFolder(folder: FolderId, name: string): Promise<Fold
     throw new Error(`folder rename returned ${response.status}`)
   }
   return { kind: 'written' }
+}
+
+/**
+ * `GET /api/storage` — what the whole store holds, and where it is on the host.
+ *
+ * Instance-wide, so it takes no library: two of its figures belong to none, and its
+ * derivative total is deliberately not the per-library ones added up.
+ *
+ * `onDisk` asks the server to walk the storage root for the number `du` would give. Off by
+ * default because it costs a stat per file, and the four tracked figures are free.
+ */
+export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStorageView> {
+  const response = await fetch(`/api/storage${onDisk ? '?onDisk=true' : ''}`)
+  if (!response.ok) {
+    throw new Error(`instance storage returned ${response.status}`)
+  }
+  return (await response.json()) as InstanceStorageView
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */

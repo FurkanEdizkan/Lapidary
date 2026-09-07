@@ -7,14 +7,18 @@ import {
   downloadUrl,
   fetchBatchStatus,
   fetchHealth,
+  fetchInstanceStorage,
   fetchLibrarySettings,
   fetchLibraryStorage,
+  fetchPartDetail,
   fetchParts,
   renderLibraryThumbnails,
   renderPartThumbnail,
   setAutoThumbnail,
   startScan,
 } from '../lib/api'
+import { Dialog } from '../components/Dialog'
+import { Detail } from '../components/PartDetail'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
@@ -29,6 +33,7 @@ import type {
   BatchId,
   BatchStatus,
   FolderId,
+  InstanceStorageView,
   LibraryStorage,
   PartCard,
   PartId,
@@ -208,6 +213,21 @@ export function Index({
     folderId === undefined
       ? null
       : (folders.data?.find((folder) => folder.id === folderId)?.name ?? null)
+
+  // Where the store is on the host, and what the whole of it holds. **One query for the
+  // page**, read by two places: every card needs the host root to show a path, and the
+  // panel at the foot needs the totals. Two `useQuery` calls on one route — even under
+  // different keys — would be two requests for one fact, and the second would answer a
+  // question nobody asked twice.
+  //
+  // `measure` is part of the key rather than a refetch, so asking for the disk walk is a
+  // different query with its own cached answer: pressing the button once and scrolling away
+  // does not re-walk the store on the way back.
+  const [measure, setMeasure] = useState(false)
+  const instance = useQuery({
+    queryKey: ['instance-storage', measure],
+    queryFn: () => fetchInstanceStorage(measure),
+  })
 
   const parts = useInfiniteQuery({
     queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
@@ -466,6 +486,7 @@ export function Index({
               parts={loaded}
               onRender={(part) => renderPart.mutate(part)}
               busyPart={renderPart.isPending ? renderPart.variables : undefined}
+              hostRoot={instance.data?.hostStorageRoot ?? null}
             />
             <MorePages
               count={loaded.length}
@@ -474,6 +495,13 @@ export function Index({
               onMore={() => void parts.fetchNextPage()}
             />
             <StorageTotals storage={storage.data} isError={storage.isError} />
+            <InstanceStorage
+              instance={instance.data}
+              isError={instance.isError}
+              measuring={measure && instance.isFetching}
+              measured={measure}
+              onMeasure={() => setMeasure(true)}
+            />
           </>
         )}
         <p className="mt-6 text-sm text-[var(--color-muted)]">
@@ -896,14 +924,99 @@ function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError
   )
 }
 
+/**
+ * What the whole store holds, under the one library's line.
+ *
+ * Separate from `StorageTotals` and not folded into it, because it answers a different
+ * question and the two disagree on purpose: a derivative two libraries share is charged to
+ * both of them above and counted once here, and the quarantined figure belongs to no
+ * library at all. Adding the panels up is exactly the thing this is here to stop somebody
+ * doing.
+ *
+ * The disk measurement is a button rather than part of the load. It costs the server a
+ * `stat` per file — instant on a small library, seconds on a corpus — and the four figures
+ * beside it are free, so making everyone pay for it on every page load to answer a question
+ * most visits do not ask would be the wrong default.
+ */
+function InstanceStorage({
+  instance,
+  isError,
+  measuring,
+  measured,
+  onMeasure,
+}: {
+  instance?: InstanceStorageView
+  isError: boolean
+  /** The walk is in flight. */
+  measuring: boolean
+  /** The walk has been asked for, whether or not it came back. */
+  measured: boolean
+  onMeasure: () => void
+}) {
+  // Same rule as the library totals: nothing at all while the first read is in flight,
+  // because a total is a claim and there is no honest placeholder for one.
+  if (isError) {
+    return <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.storage.failed}</p>
+  }
+  if (instance === undefined) {
+    return null
+  }
+
+  const { sourceBytes, derivativeBytes, inlinePreviewBytes, removedBytes, quarantinedBytes, onDiskBytes } =
+    instance
+  // Deliberately **without** `inlinePreviewBytes`: those are in Postgres, and this figure
+  // is compared against a walk of the storage folder. Including them put the tracked total
+  // above the disk by exactly their size on a real library, which reads as loss.
+  const tracked = sourceBytes + derivativeBytes + removedBytes + quarantinedBytes
+  // Narrowed here and not in the JSX, for the reason `ShowInFolder` narrows where it does:
+  // a `typeof x === 'number'` inside a child expression puts the literal `'number'` in a
+  // position `no-bare-strings.test.ts` reads — correctly — as a label reaching the screen.
+  // `typeof` and not truthiness, because a genuinely empty store measures 0, which is an
+  // answer rather than a missing one.
+  const onDisk = typeof onDiskBytes === 'number' ? onDiskBytes : null
+  return (
+    <div className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+      <p>
+        {strings.storage.everything(
+          sourceBytes,
+          derivativeBytes,
+          inlinePreviewBytes,
+          removedBytes,
+          quarantinedBytes,
+        )}
+      </p>
+      {onDisk !== null ? (
+        <p className="mt-1">{strings.storage.onDisk(onDisk, tracked)}</p>
+      ) : measuring ? (
+        <p className="mt-1">{strings.storage.measuring}</p>
+      ) : measured ? (
+        // Asked for and not answered: the walk failed, and the four figures above are still
+        // true because they never came from the disk.
+        <p className="mt-1">{strings.storage.onDiskFailed}</p>
+      ) : (
+        <button
+          type="button"
+          onClick={onMeasure}
+          className="ease-mechanical mt-1 rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.storage.measureOnDisk}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Grid({
   parts,
   onRender,
   busyPart,
+  hostRoot,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
   busyPart?: PartId
+  /** Passed down rather than fetched per card: it is one fact about the deployment. */
+  hostRoot: string | null
 }) {
   return (
     <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
@@ -927,7 +1040,7 @@ function Grid({
         // real size once it has rendered one, so this figure only has to be close for the
         // first paint rather than exact forever.
         <li key={part.id} className="[content-visibility:auto] [contain-intrinsic-size:auto_26rem]">
-          <Card part={part} onRender={onRender} busy={part.id === busyPart} />
+          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} />
         </li>
       ))}
     </ul>
@@ -938,13 +1051,16 @@ function Card({
   part,
   onRender,
   busy,
+  hostRoot,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
   busy: boolean
+  hostRoot: string | null
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
+  const [looking, setLooking] = useState(false)
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -954,6 +1070,23 @@ function Card({
   return (
     <article
       aria-labelledby={nameId}
+      /*
+        The whole card opens the quick look, and it is a handler rather than an anchor for
+        the reason the name's own comment gives below: this card holds a render button, a
+        move button, a download link and a path disclosure, and nesting those inside an
+        `<a>` is invalid HTML that browsers resolve by guessing.
+
+        So the click is filtered instead of the markup being reshaped. Anything that
+        originated inside a control belongs to that control — including a click on a label
+        inside a button, which is why this asks `closest` rather than comparing the target.
+        The name stays a real `Link`: it is the keyboard path, the middle-click path, and
+        what a screen reader announces for the card.
+      */
+      onClick={(event) => {
+        if (!(event.target instanceof Element)) return
+        if (event.target.closest('a, button, input')) return
+        setLooking(true)
+      }}
       draggable={movable}
       onDragStart={(event) =>
         event.dataTransfer.setData(
@@ -1040,7 +1173,7 @@ function Card({
             <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
           )}
         </div>
-        <ShowInFolder part={part} directory={directory} />
+        <ShowInFolder part={part} hostRoot={hostRoot} />
         {/*
           Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
           This card is `overflow-hidden hover:-translate-y-0.5`, Tailwind emits that lift as
@@ -1050,6 +1183,7 @@ function Card({
           to it for as long as the pointer stayed over the card. Nothing here may hoist that
           markup back out of the portal.
         */}
+        {looking ? <QuickLook part={part} onClose={() => setLooking(false)} /> : null}
         {moving ? (
           <MovePartDialog
             part={{ id: part.id, name: part.name }}
@@ -1059,6 +1193,53 @@ function Card({
         ) : null}
       </div>
     </article>
+  )
+}
+
+/**
+ * The part, in a panel, without leaving the grid.
+ *
+ * Scanning a library means looking at one part and then the next, and a round trip through
+ * a full page and the back button for each of them is what makes that tiring. So this is a
+ * look; the page is where the controls that change something live, and where a URL someone
+ * can share lives.
+ *
+ * **It renders `Detail`, the detail page's own article, rather than a version of it.** Two
+ * renderings of one measurement that can disagree is a defect here, and measurements are
+ * the case that matters: every figure goes through `Figure`, which cannot render a value
+ * without its `approximate` flag, because a mesh-derived number must be labelled wherever
+ * it appears.
+ *
+ * **And it fetches under the detail route's own query key**, so opening the panel and then
+ * the page costs one request rather than two — the look warms the cache for the page it
+ * links to.
+ */
+function QuickLook({ part, onClose }: { part: PartCard; onClose: () => void }) {
+  const detail = useQuery({
+    queryKey: ['part', part.id],
+    queryFn: () => fetchPartDetail(part.id),
+  })
+  return (
+    <Dialog title={part.name} onClose={onClose}>
+      {detail.isPending ? (
+        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
+      ) : detail.isError ? (
+        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.quickLook.failed}
+        </p>
+      ) : (
+        <Detail part={detail.data} />
+      )}
+      <div className="mt-4 flex justify-end gap-2">
+        <Link
+          to="/parts/$partId"
+          params={{ partId: part.id }}
+          className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.quickLook.fullPage}
+        </Link>
+      </div>
+    </Dialog>
   )
 }
 
@@ -1077,16 +1258,30 @@ function Card({
  */
 function ShowInFolder({
   part,
-  directory,
+  hostRoot,
 }: {
   part: PartCard
-  directory: string | null
+  /**
+   * Where the store is on the host, or `null` when the deployment has not said.
+   *
+   * Never derived here and never guessed. The api sees the store at a container path that
+   * exists on nobody's machine, so if this is `null` the honest answer is the path within
+   * the store — which is what the copy then says, along with how to fix it.
+   */
+  hostRoot: string | null
 }) {
   const [open, setOpen] = useState(false)
-  // Narrowed out here rather than in the JSX below: a `typeof x !== 'string'` inside a
-  // child expression puts the literal `'string'` in a position `no-bare-strings.test.ts`
-  // reads — correctly — as a label reaching the screen.
-  const path = typeof directory === 'string' ? directory : null
+  // The file, not its directory: "where is this model" is answered by the path to the
+  // model, and the directory is one `rsplit` away for anyone who wants it. Narrowed with
+  // `typeof` rather than in the JSX because a `!== 'string'` inside a child expression puts
+  // the literal `'string'` where `no-bare-strings.test.ts` reads it — correctly — as a
+  // label reaching the screen.
+  const relative = typeof part.storagePath === 'string' ? part.storagePath : null
+  // Joined with a single slash and no path library: `hostRoot` is absolute or absent (the
+  // server drops a relative one), and the store-relative path never starts with one, so the
+  // only case to handle is a trailing slash on the root.
+  const path =
+    relative === null ? null : hostRoot === null ? relative : `${hostRoot.replace(/\/$/, '')}/${relative}`
   return (
     <div className="mt-2 text-xs text-[var(--color-muted)]">
       <button
@@ -1119,7 +1314,8 @@ function ShowInFolder({
           >
             {strings.folders.copyPath}
           </button>
-          <p>{strings.folders.directoryHint}</p>
+          <p>{hostRoot === null ? strings.folders.directoryHint : strings.folders.directoryHintAbsolute}</p>
+          {hostRoot === null ? <p>{strings.folders.directoryPartial}</p> : null}
         </div>
       )}
     </div>
