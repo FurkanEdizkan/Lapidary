@@ -8,6 +8,7 @@ mod download;
 mod error;
 mod folders;
 mod health;
+mod images;
 mod jobs;
 mod lifecycle;
 mod moves;
