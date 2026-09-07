@@ -561,9 +561,10 @@ async fn a_directory_holding_something_of_the_owners_survives_and_does_not_stop_
 
     let mut removed = report.removed_files.clone();
     removed.sort();
+    let mut expected = vec![kept.to_owned(), alone.to_owned()];
+    expected.sort();
     assert_eq!(
-        removed,
-        vec![kept.to_owned(), alone.to_owned()].tap_sorted(),
+        removed, expected,
         "both model files are removed, including the one whose directory has to stay"
     );
     assert!(!blob_root.path().join(kept).exists(), "the model file goes");
@@ -591,16 +592,4 @@ async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
         .fetch_all(pool)
         .await
         .expect("quarantined paths read")
-}
-
-/// `Vec::sort` returns `()`, and these comparisons want the sorted value inline.
-trait TapSorted {
-    fn tap_sorted(self) -> Self;
-}
-
-impl TapSorted for Vec<String> {
-    fn tap_sorted(mut self) -> Self {
-        self.sort();
-        self
-    }
 }

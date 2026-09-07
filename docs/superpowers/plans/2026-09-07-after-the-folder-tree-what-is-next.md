@@ -80,8 +80,12 @@ Two things came out of it that were not in the plan:
   than writing the row by hand. **Worth generalising:** the delete list is maintained by
   hand precisely because nothing declares `ON DELETE CASCADE`, so the next table that
   references `part`, `revision`, `file` or `derivative` will silently break purge the same
-  way. A test that reads `information_schema` and fails when a referencing table is not in
-  the list would close the class rather than the instance.
+  way. **Closed too:** `every_table_referencing_the_part_chain_is_one_purge_deletes_from`
+  asks the catalogue what has a foreign key into `part`, `revision`, `file` or
+  `derivative` and fails when purge does not delete from it, naming the table and saying
+  what to add. `part_image` is already named in `revisions_missing`'s doc as coming in
+  slice 5, and Phase 4's lineage adds more; each of them now fails at the point it is
+  added rather than in front of whoever first purges a part that uses it.
 - **The sweep over-reports what it freed**, by exactly the `stored_bytes` of a migrated
   source's `blob` row — a figure describing a content-addressed path `migrate_storage`
   emptied. Measured: 22,660 reported, 12,976 actually freed. Pre-existing and unchanged in

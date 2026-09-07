@@ -2621,3 +2621,63 @@ async fn purging_a_part_that_has_been_moved_takes_its_move_history_with_it(pool:
          where it was filed points at an id nothing else in the database knows"
     );
 }
+
+/// **The class, not the instance.**
+///
+/// `purge` brings the part chain down child-first by hand, because nothing in the schema
+/// declares `ON DELETE CASCADE` — a property worth keeping, since a stray `DELETE FROM
+/// part` should fail loudly rather than quietly take four tables with it. The cost is that
+/// the list is maintained by hand, and a table added later that references the chain
+/// breaks purge with a foreign key violation the moment anyone purges a row it points at.
+///
+/// That already happened once. `part_move` arrived with the folder tree, a slice after the
+/// list was written, and purging any part anyone had ever moved answered 500 — found on a
+/// running stack rather than by either suite, because slice 7's purge tests never move a
+/// part and the folder tree's move tests never purge one. `part_image` is named in
+/// `PgParts::revisions_missing`'s own doc as coming in slice 5, and Phase 4's lineage will
+/// add more.
+///
+/// So this asks the database what references the chain and compares it against what purge
+/// knows about. A new table fails here, at the point it is added, with a message saying
+/// what to do — rather than in front of whoever first purges a part that uses it.
+#[sqlx::test(migrations = "./migrations")]
+async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: sqlx::PgPool) {
+    // What `PgParts::purge`'s statement list covers. `revision` appears because it
+    // references `part`; its self-reference through `parent_revision_id` is settled by the
+    // same single `DELETE FROM revision WHERE part_id`, which removes a parent and its
+    // child in one statement.
+    let purged: &[&str] = &["derivative", "file", "part_move", "revision"];
+
+    let referencing: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT tc.table_name \
+         FROM information_schema.table_constraints tc \
+         JOIN information_schema.constraint_column_usage ccu \
+           ON tc.constraint_name = ccu.constraint_name \
+         WHERE tc.constraint_type = 'FOREIGN KEY' \
+           AND tc.table_schema = 'public' \
+           AND ccu.table_name IN ('part', 'revision', 'file', 'derivative') \
+         ORDER BY tc.table_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the catalogue reads");
+
+    let missing: Vec<&String> = referencing
+        .iter()
+        .filter(|table| !purged.contains(&table.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{missing:?} reference the part chain and `PgParts::purge` does not delete from \
+         them, so purging a part they point at will fail on a foreign key. Add a `DELETE \
+         FROM <table> WHERE …` to purge's statement list above the row it references, and \
+         add the table here. If a table genuinely should outlive the part it names, say so \
+         here in a comment rather than removing the assertion."
+    );
+    assert_eq!(
+        referencing, purged,
+        "and nothing purge deletes from has stopped referencing the chain — a statement \
+         kept for a table that no longer points at a part is a delete nobody can justify"
+    );
+}
