@@ -857,6 +857,36 @@ export const strings = {
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
+  images: {
+    /**
+     * A photograph shows what a render cannot: the finish, the colour, the thing next to a
+     * hand. It sits above the render rather than replacing it — the generated view is still
+     * the honest picture of the geometry, and `part_image`'s ordering keeps both.
+     */
+    title: 'Pictures',
+    add: 'Add a picture',
+    adding: 'Storing…',
+    /** Named alt text, because "image" tells a screen reader nothing it did not know. */
+    alt: (name: string, index: number) => `Picture ${index + 1} of ${name}`,
+    /**
+     * The resize is otherwise invisible. Somebody who attached a 4000-pixel photograph is
+     * owed the sentence saying what is now on the card — the server answers with the size it
+     * stored, so this is a fact rather than a guess.
+     */
+    resized: (width: number, height: number) =>
+      `Stored at ${width}×${height}. Larger pictures are scaled down so a page of cards stays quick to load.`,
+    /**
+     * A refusal the server did not explain. It always does explain — every `ImageError`
+     * carries a sentence — so this covers a body that could not be read rather than a
+     * refusal without a reason.
+     */
+    refusedWithoutReason:
+      'That picture was refused and the reason did not come back. Check that it is a PNG, JPEG or WebP under 10 MB, then try again.',
+    failed:
+      'The picture could not be stored. Check that the api service is running, then try again.',
+    /** Where a fetched image came from, so a chosen picture reads differently from a pulled one. */
+    from: (url: string) => `From ${url}`,
+  },
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means
