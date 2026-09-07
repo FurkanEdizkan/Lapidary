@@ -86,6 +86,11 @@ Thumbs.db
 !/graphify-out/manifest.json
 !/graphify-out/cost.json
 !/graphify-out/.graphify_labels.json
+# The agent-crawlable half: index.md plus one article per community, wikilinked, every
+# concept carrying the file it came from. 572 KB of markdown that diffs cleanly, and the
+# reason it is here rather than regenerated is that an agent reading this repository should
+# find it by looking, not by running a pipeline first.
+!/graphify-out/wiki/
 
 # Excluded, and each for its own reason rather than for being big:
 #
