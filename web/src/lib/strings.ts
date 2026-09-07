@@ -793,5 +793,24 @@ export const strings = {
     title: 'Nothing here yet',
     body:
       'This library is empty. Drop a folder of models above to add them, or scan the directory mounted on the server — either way, every model found appears here.',
+    /**
+     * An empty *category* is not an empty library, and saying so was a lie the grid could
+     * always tell — a scan that found an empty directory made one — but which only became
+     * easy to reach when categories became something a person could create. Somebody makes
+     * `Workholding`, looks at it, and is told the library holding their 1,700 models is
+     * empty.
+     *
+     * Named, because the difference is the whole point: a user who has just filed nothing
+     * into a category they made needs to know the models are still where they were, not
+     * that they are gone.
+     */
+    categoryTitle: 'Nothing filed here yet',
+    /**
+     * The name is optional because the tree it comes from is a second query, and a page
+     * that has the grid's answer but not the sidebar's must still not claim the library is
+     * empty. Naming the category is better and not required to be truthful.
+     */
+    categoryBody: (name: string | null) =>
+      `No models are in ${name ?? 'this category'} yet. Drag a card onto it in the sidebar, or use a card's "Move to…" button — the rest of the library is still under All models.`,
   },
 } as const

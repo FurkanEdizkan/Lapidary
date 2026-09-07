@@ -23,6 +23,7 @@ import {
   MovePartDialog,
   PART_DRAG_TYPE,
   partDragPayload,
+  useFolders,
 } from '../components/FolderTree'
 import type {
   BatchId,
@@ -200,6 +201,14 @@ export function Index({
    * nothing in the other. The invalidation the scan effect fires still reaches both —
    * `['parts', library]` is a prefix of every one of them.
    */
+  // The same query key the sidebar's own `useFolders` uses, so this is a read of the cache
+  // entry that component already fills and not a second request for the same tree.
+  const folders = useFolders(DEFAULT_LIBRARY_ID)
+  const selectedFolderName =
+    folderId === undefined
+      ? null
+      : (folders.data?.find((folder) => folder.id === folderId)?.name ?? null)
+
   const parts = useInfiniteQuery({
     queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
     queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId),
@@ -447,8 +456,10 @@ export function Index({
           <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
         ) : loaded.length === 0 ? (
           // An empty page and a page still in flight are different facts, so only a page
-          // that came back empty gets the empty state.
-          <EmptyLibrary />
+          // that came back empty gets the empty state — and which empty state depends on
+          // whether a category is filtering it, because "this library is empty" is false
+          // and alarming when the library is full and the category is not.
+          <EmptyLibrary filtered={folderId !== undefined} categoryName={selectedFolderName} />
         ) : (
           <>
             <Grid
@@ -752,11 +763,30 @@ function ScanProgress({
   )
 }
 
-function EmptyLibrary() {
+/**
+ * Nothing to show, and which "nothing" it is.
+ *
+ * `filtered` and not "is `categoryName` null": the two answer different questions, and only
+ * the first is safe to render from. The category's name comes from the tree, which is a
+ * different query from the grid's — so a page can know the category holds nothing before it
+ * knows what the category is called, and a component that inferred "no category" from a
+ * missing name would tell that user their library is empty.
+ */
+function EmptyLibrary({
+  filtered,
+  categoryName,
+}: {
+  filtered: boolean
+  categoryName: string | null
+}) {
   return (
     <div className="max-w-prose">
-      <h2 className="text-lg">{strings.emptyLibrary.title}</h2>
-      <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.body}</p>
+      <h2 className="text-lg">
+        {filtered ? strings.emptyLibrary.categoryTitle : strings.emptyLibrary.title}
+      </h2>
+      <p className="mt-2 text-[var(--color-muted)]">
+        {filtered ? strings.emptyLibrary.categoryBody(categoryName) : strings.emptyLibrary.body}
+      </p>
     </div>
   )
 }

@@ -2248,3 +2248,36 @@ test("right-clicking a card opens the same chooser the button does", async () =>
     }),
   ).toBeDefined();
 });
+
+/**
+ * An empty **category** is not an empty library, and the grid used to say it was.
+ *
+ * Reachable before this only through a scan that found an empty directory; reachable in two
+ * clicks once categories became something a person could create. The consequence is not
+ * cosmetic: somebody makes `Rocks`, looks at it, and is told the library holding their 156
+ * models is empty and that they should drop a folder to add some. The models are fine and
+ * the sentence says they are gone.
+ */
+test("an empty category says the category is empty, not the library", async () => {
+  stubFetch({ parts: ok(page([])), folders: ok([TERRAIN, ROCKS]) });
+  renderIndex({ folderId: ROCKS.id });
+
+  expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
+  expect(screen.getByText(strings.emptyLibrary.categoryBody("Rocks"))).toBeDefined();
+  // The claim that would be false. Asserted as absent rather than trusting the branch: this
+  // is the string the bug rendered, and its absence is the whole fix.
+  expect(screen.queryByText(strings.emptyLibrary.body)).toBeNull();
+});
+
+/**
+ * The tree is a second query, so a page can know the category is empty before it knows what
+ * the category is called. It must not fall back to "this library is empty" in that window —
+ * which is what a component inferring "no category" from a missing name would do.
+ */
+test("an empty category with its name not loaded still does not claim the library is empty", async () => {
+  stubFetch({ parts: ok(page([])) });
+  renderIndex({ folderId: ROCKS.id });
+
+  expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
+  expect(screen.getByText(strings.emptyLibrary.categoryBody(null))).toBeDefined();
+});
