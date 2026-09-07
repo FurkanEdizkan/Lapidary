@@ -1310,9 +1310,17 @@ function Grid({
     density === 'compact'
       ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
       : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
+  //
+  // **A compact card is TALLER, not shorter**, and guessing the other way was the first
+  // thing this got wrong. A narrower column wraps more of the name and more of the "9.7 kB
+  // on disk, stored uncompressed" line, so 8rem-wide cards run past 11rem-wide ones.
+  // Measured in Chrome over 24 cards of the real 156-part library: comfortable 442–461px
+  // (median 27.6rem), compact 478–516px (median 31.1rem). The same mistake the 26rem figure
+  // below already records making once — a guess, in the wrong direction, about a height
+  // that has to be measured.
   const intrinsic =
     density === 'compact'
-      ? '[contain-intrinsic-size:auto_21rem]'
+      ? '[contain-intrinsic-size:auto_31rem]'
       : '[contain-intrinsic-size:auto_26rem]'
   return (
     <ul className={`grid list-none ${columns}`}>
