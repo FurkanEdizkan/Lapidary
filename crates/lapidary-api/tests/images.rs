@@ -100,6 +100,22 @@ fn upload(part: PartId, bytes: Vec<u8>) -> Request<Body> {
         .expect("request builds")
 }
 
+fn from_url(part: PartId, url: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/parts/{part}/images/from-url"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({ "url": url }).to_string()))
+        .expect("request builds")
+}
+
+fn gallery(part: PartId) -> Request<Body> {
+    Request::builder()
+        .uri(format!("/api/parts/{part}/images"))
+        .body(Body::empty())
+        .expect("request builds")
+}
+
 /// A small image lives on its row, and comes back as a `data:` URL — already in hand, so
 /// asking for it again would be a round trip bought with nothing.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -282,4 +298,77 @@ async fn images_come_back_in_the_order_they_were_added(pool: sqlx::PgPool) {
     )
     .await;
     assert_eq!(json(&body).as_array().map(Vec::len), Some(2));
+}
+
+/// **The route, not the guard.** `fetch.rs`'s own tests prove the address check and the
+/// per-hop re-check; this proves the route is wired to them — that pasting the cloud
+/// metadata endpoint into the application reaches a refusal rather than a request, and that
+/// the refusal is a status a client can act on with a sentence a person can read.
+///
+/// It also proves the gallery is untouched, which is the part a status code cannot say.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn pasting_the_metadata_endpoint_is_refused_and_writes_nothing(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+
+    let (status, body) = send(
+        state(pool.clone(), store.path()),
+        from_url(
+            part,
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the address will never work, so this is not a 502: {}",
+        json(&body)
+    );
+    assert!(
+        json(&body)["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("private network")),
+        "the refusal explains itself: {}",
+        json(&body)
+    );
+
+    let (status, body) = send(state(pool, store.path()), gallery(part)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json(&body).as_array().map(Vec::len),
+        Some(0),
+        "a refused fetch leaves no row behind"
+    );
+}
+
+/// Loopback is the other half of the same refusal, and the one somebody reaches for by
+/// accident: the API's own address, pasted from the browser's address bar.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn pasting_this_servers_own_address_is_refused(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+
+    let (status, _) = send(
+        state(pool, store.path()),
+        from_url(part, "http://127.0.0.1:8080/api/parts"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A scheme that is not `http` or `https` never gets as far as a resolver. `file:///etc/passwd`
+/// is the one worth naming: it is what a caller tries when the address check refuses them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_url_is_refused_before_anything_is_opened(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+
+    let (status, body) = send(
+        state(pool, store.path()),
+        from_url(part, "file:///etc/passwd"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", json(&body));
 }
