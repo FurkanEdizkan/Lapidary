@@ -166,8 +166,8 @@ each:
 
 | # | Item | Status now |
 |---|---|---|
-| 1 | A renamed category does not rename its directory on disk | Unchanged. Blocked on a decision — see §5. |
-| 2 | No UI for creating or renaming a category | Unchanged, and now the more visible half: the merge shipped the sidebar, so the gap is on screen. **Split it:** create is free-standing, rename is not — see below. |
+| 1 | A renamed category does not rename its directory on disk | **Not debt — the answer.** §5's first decision came back *no*, so this is now the documented rule (`DATA.md` §1.1) and the code enforces it. |
+| 2 | No UI for creating or renaming a category | Unchanged, and now the more visible half: the merge shipped the sidebar, so the gap is on screen. **Both halves are unblocked** now the decision is in; the split below is only about which is smaller. |
 | 3 | `GET /api/parts/{id}/moves` has no consumer | Unchanged. Blocked on a decision — see §5. |
 | 4 | The descendant CTE lives in the page query, not in `PgFolders` | **Settle it as accepted.** The merge put the `Shows` predicate and the folder CTE in the same query and the suite proves they agree; splitting it now would create the second descent implementation the original note was worried about. |
 | 5 | Two scale ceilings (tree fan-out, whole-tree fetch) | Unchanged, and §3.4's run is the natural place to get a number for both. |
@@ -179,10 +179,11 @@ until something moves into it, and the refusals to render (`nameTaken`, `slugTak
 `emptyName`) already carry prose and a machine-readable `reason`. It is the smallest real
 feature on this page and a good first task for anyone picking the codebase back up.
 
-*Rename* is downstream of the first decision in §5. Shipping it before that question is
-answered is not neutral — it hands users a button whose every press widens the drift item
-1 describes, because the row changes and the directory does not. Either answer the
-question first, or ship create alone and hold rename behind it.
+*Rename* was downstream of the first decision in §5, which is now answered: the row
+changes and the directory does not, on purpose. The button is safe to ship. What it needs
+that create does not is prose — the drawer should say the directory keeps its original
+name, because the store is meant to be opened in a file manager and a person who renames
+`Terain` to `Terrain` will otherwise go looking for the fixed spelling and not find it.
 
 While building create, note what has no test: a `PATCH` carrying **both** a new name and
 a new parent applies the move first and the rename second, and answers
@@ -205,18 +206,24 @@ a name, so the two cannot drift.
 
 Neither is defaulted here, because a wrong default in either is expensive to reverse.
 
-### Does renaming a category move bytes on disk?
+### Does renaming a category move bytes on disk? — **answered: no** (2026-09-07)
 
 A user who fixes `Terain` to `Terrain` expects the folder to follow. A user who renames
-`WIP` to `Archive 2024` may not expect ten thousand files to be rewritten. A resumable
-`repath_category` job that reports progress answers both honestly, but whether a rename
-*offers* to move bytes at all — always, never, or with a checkbox — is a product call.
+`WIP` to `Archive 2024` may not expect ten thousand files to be rewritten. The second is
+the one that decided it: **never**, no checkbox, no `repath_category` job.
 
-Until it is answered, `file.storage_path` stays authoritative and correct and nothing
-breaks; what stops being true is that directory names in the store mirror category names
-on screen for anything ingested before the rename. That matters exactly as much as
-browsing the store in a file manager matters, which is the feature the whole layout is
-for.
+Written up in `DATA.md` §1.1 with what follows from it. The short version is that this is
+not a rename that declines to tidy up — it is a rule about what a directory name *is*.
+`folder.slug` is the category's address, allocated at creation; `folder.name` is its label.
+Taking the other branch and letting the slug track the name would have been strictly worse
+than a stale directory name: nothing rewrites `file.storage_path`, so a category would end
+up split across one directory per rename it had ever had.
+
+Enforced rather than documented: `PgFolders::rename` has no slug parameter, and
+`migrate_storage`'s legitimate re-slug calls `reslug` instead. Landed with the scan fix it
+implies — `get_or_create` matches a directory to a category by slug, so a re-scan after a
+rename finds the category rather than forking one. **Re-parenting keeps the same split**
+one level up and is not closed; `DATA.md` §1.1 says what it would take.
 
 ### Is a part's move history ever shown?
 

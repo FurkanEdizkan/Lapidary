@@ -53,6 +53,37 @@ is still computed before anything else in ingest, and a known `(library_id, sour
 blake3)` still short-circuits a re-scan of the same path. Only the filename the bytes are
 written under changed; which paths dedupe against which did not.
 
+**A category's directory name is allocated once, when the category is created.** Renaming
+a category changes the row's `name` and nothing on disk — the decision, taken 2026-09-07:
+a rename is a correction to a label, and rewriting every file under `WIP` because somebody
+renamed it `Archive 2024` is not what that person asked for. So `folder.slug` is the
+category's *address* and `folder.name` is its *label*, they agree at creation, and they
+stop agreeing at the first rename. `PgFolders::rename` cannot write a slug — the parameter
+is not in the signature — and the one job that legitimately repoints a category at another
+directory says so by calling `reslug` instead.
+
+The alternative is worse than a stale directory name, which is why this is a rule rather
+than a deferral. Nothing rewrites `file.storage_path`, so parts already ingested stay where
+they are whatever the row says; if the slug followed the name, `slug_path` would start
+answering the new directory and the next ingest or move into that *same* category would
+land there — one category, two directories, and another with every further rename. A store
+you can browse must have one directory per category more than it must have a current name
+on it.
+
+What follows from it: a scan matches a directory to a category **by slug, not by name**
+(`get_or_create`), so re-scanning a renamed library finds the category rather than forking
+a second one under the old name; and `slugTaken` can now refuse a name because a sibling
+*renamed away from it* still holds the directory, which is why that message names the
+directory instead of explaining which of the two cases happened.
+
+**Known and not fixed: re-parenting a category has the same split**, one level up.
+`slug_path` joins *ancestor* slugs, so moving `Rocks` from under `Terrain` to under `Props`
+changes the path it answers while the files stay at `Terrain/Rocks/`. An immutable slug
+does not help, because it is not this folder's slug that changed. Closing it needs a
+`dir_path` stored per folder, or the resumable repath job a rename declined to be —
+`PATCH /api/folders/{id}` with `parent_id` is the only way to reach it and no UI sends it
+today.
+
 **Content addressing survives for `blobs/` only** — derivatives, which are evictable and
 rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,
 keeping any cache directory under ~2k entries at a million derivatives, still keyed on

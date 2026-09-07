@@ -85,16 +85,24 @@ impl PgFolders {
             return Ok(FolderId::from_uuid(uuid));
         }
 
+        // Matched on the slug, not the name, because the caller is holding a *directory*
+        // and the slug is what a directory is called. The two agree at creation and stop
+        // agreeing at the first rename, which changes the name and leaves the slug — so a
+        // scan walking `Rocks/` after somebody renamed that category to `Cliffs` must find
+        // the `Cliffs` row and put the file back into it. Matching on the name would find
+        // nothing, and the INSERT above cannot have made the row it would then look for,
+        // because `folder_slug_unique_per_parent` is exactly what it conflicted on.
+        //
         // `IS NOT DISTINCT FROM`, not `=`: parent_id is NULL at the library root, and `=`
         // is never true against NULL, so the plain form would find nothing and the caller
         // would loop forever trying to create a row that already exists.
         let found: Uuid = sqlx::query_scalar(
             "SELECT id FROM folder WHERE library_id = $1 \
-             AND parent_id IS NOT DISTINCT FROM $2 AND name = $3",
+             AND parent_id IS NOT DISTINCT FROM $2 AND slug = $3",
         )
         .bind(library.as_uuid())
         .bind(parent.map(|p| p.as_uuid()))
-        .bind(name)
+        .bind(slug)
         .fetch_one(&self.0)
         .await?;
         Ok(FolderId::from_uuid(found))
@@ -243,13 +251,53 @@ impl PgFolders {
         Ok(found.map(LibraryId::from_uuid))
     }
 
-    /// Rename in place. The two sibling-uniqueness constraints come back as
-    /// [`DbError::FolderNameTaken`] and [`DbError::FolderSlugTaken`] rather than as a raw
-    /// database error — see [`collision`].
-    pub async fn rename(&self, folder: FolderId, name: &str, slug: &str) -> Result<bool, DbError> {
-        let done = sqlx::query("UPDATE folder SET name = $2, slug = $3 WHERE id = $1")
+    /// Rename in place — the row's `name`, and deliberately nothing else.
+    ///
+    /// **The slug is not a parameter, because a rename does not move bytes.** That is a
+    /// product decision, recorded in `docs/DATA.md` §1.1: a person fixing `Terain` to
+    /// `Terrain` is correcting a label, and rewriting ten thousand files under a category
+    /// called `WIP` because somebody renamed it `Archive 2024` is not what they asked for.
+    /// The slug is the directory, the directory holds the bytes, so the slug is allocated
+    /// once at creation and is thereafter the category's address rather than its name.
+    ///
+    /// Keeping it out of the signature is the enforcement. A `rename` that *could* write a
+    /// slug would split one category across two directories the first time anyone used it:
+    /// the parts already ingested stay under the old slug — `file.storage_path` is
+    /// authoritative and no rename rewrites it — while [`Self::slug_path`] starts answering
+    /// the new one, so the next ingest or move into that same category lands somewhere
+    /// else. `migrate_storage` genuinely does need to repoint a category at a different
+    /// directory, and says so by calling [`Self::reslug`].
+    ///
+    /// Only `folder_name_unique_per_parent` can fire here. The slug constraint cannot: this
+    /// statement does not write a slug.
+    pub async fn rename(&self, folder: FolderId, name: &str) -> Result<bool, DbError> {
+        let done = sqlx::query("UPDATE folder SET name = $2 WHERE id = $1")
             .bind(folder.as_uuid())
             .bind(name)
+            .execute(&self.0)
+            .await
+            .map_err(|err| match constraint_of(&err).as_deref() {
+                Some("folder_name_unique_per_parent") => DbError::FolderNameTaken {
+                    name: name.to_owned(),
+                },
+                _ => DbError::Query(err),
+            })?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    /// Repoint a category at a different directory, leaving its name alone.
+    ///
+    /// The other half of [`Self::rename`], and the one thing a user-facing rename must not
+    /// do. One caller: `migrate_storage`'s re-slug pass, repairing rows that migration
+    /// `0009` back-filled with `slug = name` straight off an ingest directory, never
+    /// slugified. That job knows what it is doing to the store because moving the files is
+    /// the rest of its work; a rename does not.
+    ///
+    /// `name` is here for the refusal, not for the statement — it is what [`collision`]
+    /// needs to say which category is in the way when the new slug is a sibling's.
+    pub async fn reslug(&self, folder: FolderId, name: &str, slug: &str) -> Result<bool, DbError> {
+        let done = sqlx::query("UPDATE folder SET slug = $2 WHERE id = $1")
+            .bind(folder.as_uuid())
             .bind(slug)
             .execute(&self.0)
             .await
