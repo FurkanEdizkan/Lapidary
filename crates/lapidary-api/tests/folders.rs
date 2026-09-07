@@ -513,3 +513,65 @@ async fn a_category_that_does_not_exist_is_a_404(pool: sqlx::PgPool) {
     assert_eq!(deleted, StatusCode::NOT_FOUND);
     assert_eq!(body["reason"], "noSuchFolder");
 }
+
+/// The state a rename makes reachable, and what the user is told about it.
+///
+/// A rename keeps the directory it was created in (`DATA.md` §1.1), so the name a category
+/// was created under stops being the name it shows and stays the name of its folder. Create
+/// `Rocks`, rename it to `Cliffs`, and `Rocks` is now a name nothing on screen uses and a
+/// directory that is still occupied.
+///
+/// Refusing is the answer rather than disambiguating to `Rocks_a1b2c3`. `model_dir_for`
+/// does disambiguate, but it is naming a directory after a *file* the user did not choose
+/// and cannot rename; this is a name somebody just typed, and handing them a folder called
+/// something other than what they asked for is the worse surprise in a store whose whole
+/// point is being browsable. So the refusal names the directory, and the message covers
+/// both ways of reaching it because a user can go and look at the folder either way.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_name_a_renamed_sibling_still_occupies_the_directory_of_is_refused(pool: sqlx::PgPool) {
+    let uri = format!("/api/libraries/{SEEDED_LIBRARY}/folders");
+
+    let (created, body) = send(
+        &pool,
+        json_request("POST", uri.clone(), serde_json::json!({ "name": "Rocks" })),
+    )
+    .await;
+    assert_eq!(created, StatusCode::CREATED);
+    let folder = body["id"]
+        .as_str()
+        .expect("the new category's id")
+        .to_owned();
+
+    let (renamed, _) = send(
+        &pool,
+        json_request(
+            "PATCH",
+            format!("/api/folders/{folder}"),
+            serde_json::json!({ "name": "Cliffs" }),
+        ),
+    )
+    .await;
+    assert_eq!(renamed, StatusCode::OK);
+
+    let (again, refusal) = send(
+        &pool,
+        json_request("POST", uri, serde_json::json!({ "name": "Rocks" })),
+    )
+    .await;
+
+    assert_eq!(
+        again,
+        StatusCode::CONFLICT,
+        "no sibling is called `Rocks` any more, but one is still living in that directory"
+    );
+    assert_eq!(
+        refusal["reason"], "slugTaken",
+        "and not `nameTaken` — the name is genuinely free, the directory is not"
+    );
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Rocks")),
+        "the refusal names the directory, which the user can go and look at: {refusal}"
+    );
+}

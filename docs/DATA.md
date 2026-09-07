@@ -76,13 +76,10 @@ a second one under the old name; and `slugTaken` can now refuse a name because a
 *renamed away from it* still holds the directory, which is why that message names the
 directory instead of explaining which of the two cases happened.
 
-**Known and not fixed: re-parenting a category has the same split**, one level up.
-`slug_path` joins *ancestor* slugs, so moving `Rocks` from under `Terrain` to under `Props`
-changes the path it answers while the files stay at `Terrain/Rocks/`. An immutable slug
-does not help, because it is not this folder's slug that changed. Closing it needs a
-`dir_path` stored per folder, or the resumable repath job a rename declined to be —
-`PATCH /api/folders/{id}` with `parent_id` is the only way to reach it and no UI sends it
-today.
+Re-parenting a category splits it the same way one level up, because `slug_path` joins
+*ancestor* slugs and this folder's own slug staying put says nothing about theirs. Only
+`PATCH /api/folders/{id}` with `parent_id` reaches it, no client sends it, and closing it
+needs the stored per-folder directory path this rule made unnecessary for renames.
 
 **Content addressing survives for `blobs/` only** — derivatives, which are evictable and
 rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,

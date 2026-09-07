@@ -61,6 +61,11 @@ impl PgFolders {
     /// Insert-or-find, in that order. Two workers scanning concurrently genuinely race the
     /// same directory, so the constraint is what makes it safe rather than a prior SELECT
     /// that another worker can invalidate between statements.
+    ///
+    /// Both `name` and `slug` are taken and each is used on one path only: the INSERT
+    /// writes both, the SELECT matches on the slug alone. After a rename the two disagree,
+    /// and the caller — a scan holding a directory — knows the slug and is only guessing at
+    /// the name.
     pub async fn get_or_create(
         &self,
         library: LibraryId,
