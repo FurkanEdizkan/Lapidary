@@ -1,7 +1,7 @@
 # Phase 1, slice 2 — the job queue, and ingest that survives a crash
 
 **Date:** 2026-09-03
-**Status:** design approved, not yet planned
+**Status:** shipped. Kept as the record of what was decided and why.
 **Phase:** 1 (Ingest and grid), second of five slices
 **Predecessor:** Slice 1, complete — `2026-09-02-phase-1-slice-1-ingest-design.md`, shipped
 at `518dfb5` with CI green (run 33714239711)

@@ -120,13 +120,6 @@ export const strings = {
     showingAll: (count: number) =>
       count === 1 ? 'Showing 1 part.' : `Showing all ${count.toLocaleString('en-US')} parts.`,
     /**
-     * The server capped the page and there is more behind it. The grid asks for one
-     * page and renders it — paging and virtualization are a later slice — so a library
-     * larger than a page is genuinely truncated on screen, and saying so is the whole
-     * point of this string. A grid that silently shows the first 50 of 200 parts is a
-     * measurement that lies by omission.
-     */
-    /**
      * Some of the library, with more to come. Deliberately not "showing 50 of 1,000":
      * the server does not count the library to answer a page, and adding a count query to
      * every grid request to render one number would be paying for it on every scroll.
@@ -135,8 +128,6 @@ export const strings = {
     showingSoFar: (count: number) => `${count.toLocaleString('en-US')} parts so far.`,
     loadMore: 'Load more',
     loadingMore: 'Loading…',
-    showingFirstPage: (count: number) =>
-      `Showing the first ${count.toLocaleString('en-US')} parts. This library has more — paging through them arrives with the virtualized grid.`,
   },
   upload: {
     /**
@@ -515,8 +506,9 @@ export const strings = {
     line: (path: string, reason: string) => (path === '' ? reason : `${path} — ${reason}`),
     /**
      * `BatchStatus.failed` is capped at 100 while `failedTotal` is the real number. A
-     * list that silently stops at 100 is a measurement that lies by omission, which is
-     * the same fault the truncated grid needs `parts.showingFirstPage` for.
+     * list that silently stops at 100 is a measurement that lies by omission — the same
+     * fault `parts.showingSoFar` exists to avoid on the grid, which says there is more
+     * rather than letting a capped page read as the whole library.
      */
     more: (hidden: number) =>
       hidden === 1
@@ -741,10 +733,84 @@ export const strings = {
     notMigrated:
       'This model has not finished moving into the new storage layout yet. Wait for the storage migration to finish, then try again.',
     copyPath: 'Copy path',
+
+    /**
+     * Create and rename. Both routes shipped with the folder tree and neither had a control
+     * until now, which is why `FolderTree` could show you a category and delete it but not
+     * make one.
+     */
+    newCategory: 'New category',
+    /**
+     * Where it will go, said in the title rather than left to be inferred from the sidebar
+     * selection. The button is one control whose target moves with that selection, so the
+     * dialog owes the user the answer before they type into it.
+     */
+    createTitle: (parent: string | null) =>
+      parent === null ? 'New category' : `New category inside ${parent}`,
+    createLabel: 'Category name',
+    createConfirm: 'Create',
+    createFailed:
+      'The category could not be created. Check that the api service is running, then try again.',
+
+    renameAction: 'Rename',
+    renameFor: (name: string) => `Rename ${name}`,
+    renameTitle: (name: string) => `Rename ${name}`,
+    renameConfirm: 'Rename',
+    renameFailed:
+      'The category could not be renamed. Check that the api service is running, then try again.',
+    /**
+     * The one thing a rename dialog must say, and the reason it is a sentence rather than a
+     * footnote: `DATA.md` §1.1 makes the directory a category's *address*, allocated once at
+     * creation, and the name only its label. The whole point of the store's layout is that
+     * you can open it in a file manager — so somebody who fixes `Terain` to `Terrain` here
+     * and then goes looking for a `Terrain` folder needs to have been told, once, that they
+     * will not find one.
+     */
+    renameKeepsDirectory: (slug: string) =>
+      `The folder on disk stays ${slug}. A category keeps the folder it was created in, so renaming changes what you see here and moves nothing on your drive.`,
+
+    /**
+     * The refusals a create or a rename can answer with. Mapped from `reason` rather than
+     * rendered from the server's prose, the way the move's four already are — the wire
+     * carries the reason, this file carries the wording.
+     */
+    nameTaken:
+      'A category here already has that name. Pick another, or rename the one that has it.',
+    /**
+     * Two ways to reach this and the message covers both, because the user can go and look
+     * at the folder either way: names that differ only in characters a filesystem cannot
+     * store, and a sibling that was renamed away from this name and kept its folder.
+     */
+    slugTaken:
+      'Another category here already occupies the folder that name needs — either the two names differ only in characters a filesystem cannot store, or that category was renamed and kept the folder it was created in. Pick a different name.',
+    emptyName: 'A category needs a name. Type one and try again.',
+    writeGone:
+      'That category is no longer there — it was deleted somewhere else while this was open. Reload and try again.',
+    writeUnknown:
+      'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
   emptyLibrary: {
     title: 'Nothing here yet',
     body:
       'This library is empty. Drop a folder of models above to add them, or scan the directory mounted on the server — either way, every model found appears here.',
+    /**
+     * An empty *category* is not an empty library, and saying so was a lie the grid could
+     * always tell — a scan that found an empty directory made one — but which only became
+     * easy to reach when categories became something a person could create. Somebody makes
+     * `Workholding`, looks at it, and is told the library holding their 1,700 models is
+     * empty.
+     *
+     * Named, because the difference is the whole point: a user who has just filed nothing
+     * into a category they made needs to know the models are still where they were, not
+     * that they are gone.
+     */
+    categoryTitle: 'Nothing filed here yet',
+    /**
+     * The name is optional because the tree it comes from is a second query, and a page
+     * that has the grid's answer but not the sidebar's must still not claim the library is
+     * empty. Naming the category is better and not required to be truthful.
+     */
+    categoryBody: (name: string | null) =>
+      `No models are in ${name ?? 'this category'} yet. Drag a card onto it in the sidebar, or use a card's "Move to…" button — the rest of the library is still under All models.`,
   },
 } as const

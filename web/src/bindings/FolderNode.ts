@@ -17,6 +17,17 @@ export type FolderNode = { id: FolderId,
  */
 parentId: FolderId | null, name: string, 
 /**
+ * The directory this category owns, relative to its parent's.
+ *
+ * On the wire because a rename has to be able to name it. `folder.slug` is the
+ * category's *address*, allocated once at creation and never changed by a rename
+ * (`DATA.md` §1.1) — so after one rename the name on screen and the folder on disk
+ * differ, and the dialog that caused it is where a user should learn that, naming the
+ * folder they will actually find rather than describing the situation in the abstract.
+ * The store is meant to be opened in a file manager; this is what it will look like.
+ */
+slug: string, 
+/**
  * Live models in this category **and every category under it**.
  *
  * It rides along on every node so that one tree request answers the whole sidebar

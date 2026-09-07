@@ -125,8 +125,12 @@ not merely decline to serve `/scan` — the code behind it is not linked into th
 
 Ingest is asynchronous: the POST returns a batch id as soon as the work is queued, and
 `GET /api/libraries/{id}/jobs/{batch}` reports how it is going — which is what the grid
-polls, and where a failed file's reason comes from. Progress over SSE, rather than a
-one-second poll, is a later slice.
+polls, and where a failed file's reason comes from. Progress also streams over SSE at
+`GET /api/libraries/{id}/jobs/{batch}/events`, which is what keeps the line moving on a
+tab you have switched away from — a browser holds an `EventSource` open on a hidden
+document where it will not run a poll. The one-second poll is still there underneath it,
+deliberately: the timer is what makes delivery correct, and the stream is what makes it
+prompt.
 
 ## Documentation
 

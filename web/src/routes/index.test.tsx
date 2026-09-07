@@ -854,8 +854,9 @@ test("a per-file failure names the file alongside the reason", async () => {
 });
 
 // The server caps `failed` at 100 while `failedTotal` is the real number. A list that
-// simply stops is a measurement that lies by omission, which is the same fault the
-// truncated grid needs `parts.showingFirstPage` for.
+// simply stops is a measurement that lies by omission — the same fault `showingSoFar`
+// avoids on the grid by saying there is more rather than letting a page read as the whole
+// library.
 test("a failure list capped by the server says how many it is not showing", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
@@ -2025,12 +2026,14 @@ const TERRAIN: FolderNode = {
   id: "01a06b30-4c11-7a92-8f03-6d1e5c9a0001",
   parentId: null,
   name: "Terrain",
+  slug: "Terain",
   partCount: 34,
 };
 const ROCKS: FolderNode = {
   id: "01a06b30-4c11-7a92-8f03-6d1e5c9a0002",
   parentId: TERRAIN.id,
   name: "Rocks",
+  slug: "Rocks",
   partCount: 12,
 };
 
@@ -2244,4 +2247,37 @@ test("right-clicking a card opens the same chooser the button does", async () =>
       name: strings.folders.moveInto(ROCKS.name),
     }),
   ).toBeDefined();
+});
+
+/**
+ * An empty **category** is not an empty library, and the grid used to say it was.
+ *
+ * Reachable before this only through a scan that found an empty directory; reachable in two
+ * clicks once categories became something a person could create. The consequence is not
+ * cosmetic: somebody makes `Rocks`, looks at it, and is told the library holding their 156
+ * models is empty and that they should drop a folder to add some. The models are fine and
+ * the sentence says they are gone.
+ */
+test("an empty category says the category is empty, not the library", async () => {
+  stubFetch({ parts: ok(page([])), folders: ok([TERRAIN, ROCKS]) });
+  renderIndex({ folderId: ROCKS.id });
+
+  expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
+  expect(screen.getByText(strings.emptyLibrary.categoryBody("Rocks"))).toBeDefined();
+  // The claim that would be false. Asserted as absent rather than trusting the branch: this
+  // is the string the bug rendered, and its absence is the whole fix.
+  expect(screen.queryByText(strings.emptyLibrary.body)).toBeNull();
+});
+
+/**
+ * The tree is a second query, so a page can know the category is empty before it knows what
+ * the category is called. It must not fall back to "this library is empty" in that window —
+ * which is what a component inferring "no category" from a missing name would do.
+ */
+test("an empty category with its name not loaded still does not claim the library is empty", async () => {
+  stubFetch({ parts: ok(page([])) });
+  renderIndex({ folderId: ROCKS.id });
+
+  expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
+  expect(screen.getByText(strings.emptyLibrary.categoryBody(null))).toBeDefined();
 });

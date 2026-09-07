@@ -46,6 +46,15 @@ pub struct FolderNode {
     /// there is no id that means "no category".
     pub parent_id: Option<FolderId>,
     pub name: String,
+    /// The directory this category owns, relative to its parent's.
+    ///
+    /// On the wire because a rename has to be able to name it. `folder.slug` is the
+    /// category's *address*, allocated once at creation and never changed by a rename
+    /// (`DATA.md` §1.1) — so after one rename the name on screen and the folder on disk
+    /// differ, and the dialog that caused it is where a user should learn that, naming the
+    /// folder they will actually find rather than describing the situation in the abstract.
+    /// The store is meant to be opened in a file manager; this is what it will look like.
+    pub slug: String,
     /// Live models in this category **and every category under it**.
     ///
     /// It rides along on every node so that one tree request answers the whole sidebar
@@ -63,11 +72,13 @@ pub struct FolderNode {
 }
 
 /// `POST /api/libraries/{id}/folders` — a category the user typed, not one a scan found.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct NewFolder {
     /// Absent or `null` puts it at the library root.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub parent_id: Option<FolderId>,
     pub name: String,
 }
@@ -78,12 +89,31 @@ pub struct NewFolder {
 /// leaving the field out means "do not move it", and sending `null` means "move it to the
 /// library root". Collapsing them would make every rename also move the folder to the root,
 /// which is the kind of silent data change this project treats as a defect, not a default.
-#[derive(Debug, Deserialize)]
+///
+/// **Both fields are `#[ts(optional = nullable)]`, and for `parentId` that is the whole
+/// point.** TypeScript can express the three states this type has — `{}`, `{parentId:
+/// null}` and `{parentId: id}` — only as an *optional* property, because an omitted key
+/// and a `null` one are different values there in a way they are not in most languages.
+/// Exported as `parentId?: FolderId | null`, a client that spreads an object with
+/// `parentId: undefined` sends nothing, and one that means the root has to write `null` on
+/// purpose. Bound to `T | null` instead — ts-rs's default for `Option` — the two states
+/// would collapse and every rename would quietly move its category to the library root.
+// A `//` comment and not a `///` one: this is about the Rust build, and a doc comment here
+// is copied verbatim into `web/src/bindings/FolderPatch.ts`, where a frontend reader has no
+// use for it. The build prints `ts-rs failed to parse this attribute. It will be ignored.`
+// for `deserialize_with` below — expected and harmless. ts-rs has no use for a deserializer
+// name, and what it ignores is the serde attribute, not the `ts` ones above it. The
+// exported type is committed and gated by `cargo xtask verify`, so a regression fails a
+// build rather than hiding in a warning.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderPatch {
     #[serde(default)]
+    #[ts(optional)]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "present_or_absent")]
+    #[ts(optional = nullable)]
     pub parent_id: Option<Option<FolderId>>,
 }
 
@@ -115,6 +145,7 @@ pub async fn tree(State(state): State<AppState>, Path(library): Path<LibraryId>)
                     id: row.id,
                     parent_id: row.parent_id,
                     name: row.name,
+                    slug: row.slug,
                     part_count: row.part_count,
                 })
                 .collect::<Vec<_>>(),
@@ -164,6 +195,10 @@ pub async fn create(
                 id,
                 parent_id: body.parent_id,
                 name: name.to_owned(),
+                // The same `slugify(name)` the create above was given, not a second call:
+                // one derivation, so the row and the response cannot describe different
+                // directories.
+                slug: slugify(name),
                 // Brand new, so nothing is in it yet. Stated rather than re-queried.
                 part_count: 0,
             }),
