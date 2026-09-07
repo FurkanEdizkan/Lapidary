@@ -5,8 +5,12 @@ web/dist/
 docs/
 design/
 fixtures/
-# The sample part library is a runtime bind mount (deploy/compose.yaml mounts it at
-# /ingest), never a COPY — and it sits next to a 163 MB archive. Sending it as build
-# context would cost every image build that much for nothing.
-example/
+# The sample part library is both a runtime bind mount (deploy/compose.yaml mounts it at
+# /ingest) and, since the seeding of a first run, a COPY — deploy/Containerfile bakes the
+# meshes in at /usr/share/lapidary/example-parts. So the meshes must reach the build
+# context. Only the meshes: the generator beside them is not wanted in an image.
+example/*
+!example/parts/
+example/parts/*
+!example/parts/*.stl
 deploy/.env
