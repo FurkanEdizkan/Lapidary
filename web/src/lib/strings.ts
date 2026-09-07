@@ -857,6 +857,34 @@ export const strings = {
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
+  libraries: {
+    /**
+     * The switcher. Every screen is one library's, and until now that library was a UUID
+     * compiled into the client — so this control is what makes the id in `api.ts` a fallback
+     * rather than the answer.
+     */
+    label: 'Library',
+    /** How many models are in it, so a switcher says where anything is. */
+    option: (name: string, parts: number) =>
+      parts === 1 ? `${name} — 1 model` : `${name} — ${parts.toLocaleString('en-US')} models`,
+    create: 'New library',
+    createTitle: 'New library',
+    nameLabel: 'Library name',
+    createConfirm: 'Create',
+    modeLabel: 'Governance',
+    /**
+     * Chosen once, at creation, because later means asking about a library somebody has
+     * already filled. Nothing reads it yet — revisions, states and approvals are Phase 8 —
+     * and the copy says so rather than implying a switch that does something today.
+     */
+    hobby: 'Hobby — no revisions or approvals',
+    controlled: 'Controlled — revisions and approvals, when they arrive in a later phase',
+    createFailed:
+      'The library could not be created. Check that the api service is running, then try again.',
+    refusedWithoutReason:
+      'That library was refused and the reason did not come back. Try a different name.',
+    failed: 'Could not read the list of libraries. Check that the api service is running.',
+  },
   grid: {
     /**
      * How many cards a page asks for, and how tightly they pack. Remembered per library,

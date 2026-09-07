@@ -83,13 +83,20 @@ async fn patch_folder(
     .await
 }
 
-/// A second library, inserted directly: nothing in this slice creates one through the API,
-/// the same way `crates/lapidary-db/tests/repo.rs` seeds its second.
+/// A second library, inserted directly, the same way `crates/lapidary-db/tests/repo.rs`
+/// seeds its second.
+///
+/// `slug` is supplied because `0018` made it `NOT NULL`: a library's directory is a column
+/// now rather than something derived from its name, so an insert that skipped it would be a
+/// library with no folder. Spelled out here rather than defaulted in the schema — a default
+/// would hand a library a directory unrelated to its name, which is worse than a failed
+/// insert that says so.
 async fn second_library(pool: &sqlx::PgPool) -> LibraryId {
     let id = LibraryId::new();
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, $2)")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, $2, $3)")
         .bind(id.as_uuid())
         .bind("Tabletop terrain")
+        .bind("tabletop terrain")
         .execute(pool)
         .await
         .expect("second library");

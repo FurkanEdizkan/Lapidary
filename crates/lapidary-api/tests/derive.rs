@@ -34,7 +34,7 @@ fn library() -> LibraryId {
 /// `crates/lapidary-api/tests/parts.rs` and `crates/lapidary-db/tests/repo.rs` use.
 async fn other_library(pool: &sqlx::PgPool) -> LibraryId {
     let id = LibraryId::new();
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture library, other tenant')")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture library, other tenant', 'fixture library, other tenant')")
         .bind(id.as_uuid())
         .execute(pool)
         .await

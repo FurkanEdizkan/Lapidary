@@ -10,10 +10,10 @@ pub use folders::{FolderRow, PgFolders};
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
-    DerivativeBytes, DownloadSource, ImageBytes, IngestRequest, InstanceStorage, MoveRow,
-    MoveSource, NewPartImage, PartDetailRow, PartImageRow, PartRepository, PartRow, PgBlobs,
-    PgIngest, PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows, StorageTotals,
-    StoredBlobRow, TessellationRow,
+    DerivativeBytes, DownloadSource, ImageBytes, IngestRequest, InstanceStorage, LibraryRow,
+    MoveRow, MoveSource, NewPartImage, PartDetailRow, PartImageRow, PartRepository, PartRow,
+    PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows,
+    StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -151,6 +151,21 @@ pub enum DbError {
     )]
     FolderSlugTaken { name: String, slug: String },
 
+    /// `library_name_unique`. Not a technical requirement — nothing joins on a library's
+    /// name — but two entries called `Terrain` in a switcher is a switcher nobody can use.
+    #[error(
+        "A library called `{name}` already exists. Libraries are told apart by name in the switcher, so pick a different one — or open the existing library if it is the one you meant."
+    )]
+    LibraryNameTaken { name: String },
+
+    /// `library_slug_unique`. Two names that differ on screen and not on disk — `Tabletop
+    /// terrain` and `tabletop terrain`, or `Rocks?` and `Rocks*`. The pair `0017`'s name
+    /// index lets through and `0018`'s slug index does not.
+    #[error(
+        "`{name}` would live in the folder `{slug}`, and another library already occupies it — the two names differ only in capitals, or in characters no filesystem can store. Pick a name that differs somewhere a folder name can show it."
+    )]
+    LibrarySlugTaken { name: String, slug: String },
+
     /// `folder_library_id_fkey`, read off the constraint the same way the two collisions
     /// above are. Reached only through [`PgFolders::create`]: `get_or_create` is the scan's,
     /// and the scan always has a library in hand.
@@ -206,6 +221,8 @@ impl DbError {
             | DbError::WouldCreateCycle { .. }
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
+            | DbError::LibraryNameTaken { .. }
+            | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }
             // Composed here from the storage layer's own `Display`, which is already
             // operator-facing and carries no connection string — the same audit the

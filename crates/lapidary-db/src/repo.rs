@@ -1,4 +1,5 @@
 use crate::DbError;
+use crate::folders::constraint_of;
 use lapidary_core::{
     BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartImageId,
     PartSummary, Provenance, RevisionId,
@@ -2798,4 +2799,88 @@ fn like_pattern(query: &str) -> String {
         .replace('%', "\\%")
         .replace('_', "\\_");
     format!("%{escaped}%")
+}
+
+/// A library, as a picker sees it.
+///
+/// `part_count` rides along for the same reason `FolderNode`'s does: a switcher listing
+/// libraries wants to say which one has anything in it, and a count per library would be N
+/// requests for a control that is one.
+#[derive(Debug)]
+pub struct LibraryRow {
+    pub id: LibraryId,
+    pub name: String,
+    /// `hobby` or `controlled`. Text on the wire and in the column, matching every other
+    /// discriminator here: a new mode must not need a migration.
+    pub mode: String,
+    pub part_count: i64,
+}
+
+/// Libraries: list them, make them.
+impl PgParts {
+    /// Every library, with how many live parts each holds, oldest first.
+    ///
+    /// Ordered by `created_at` rather than by name so the switcher does not reshuffle when
+    /// somebody renames one — and so the seeded library, which is the one an existing
+    /// deployment has been using, stays first.
+    pub async fn libraries(&self) -> Result<Vec<LibraryRow>, DbError> {
+        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
+            "SELECT l.id, l.name, l.mode, \
+                    (SELECT count(*) FROM part p \
+                      WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+               FROM library l ORDER BY l.created_at, l.id",
+        )
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, mode, part_count)| LibraryRow {
+                id: LibraryId::from_uuid(id),
+                name,
+                mode,
+                part_count,
+            })
+            .collect())
+    }
+
+    /// Create one, refusing a name another library already has.
+    ///
+    /// **The name is unique across the instance**, which the migration enforces and this
+    /// reports. Not a technical requirement — nothing joins on it — but a switcher listing
+    /// two entries called `Terrain` is a switcher nobody can use, and the cost of finding
+    /// that out later is a rename plus an explanation.
+    ///
+    /// `mode` is `hobby` or `controlled` and is checked by the database, so a value this
+    /// code does not know is a failed insert rather than a row every reader has to cope
+    /// with. Nothing reads it yet — governance is Phase 8 — but choosing it is a decision
+    /// made once, at creation, and asking later would mean asking about a library somebody
+    /// has already filled.
+    pub async fn create_library(&self, name: &str, mode: &str) -> Result<LibraryId, DbError> {
+        let id = LibraryId::new();
+        // Derived here and never sent by a client, exactly as a category's is: `slugify` is
+        // the one place that decides what a filesystem may hold, and a caller who could name
+        // the directory could name one outside the store. Lowercased because that is what
+        // `library_slug` has always returned and what every existing directory is called.
+        let slug = lapidary_core::slug::slugify(name).to_lowercase();
+        sqlx::query("INSERT INTO library (id, name, mode, slug) VALUES ($1, $2, $3, $4)")
+            .bind(id.as_uuid())
+            .bind(name)
+            .bind(mode)
+            .bind(&slug)
+            .execute(&self.0)
+            .await
+            .map_err(|err| match constraint_of(&err).as_deref() {
+                Some("library_name_unique") => DbError::LibraryNameTaken {
+                    name: name.to_owned(),
+                },
+                // Distinct names, one directory. The pair a user can see is refused above;
+                // this is the pair that looks different on screen and is not on disk.
+                Some("library_slug_unique") => DbError::LibrarySlugTaken {
+                    name: name.to_owned(),
+                    slug,
+                },
+                _ => DbError::Query(err),
+            })?;
+        Ok(id)
+    }
 }

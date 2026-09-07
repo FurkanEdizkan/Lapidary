@@ -49,6 +49,8 @@ function renderIndex(
     batch?: string;
     folderId?: string;
     q?: string;
+    /** Defaults to the seeded library, which is what every test before this one meant. */
+    library?: string;
     onSelectFolder?: (folder: string | null) => void;
     onSearch?: (query: string) => void;
     client?: QueryClient;
@@ -62,6 +64,7 @@ function renderIndex(
         batch={props.batch}
         folderId={props.folderId}
         q={props.q}
+        library={props.library ?? DEFAULT_LIBRARY_ID}
         onSelectFolder={onSelectFolder}
         onSearch={props.onSearch}
       />
@@ -131,9 +134,16 @@ function stubFetch(routes: {
   folderDelete?: () => Promise<StubResponse>;
   instanceStorage?: () => Promise<StubResponse>;
   partDetail?: () => Promise<StubResponse>;
+  libraries?: () => Promise<StubResponse>;
+  libraryCreate?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    // The library set, not any one library — above the `/api/libraries/{id}` rules below,
+    // which would otherwise claim this path too.
+    if (url === "/api/libraries" && init?.method === "POST")
+      return (routes.libraryCreate ?? pending)();
+    if (url === "/api/libraries") return (routes.libraries ?? pending)();
     // Before the per-library storage rule: this one has no library in its path, and the
     // two would otherwise be told apart only by which substring was tested first.
     if (url.startsWith("/api/storage"))
@@ -2802,3 +2812,118 @@ test("preferences survive storage being unavailable", () => {
     Object.defineProperty(window, "localStorage", { configurable: true, value: real });
   }
 });
+
+/**
+ * `GET /api/libraries`, as the switcher reads it. Named rather than indexed at the call
+ * sites, so `noUncheckedIndexedAccess` has nothing to complain about and the tests read as
+ * what they mean.
+ */
+const SEEDED_LIBRARY_ROW = {
+  id: DEFAULT_LIBRARY_ID,
+  name: "Default",
+  mode: "hobby",
+  partCount: 156,
+};
+const SECOND_LIBRARY_ROW = {
+  id: "01a07c40-0000-7000-8000-000000000002",
+  name: "Tabletop terrain",
+  mode: "controlled",
+  partCount: 0,
+};
+const LIBRARIES = [SEEDED_LIBRARY_ROW, SECOND_LIBRARY_ROW];
+
+
+
+/**
+ * **One library means no switcher.** A control offering a single choice explains nothing
+ * and takes a row of the screen to do it — and that is every deployment until somebody
+ * makes a second. The button that makes one stays, because that is how they do.
+ */
+test("the library switcher is hidden until there is more than one library", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    libraries: ok([SEEDED_LIBRARY_ROW]),
+  });
+  renderIndex();
+
+  expect(await screen.findByRole("button", { name: strings.libraries.create })).toBeDefined();
+  expect(screen.queryByRole("combobox", { name: strings.libraries.label })).toBeNull();
+});
+
+/** With two, it appears — and says how many models each holds, so it points somewhere. */
+test("with two libraries the switcher appears and names what is in each", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    libraries: ok(LIBRARIES),
+  });
+  renderIndex();
+
+  const switcher = await screen.findByRole("combobox", { name: strings.libraries.label });
+  expect(switcher.textContent).toContain(strings.libraries.option("Default", 156));
+  expect(switcher.textContent).toContain(strings.libraries.option("Tabletop terrain", 0));
+});
+
+/**
+ * **A screen belongs to its library, and everything under it does too.**
+ *
+ * Every query is keyed by the library, so switching asks for the other one's parts rather
+ * than showing the first one's under a new name.
+ */
+test("selecting a library asks for that library's parts", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    libraries: ok(LIBRARIES),
+  });
+  renderIndex({ library: SECOND_LIBRARY_ROW.id });
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${SECOND_LIBRARY_ROW.id}/parts?limit=50`,
+    ),
+  );
+  // And never the seeded one, which is what a hard-coded id would have asked for.
+  expect(fetchMock).not.toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?limit=50`,
+  );
+});
+
+/**
+ * A refused name keeps the dialog open with what was typed — editing it is the one thing
+ * the person can do, and closing would throw it away.
+ */
+test("a library name another library has keeps the dialog open with the reason", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    libraries: ok(LIBRARIES),
+    libraryCreate: conflict("nameTaken", "A library called `Tabletop terrain` already exists."),
+  });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.libraries.create }));
+  fireEvent.change(screen.getByRole("textbox", { name: strings.libraries.nameLabel }), {
+    target: { value: "Tabletop terrain" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: strings.libraries.createConfirm }));
+
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "A library called `Tabletop terrain` already exists.",
+  );
+  expect(
+    (screen.getByRole("textbox", { name: strings.libraries.nameLabel }) as HTMLInputElement)
+      .value,
+  ).toBe("Tabletop terrain");
+});
+
+/** A refusal that names itself, the shape `folders.rs` and `derive.rs` both answer with. */
+function conflict(reason: string, message: string) {
+  return async (): Promise<StubResponse> => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ reason, message }),
+  });
+}

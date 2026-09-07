@@ -5,12 +5,29 @@ use ts_rs::TS;
 
 /// Governance is opt-in per library. Hobby libraries have no revisions, states or
 /// approvals; flipping a library to `Controlled` turns that machinery on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum LibraryMode {
+    /// No revisions, no states, no approvals. What a library is unless somebody says
+    /// otherwise, which is why it is the `Default` — `CLAUDE.md`: governance is opt-in per
+    /// library.
+    #[default]
     Hobby,
     Controlled,
+}
+
+impl LibraryMode {
+    /// The value the `library.mode` column holds. One spelling, here, so a writer and a
+    /// reader cannot disagree about it — the same rule `DerivativeKind::as_str` follows and
+    /// for the same reason: a kind spelled differently on the two sides reads nothing while
+    /// looking entirely correct.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hobby => "hobby",
+            Self::Controlled => "controlled",
+        }
+    }
 }
 
 /// The grid row, in the shape the spec calls for: identity, part number, thumbnail

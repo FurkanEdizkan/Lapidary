@@ -8,6 +8,8 @@ import type {
   FolderPatch,
   InstanceStorageView,
   LibraryId,
+  LibrarySummary,
+  NewLibrary,
   PartImage,
   StoredImage,
   LibrarySettings,
@@ -602,6 +604,51 @@ export async function uploadPartImage(
     }
   }
   throw new Error(`image upload returned ${response.status}`)
+}
+
+/**
+ * `GET /api/libraries` — every library, oldest first.
+ *
+ * Unpaginated: a deployment has a handful of these, not a page of them, and a switcher that
+ * paged would be a control nobody could scan.
+ */
+export async function fetchLibraries(): Promise<LibrarySummary[]> {
+  const response = await fetch('/api/libraries')
+  if (!response.ok) {
+    throw new Error(`libraries returned ${response.status}`)
+  }
+  return (await response.json()) as LibrarySummary[]
+}
+
+/**
+ * `POST /api/libraries` — make one.
+ *
+ * `409 nameTaken` is an answer rather than a failure: two libraries with one name is a
+ * switcher nobody can use, and the fix is typing a different name.
+ */
+export async function createLibrary(
+  body: NewLibrary,
+): Promise<{ kind: 'created'; library: LibrarySummary } | { kind: 'refused'; message: string }> {
+  const response = await fetch('/api/libraries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (response.ok) {
+    return { kind: 'created', library: (await response.json()) as LibrarySummary }
+  }
+  if (response.status === 409 || response.status === 400) {
+    const parsed: unknown = await response.json().catch(() => null)
+    const message =
+      parsed !== null && typeof parsed === 'object'
+        ? (parsed as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.libraries.refusedWithoutReason,
+    }
+  }
+  throw new Error(`library create returned ${response.status}`)
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */
