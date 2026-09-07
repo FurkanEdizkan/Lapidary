@@ -18,7 +18,7 @@ import {
   startScan,
 } from '../lib/api'
 import { Dialog } from '../components/Dialog'
-import { Detail } from './parts.$partId'
+import { Detail } from '../components/PartDetail'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
