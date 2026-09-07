@@ -568,12 +568,48 @@ export const strings = {
      *
      * Says nothing about quarantined bytes, which have no library to belong to: a purge
      * removes the part chain, so those blobs are counted by no library's panel. That gap
-     * is real and is recorded in the slice 7 design; it closes with Phase 4's
-     * instance-wide storage view.
+     * is real, was recorded in the slice 7 design as closing with Phase 4 — and is closed
+     * instead by `everything` below, which is the panel that *can* report them.
      */
     removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
+
+    /**
+     * The whole store, across every library, and the two figures no per-library line can
+     * carry: `removed` is on the disk until somebody purges it, and `quarantined` is on the
+     * disk *and* belongs to no library at all, because the part that would have said which
+     * one is the part that was purged.
+     *
+     * Both clauses are conditional for the reason `removed` above is: a permanent
+     * "0 B quarantined" is noise on every installation where nobody has purged anything,
+     * and the moment one exists it is bytes nothing else in the application admits to.
+     */
+    everything: (source: number, derivative: number, removed: number, quarantined: number) =>
+      `Everything: ${bytes(source + derivative + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of previews and generated views${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} purged and waiting out its 30 days` : ''}.`,
+    /**
+     * The walk is opt-in because it costs the server a look at every file. Worded as the
+     * question it answers rather than as the work it does — "measure" is what the user
+     * wants; that it is a directory walk is our problem.
+     */
+    measureOnDisk: 'Measure what is actually on disk',
+    measuring: 'Measuring…',
+    /**
+     * The two numbers side by side, and the gap named rather than left to be noticed.
+     *
+     * The tracked figures count what the database knows about: one row per model file, one
+     * per derivative. The disk also holds a `metadata.json` beside every model — deliberately
+     * counted by nothing, because a per-manifest length column would be a figure nobody
+     * would ever see move — plus anything a person has put in the folder themselves, which
+     * is a thing this layout invites. So the disk number is the larger one, and the
+     * difference is not an error.
+     */
+    onDisk: (disk: number, tracked: number) =>
+      disk >= tracked
+        ? `On disk: ${bytes(disk)}. That is ${bytes(disk - tracked)} more than the figures above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real.`
+        : `On disk: ${bytes(disk)}, which is ${bytes(tracked - disk)} less than the figures above. That should not happen: every tracked byte should be a file. Something has removed files from the store without going through the app.`,
+    onDiskFailed:
+      'Could not measure the storage folder. The figures above still stand — they come from the database, not from the disk.',
   },
   /**
    * The category tree beside the grid, moving models between categories, and the folder a

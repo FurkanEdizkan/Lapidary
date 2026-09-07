@@ -2176,7 +2176,7 @@ test("show in folder reveals the model's own path as copyable text and opens not
     }),
   );
 
-  expect(within(card).getByText(CLIFF_FACE.storagePath)).toBeDefined();
+  expect(within(card).getByText(cliffPath())).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined();
   // The one sentence that says what to change to get a full path. Shown only here.
   expect(within(card).getByText(strings.folders.directoryPartial)).toBeDefined();
@@ -2189,7 +2189,7 @@ test("show in folder reveals the model's own path as copyable text and opens not
   fireEvent.click(
     within(card).getByRole("button", { name: strings.folders.copyPath }),
   );
-  expect(within(card).getByText(CLIFF_FACE.storagePath)).toBeDefined();
+  expect(within(card).getByText(cliffPath())).toBeDefined();
 });
 
 /**
@@ -2216,7 +2216,7 @@ test("a deployment that says where the store is gets the full path on the card",
   );
 
   expect(
-    await within(card).findByText(`/srv/lapidary-storage/${CLIFF_FACE.storagePath}`),
+    await within(card).findByText(`/srv/lapidary-storage/${cliffPath()}`),
   ).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHintAbsolute)).toBeDefined();
   // The "set the variable" sentence is about a state this deployment is not in.
@@ -2240,7 +2240,7 @@ test("a host root with a trailing slash still joins to one separator", async () 
     }),
   );
   expect(
-    await within(card).findByText(`/srv/lapidary-storage/${CLIFF_FACE.storagePath}`),
+    await within(card).findByText(`/srv/lapidary-storage/${cliffPath()}`),
   ).toBeDefined();
 });
 
@@ -2366,3 +2366,98 @@ function instanceStorage(hostStorageRoot: string | null) {
     hostStorageRoot,
   };
 }
+
+/**
+ * `CLIFF_FACE.storagePath` narrowed once. The field is nullable on the wire — a part that
+ * predates the folder layout has neither a path nor a directory — and this fixture is not
+ * one, so the assertion says so here instead of at four call sites.
+ */
+function cliffPath(): string {
+  const path = CLIFF_FACE.storagePath;
+  if (path === null) throw new Error("the CLIFF_FACE fixture has a storage path");
+  return path;
+}
+
+/**
+ * The whole store, under the one library's line — including the two figures no per-library
+ * panel can carry.
+ *
+ * `quarantinedBytes` is the one that matters: a purge removes the part chain, so those
+ * bytes belong to no library and appear in no other number this application renders. They
+ * are on the disk for thirty days regardless, and a storage panel that could not mention
+ * them was under-reporting by everything anybody had purged.
+ */
+test("the instance panel reports quarantined bytes, which no library total can", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    storage: ok({
+      sourceBytes: 9684,
+      derivativeBytes: 4096,
+      removedBytes: 0,
+      derivativeRatio: 0.42,
+    }),
+    instanceStorage: ok({
+      sourceBytes: 9684,
+      derivativeBytes: 4096,
+      removedBytes: 0,
+      quarantinedBytes: 12976,
+      onDiskBytes: null,
+      hostStorageRoot: null,
+    }),
+  });
+  renderIndex();
+
+  expect(
+    await screen.findByText(strings.storage.everything(9684, 4096, 0, 12976)),
+  ).toBeDefined();
+  // And the library's own line still says nothing about them, which is why the other exists.
+  expect(screen.getByText(strings.storage.totals(9684, 4096, 0.42))).toBeDefined();
+});
+
+/**
+ * The walk is opt-in, and its answer names the gap rather than leaving it to be found.
+ *
+ * `metadata.json` sits beside every model and is deliberately counted by nothing, so the
+ * disk figure is legitimately larger than the tracked one. A panel showing both without
+ * saying why would just relocate the confusion it exists to prevent.
+ */
+test("measuring the disk asks the server to walk it and explains the difference", async () => {
+  const tracked = {
+    sourceBytes: 9684,
+    derivativeBytes: 4096,
+    removedBytes: 0,
+    quarantinedBytes: 0,
+    hostStorageRoot: null,
+  };
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    // First call has no walk; the second, after the button, carries one.
+    // One response per call, in order: the first load asks for no walk, and the click
+    // re-queries with one. A single stub could not tell the two apart.
+    instanceStorage: (() => {
+      const bodies = [
+        { ...tracked, onDiskBytes: null },
+        { ...tracked, onDiskBytes: 9684 + 4096 + 918 },
+      ];
+      let call = 0;
+      return async (): Promise<StubResponse> => ({
+        ok: true,
+        json: async () => bodies[Math.min(call++, bodies.length - 1)],
+      });
+    })(),
+  });
+  renderIndex();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: strings.storage.measureOnDisk }),
+  );
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith("/api/storage?onDisk=true"),
+  );
+  expect(
+    await screen.findByText(strings.storage.onDisk(9684 + 4096 + 918, 9684 + 4096)),
+  ).toBeDefined();
+});

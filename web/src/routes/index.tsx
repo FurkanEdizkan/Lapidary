@@ -30,6 +30,7 @@ import type {
   BatchId,
   BatchStatus,
   FolderId,
+  InstanceStorageView,
   LibraryStorage,
   PartCard,
   PartId,
@@ -210,11 +211,19 @@ export function Index({
       ? null
       : (folders.data?.find((folder) => folder.id === folderId)?.name ?? null)
 
-  // Where the store is on the host, and what the whole of it holds. One request for the
-  // page, not one per card: both are facts about the deployment rather than about a part.
+  // Where the store is on the host, and what the whole of it holds. **One query for the
+  // page**, read by two places: every card needs the host root to show a path, and the
+  // panel at the foot needs the totals. Two `useQuery` calls on one route — even under
+  // different keys — would be two requests for one fact, and the second would answer a
+  // question nobody asked twice.
+  //
+  // `measure` is part of the key rather than a refetch, so asking for the disk walk is a
+  // different query with its own cached answer: pressing the button once and scrolling away
+  // does not re-walk the store on the way back.
+  const [measure, setMeasure] = useState(false)
   const instance = useQuery({
-    queryKey: ['instance-storage'],
-    queryFn: () => fetchInstanceStorage(),
+    queryKey: ['instance-storage', measure],
+    queryFn: () => fetchInstanceStorage(measure),
   })
 
   const parts = useInfiniteQuery({
@@ -483,6 +492,13 @@ export function Index({
               onMore={() => void parts.fetchNextPage()}
             />
             <StorageTotals storage={storage.data} isError={storage.isError} />
+            <InstanceStorage
+              instance={instance.data}
+              isError={instance.isError}
+              measuring={measure && instance.isFetching}
+              measured={measure}
+              onMeasure={() => setMeasure(true)}
+            />
           </>
         )}
         <p className="mt-6 text-sm text-[var(--color-muted)]">
@@ -902,6 +918,76 @@ function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError
       */}
       {storage.removedBytes > 0 ? strings.storage.removed(storage.removedBytes) : null}
     </p>
+  )
+}
+
+/**
+ * What the whole store holds, under the one library's line.
+ *
+ * Separate from `StorageTotals` and not folded into it, because it answers a different
+ * question and the two disagree on purpose: a derivative two libraries share is charged to
+ * both of them above and counted once here, and the quarantined figure belongs to no
+ * library at all. Adding the panels up is exactly the thing this is here to stop somebody
+ * doing.
+ *
+ * The disk measurement is a button rather than part of the load. It costs the server a
+ * `stat` per file — instant on a small library, seconds on a corpus — and the four figures
+ * beside it are free, so making everyone pay for it on every page load to answer a question
+ * most visits do not ask would be the wrong default.
+ */
+function InstanceStorage({
+  instance,
+  isError,
+  measuring,
+  measured,
+  onMeasure,
+}: {
+  instance?: InstanceStorageView
+  isError: boolean
+  /** The walk is in flight. */
+  measuring: boolean
+  /** The walk has been asked for, whether or not it came back. */
+  measured: boolean
+  onMeasure: () => void
+}) {
+  // Same rule as the library totals: nothing at all while the first read is in flight,
+  // because a total is a claim and there is no honest placeholder for one.
+  if (isError) {
+    return <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.storage.failed}</p>
+  }
+  if (instance === undefined) {
+    return null
+  }
+
+  const { sourceBytes, derivativeBytes, removedBytes, quarantinedBytes, onDiskBytes } = instance
+  const tracked = sourceBytes + derivativeBytes + removedBytes + quarantinedBytes
+  // Narrowed here and not in the JSX, for the reason `ShowInFolder` narrows where it does:
+  // a `typeof x === 'number'` inside a child expression puts the literal `'number'` in a
+  // position `no-bare-strings.test.ts` reads — correctly — as a label reaching the screen.
+  // `typeof` and not truthiness, because a genuinely empty store measures 0, which is an
+  // answer rather than a missing one.
+  const onDisk = typeof onDiskBytes === 'number' ? onDiskBytes : null
+  return (
+    <div className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+      <p>{strings.storage.everything(sourceBytes, derivativeBytes, removedBytes, quarantinedBytes)}</p>
+      {onDisk !== null ? (
+        <p className="mt-1">{strings.storage.onDisk(onDisk, tracked)}</p>
+      ) : measuring ? (
+        <p className="mt-1">{strings.storage.measuring}</p>
+      ) : measured ? (
+        // Asked for and not answered: the walk failed, and the four figures above are still
+        // true because they never came from the disk.
+        <p className="mt-1">{strings.storage.onDiskFailed}</p>
+      ) : (
+        <button
+          type="button"
+          onClick={onMeasure}
+          className="ease-mechanical mt-1 rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.storage.measureOnDisk}
+        </button>
+      )}
+    </div>
   )
 }
 
