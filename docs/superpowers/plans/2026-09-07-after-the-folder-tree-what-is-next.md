@@ -141,14 +141,37 @@ each:
 | # | Item | Status now |
 |---|---|---|
 | 1 | A renamed category does not rename its directory on disk | Unchanged. Blocked on a decision — see §5. |
-| 2 | No UI for creating or renaming a category | Unchanged, and now the more visible half: the merge shipped the sidebar, so the gap is on screen. |
+| 2 | No UI for creating or renaming a category | Unchanged, and now the more visible half: the merge shipped the sidebar, so the gap is on screen. **Split it:** create is free-standing, rename is not — see below. |
 | 3 | `GET /api/parts/{id}/moves` has no consumer | Unchanged. Blocked on a decision — see §5. |
 | 4 | The descendant CTE lives in the page query, not in `PgFolders` | **Settle it as accepted.** The merge put the `Shows` predicate and the folder CTE in the same query and the suite proves they agree; splitting it now would create the second descent implementation the original note was worried about. |
 | 5 | Two scale ceilings (tree fan-out, whole-tree fetch) | Unchanged, and §3.4's run is the natural place to get a number for both. |
 | 6 | `file.storage_path` is still nullable | **More urgent, and now cheap.** `migrate_storage` drained a real library to zero pending in this deployment. When the `NOT NULL` migration lands, four places simplify together: the move route's `409 migrationPending`, the card's "not migrated yet" note, `PartCard.directory`'s nullability, and the `coalesce(f.stored_bytes, f.size_bytes)` fallback in `storage_totals`. Leave them and they read as defence against a state that can no longer happen. |
 
-Item 2 is the smallest real feature on this whole page and the routes it needs already
-answer. It is a good first task for anyone picking the codebase back up.
+**Item 2 is two features, and only one of them is free-standing.** *Create* depends on
+nothing: `POST /api/libraries/{id}/folders` answers, a new category has no directory
+until something moves into it, and the refusals to render (`nameTaken`, `slugTaken`,
+`emptyName`) already carry prose and a machine-readable `reason`. It is the smallest real
+feature on this page and a good first task for anyone picking the codebase back up.
+
+*Rename* is downstream of the first decision in §5. Shipping it before that question is
+answered is not neutral — it hands users a button whose every press widens the drift item
+1 describes, because the row changes and the directory does not. Either answer the
+question first, or ship create alone and hold rename behind it.
+
+While building create, note what has no test: a `PATCH` carrying **both** a new name and
+a new parent applies the move first and the rename second, and answers
+`409 renamedAfterMove` if the name is refused at the destination. No client sends both
+fields today. If a rename UI ever does, that branch needs a test.
+
+One thing that looked wrong on the running stack and is not: a category's directory is
+its name with spaces and capitals intact (`libraries/default/Trench Terrain/…`), because
+`slug::slugify` is a *filesystem-safety* function and not a URL slug. It replaces hostile
+and control characters, bounds the component in characters and bytes at once, trims what
+the cut exposes, and suffixes Windows reserved stems — and deliberately leaves everything
+else alone, because the store is meant to be legible to a person opening it in a file
+manager. The route derives the slug with it and never accepts one from a client
+(`folders.rs:129`), and the move route reads the stored slug back rather than re-slugging
+a name, so the two cannot drift.
 
 ---
 
@@ -185,7 +208,10 @@ deliberate, because nothing acts differently on the two.
 ## 6. Recommended order
 
 1. **The purge gap** (§2). Small slice, and it is the only correctness item.
-2. **Category create/rename UI** (§4 item 2). Small, routes exist, visible.
+2. **Category *create* UI** (§4 item 2). Small, the route exists, and the gap is on
+   screen. Rename is not in this step — it waits on the first decision in §5, because a
+   rename button shipped before that answer generates the drift item 1 describes on every
+   press.
 3. **`storage_path` NOT NULL** (§4 item 6). Small, and four simplifications ride on it.
 4. **Search** (§3.1). The large one. Spec it properly; build the Phase 2 ranking seam.
 5. **Page size and density** (§3.3). Small, and best done while the grid query is open
@@ -193,6 +219,9 @@ deliberate, because nothing acts differently on the two.
 6. **Measure the exit criterion** (§3.4) against the 1,703-file corpus.
 7. **More than one library** (§3.2) — last of the Phase 1 items, because everything above
    it is work a single-library user feels and this is work they do not.
+
+Rename lands whenever the §5 decision does, which may be before any of this — it is
+blocked on an answer, not on work.
 
 Then Phase 2, whose first question is `lapidary-cad` driving the OCCT sidecar — and whose
 exit criterion is a search assertion, which is why step 4 is where it is.
@@ -207,3 +236,8 @@ exit criterion is a search assertion, which is why step 4 is where it is.
   left to the owner, per "we never delete user data implicitly".
 - Every `lane-*`, `worktree-*` and `feat/*` branch is now an ancestor of `main`. The
   worktrees are gone; the refs are left alone.
+- `storage/` on this machine is `chmod 777`, not the `chown -R 10001:10001` that
+  `DATA.md` §1.1 prescribes — no `sudo` was available during the upgrade run. It works
+  because the mode is permissive, not because the ownership is right. Fix it with the
+  documented command, or decide 777 is acceptable on a development box; either way the
+  doc stays the instruction for the next machine.
