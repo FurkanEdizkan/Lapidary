@@ -192,7 +192,8 @@ than any compression decision above.
    `ref_count` from what actually points at it.
 3. **Quarantine** — a blob whose recomputed count reaches zero gets `quarantined_at` set,
    and is left where it is for 30 days. Reachable by hash, invisible in the UI, restorable.
-   Only then removed.
+   Only then removed. A purged part's **model directory** is held the same way and for the
+   same 30 days, by path rather than by hash — see *Two quarantines, one timer* below.
 
 **Amended by slice 7, and two of these lines changed.**
 
@@ -225,11 +226,37 @@ said they are done with. **Cache eviction** (§1.5) is neither — it drops deri
 app can rebuild and never touches a source file. Wording that lets any one of them read as
 another is a defect, not a nicety.
 
-*How long the hold should be for path-addressed sources is genuinely open.* The 30 days
-above were written for a content-addressed store, where one blob could be the last
-reference several parts shared and a hold protected all of them at once. One file per
-model is a different question — nobody is sharing that file — and this document does not
-answer it yet.
+#### Two quarantines, one timer
+
+The 30 days above were written for a content-addressed store, where one blob could be the
+last reference several parts shared and a hold protected all of them at once. One file per
+model is a different question — nobody is sharing that file — and this document used to
+leave it open. Migration `0014` answers it: **the same 30 days, one constant**
+(`lapidary_ingest::reap::QUARANTINE`) for both. A second retention would be a second
+promise to explain inside the same confirmation dialog, and nothing has argued the two
+should differ.
+
+They are two quarantines because they are keyed on different things, and neither subsumes
+the other. `blob.quarantined_at` is per hash and enters when a recomputed `ref_count`
+reaches zero; `quarantined_file` is per store-relative path and enters when the one part
+that owned that file is purged. Source dedup is gone (§1.1), so one hash can be several
+model files with several independent lifetimes — which is exactly why the path cannot live
+on the `blob` row.
+
+One sweep, one transaction, one cutoff. What differs is the guard: a referenced blob is
+protected by `file.blake3`'s foreign key whatever any query says, and the reaper's
+reachability check merely lets it *decline*; nothing references `file.storage_path`, so
+there the check is the only protection and is written as such.
+
+*"Reachable by hash" is true of a quarantined blob and false of a quarantined file.* Its
+bytes sit at a path no route serves once the `file` row naming them is gone. Both are
+invisible in the UI; neither has a restore yet.
+
+*Removing a model file removes what is around it.* The file, the `metadata.json` beside it,
+and the directory that held them — but only if nothing else is in it. A directory the
+owner has put something of their own into keeps that something, and keeps standing; the
+sweep logs it and carries on rather than failing, because failing would stop every other
+removal for as long as their file sat there.
 
 ---
 

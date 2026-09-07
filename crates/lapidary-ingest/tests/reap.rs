@@ -339,6 +339,18 @@ fn stage_bytes_at(blob_root: &Path, seed: u8, rel: &str) -> StoredBlobRow {
 
 async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel: &str) -> PartId {
     let blob = stage_bytes_at(blob_root, seed, rel);
+    // Ingest writes `metadata.json` beside the file it describes (handler step 10), and a
+    // sweep that removed the file and left the manifest would leave an orphan directory.
+    // The fixture has to leave one for that to be testable at all.
+    let model_dir = rel
+        .rsplit_once('/')
+        .expect("a model path has a directory")
+        .0;
+    std::fs::write(
+        blob_root.join(model_dir).join("metadata.json"),
+        br#"{"schema":1}"#,
+    )
+    .expect("a manifest beside the model file");
     PgIngest(pool.clone())
         .record(IngestRequest {
             library: library(),
@@ -363,27 +375,17 @@ async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel
         .expect("seed a migrated part")
 }
 
-/// **A known gap, pinned rather than described.** Purging a part whose bytes have migrated
-/// out of the blob store removes the row and leaves the file.
+/// A purged model directory goes, and it is the ordinary case rather than the edge one:
+/// every part ingested since the folder tree keeps its bytes at `file.storage_path`, not
+/// under the hash fan-out the sweep used to be the whole of.
 ///
-/// The sweep unlinks `blobs/<ab>/<cd>/<hash>`, which is where the bytes were before the
-/// folder tree and where they still are for anything `migrate_storage` has not reached.
-/// For a migrated part they are at `file.storage_path` instead, and `purge` deletes the
-/// `file` row — so by the time the thirty days are up, the only record of where the bytes
-/// sit is gone and `SourceStore::remove` unlinks a path that holds nothing. A missing file
-/// is success to the reaper, deliberately, so the sweep reports the hash as removed and
-/// the model directory stays on disk for good.
-///
-/// Nothing is lost, which is the right way round for a bug in this area to fail. What is
-/// wrong is the promise: `strings.parts.purgeConfirm` tells a user their bytes are kept
-/// for 30 days and then deleted, and for a migrated part the second half does not happen.
-///
-/// Closing it needs somewhere to record the path a purge is about to forget — `blob` is
-/// per-hash and one hash can be several model files now — so it is a slice, not a patch,
-/// and it is written up in the folder-tree follow-ups. This test is the tripwire: it
-/// asserts today's behaviour, so whoever fixes it has to come here and say so.
+/// This replaces `a_purged_model_directory_outlives_the_sweep_that_reports_removing_it`,
+/// which pinned the gap while it was open -- same fixture, opposite assertion. The file,
+/// the `metadata.json` beside it and the directory that held them all go together, because
+/// a directory holding a stale manifest and nothing else is an orphan every walk of the
+/// store has to explain.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_purged_model_directory_outlives_the_sweep_that_reports_removing_it(pool: PgPool) {
+async fn a_purged_model_directory_is_removed_once_its_thirty_days_are_up(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
     let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
     let part = seed_part_at(
@@ -409,17 +411,196 @@ async fn a_purged_model_directory_outlives_the_sweep_that_reports_removing_it(po
         .expect("sweep");
 
     assert_eq!(
-        report.removed,
-        vec![hash_of(0xc7)],
-        "the sweep reports the hash as removed"
+        report.removed_files,
+        vec![rel.to_owned()],
+        "the sweep names the path it removed, not only the hash"
+    );
+    assert!(
+        !blob_root.path().join(rel).exists(),
+        "the model file is gone"
+    );
+    assert!(
+        !blob_root
+            .path()
+            .join(model_dir(rel))
+            .join("metadata.json")
+            .exists(),
+        "and its manifest with it -- a directory holding only a stale manifest is an orphan"
+    );
+    assert!(
+        !blob_root.path().join(model_dir(rel)).exists(),
+        "and the directory that held them, because nothing else was in it"
     );
     assert_eq!(
-        quarantined(&pool, 0xc7).await,
-        None,
-        "and the blob row really is gone"
+        quarantined_paths(&pool).await,
+        Vec::<String>::new(),
+        "the row is gone, not merely swept past"
+    );
+}
+
+/// The production retention against a file quarantined seconds ago: what every sweep on a
+/// new installation does, and it must do nothing at all. The hash-addressed half has the
+/// same test, and the two retentions are one constant on purpose -- a second one would be
+/// a second promise to explain in the same confirmation dialog.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_model_file_inside_its_thirty_days_is_not_touched(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
+    let part = seed_part_at(
+        &pool,
+        blob_root.path(),
+        0xc8,
+        "brackets/LP-1042-03.stl",
+        rel,
+    )
+    .await;
+    retire(&pool, part).await;
+    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
+
+    let report =
+        lapidary_ingest::reap::sweep(&pool, blob_root.path(), lapidary_ingest::reap::QUARANTINE)
+            .await
+            .expect("sweep");
+
+    assert!(report.removed_files.is_empty(), "{report:?}");
+    assert_eq!(report.bytes, 0);
+    assert!(
+        blob_root.path().join(rel).exists(),
+        "the bytes are the promise: still there for thirty days"
+    );
+    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
+}
+
+/// **The guard, and the one assertion that fails loudly if it is ever dropped.**
+///
+/// The hash-addressed half gets its safety from a foreign key -- `file.blake3` references
+/// `blob`, so a referenced row cannot be deleted whatever a query says, and the
+/// reachability check merely lets the sweep decline. Nothing references
+/// `file.storage_path`, so there the `NOT EXISTS` is the only thing standing between a
+/// live part and its bytes.
+///
+/// Reaching this state takes a person: `model_dir_for` disambiguates against a directory
+/// that exists, so a re-ingest after a purge lands somewhere else. What puts a quarantined
+/// path back in play is the owner removing that directory in a file manager and re-adding
+/// the file -- which a browsable store invites, and is the whole reason the layout exists.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_path_a_live_part_has_claimed_again_is_declined_rather_than_unlinked(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
+    let gone = seed_part_at(
+        &pool,
+        blob_root.path(),
+        0xc9,
+        "brackets/LP-1042-03.stl",
+        rel,
+    )
+    .await;
+    retire(&pool, gone).await;
+    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
+
+    // A second part now holds that exact path -- different bytes, same place.
+    seed_part_at(
+        &pool,
+        blob_root.path(),
+        0xca,
+        "brackets/LP-1042-03-v2.stl",
+        rel,
+    )
+    .await;
+
+    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
+        .await
+        .expect("sweep");
+
+    assert!(
+        report.removed_files.is_empty(),
+        "a path a live file row names must not be unlinked: {report:?}"
+    );
+    assert_eq!(
+        report.un_quarantined, 1,
+        "it is reported as reclaimed, the way a re-referenced blob is"
     );
     assert!(
         blob_root.path().join(rel).exists(),
-        "but the bytes are still there, because nothing told the sweep where they went"
+        "and the live part still has its bytes"
     );
+    assert_eq!(
+        quarantined_paths(&pool).await,
+        Vec::<String>::new(),
+        "the row is dropped rather than un-flagged: there is no ref_count to correct and \
+         no state to go back to, so a record saying these bytes are doomed is just wrong"
+    );
+}
+
+/// A model directory the owner has put something of their own into: a note beside the
+/// model, a re-exported STL, a photo. The model file goes; their file does not, the
+/// directory does not, and -- the part that matters -- the sweep does not fail over it and
+/// stop reaping everything else for as long as that file sits there.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_directory_holding_something_of_the_owners_survives_and_does_not_stop_the_sweep(
+    pool: PgPool,
+) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let kept = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
+    let alone = "libraries/default/pumps/lp-5501-02/lp-5501-02.stl";
+    let with_note = seed_part_at(&pool, blob_root.path(), 0xcb, "brackets/a.stl", kept).await;
+    let plain = seed_part_at(&pool, blob_root.path(), 0xcc, "pumps/b.stl", alone).await;
+
+    let note = blob_root
+        .path()
+        .join(model_dir(kept))
+        .join("print-settings.txt");
+    std::fs::write(&note, b"0.2 mm layers, 15% gyroid, no supports\n").expect("the owner's note");
+
+    retire(&pool, with_note).await;
+    retire(&pool, plain).await;
+
+    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
+        .await
+        .expect("a directory that will not empty must not fail the sweep");
+
+    let mut removed = report.removed_files.clone();
+    removed.sort();
+    assert_eq!(
+        removed,
+        vec![kept.to_owned(), alone.to_owned()].tap_sorted(),
+        "both model files are removed, including the one whose directory has to stay"
+    );
+    assert!(!blob_root.path().join(kept).exists(), "the model file goes");
+    assert!(note.exists(), "the owner's file does not");
+    assert!(
+        blob_root.path().join(model_dir(kept)).exists(),
+        "nor the directory holding it"
+    );
+    assert!(
+        !blob_root.path().join(model_dir(alone)).exists(),
+        "and the directory with nothing left in it still goes -- one awkward neighbour \
+         must not stop the tidying everywhere else"
+    );
+}
+
+/// The parent of a store-relative file path: the model's own directory.
+fn model_dir(rel: &str) -> &str {
+    rel.rsplit_once('/')
+        .expect("a model path has a directory")
+        .0
+}
+
+async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
+    sqlx::query_scalar("SELECT storage_path FROM quarantined_file ORDER BY storage_path")
+        .fetch_all(pool)
+        .await
+        .expect("quarantined paths read")
+}
+
+/// `Vec::sort` returns `()`, and these comparisons want the sorted value inline.
+trait TapSorted {
+    fn tap_sorted(self) -> Self;
+}
+
+impl TapSorted for Vec<String> {
+    fn tap_sorted(mut self) -> Self {
+        self.sort();
+        self
+    }
 }
