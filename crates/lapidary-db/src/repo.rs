@@ -170,9 +170,21 @@ pub struct InstanceStorage {
     /// Every live model file, at what it occupies. One file per model, never deduplicated —
     /// source dedup ended with the folder tree (`DATA.md` §1.1).
     pub source_bytes: u64,
-    /// Rungs on disk plus inline thumbnails from Postgres, **each blob counted once** however
-    /// many revisions or libraries point at it.
+    /// Rungs **on the storage volume**, each blob counted once however many revisions or
+    /// libraries point at it.
+    ///
+    /// Kept apart from `inline_preview_bytes` below, and the reason is arithmetic rather
+    /// than taste: adding the two gives a figure that is larger than the storage folder,
+    /// because half of it is not in the storage folder. A caller comparing that against a
+    /// directory walk finds the tracked total exceeding the disk, which reads as bytes
+    /// having gone missing.
     pub derivative_bytes: u64,
+    /// Thumbnails, which live in Postgres as `bytea` and not on the volume at all.
+    ///
+    /// A deliberate exception (`DATA.md` §1.5): a page of cards is one query and no
+    /// per-card round trip because the previews come back with the row. They are real bytes
+    /// and they cost real space — just not the space a `du` of the storage root measures.
+    pub inline_preview_bytes: u64,
     /// What soft-deleted parts still occupy. Nothing has left the disk; a restore brings
     /// them back, and only a purge starts the clock that removes them.
     pub removed_bytes: u64,
@@ -1918,15 +1930,16 @@ impl PgParts {
         // One row, four scalar subqueries, same `::bigint` casts as `storage_totals` and
         // for the same reason: `sum()` over bigint is `numeric`, which sqlx will not decode
         // into i64.
-        let (source, derivative, removed, quarantined): (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT \
+        let (source, derivative, inline, removed, quarantined): (i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
               JOIN part p ON p.id = r.part_id \
               WHERE p.deleted_at IS NULL AND f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
-              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)) \
-             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint FROM derivative d), \
+              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)), \
+             (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint FROM derivative d), \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
               JOIN part p ON p.id = r.part_id \
@@ -1934,13 +1947,14 @@ impl PgParts {
              (SELECT coalesce(sum(q.stored_bytes), 0)::bigint FROM quarantined_file q) \
              + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
                 WHERE b.quarantined_at IS NOT NULL)",
-        )
-        .fetch_one(&self.0)
-        .await?;
+            )
+            .fetch_one(&self.0)
+            .await?;
 
         Ok(InstanceStorage {
             source_bytes: bytes_column("file.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
+            inline_preview_bytes: bytes_column("derivative.thumb_bytes", inline)?,
             removed_bytes: bytes_column("file.stored_bytes", removed)?,
             quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
         })

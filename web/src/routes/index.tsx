@@ -962,7 +962,11 @@ function InstanceStorage({
     return null
   }
 
-  const { sourceBytes, derivativeBytes, removedBytes, quarantinedBytes, onDiskBytes } = instance
+  const { sourceBytes, derivativeBytes, inlinePreviewBytes, removedBytes, quarantinedBytes, onDiskBytes } =
+    instance
+  // Deliberately **without** `inlinePreviewBytes`: those are in Postgres, and this figure
+  // is compared against a walk of the storage folder. Including them put the tracked total
+  // above the disk by exactly their size on a real library, which reads as loss.
   const tracked = sourceBytes + derivativeBytes + removedBytes + quarantinedBytes
   // Narrowed here and not in the JSX, for the reason `ShowInFolder` narrows where it does:
   // a `typeof x === 'number'` inside a child expression puts the literal `'number'` in a
@@ -972,7 +976,15 @@ function InstanceStorage({
   const onDisk = typeof onDiskBytes === 'number' ? onDiskBytes : null
   return (
     <div className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
-      <p>{strings.storage.everything(sourceBytes, derivativeBytes, removedBytes, quarantinedBytes)}</p>
+      <p>
+        {strings.storage.everything(
+          sourceBytes,
+          derivativeBytes,
+          inlinePreviewBytes,
+          removedBytes,
+          quarantinedBytes,
+        )}
+      </p>
       {onDisk !== null ? (
         <p className="mt-1">{strings.storage.onDisk(onDisk, tracked)}</p>
       ) : measuring ? (

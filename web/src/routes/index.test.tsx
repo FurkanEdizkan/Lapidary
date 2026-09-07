@@ -2364,7 +2364,8 @@ test("an empty category with its name not loaded still does not claim the librar
 function instanceStorage(hostStorageRoot: string | null) {
   return {
     sourceBytes: 150406654,
-    derivativeBytes: 9437184,
+    derivativeBytes: 7555924,
+    inlinePreviewBytes: 5745760,
     removedBytes: 0,
     quarantinedBytes: 0,
     onDiskBytes: null,
@@ -2405,6 +2406,7 @@ test("the instance panel reports quarantined bytes, which no library total can",
     instanceStorage: ok({
       sourceBytes: 9684,
       derivativeBytes: 4096,
+      inlinePreviewBytes: 512,
       removedBytes: 0,
       quarantinedBytes: 12976,
       onDiskBytes: null,
@@ -2414,7 +2416,7 @@ test("the instance panel reports quarantined bytes, which no library total can",
   renderIndex();
 
   expect(
-    await screen.findByText(strings.storage.everything(9684, 4096, 0, 12976)),
+    await screen.findByText(strings.storage.everything(9684, 4096, 512, 0, 12976)),
   ).toBeDefined();
   // And the library's own line still says nothing about them, which is why the other exists.
   expect(screen.getByText(strings.storage.totals(9684, 4096, 0.42))).toBeDefined();
@@ -2431,6 +2433,9 @@ test("measuring the disk asks the server to walk it and explains the difference"
   const tracked = {
     sourceBytes: 9684,
     derivativeBytes: 4096,
+    // In Postgres, so deliberately absent from what the walk is compared against — which
+    // is the whole reason the field is separate.
+    inlinePreviewBytes: 5745760,
     removedBytes: 0,
     quarantinedBytes: 0,
     hostStorageRoot: null,

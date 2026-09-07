@@ -326,10 +326,18 @@ pub struct InstanceStorageView {
     /// Every live model file across every library. One file per model, no deduplication.
     #[ts(type = "number")]
     pub source_bytes: u64,
-    /// Rungs and inline thumbnails, **each blob counted once** however many libraries point
+    /// Rungs **on the storage volume**, each blob counted once however many libraries point
     /// at it — where the per-library figure charges it to each of them in full.
     #[ts(type = "number")]
     pub derivative_bytes: u64,
+    /// Thumbnails, which are in Postgres and not on the volume.
+    ///
+    /// Separate so that the figures above can be compared with `on_disk_bytes` and add up.
+    /// Folded in, the tracked total exceeds a walk of the storage root by exactly this
+    /// amount — measured at 5,745,760 bytes on the library this was written against — and
+    /// a panel reporting more tracked than present reads as bytes having gone missing.
+    #[ts(type = "number")]
+    pub inline_preview_bytes: u64,
     /// Soft-deleted parts. On the disk, and back the moment somebody restores them.
     #[ts(type = "number")]
     pub removed_bytes: u64,
@@ -386,6 +394,7 @@ pub async fn instance_storage(
     Json(InstanceStorageView {
         source_bytes: totals.source_bytes,
         derivative_bytes: totals.derivative_bytes,
+        inline_preview_bytes: totals.inline_preview_bytes,
         removed_bytes: totals.removed_bytes,
         quarantined_bytes: totals.quarantined_bytes,
         on_disk_bytes: on_disk.flatten(),

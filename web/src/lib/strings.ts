@@ -585,8 +585,14 @@ export const strings = {
      * "0 B quarantined" is noise on every installation where nobody has purged anything,
      * and the moment one exists it is bytes nothing else in the application admits to.
      */
-    everything: (source: number, derivative: number, removed: number, quarantined: number) =>
-      `Everything: ${bytes(source + derivative + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of previews and generated views${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} purged and waiting out its 30 days` : ''}.`,
+    everything: (
+      source: number,
+      derivative: number,
+      inline: number,
+      removed: number,
+      quarantined: number,
+    ) =>
+      `Everything: ${bytes(source + derivative + inline + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of generated views, ${bytes(inline)} of thumbnails in the database${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} purged and waiting out its 30 days` : ''}.`,
     /**
      * The walk is opt-in because it costs the server a look at every file. Worded as the
      * question it answers rather than as the work it does — "measure" is what the user
@@ -604,10 +610,20 @@ export const strings = {
      * is a thing this layout invites. So the disk number is the larger one, and the
      * difference is not an error.
      */
+    /**
+     * `tracked` here is the part of the figures above that is genuinely *in the storage
+     * folder* — so not the thumbnails, which are in Postgres. Measured on a real library
+     * before this was written: folding them in put the tracked total 5.7 MB above a walk of
+     * the store, which reads as bytes having gone missing rather than as a category error.
+     *
+     * The disk is then legitimately the larger of the two, by the `metadata.json` beside
+     * every model (deliberately counted by nothing) plus whatever the owner has put in the
+     * folder — which this layout invites them to do.
+     */
     onDisk: (disk: number, tracked: number) =>
       disk >= tracked
-        ? `On disk: ${bytes(disk)}. That is ${bytes(disk - tracked)} more than the figures above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real.`
-        : `On disk: ${bytes(disk)}, which is ${bytes(tracked - disk)} less than the figures above. That should not happen: every tracked byte should be a file. Something has removed files from the store without going through the app.`,
+        ? `On disk: ${bytes(disk)} in the storage folder. That is ${bytes(disk - tracked)} more than the models and views above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real. Thumbnails are not in this figure: they live in the database.`
+        : `On disk: ${bytes(disk)} in the storage folder, which is ${bytes(tracked - disk)} less than the models and views above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
     onDiskFailed:
       'Could not measure the storage folder. The figures above still stand — they come from the database, not from the disk.',
   },
