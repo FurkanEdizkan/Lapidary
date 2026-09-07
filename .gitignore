@@ -63,3 +63,10 @@ Thumbs.db
 # reference material and its hooks are committed; only the compiled linux-x64 artefact
 # is not, because a binary in git is forever and this one is wrong on any other arch.
 .claude/skills/impeccable/scripts/bin/
+
+# The knowledge graph graphify builds from this tree. 11 MB of generated artefact —
+# graph.json plus a self-contained graph.html — derived entirely from files that are
+# already committed, and stale the moment anything here changes. `/graphify . --update`
+# rebuilds it from the manifest; there is nothing in it that the repository does not
+# already say.
+/graphify-out/
