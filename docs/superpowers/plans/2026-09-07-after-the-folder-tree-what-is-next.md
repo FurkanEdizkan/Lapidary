@@ -234,8 +234,21 @@ exit criterion is a search assertion, which is why step 4 is where it is.
 - The `lapidary_lapidary-blobs` Docker volume is still on this machine, holding the
   pre-merge copy of the store. Nothing reads it. Removing it is a deliberate act and is
   left to the owner, per "we never delete user data implicitly".
-- Every `lane-*`, `worktree-*` and `feat/*` branch is now an ancestor of `main`. The
-  worktrees are gone; the refs are left alone.
+- Every `lane-*`, `worktree-*` and `feat/*` branch was an ancestor of `main` and has been
+  deleted with `git branch -d`, which refuses an unmerged branch — so nothing was dropped
+  that `main` does not already carry. The worktrees and `.claude/worktrees/` are gone.
+  `main` is the only local branch.
+- The eight stale `origin/*` branches are **not** touched. Deleting a branch on a remote
+  is a different kind of act from deleting a local ref, and `main` is 185 commits ahead of
+  `origin/main` — this repository pushes for a release, not for a merge.
+- `~/lapidary-ingest-real` is gone: 144 MB of flattened tabletop scenery used as the
+  ingest mount for the slice 3b, 4 and 5 exit runs. Nothing referenced it — `deploy/.env`
+  sets no `LAPIDARY_INGEST_DIR`, so compose mounts the six committed example parts, and
+  the 156 parts it produced keep their own bytes under `storage/libraries/`. Every one of
+  its 150 files was verified present in `/mnt/Storage2/All/STL Files` first, and the file
+  list plus the flattening rule survive in `~/lapidary-ingest-real.manifest.txt`. Do not
+  rebuild it for §3.4: it is flat, which is why the parts it made have no folder tree and
+  carry `--` in their names, and the scan has descended since slice 6a.
 - `storage/` on this machine is `chmod 777`, not the `chown -R 10001:10001` that
   `DATA.md` §1.1 prescribes — no `sudo` was available during the upgrade run. It works
   because the mode is permissive, not because the ownership is right. Fix it with the
