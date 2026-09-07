@@ -36,7 +36,7 @@ column and `pg_trgm` extension that `0001`/`0002` create are read by nothing.
 
 ---
 
-## 2. The debt this merge created — do this first
+## 2. The debt this merge created — **done** (`e4f4336`)
 
 **A purge does not remove a migrated model's directory.**
 
@@ -63,9 +63,31 @@ transaction, and a sweep that unlinks the path and prunes the empty model direct
 it. A migration, a repository method, a change to `reap::sweep`, and the test above
 inverted. Call it a small slice.
 
-**Why first.** It is the only thing on this list that makes the app tell a person
-something untrue, and it gets worse with time rather than better: every day of use adds
-model directories that a purge will strand.
+**Why first.** It was the only thing on this list that made the app tell a person
+something untrue, and it got worse with time rather than better: every day of use added
+model directories that a purge would strand.
+
+**Closed by `e4f4336`.** Migration `0014` adds `quarantined_file`, keyed on the path; the
+sweep grew a second half under the same cutoff and constant. Spec:
+`docs/superpowers/specs/2026-09-07-purge-removes-the-model-directory-design.md`.
+
+Two things came out of it that were not in the plan:
+
+- **Purging a part that had ever been moved answered 500.** `part_move` references `part`
+  and arrived a slice after purge's delete list was written; neither suite could see it,
+  because slice 7's purge tests never move a part and the folder tree's move tests never
+  purge one. Fixed in the same branch, with a test that drives `move_to_folder` rather
+  than writing the row by hand. **Worth generalising:** the delete list is maintained by
+  hand precisely because nothing declares `ON DELETE CASCADE`, so the next table that
+  references `part`, `revision`, `file` or `derivative` will silently break purge the same
+  way. A test that reads `information_schema` and fails when a referencing table is not in
+  the list would close the class rather than the instance.
+- **The sweep over-reports what it freed**, by exactly the `stored_bytes` of a migrated
+  source's `blob` row — a figure describing a content-addressed path `migrate_storage`
+  emptied. Measured: 22,660 reported, 12,976 actually freed. Pre-existing and unchanged in
+  size by that slice; it reaches an operator log and no user-facing string. The spec's
+  non-goals say what has to be decided before it can be fixed, and that `storage_totals`
+  defers the same question.
 
 ---
 
@@ -207,7 +229,7 @@ deliberate, because nothing acts differently on the two.
 
 ## 6. Recommended order
 
-1. **The purge gap** (§2). Small slice, and it is the only correctness item.
+1. ~~**The purge gap** (§2).~~ **Done** — `e4f4336`.
 2. **Category *create* UI** (§4 item 2). Small, the route exists, and the gap is on
    screen. Rename is not in this step — it waits on the first decision in §5, because a
    rename button shipped before that answer generates the drift item 1 describes on every
