@@ -60,3 +60,56 @@ async fn a_blob_cannot_be_orphaned_by_deleting_it_out_from_under_a_file(pool: sq
         .await;
     assert!(err.is_ok(), "deleting an unreferenced blob is allowed");
 }
+
+/// The indexes the STORED guard above exists to make possible.
+///
+/// `the_search_column_is_stored_not_virtual` has guarded `part.search` since `0002` with a
+/// comment about search being "silently unindexable" — and for fourteen migrations nothing
+/// indexed it, so every search would have been a sequential scan that looks fine on a
+/// developer's 156 parts. This is the other half of that guard.
+///
+/// Read out of the catalogue rather than asserted about the migration text: a test that
+/// grepped the SQL would pass against a migration that was never applied.
+#[sqlx::test(migrations = "./migrations")]
+async fn search_has_the_three_indexes_it_needs_and_the_right_operator_class(pool: sqlx::PgPool) {
+    let found: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT i.relname::text, am.amname::text, op.opcname::text \
+           FROM pg_index x \
+           JOIN pg_class i ON i.oid = x.indexrelid \
+           JOIN pg_am am ON am.oid = i.relam \
+           LEFT JOIN pg_opclass op ON op.oid = x.indclass[0] \
+          WHERE x.indrelid = 'part'::regclass \
+            AND i.relname IN ('part_search_gin', 'part_number_trgm', 'part_name_trgm') \
+          ORDER BY i.relname",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the catalogue reads");
+
+    assert_eq!(
+        found,
+        vec![
+            // The substring half. `gin_trgm_ops` and not `gist_trgm_ops`: GiST buys KNN
+            // distance ordering nothing here asks for and pays with slower lookups.
+            (
+                "part_name_trgm".to_owned(),
+                "gin".to_owned(),
+                Some("gin_trgm_ops".to_owned())
+            ),
+            (
+                "part_number_trgm".to_owned(),
+                "gin".to_owned(),
+                Some("gin_trgm_ops".to_owned())
+            ),
+            // The multi-word half, over the STORED tsvector the test above guards.
+            (
+                "part_search_gin".to_owned(),
+                "gin".to_owned(),
+                Some("tsvector_ops".to_owned())
+            ),
+        ],
+        "three indexes, all GIN, and the trigram pair on the trigram operator class — \
+         a missing one is a sequential scan that only shows up at corpus size, and the \
+         wrong operator class is an index the planner will not use for `ILIKE`"
+    );
+}

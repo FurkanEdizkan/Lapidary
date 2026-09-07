@@ -2874,3 +2874,201 @@ async fn purging_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx:
          for it, are rows pointing at an id nothing else in the database knows"
     );
 }
+
+/// A searchable part: ingested through the real write path, then given a `part_number`.
+///
+/// **Ingested rather than inserted**, and the first version of this helper was not — it
+/// wrote one `part` row and every search test came back empty. The grid query reaches its
+/// card through `JOIN LATERAL (SELECT * FROM revision …)`, an *inner* join, so a part with
+/// no revision is in no result set. That is a known, documented gap (slice 7's handoff:
+/// "a part with zero revisions is in neither list"), and a search fixture that tripped over
+/// it would have been testing the join rather than the search.
+///
+/// The `UPDATE` afterwards is because no repository method writes `part_number`:
+/// `handler.rs` passes `None`, and Phase 2's extractor is what will fill it. Widening
+/// `IngestRequest` for a column ingest cannot populate would be building a setter for a
+/// value nothing has.
+async fn seed_named(
+    pool: &sqlx::PgPool,
+    seed: u8,
+    name: &str,
+    part_number: Option<&str>,
+) -> PartId {
+    let id = seed_part(&PgIngest(pool.clone()), library(), name, seed, None).await;
+    if let Some(number) = part_number {
+        sqlx::query("UPDATE part SET part_number = $2 WHERE id = $1")
+            .bind(id.as_uuid())
+            .bind(number)
+            .execute(pool)
+            .await
+            .expect("the part number lands");
+    }
+    id
+}
+
+/// **Phase 2's exit criterion, running from the first commit of Phase 1's search.**
+///
+/// *"searching a part number like `A1234-56-B` by the fragment `1234` returns it at position
+/// one"* — `ROADMAP.md`'s words. It passes today because the ranking tiers already do what
+/// that criterion asks: an identifier hit scores 4, and a part merely *named* for the same
+/// digits scores 2 plus the tsquery term. So Phase 2 is held to the same code path by a test
+/// rather than by an intention.
+///
+/// The decoy is the point. Without it, "returns it" passes with one row in the table and
+/// says nothing about *position one*.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_part_number_fragment_returns_the_part_at_position_one(pool: sqlx::PgPool) {
+    seed_named(&pool, 0xd1, "Bracket 1234 mount", None).await;
+    let identified = seed_named(&pool, 0xd2, "Coupler, flexible", Some("A1234-56-B")).await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "1234", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.first().map(|row| row.summary.id),
+        Some(identified),
+        "the part whose *number* contains the fragment outranks the one whose name does"
+    );
+    assert_eq!(
+        found.len(),
+        2,
+        "and the decoy is still a result, just second"
+    );
+}
+
+/// The corpus this was actually developed against has **no part numbers at all** — 156 of
+/// 156 rows — and its identifiers live inside names: `flange-dn40-lp-3310-02`. A design that
+/// leaned on `part_number` would pass the test above and find nothing in a real library.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_fragment_of_an_identifier_inside_a_name_finds_the_part(pool: sqlx::PgPool) {
+    let flange = seed_named(&pool, 0xd3, "flange-dn40-lp-3310-02", None).await;
+    seed_named(&pool, 0xd4, "spur-gear-m2-20t-lp-5140-00", None).await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "3310", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        vec![flange],
+        "the fragment is not a lexeme, so only the substring term can find it"
+    );
+}
+
+/// **The NULL annihilation.**
+///
+/// `(p.part_number ILIKE $9)::int * 4 + …` is NULL for the whole expression when
+/// `part_number` is NULL — which is every row in a real library. The `WHERE` is unaffected,
+/// so page one comes back full and plausibly ordered and *looks entirely correct*; then
+/// every row ties under `ORDER BY rank DESC NULLS FIRST` and page two returns nothing.
+///
+/// So this pages deliberately, at a limit of one, over rows that all have a NULL
+/// `part_number`. A test that only asked "does page one have results" would pass against the
+/// bug.
+#[sqlx::test(migrations = "./migrations")]
+async fn rows_with_no_part_number_still_rank_and_still_page(pool: sqlx::PgPool) {
+    for (seed, name) in [
+        (0xd5, "bracket-lp-1042-01"),
+        (0xd6, "bracket-lp-1042-02"),
+        (0xd7, "bracket-lp-1042-03"),
+    ] {
+        seed_named(&pool, seed, name, None).await;
+    }
+    let parts = PgParts(pool);
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    for _ in 0..3 {
+        let page = parts
+            .search(library(), None, "bracket", cursor, 1, Shows::Live)
+            .await
+            .expect("searches");
+        let Some(row) = page.first() else { break };
+        seen.push(row.summary.id);
+        cursor = Some(row.summary.id);
+    }
+
+    assert_eq!(
+        seen.len(),
+        3,
+        "every page after the first is what the missing coalesce would have emptied"
+    );
+    let unique: std::collections::HashSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 3, "and no row is handed out twice");
+}
+
+/// A single `%` is a valid thing to type and must not answer with the library.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_wildcard_is_searched_for_rather_than_interpreted(pool: sqlx::PgPool) {
+    seed_named(&pool, 0xd8, "flange-dn40-lp-3310-02", None).await;
+    seed_named(&pool, 0xd9, "100% infill test coupon", None).await;
+    let parts = PgParts(pool);
+
+    let found = parts
+        .search(library(), None, "%", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+    assert_eq!(
+        found.len(),
+        1,
+        "one part actually contains a percent sign; the other is not a match for it"
+    );
+
+    assert!(
+        parts
+            .search(library(), None, "_", None, 50, Shows::Live)
+            .await
+            .expect("searches")
+            .is_empty(),
+        "and an underscore is a character to look for, not a single-character wildcard"
+    );
+}
+
+/// Two words, neither adjacent, in either order — what substring matching cannot do and the
+/// reason the tsvector term is in the expression at all.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_two_word_query_finds_a_name_holding_both_words_apart(pool: sqlx::PgPool) {
+    let mount = seed_named(&pool, 0xda, "Mount bracket, left", None).await;
+    seed_named(&pool, 0xdb, "Idler pulley", None).await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "bracket mount", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        vec![mount],
+        "`plainto_tsquery` ANDs the lexemes, and neither substring term spans the comma"
+    );
+}
+
+/// Search reads the removed list through the same `Shows` predicate the grid uses, so a
+/// part somebody deleted is findable there and nowhere else.
+#[sqlx::test(migrations = "./migrations")]
+async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::PgPool) {
+    let part = seed_named(&pool, 0xdc, "vee-block-lp-3072-02", None).await;
+    let parts = PgParts(pool.clone());
+    parts.soft_delete(part).await.expect("removes it");
+
+    assert!(
+        parts
+            .search(library(), None, "vee-block", None, 50, Shows::Live)
+            .await
+            .expect("searches")
+            .is_empty(),
+        "gone from the library"
+    );
+    assert_eq!(
+        parts
+            .search(library(), None, "vee-block", None, 50, Shows::Removed)
+            .await
+            .expect("searches")
+            .len(),
+        1,
+        "and present on the list that exists to get it back"
+    );
+}
