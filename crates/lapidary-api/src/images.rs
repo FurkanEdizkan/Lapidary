@@ -170,9 +170,22 @@ pub fn normalize(bytes: &[u8]) -> Result<NormalizedImage, ImageError> {
 /// EXIF is a container-level thing — so what comes out has none, by construction rather than
 /// by a filter somebody has to remember to keep working.
 fn encode_webp(image: &DynamicImage) -> Result<Vec<u8>, ImageError> {
-    // Lossless: these are stored once and read many times, and a lossy pass over a
-    // photograph that is already a lossy JPEG stacks a second generation of artefacts onto
-    // the thing somebody is looking at in order to decide something.
+    // Lossless, and **not entirely by choice**: `image`'s pure-Rust WebP encoder writes
+    // lossless only — lossy needs libwebp, which is a C dependency this workspace does not
+    // have and would not take lightly.
+    //
+    // It is the right answer for a screenshot or a diagram and the wrong one for a
+    // photograph, where lossless WebP is routinely larger than the JPEG it came from.
+    // Measured on the running stack: a 697 KB high-frequency PNG came out at 1.75 MB. The
+    // bound on dimensions is what keeps that survivable — 2048 px caps how bad it gets —
+    // and a library of photographs will still cost more disk than the same pictures as
+    // JPEGs.
+    //
+    // ponytail: lossless because the encoder offers nothing else. If stored size becomes
+    // the complaint, the upgrade is a lossy encoder at q≈85 (libwebp, or `webp` crate),
+    // not a change here — and the argument against it, that a lossy pass over an already
+    // lossy JPEG stacks a second generation of artefacts onto the picture somebody is
+    // using to decide something, is worth weighing then rather than assuming.
     let rgba = image.to_rgba8();
     let mut out = Vec::new();
     image::codecs::webp::WebPEncoder::new_lossless(&mut out)
