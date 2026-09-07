@@ -1463,6 +1463,18 @@ impl PgParts {
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",
+            // The move audit trail. It references `part` and arrived a slice after this
+            // list was written, so a purge of any part anyone had ever moved failed on
+            // `part_move_part_id_fkey` -- caught on the running stack, not by the suite,
+            // because slice 7's purge tests never move and the folder tree's move tests
+            // never purge. `child-first` is the rule this list already follows; this row
+            // is a child of `part` and belongs above it.
+            //
+            // Deleted rather than kept: the trail records where a part was filed, and a
+            // purged part is not filed anywhere. Keeping it would leave rows pointing at
+            // an id nothing else in the database knows, which is the shape of orphan the
+            // no-`ON DELETE CASCADE` rule exists to make impossible.
+            "DELETE FROM part_move WHERE part_id = $1",
             "DELETE FROM part WHERE id = $1",
         ] {
             sqlx::query(statement)

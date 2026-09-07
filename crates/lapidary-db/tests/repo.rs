@@ -1,7 +1,7 @@
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, RevisionId};
 use lapidary_db::{
-    DbError, DerivativeBytes, IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, Shows,
-    StoredBlobRow, TessellationRow,
+    DbError, DerivativeBytes, IngestRequest, PartRepository, PgBlobs, PgFolders, PgIngest, PgParts,
+    Purged, Shows, StoredBlobRow, TessellationRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -2563,5 +2563,61 @@ async fn an_empty_library_costs_nothing_and_an_absent_one_has_no_answer(pool: sq
             .await
             .expect("totals")
             .is_none()
+    );
+}
+
+/// **Purging a part that has ever been moved.**
+///
+/// `part_move` references `part` and arrived a slice after `purge`'s delete list was
+/// written, so this raised `part_move_part_id_fkey` and answered 500 for any part with a
+/// move behind it. Neither side's suite could see it: slice 7's purge tests never move a
+/// part and the folder tree's move tests never purge one, so the combination existed only
+/// on a running stack — which is where it was found.
+///
+/// The move goes through `move_to_folder`, not a hand-written `INSERT`, so the row this
+/// deletes is the row the product writes.
+#[sqlx::test(migrations = "./migrations")]
+async fn purging_a_part_that_has_been_moved_takes_its_move_history_with_it(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let parts = PgParts(pool.clone());
+    let folders = PgFolders(pool.clone());
+    let id = seed_part(&ingest, library(), "Vee block, LP-3072-02", 0xd1, None).await;
+    let terrain = folders
+        .get_or_create(library(), None, "Fixtures", "Fixtures")
+        .await
+        .expect("a category to move into");
+
+    parts
+        .move_to_folder(
+            id,
+            None,
+            Some(terrain),
+            "libraries/default/vee-block-lp-3072-02",
+            "libraries/default/Fixtures/vee-block-lp-3072-02",
+            || Ok(()),
+        )
+        .await
+        .expect("the move is recorded");
+    assert_eq!(
+        parts.moves(id).await.expect("history reads").len(),
+        1,
+        "the fixture has to leave a move behind, or this proves nothing"
+    );
+
+    assert!(parts.soft_delete(id).await.expect("soft delete"));
+    assert!(
+        matches!(parts.purge(id).await.expect("purge"), Purged::Done(_)),
+        "a purge must not fail on the audit trail of a move"
+    );
+
+    let orphans: i64 = sqlx::query_scalar("SELECT count(*) FROM part_move WHERE part_id = $1")
+        .bind(id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("move rows count");
+    assert_eq!(
+        orphans, 0,
+        "and the trail goes with the part: a purged part is filed nowhere, so a row saying \
+         where it was filed points at an id nothing else in the database knows"
     );
 }
