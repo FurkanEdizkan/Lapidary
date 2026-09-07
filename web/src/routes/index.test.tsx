@@ -118,9 +118,14 @@ function stubFetch(routes: {
   folders?: () => Promise<StubResponse>;
   move?: () => Promise<StubResponse>;
   folderDelete?: () => Promise<StubResponse>;
+  instanceStorage?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    // Before the per-library storage rule: this one has no library in its path, and the
+    // two would otherwise be told apart only by which substring was tested first.
+    if (url.startsWith("/api/storage"))
+      return (routes.instanceStorage ?? pending)();
     // Above the settings rule below, which claims every `PATCH` there is. The move is a
     // `PATCH` too, and answering it with a `LibrarySettings` body would leave a move test
     // asserting against a shape it never asked for.
@@ -219,6 +224,7 @@ const MOTOR_MOUNT: PartCard = {
   storedBytes: 197_012,
   compressed: true,
   directory: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face",
+  storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
   createdAt: "2026-08-14T09:12:44Z",
   updatedAt: "2026-08-14T09:12:44Z",
 };
@@ -240,6 +246,7 @@ const HEX_NUT: PartCard = {
   storedBytes: 26_741,
   compressed: true,
   directory: "libraries/default/Fasteners/Hex nut M8, DIN 934",
+  storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
   createdAt: "2026-08-14T09:12:51Z",
   updatedAt: "2026-08-14T09:12:51Z",
 };
@@ -268,6 +275,7 @@ const SHAFT_COUPLER: PartCard = {
   storedBytes: 148_930,
   compressed: false,
   directory: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm",
+  storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
   createdAt: "2026-08-14T09:13:02Z",
   updatedAt: "2026-08-14T09:13:02Z",
 };
@@ -2068,6 +2076,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   createdAt: "2026-08-30T11:04:19Z",
   updatedAt: "2026-08-30T11:04:19Z",
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
+  storagePath: "libraries/default/Terrain/Rocks/basalt_cliff_face/basalt_cliff_face.stl",
 };
 
 /** Ingested before the folder layout existed, so it is still in the shared store. */
@@ -2090,6 +2099,7 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   createdAt: "2026-05-02T08:41:07Z",
   updatedAt: "2026-05-02T08:41:07Z",
   directory: null,
+  storagePath: null,
 };
 
 test("selecting a category puts it in the URL and asks the grid for that category", async () => {
@@ -2142,11 +2152,20 @@ test("a category in the URL filters the first request the grid makes", async () 
   );
 });
 
-test("show in folder reveals the directory as copyable text and opens nothing", async () => {
+/**
+ * The store-relative case: the deployment has not said where the store is, so the path
+ * shown is the one within it, and the copy says how to get the rest.
+ *
+ * The **file**, not its directory. "Where is this model" is answered by the path to the
+ * model — and the filename is the half a client cannot reconstruct, because the server
+ * disambiguates a colliding model name and only it knows when it did.
+ */
+test("show in folder reveals the model's own path as copyable text and opens nothing", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
     folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage(null)),
   });
   renderIndex();
 
@@ -2157,8 +2176,10 @@ test("show in folder reveals the directory as copyable text and opens nothing", 
     }),
   );
 
-  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined();
+  expect(within(card).getByText(CLIFF_FACE.storagePath)).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined();
+  // The one sentence that says what to change to get a full path. Shown only here.
+  expect(within(card).getByText(strings.folders.directoryPartial)).toBeDefined();
   // No browser opens a host file manager, and `file://` navigation from a page is blocked
   // everywhere — so nothing here pretends to. The path is text, and there is no link.
   expect(document.querySelector('a[href^="file:"]')).toBeNull();
@@ -2168,7 +2189,59 @@ test("show in folder reveals the directory as copyable text and opens nothing", 
   fireEvent.click(
     within(card).getByRole("button", { name: strings.folders.copyPath }),
   );
-  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined();
+  expect(within(card).getByText(CLIFF_FACE.storagePath)).toBeDefined();
+});
+
+/**
+ * And the case the whole feature is for: the deployment named an absolute host root, so
+ * what is on screen is a path that will actually open.
+ *
+ * The prefix is joined once, here, from a value the server sent — never assembled from
+ * category names, which is the mistake `ShowInFolder`'s own doc has always refused.
+ */
+test("a deployment that says where the store is gets the full path on the card", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([CLIFF_FACE])),
+    folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage("/srv/lapidary-storage")),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  fireEvent.click(
+    within(card).getByRole("button", {
+      name: strings.folders.showInFolderFor(CLIFF_FACE.name),
+    }),
+  );
+
+  expect(
+    await within(card).findByText(`/srv/lapidary-storage/${CLIFF_FACE.storagePath}`),
+  ).toBeDefined();
+  expect(within(card).getByText(strings.folders.directoryHintAbsolute)).toBeDefined();
+  // The "set the variable" sentence is about a state this deployment is not in.
+  expect(within(card).queryByText(strings.folders.directoryPartial)).toBeNull();
+});
+
+/** A trailing slash on the root must not produce a doubled separator in the path. */
+test("a host root with a trailing slash still joins to one separator", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([CLIFF_FACE])),
+    folders: ok([TERRAIN]),
+    instanceStorage: ok(instanceStorage("/srv/lapidary-storage/")),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  fireEvent.click(
+    within(card).getByRole("button", {
+      name: strings.folders.showInFolderFor(CLIFF_FACE.name),
+    }),
+  );
+  expect(
+    await within(card).findByText(`/srv/lapidary-storage/${CLIFF_FACE.storagePath}`),
+  ).toBeDefined();
 });
 
 test("a model still in the shared store says so rather than showing an invented path", async () => {
@@ -2281,3 +2354,15 @@ test("an empty category with its name not loaded still does not claim the librar
   expect(await screen.findByText(strings.emptyLibrary.categoryTitle)).toBeDefined();
   expect(screen.getByText(strings.emptyLibrary.categoryBody(null))).toBeDefined();
 });
+
+/** `GET /api/storage`'s body, with only the field these tests care about varied. */
+function instanceStorage(hostStorageRoot: string | null) {
+  return {
+    sourceBytes: 150406654,
+    derivativeBytes: 9437184,
+    removedBytes: 0,
+    quarantinedBytes: 0,
+    onDiskBytes: null,
+    hostStorageRoot,
+  };
+}

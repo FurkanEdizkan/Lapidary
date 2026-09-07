@@ -719,9 +719,25 @@ export const strings = {
      * manager — `file://` links are blocked everywhere — so this shows where to look
      * instead of pretending to a capability the web build does not have. A native reveal
      * belongs to the Tauri shell.
+     *
+     * Two versions, because there are two truths to tell. With `LAPIDARY_HOST_STORAGE_ROOT`
+     * set to an absolute path the server can say where the store really is, and what is on
+     * screen is a path that will open — so the copy stops apologising and just says to
+     * paste it. Without it the path is store-relative, the user has to know where their own
+     * store is, and pretending otherwise would be the confidently-wrong answer this whole
+     * feature refuses to give.
      */
     directoryHint:
       'A browser cannot open a file manager, so this is the path rather than a button. Copy it and open it where your files are.',
+    directoryHintAbsolute:
+      'A browser cannot open a file manager, so this is the path rather than a button. Copy it and paste it into yours.',
+    /**
+     * Shown under a store-relative path, once, where a person is looking at exactly the
+     * thing it would fix. Names the variable rather than describing it: somebody editing
+     * `deploy/.env` needs the string to search for.
+     */
+    directoryPartial:
+      'This is the path inside your storage folder. Set LAPIDARY_STORAGE_ROOT to an absolute path in deploy/.env and the full path appears here instead.',
     /**
      * `directory` is null: this model predates the folder layout and still lives in the
      * shared store. Wording taken from the move route's own refusal, so the two places a

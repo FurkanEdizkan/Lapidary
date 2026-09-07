@@ -7,6 +7,7 @@ import {
   downloadUrl,
   fetchBatchStatus,
   fetchHealth,
+  fetchInstanceStorage,
   fetchLibrarySettings,
   fetchLibraryStorage,
   fetchParts,
@@ -208,6 +209,13 @@ export function Index({
     folderId === undefined
       ? null
       : (folders.data?.find((folder) => folder.id === folderId)?.name ?? null)
+
+  // Where the store is on the host, and what the whole of it holds. One request for the
+  // page, not one per card: both are facts about the deployment rather than about a part.
+  const instance = useQuery({
+    queryKey: ['instance-storage'],
+    queryFn: () => fetchInstanceStorage(),
+  })
 
   const parts = useInfiniteQuery({
     queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
@@ -466,6 +474,7 @@ export function Index({
               parts={loaded}
               onRender={(part) => renderPart.mutate(part)}
               busyPart={renderPart.isPending ? renderPart.variables : undefined}
+              hostRoot={instance.data?.hostStorageRoot ?? null}
             />
             <MorePages
               count={loaded.length}
@@ -900,10 +909,13 @@ function Grid({
   parts,
   onRender,
   busyPart,
+  hostRoot,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
   busyPart?: PartId
+  /** Passed down rather than fetched per card: it is one fact about the deployment. */
+  hostRoot: string | null
 }) {
   return (
     <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
@@ -927,7 +939,7 @@ function Grid({
         // real size once it has rendered one, so this figure only has to be close for the
         // first paint rather than exact forever.
         <li key={part.id} className="[content-visibility:auto] [contain-intrinsic-size:auto_26rem]">
-          <Card part={part} onRender={onRender} busy={part.id === busyPart} />
+          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} />
         </li>
       ))}
     </ul>
@@ -938,10 +950,12 @@ function Card({
   part,
   onRender,
   busy,
+  hostRoot,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
   busy: boolean
+  hostRoot: string | null
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
@@ -1040,7 +1054,7 @@ function Card({
             <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
           )}
         </div>
-        <ShowInFolder part={part} directory={directory} />
+        <ShowInFolder part={part} hostRoot={hostRoot} />
         {/*
           Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
           This card is `overflow-hidden hover:-translate-y-0.5`, Tailwind emits that lift as
@@ -1077,16 +1091,30 @@ function Card({
  */
 function ShowInFolder({
   part,
-  directory,
+  hostRoot,
 }: {
   part: PartCard
-  directory: string | null
+  /**
+   * Where the store is on the host, or `null` when the deployment has not said.
+   *
+   * Never derived here and never guessed. The api sees the store at a container path that
+   * exists on nobody's machine, so if this is `null` the honest answer is the path within
+   * the store — which is what the copy then says, along with how to fix it.
+   */
+  hostRoot: string | null
 }) {
   const [open, setOpen] = useState(false)
-  // Narrowed out here rather than in the JSX below: a `typeof x !== 'string'` inside a
-  // child expression puts the literal `'string'` in a position `no-bare-strings.test.ts`
-  // reads — correctly — as a label reaching the screen.
-  const path = typeof directory === 'string' ? directory : null
+  // The file, not its directory: "where is this model" is answered by the path to the
+  // model, and the directory is one `rsplit` away for anyone who wants it. Narrowed with
+  // `typeof` rather than in the JSX because a `!== 'string'` inside a child expression puts
+  // the literal `'string'` where `no-bare-strings.test.ts` reads it — correctly — as a
+  // label reaching the screen.
+  const relative = typeof part.storagePath === 'string' ? part.storagePath : null
+  // Joined with a single slash and no path library: `hostRoot` is absolute or absent (the
+  // server drops a relative one), and the store-relative path never starts with one, so the
+  // only case to handle is a trailing slash on the root.
+  const path =
+    relative === null ? null : hostRoot === null ? relative : `${hostRoot.replace(/\/$/, '')}/${relative}`
   return (
     <div className="mt-2 text-xs text-[var(--color-muted)]">
       <button
@@ -1119,7 +1147,8 @@ function ShowInFolder({
           >
             {strings.folders.copyPath}
           </button>
-          <p>{strings.folders.directoryHint}</p>
+          <p>{hostRoot === null ? strings.folders.directoryHint : strings.folders.directoryHintAbsolute}</p>
+          {hostRoot === null ? <p>{strings.folders.directoryPartial}</p> : null}
         </div>
       )}
     </div>
