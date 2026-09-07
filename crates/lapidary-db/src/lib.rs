@@ -139,10 +139,14 @@ pub enum DbError {
     )]
     FolderNameTaken { name: String },
 
-    /// `folder_slug_unique_per_parent`. Distinct names, one directory: `Rocks?` and
-    /// `Rocks*` both become `Rocks-` on a filesystem that will hold neither character.
+    /// `folder_slug_unique_per_parent`. Distinct names, one directory, reachable two ways:
+    /// `Rocks?` and `Rocks*` both become `Rocks-` on a filesystem that will hold neither
+    /// character, and — since a rename keeps the slug it was created with — a sibling now
+    /// called something else entirely may still be sitting in the directory this name wants.
+    /// The message names the directory rather than guessing which of the two happened,
+    /// because the user can go and look at it.
     #[error(
-        "`{name}` would live in the directory `{slug}`, and a sibling category already occupies it — the two names differ only in characters no filesystem can store. Pick a name that differs somewhere a directory name can show it."
+        "`{name}` would live in the directory `{slug}`, and a sibling category already occupies it — either the two names differ only in characters no filesystem can store, or that sibling was renamed and kept the directory it was created in. Pick another name."
     )]
     FolderSlugTaken { name: String, slug: String },
 

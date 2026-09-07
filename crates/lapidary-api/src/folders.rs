@@ -218,7 +218,7 @@ pub async fn patch(
                 "A category needs a name. Type one and try again.",
             );
         }
-        match folders.rename(folder, name, &slugify(name)).await {
+        match folders.rename(folder, name).await {
             Ok(true) => {}
             Ok(false) => return no_such_folder(),
             Err(err) if moved => return partly_applied(&err),

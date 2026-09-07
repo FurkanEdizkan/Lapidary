@@ -149,8 +149,19 @@ async fn reparent_moves_a_folder_and_slug_path_follows_it(pool: sqlx::PgPool) {
     );
 }
 
+/// **A rename does not move bytes**, which is the product decision `docs/DATA.md` §1.1
+/// records, and this is where it is enforced: the row's name changes, the slug does not,
+/// and `slug_path` — which is what every writer asks for a directory — keeps answering the
+/// directory the category was created in.
+///
+/// The assertion is the opposite of what this test held before the decision was made, and
+/// the reason is not tidiness. If the slug followed the name, the parts already ingested
+/// would stay under the old directory (nothing rewrites `file.storage_path`) while the next
+/// ingest or move into the *same* category landed under the new one — one category, two
+/// directories, and another with every further rename. The choice is not between a stale
+/// directory name and a fresh one; it is between a stale name and a split category.
 #[sqlx::test(migrations = "./migrations")]
-async fn rename_changes_the_name_and_slug_path_reflects_it(pool: sqlx::PgPool) {
+async fn a_rename_leaves_the_category_in_the_directory_it_was_created_in(pool: sqlx::PgPool) {
     let f = PgFolders(pool.clone());
     let terrain = f
         .get_or_create(library(), None, "Terrain", "Terrain")
@@ -162,13 +173,56 @@ async fn rename_changes_the_name_and_slug_path_reflects_it(pool: sqlx::PgPool) {
         .expect("Rocks");
 
     assert!(
-        f.rename(rocks, "Cliffs", "Cliffs").await.expect("renames"),
+        f.rename(rocks, "Cliffs").await.expect("renames"),
         "the row exists, so the rename must match"
     );
     assert_eq!(
         f.slug_path(rocks).await.expect("path"),
-        "Terrain/Cliffs",
-        "slug_path must reflect the new slug, not the old one"
+        "Terrain/Rocks",
+        "the name changed and the directory did not, so slug_path must still answer `Rocks`"
+    );
+    assert_eq!(
+        f.tree(library())
+            .await
+            .expect("tree")
+            .into_iter()
+            .find(|node| node.id == rocks)
+            .expect("the renamed category")
+            .name,
+        "Cliffs",
+        "and the rename did happen — this is not a test that nothing changed"
+    );
+}
+
+/// The consequence of the rule above, on the path that matters most: a scan.
+///
+/// The store is meant to be browsable, so the directory a scan walks is the only thing it
+/// knows about a category. After a rename that directory carries a name no screen shows,
+/// and `get_or_create` has to recognise it anyway — otherwise re-scanning a renamed library
+/// either forks a second category with the old name, or fails outright on the slug
+/// constraint. It matches on the slug for exactly this reason.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_scan_walking_a_renamed_categorys_directory_finds_that_category(pool: sqlx::PgPool) {
+    let f = PgFolders(pool.clone());
+    let rocks = f
+        .get_or_create(library(), None, "Rocks", "Rocks")
+        .await
+        .expect("Rocks");
+    f.rename(rocks, "Cliffs").await.expect("renames");
+
+    // What the scan does with the directory `Rocks/`: the name it derives is the directory,
+    // because a directory is all it has.
+    assert_eq!(
+        f.get_or_create(library(), None, "Rocks", "Rocks")
+            .await
+            .expect("the scan finds the category rather than forking one"),
+        rocks,
+        "the directory `Rocks` still belongs to the category now called `Cliffs`"
+    );
+    assert_eq!(
+        f.tree(library()).await.expect("tree").len(),
+        1,
+        "and no second category was created behind the user's back"
     );
 }
 

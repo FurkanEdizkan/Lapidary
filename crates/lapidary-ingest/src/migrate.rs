@@ -558,7 +558,7 @@ impl WorkerHandler {
                 );
             }
             folders
-                .rename(id, &name, &slug)
+                .reslug(id, &name, &slug)
                 .await
                 .map_err(classify_db)?;
         }
