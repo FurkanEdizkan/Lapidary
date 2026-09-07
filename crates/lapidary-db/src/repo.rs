@@ -261,6 +261,26 @@ pub trait PartRepository: Send + Sync {
         limit: u16,
         shows: Shows,
     ) -> Result<Vec<PartRow>, DbError>;
+
+    /// The same grid, filtered to a text query and ordered by relevance.
+    ///
+    /// A method and not a sixth parameter on [`Self::page`]: that one has around
+    /// twenty-five call sites across three crates' tests, and widening it would be
+    /// twenty-five mechanical `None`s bought for nothing. The two share their columns,
+    /// their LATERALs and their decoder, which is where sharing actually matters.
+    ///
+    /// Same keyset contract: `after` is still a `PartId`, and the rank behind it is
+    /// recomputed inside the query rather than carried on the wire. A float in a cursor
+    /// drifts by one ULP and silently skips or repeats a row.
+    async fn search(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: &str,
+        after: Option<lapidary_core::PartId>,
+        limit: u16,
+        shows: Shows,
+    ) -> Result<Vec<PartRow>, DbError>;
 }
 
 /// Mirrors `lapidary_storage::StoredBlob`. Not imported: both crates are L1, and
@@ -1205,6 +1225,46 @@ struct DetailColumns {
     l0_stored_bytes: Option<i64>,
     created_us: i64,
     updated_us: i64,
+}
+
+/// The sixteen columns a card is made of.
+///
+/// A `const` and not two copies, because `page` and `search` must select the same list in
+/// the same order or [`to_part_row`]'s positional tuple decodes one query's columns into
+/// another query's fields — a failure that type-checks. `repo.rs`'s LATERAL comment already
+/// argues this about the joins; two hand-copied SELECT lists would be worse, because the
+/// tuple's safety would then *depend* on nobody editing one without the other.
+///
+/// A macro rather than a `const`, and only because `concat!` takes literals: a `const &str`
+/// is not one. The effect is what a const would have given — one definition, spliced at
+/// compile time, no string building anywhere near a query.
+macro_rules! grid_columns {
+    () => {
+        "p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
+     d.thumb_bytes, r.triangle_count, \
+     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, l0.blake3, \
+     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
+     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us"
+    };
+}
+
+/// The four LATERALs behind those columns: the latest revision, its thumbnail, its L0 rung
+/// and its source file.
+///
+/// Shared for the same reason as [`GRID_COLUMNS`], and named separately because search puts
+/// a join between the two — its candidates come from a CTE, and the LATERALs then run for
+/// the page it kept rather than for every row that matched.
+macro_rules! grid_laterals {
+    () => {
+        "\
+     JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+     LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+     LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
+     LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
+                        FROM file f \
+                        WHERE f.revision_id = r.id AND f.role = 'source' \
+                        ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true"
+    };
 }
 
 pub struct PgParts(pub PgPool);
@@ -2267,50 +2327,21 @@ impl PartRepository for PgParts {
         // give the tree two descent implementations to keep in step. `down` is empty and
         // costs nothing when `$7` is NULL, and the `IS NULL` guard beside it is what makes
         // an absent filter mean the whole library.
-        #[allow(clippy::type_complexity)]
-        let rows: Vec<(
-            Uuid,
-            Uuid,
-            Uuid,
-            String,
-            Option<String>,
-            String,
-            Option<Vec<u8>>,
-            Option<i32>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i16>,
-            Option<String>,
-            Option<String>,
-            i64,
-            i64,
-        )> = sqlx::query_as(
+        let rows: Vec<GridRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $7 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             SELECT p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
-                    d.thumb_bytes, \
-                    r.triangle_count, \
-                    s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, \
-                    l0.blake3, \
-                    (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
-                    (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
-             FROM part p \
-             JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
-                                FROM file f \
-                                WHERE f.revision_id = r.id AND f.role = 'source' \
-                                ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+             SELECT ",
+            grid_columns!(),
+            " FROM part p ",
+            grid_laterals!(),
+            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                AND ($2::uuid IS NULL OR p.id < $2) \
                AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
              ORDER BY p.id DESC LIMIT $3",
-        )
+        ))
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
@@ -2338,119 +2369,111 @@ impl PartRepository for PgParts {
         // makes this grid checkable against the storage panel above it: `storage_totals`
         // sums `f.stored_bytes` over the same rows, which is the figure this card calls
         // `stored_bytes` too.
-        fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
-            value.map(|v| bytes_column(column, v)).transpose()
-        }
+        rows.into_iter().map(to_part_row).collect()
+    }
 
-        rows.into_iter()
-            .map(
-                |(
-                    id,
-                    lib,
-                    revision,
-                    name,
-                    part_number,
-                    source_path,
-                    thumb_bytes,
-                    triangles,
-                    source_hash,
-                    source_bytes,
-                    stored_bytes,
-                    zstd_level,
-                    storage_path,
-                    tessellation_l0,
-                    created_us,
-                    updated_us,
-                )| {
-                    // `as u32` previously turned a negative column value into a number
-                    // near 4.29 billion instead of failing — the same silent-wraparound
-                    // shape as the write side above, just in the other direction.
-                    let triangle_count = triangles
-                        .map(|t| {
-                            u32::try_from(t).map_err(|_| DbError::NegativeTriangleCount {
-                                column: "revision.triangle_count",
-                                value: t,
-                            })
-                        })
-                        .transpose()?;
-                    let source_hash = source_hash
-                        .map(|hex| {
-                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
-                                column: "file.blake3",
-                                value: hex,
-                            })
-                        })
-                        .transpose()?;
-                    // Refused rather than dropped, same as the source hash above: a
-                    // derivative row whose `blake3` is not a digest is a corrupt row, and
-                    // reporting it as "this part has no rung" would hide the corruption
-                    // behind a state that looks ordinary.
-                    let tessellation_l0 = tessellation_l0
-                        .map(|hex| {
-                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
-                                column: "derivative.blake3",
-                                value: hex,
-                            })
-                        })
-                        .transpose()?;
-                    // Keyed off the source row's presence, never off `zstd_level`'s:
-                    // the column is nullable, so a `None` level on a row that exists
-                    // means "nobody recorded how these bytes were stored", which is a
-                    // different fact from "this revision has no source file" and must
-                    // not collapse into it. The predicate matches `SourceReader::get`'s
-                    // for every level actually recorded, which is what keeps a card
-                    // claiming "compressed" from sitting over a raw download. A `NULL`
-                    // one is not a download this card describes at all: `download.rs`
-                    // answers 500 for it rather than serving anything (spec §2.5.1), so
-                    // reporting `false` is the display field declining to be the place a
-                    // data error surfaces. Reachable only from outside `insert_part_chain`
-                    // now that migration `0013` records the level on the `file` row: every
-                    // row this crate writes carries the level `put_at` reported for it,
-                    // including `link_existing`'s, which used to inherit whatever the
-                    // shared `blob` row said. See `PartSummary::compressed`.
-                    let compressed = source_hash
-                        .as_ref()
-                        .map(|_| zstd_level.is_some_and(|level| level != 0));
-                    Ok(PartRow {
-                        summary: PartSummary {
-                            id: PartId::from_uuid(id),
-                            library: LibraryId::from_uuid(lib),
-                            revision: RevisionId::from_uuid(revision),
-                            name,
-                            part_number,
-                            source_path,
-                            // The hash is not carried in slice 1: thumbnails arrive inline
-                            // and the grid renders them directly. A hash-addressed
-                            // thumbnail endpoint arrives with the viewer.
-                            thumbnail: None,
-                            triangle_count,
-                            // Every figure on a mesh part is tessellated, so any is all.
-                            approximate: true,
-                            source_hash,
-                            tessellation_l0,
-                            source_bytes: bytes("file.size_bytes", source_bytes)?,
-                            stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
-                            compressed,
-                            created_at: jiff::Timestamp::from_microsecond(created_us).map_err(
-                                |_| DbError::TimestampOutOfRange {
-                                    column: "part.created_at",
-                                    value: created_us,
-                                },
-                            )?,
-                            updated_at: jiff::Timestamp::from_microsecond(updated_us).map_err(
-                                |_| DbError::TimestampOutOfRange {
-                                    column: "part.updated_at",
-                                    value: updated_us,
-                                },
-                            )?,
-                        },
-                        thumbnail_webp: thumb_bytes,
-                        directory: storage_path.as_deref().and_then(model_directory),
-                        storage_path,
-                    })
-                },
-            )
-            .collect()
+    async fn search(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: &str,
+        after: Option<PartId>,
+        limit: u16,
+        shows: Shows,
+    ) -> Result<Vec<PartRow>, DbError> {
+        // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
+        // What differs is which parts are candidates and in what order they come back.
+        //
+        // # The three things that make this query the shape it is
+        //
+        // **1. `coalesce(part_number, '')` belongs in the rank and must NOT be in the
+        // match.** Two different reasons, pulling opposite ways, and getting either wrong
+        // is silent.
+        //
+        // In the *rank* it is load-bearing: with a NULL `part_number` — which is every row
+        // in a real library today, because nothing writes that column yet —
+        // `(p.part_number ILIKE $9)::int * 4 + …` is NULL for the whole expression. The
+        // `WHERE` is unaffected, so page one comes back full and plausibly ordered and
+        // looks entirely correct; then every row ties under `ORDER BY rank DESC` and page
+        // two returns nothing. `0002_parts.sql:43` coalesces inside the generated column
+        // for the same reason.
+        //
+        // In the *match* it is the opposite: `coalesce(part_number, '') ILIKE $9` is an
+        // expression, and `part_number_trgm` indexes the column — so the coalesced form is
+        // unindexable and the term becomes a sequential scan. Verified with `EXPLAIN` on
+        // this deployment: bare `part_number ILIKE` takes a `Bitmap Index Scan on
+        // part_number_trgm`, and the coalesced one takes a `Seq Scan` with the predicate as
+        // a filter. `NULL ILIKE x` is NULL, and `NULL OR …` is exactly the "not a match"
+        // this wants, so the coalesce buys nothing here and costs the index.
+        //
+        // **2. `hits` must stay materialized**, which multiple references give it. `anchor`
+        // and `top` both read it, so both read the *same stored* `real` out of one
+        // tuplestore rather than recomputing a float and comparing two results of it.
+        // Collapse it to one reference, or add `NOT MATERIALIZED`, and an exact comparison
+        // silently becomes a recomputation — which is a cursor that skips or repeats a row
+        // by one ULP.
+        //
+        // **3. The `hits`/`top` split is what keeps this affordable.** The four LATERALs run
+        // `limit` times, not once per matching row: `top` picks the page first and the joins
+        // happen after. Without the split a five-thousand-hit query would do twenty thousand
+        // index lookups per page and throw all but a screenful away.
+        //
+        // # What it costs, plainly
+        //
+        // `rank` is not indexable, so page 20 re-scans and re-ranks the whole match set
+        // exactly as page 1 did. It is no *dearer* than page 1 either, which is the thing
+        // `OFFSET` cannot promise — and the keyset stays a `PartId`, so `PartsPage`,
+        // `fetchParts` and every binding are untouched.
+        //
+        // One honest hole: if the anchor part is renamed out of the result set mid-scroll,
+        // `anchor` is empty, the row comparison is NULL, and paging ends early rather than
+        // repeating rows. Documented rather than branched around — a fallback for a
+        // rename-during-scroll window would be more machinery than the case deserves.
+        let rows: Vec<GridRow> = sqlx::query_as(concat!(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $7 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
+             hits AS ( \
+               SELECT p.id, \
+                      ( (coalesce(p.part_number, '') ILIKE $9)::int * 4 \
+                      + (p.name ILIKE $9)::int * 2 \
+                      + (p.search @@ plainto_tsquery('simple', $8))::int \
+                      + ts_rank(p.search, plainto_tsquery('simple', $8)) ) AS rank \
+                 FROM part p \
+                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ( p.part_number ILIKE $9 \
+                     OR p.name ILIKE $9 \
+                     OR p.search @@ plainto_tsquery('simple', $8) ) ), \
+             anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
+             top AS ( \
+               SELECT id, rank FROM hits \
+                WHERE $2::uuid IS NULL OR (rank, id) < (SELECT rank, id FROM anchor) \
+                ORDER BY rank DESC, id DESC LIMIT $3) \
+             SELECT ",
+            grid_columns!(),
+            " FROM top JOIN part p ON p.id = top.id ",
+            grid_laterals!(),
+            " ORDER BY top.rank DESC, top.id DESC",
+        ))
+        .bind(library.as_uuid())
+        .bind(after.map(|a| a.as_uuid()))
+        .bind(i64::from(limit))
+        .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(DerivativeKind::TessellationL0.as_str())
+        .bind(shows == Shows::Removed)
+        .bind(folder.map(|f| f.as_uuid()))
+        // The raw query, for `plainto_tsquery`, which must not see the LIKE escapes.
+        .bind(query)
+        // And the escaped one, wrapped. Two bindings of one input, and they are not
+        // interchangeable.
+        .bind(like_pattern(query))
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter().map(to_part_row).collect()
     }
 }
 
@@ -2614,4 +2637,165 @@ pub struct NewPartImage<'a> {
     /// Where it was fetched from, for one that was. Never used to load the image: our own
     /// copy is what is served, because hotlinking leaks a referrer on every grid scroll.
     pub source_url: Option<&'a str>,
+}
+
+/// One grid row, decoded. `page` and `search` select the same sixteen columns and both end
+/// here, so a card cannot mean one thing on the grid and another in a set of results.
+///
+/// The tuple is positional and stays that way: `#[derive(sqlx::FromRow)]` maps by column
+/// *name*, and this SELECT has two `id`s and two `blake3`s. Adopting it would mean aliasing
+/// the grid's crown-jewel query for a benefit nothing needs yet.
+///
+/// ponytail: a positional 16-tuple at sqlx's ceiling. A seventeenth column is the trigger to
+/// alias the SELECT and move to a named `FromRow` struct, not a reason to drop a column
+/// again.
+#[allow(clippy::type_complexity)]
+type GridRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    String,
+    Option<String>,
+    String,
+    Option<Vec<u8>>,
+    Option<i32>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i16>,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+);
+
+fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
+    fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
+        value.map(|v| bytes_column(column, v)).transpose()
+    }
+
+    let (
+        id,
+        lib,
+        revision,
+        name,
+        part_number,
+        source_path,
+        thumb_bytes,
+        triangles,
+        source_hash,
+        source_bytes,
+        stored_bytes,
+        zstd_level,
+        storage_path,
+        tessellation_l0,
+        created_us,
+        updated_us,
+    ) = row;
+    {
+        // `as u32` previously turned a negative column value into a number
+        // near 4.29 billion instead of failing — the same silent-wraparound
+        // shape as the write side above, just in the other direction.
+        let triangle_count = triangles
+            .map(|t| {
+                u32::try_from(t).map_err(|_| DbError::NegativeTriangleCount {
+                    column: "revision.triangle_count",
+                    value: t,
+                })
+            })
+            .transpose()?;
+        let source_hash = source_hash
+            .map(|hex| {
+                BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                    column: "file.blake3",
+                    value: hex,
+                })
+            })
+            .transpose()?;
+        // Refused rather than dropped, same as the source hash above: a
+        // derivative row whose `blake3` is not a digest is a corrupt row, and
+        // reporting it as "this part has no rung" would hide the corruption
+        // behind a state that looks ordinary.
+        let tessellation_l0 = tessellation_l0
+            .map(|hex| {
+                BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                    column: "derivative.blake3",
+                    value: hex,
+                })
+            })
+            .transpose()?;
+        // Keyed off the source row's presence, never off `zstd_level`'s:
+        // the column is nullable, so a `None` level on a row that exists
+        // means "nobody recorded how these bytes were stored", which is a
+        // different fact from "this revision has no source file" and must
+        // not collapse into it. The predicate matches `SourceReader::get`'s
+        // for every level actually recorded, which is what keeps a card
+        // claiming "compressed" from sitting over a raw download. A `NULL`
+        // one is not a download this card describes at all: `download.rs`
+        // answers 500 for it rather than serving anything (spec §2.5.1), so
+        // reporting `false` is the display field declining to be the place a
+        // data error surfaces. Reachable only from outside `insert_part_chain`
+        // now that migration `0013` records the level on the `file` row: every
+        // row this crate writes carries the level `put_at` reported for it,
+        // including `link_existing`'s, which used to inherit whatever the
+        // shared `blob` row said. See `PartSummary::compressed`.
+        let compressed = source_hash
+            .as_ref()
+            .map(|_| zstd_level.is_some_and(|level| level != 0));
+        Ok(PartRow {
+            summary: PartSummary {
+                id: PartId::from_uuid(id),
+                library: LibraryId::from_uuid(lib),
+                revision: RevisionId::from_uuid(revision),
+                name,
+                part_number,
+                source_path,
+                // The hash is not carried in slice 1: thumbnails arrive inline
+                // and the grid renders them directly. A hash-addressed
+                // thumbnail endpoint arrives with the viewer.
+                thumbnail: None,
+                triangle_count,
+                // Every figure on a mesh part is tessellated, so any is all.
+                approximate: true,
+                source_hash,
+                tessellation_l0,
+                source_bytes: bytes("file.size_bytes", source_bytes)?,
+                stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
+                compressed,
+                created_at: jiff::Timestamp::from_microsecond(created_us).map_err(|_| {
+                    DbError::TimestampOutOfRange {
+                        column: "part.created_at",
+                        value: created_us,
+                    }
+                })?,
+                updated_at: jiff::Timestamp::from_microsecond(updated_us).map_err(|_| {
+                    DbError::TimestampOutOfRange {
+                        column: "part.updated_at",
+                        value: updated_us,
+                    }
+                })?,
+            },
+            thumbnail_webp: thumb_bytes,
+            directory: storage_path.as_deref().and_then(model_directory),
+            storage_path,
+        })
+    }
+}
+
+/// A user's text as a `LIKE` pattern: escaped, then wrapped in `%`.
+///
+/// **Not cosmetic.** `'%' || $q || '%'` with a query of `%` is `'%%%'`, which matches every
+/// row — so a search box would answer a single percent sign with the entire library. It is
+/// not injection, because the value is bound; it is a search that lies about what it found,
+/// which is the same class of thing `CLAUDE.md` forbids about measurement.
+///
+/// Backslash first, or escaping `%` would then have its own escape escaped. The result goes
+/// to the `ILIKE` terms only — `plainto_tsquery` gets the raw query, because a tsquery has
+/// no idea what a LIKE escape is and would tokenize the backslashes as text.
+fn like_pattern(query: &str) -> String {
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
 }

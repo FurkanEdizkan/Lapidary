@@ -56,15 +56,32 @@ export const Route = createFileRoute('/')({
    * hands back nothing, so the poll below would simply never enable — silently, and
    * identically to there being no scan.
    */
-  validateSearch: (search: Record<string, unknown>): { batch?: string; folderId?: string } => {
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { batch?: string; folderId?: string; q?: string } => {
     const batch = search.batch
     const folderId = search.folderId
+    const q = search.q
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
       // route spells as no parameter at all — so a selection that is cleared has to leave
       // nothing behind rather than leave `?folderId=` behind.
       ...(typeof folderId === 'string' && folderId.length > 0 ? { folderId } : {}),
+      // **A number is a query too, and this is not hypothetical.** The router parses search
+      // params as JSON, so it writes `?q="3310"` and reads that back as the string `3310` —
+      // which works. But somebody sharing a link, or typing one, writes `?q=3310` without
+      // the quotes, and *that* parses as the number 3310. A `typeof q === 'string'` check
+      // alone drops it, and the page silently shows the whole library for a URL that plainly
+      // asks for a search.
+      //
+      // `folderId` above never meets this because a UUID is not valid JSON, so it always
+      // arrives as a string. Digits are.
+      ...(typeof q === 'string' && q.length > 0
+        ? { q }
+        : typeof q === 'number'
+          ? { q: String(q) }
+          : {}),
     }
   },
 })
@@ -78,15 +95,24 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId } = Route.useSearch()
+  const { batch, folderId, q } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
       batch={batch}
       folderId={folderId}
+      q={q}
       onSelectFolder={(folder) =>
         void navigate({
           search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
+        })
+      }
+      onSearch={(query) =>
+        void navigate({
+          search: (previous) => ({ ...previous, q: query === '' ? undefined : query }),
+          // The back button walks a person through the pages they went to, not through
+          // every keystroke on the way to one.
+          replace: true,
         })
       }
     />
@@ -171,11 +197,17 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
 export function Index({
   batch,
   folderId,
+  q,
   onSelectFolder,
+  onSearch,
 }: {
   batch?: string
   folderId?: string
+  /** The query in the URL. Absent, never empty — see `validateSearch`. */
+  q?: string
   onSelectFolder?: (folder: FolderId | null) => void
+  /** Writes the query to the URL. Given `''` it removes it. */
+  onSearch?: (query: string) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -230,8 +262,12 @@ export function Index({
   })
 
   const parts = useInfiniteQuery({
-    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
-    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId),
+    // `q` is part of the key, so a result set is cached per query rather than one cache
+    // entry being overwritten by whatever was typed last. The scan-completion invalidation
+    // is `['parts', library]`, still a prefix of every one of these, so nothing about it
+    // changes.
+    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null, q ?? null],
+    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId, q),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -463,6 +499,18 @@ export function Index({
           sweepBusy={sweep.isPending}
           note={note}
         />
+        {/*
+          Between the action bar and the drop target, and not inside the action bar. That row
+          is a row of *actions* — a checkbox and two buttons — and putting a persistent text
+          filter among them makes it read as "type here, then press Scan".
+        */}
+        <SearchBox
+          q={q ?? ''}
+          categoryName={selectedFolderName}
+          filtered={folderId !== undefined}
+          onSearch={onSearch}
+          onWiden={() => onSelectFolder?.(null)}
+        />
         <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
@@ -479,7 +527,12 @@ export function Index({
           // that came back empty gets the empty state — and which empty state depends on
           // whether a category is filtering it, because "this library is empty" is false
           // and alarming when the library is full and the category is not.
-          <EmptyLibrary filtered={folderId !== undefined} categoryName={selectedFolderName} />
+          <EmptyLibrary
+            filtered={folderId !== undefined}
+            categoryName={selectedFolderName}
+            query={q ?? null}
+            onWiden={() => onSelectFolder?.(null)}
+          />
         ) : (
           <>
             <Grid
@@ -792,6 +845,93 @@ function ScanProgress({
 }
 
 /**
+ * The search box, and the chip that says what it is searching.
+ *
+ * A `<input type="search">`, so the clear affordance, Escape-to-clear and the right mobile
+ * keyboard come from the browser rather than from code here.
+ *
+ * **Local state, debounced navigation.** The field responds to every keystroke and the URL
+ * does not: `navigate` on each one would render the route per character and — without
+ * `replace` — put every character in the back button's history. 250 ms is the pause after
+ * typing, not a delay before feedback.
+ *
+ * **Two characters minimum, and it is not arbitrary.** A trigram is three characters, so
+ * under that `gin_trgm_ops` cannot be used at all and the query is a sequential scan by
+ * construction. The box accepts the keystroke and says it is waiting.
+ *
+ * ponytail: two characters because of the index, not because of the product. If a
+ * one-character search is ever wanted, the fix is a prefix index, not removing this.
+ */
+function SearchBox({
+  q,
+  categoryName,
+  filtered,
+  onSearch,
+  onWiden,
+}: {
+  q: string
+  categoryName: string | null
+  filtered: boolean
+  onSearch?: (query: string) => void
+  onWiden: () => void
+}) {
+  const [typed, setTyped] = useState(q)
+  // The URL is the source of truth: a back navigation or a shared link has to move the box,
+  // and without this the field would keep whatever was last typed into it.
+  const [lastFromUrl, setLastFromUrl] = useState(q)
+  if (q !== lastFromUrl) {
+    setLastFromUrl(q)
+    setTyped(q)
+  }
+
+  useEffect(() => {
+    const trimmed = typed.trim()
+    // Below the minimum the query is not run — but an empty box *is* a change, because it
+    // means "show me the library again".
+    if (trimmed.length === 1) return
+    if (trimmed === q) return
+    const timer = setTimeout(() => onSearch?.(trimmed), 250)
+    return () => clearTimeout(timer)
+  }, [typed, q, onSearch])
+
+  const waiting = typed.trim().length === 1
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2">
+      <input
+        type="search"
+        value={typed}
+        onChange={(event) => setTyped(event.target.value)}
+        aria-label={strings.search.label}
+        placeholder={strings.search.placeholder}
+        className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+      />
+      {/*
+        The disclosure, not a control that narrows. The sidebar has already narrowed the
+        grid; a search that quietly kept that narrowing without saying so is how somebody
+        concludes a part is missing from the library. Dismissing it widens and keeps the
+        query.
+      */}
+      {!filtered || q === '' ? null : (
+        <button
+          type="button"
+          onClick={onWiden}
+          title={strings.search.widen}
+          className="ease-mechanical rounded-full border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {categoryName === null
+            ? strings.search.inThisCategory
+            : strings.search.inCategory(categoryName)}{' '}
+          ×
+        </button>
+      )}
+      {!waiting ? null : (
+        <p className="text-xs text-[var(--color-muted)]">{strings.search.keepTyping}</p>
+      )}
+    </div>
+  )
+}
+
+/**
  * Nothing to show, and which "nothing" it is.
  *
  * `filtered` and not "is `categoryName` null": the two answer different questions, and only
@@ -803,10 +943,47 @@ function ScanProgress({
 function EmptyLibrary({
   filtered,
   categoryName,
+  query,
+  onWiden,
 }: {
   filtered: boolean
   categoryName: string | null
+  /** The query that found nothing, or `null` when nobody searched. */
+  query: string | null
+  onWiden: () => void
 }) {
+  // A search that found nothing is not an empty library, and saying so is worse than
+  // useless: the user did not empty anything, they typed something, and "drop a folder of
+  // models above to add them" is an instruction for a problem they do not have.
+  if (query !== null) {
+    return (
+      <div className="max-w-prose">
+        <h2 className="text-lg">{strings.emptyLibrary.categoryTitle}</h2>
+        <p className="mt-2 text-[var(--color-muted)]">
+          {filtered
+            ? strings.search.noMatchesInCategory(
+                query,
+                categoryName ?? strings.search.inThisCategory,
+              )
+            : strings.search.noMatches(query)}
+        </p>
+        {/*
+          The narrowed case is the one that matters. Somebody searching inside a category
+          and finding nothing has to be able to widen without first working out that the
+          sidebar was the reason.
+        */}
+        {!filtered ? null : (
+          <button
+            type="button"
+            onClick={onWiden}
+            className="ease-mechanical mt-3 rounded border border-[var(--color-border)] px-2 py-1 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.search.widen}
+          </button>
+        )}
+      </div>
+    )
+  }
   return (
     <div className="max-w-prose">
       <h2 className="text-lg">

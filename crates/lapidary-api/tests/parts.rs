@@ -955,3 +955,88 @@ async fn a_store_that_does_not_exist_yet_answers_the_tracked_figures_anyway(pool
     assert_eq!(body["sourceBytes"], 0);
     assert_eq!(body["quarantinedBytes"], 0);
 }
+
+/// `?q=` searches; absent or empty is the unfiltered grid.
+async fn get_page_with(pool: sqlx::PgPool, query: &str) -> (StatusCode, serde_json::Value) {
+    get_page(pool, SEEDED_LIBRARY, query).await
+}
+
+/// Two parts whose names carry real identifiers, which is the shape a corpus actually has:
+/// nothing writes `part_number`, so `lp-3310` lives inside the name or nowhere.
+async fn seed_two_parts(pool: &sqlx::PgPool) {
+    seed_part(
+        pool,
+        library(),
+        0xe1,
+        "flange-dn40-lp-3310-02",
+        b"webp-flange",
+    )
+    .await;
+    seed_part(
+        pool,
+        library(),
+        0xe2,
+        "spur-gear-m2-20t-lp-5140-00",
+        b"webp-gear",
+    )
+    .await;
+}
+
+/// The route branches on the query and returns the same cards either way — same shape, same
+/// `next`, same everything a client already reads.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_query_filters_the_grid_to_what_matches_it(pool: sqlx::PgPool) {
+    seed_two_parts(&pool).await;
+
+    let (status, all) = get_page_with(pool.clone(), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["parts"].as_array().map(Vec::len), Some(2));
+
+    let (status, found) = get_page_with(pool, "q=flange").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(found["parts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(found["parts"][0]["name"], "flange-dn40-lp-3310-02");
+}
+
+/// **Empty means absent, and is not an error.** `` `…&q=${term}` `` is the natural shape of
+/// a URL before anything has been typed, and a bookmark somebody cleared the box on must
+/// answer the library rather than an error page — a grid is a read.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_empty_query_is_the_whole_grid_rather_than_a_refusal(pool: sqlx::PgPool) {
+    seed_two_parts(&pool).await;
+
+    for query in ["q=", "q=%20%20"] {
+        let (status, body) = get_page_with(pool.clone(), query).await;
+        assert_eq!(status, StatusCode::OK, "{query} must not be a 400");
+        assert_eq!(
+            body["parts"].as_array().map(Vec::len),
+            Some(2),
+            "{query} is a box nobody has typed in"
+        );
+    }
+}
+
+/// A query composes with the category filter and the cursor, because it is a parameter on
+/// the grid rather than a route beside it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_query_composes_with_paging(pool: sqlx::PgPool) {
+    seed_two_parts(&pool).await;
+
+    let (_, first) = get_page_with(pool.clone(), "q=lp&limit=1").await;
+    assert_eq!(first["parts"].as_array().map(Vec::len), Some(1));
+    let cursor = first["next"]
+        .as_str()
+        .expect("a full page hands back a cursor");
+
+    let (status, second) = get_page_with(pool, &format!("q=lp&limit=1&after={cursor}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        second["parts"].as_array().map(Vec::len),
+        Some(1),
+        "the second page of a search is the half a broken rank expression empties"
+    );
+    assert_ne!(
+        second["parts"][0]["id"], first["parts"][0]["id"],
+        "and it is a different part"
+    );
+}

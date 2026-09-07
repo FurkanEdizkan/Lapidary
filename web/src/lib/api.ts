@@ -64,6 +64,7 @@ export async function fetchParts(
   after?: PartId,
   state?: 'removed',
   folderId?: FolderId | null,
+  q?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -74,6 +75,10 @@ export async function fetchParts(
   if (after !== undefined) query.set('after', after)
   if (state !== undefined) query.set('state', state)
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
+  // Same rule again: omitted rather than sent empty. The route reads `q=` as no filter, so
+  // an empty one would work — but a URL carrying a parameter that means nothing is a URL
+  // that reads as a search nobody ran.
+  if (typeof q === 'string' && q.length > 0) query.set('q', q)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {

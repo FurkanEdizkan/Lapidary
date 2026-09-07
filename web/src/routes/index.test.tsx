@@ -15,7 +15,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { beforeEach, expect, test, vi } from "vitest";
-import { Index } from "./index";
+import { Index, Route } from "./index";
 import { routeTree } from "../routeTree.gen";
 import { DEFAULT_LIBRARY_ID } from "../lib/api";
 import { strings } from "../lib/strings";
@@ -43,17 +43,22 @@ function renderIndex(
   props: {
     batch?: string;
     folderId?: string;
+    q?: string;
     onSelectFolder?: (folder: string | null) => void;
+    onSearch?: (query: string) => void;
     client?: QueryClient;
   } = {},
 ) {
+  const onSelectFolder = props.onSelectFolder ?? vi.fn();
   const client = props.client ?? newClient();
   const rootRoute = createRootRoute({
     component: () => (
       <Index
         batch={props.batch}
         folderId={props.folderId}
-        onSelectFolder={props.onSelectFolder}
+        q={props.q}
+        onSelectFolder={onSelectFolder}
+        onSearch={props.onSearch}
       />
     ),
   });
@@ -66,13 +71,14 @@ function renderIndex(
     routeTree: rootRoute.addChildren([detailRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       {/* The synthetic tree is not the registered one, so its types do not line up with
           the global router registration. The cast is confined to this one line. */}
       <RouterProvider router={router as never} />
     </QueryClientProvider>,
   );
+  return { ...rendered, onSelectFolder };
 }
 
 /**
@@ -2585,4 +2591,125 @@ test("the quick-look shows the part without offering to remove it", async () => 
 
   expect(within(dialog).queryByText(strings.removal.removeHint)).toBeNull();
   expect(within(dialog).queryByRole("button", { name: strings.removal.remove })).toBeNull();
+});
+
+/**
+ * Typing searches, and the URL is what carries it — so a result set is a link.
+ *
+ * Debounced, so the assertion waits: `navigate` per keystroke would render the route per
+ * character and put every character in the back button's history.
+ */
+test("typing a query sends it to the server and puts it in the query key", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+  });
+  renderIndex({ q: "flange" });
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?q=flange`,
+    ),
+  );
+});
+
+/**
+ * **A search that finds nothing is not an empty library.**
+ *
+ * `emptyLibrary.body` says "This library is empty. Drop a folder of models above to add
+ * them" — false over a library of 1,700 parts, and an instruction for a problem the user
+ * does not have. They did not empty anything; they typed something.
+ */
+test("a query that matches nothing says so, and does not claim the library is empty", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])) });
+  renderIndex({ q: "nonesuch" });
+
+  expect(await screen.findByText(strings.search.noMatches("nonesuch"))).toBeDefined();
+  expect(screen.queryByText(strings.emptyLibrary.body)).toBeNull();
+});
+
+/**
+ * The narrowed case, which is the one that matters: a query finding nothing *inside a
+ * category* has to say it was narrowed, or the reasonable conclusion is that the part is
+ * not in the library — and the way out has to be one press rather than a deduction about
+ * the sidebar.
+ */
+test("a query that matches nothing in a category names the category and offers to widen", async () => {
+  const { onSelectFolder } = renderIndexWithFolders({ q: "flange", folderId: ROCKS.id });
+
+  expect(
+    await screen.findByText(strings.search.noMatchesInCategory("flange", "Rocks")),
+  ).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: strings.search.widen }));
+  expect(onSelectFolder).toHaveBeenCalledWith(null);
+});
+
+/**
+ * The chip is a disclosure, not a control that narrows — the sidebar already narrowed the
+ * grid. Dismissing it widens and **keeps the query**, which is the half that would be easy
+ * to get wrong.
+ */
+test("the scope chip widens the search without clearing it", async () => {
+  const { onSelectFolder } = renderIndexWithFolders({
+    q: "flange",
+    folderId: ROCKS.id,
+    parts: [MOTOR_MOUNT],
+  });
+
+  const chip = await screen.findByTitle(strings.search.widen);
+  // Waited for: the category's name comes from the folder tree, a different query from the
+  // grid's, so the chip exists before it can name anything.
+  await waitFor(() => expect(chip.textContent).toContain("Rocks"));
+  fireEvent.click(chip);
+  expect(onSelectFolder).toHaveBeenCalledWith(null);
+  // The box still holds it: widening is about where to look, not about what to look for.
+  expect(
+    (screen.getByRole("searchbox", { name: strings.search.label }) as HTMLInputElement).value,
+  ).toBe("flange");
+});
+
+/** A trigram is three characters, so one is a sequential scan by construction. */
+test("a single character waits rather than searching", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+
+  const box = await screen.findByRole("searchbox", { name: strings.search.label });
+  fireEvent.change(box, { target: { value: "f" } });
+  expect(screen.getByText(strings.search.keepTyping)).toBeDefined();
+});
+
+/** A grid with a selected category and a query, with the folder tree answered. */
+function renderIndexWithFolders(props: {
+  q: string;
+  folderId: string;
+  parts?: PartCard[];
+}) {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page(props.parts ?? [])),
+    folders: ok([TERRAIN, ROCKS]),
+  });
+  return renderIndex({ q: props.q, folderId: props.folderId });
+}
+
+/**
+ * **A hand-written or shared `?q=3310` must search.**
+ *
+ * TanStack parses search params as JSON: it *writes* `?q="3310"` and reads that back as a
+ * string, so typing in the box works. But a link somebody shares or edits says `?q=3310`,
+ * and that parses as the number 3310 — which a `typeof === 'string'` check drops, showing
+ * the whole library for a URL that plainly asks for a search.
+ *
+ * `folderId` never meets this because a UUID is not valid JSON. Digits are, and part
+ * numbers are digits.
+ */
+test("a numeric query in the URL is still a search", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { q?: string };
+
+  expect(validate({ q: 3310 })).toEqual({ q: "3310" });
+  expect(validate({ q: "3310" })).toEqual({ q: "3310" });
+  expect(validate({})).toEqual({});
+  expect(validate({ q: "" })).toEqual({});
 });
