@@ -15,7 +15,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { beforeEach, expect, test, vi } from "vitest";
-import { Index } from "./index";
+import { Index, Route } from "./index";
 import { routeTree } from "../routeTree.gen";
 import { DEFAULT_LIBRARY_ID } from "../lib/api";
 import { strings } from "../lib/strings";
@@ -2691,3 +2691,25 @@ function renderIndexWithFolders(props: {
   });
   return renderIndex({ q: props.q, folderId: props.folderId });
 }
+
+/**
+ * **A hand-written or shared `?q=3310` must search.**
+ *
+ * TanStack parses search params as JSON: it *writes* `?q="3310"` and reads that back as a
+ * string, so typing in the box works. But a link somebody shares or edits says `?q=3310`,
+ * and that parses as the number 3310 — which a `typeof === 'string'` check drops, showing
+ * the whole library for a URL that plainly asks for a search.
+ *
+ * `folderId` never meets this because a UUID is not valid JSON. Digits are, and part
+ * numbers are digits.
+ */
+test("a numeric query in the URL is still a search", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { q?: string };
+
+  expect(validate({ q: 3310 })).toEqual({ q: "3310" });
+  expect(validate({ q: "3310" })).toEqual({ q: "3310" });
+  expect(validate({})).toEqual({});
+  expect(validate({ q: "" })).toEqual({});
+});

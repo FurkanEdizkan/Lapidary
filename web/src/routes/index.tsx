@@ -68,9 +68,20 @@ export const Route = createFileRoute('/')({
       // route spells as no parameter at all — so a selection that is cleared has to leave
       // nothing behind rather than leave `?folderId=` behind.
       ...(typeof folderId === 'string' && folderId.length > 0 ? { folderId } : {}),
-      // Same rule, same reason: a cleared search box leaves no `?q=` behind, so the URL of
-      // a library nobody has searched is the URL of the library.
-      ...(typeof q === 'string' && q.length > 0 ? { q } : {}),
+      // **A number is a query too, and this is not hypothetical.** The router parses search
+      // params as JSON, so it writes `?q="3310"` and reads that back as the string `3310` —
+      // which works. But somebody sharing a link, or typing one, writes `?q=3310` without
+      // the quotes, and *that* parses as the number 3310. A `typeof q === 'string'` check
+      // alone drops it, and the page silently shows the whole library for a URL that plainly
+      // asks for a search.
+      //
+      // `folderId` above never meets this because a UUID is not valid JSON, so it always
+      // arrives as a string. Digits are.
+      ...(typeof q === 'string' && q.length > 0
+        ? { q }
+        : typeof q === 'number'
+          ? { q: String(q) }
+          : {}),
     }
   },
 })
