@@ -2560,3 +2560,29 @@ test("the card's name is still a link to the full page", async () => {
   const link = within(card).getByRole("link", { name: MOTOR_MOUNT.name });
   expect(link.getAttribute("href")).toBe(`/parts/${MOTOR_MOUNT.id}`);
 });
+
+/**
+ * The panel shows the part; it does not offer to change it.
+ *
+ * `Detail` is shared with the page, and the page hands it a remove button through the
+ * `actions` slot. This asserts the slot is genuinely how that arrives — the first version
+ * rendered the hint *inside* `Detail`, so the quick-look told people they could restore a
+ * model from a panel that offered no way to remove one. Visible immediately in a browser
+ * and to no test, which is why there is one now.
+ */
+test("the quick-look shows the part without offering to remove it", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+  });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("article", { name: MOTOR_MOUNT.name }));
+  const dialog = await screen.findByRole("dialog");
+  // Waited for, so the assertion is about a filled panel and not an empty one.
+  await within(dialog).findAllByText(strings.detail.approximate);
+
+  expect(within(dialog).queryByText(strings.removal.removeHint)).toBeNull();
+  expect(within(dialog).queryByRole("button", { name: strings.removal.remove })).toBeNull();
+});

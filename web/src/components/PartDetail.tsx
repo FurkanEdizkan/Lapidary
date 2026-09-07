@@ -45,15 +45,6 @@ export function Detail({ part, actions }: { part: PartDetailData; actions?: Reac
             */}
             {actions}
           </div>
-          {/*
-            The reassurance sits beside the button rather than behind a confirmation
-            dialog. Removing is reversible and touches nothing on disk, so a modal would
-            spend on this action the alarm that purge is going to need — and purge is one
-            deliberate step further away, on the removed list this sends you to.
-          */}
-          <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
-            {strings.removal.removeHint}
-          </p>
         </div>
       </header>
 

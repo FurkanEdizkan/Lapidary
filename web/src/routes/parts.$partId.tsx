@@ -53,7 +53,28 @@ export function PartPage({ partId }: { partId: string }) {
       ) : part.isError ? (
         <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
       ) : (
-        <Detail part={part.data} actions={<Remove part={part.data} />} />
+        <Detail
+          part={part.data}
+          actions={
+            <>
+              <Remove part={part.data} />
+              {/*
+                The reassurance sits beside the button rather than behind a confirmation
+                dialog. Removing is reversible and touches nothing on disk, so a modal would
+                spend on this action the alarm that purge is going to need — and purge is one
+                deliberate step further away, on the removed list this sends you to.
+
+                Inside `actions` and not inside `Detail`, because it is a sentence about a
+                control: the grid's quick-look shows the same article without the remove
+                button, and it was telling people they could restore something from a panel
+                that offers no way to remove it.
+              */}
+              <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+                {strings.removal.removeHint}
+              </p>
+            </>
+          }
+        />
       )}
     </section>
   )
