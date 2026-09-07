@@ -15,7 +15,7 @@ mod tmf;
 
 pub use cluster::{Lod, Tessellation, cluster};
 pub use glb::GLB_VERSION;
-pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
+pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, Unproduced};
 pub use measure::measure;
 pub use mesh_kernel::MeshKernel;
 #[cfg(feature = "mock-kernel")]

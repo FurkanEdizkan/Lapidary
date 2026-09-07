@@ -344,6 +344,28 @@ impl WorkerHandler {
                     message: e.to_string(),
                 })?;
 
+        // 4a. What could not be made, said out loud.
+        //
+        // The mesh parsed, so there is a part; one of the pictures of it could not be drawn.
+        // That used to fail the whole ingest — a file in 1,095 of the owner's own corpus
+        // clusters to zero triangles, and the model was absent from the library rather than
+        // present with no preview, which is the opposite of what `ROADMAP.md`'s exit
+        // criterion asks for.
+        //
+        // `warn`, not `error`: nothing is broken and nothing needs attention tonight. It is
+        // a fact about one file that an operator should be able to find when they wonder why
+        // one card has no picture. `POST /api/libraries/{id}/thumbnails` is how they ask for
+        // another go, and it is the same route a library with `auto_thumbnail = false`
+        // already uses.
+        for refused in &output.unproduced {
+            tracing::warn!(
+                source_path,
+                derivative = refused.kind.as_str(),
+                reason = refused.reason,
+                "could not produce a derivative; the part is ingested without it"
+            );
+        }
+
         // 5. The rungs go to disk before either branch's transaction, for the same reason
         // the source blob does: a filesystem write cannot be rolled back by Postgres, so
         // the bytes must be there before a row is allowed to point at them.

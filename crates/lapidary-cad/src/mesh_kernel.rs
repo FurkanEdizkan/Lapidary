@@ -3,7 +3,7 @@
 
 use crate::cluster::{Lod, cluster};
 use crate::glb::GLB_VERSION;
-use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
+use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, Unproduced};
 use crate::stl::Mesh;
 use crate::{RASTER_VERSION, measure, parse_3mf, parse_obj, parse_stl, render_thumbnail};
 use lapidary_core::DerivativeKind;
@@ -56,21 +56,43 @@ impl Kernel for MeshKernel {
     /// decide anything at all — but a thumbnail render or a tessellation rung the caller
     /// did not ask for is one that never runs.
     async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
+        // **Parsing is fatal; producing a picture of what parsed is not.** A file we cannot
+        // read has no measurements and no part to hang them on, so this `?` stays. Below it,
+        // a derivative that cannot be made is recorded as not made — because a mesh that
+        // parses is a model, and losing the model because its preview could not be drawn is
+        // the wrong way round. `ROADMAP.md`'s exit criterion says so in as many words, and a
+        // real corpus produced exactly one such file in 1,095.
         let mesh = parse(bytes, &params.format)?;
         let mut tessellations = Vec::new();
         let mut thumbnail_webp = None;
+        let mut unproduced = Vec::new();
         for want in &params.produce {
-            match want {
-                DerivativeKind::Thumbnail => thumbnail_webp = Some(render_thumbnail(&mesh)?),
-                DerivativeKind::TessellationL0 => tessellations.push(cluster(&mesh, Lod::L0)?),
-                DerivativeKind::TessellationL1 => tessellations.push(cluster(&mesh, Lod::L1)?),
-                DerivativeKind::TessellationL2 => tessellations.push(cluster(&mesh, Lod::L2)?),
+            let made = match want {
+                DerivativeKind::Thumbnail => render_thumbnail(&mesh).map(|webp| {
+                    thumbnail_webp = Some(webp);
+                }),
+                DerivativeKind::TessellationL0 => cluster(&mesh, Lod::L0).map(|rung| {
+                    tessellations.push(rung);
+                }),
+                DerivativeKind::TessellationL1 => cluster(&mesh, Lod::L1).map(|rung| {
+                    tessellations.push(rung);
+                }),
+                DerivativeKind::TessellationL2 => cluster(&mesh, Lod::L2).map(|rung| {
+                    tessellations.push(rung);
+                }),
+            };
+            if let Err(reason) = made {
+                unproduced.push(Unproduced {
+                    kind: *want,
+                    reason: reason.to_string(),
+                });
             }
         }
         Ok(KernelOutput {
             measurements: measure(&mesh),
             thumbnail_webp,
             tessellations,
+            unproduced,
             // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
             // no analytic surfaces to recover, so this is the truthful answer, not a stub.
             entities: Vec::new(),
@@ -92,6 +114,84 @@ mod tests {
 
     fn stl_params() -> KernelParams {
         params("stl")
+    }
+
+    /// A binary STL of one degenerate triangle: three vertices at the same point.
+    ///
+    /// Parses perfectly — the header, the count and the record are all well formed — and has
+    /// no extent, so nothing can be drawn of it. That is the shape of the file that failed
+    /// in the owner's corpus, built here rather than committed so it can be read.
+    fn zero_extent_stl() -> Vec<u8> {
+        let mut bytes = vec![0u8; 80];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        // Normal, then three identical vertices, then the attribute byte count.
+        for _ in 0..12 {
+            bytes.extend_from_slice(&0f32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
+    /// **A mesh that parses is a model, even when no picture of it can be drawn.**
+    ///
+    /// This used to be an error, and the caller's only option was to fail the ingest — so a
+    /// file like this was absent from the library rather than present with no preview.
+    /// `ROADMAP.md`'s Phase 1 exit criterion asks for the opposite in as many words, and a
+    /// measured run over 1,095 real files found exactly one of these.
+    #[tokio::test]
+    async fn a_mesh_no_picture_can_be_made_of_still_yields_its_measurements() {
+        let out = MeshKernel
+            .process(&zero_extent_stl(), &stl_params())
+            .await
+            .expect("a file that parses is not an error, whatever can be drawn of it");
+
+        assert_eq!(
+            out.measurements.triangle_count, 1,
+            "the geometry is real and measured, which is what makes it a part"
+        );
+        assert!(out.thumbnail_webp.is_none(), "and no picture was made");
+        assert!(out.tessellations.is_empty(), "nor any rung");
+    }
+
+    /// What could not be made is reported rather than dropped, with the kind and the reason —
+    /// so an operator wondering why one card has no picture can find out.
+    #[tokio::test]
+    async fn what_could_not_be_produced_is_named_along_with_why() {
+        let out = MeshKernel
+            .process(&zero_extent_stl(), &stl_params())
+            .await
+            .expect("parses");
+
+        let kinds: Vec<_> = out.unproduced.iter().map(|u| u.kind).collect();
+        assert!(
+            kinds.contains(&DerivativeKind::Thumbnail),
+            "the thumbnail is named: {kinds:?}"
+        );
+        assert!(
+            out.unproduced.iter().all(|u| !u.reason.is_empty()),
+            "and each carries the kernel's own sentence about it"
+        );
+        // The message no longer claims "thumbnail" for a rung that could not be written:
+        // `Unrenderable` is raised by the glTF writer too, and said so for years.
+        assert!(
+            out.unproduced
+                .iter()
+                .all(|u| !u.reason.contains("Could not render a thumbnail")),
+            "the wording is about a view of the mesh, and the kind says which: {:?}",
+            out.unproduced
+        );
+    }
+
+    /// A readable file is still fatal when it is not readable. The `?` on `parse` stays.
+    #[tokio::test]
+    async fn a_file_that_does_not_parse_is_still_an_error() {
+        let out = MeshKernel
+            .process(b"this is not an STL at all", &stl_params())
+            .await;
+        assert!(
+            out.is_err(),
+            "no mesh means no measurements and no part to hang them on"
+        );
     }
 
     #[tokio::test]
