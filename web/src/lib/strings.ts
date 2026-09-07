@@ -857,6 +857,17 @@ export const strings = {
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
+  grid: {
+    /**
+     * How many cards a page asks for, and how tightly they pack. Remembered per library,
+     * in this browser — the honest scope, and what `FEATURES.md` says now.
+     */
+    pageSize: 'Cards per page',
+    pageSizeOption: (size: number) => `${size.toLocaleString('en-US')} per page`,
+    density: 'Card size',
+    comfortable: 'Comfortable',
+    compact: 'Compact',
+  },
   search: {
     label: 'Search this library',
     placeholder: 'Search by name or part number',

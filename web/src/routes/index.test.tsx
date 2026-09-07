@@ -16,6 +16,11 @@ import {
 } from "@tanstack/react-router";
 import { beforeEach, expect, test, vi } from "vitest";
 import { Index, Route } from "./index";
+import {
+  densityFor,
+  pageSizeFor,
+  setPageSize,
+} from "../lib/preferences";
 import { routeTree } from "../routeTree.gen";
 import { DEFAULT_LIBRARY_ID } from "../lib/api";
 import { strings } from "../lib/strings";
@@ -525,10 +530,11 @@ test("renders a card per part with that part own thumbnail bytes inline", async 
     "Rendered preview of Hex nut M8, DIN 934",
   );
 
-  // Keyset paging is not wired yet, but the library in the path is: pin it, since the
-  // stub answers any URL containing "/parts".
+  // The library in the path, and the page size the grid asked for. `limit` is always sent
+  // rather than omitted when it matches the route's default: omitting it would mean this
+  // client holding a second copy of the server's default, in another language.
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/libraries/01931b6e-0000-7000-8000-000000000001/parts",
+    "/api/libraries/01931b6e-0000-7000-8000-000000000001/parts?limit=50",
   );
 });
 
@@ -2131,7 +2137,7 @@ test("selecting a category puts it in the URL and asks the grid for that categor
   );
   await waitFor(() =>
     expect(fetchMock).toHaveBeenCalledWith(
-      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}&limit=50`,
     ),
   );
 
@@ -2154,12 +2160,12 @@ test("a category in the URL filters the first request the grid makes", async () 
 
   await waitFor(() =>
     expect(fetchMock).toHaveBeenCalledWith(
-      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}&limit=50`,
     ),
   );
   // Unfiltered is a different request, not this one with an empty parameter.
   expect(fetchMock).not.toHaveBeenCalledWith(
-    `/api/libraries/${DEFAULT_LIBRARY_ID}/parts`,
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?limit=50`,
   );
 });
 
@@ -2608,7 +2614,7 @@ test("typing a query sends it to the server and puts it in the query key", async
 
   await waitFor(() =>
     expect(fetchMock).toHaveBeenCalledWith(
-      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?q=flange`,
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?q=flange&limit=50`,
     ),
   );
 });
@@ -2712,4 +2718,87 @@ test("a numeric query in the URL is still a search", () => {
   expect(validate({ q: "3310" })).toEqual({ q: "3310" });
   expect(validate({})).toEqual({});
   expect(validate({ q: "" })).toEqual({});
+});
+
+/**
+ * Changing the page size changes what the grid asks for, and is remembered.
+ *
+ * `localStorage` keyed by library, because there is no user table and no auth in Phase 1 —
+ * a column would make one operator's choice everybody's. `FEATURES.md` says "per viewer,
+ * per library" now, which is what this is.
+ */
+test("choosing a page size asks for it and remembers it", async () => {
+  window.localStorage.clear();
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+
+  fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.pageSize }), {
+    target: { value: "250" },
+  });
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?limit=250`,
+    ),
+  );
+  // The next visit starts where this one left off — which is the whole point of storing it.
+  expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(250);
+});
+
+/**
+ * Density is a viewport preference and never had a server side, so it changes the grid and
+ * nothing else. Asserted through the column template rather than a class name, because that
+ * is the thing that actually makes cards smaller.
+ */
+test("choosing a compact density packs the grid tighter and remembers it", async () => {
+  window.localStorage.clear();
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+
+  fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.density }), {
+    target: { value: "compact" },
+  });
+
+  const list = document.querySelector("ul.grid");
+  expect(list?.className).toContain("minmax(8rem,1fr)");
+  expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("compact");
+});
+
+/**
+ * A stored value a person has edited by hand is not trusted: `localStorage` is theirs to
+ * change, and a page size nobody offered should not reach a route that would clamp it into
+ * something else anyway.
+ */
+test("a stored page size that is not one of the offered sizes falls back to the default", () => {
+  window.localStorage.setItem(
+    "lapidary.grid.v1." + DEFAULT_LIBRARY_ID,
+    JSON.stringify({ pageSize: 37, density: "enormous" }),
+  );
+  expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(50);
+  expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("comfortable");
+  window.localStorage.clear();
+});
+
+/**
+ * **Storage that throws must not take the grid with it.** In a private window or with site
+ * data blocked, the accessor itself throws rather than returning null — so an unguarded read
+ * during render would fail the page for somebody who has cookies turned off.
+ */
+test("preferences survive storage being unavailable", () => {
+  const real = window.localStorage;
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    get() {
+      throw new Error("The operation is insecure.");
+    },
+  });
+  try {
+    expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(50);
+    expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("comfortable");
+    // And writing is a no-op rather than a throw: the setting still applies for this
+    // session, it simply will not be there next time.
+    expect(() => setPageSize(DEFAULT_LIBRARY_ID, 250)).not.toThrow();
+  } finally {
+    Object.defineProperty(window, "localStorage", { configurable: true, value: real });
+  }
 });

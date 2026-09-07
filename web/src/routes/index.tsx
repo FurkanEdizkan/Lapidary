@@ -19,6 +19,16 @@ import {
 } from '../lib/api'
 import { Dialog } from '../components/Dialog'
 import { Detail } from '../components/PartDetail'
+import {
+  DENSITIES,
+  PAGE_SIZES,
+  densityFor,
+  pageSizeFor,
+  setDensity,
+  setPageSize,
+  type Density,
+  type PageSize,
+} from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
@@ -256,6 +266,14 @@ export function Index({
   // different query with its own cached answer: pressing the button once and scrolling away
   // does not re-walk the store on the way back.
   const [measure, setMeasure] = useState(false)
+  /**
+   * Read once, from this browser's storage, keyed by library. Lazy initialisers because
+   * `localStorage` is a synchronous read and there is no reason to do it on every render —
+   * and because the accessor itself throws where site data is blocked, which the helpers
+   * catch.
+   */
+  const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(DEFAULT_LIBRARY_ID))
+  const [density, setDensityState] = useState<Density>(() => densityFor(DEFAULT_LIBRARY_ID))
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
     queryFn: () => fetchInstanceStorage(measure),
@@ -266,8 +284,12 @@ export function Index({
     // entry being overwritten by whatever was typed last. The scan-completion invalidation
     // is `['parts', library]`, still a prefix of every one of these, so nothing about it
     // changes.
-    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null, q ?? null],
-    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId, q),
+    // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
+    // held describe a different question and re-using them would show 50-card pages under a
+    // grid that says 250.
+    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null, q ?? null, pageSize],
+    queryFn: ({ pageParam }) =>
+      fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId, q, pageSize),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -504,6 +526,18 @@ export function Index({
           is a row of *actions* — a checkbox and two buttons — and putting a persistent text
           filter among them makes it read as "type here, then press Scan".
         */}
+        <GridSettings
+          pageSize={pageSize}
+          density={density}
+          onPageSize={(size) => {
+            setPageSizeState(size)
+            setPageSize(DEFAULT_LIBRARY_ID, size)
+          }}
+          onDensity={(next) => {
+            setDensityState(next)
+            setDensity(DEFAULT_LIBRARY_ID, next)
+          }}
+        />
         <SearchBox
           q={q ?? ''}
           categoryName={selectedFolderName}
@@ -540,6 +574,7 @@ export function Index({
               onRender={(part) => renderPart.mutate(part)}
               busyPart={renderPart.isPending ? renderPart.variables : undefined}
               hostRoot={instance.data?.hostStorageRoot ?? null}
+              density={density}
             />
             <MorePages
               count={loaded.length}
@@ -840,6 +875,73 @@ function ScanProgress({
           {hidden <= 0 ? null : <li>{strings.failure.more(hidden)}</li>}
         </ul>
       )}
+    </div>
+  )
+}
+
+/**
+ * How many cards a page holds, and how tightly they pack.
+ *
+ * Two `<select>`s and no custom widget: a native select is keyboard-operable, screen-reader
+ * announced and correct on a touch screen for free, and this is a preference rather than a
+ * place to spend design on.
+ *
+ * Both are remembered per library in this browser — not on the server. There is no user
+ * table and no auth in Phase 1, so a column would make one operator's choice everybody's;
+ * `FEATURES.md` says "per viewer, per library" now, because that is what this is.
+ */
+/**
+ * The label for each density. A lookup and not a ternary in the JSX: a `option === 'compact'`
+ * inside a child expression puts the literal `'compact'` where `no-bare-strings.test.ts`
+ * reads it — correctly — as a label reaching the screen. Same trap `ShowInFolder` and
+ * `InstanceStorage` both carry a comment about.
+ */
+const DENSITY_LABEL: Record<Density, string> = {
+  comfortable: strings.grid.comfortable,
+  compact: strings.grid.compact,
+}
+
+function GridSettings({
+  pageSize,
+  density,
+  onPageSize,
+  onDensity,
+}: {
+  pageSize: PageSize
+  density: Density
+  onPageSize: (size: PageSize) => void
+  onDensity: (density: Density) => void
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-[var(--color-muted)]">
+      <label className="flex items-center gap-2">
+        {strings.grid.pageSize}
+        <select
+          value={pageSize}
+          onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
+          className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {strings.grid.pageSizeOption(size)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2">
+        {strings.grid.density}
+        <select
+          value={density}
+          onChange={(event) => onDensity(event.target.value as Density)}
+          className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+        >
+          {DENSITIES.map((option) => (
+            <option key={option} value={option}>
+              {DENSITY_LABEL[option]}
+            </option>
+          ))}
+        </select>
+      </label>
     </div>
   )
 }
@@ -1188,15 +1290,32 @@ function Grid({
   onRender,
   busyPart,
   hostRoot,
+  density,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
   busyPart?: PartId
   /** Passed down rather than fetched per card: it is one fact about the deployment. */
   hostRoot: string | null
+  density: Density
 }) {
+  // Two numbers move together and have to: the column width sets how tall a card ends up,
+  // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
+  // Give the compact grid the comfortable card's height and the scrollbar jumps as cards
+  // enter and leave — which is what makes `content-visibility` look broken.
+  //
+  // Whole class strings rather than interpolation: Tailwind scans source for literals, and
+  // a class built at runtime is a class that was never generated.
+  const columns =
+    density === 'compact'
+      ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
+      : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
+  const intrinsic =
+    density === 'compact'
+      ? '[contain-intrinsic-size:auto_21rem]'
+      : '[contain-intrinsic-size:auto_26rem]'
   return (
-    <ul className="grid list-none grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
+    <ul className={`grid list-none ${columns}`}>
       {parts.map((part) => (
         // `content-visibility: auto` is the virtualization, and it is one CSS property
         // rather than a dependency. It tells the browser to skip layout, paint and image
@@ -1216,7 +1335,7 @@ function Grid({
         // height by 23%. The leading `auto` means the browser substitutes each card's
         // real size once it has rendered one, so this figure only has to be close for the
         // first paint rather than exact forever.
-        <li key={part.id} className="[content-visibility:auto] [contain-intrinsic-size:auto_26rem]">
+        <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
           <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} />
         </li>
       ))}
