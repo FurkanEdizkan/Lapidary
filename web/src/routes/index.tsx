@@ -10,12 +10,15 @@ import {
   fetchInstanceStorage,
   fetchLibrarySettings,
   fetchLibraryStorage,
+  fetchPartDetail,
   fetchParts,
   renderLibraryThumbnails,
   renderPartThumbnail,
   setAutoThumbnail,
   startScan,
 } from '../lib/api'
+import { Dialog } from '../components/Dialog'
+import { Detail } from './parts.$partId'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
@@ -1045,6 +1048,7 @@ function Card({
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
+  const [looking, setLooking] = useState(false)
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -1054,6 +1058,23 @@ function Card({
   return (
     <article
       aria-labelledby={nameId}
+      /*
+        The whole card opens the quick look, and it is a handler rather than an anchor for
+        the reason the name's own comment gives below: this card holds a render button, a
+        move button, a download link and a path disclosure, and nesting those inside an
+        `<a>` is invalid HTML that browsers resolve by guessing.
+
+        So the click is filtered instead of the markup being reshaped. Anything that
+        originated inside a control belongs to that control — including a click on a label
+        inside a button, which is why this asks `closest` rather than comparing the target.
+        The name stays a real `Link`: it is the keyboard path, the middle-click path, and
+        what a screen reader announces for the card.
+      */
+      onClick={(event) => {
+        if (!(event.target instanceof Element)) return
+        if (event.target.closest('a, button, input')) return
+        setLooking(true)
+      }}
       draggable={movable}
       onDragStart={(event) =>
         event.dataTransfer.setData(
@@ -1150,6 +1171,7 @@ function Card({
           to it for as long as the pointer stayed over the card. Nothing here may hoist that
           markup back out of the portal.
         */}
+        {looking ? <QuickLook part={part} onClose={() => setLooking(false)} /> : null}
         {moving ? (
           <MovePartDialog
             part={{ id: part.id, name: part.name }}
@@ -1159,6 +1181,53 @@ function Card({
         ) : null}
       </div>
     </article>
+  )
+}
+
+/**
+ * The part, in a panel, without leaving the grid.
+ *
+ * Scanning a library means looking at one part and then the next, and a round trip through
+ * a full page and the back button for each of them is what makes that tiring. So this is a
+ * look; the page is where the controls that change something live, and where a URL someone
+ * can share lives.
+ *
+ * **It renders `Detail`, the detail page's own article, rather than a version of it.** Two
+ * renderings of one measurement that can disagree is a defect here, and measurements are
+ * the case that matters: every figure goes through `Figure`, which cannot render a value
+ * without its `approximate` flag, because a mesh-derived number must be labelled wherever
+ * it appears.
+ *
+ * **And it fetches under the detail route's own query key**, so opening the panel and then
+ * the page costs one request rather than two — the look warms the cache for the page it
+ * links to.
+ */
+function QuickLook({ part, onClose }: { part: PartCard; onClose: () => void }) {
+  const detail = useQuery({
+    queryKey: ['part', part.id],
+    queryFn: () => fetchPartDetail(part.id),
+  })
+  return (
+    <Dialog title={part.name} onClose={onClose}>
+      {detail.isPending ? (
+        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
+      ) : detail.isError ? (
+        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.quickLook.failed}
+        </p>
+      ) : (
+        <Detail part={detail.data} />
+      )}
+      <div className="mt-4 flex justify-end gap-2">
+        <Link
+          to="/parts/$partId"
+          params={{ partId: part.id }}
+          className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.quickLook.fullPage}
+        </Link>
+      </div>
+    </Dialog>
   )
 }
 

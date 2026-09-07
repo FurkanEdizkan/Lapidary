@@ -119,6 +119,7 @@ function stubFetch(routes: {
   move?: () => Promise<StubResponse>;
   folderDelete?: () => Promise<StubResponse>;
   instanceStorage?: () => Promise<StubResponse>;
+  partDetail?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
@@ -131,6 +132,10 @@ function stubFetch(routes: {
     // asserting against a shape it never asked for.
     if (init?.method === "PATCH" && url.startsWith("/api/parts/"))
       return (routes.move ?? pending)();
+    // A bare GET of one part: what the quick-look and the detail page both ask for, under
+    // the same query key. Below the PATCH rule so a move is never answered with a detail.
+    if (url.startsWith("/api/parts/") && init?.method === undefined)
+      return (routes.partDetail ?? pending)();
     if (url.startsWith("/api/folders/"))
       return (routes.folderDelete ?? pending)();
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
@@ -2460,4 +2465,93 @@ test("measuring the disk asks the server to walk it and explains the difference"
   expect(
     await screen.findByText(strings.storage.onDisk(9684 + 4096 + 918, 9684 + 4096)),
   ).toBeDefined();
+});
+
+/** What `GET /api/parts/{id}` answers for the card these tests click. */
+const MOTOR_MOUNT_DETAIL = {
+  id: MOTOR_MOUNT.id,
+  library: MOTOR_MOUNT.library,
+  revision: MOTOR_MOUNT.revision,
+  revLabel: "1",
+  name: MOTOR_MOUNT.name,
+  partNumber: MOTOR_MOUNT.partNumber,
+  sourcePath: MOTOR_MOUNT.sourcePath,
+  thumbnail: MOTOR_MOUNT.thumbnail,
+  triangleCount: MOTOR_MOUNT.triangleCount,
+  isWatertight: true,
+  // Mesh-derived, so `Figure` must label it — which is what proves the dialog renders the
+  // detail page's own component rather than a second `<dl>` of its own.
+  bboxMm: { value: [61, 42, 18.5], approximate: true },
+  volumeMm3: { value: 21478.5, approximate: true },
+  surfaceAreaMm2: { value: 9804.25, approximate: true },
+  kernelVersion: "mesh stl-1+cpu-1",
+  sourceHash: MOTOR_MOUNT.sourceHash,
+  sourceFormat: "stl",
+  sourceBytes: MOTOR_MOUNT.sourceBytes,
+  storedBytes: MOTOR_MOUNT.storedBytes,
+  compressed: MOTOR_MOUNT.compressed,
+  tessellationL0: null,
+  tessellationL0Bytes: null,
+  createdAt: MOTOR_MOUNT.createdAt,
+  updatedAt: MOTOR_MOUNT.updatedAt,
+};
+
+/**
+ * Clicking a card opens it in place, and what opens is the detail page's own article —
+ * asserted through the approximate label, which only `Figure` renders. A dialog with its
+ * own `<dl>` would pass a "shows the volume" test and fail this one.
+ */
+test("clicking a card opens the part in place, rendered by the detail page's own component", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  fireEvent.click(card);
+
+  const dialog = await screen.findByRole("dialog");
+  // `find`, not `get`: the panel opens immediately and fills when the detail arrives, which
+  // is the point of opening it immediately.
+  expect((await within(dialog).findAllByText(strings.detail.approximate)).length).toBeGreaterThan(0);
+  expect(
+    within(dialog).getByRole("link", { name: strings.quickLook.fullPage }),
+  ).toBeDefined();
+});
+
+/**
+ * The card is not an anchor and its click is filtered rather than its markup reshaped, so
+ * every control it already carries has to keep working. This is the assertion that the
+ * filter is real: pressing a button inside the card must do that button's job and nothing
+ * else.
+ *
+ * `closest` and not a target comparison, because a click can land on a label inside a
+ * button — which is a click on the button as far as the user is concerned.
+ */
+test("a control inside a card does its own job and does not open the panel", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partThumbnail: ok({ batchId: "01931b6e-0000-7000-8000-0000000000ff" }),
+  });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  fireEvent.click(
+    within(card).getByRole("button", { name: strings.render.partFor(MOTOR_MOUNT.name) }),
+  );
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+/** The name is still a real link, so a keyboard and a middle click both still reach the page. */
+test("the card's name is still a link to the full page", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const link = within(card).getByRole("link", { name: MOTOR_MOUNT.name });
+  expect(link.getAttribute("href")).toBe(`/parts/${MOTOR_MOUNT.id}`);
 });

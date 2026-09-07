@@ -58,7 +58,17 @@ export function PartPage({ partId }: { partId: string }) {
   )
 }
 
-function Detail({ part }: { part: PartDetail }) {
+/**
+ * The part, rendered whole. Exported because the grid's quick-look shows exactly this and
+ * must not render its own version of it.
+ *
+ * Two renderings of one measurement that can disagree is what this repository treats as a
+ * defect, and measurements are the case that matters most: every figure goes through
+ * `Figure`, which cannot render a value without its `approximate` flag, because `CLAUDE.md`
+ * requires a mesh-derived number to be labelled wherever it appears. A dialog with its own
+ * `<dl>` would be one refactor away from dropping that.
+ */
+export function Detail({ part }: { part: PartDetail }) {
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">

@@ -841,6 +841,23 @@ export const strings = {
     writeUnknown:
       'The server refused that, and did not say why. Reload the tree and try again; if it keeps happening, the api service log has the reason.',
   },
+  quickLook: {
+    /**
+     * The card opens a panel rather than navigating, because scanning a library means
+     * looking at one part and then the next one — and a round trip through a full page and
+     * the back button for each of them is the thing that makes a library tiring to go
+     * through.
+     */
+    openFor: (name: string) => `Open ${name}`,
+    /**
+     * Out to the real page. The dialog is for a look; the page is where the controls that
+     * change something live, and it is a URL that can be shared and bookmarked.
+     */
+    fullPage: 'Open the full page',
+    loading: 'Loading…',
+    failed:
+      'Could not open this part. Check that the api service is running, then try again.',
+  },
   emptyLibrary: {
     title: 'Nothing here yet',
     body:
