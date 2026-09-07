@@ -98,13 +98,13 @@ pub struct NewFolder {
 /// `parentId: undefined` sends nothing, and one that means the root has to write `null` on
 /// purpose. Bound to `T | null` instead — ts-rs's default for `Option` — the two states
 /// would collapse and every rename would quietly move its category to the library root.
-///
-/// The build prints `ts-rs failed to parse this attribute. It will be ignored.` for
-/// `deserialize_with` below, and that is expected and harmless: ts-rs has no use for a
-/// deserializer name, and what it ignores is the serde attribute rather than the `ts`
-/// attributes above. The exported type is checked into `web/src/bindings/FolderPatch.ts`
-/// and gated by `cargo xtask verify`, so a regression here fails a build rather than
-/// hiding in a warning.
+// A `//` comment and not a `///` one: this is about the Rust build, and a doc comment here
+// is copied verbatim into `web/src/bindings/FolderPatch.ts`, where a frontend reader has no
+// use for it. The build prints `ts-rs failed to parse this attribute. It will be ignored.`
+// for `deserialize_with` below — expected and harmless. ts-rs has no use for a deserializer
+// name, and what it ignores is the serde attribute, not the `ts` ones above it. The
+// exported type is committed and gated by `cargo xtask verify`, so a regression fails a
+// build rather than hiding in a warning.
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
