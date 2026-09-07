@@ -2386,13 +2386,25 @@ impl PartRepository for PgParts {
         //
         // # The three things that make this query the shape it is
         //
-        // **1. `coalesce(part_number, '')` is load-bearing, in both terms.** With a NULL
-        // `part_number` — which is *every row* in a real library today, because nothing
-        // writes that column yet — `(p.part_number ILIKE $9)::int * 4 + …` is NULL for the
-        // whole expression. The `WHERE` is unaffected (`NULL OR true` is true), so page one
-        // comes back full and plausibly ordered and looks entirely correct; then every row
-        // ties under `ORDER BY rank DESC` and page two returns nothing. `0002_parts.sql:43`
-        // already coalesces inside the generated column, for the same reason.
+        // **1. `coalesce(part_number, '')` belongs in the rank and must NOT be in the
+        // match.** Two different reasons, pulling opposite ways, and getting either wrong
+        // is silent.
+        //
+        // In the *rank* it is load-bearing: with a NULL `part_number` — which is every row
+        // in a real library today, because nothing writes that column yet —
+        // `(p.part_number ILIKE $9)::int * 4 + …` is NULL for the whole expression. The
+        // `WHERE` is unaffected, so page one comes back full and plausibly ordered and
+        // looks entirely correct; then every row ties under `ORDER BY rank DESC` and page
+        // two returns nothing. `0002_parts.sql:43` coalesces inside the generated column
+        // for the same reason.
+        //
+        // In the *match* it is the opposite: `coalesce(part_number, '') ILIKE $9` is an
+        // expression, and `part_number_trgm` indexes the column — so the coalesced form is
+        // unindexable and the term becomes a sequential scan. Verified with `EXPLAIN` on
+        // this deployment: bare `part_number ILIKE` takes a `Bitmap Index Scan on
+        // part_number_trgm`, and the coalesced one takes a `Seq Scan` with the predicate as
+        // a filter. `NULL ILIKE x` is NULL, and `NULL OR …` is exactly the "not a match"
+        // this wants, so the coalesce buys nothing here and costs the index.
         //
         // **2. `hits` must stay materialized**, which multiple references give it. `anchor`
         // and `top` both read it, so both read the *same stored* `real` out of one
@@ -2432,7 +2444,7 @@ impl PartRepository for PgParts {
                  FROM part p \
                 WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                   AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ( coalesce(p.part_number, '') ILIKE $9 \
+                  AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.search @@ plainto_tsquery('simple', $8) ) ), \
              anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
