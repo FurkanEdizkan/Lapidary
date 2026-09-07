@@ -1,0 +1,18 @@
+-- One name, one library.
+--
+-- Not a technical requirement: nothing joins on a library's name, and `0002` did without
+-- it because nothing created a second library. What changes is that somebody can now make
+-- one — and two entries called `Terrain` in a switcher is a switcher nobody can use, with
+-- no way to tell which is which and no way to find out but opening both.
+--
+-- Enforced here rather than checked in the route for the reason every other uniqueness in
+-- this schema is: a prior `SELECT` is a second round trip that a concurrent insert can
+-- invalidate between statements, and the constraint is the only thing that cannot be
+-- raced. `PgParts::create_library` reads this constraint's name off the failure and
+-- reports it as `LibraryNameTaken`.
+--
+-- Case-sensitive, deliberately. `Terrain` and `terrain` are different names, and a
+-- case-insensitive index would need a collation decision this project has no reason to
+-- make yet — the Turkish locale that is planned makes `I`/`ı` a real question rather than
+-- a pedantic one, and answering it here would be answering it early.
+create unique index library_name_unique on library (name);

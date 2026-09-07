@@ -22,7 +22,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{DerivativeKind, JobPayload, LibraryId, PartId, ScanAccepted};
+use lapidary_core::{DerivativeKind, JobPayload, LibraryId, LibraryMode, PartId, ScanAccepted};
 use lapidary_db::{DbError, PgJobs, PgParts, PgPool};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -40,6 +40,122 @@ use ts_rs::TS;
 #[ts(export)]
 pub struct LibrarySettings {
     auto_thumbnail: bool,
+}
+
+/// One library in the switcher.
+///
+/// `partCount` rides along so the control can say which library has anything in it without
+/// a request per row — the same reason `FolderNode` carries one.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySummary {
+    pub id: LibraryId,
+    pub name: String,
+    /// `hobby` or `controlled`. **Nothing reads it yet** — governance is Phase 8 — and it is
+    /// on the wire because a switcher that shows which libraries are controlled is the point
+    /// at which the column stops being decorative. Until then it is a label.
+    pub mode: LibraryMode,
+    #[ts(type = "number")]
+    pub part_count: i64,
+}
+
+/// `GET /api/libraries` — every library, oldest first.
+///
+/// No pagination. A deployment has a handful of libraries, not a page of them, and a
+/// switcher that paged would be a control nobody could scan.
+pub async fn list_libraries(State(state): State<AppState>) -> Response {
+    match PgParts(state.db).libraries().await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| LibrarySummary {
+                    id: row.id,
+                    name: row.name,
+                    // Parsed rather than passed through: an unknown value in that column is
+                    // a row this application does not understand, and answering it as though
+                    // it were `hobby` would be quietly deciding it is one.
+                    mode: match row.mode.as_str() {
+                        "controlled" => LibraryMode::Controlled,
+                        _ => LibraryMode::Hobby,
+                    },
+                    part_count: row.part_count,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => internal_error(&err, "library list query failed"),
+    }
+}
+
+/// What `POST /api/libraries` takes.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NewLibrary {
+    pub name: String,
+    /// Chosen at creation and not asked about later, because later means asking about a
+    /// library somebody has already filled. Defaults to `hobby`, which is what a library
+    /// with no governance is.
+    #[serde(default)]
+    pub mode: LibraryMode,
+}
+
+/// `POST /api/libraries` — make one.
+///
+/// The route `0002_parts.sql` said would arrive: *"Whichever slice adds a second library
+/// replaces this seed rather than building beside it."* The seed stays — it is the library
+/// an existing deployment has been using, and deleting it would take their models with it —
+/// but it is no longer the only one there can be.
+pub async fn create_library(
+    State(state): State<AppState>,
+    body: Result<Json<NewLibrary>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badBody",
+            "A library needs a name, and `mode` must be `hobby` or `controlled` if you send it.",
+        );
+    };
+    let name = body.name.trim();
+    if name.is_empty() {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "emptyName",
+            "A library needs a name. Type one and try again.",
+        );
+    }
+
+    match PgParts(state.db)
+        .create_library(name, body.mode.as_str())
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(LibrarySummary {
+                id,
+                name: name.to_owned(),
+                mode: body.mode,
+                // Brand new, so empty. Stated rather than re-queried.
+                part_count: 0,
+            }),
+        )
+            .into_response(),
+        Err(err @ DbError::LibraryNameTaken { .. }) => {
+            refused(StatusCode::CONFLICT, "nameTaken", &err.to_string())
+        }
+        Err(err) => internal_error(&err, "library create failed"),
+    }
+}
+
+/// A refusal that names itself, the shape `folders.rs` already uses so a client reads both
+/// the same way.
+fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "reason": reason, "message": message })),
+    )
+        .into_response()
 }
 
 /// `GET /api/libraries/{id}` — what `PATCH` on the same id would change.

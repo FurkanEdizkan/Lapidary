@@ -7,7 +7,9 @@ import {
   downloadUrl,
   fetchBatchStatus,
   fetchHealth,
+  createLibrary,
   fetchInstanceStorage,
+  fetchLibraries,
   fetchLibrarySettings,
   fetchLibraryStorage,
   fetchPartDetail,
@@ -44,7 +46,9 @@ import type {
   BatchStatus,
   FolderId,
   InstanceStorageView,
+  LibraryId,
   LibraryStorage,
+  NewLibrary,
   PartCard,
   PartId,
   PartsPage,
@@ -68,10 +72,11 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
+    const library = search.library
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -92,6 +97,10 @@ export const Route = createFileRoute('/')({
         : typeof q === 'number'
           ? { q: String(q) }
           : {}),
+      // A UUID, so never the number case `q` has to handle. Absent means the default
+      // library, which is what every screen meant before there could be a second one — so
+      // an old bookmark keeps working and a new one is shareable.
+      ...(typeof library === 'string' && library.length > 0 ? { library } : {}),
     }
   },
 })
@@ -105,13 +114,25 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q } = Route.useSearch()
+  const { batch, folderId, q, library } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
       batch={batch}
       folderId={folderId}
       q={q}
+      // The seeded library when nobody has chosen: `DEFAULT_LIBRARY_ID` stops being the
+      // answer and becomes the fallback, which is the whole of what "more than one library"
+      // changes about every screen.
+      library={(library as LibraryId | undefined) ?? DEFAULT_LIBRARY_ID}
+      onSelectLibrary={(next) =>
+        void navigate({
+          // Everything below a library belongs to it: a category id and a search from the
+          // old one mean nothing in the new one, and carrying them over would filter the
+          // new library by a folder it does not have.
+          search: { library: next === DEFAULT_LIBRARY_ID ? undefined : next },
+        })
+      }
       onSelectFolder={(folder) =>
         void navigate({
           search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
@@ -208,16 +229,21 @@ export function Index({
   batch,
   folderId,
   q,
+  library,
   onSelectFolder,
   onSearch,
+  onSelectLibrary,
 }: {
   batch?: string
   folderId?: string
   /** The query in the URL. Absent, never empty — see `validateSearch`. */
   q?: string
+  /** Which library this screen is of. Every query below is keyed by it. */
+  library: LibraryId
   onSelectFolder?: (folder: FolderId | null) => void
   /** Writes the query to the URL. Given `''` it removes it. */
   onSearch?: (query: string) => void
+  onSelectLibrary?: (library: LibraryId) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -250,7 +276,7 @@ export function Index({
    */
   // The same query key the sidebar's own `useFolders` uses, so this is a read of the cache
   // entry that component already fills and not a second request for the same tree.
-  const folders = useFolders(DEFAULT_LIBRARY_ID)
+  const folders = useFolders(library)
   const selectedFolderName =
     folderId === undefined
       ? null
@@ -272,8 +298,8 @@ export function Index({
    * and because the accessor itself throws where site data is blocked, which the helpers
    * catch.
    */
-  const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(DEFAULT_LIBRARY_ID))
-  const [density, setDensityState] = useState<Density>(() => densityFor(DEFAULT_LIBRARY_ID))
+  const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(library))
+  const [density, setDensityState] = useState<Density>(() => densityFor(library))
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
     queryFn: () => fetchInstanceStorage(measure),
@@ -287,9 +313,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null, q ?? null, pageSize],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize],
     queryFn: ({ pageParam }) =>
-      fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId, q, pageSize),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -298,8 +324,8 @@ export function Index({
   // are.
   const loaded = parts.data?.pages.flatMap((page) => page.parts) ?? []
   const scan = useQuery({
-    queryKey: ['batch', DEFAULT_LIBRARY_ID, activeBatch],
-    queryFn: () => fetchBatchStatus(DEFAULT_LIBRARY_ID, activeBatch as string),
+    queryKey: ['batch', library, activeBatch],
+    queryFn: () => fetchBatchStatus(library, activeBatch as string),
     enabled: activeBatch !== undefined,
     // The poll stops itself. A batch that finishes while the tab is backgrounded must not
     // leave a closed laptop asking about a completed scan forever — spec §11's last risk,
@@ -329,10 +355,10 @@ export function Index({
     if (activeBatch === undefined) {
       return
     }
-    const source = new EventSource(batchEventsUrl(DEFAULT_LIBRARY_ID, activeBatch))
+    const source = new EventSource(batchEventsUrl(library, activeBatch))
     source.onmessage = (event) => {
       const status = JSON.parse(event.data) as BatchStatus
-      queryClient.setQueryData(['batch', DEFAULT_LIBRARY_ID, activeBatch], status)
+      queryClient.setQueryData(['batch', library, activeBatch], status)
       // The server closes after the last event, and `EventSource` answers a closed stream
       // by reconnecting — forever, on a batch that will never change again. Closing from
       // this side is what stops that, and it is the same hazard `refetchInterval`
@@ -361,8 +387,8 @@ export function Index({
    * invalidated every time the worker commits a part.
    */
   const librarySettings = useQuery({
-    queryKey: ['library', DEFAULT_LIBRARY_ID],
-    queryFn: () => fetchLibrarySettings(DEFAULT_LIBRARY_ID),
+    queryKey: ['library', library],
+    queryFn: () => fetchLibrarySettings(library),
   })
   /**
    * What this library occupies. Its own query for the reason the settings read is one:
@@ -370,11 +396,11 @@ export function Index({
    * whole library rather than about the 50 parts a page holds.
    */
   const storage = useQuery({
-    queryKey: ['storage', DEFAULT_LIBRARY_ID],
-    queryFn: () => fetchLibraryStorage(DEFAULT_LIBRARY_ID),
+    queryKey: ['storage', library],
+    queryFn: () => fetchLibraryStorage(library),
   })
   const settings = useMutation({
-    mutationFn: (on: boolean) => setAutoThumbnail(DEFAULT_LIBRARY_ID, on),
+    mutationFn: (on: boolean) => setAutoThumbnail(library, on),
   })
   /**
    * `queued: 0` is a success with nothing to watch — such a batch has no status resource
@@ -391,11 +417,11 @@ export function Index({
   // Always `queued: 1` — the directory walk — so this always arms the poll. The file
   // count arrives as `total` grows, which is why nothing here waits for it.
   const scanNow = useMutation({
-    mutationFn: () => startScan(DEFAULT_LIBRARY_ID),
+    mutationFn: () => startScan(library),
     onSuccess: (accepted) => watch(accepted, 'scan'),
   })
   const sweep = useMutation({
-    mutationFn: () => renderLibraryThumbnails(DEFAULT_LIBRARY_ID),
+    mutationFn: () => renderLibraryThumbnails(library),
     onSuccess: (accepted) => watch(accepted, 'render'),
   })
   const renderPart = useMutation({
@@ -412,7 +438,7 @@ export function Index({
   const [uploadNote, setUploadNote] = useState<string | null>(null)
   const upload = useMutation({
     mutationFn: (picked: PickedFile[]) =>
-      uploadFiles(DEFAULT_LIBRARY_ID, picked, setUploading),
+      uploadFiles(library, picked, setUploading),
     onSuccess: ({ accepted, alreadyHere, bytesSkipped }) => {
       setUploading(undefined)
       // `queued: 0` means the probe found every file already indexed here, which is a
@@ -460,13 +486,13 @@ export function Index({
     // top of a library they were scrolled into, which is worse than a grid that fills a
     // few seconds later.
     if (pagesLoaded <= 1 || batchFinished) {
-      void queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+      void queryClient.invalidateQueries({ queryKey: ['parts', library] })
     }
     // The totals move with the grid, and nothing else would tell them so. A scan that
     // ingests 151 parts under a line still reporting the pre-scan figure is a
     // measurement contradicted by the cards directly above it. One row either way, so it
     // is not worth gating.
-    void queryClient.invalidateQueries({ queryKey: ['storage', DEFAULT_LIBRARY_ID] })
+    void queryClient.invalidateQueries({ queryKey: ['storage', library] })
   }, [settled, pagesLoaded, batchFinished, queryClient])
 
   const note = scanNow.isError
@@ -485,7 +511,7 @@ export function Index({
         reads it back on drop, so neither holds state for the other.
       */}
       <FolderTree
-        library={DEFAULT_LIBRARY_ID}
+        library={library}
         selected={folderId ?? null}
         onSelect={(folder) => onSelectFolder?.(folder)}
       />
@@ -526,16 +552,17 @@ export function Index({
           is a row of *actions* — a checkbox and two buttons — and putting a persistent text
           filter among them makes it read as "type here, then press Scan".
         */}
+        <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
         <GridSettings
           pageSize={pageSize}
           density={density}
           onPageSize={(size) => {
             setPageSizeState(size)
-            setPageSize(DEFAULT_LIBRARY_ID, size)
+            setPageSize(library, size)
           }}
           onDensity={(next) => {
             setDensityState(next)
-            setDensity(DEFAULT_LIBRARY_ID, next)
+            setDensity(library, next)
           }}
         />
         <SearchBox
@@ -877,6 +904,170 @@ function ScanProgress({
       )}
     </div>
   )
+}
+
+/**
+ * Which library this screen is of, and the control that makes another one.
+ *
+ * Hidden entirely while there is one library — which is every deployment until somebody
+ * makes a second. A switcher offering one choice is a control that explains nothing and
+ * takes a row of the screen to do it; the "New library" button stays, because that is how
+ * the second one gets made.
+ */
+function LibrarySwitcher({
+  library,
+  onSelect,
+}: {
+  library: LibraryId
+  onSelect?: (library: LibraryId) => void
+}) {
+  const [creating, setCreating] = useState(false)
+  const queryClient = useQueryClient()
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const add = useMutation({
+    mutationFn: (body: NewLibrary) => createLibrary(body),
+    onMutate: () => setRefusal(null),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setRefusal(result.message)
+        return
+      }
+      setCreating(false)
+      void queryClient.invalidateQueries({ queryKey: ['libraries'] })
+      // Straight into it: somebody who just made a library meant to use it, and leaving
+      // them on the old one is a second step for no reason.
+      onSelect?.(result.library.id)
+    },
+  })
+
+  const all = libraries.data ?? []
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
+      {all.length < 2 ? null : (
+        <label className="flex items-center gap-2">
+          {strings.libraries.label}
+          <select
+            value={library}
+            onChange={(event) => onSelect?.(event.target.value as LibraryId)}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+          >
+            {all.map((one) => (
+              <option key={one.id} value={one.id}>
+                {strings.libraries.option(one.name, one.partCount)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <button
+        type="button"
+        onClick={() => setCreating(true)}
+        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.libraries.create}
+      </button>
+      {libraries.isError ? <span role="alert">{strings.libraries.failed}</span> : null}
+      {!creating ? null : (
+        <NewLibraryDialog
+          busy={add.isPending}
+          note={refusal ?? (add.isError ? strings.libraries.createFailed : null)}
+          onConfirm={(body) => add.mutate(body)}
+          onCancel={() => {
+            setCreating(false)
+            setRefusal(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * A name and a governance mode, chosen once.
+ *
+ * The mode is at creation because later means asking about a library somebody has already
+ * filled — and the copy says nothing reads it yet, rather than implying a switch that does
+ * something today. `CLAUDE.md`: governance is opt-in per library, and flipping a library to
+ * `controlled` is what turns that machinery on when Phase 8 builds it.
+ */
+function NewLibraryDialog({
+  busy,
+  note,
+  onConfirm,
+  onCancel,
+}: {
+  busy: boolean
+  note: string | null
+  onConfirm: (body: NewLibrary) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState('')
+  const [mode, setMode] = useState<NewLibrary['mode']>('hobby')
+  const trimmed = name.trim()
+  return (
+    <Dialog title={strings.libraries.createTitle} onClose={onCancel}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode })
+        }}
+      >
+        <input
+          type="text"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          aria-label={strings.libraries.nameLabel}
+          autoFocus
+          className="mt-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+        />
+        <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+          {strings.libraries.modeLabel}
+          <select
+            value={mode}
+            onChange={(event) => setMode(event.target.value as NewLibrary['mode'])}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          >
+            {LIBRARY_MODES.map((option) => (
+              <option key={option} value={option}>
+                {MODE_LABEL[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {note === null ? null : (
+          <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+            {note}
+          </p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.folders.cancel}
+          </button>
+          <button
+            type="submit"
+            disabled={busy || trimmed === ''}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.libraries.createConfirm}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
+/** The two modes, and their labels — a lookup rather than a ternary in JSX, for the reason
+ * `DENSITY_LABEL` above gives. */
+const LIBRARY_MODES = ['hobby', 'controlled'] as const
+const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
+  hobby: strings.libraries.hobby,
+  controlled: strings.libraries.controlled,
 }
 
 /**

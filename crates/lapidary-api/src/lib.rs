@@ -110,6 +110,12 @@ pub fn router(state: AppState, role: Role) -> Router {
     let by_role =
         match role {
             Role::Api => Router::new()
+                // Every library, and the route that makes one. Not under `{id}` — these are
+                // about the set of libraries rather than about any of them.
+                .route(
+                    "/api/libraries",
+                    get(derive::list_libraries).post(derive::create_library),
+                )
                 .route("/api/libraries/{id}/parts", get(parts::page))
                 // What that page of cards costs, summed. `Role::Api` with the grid it totals
                 // — see `parts.rs`.

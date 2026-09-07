@@ -457,7 +457,7 @@ fn collision(name: &str, slug: &str, err: sqlx::Error) -> DbError {
 /// The constraint a failed statement names, owned so the error itself can be moved
 /// afterwards. `None` for anything that is not a database error, and for a database error
 /// that violated no named constraint.
-fn constraint_of(err: &sqlx::Error) -> Option<String> {
+pub(crate) fn constraint_of(err: &sqlx::Error) -> Option<String> {
     match err {
         sqlx::Error::Database(db) => db.constraint().map(str::to_owned),
         _ => None,
