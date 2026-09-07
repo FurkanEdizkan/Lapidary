@@ -1506,6 +1506,21 @@ impl PgParts {
         .await?;
 
         for statement in [
+            // The gallery and the provenance, both children of `part` and both added a
+            // slice after this list was written -- the same shape as `part_move` below,
+            // and this time the catalogue test caught them at the moment they were created
+            // rather than a running stack catching them at the moment somebody purged.
+            //
+            // `part_image` first: its `blake3` references `blob`, and the `ref_count`
+            // recompute further down has to see these rows gone or it will count a
+            // reference that is on its way out. An inline image needs no such care -- its
+            // bytes are the row.
+            "DELETE FROM part_image WHERE part_id = $1",
+            // Deleted with the part rather than kept as a record of where it came from. A
+            // source row is a claim about a model, and after a purge there is no model for
+            // it to be about; keeping it would leave a vendor and a price pointing at an id
+            // nothing else in the database knows.
+            "DELETE FROM part_source WHERE part_id = $1",
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",

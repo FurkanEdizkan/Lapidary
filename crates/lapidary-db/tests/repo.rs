@@ -2646,7 +2646,14 @@ async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: 
     // references `part`; its self-reference through `parent_revision_id` is settled by the
     // same single `DELETE FROM revision WHERE part_id`, which removes a parent and its
     // child in one statement.
-    let purged: &[&str] = &["derivative", "file", "part_move", "revision"];
+    let purged: &[&str] = &[
+        "derivative",
+        "file",
+        "part_image",
+        "part_move",
+        "part_source",
+        "revision",
+    ];
 
     let referencing: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT tc.table_name \
@@ -2809,5 +2816,61 @@ async fn purged_bytes_waiting_out_the_hold_are_in_the_instance_total_and_no_libr
         0,
         "no library can be charged for them: the part that said which library is the part \
          that was purged"
+    );
+}
+
+/// The regression the catalogue guard predicted, driven rather than asserted.
+///
+/// `part_image` and `part_source` reference `part`, so a purge of a part carrying either
+/// would have failed on a foreign key — the same way `part_move` did when it arrived a
+/// slice after purge's delete list was written, and was found on a running stack rather
+/// than by any test. This time the guard failed the moment the tables were created and
+/// named both of them; this is the other half, proving the fix works rather than that the
+/// list was edited.
+#[sqlx::test(migrations = "./migrations")]
+async fn purging_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let parts = PgParts(pool.clone());
+    let part = seed_part(&ingest, library(), "Idler pulley, LP-4820-00", 0xc1, None).await;
+
+    sqlx::query(
+        "INSERT INTO part_image (id, part_id, image_webp, origin, position) \
+         VALUES ($1, $2, $3, 'uploaded', 0)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(part.as_uuid())
+    .bind(b"webp-a-photograph-of-the-real-part".as_slice())
+    .execute(&pool)
+    .await
+    .expect("an uploaded photo");
+
+    sqlx::query(
+        "INSERT INTO part_source (id, part_id, url, vendor, license, price_minor, currency) \
+         VALUES ($1, $2, 'https://example.invalid/idler-pulley', 'Misumi', 'CC-BY-NC-SA 4.0', 1250, 'EUR')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(part.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("where it came from");
+
+    parts.soft_delete(part).await.expect("removes the part");
+    parts
+        .purge(part)
+        .await
+        .expect("and purges it, foreign keys and all");
+
+    let orphans: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM part_image WHERE part_id = $1) \
+         + (SELECT count(*) FROM part_source WHERE part_id = $1)",
+    )
+    .bind(part.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        orphans, 0,
+        "both go with the part: a photograph of a model that no longer exists, and a price \
+         for it, are rows pointing at an id nothing else in the database knows"
     );
 }
