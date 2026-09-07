@@ -139,11 +139,13 @@ async fn seed_cas_part(
 
 async fn second_library(pool: &PgPool) -> LibraryId {
     let library = LibraryId::new();
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Terrain Packs')")
-        .bind(library.as_uuid())
-        .execute(pool)
-        .await
-        .expect("seeds a second library");
+    sqlx::query(
+        "INSERT INTO library (id, name, slug) VALUES ($1, 'Terrain Packs', 'terrain packs')",
+    )
+    .bind(library.as_uuid())
+    .execute(pool)
+    .await
+    .expect("seeds a second library");
     library
 }
 

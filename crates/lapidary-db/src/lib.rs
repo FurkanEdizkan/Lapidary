@@ -158,6 +158,14 @@ pub enum DbError {
     )]
     LibraryNameTaken { name: String },
 
+    /// `library_slug_unique`. Two names that differ on screen and not on disk — `Tabletop
+    /// terrain` and `tabletop terrain`, or `Rocks?` and `Rocks*`. The pair `0017`'s name
+    /// index lets through and `0018`'s slug index does not.
+    #[error(
+        "`{name}` would live in the folder `{slug}`, and another library already occupies it — the two names differ only in capitals, or in characters no filesystem can store. Pick a name that differs somewhere a folder name can show it."
+    )]
+    LibrarySlugTaken { name: String, slug: String },
+
     /// `folder_library_id_fkey`, read off the constraint the same way the two collisions
     /// above are. Reached only through [`PgFolders::create`]: `get_or_create` is the scan's,
     /// and the scan always has a library in hand.
@@ -214,6 +222,7 @@ impl DbError {
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
             | DbError::LibraryNameTaken { .. }
+            | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }
             // Composed here from the storage layer's own `Display`, which is already
             // operator-facing and carries no connection string — the same audit the

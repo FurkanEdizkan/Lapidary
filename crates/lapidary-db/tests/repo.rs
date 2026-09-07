@@ -170,7 +170,7 @@ async fn second_library(pool: &sqlx::PgPool) -> LibraryId {
     let id: uuid::Uuid = "01931b6e-0000-7000-8000-0000000000a2"
         .parse()
         .expect("valid uuid");
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture jigs')")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture jigs', 'fixture jigs')")
         .bind(id)
         .execute(pool)
         .await

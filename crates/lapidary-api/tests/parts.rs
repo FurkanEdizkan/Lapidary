@@ -254,7 +254,7 @@ async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
     let other_library: LibraryId = "01931b6e-0000-7000-8000-000000000002"
         .parse()
         .expect("valid uuid");
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture library, other tenant')")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture library, other tenant', 'fixture library, other tenant')")
         .bind(other_library.as_uuid())
         .execute(&pool)
         .await

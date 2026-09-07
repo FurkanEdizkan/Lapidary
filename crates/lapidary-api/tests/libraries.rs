@@ -101,11 +101,62 @@ async fn a_name_another_library_already_has_is_refused(pool: sqlx::PgPool) {
         "the refusal names the library in the way: {refusal}"
     );
 
-    // Case-sensitive, deliberately: `Terrain` and `terrain` are different names, and the
-    // collation question that a case-insensitive index would raise is one the planned
-    // Turkish locale makes real rather than pedantic.
-    let (status, _) = send(pool, create("tabletop terrain", None)).await;
+    // **And the pair that looks different on screen and is not on disk.** This assertion
+    // used to say `CREATED`, which is what `0017`'s name index allowed and what running the
+    // stack then showed to be wrong: `library_slug` is `slugify(name).to_lowercase()`, so
+    // both of these want `libraries/tabletop terrain/`, and two libraries would have been
+    // interleaved in one folder the owner is invited to open and read.
+    //
+    // `0018` gives a library its own `slug` column with its own unique index, which is
+    // `folder.slug`'s design one level up and for the same reason.
+    let (status, refusal) = send(pool, create("tabletop terrain", None)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refusal["reason"], "slugTaken",
+        "and not `nameTaken` — the name is genuinely free, the folder is not: {refusal}"
+    );
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("tabletop terrain")),
+        "the refusal names the folder both wanted: {refusal}"
+    );
+}
+
+/// Names that differ only in characters a filesystem cannot store are the other half of the
+/// same pair — the case `folder_slug_unique_per_parent` has always caught for categories.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn two_library_names_that_slug_alike_cannot_both_exist(pool: sqlx::PgPool) {
+    let (status, _) = send(pool.clone(), create("Rocks?", None)).await;
     assert_eq!(status, StatusCode::CREATED);
+
+    let (status, refusal) = send(pool, create("Rocks*", None)).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "distinct names, one folder: {refusal}"
+    );
+    assert_eq!(refusal["reason"], "slugTaken");
+}
+
+/// The seeded library keeps the folder its models are already in.
+///
+/// `0018` backfills `slug` from the name, and `Default` has been `libraries/default/` since
+/// the folder tree. A backfill that produced anything else would point an existing
+/// deployment at an empty directory while its bytes sat in the old one — the grid would look
+/// healthy and every download would 500.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_backfilled_slug_matches_the_directory_the_seeded_library_already_uses(
+    pool: sqlx::PgPool,
+) {
+    let slug: String = sqlx::query_scalar("SELECT slug FROM library WHERE name = 'Default'")
+        .fetch_one(&pool)
+        .await
+        .expect("the seeded library has a slug");
+    assert_eq!(
+        slug, "default",
+        "the directory an existing store's models are already in"
+    );
 }
 
 /// A name of nothing but spaces is not a name.

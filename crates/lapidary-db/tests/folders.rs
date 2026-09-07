@@ -428,7 +428,7 @@ async fn a_part_in_another_library_is_not_counted_under_this_librarys_category(p
         .expect("Terrain");
 
     let other = LibraryId::new();
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Shop floor')")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Shop floor', 'shop floor')")
         .bind(other.as_uuid())
         .execute(&pool)
         .await

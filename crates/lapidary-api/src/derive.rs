@@ -144,6 +144,12 @@ pub async fn create_library(
         Err(err @ DbError::LibraryNameTaken { .. }) => {
             refused(StatusCode::CONFLICT, "nameTaken", &err.to_string())
         }
+        // The pair that looks different on screen and is not on disk. Its own reason, not
+        // folded into `nameTaken`: a client told "that name is taken" about a name nothing
+        // on screen uses would be told something it can check and find false.
+        Err(err @ DbError::LibrarySlugTaken { .. }) => {
+            refused(StatusCode::CONFLICT, "slugTaken", &err.to_string())
+        }
         Err(err) => internal_error(&err, "library create failed"),
     }
 }

@@ -2857,15 +2857,27 @@ impl PgParts {
     /// has already filled.
     pub async fn create_library(&self, name: &str, mode: &str) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
-        sqlx::query("INSERT INTO library (id, name, mode) VALUES ($1, $2, $3)")
+        // Derived here and never sent by a client, exactly as a category's is: `slugify` is
+        // the one place that decides what a filesystem may hold, and a caller who could name
+        // the directory could name one outside the store. Lowercased because that is what
+        // `library_slug` has always returned and what every existing directory is called.
+        let slug = lapidary_core::slug::slugify(name).to_lowercase();
+        sqlx::query("INSERT INTO library (id, name, mode, slug) VALUES ($1, $2, $3, $4)")
             .bind(id.as_uuid())
             .bind(name)
             .bind(mode)
+            .bind(&slug)
             .execute(&self.0)
             .await
             .map_err(|err| match constraint_of(&err).as_deref() {
                 Some("library_name_unique") => DbError::LibraryNameTaken {
                     name: name.to_owned(),
+                },
+                // Distinct names, one directory. The pair a user can see is refused above;
+                // this is the pair that looks different on screen and is not on disk.
+                Some("library_slug_unique") => DbError::LibrarySlugTaken {
+                    name: name.to_owned(),
+                    slug,
                 },
                 _ => DbError::Query(err),
             })?;

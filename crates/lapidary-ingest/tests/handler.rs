@@ -144,11 +144,13 @@ async fn ref_count(pool: &PgPool) -> i64 {
 /// and there is still no library-creation route, so the row is inserted directly.
 async fn second_library(pool: &PgPool) -> LibraryId {
     const ID: &str = "01931b6e-0000-7000-8000-0000000000a2";
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1::uuid, 'Fixture jigs')")
-        .bind(ID)
-        .execute(pool)
-        .await
-        .expect("seeds a second library");
+    sqlx::query(
+        "INSERT INTO library (id, name, slug) VALUES ($1::uuid, 'Fixture jigs', 'fixture jigs')",
+    )
+    .bind(ID)
+    .execute(pool)
+    .await
+    .expect("seeds a second library");
     LibraryId::from_uuid(Uuid::parse_str(ID).expect("second library id parses"))
 }
 

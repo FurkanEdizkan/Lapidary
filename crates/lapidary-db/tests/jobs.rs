@@ -1227,7 +1227,7 @@ async fn a_mixed_batchs_total_is_the_sum_of_its_per_state_counts(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn a_derive_job_naming_another_librarys_revision_does_not_leak_its_name(pool: PgPool) {
     let other = LibraryId::new();
-    sqlx::query("INSERT INTO library (id, name) VALUES ($1, 'Fixture jigs')")
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture jigs', 'fixture jigs')")
         .bind(other.as_uuid())
         .execute(&pool)
         .await
