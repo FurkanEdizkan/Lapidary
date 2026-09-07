@@ -16,6 +16,9 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Crash-resumable job queue (rows in Postgres, not memory) | 1 |
 | Per-file stage names: hashing, parsing, tessellating, rendering | 1 |
 | Mesh formats: STL, 3MF, OBJ | 1 |
+| Folder tree per library, mirrored on disk — one directory per part | 1 |
+| Move a part between folders; renames its directory, `source_path` unchanged | 1 |
+| Move history per part, newest first | 1 |
 | B-rep formats: STEP, IGES | 2 |
 | Failed-file drawer with actionable errors and per-file retry | 2 |
 | Watched-folder ingest (agent) | 4 |

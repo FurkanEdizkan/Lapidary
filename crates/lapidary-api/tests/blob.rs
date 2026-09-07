@@ -58,6 +58,8 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
         .expect("stores the rung");
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",

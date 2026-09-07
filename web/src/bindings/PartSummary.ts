@@ -75,9 +75,12 @@ tessellationL0: BlobHash | null,
  */
 sourceBytes: number | null, 
 /**
- * What those bytes actually occupy on disk, after compression. Read off `blob`
- * beside `source_bytes` rather than off `file.size_bytes`, which duplicates the
- * same number and could drift from it.
+ * What this part's file actually occupies on disk, after compression. Read off the
+ * `file` row beside `source_bytes`, not off the shared `blob` row: source bytes are
+ * no longer deduplicated, so a hash can have a compressed copy at the old
+ * content-addressed path and a raw copy in a model directory at the same time, and
+ * the per-hash column could only ever describe one of them — it reported 91,204 bytes
+ * for a 204,800-byte file it had just called uncompressed.
  */
 storedBytes: number | null, 
 /**

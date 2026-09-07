@@ -509,7 +509,8 @@ fn check_deploy() -> Result<()> {
              services link the CAD kernel (static check: configuration only, not built images), \
              every service that runs lapidary-server sets LAPIDARY_ROLE, every kernel-linked \
              service sets it to worker and something does, and lapidary-api never names \
-             SourceStore and names SourceReader only in crates/lapidary-api/src/download.rs \
+             SourceStore, names SourceReader only in crates/lapidary-api/src/download.rs, and \
+             names SourceRelocator only in crates/lapidary-api/src/moves.rs \
              ({} source file(s) checked)",
             api_sources.len()
         );

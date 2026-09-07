@@ -367,3 +367,342 @@ async fn the_source_path_backfill_reconstructs_the_filename_a_flat_scan_used(poo
          name where there is none — never NULL, which NOT NULL would have refused"
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_root_folders_with_one_name_are_refused(pool: PgPool) {
+    // NULLs are distinct in a unique constraint by default, so a plain
+    // unique(library_id, parent_id, name) would silently allow this — and a corpus scan
+    // produces it on the first two top-level directories.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let insert = |id: Uuid, name: &'static str, slug: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO folder (id, library_id, parent_id, name, slug) \
+                 VALUES ($1, $2, NULL, $3, $4)",
+            )
+            .bind(id)
+            .bind(library)
+            .bind(name)
+            .bind(slug)
+            .execute(&pool)
+            .await
+        }
+    };
+    insert(Uuid::now_v7(), "Terrain", "Terrain")
+        .await
+        .expect("the first inserts");
+    let err = insert(Uuid::now_v7(), "Terrain", "Terrain")
+        .await
+        .expect_err("the second must not");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.constraint()),
+        Some("folder_name_unique_per_parent")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn two_distinct_names_that_slug_alike_are_refused(pool: PgPool) {
+    // "Rocks?" and "Rocks*" are different names and the same directory.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let insert = |id: Uuid, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO folder (id, library_id, parent_id, name, slug) \
+                 VALUES ($1, $2, NULL, $3, 'Rocks-')",
+            )
+            .bind(id)
+            .bind(library)
+            .bind(name)
+            .execute(&pool)
+            .await
+        }
+    };
+    insert(Uuid::now_v7(), "Rocks?")
+        .await
+        .expect("the first inserts");
+    let err = insert(Uuid::now_v7(), "Rocks*")
+        .await
+        .expect_err("the second must not");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.constraint()),
+        Some("folder_slug_unique_per_parent")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
+    // Slice 6a made the scan recursive, so parts ingested since carry nested source_paths.
+    // Without this backfill they are stranded flat forever: folders are only created for
+    // files that actually ingest, and a re-scan settles every one of them as Skipped.
+    //
+    // This test seeds the table the way 6a leaves it, runs 0009's backfill by hand against
+    // the already-migrated pool, and asserts the tree. Because sqlx has already run the
+    // migration on an empty database, the rows are inserted first and the backfill's
+    // statement is re-executed here.
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    for (name, path) in [
+        ("bracket-lp-1042-03", "bracket-lp-1042-03.stl"),
+        ("rock", "Terrain/rock.stl"),
+        // The "?" is deliberate: these directories already exist on disk under that exact
+        // name, so the folder this backfills must carry it unslugged — see the assertion
+        // below.
+        ("cliff", "Terrain/Rocks?/cliff.stl"),
+        ("spire", "Terrain/Rocks?/Cliffs/spire.stl"),
+        ("round-32mm", "Bases/round-32mm.stl"),
+        ("base-rock", "Bases/Rocks/base-rock.stl"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1,$2,$3,$4)")
+            .bind(Uuid::now_v7())
+            .bind(library)
+            .bind(name)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("seeds a part");
+    }
+
+    sqlx::query(include_str!("../backfill/0009_backfill.sql"))
+        .execute(&pool)
+        .await
+        .expect("the backfill runs");
+
+    let paths: Vec<String> = sqlx::query_scalar(
+        "WITH RECURSIVE t AS (
+           SELECT id, name::text AS path FROM folder WHERE parent_id IS NULL
+           UNION ALL SELECT f.id, t.path||'/'||f.name FROM folder f JOIN t ON f.parent_id = t.id)
+         SELECT path FROM t ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("reads the tree");
+
+    assert_eq!(
+        paths,
+        vec![
+            "Bases",
+            "Bases/Rocks",
+            "Terrain",
+            "Terrain/Rocks?",
+            "Terrain/Rocks?/Cliffs"
+        ],
+        "Terrain/Rocks? and Bases/Rocks are two folders, not one"
+    );
+
+    // The backfill must not slugify: "Rocks?" is a directory name the store already has
+    // on disk, and turning it into anything else would rename a directory the store is
+    // about to be told to find. `folder.slug` is meant to be the filesystem-safe name —
+    // it just is not computed by this backfill, on purpose, because these names did not
+    // come through a path where computing one was safe.
+    let rocks_slug: String =
+        sqlx::query_scalar("SELECT slug FROM folder WHERE library_id = $1 AND name = 'Rocks?'")
+            .bind(library)
+            .fetch_one(&pool)
+            .await
+            .expect("reads the Rocks? folder's slug");
+    assert_eq!(
+        rocks_slug, "Rocks?",
+        "the slug must stay unslugged, character for character"
+    );
+
+    let root_parts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM part WHERE folder_id IS NULL AND source_path NOT LIKE '%/%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(root_parts, 1, "the flat part stays at the library root");
+
+    // Beyond the brief: the tree existing is not proof every nested part actually got
+    // filed into it. Dropping the backfill's final UPDATE leaves this tree intact and
+    // every nested part unfiled -- the two assertions above would still pass.
+    let unfiled: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE folder_id IS NULL")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(
+        unfiled, 1,
+        "only the flat part stays unfiled; all five nested parts must get a folder_id"
+    );
+}
+
+/// Beyond the brief: the test above seeds parts into a database `0009` has already
+/// migrated and re-runs the backfill statement by hand. It never exercises the copy of
+/// that same statement appended to `0009_folders.sql` itself -- every `sqlx::test` above
+/// migrates an *empty* database, so on that path `_dirs` is empty, `maxlvl` is null, the
+/// loop never runs, and the inline copy is a no-op in every test in this file.
+///
+/// The real upgrade path is a database that already has parts with nested source_paths
+/// (written by slice 6a's recursive scan) when `0009` runs against it. This drives that
+/// path directly: migrate up to `0007`, seed the parts, then run `0009` for real and
+/// check the tree it leaves behind matches the hand-run backfill above.
+#[sqlx::test(migrations = false)]
+async fn migration_0009_backfills_a_database_that_already_has_parts(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(7, &pool)
+        .await
+        .expect("migrations up to 0007 apply");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    for (name, path) in [
+        ("bracket-lp-1042-03", "bracket-lp-1042-03.stl"),
+        ("rock", "Terrain/rock.stl"),
+        ("cliff", "Terrain/Rocks/cliff.stl"),
+        ("spire", "Terrain/Rocks/Cliffs/spire.stl"),
+        ("round-32mm", "Bases/round-32mm.stl"),
+        ("base-rock", "Bases/Rocks/base-rock.stl"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1,$2,$3,$4)")
+            .bind(Uuid::now_v7())
+            .bind(library)
+            .bind(name)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("seeds a part before 0009 runs");
+    }
+
+    migrator
+        .run(&pool)
+        .await
+        .expect("0009 applies against an already-populated database");
+
+    let paths: Vec<String> = sqlx::query_scalar(
+        "WITH RECURSIVE t AS (SELECT id, name::text AS path FROM folder WHERE parent_id IS NULL \
+         UNION ALL SELECT f.id, t.path||'/'||f.name FROM folder f JOIN t ON f.parent_id = t.id) \
+         SELECT path FROM t ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("reads the tree");
+    assert_eq!(
+        paths,
+        vec![
+            "Bases",
+            "Bases/Rocks",
+            "Terrain",
+            "Terrain/Rocks",
+            "Terrain/Rocks/Cliffs"
+        ],
+        "the real migration backfills a pre-populated database the same way"
+    );
+
+    let unfiled: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE folder_id IS NULL")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(unfiled, 1, "only the flat part stays unfiled");
+}
+
+/// Task 8b's own opening line: an operator could only start a `migrate_storage` job by
+/// hand-writing `INSERT INTO job` -- and nothing stopped them from writing it twice for
+/// the same library. `0011_migrate_storage_startup_guard.sql` added a unique index that a
+/// database in exactly that state would otherwise have failed to create at all
+/// (`CREATE UNIQUE INDEX` refuses to build over an existing duplicate), so it
+/// de-duplicated first, keeping the oldest pending row per library.
+///
+/// Fix round 3: the index itself is gone (`0012_drop_migrate_storage_pending_index.sql`)
+/// -- it only ever constrained `pending` rows, never the concurrent *execution* it was
+/// believed to guard, and the guards it forced into `release_leases` and `reschedule`
+/// cost more correctness than the deduplication bought. The de-duplication in `0011`
+/// still ran and is still worth pinning; the index it built is not, and must be absent
+/// once `0012` has applied too.
+#[sqlx::test(migrations = false)]
+async fn migration_0011_de_duplicates_pending_migrations_and_0012_drops_its_index(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(9, &pool)
+        .await
+        .expect("migrations up to 0010 apply");
+
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let mut oldest = None;
+    for offset_seconds in [2_i64, 1, 0] {
+        let id = Uuid::now_v7();
+        if oldest.is_none() {
+            oldest = Some(id);
+        }
+        sqlx::query(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload, state, created_at) \
+             VALUES ($1, $2, $3, 'migrate_storage', '{}', 'pending', \
+                     now() - make_interval(secs => $4))",
+        )
+        .bind(id)
+        .bind(Uuid::now_v7())
+        .bind(library)
+        .bind(offset_seconds)
+        .execute(&pool)
+        .await
+        .expect("hand-writes a pending migrate_storage row, as an operator would have");
+    }
+    // Three hand-written rows, none of them created by this test in `created_at` order --
+    // the oldest is the FIRST one inserted (offset 2s ago), not the one this loop
+    // happened to insert last, so this also pins that the migration keeps the oldest
+    // rather than an arbitrary survivor.
+    let count_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM job WHERE kind = 'migrate_storage' AND library_id = $1",
+    )
+    .bind(library)
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        count_before, 3,
+        "three hand-written rows exist before 0011 runs"
+    );
+
+    // Runs every remaining migration, 0011 and 0012 alike -- this is the same
+    // round-trip point 4 of the round-3 brief asks for, just entered from a database
+    // that already holds duplicates rather than an empty one.
+    migrator
+        .run(&pool)
+        .await
+        .expect("0011 must not fail against a database already holding duplicates, and 0012 must not fail after it");
+
+    let survivors: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
+          AND state = 'pending'",
+    )
+    .bind(library)
+    .fetch_all(&pool)
+    .await
+    .expect("reads back");
+    assert_eq!(
+        survivors,
+        vec![oldest.expect("set in the loop above")],
+        "0011's de-duplication still ran: exactly the oldest pending row survives"
+    );
+
+    let index_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes \
+          WHERE tablename = 'job' AND indexname = 'job_migrate_storage_pending_per_library')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("checks pg_indexes");
+    assert!(
+        !index_exists,
+        "0012 must have dropped the index 0011 created"
+    );
+}
+
+/// `backfill/0009_backfill.sql` and the copy appended inside `migrations/0009_folders.sql`
+/// exist for two different reasons — the standalone file is what this test file re-runs by
+/// hand against an already-migrated database, the appended copy is what upgrades a database
+/// that already has parts when `0009` itself runs — and nothing stops the two drifting
+/// apart. This is not a live-database test: it reads both files as text and checks the
+/// migration contains the standalone file's contents verbatim, so an edit to one that is
+/// not carried to the other fails here instead of shipping two silently different rebuilds
+/// of the same tree.
+#[test]
+fn the_standalone_backfill_file_and_the_copy_inside_0009_agree() {
+    let standalone = include_str!("../backfill/0009_backfill.sql");
+    let migration = include_str!("../migrations/0009_folders.sql");
+    assert!(
+        migration.contains(standalone),
+        "migrations/0009_folders.sql must contain backfill/0009_backfill.sql verbatim, or \
+         the two have drifted apart"
+    );
+}

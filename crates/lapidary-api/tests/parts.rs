@@ -57,6 +57,8 @@ async fn seed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library,
             name,
             source_path: name,
@@ -451,10 +453,13 @@ async fn seed_sized_part(
     format: &str,
     blob: StoredBlobRow,
     thumbnail_webp: &[u8],
+    storage_path: &str,
 ) {
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: Some(storage_path),
             library: library(),
             name,
             source_path: name,
@@ -471,9 +476,11 @@ async fn seed_sized_part(
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: sqlx::PgPool) {
-    // A compressed STL and an `AsIs` 3MF, so the source total is a sum of two different
-    // stored sizes rather than a doubled one — a route reporting `size_bytes` would read
-    // 266,094 here instead of 152,498.
+    // Two parts of visibly different sizes, so the source total is a sum rather than a
+    // doubled one — a route reading one part's bytes twice, or reporting only the larger,
+    // could not produce 266,094. Both are shaped as ingest writes them since the store
+    // became a folder tree: one file per part at its own path, uncompressed, so
+    // `size_bytes` is what the file occupies.
     seed_sized_part(
         &pool,
         0xe1,
@@ -482,10 +489,11 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
         StoredBlobRow {
             hash: BlobHash::from_bytes([0xe1; 32]),
             size_bytes: 204_800,
-            stored_bytes: 91_204,
-            zstd_level: 3,
+            stored_bytes: 204_800,
+            zstd_level: 0,
         },
         b"webp-bracket",
+        "libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl",
     )
     .await;
     seed_sized_part(
@@ -500,6 +508,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
             zstd_level: 0,
         },
         b"webp-impeller",
+        "libraries/default/impeller-lp-5501-02/impeller-lp-5501-02.3mf",
     )
     .await;
 
@@ -507,7 +516,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     assert_eq!(status, StatusCode::OK);
     let source = json["sourceBytes"].as_u64().expect("a JSON number");
     let derivative = json["derivativeBytes"].as_u64().expect("a JSON number");
-    assert_eq!(source, 91_204 + 61_294);
+    assert_eq!(source, 204_800 + 61_294);
     assert_eq!(
         derivative,
         ("webp-bracket".len() + "webp-impeller".len()) as u64,
@@ -525,7 +534,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     );
     assert!(
         ratio < 1.0,
-        "two previews against 149 KB of sources is a small fraction; a ratio above 1 \
+        "two previews against 260 KB of sources is a small fraction; a ratio above 1 \
          here would mean the division is inverted: {ratio}"
     );
 }
@@ -545,6 +554,175 @@ async fn storage_for_a_library_that_does_not_exist_is_a_404_not_a_row_of_zeroes(
     // The grid answers an unknown id with an empty page on purpose; this route must not,
     // because `0 B` for a mistyped id is a number a person would believe.
     assert!(json["sourceBytes"].is_null());
+}
+
+/// One part filed under a category, with a model directory of its own — the shape every
+/// part has once ingest writes model directories, which `seed_part` deliberately does not
+/// have so that the migration-pending case stays covered too.
+async fn seed_filed_part(
+    pool: &sqlx::PgPool,
+    folder: Option<lapidary_core::FolderId>,
+    seed: u8,
+    name: &str,
+    storage_path: &str,
+) {
+    let blob = StoredBlobRow {
+        hash: BlobHash::from_bytes([seed; 32]),
+        size_bytes: 2_048,
+        stored_bytes: 1_024,
+        zstd_level: 3,
+    };
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder,
+            storage_path: Some(storage_path),
+            library: library(),
+            name,
+            source_path: storage_path,
+            blob: &blob,
+            measurements: &measurements(),
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("seed filed part");
+}
+
+fn names(json: &serde_json::Value) -> Vec<String> {
+    json["parts"]
+        .as_array()
+        .expect("an array of cards")
+        .iter()
+        .map(|card| card["name"].as_str().expect("a name").to_owned())
+        .collect()
+}
+
+/// Clicking a parent category shows what is under it, not an empty grid. A tree that hid
+/// nested models when you selected a parent would be contradicting the count the sidebar
+/// prints on that very row.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn filtering_by_category_includes_every_subcategory(pool: sqlx::PgPool) {
+    let folders = lapidary_db::PgFolders(pool.clone());
+    let terrain = folders
+        .get_or_create(library(), None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+    let rocks = folders
+        .get_or_create(library(), Some(terrain), "Rocks", "Rocks")
+        .await
+        .expect("Rocks");
+    let bases = folders
+        .get_or_create(library(), None, "Bases", "Bases")
+        .await
+        .expect("Bases");
+    seed_filed_part(
+        &pool,
+        Some(terrain),
+        0x61,
+        "Scree slope, 120 mm",
+        "libraries/default/Terrain/scree slope/scree.stl",
+    )
+    .await;
+    seed_filed_part(
+        &pool,
+        Some(rocks),
+        0x62,
+        "Basalt cliff face, 180 mm span",
+        "libraries/default/Terrain/Rocks/basalt cliff face/cliff.stl",
+    )
+    .await;
+    seed_filed_part(
+        &pool,
+        Some(bases),
+        0x63,
+        "Round base, 32 mm",
+        "libraries/default/Bases/round base/base.stl",
+    )
+    .await;
+
+    let (status, whole) = get_page(pool.clone(), SEEDED_LIBRARY, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&whole).len(), 3, "no filter is the whole library");
+
+    let (status, under_terrain) =
+        get_page(pool.clone(), SEEDED_LIBRARY, &format!("folderId={terrain}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut found = names(&under_terrain);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            "Basalt cliff face, 180 mm span".to_owned(),
+            "Scree slope, 120 mm".to_owned(),
+        ],
+        "the subcategory's model is in the parent's grid"
+    );
+
+    let (status, under_rocks) =
+        get_page(pool.clone(), SEEDED_LIBRARY, &format!("folderId={rocks}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&under_rocks), vec!["Basalt cliff face, 180 mm span"]);
+
+    // An empty category is an empty grid, not the whole library — the failure mode of a
+    // filter that falls back to "no filter" when it matches nothing.
+    let empty = folders
+        .get_or_create(library(), None, "Vehicles", "Vehicles")
+        .await
+        .expect("Vehicles");
+    let (status, none) = get_page(pool, SEEDED_LIBRARY, &format!("folderId={empty}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&none), Vec::<String>::new());
+}
+
+/// The card carries the model's own directory, store-relative, and `null` for a part the
+/// storage migration has not reached — which is a different fact from "no directory", and
+/// the card says so instead of offering a move the route would refuse.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_card_carries_the_model_directory_or_null_while_it_has_none(pool: sqlx::PgPool) {
+    seed_filed_part(
+        &pool,
+        None,
+        0x71,
+        "Basalt cliff face, 180 mm span",
+        "libraries/default/Terrain/Rocks/basalt cliff face/cliff.stl",
+    )
+    .await;
+    seed_part(&pool, library(), 0x72, "Corner bracket, LP-2280-A", b"webp").await;
+
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let card = |name: &str| {
+        json["parts"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .find(|card| card["name"] == name)
+            .expect("the card")
+            .clone()
+    };
+    assert_eq!(
+        card("Basalt cliff face, 180 mm span")["directory"],
+        "libraries/default/Terrain/Rocks/basalt cliff face",
+        "the directory, not the file inside it, and relative to the storage root"
+    );
+    assert!(
+        card("Corner bracket, LP-2280-A")["directory"].is_null(),
+        "still content-addressed, so there is no directory to show"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_folder_id_that_is_not_an_id_is_a_400_that_says_what_one_is(pool: sqlx::PgPool) {
+    let (status, json) = get_page(pool, SEEDED_LIBRARY, "folderId=Terrain").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = json["message"].as_str().expect("a JSON message");
+    assert!(
+        message.contains("folderId") && message.contains("category id"),
+        "says what is wrong and what to send instead (CLAUDE.md): {message}"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -579,6 +757,10 @@ async fn a_card_carries_the_l0_rung_hash_so_those_bytes_are_addressable(pool: sq
             library,
             name: "LP-1042-03",
             source_path: "brackets/LP-1042-03.stl",
+            // Staged through the content-addressed writer, so this row is one that has
+            // not migrated: no folder, no storage path.
+            folder: None,
+            storage_path: None,
             blob: &blob,
             measurements: &measurements(),
             thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),

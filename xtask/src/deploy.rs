@@ -67,19 +67,22 @@ const ARG_EXPANSION: &str = "${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
 /// it prints, so the two cannot drift into telling a reader to put the code somewhere the
 /// check still rejects.
 ///
-/// Two entries, arrived at one slice apart and for mirrored reasons. `SourceReader` is
-/// the read half: `download.rs` hands a user the exact bytes they asked for, which is not
-/// the open path because it parses nothing. `SourceWriter` is the write half: `upload.rs`
-/// puts bytes a user just handed it into the store, which is not the open path for the
-/// same reason. Both are narrow types that exist so the alternative — giving the api
-/// `SourceStore`, and with it the whole source half of the store — never has to be
-/// considered.
+/// Three entries, arrived at a slice apart each and for mirrored reasons. `SourceReader`
+/// is the read half: `download.rs` hands a user the exact bytes they asked for, which is
+/// not the open path because it parses nothing. `SourceWriter` is the write half:
+/// `upload.rs` puts bytes a user just handed it into the store, which is not the open path
+/// for the same reason. `SourceRelocator` is neither: `moves.rs` renames a model's
+/// directory, which reads no bytes and invokes no kernel, and is in the api rather than
+/// behind the job queue because an O(1) syscall does not need a worker. All three are
+/// narrow types that exist so the alternative — giving the api `SourceStore`, and with it
+/// the whole source half of the store — never has to be considered.
 ///
-/// A third entry should be argued for, not added. The list existing at all is what keeps
+/// A fourth entry should be argued for, not added. The list existing at all is what keeps
 /// "one named route may do this" from becoming "lapidary-api may do this".
 const SOURCE_HANDLE_EXEMPTIONS: &[(&str, &str)] = &[
     ("SourceReader", "crates/lapidary-api/src/download.rs"),
     ("SourceWriter", "crates/lapidary-api/src/upload.rs"),
+    ("SourceRelocator", "crates/lapidary-api/src/moves.rs"),
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -130,9 +133,9 @@ pub enum Violation {
     OpenPathNamesSourceStore { path: String },
     /// A file under `crates/lapidary-api/src/` names one of the narrow source-bytes
     /// handles somewhere other than the single route that handle exists for. Handing a
-    /// user the exact bytes they asked for is a download, and storing bytes a user just
-    /// handed us is an upload; every other route in `lapidary-api` is the open path and
-    /// reads derivatives only.
+    /// user the exact bytes they asked for is a download, storing bytes a user just
+    /// handed us is an upload, and renaming a model's directory is a move; every other
+    /// route in `lapidary-api` is the open path and reads derivatives only.
     OpenPathNamesSourceHandleOutsideItsModule {
         path: String,
         handle: &'static str,
@@ -671,8 +674,16 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
     violations
 }
 
-/// Rules 4 and 5, over the same file list: `lapidary-api` must never name `SourceStore`,
-/// and may name `SourceReader` only in `crates/lapidary-api/src/download.rs`.
+/// Rules 4, 5 and 6, over the same file list: `lapidary-api` must never name
+/// `SourceStore`, and may name each handle in [`SOURCE_HANDLE_EXEMPTIONS`] only in the one
+/// file that table pairs it with.
+///
+/// Rule 6 is rule 5's argument again, one handle narrower: `SourceRelocator` has no
+/// `WorkerRole` gate either, because a rename reads no bytes and invokes no kernel — see
+/// its doc in `lapidary-storage` for why that earns it a route in the open path rather
+/// than a trip through the worker's job queue. It is a row in the same table rather than a
+/// rule of its own, because two greps enforcing one boundary is how the third one gets
+/// written differently.
 ///
 /// Rule 5 exists because `SourceReader` has no `WorkerRole` gate — spec
 /// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2 chose a read-only handle over
@@ -702,17 +713,19 @@ pub fn check_containerfile(contents: &str) -> Vec<Violation> {
 ///
 /// Rule 5 is textual in the same way and evadable by the same move, demonstrably:
 /// `pub(crate) use lapidary_storage::SourceReader as Bytes;` in `download.rs`, then `Bytes`
-/// used from an open-path file, is green here. Both rules are lints against the mistake,
-/// not seals against someone routing around them on purpose. A future reader should not
-/// treat a green run as proof no source bytes are reachable, only as proof that nothing
-/// under `crates/lapidary-api/src/` names `SourceStore` directly, and that nothing but
-/// `crates/lapidary-api/src/download.rs` names `SourceReader` directly.
+/// used from an open-path file, is green here. Rule 6 is textual for the same reason and
+/// the same way around it exists for `SourceReader`. All three rules are lints against
+/// the mistake, not seals against someone routing around them on purpose. A future reader
+/// should not treat a green run as proof no source bytes are reachable, only as proof that
+/// nothing under `crates/lapidary-api/src/` names `SourceStore` directly, that nothing but
+/// `crates/lapidary-api/src/download.rs` names `SourceReader` directly, and that nothing
+/// but `crates/lapidary-api/src/moves.rs` names `SourceRelocator` directly.
 pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violation> {
     let names_source_store = api_sources
         .iter()
         .filter(|(_, body)| body.contains("SourceStore"))
         .map(|(path, _)| Violation::OpenPathNamesSourceStore { path: path.clone() });
-    // Per file, then per handle, so one file naming both handles reports in the order a
+    // Per file, then per handle, so one file naming two handles reports in the order a
     // reader meets them rather than grouped by handle.
     let handle_outside_its_module = api_sources.iter().flat_map(|(path, body)| {
         SOURCE_HANDLE_EXEMPTIONS
@@ -1410,5 +1423,46 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             "use lapidary_storage::DerivativeStore;\n".to_owned(),
         )];
         assert_eq!(check_open_path_boundary(&sources), vec![]);
+    }
+
+    #[test]
+    fn source_relocator_is_allowed_in_the_move_route_and_nowhere_else() {
+        let sources = vec![
+            (
+                "crates/lapidary-api/src/moves.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+            (
+                "crates/lapidary-api/src/parts.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+            // A string-suffix test on the whole path would let this one through, the same
+            // way bulk_download.rs would slip past a suffix test on DOWNLOAD_MODULE.
+            (
+                "crates/lapidary-api/src/bulk_moves.rs".to_owned(),
+                "let relocator = SourceRelocator::open(&root);".to_owned(),
+            ),
+        ];
+        let violations = check_open_path_boundary(&sources);
+        assert_eq!(
+            violations,
+            vec![
+                Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                    path: "crates/lapidary-api/src/parts.rs".to_owned(),
+                    handle: "SourceRelocator",
+                    allowed: "crates/lapidary-api/src/moves.rs",
+                },
+                Violation::OpenPathNamesSourceHandleOutsideItsModule {
+                    path: "crates/lapidary-api/src/bulk_moves.rs".to_owned(),
+                    handle: "SourceRelocator",
+                    allowed: "crates/lapidary-api/src/moves.rs",
+                },
+            ]
+        );
+        let msg = violations[0].to_string();
+        assert!(
+            msg.contains("parts.rs"),
+            "names the file that broke it: {msg}"
+        );
     }
 }

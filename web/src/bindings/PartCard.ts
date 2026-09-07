@@ -64,4 +64,21 @@ sourceBytes: number | null, storedBytes: number | null,
  * Whether the stored bytes are a zstd frame. `Some(false)` covers both "stored
  * raw" and "level unrecorded" — see `PartSummary.compressed`.
  */
-compressed: boolean | null, createdAt: string, updatedAt: string, };
+compressed: boolean | null, 
+/**
+ * The model's own directory in the store, relative to the storage root:
+ * `libraries/default/Terrain/rock`. Shown, never opened — no browser can navigate a
+ * `file://` URL from a page, and the api runs in a container where an absolute path
+ * would name a filesystem the user is not looking at. The Tauri shell is what will
+ * eventually have a host to ask.
+ *
+ * `directory`, not `storagePath`: this names a directory, not the file inside it, and
+ * a field named for a path a caller could then try to download would be a small lie
+ * of the kind measurement rules already forbid.
+ *
+ * `None` is a real state and not a missing value — the part predates the folder layout
+ * and its bytes are still content-addressed, so it has no directory to show and cannot
+ * be moved until `migrate_storage` reaches it. The card says so rather than offering a
+ * move that the route would refuse.
+ */
+directory: string | null, createdAt: string, updatedAt: string, };

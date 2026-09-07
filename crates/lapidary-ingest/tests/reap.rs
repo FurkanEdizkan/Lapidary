@@ -52,6 +52,11 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: path,
+            // This fixture stages its bytes through the content-addressed writer, so the
+            // row it makes is one that has not migrated: no folder, no storage path. That
+            // is the state quarantine was built against and the one this file is about.
+            folder: None,
+            storage_path: None,
             blob: &blob,
             measurements: &MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],

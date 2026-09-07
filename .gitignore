@@ -18,6 +18,14 @@ web/dist/
 .lapidary-data/
 volumes/
 
+# The default storage root. deploy/compose.yaml binds ${LAPIDARY_STORAGE_ROOT:-../storage}
+# into api and worker, and compose resolves that against deploy/, so an operator who sets
+# nothing gets the user's own parts library right here, inside the working tree. Never
+# ours to commit, and it must not sit in `git status` inviting a broad `git add`. Note
+# what an ignore entry cannot do: `git clean -xfd` removes ignored files by definition,
+# so a store that matters belongs outside the repository — set LAPIDARY_STORAGE_ROOT.
+/storage/
+
 # Generated
 sidecar/occt-bridge/build/
 crates/*/bindings/

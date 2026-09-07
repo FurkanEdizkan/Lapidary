@@ -67,6 +67,10 @@ tracing-subscriber.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
+# Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed
+# directly (a part/revision/file with no storage_path) -- the same reason lapidary-ingest
+# and lapidary-api's own test suites already depend on it.
+uuid.workspace = true
 
 [lints]
 workspace = true

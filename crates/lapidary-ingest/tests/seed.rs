@@ -38,17 +38,19 @@ async fn a_first_run_lands_the_bundled_parts_with_real_measurements(pool: PgPool
         "every seeded part carries the measurements a real ingest produces"
     );
 
-    // And the bytes are on disk under the hash the row names, so the download link works.
-    let hash: String = sqlx::query_scalar("SELECT blake3 FROM file WHERE role = 'source' LIMIT 1")
-        .fetch_one(&pool)
-        .await
-        .expect("query");
-    let path = blobs
-        .path()
-        .join("blobs")
-        .join(&hash[0..2])
-        .join(&hash[2..4])
-        .join(&hash);
+    // And the bytes are on disk where the row says they are, so the download link works.
+    //
+    // `storage_path`, not the hash fan-out: a seeded part goes through the same ingest as
+    // any other and lands in its own model directory, so the file this asserts is
+    // `libraries/default/.../flange-dn40-pn16-lp-3310-02.stl` and not
+    // `blobs/41/ed/41ed...`. Read off the row rather than reconstructed, because the row
+    // is what the download route follows.
+    let rel: String =
+        sqlx::query_scalar("SELECT storage_path FROM file WHERE role = 'source' LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("query");
+    let path = blobs.path().join(&rel);
     assert!(path.exists(), "no bytes at {}", path.display());
 }
 

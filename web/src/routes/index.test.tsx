@@ -9,9 +9,10 @@ import {
 } from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { Index } from './index'
+import { routeTree } from '../routeTree.gen'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/types'
+import type { BatchStatus, FolderNode, LibraryStorage, PartCard, PartsPage } from '../lib/types'
 
 /**
  * `Index` takes the batch as a prop rather than reading the search param itself, which is
@@ -25,9 +26,20 @@ import type { BatchStatus, LibraryStorage, PartCard, PartsPage } from '../lib/ty
  * spelling it as a search param in forty places to test something `index.tsx` already
  * covers. The detail route is stubbed so the link has a real target to resolve against.
  */
-function renderIndex(props: { batch?: string; client?: QueryClient } = {}) {
+function renderIndex(
+  props: {
+    batch?: string
+    folderId?: string
+    onSelectFolder?: (folder: string | null) => void
+    client?: QueryClient
+  } = {},
+) {
   const client = props.client ?? newClient()
-  const rootRoute = createRootRoute({ component: () => <Index batch={props.batch} /> })
+  const rootRoute = createRootRoute({
+    component: () => (
+      <Index batch={props.batch} folderId={props.folderId} onSelectFolder={props.onSelectFolder} />
+    ),
+  })
   const detailRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/parts/$partId',
@@ -79,9 +91,17 @@ function stubFetch(routes: {
   sweep?: () => Promise<StubResponse>
   partThumbnail?: () => Promise<StubResponse>
   scan?: () => Promise<StubResponse>
+  folders?: () => Promise<StubResponse>
+  move?: () => Promise<StubResponse>
+  folderDelete?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith('/api/healthz')) return (routes.healthz ?? pending)()
+    // Above the settings rule below, which claims every `PATCH` there is. The move is a
+    // `PATCH` too, and answering it with a `LibrarySettings` body would leave a move test
+    // asserting against a shape it never asked for.
+    if (init?.method === 'PATCH' && url.startsWith('/api/parts/')) return (routes.move ?? pending)()
+    if (url.startsWith('/api/folders/')) return (routes.folderDelete ?? pending)()
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
     // is a prefix of every other library route.
     if (init?.method === 'PATCH') return (routes.settings ?? pending)()
@@ -90,8 +110,13 @@ function stubFetch(routes: {
     // earlier `includes('/parts')` rule would have answered with a page of the grid.
     if (url.endsWith('/thumbnails')) return (routes.sweep ?? pending)()
     if (url.endsWith('/thumbnail')) return (routes.partThumbnail ?? pending)()
-    if (url.endsWith('/parts')) return (routes.parts ?? pending)()
+    // `endsWith` alone stops matching the moment the grid filters by a category, and the
+    // request then falls through to the bare-library rule — a settings body where a page
+    // of parts was expected.
+    if (url.endsWith('/parts') || url.includes('/parts?')) return (routes.parts ?? pending)()
     if (url.endsWith('/scan')) return (routes.scan ?? pending)()
+    // Before the bare-library rule, which every library route is a prefix of.
+    if (url.endsWith('/folders')) return (routes.folders ?? pending)()
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith('/storage')) return (routes.storage ?? pending)()
     if (url.includes('/jobs/')) return (routes.batch ?? pending)()
@@ -129,6 +154,8 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   ingested: 0,
   skipped: 0,
   rendered: 0,
+  migrated: 0,
+  migrating: 0,
   failedTotal: 0,
   failed: [],
   startedAt: '2026-09-03T23:28:56.014618Z',
@@ -161,6 +188,7 @@ const MOTOR_MOUNT: PartCard = {
   sourceBytes: 624_384,
   storedBytes: 197_012,
   compressed: true,
+  directory: 'libraries/default/Motors/NEMA 17 motor mount, 42 mm face',
   createdAt: '2026-08-14T09:12:44Z',
   updatedAt: '2026-08-14T09:12:44Z',
 }
@@ -180,6 +208,7 @@ const HEX_NUT: PartCard = {
   sourceBytes: 99_284,
   storedBytes: 26_741,
   compressed: true,
+  directory: 'libraries/default/Fasteners/Hex nut M8, DIN 934',
   createdAt: '2026-08-14T09:12:51Z',
   updatedAt: '2026-08-14T09:12:51Z',
 }
@@ -206,6 +235,7 @@ const SHAFT_COUPLER: PartCard = {
   sourceBytes: 148_930,
   storedBytes: 148_930,
   compressed: false,
+  directory: 'libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm',
   createdAt: '2026-08-14T09:13:02Z',
   updatedAt: '2026-08-14T09:13:02Z',
 }
@@ -944,6 +974,189 @@ test('a batch whose jobs all settle as rendered refetches the grid exactly once'
 })
 
 /**
+ * The blind window this fix round closes. `migrating` counts ROWS of kind
+ * `migrate_storage`, not settled outcomes, so it is already 1 the instant the worker's
+ * startup enqueue creates the batch — before anything has run. The worker queues a
+ * migration on its own at startup, so this IS the ordinary shape of a migration batch
+ * this page ever learns about, not an edge case: `migrated` (settled outcomes) would
+ * still read 0 here, and if `kind` fell through to that, an operator watching their
+ * files get relocated would see "Reading the folder…" for the whole first run —
+ * worst on a large corpus, where that first run is slowest.
+ */
+test('a migration batch reads as a migration before its first job has settled', async () => {
+  const running = batchStatus({
+    total: 1,
+    pending: 0,
+    running: 1,
+    migrating: 1,
+    migrated: 0,
+  })
+  expect(running.finishedAt).toBeNull()
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(running),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.running)).toBeTruthy()
+  expect(screen.queryByText('Reading the folder…')).toBeNull()
+})
+
+/**
+ * The regression this task exists to close. Nothing on this page starts a migration —
+ * the worker queues it on its own at startup — so the only way this page ever learns
+ * about one is a batch id it never clicked into, exactly like the render sweep's own
+ * `curl` gap above. Before `migrating` existed on `BatchStatus`, this batch's `rendered`
+ * count was 0 just like a scan's, so `kind` fell through to `'scan'` and an operator
+ * watching their files get relocated read "Scan complete — 3 added." over three files
+ * that were only moved, not added.
+ */
+test('a batch whose jobs all settle as migrated reads as a migration, not a scan', async () => {
+  const migrated = batchStatus({
+    total: 3,
+    pending: 0,
+    running: 0,
+    migrating: 3,
+    migrated: 3,
+    finishedAt: '2026-09-06T10:14:02.116Z',
+  })
+  expect(migrated.ingested + migrated.skipped + migrated.rendered + migrated.failedTotal).toBe(0)
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(migrated),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.finished(0))).toBeTruthy()
+  // Neither of the other two kinds' copy leaked in — `scan.finished` would call three
+  // moved files "added", and `render.finished` would call them rendered previews. Not a
+  // bare `/preview/i` check: the action bar's own static copy ("Generate missing
+  // previews", "Render preview") always contains that word and would make this
+  // assertion fire on correct output.
+  expect(screen.queryByText(/Scan complete/)).toBeNull()
+  expect(screen.queryByText(strings.render.finished(3))).toBeNull()
+})
+
+/**
+ * The copy a migration failure gets, and the copy it must never get.
+ *
+ * `strings.migrate` used to carry only `running` and `finished`, so a `migrate_storage`
+ * job that failed fell through to `strings.scan` and told an operator that "1 file could
+ * not be read. It will not appear in the grid" — about a model that already exists, is
+ * already in the grid, and whose bytes were never touched. A migration relocates a file a
+ * part already has; the worst a failure can do is leave it where it was. Wording a
+ * non-destructive failure as data loss is the one class of copy mistake this product
+ * treats as a correctness bug, so both halves are pinned here: the migration wording
+ * present, and the scan wording absent.
+ *
+ * The completion line is checked in the same test because the two are one sentence to a
+ * reader: `finished` asserted "this library's files are now in their model folders"
+ * regardless of `failedTotal`, so a migration that moved four steps out of five claimed
+ * every file was home directly beside a line saying one was not.
+ */
+test('a failed migration is not described in the words a failed scan uses', async () => {
+  const reason =
+    'The stored copy of Basalt cliff face, 180 mm span does not match the hash recorded \
+for it — it reads as 4f6a91c2… where the database says 8b30d5ae… . The blob may have been \
+corrupted or written by something other than Lapidary; re-scan this part from its source \
+file. Nothing was moved or removed.'
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 5,
+        pending: 0,
+        running: 0,
+        migrating: 5,
+        migrated: 4,
+        failedTotal: 1,
+        failed: [{ path: '', reason, attempts: 3 }],
+        finishedAt: '2026-09-06T10:14:02.116Z',
+      }),
+    ),
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.failed())).toBeTruthy()
+  // The sentence this whole finding is about: existing models described as about to
+  // vanish from a grid they are already in.
+  expect(screen.queryByText(strings.scan.failed(1))).toBeNull()
+  // And the completion line qualified by the failure rather than talking over it.
+  expect(screen.getByText(strings.migrate.finished(1))).toBeTruthy()
+  expect(screen.queryByText(strings.migrate.finished(0))).toBeNull()
+  // The reason itself still reaches the screen, which is where "1 step" gets its detail.
+  expect(screen.getByText(strings.failure.line('', reason))).toBeTruthy()
+})
+
+/**
+ * The other half of the same fall-through. A status poll that stops answering rendered
+ * `scan.unknown` — "No scan with that id has run in this library" — to an operator who
+ * never started a scan: nothing on this page can start a migration, the worker queues it
+ * at boot, and the batch is one this browser was only ever watching.
+ *
+ * The poll has to succeed once before it can fail as a migration: `kind` is read off the
+ * counters, so a first request that errors has nothing to read and falls back to `scan`,
+ * which is correct there — a mistyped `?batch=` id genuinely is a scan id as far as
+ * anything here can tell.
+ */
+test('a migration whose status stops answering does not report a scan nobody started', async () => {
+  let calls = 0
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      calls += 1
+      return calls === 1
+        ? { ok: true, json: async () => batchStatus({ total: 4, pending: 3, running: 1, migrating: 4 }) }
+        : { ok: false, status: 404 }
+    },
+  })
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.migrate.running)).toBeTruthy()
+  // Past the 1000 ms poll interval: the second request is the one that fails.
+  expect(await screen.findByText(strings.migrate.unknown, {}, { timeout: 4000 })).toBeTruthy()
+  expect(screen.queryByText(strings.scan.unknown)).toBeNull()
+})
+
+// The converse, pinned beside the test above so the two cannot drift: adding a third
+// batch kind must not change how an ordinary scan, with no jobs of either other kind
+// settled, reads. `migrating` and `migrated` both default to 0 in every fixture already
+// — this is what proves that default keeps the scan path silent rather than merely
+// asserting it does.
+test('a batch with nothing migrating or rendered still reads as a scan', async () => {
+  const scanned = batchStatus({
+    total: 4,
+    scanned: 1,
+    pending: 0,
+    running: 0,
+    ingested: 3,
+    finishedAt: '2026-09-06T10:14:02.116Z',
+  })
+  expect(scanned.migrating).toBe(0)
+  expect(scanned.migrated).toBe(0)
+  expect(scanned.rendered).toBe(0)
+
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(scanned),
+  })
+
+  renderIndex({ batch: BATCH_ID })
+
+  expect(await screen.findByText(strings.scan.finished(3, 0))).toBeTruthy()
+  expect(screen.queryByText(/Move complete/)).toBeNull()
+})
+
+/**
  * The test this whole slice-4 addendum exists for. A library switched off has to render
  * off — the failure it replaces is a toggle that showed design §3.2's default and told an
  * owner who had turned rendering off that it was on.
@@ -1580,4 +1793,207 @@ test('the storage panel says removed bytes are still on disk, and says nothing w
   renderIndex()
   await screen.findByRole('article', { name: MOTOR_MOUNT.name })
   expect(screen.queryByText(/removed, still on disk/)).toBeNull()
+})
+/**
+ * The category tree beside the grid, and the one half of it that needs a real router: the
+ * selection is a search param, so proving it lands in the URL means rendering the route
+ * rather than the component. `FolderTree.test.tsx` covers everything that does not need
+ * one.
+ *
+ * `createMemoryHistory` rather than a stub: `routeTree.gen.ts` imports its routes plainly
+ * and `vitest.config.ts` does not load the router plugin, so the generated tree renders
+ * here as it ships.
+ */
+function renderApp(client: QueryClient = newClient()) {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  )
+  return router
+}
+
+const TERRAIN: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0001',
+  parentId: null,
+  name: 'Terrain',
+  partCount: 34,
+}
+const ROCKS: FolderNode = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0002',
+  parentId: TERRAIN.id,
+  name: 'Rocks',
+  partCount: 12,
+}
+
+/**
+ * A card as it arrives once a model has its own directory. The intersection narrows
+ * `PartCard.directory` from `string | null` to the one case each fixture is for, so the
+ * assertions below can name `CLIFF_FACE.directory` directly instead of re-narrowing a
+ * value the fixture already fixed.
+ *
+ * The path is the server's, verbatim, and store-relative — it names a place inside the
+ * storage volume, not a path on the reader's machine, because the api serving it is in a
+ * container and does not know what that volume is mounted as outside one. It is never
+ * rebuilt here from category names either: the server disambiguates colliding directory
+ * names and a client cannot know when it did.
+ */
+const CLIFF_FACE: PartCard & { directory: string } = {
+  id: '01931b6e-0000-7000-8000-0000000a0007',
+  library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0007',
+  name: 'Basalt cliff face, 180 mm span',
+  partNumber: 'LP-7710-C',
+  thumbnail: WEBP_BLUE,
+  triangleCount: 148_302,
+  approximate: true,
+  sourceHash: '5b8c1f2e9a47d0c3b6154e88f0a2d97361cc4e5b0f18a7d2946b3e5107cd82af',
+  sourceBytes: 7_412_880,
+  storedBytes: 2_104_331,
+  compressed: true,
+  createdAt: '2026-08-30T11:04:19Z',
+  updatedAt: '2026-08-30T11:04:19Z',
+  directory: 'libraries/default/Terrain/Rocks/basalt_cliff_face',
+}
+
+/** Ingested before the folder layout existed, so it is still in the shared store. */
+const OLD_BRACKET: PartCard & { directory: null } = {
+  id: '01931b6e-0000-7000-8000-0000000a0008',
+  library: DEFAULT_LIBRARY_ID,
+  revision: '01931b6e-0000-7000-8000-0000000b0008',
+  name: 'Corner bracket, 40 x 40 mm, 4 mm wall',
+  partNumber: 'LP-2280-A',
+  thumbnail: WEBP_ORANGE,
+  triangleCount: 3204,
+  approximate: true,
+  sourceHash: 'e41d2b7c05986aa3f0d4b8172c9e5a63d081fb42c7e9503a186dd47b2c9f0e35',
+  sourceBytes: 212_004,
+  storedBytes: 64_118,
+  compressed: true,
+  createdAt: '2026-05-02T08:41:07Z',
+  updatedAt: '2026-05-02T08:41:07Z',
+  directory: null,
+}
+
+test('selecting a category puts it in the URL and asks the grid for that category', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    folders: ok([TERRAIN, ROCKS]),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  const router = renderApp()
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Rocks' }))
+
+  // In the URL, not in component state: the filter survives a reload and is a link
+  // someone can send.
+  await waitFor(() => expect(router.state.location.searchStr).toContain(`folderId=${ROCKS.id}`))
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+    ),
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.root }))
+  // Cleared means absent, never `?folderId=`: an absent parameter is what the route reads
+  // as the whole library.
+  await waitFor(() => expect(router.state.location.searchStr).not.toContain('folderId'))
+})
+
+test('a category in the URL filters the first request the grid makes', async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    folders: ok([TERRAIN, ROCKS]),
+    storage: ok(LIBRARY_STORAGE),
+  })
+  renderIndex({ folderId: ROCKS.id })
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?folderId=${ROCKS.id}`,
+    ),
+  )
+  // Unfiltered is a different request, not this one with an empty parameter.
+  expect(fetchMock).not.toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/parts`)
+})
+
+test('show in folder reveals the directory as copyable text and opens nothing', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.showInFolderFor(CLIFF_FACE.name) }),
+  )
+
+  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined()
+  expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined()
+  // No browser opens a host file manager, and `file://` navigation from a page is blocked
+  // everywhere — so nothing here pretends to. The path is text, and there is no link.
+  expect(document.querySelector('a[href^="file:"]')).toBeNull()
+
+  // jsdom has no clipboard, which is the same shape as an insecure context: the copy
+  // control must not throw there, and the path stays on screen either way.
+  fireEvent.click(within(card).getByRole('button', { name: strings.folders.copyPath }))
+  expect(within(card).getByText(CLIFF_FACE.directory)).toBeDefined()
+})
+
+test('a model still in the shared store says so rather than showing an invented path', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([OLD_BRACKET])), folders: ok([TERRAIN]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: OLD_BRACKET.name })
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.showInFolderFor(OLD_BRACKET.name) }),
+  )
+
+  expect(within(card).getByText(strings.folders.directoryPending)).toBeDefined()
+  // And the move is withheld with its reason rather than offered and refused at the
+  // server with a 409 — the same status a name collision uses, which the UI would then
+  // present as one.
+  expect(
+    within(card).queryByRole('button', { name: strings.folders.moveToFor(OLD_BRACKET.name) }),
+  ).toBeNull()
+  expect(within(card).getByText(strings.folders.notMigrated)).toBeDefined()
+  expect(card.getAttribute('draggable')).toBe('false')
+})
+
+test('a card offers the move chooser, and is draggable for the tree to catch', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN, ROCKS]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  expect(card.getAttribute('draggable')).toBe('true')
+
+  // The keyboard path: a plain button on the card, no pointer gesture anywhere in it.
+  fireEvent.click(
+    within(card).getByRole('button', { name: strings.folders.moveToFor(CLIFF_FACE.name) }),
+  )
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByText(strings.folders.moveTitle(CLIFF_FACE.name))).toBeDefined()
+  expect(
+    within(dialog).getByRole('button', { name: strings.folders.moveInto(ROCKS.name) }),
+  ).toBeDefined()
+})
+
+test('right-clicking a card opens the same chooser the button does', async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([CLIFF_FACE])), folders: ok([TERRAIN, ROCKS]) })
+  renderIndex()
+
+  const card = await screen.findByRole('article', { name: CLIFF_FACE.name })
+  // The pointer gesture a file manager would give you, opening the same chooser rather
+  // than a menu of its own — so neither path can drift from the other.
+  fireEvent.contextMenu(card)
+
+  expect(
+    within(await screen.findByRole('dialog')).getByRole('button', {
+      name: strings.folders.moveInto(ROCKS.name),
+    }),
+  ).toBeDefined()
 })

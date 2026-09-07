@@ -71,6 +71,8 @@ async fn seed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library,
             name,
             source_path: name,
@@ -531,7 +533,7 @@ async fn a_batch_is_enqueued_under_the_parts_own_library_and_no_other(pool: sqlx
 
     // The seeded library also gained no part, so nothing was written across the boundary.
     let rows = PgParts(pool)
-        .page(library(), None, 50, Shows::Live)
+        .page(library(), None, None, 50, Shows::Live)
         .await
         .expect("reads the grid");
     assert!(rows.is_empty());

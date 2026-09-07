@@ -18,15 +18,103 @@ Treating these the same is the most common way this kind of app becomes slow and
 | **Preview** | thumbnails | 5 – 60 KB | Yes, cheaply | **Hot** |
 
 ```
-/var/lib/lapidary/          (named volume)
-  blobs/ab/cd/abcdef01…     content-addressed, 2-level hex sharding
-  workspace/                agent checkout dir (agent host only)
-  quarantine/               ref_count=0, 30-day hold before removal
+<storage-root>/                        LAPIDARY_STORAGE_ROOT; a host directory, bind-mounted
+  libraries/default/
+    Terrain/Rocks/cliff/               one directory per model, named after the part
+      cliff.stl                        the source, under its original filename
+      metadata.json                    part + revision facts, human-readable
+  blobs/ab/cd/<blake3>                 derivatives only, content-addressed, evictable
 ```
 
-Two-level sharding gives 65,536 buckets, keeping any directory under ~2k entries at a
-million blobs. **BLAKE3**, not SHA-256 — ingest is hash-bound before it is anything else.
-Blobs never live in Postgres, with one deliberate exception (§1.5).
+That is the whole of it, and it is what the code writes: `SourceStore::put_at` for the
+model directories, `blob_path` — `root.join("blobs")` — for the cache. Two things a
+reader might expect are deliberately absent. **Thumbnails are not files**: they live in
+Postgres as `bytea` on the derivative row (§1.5), so no `images/` directory is written.
+**There is no config file in the store**: nothing in the workspace reads or writes a
+`lapidary.toml`, and configuration is environment variables the container gets
+(`deploy/.env.example` names them). The root itself is not chosen in a first-run dialog
+either — it is `LAPIDARY_STORAGE_ROOT`, a bind mount, and defaults to `deploy/../storage`.
+
+**Sources are path-addressed now, not content-addressed.** Each ingested model gets its
+own directory named after the part, under a folder tree mirroring the ingest directory's
+own nesting — `Terrain/Rocks/cliff/` for a file ingested at `Terrain/Rocks/cliff.stl`.
+This reverses the rule that stood here: every source used to land at
+`blobs/ab/cd/<hash>` so identical bytes anywhere in a library shared one file — the same
+directory the derivative cache still writes to, which is why `migrate_storage` moves
+sources out of it and leaves the derivatives where they are. The owner wants the
+opposite — a folder a user can open in a file manager and find their model by name, not
+by hash.
+
+**The cost, stated plainly: source deduplication is gone.** Two identical files ingested
+at two source paths are now two files on disk. That is the price of a browsable store,
+and it is not recoverable by cleverness — a store cannot be both one file per model and
+one file per distinct content. **`CLAUDE.md`'s "Hash first, always" still holds:** BLAKE3
+is still computed before anything else in ingest, and a known `(library_id, source_path,
+blake3)` still short-circuits a re-scan of the same path. Only the filename the bytes are
+written under changed; which paths dedupe against which did not.
+
+**Content addressing survives for `blobs/` only** — derivatives, which are evictable and
+rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,
+keeping any cache directory under ~2k entries at a million derivatives, still keyed on
+**BLAKE3**, not SHA-256. Blobs never live in Postgres, with one deliberate exception
+(§1.5).
+
+**What the flat layout costs, recorded rather than argued away.** The design for this
+store called the cache `cache/blobs/`, and hung a product rule on the name: CLAUDE.md's
+"cache eviction must never read as data loss" is self-evident to anyone who opens a
+directory literally called `cache/`. What shipped is `blobs/` as a sibling of
+`libraries/` — never-deleted user data and a freely evictable cache, side by side at the
+top of the very directory this layout exists to make users open, with nothing on disk
+telling them which is which. This document describes `blobs/` because that is what
+`blob_path` writes; the gap is real and is not closed by documenting it. Closing it is a
+follow-up — a change to `blob_path` plus a relocation of any existing store, with the
+same "copy it across first" problem as the upgrade below — and until then the distinction
+between the two lives only in UI wording (§1.5), never on disk.
+
+#### Upgrading a store created before this layout
+
+Deployments from before this change kept everything in a named volume, `lapidary-blobs`,
+mounted at `/var/lib/lapidary`. The storage root is now a bind-mounted host directory and
+`deploy/compose.yaml` no longer declares that volume, so **`compose up` after the upgrade
+starts api and worker on an empty directory while the old volume still holds the store.**
+Nothing copies it for you. Do it before the first start:
+
+```sh
+# Confirm the volume's name first: compose prefixes it with the project name, so the
+# default is `lapidary_lapidary-blobs`, and podman-compose has not always agreed.
+podman volume ls
+mkdir -p storage
+podman run --rm --user 0 \
+  -v lapidary_lapidary-blobs:/from:ro \
+  -v "$PWD/storage":/to:z \
+  docker.io/library/debian:trixie-slim \
+  cp -a /from/. /to/
+```
+
+Run it from the repository root, or point `/to` at whatever `LAPIDARY_STORAGE_ROOT` names.
+`docker volume ls` and `docker run` take the same arguments. The plain image tag is
+deliberate and is not a lapse in "pin everything": this is a throwaway `cp` container that
+never runs in the deployment, and copying `deploy/Containerfile`'s digest here would only
+give it a second copy to rot.
+
+`cp -a` preserves ownership, which matters because the container writes as uid 10001
+(`lapidary`). The destination directory must be writable by that user too:
+`podman unshare chown -R 10001:10001 storage` under rootless Podman, which maps that uid
+into your subuid range, or `sudo chown -R 10001:10001 storage` under rootful Docker.
+
+**Skip the copy and nothing fails at boot** — which is what makes this worth reading. The
+grid renders normally, because thumbnails are `bytea` in Postgres (§1.5) and never came
+from the store at all. The first symptom is a download answering 500: the row names a
+source file that is in the volume, not in the new root. Two classes of bytes are stranded
+and only one of them is cheap — the derivative cache would rebuild itself, but a source
+blob still sitting at `blobs/ab/cd/<hash>` because `migrate_storage` has not moved it yet
+is the only copy those bytes have. That job is enqueued at every worker boot for any
+library still holding sources in the old layout, so it also loops: it reads from the empty
+root, gets ENOENT, records the failure as transient, and re-enqueues.
+
+Nothing is deleted by the upgrade, so this is recoverable after the fact as well as
+before: the volume stays until an operator removes it. Stop the stack, run the copy, start
+it again, and the pending migration finishes on that boot.
 
 ### 1.2 Compression — per-role first, per-age second
 
@@ -130,6 +218,18 @@ therefore no library, so quarantined bytes cannot be attributed to a library's s
 figure — the number is library-less by construction. `LibraryStorage.removed_bytes` covers
 the deleted-but-not-purged case, which is attributable; the quarantined figure belongs to
 an instance-wide view arriving with Phase 4's tiering job.
+
+Keep the three apart in every string that reaches a user. **Delete** hides a part and
+leaves the bytes. **Purge** is a second, explicit action against data the user has already
+said they are done with. **Cache eviction** (§1.5) is neither — it drops derivatives the
+app can rebuild and never touches a source file. Wording that lets any one of them read as
+another is a defect, not a nicety.
+
+*How long the hold should be for path-addressed sources is genuinely open.* The 30 days
+above were written for a content-addressed store, where one blob could be the last
+reference several parts shared and a hold protected all of them at once. One file per
+model is a different question — nobody is sharing that file — and this document does not
+answer it yet.
 
 ---
 

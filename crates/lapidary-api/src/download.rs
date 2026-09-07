@@ -122,28 +122,42 @@ pub async fn original(
         None => return missing_variant(),
     }
 
-    // Spec §2.5.1. Ingest records a concrete level for every source blob it writes and
-    // NULL for every derivative — which does not make a NULL reached here a row from
-    // outside. `link_existing` leaves an existing `blob` row alone, so bytes
-    // byte-identical to a tessellation rung land as a source file over a NULL-level blob,
-    // and lapidary-db's `a_source_blob_whose_level_nobody_recorded_reads_as_uncompressed`
-    // builds exactly that. Either way nobody recorded how these bytes were written:
-    // reading them raw would serve something and hope, and refusing names the one thing
-    // an operator can go and look at.
+    // Spec §2.5.1. Since migration `0013` the level is recorded on the `file` row, by the
+    // same transaction that inserts it, from what `put_at` reported — so every row ingest
+    // writes has one, including `link_existing`'s, which used to inherit the shared `blob`
+    // row's and could name a level the file on disk was never written at. A NULL reaching
+    // here is a row from outside that path: nobody recorded how these bytes were written,
+    // reading them raw would serve something and hope, and refusing names the one thing an
+    // operator can go and look at.
     let Some(zstd_level) = source.zstd_level else {
-        return unrecorded_level(&source.hash);
+        return unrecorded_level(&source.hash, source.storage_path.as_deref());
     };
 
     // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
     // `PathBuf` and a decode flag, so holding one in `AppState` would buy nothing and put
     // source-byte access in a struct every other route shares.
+    let store = SourceReader::open(&blob_root);
+
+    // `storage_path` is null while `migrate_storage` is still draining a library — a live
+    // state for as long as that job takes, hours on a real corpus, and not an edge case to
+    // special-case away (migration `0009`, `CLAUDE.md`). `Some` names where the bytes
+    // actually sit and reads through `stream_at`; `None` means they are still at the old
+    // content-addressed path and reads exactly as this route always has. Either way the
+    // `zstd_level` above came off the same row, so both branches follow the same recorded
+    // compression rather than one of them re-deriving it from which branch it is — and
+    // both stream, so which one a part takes cannot decide whether the api container holds
+    // the whole file in memory.
     //
-    // Opening is where a missing or unreadable blob is still caught synchronously, so that
+    // Opening is where a missing or unreadable file is still caught synchronously, so that
     // case is a clean 500 with a message rather than an empty 200 — only the *content*
     // moved behind the stream, not the existence check.
-    let reader = match SourceReader::open(&blob_root).stream(&source.hash, Some(zstd_level)) {
+    let opened = match source.storage_path.as_deref() {
+        Some(rel) => store.stream_at(rel, Some(zstd_level)),
+        None => store.stream(&source.hash, Some(zstd_level)),
+    };
+    let reader = match opened {
         Ok(reader) => reader,
-        Err(err) => return unreadable(&source.hash, &err),
+        Err(err) => return unreadable(&source.hash, source.storage_path.as_deref(), &err),
     };
     let body = stream_verified(reader, source.hash);
 
@@ -384,13 +398,18 @@ fn unknown_variant(got: &str) -> Response {
 
 /// Spec §2.5.1, and the one refusal that still happens *before* any bytes go out, which
 /// is why it can still be a 500 with a body: it is answered from the row, not from the
-/// blob. Its message says an operator has a `blob` row whose compression nobody recorded,
-/// which is something they can go and look at. The hash mismatch — the other thing that
-/// can be wrong with a source blob — moved into `stream_verified` when the body began
-/// streaming, because by the time it is known the status line has been sent.
-fn unrecorded_level(hash: &BlobHash) -> Response {
+/// file. Its message says an operator has a `file` row whose compression nobody recorded,
+/// which is something they can go and look at — `storage_path` names where, or says the
+/// bytes are still content-addressed. The hash mismatch — the other thing that can be
+/// wrong with a source file — moved into `stream_verified` when the body began streaming,
+/// because by the time it is known the status line has been sent.
+fn unrecorded_level(hash: &BlobHash, storage_path: Option<&str>) -> Response {
     let hex = hash.to_hex();
-    tracing::error!(hash = %hex, "a source blob has no recorded compression level");
+    tracing::error!(
+        hash = %hex,
+        storage_path = storage_path.unwrap_or("(content-addressed)"),
+        "a source blob has no recorded compression level"
+    );
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
@@ -412,17 +431,30 @@ fn unrecorded_level(hash: &BlobHash) -> Response {
 /// its absence is a broken deployment or a lost volume and nothing regenerates it.
 ///
 /// The store's own error names a filesystem path, which is an operator's business and not
-/// a caller's — it goes to the log, and the response says what to check.
-fn unreadable(hash: &BlobHash, err: &StorageError) -> Response {
+/// a caller's — it goes to the log (with `storage_path`, when there is one), and the
+/// response says what to check. `storage_path` also decides *what* it says: "the file for
+/// that hash" is wrong advice for a part whose bytes were never written there at all, and
+/// sending an operator to look at `blobs/ab/cd/<hash>` for a part that lives at
+/// `libraries/…` wastes the one thing this message exists to save them.
+fn unreadable(hash: &BlobHash, storage_path: Option<&str>, err: &StorageError) -> Response {
     let hex = hash.to_hex();
-    tracing::error!(hash = %hex, error = %err, "a referenced source blob could not be read");
+    tracing::error!(
+        hash = %hex,
+        storage_path = storage_path.unwrap_or("(content-addressed)"),
+        error = %err,
+        "a referenced source blob could not be read"
+    );
+    let check = match storage_path {
+        Some(_) => "that this part's file is still present in its model directory",
+        None => "that the file for that hash is present",
+    };
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
             "message": format!(
                 "Blob {hex} could not be read from the blob store, so nothing was served. \
-                 Check that the blob volume is mounted and that the file for that hash is \
-                 present — a source file is never removed while a part still references it."
+                 Check that the blob volume is mounted and {check} — a source file is \
+                 never removed while a part still references it."
             )
         })),
     )
