@@ -69,6 +69,12 @@ uuid_newtype!(
     "Identifies a category folder. Location, never identity — a part's identity is its \
      `source_path`."
 );
+uuid_newtype!(
+    PartImageId,
+    "Identifies one picture in a part's gallery. Its own id and not a position, because \
+     the gallery is reorderable and a client holding \"the second image\" would be holding \
+     something that changes under it."
+);
 
 /// A BLAKE3 content hash. Content addressing is not authorization — holding one of
 /// these never implies the right to read the blob it names.

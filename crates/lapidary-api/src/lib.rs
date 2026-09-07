@@ -8,6 +8,7 @@ mod download;
 mod error;
 mod folders;
 mod health;
+mod images;
 mod jobs;
 mod lifecycle;
 mod moves;
@@ -106,115 +107,126 @@ impl Role {
 /// `lapidary-ingest`'s router, which `bin/lapidary-server` merges in separately.
 pub fn router(state: AppState, role: Role) -> Router {
     let shared = Router::new().route("/api/healthz", get(health::healthz));
-    let by_role = match role {
-        Role::Api => Router::new()
-            .route("/api/libraries/{id}/parts", get(parts::page))
-            // What that page of cards costs, summed. `Role::Api` with the grid it totals
-            // — see `parts.rs`.
-            .route("/api/libraries/{id}/storage", get(parts::storage))
-            // What the whole store holds, and where it is. Not under `/api/libraries/{id}`
-            // because two of its figures belong to no library and its derivative total is
-            // deliberately not what adding the libraries up gives.
-            .route("/api/storage", get(parts::instance_storage))
-            .route(
-                "/api/libraries/{library}/jobs/{batch}",
-                get(jobs::batch_status),
-            )
-            // The same status, streamed, so the progress line keeps moving on a hidden
-            // tab — which is the one thing a poll cannot do. The route above stays as the
-            // client's fallback; see `jobs.rs`.
-            .route(
-                "/api/libraries/{library}/jobs/{batch}/events",
-                get(jobs::batch_events),
-            )
-            // The library's own settings and the two trigger routes. `Role::Api` out of
-            // necessity, not preference: nothing proxies a browser to the worker, so
-            // mounting these there would make them unreachable from the UI that exists to
-            // call them. See `derive.rs`'s module doc and design section 3.5.
-            //
-            // Read and write are one `.route` on one path rather than two entries axum
-            // would have to be trusted to merge, and they answer the same type.
-            .route(
-                "/api/libraries/{id}",
-                get(derive::get_library).patch(derive::set_library),
-            )
-            // The scan trigger, on `Role::Api` for the same reason the three below it
-            // are: nothing proxies a browser to the worker, so a scan button needs a
-            // route the api serves. It enqueues a `scan_directory` job and walks
-            // nothing — see `scan.rs`.
-            .route("/api/libraries/{id}/scan", post(scan::scan))
-            // Upload, in three. `Role::Api` for the same reason the scan trigger above
-            // is — nothing proxies a browser to the worker — and additionally because
-            // this is the process that mounts the blob volume read-write. See
-            // `upload.rs`.
-            // Both take a manifest of every file in the drop, and axum's default body
-            // limit is 2 MB — about 16,000 entries, which a real parts library passes.
-            // 8 MiB is roughly 65,000 files, and it is a buffered JSON body inside a
-            // container capped at 512 MB, so it is a ceiling rather than an absence of
-            // one. A drop past it needs the manifest split, which is a change to make
-            // when someone actually has one.
-            .route(
-                "/api/libraries/{id}/uploads/probe",
-                post(upload::probe).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
-            )
-            .route(
-                "/api/libraries/{id}/uploads/commit",
-                post(upload::commit).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
-            )
-            // Below `probe` and `commit` so those two literal segments win over the
-            // `{blake3}` capture. axum's router prefers a static segment over a dynamic
-            // one regardless of order, but reading them in this order should not require
-            // knowing that.
-            // The default 2 MB limit would reject every chunk the client sends. This
-            // layer is the *only* size guard on the route — the handler takes the
-            // rejection rather than measuring a body it has already buffered — and
-            // rewrites its message. See `upload::refuse_chunk`.
-            .route(
-                "/api/libraries/{id}/uploads/{blake3}",
-                put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
-            )
-            // The page a card links to, and the two steps that take the card away and
-            // bring it back. One route entry rather than two: `DELETE` on the thing
-            // `GET` returns is the same resource, and giving the removal a verb of its
-            // own in the path would invite a second one that forgets to be soft.
-            .route(
-                "/api/parts/{id}",
-                get(detail::detail).delete(lifecycle::remove),
-            )
-            .route("/api/parts/{id}/restore", post(lifecycle::restore))
-            .route("/api/parts/{id}/purge", post(lifecycle::purge))
-            .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
-            // The category tree and the two ways it changes. `Role::Api` for the reason
-            // everything else a browser calls is: nothing proxies a browser to the worker.
-            // None of these four reaches a file — see `folders.rs`, including why a
-            // renamed category does not rename its directory.
-            .route(
-                "/api/libraries/{id}/folders",
-                get(folders::tree).post(folders::create),
-            )
-            .route(
-                "/api/folders/{id}",
-                axum::routing::patch(folders::patch).delete(folders::delete),
-            )
-            // Moving a model, which is the one route here that does touch the store — a
-            // directory rename, no content access. `moves.rs` is the only file in this
-            // crate allowed to hold that rename handle, enforced by `cargo xtask
-            // check-deploy`'s `RELOCATE_MODULE`.
-            .route("/api/parts/{id}", axum::routing::patch(moves::move_part))
-            .route("/api/parts/{id}/moves", get(moves::history))
-            .route(
-                "/api/libraries/{id}/thumbnails",
-                post(derive::library_thumbnails),
-            )
-            // Not in `shared`: the worker has no business serving bytes to anyone, and a
-            // route mounted unconditionally is served by both images.
-            .route("/api/blob/{blake3}", get(blob::by_hash))
-            // The only route in this crate that reads a source file, and the only one
-            // that may — see `download.rs`. `Role::Api` for the same reason the blob
-            // route is: nothing proxies a browser to the worker, and this URL is one a
-            // user clicks.
-            .route("/api/revisions/{id}/download", get(download::original)),
-        Role::Worker => Router::new(),
-    };
+    let by_role =
+        match role {
+            Role::Api => Router::new()
+                .route("/api/libraries/{id}/parts", get(parts::page))
+                // What that page of cards costs, summed. `Role::Api` with the grid it totals
+                // — see `parts.rs`.
+                .route("/api/libraries/{id}/storage", get(parts::storage))
+                // What the whole store holds, and where it is. Not under `/api/libraries/{id}`
+                // because two of its figures belong to no library and its derivative total is
+                // deliberately not what adding the libraries up gives.
+                .route("/api/storage", get(parts::instance_storage))
+                .route(
+                    "/api/libraries/{library}/jobs/{batch}",
+                    get(jobs::batch_status),
+                )
+                // The same status, streamed, so the progress line keeps moving on a hidden
+                // tab — which is the one thing a poll cannot do. The route above stays as the
+                // client's fallback; see `jobs.rs`.
+                .route(
+                    "/api/libraries/{library}/jobs/{batch}/events",
+                    get(jobs::batch_events),
+                )
+                // The library's own settings and the two trigger routes. `Role::Api` out of
+                // necessity, not preference: nothing proxies a browser to the worker, so
+                // mounting these there would make them unreachable from the UI that exists to
+                // call them. See `derive.rs`'s module doc and design section 3.5.
+                //
+                // Read and write are one `.route` on one path rather than two entries axum
+                // would have to be trusted to merge, and they answer the same type.
+                .route(
+                    "/api/libraries/{id}",
+                    get(derive::get_library).patch(derive::set_library),
+                )
+                // The scan trigger, on `Role::Api` for the same reason the three below it
+                // are: nothing proxies a browser to the worker, so a scan button needs a
+                // route the api serves. It enqueues a `scan_directory` job and walks
+                // nothing — see `scan.rs`.
+                .route("/api/libraries/{id}/scan", post(scan::scan))
+                // Upload, in three. `Role::Api` for the same reason the scan trigger above
+                // is — nothing proxies a browser to the worker — and additionally because
+                // this is the process that mounts the blob volume read-write. See
+                // `upload.rs`.
+                // Both take a manifest of every file in the drop, and axum's default body
+                // limit is 2 MB — about 16,000 entries, which a real parts library passes.
+                // 8 MiB is roughly 65,000 files, and it is a buffered JSON body inside a
+                // container capped at 512 MB, so it is a ceiling rather than an absence of
+                // one. A drop past it needs the manifest split, which is a change to make
+                // when someone actually has one.
+                .route(
+                    "/api/libraries/{id}/uploads/probe",
+                    post(upload::probe).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
+                )
+                .route(
+                    "/api/libraries/{id}/uploads/commit",
+                    post(upload::commit).layer(DefaultBodyLimit::max(upload::MAX_MANIFEST_BYTES)),
+                )
+                // Below `probe` and `commit` so those two literal segments win over the
+                // `{blake3}` capture. axum's router prefers a static segment over a dynamic
+                // one regardless of order, but reading them in this order should not require
+                // knowing that.
+                // The default 2 MB limit would reject every chunk the client sends. This
+                // layer is the *only* size guard on the route — the handler takes the
+                // rejection rather than measuring a body it has already buffered — and
+                // rewrites its message. See `upload::refuse_chunk`.
+                .route(
+                    "/api/libraries/{id}/uploads/{blake3}",
+                    put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
+                )
+                // The page a card links to, and the two steps that take the card away and
+                // bring it back. One route entry rather than two: `DELETE` on the thing
+                // `GET` returns is the same resource, and giving the removal a verb of its
+                // own in the path would invite a second one that forgets to be soft.
+                .route(
+                    "/api/parts/{id}",
+                    get(detail::detail).delete(lifecycle::remove),
+                )
+                .route("/api/parts/{id}/restore", post(lifecycle::restore))
+                .route("/api/parts/{id}/purge", post(lifecycle::purge))
+                .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
+                // The category tree and the two ways it changes. `Role::Api` for the reason
+                // everything else a browser calls is: nothing proxies a browser to the worker.
+                // None of these four reaches a file — see `folders.rs`, including why a
+                // renamed category does not rename its directory.
+                .route(
+                    "/api/libraries/{id}/folders",
+                    get(folders::tree).post(folders::create),
+                )
+                .route(
+                    "/api/folders/{id}",
+                    axum::routing::patch(folders::patch).delete(folders::delete),
+                )
+                // Moving a model, which is the one route here that does touch the store — a
+                // directory rename, no content access. `moves.rs` is the only file in this
+                // crate allowed to hold that rename handle, enforced by `cargo xtask
+                // check-deploy`'s `RELOCATE_MODULE`.
+                .route("/api/parts/{id}", axum::routing::patch(moves::move_part))
+                .route("/api/parts/{id}/moves", get(moves::history))
+                // A part's gallery. The upload body is the file itself, capped at the same
+                // 10 MB `images::MAX_INPUT_BYTES` refuses past — set here as well because a
+                // limit checked after the body is buffered is a limit that has already cost
+                // what it was meant to save.
+                .route(
+                    "/api/parts/{id}/images",
+                    get(images::list).post(images::upload).layer(
+                        axum::extract::DefaultBodyLimit::max(images::MAX_INPUT_BYTES),
+                    ),
+                )
+                .route(
+                    "/api/libraries/{id}/thumbnails",
+                    post(derive::library_thumbnails),
+                )
+                // Not in `shared`: the worker has no business serving bytes to anyone, and a
+                // route mounted unconditionally is served by both images.
+                .route("/api/blob/{blake3}", get(blob::by_hash))
+                // The only route in this crate that reads a source file, and the only one
+                // that may — see `download.rs`. `Role::Api` for the same reason the blob
+                // route is: nothing proxies a browser to the worker, and this URL is one a
+                // user clicks.
+                .route("/api/revisions/{id}/download", get(download::original)),
+            Role::Worker => Router::new(),
+        };
     shared.merge(by_role).with_state(state)
 }

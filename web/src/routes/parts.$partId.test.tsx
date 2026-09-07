@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   RouterProvider,
@@ -53,14 +53,25 @@ beforeEach(() => {
 })
 
 /** A fetch that answers the detail route with `part`, or a status when given a number. */
-function stub(part: PartDetail | number) {
+/**
+ * Answers the detail route with `part`, or with a status when given a number.
+ *
+ * URL-aware, and it has to be: the page fetches its gallery as well now, and a stub that
+ * answered every request with a `PartDetail` handed `[].map` an object. That did not fail
+ * these tests — the gallery query had not resolved by the time they asserted — which is the
+ * kind of latent flake worth closing at the stub rather than discovering later.
+ */
+function stub(part: PartDetail | number, images: unknown[] = []) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () =>
-      typeof part === 'number'
+    vi.fn(async (url: string) => {
+      if (url.endsWith('/images')) {
+        return { ok: true, status: 200, json: async () => images }
+      }
+      return typeof part === 'number'
         ? { ok: false, status: part, json: async () => ({}) }
-        : { ok: true, status: 200, json: async () => part },
-    ),
+        : { ok: true, status: 200, json: async () => part }
+    }),
   )
 }
 
@@ -162,4 +173,60 @@ test('a part that is gone shows one actionable message', async () => {
   renderPage()
 
   expect(await screen.findByText(strings.detail.failed)).toBeDefined()
+})
+
+/**
+ * A photograph appears **above** the render rather than instead of it. The generated view is
+ * the honest picture of the geometry and stays; the photograph is what the geometry cannot
+ * show. `part_image`'s ordering column exists so both can, which was an owner decision.
+ */
+test('shows the pictures attached to a part, alongside the render', async () => {
+  stub(PART, [
+    {
+      id: '01a07c10-0000-7000-8000-000000000001',
+      src: 'data:image/webp;base64,UklGRg==',
+      origin: 'uploaded',
+      sourceUrl: null,
+    },
+  ])
+  renderPage()
+
+  const picture = await screen.findByAltText(strings.images.alt(PART.name, 0))
+  expect(picture.getAttribute('src')).toBe('data:image/webp;base64,UklGRg==')
+})
+
+/**
+ * A refused file keeps the server's own sentence, which names the limit that was broken.
+ * A generic "upload failed" would drop the one thing the person who picked the file needs.
+ */
+test('a refused picture shows the reason the server gave', async () => {
+  stub(PART)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string }) => {
+      if (url.endsWith('/images') && init?.method === 'POST') {
+        return {
+          ok: false,
+          status: 422,
+          json: async () => ({
+            message: 'That image is 16×16, and the smallest side must be at least 64 pixels.',
+          }),
+        }
+      }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  const picker = await screen.findByRole('button', { name: strings.images.add })
+  const input = picker.previousElementSibling as HTMLInputElement
+  fireEvent.change(input, {
+    target: { files: [new File(['not really a png'], 'icon.png', { type: 'image/png' })] },
+  })
+
+  expect(await screen.findByRole('alert')).toHaveProperty(
+    'textContent',
+    'That image is 16×16, and the smallest side must be at least 64 pixels.',
+  )
 })

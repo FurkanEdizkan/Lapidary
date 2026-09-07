@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
-import { blobUrl, downloadUrl } from '../lib/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useRef, useState, type ReactNode } from 'react'
+import { blobUrl, downloadUrl, fetchPartImages, uploadPartImage } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Approximate, PartDetail as PartDetailData } from '../lib/types'
+import type { Approximate, PartDetail as PartDetailData, PartId } from '../lib/types'
 
 /**
  * The part, rendered whole. Exported because the grid's quick-look shows exactly this and
@@ -47,6 +48,8 @@ export function Detail({ part, actions }: { part: PartDetailData; actions?: Reac
           </div>
         </div>
       </header>
+
+      <Gallery part={part.id} name={part.name} />
 
       <Section title={strings.detail.geometry}>
         <Row label={strings.detail.triangles}>
@@ -216,5 +219,110 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       <dt className="text-[var(--color-muted)]">{label}</dt>
       <dd>{children}</dd>
     </>
+  )
+}
+
+/**
+ * The pictures somebody attached, and the control that attaches one.
+ *
+ * **Above the render rather than instead of it.** The generated view is the honest picture
+ * of the geometry and stays; a photograph is what the geometry cannot show — the finish, the
+ * colour, the thing next to a hand. `part_image`'s ordering column is what lets both exist,
+ * which was an owner decision and not an accident of schema.
+ *
+ * Rendered inside `Detail`, so it appears on the page and in the grid's quick-look from one
+ * definition. That is the same reason `Detail` is shared at all.
+ */
+function Gallery({ part, name }: { part: PartId; name: string }) {
+  const queryClient = useQueryClient()
+  const picker = useRef<HTMLInputElement>(null)
+  /** The server's own sentence about a refused file — it names the limit that was broken. */
+  const [refusal, setRefusal] = useState<string | null>(null)
+  /** What the last accepted upload was stored at, so a silent resize is not silent. */
+  const [stored, setStored] = useState<{ width: number; height: number } | null>(null)
+
+  const images = useQuery({
+    queryKey: ['part-images', part],
+    queryFn: () => fetchPartImages(part),
+  })
+
+  const add = useMutation({
+    mutationFn: (file: File) => uploadPartImage(part, file),
+    onMutate: () => {
+      setRefusal(null)
+      setStored(null)
+    },
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setRefusal(result.message)
+        return
+      }
+      setStored({ width: result.stored.width, height: result.stored.height })
+      void queryClient.invalidateQueries({ queryKey: ['part-images', part] })
+    },
+  })
+
+  const gallery = images.data ?? []
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
+        {strings.images.title}
+      </h3>
+      {gallery.length === 0 ? null : (
+        <ul className="mb-2 flex list-none flex-wrap gap-2">
+          {gallery.map((image, index) => (
+            <li key={image.id}>
+              <img
+                src={image.src}
+                alt={strings.images.alt(name, index)}
+                title={image.sourceUrl === null ? undefined : strings.images.from(image.sourceUrl)}
+                className="h-24 w-24 rounded border border-[var(--color-border)] bg-[var(--color-surface)] object-cover"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {/*
+        Hidden, and driven by the button beside it: a bare file input is unstyleable across
+        browsers and announces itself as "Choose file", which is not what this does. The
+        button carries the label and the input carries the capability.
+      */}
+      <input
+        ref={picker}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file !== undefined) add.mutate(file)
+          // Cleared so that picking the same file twice in a row fires `change` the second
+          // time: without this, a failed upload could not be retried with the same file.
+          event.target.value = ''
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => picker.current?.click()}
+        disabled={add.isPending}
+        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {add.isPending ? strings.images.adding : strings.images.add}
+      </button>
+      {refusal === null ? null : (
+        <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {refusal}
+        </p>
+      )}
+      {stored === null ? null : (
+        <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {strings.images.resized(stored.width, stored.height)}
+        </p>
+      )}
+      {!add.isError ? null : (
+        <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {strings.images.failed}
+        </p>
+      )}
+    </section>
   )
 }

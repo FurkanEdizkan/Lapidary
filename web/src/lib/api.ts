@@ -8,6 +8,8 @@ import type {
   FolderPatch,
   InstanceStorageView,
   LibraryId,
+  PartImage,
+  StoredImage,
   LibrarySettings,
   LibraryStorage,
   MovePart,
@@ -22,6 +24,7 @@ import type {
   UploadManifest,
   UploadPlan,
 } from './types'
+import { strings } from './strings'
 
 export interface Health {
   status: string
@@ -539,6 +542,55 @@ export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStor
     throw new Error(`instance storage returned ${response.status}`)
   }
   return (await response.json()) as InstanceStorageView
+}
+
+/** `GET /api/parts/{id}/images` — the gallery, in order. */
+export async function fetchPartImages(part: PartId): Promise<PartImage[]> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images`)
+  if (!response.ok) {
+    throw new Error(`part images returned ${response.status}`)
+  }
+  return (await response.json()) as PartImage[]
+}
+
+/**
+ * `POST /api/parts/{id}/images` — attach a picture.
+ *
+ * The `File` is the whole body, sent as-is. No `FormData`: the route takes one field and
+ * reads the file's own header rather than any type we could declare, so a multipart
+ * envelope would be a second format for it to parse and nothing gained.
+ *
+ * The refusals — too large, not an image, too small — are answers rather than failures, and
+ * come back with the server's own sentence. That prose is written for the person who picked
+ * the file and names the limit it broke, which a generic "upload failed" could not.
+ */
+export async function uploadPartImage(
+  part: PartId,
+  file: File,
+): Promise<{ kind: 'stored'; stored: StoredImage } | { kind: 'refused'; message: string }> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images`, {
+    method: 'POST',
+    body: file,
+  })
+  if (response.ok) {
+    // The size it was stored at, which is how the caller can say so: an image over the
+    // server's bound is scaled down on the way in, and that is not a thing to do to
+    // somebody's photograph without telling them.
+    return { kind: 'stored', stored: (await response.json()) as StoredImage }
+  }
+  // 413, 415 and 422 are the three the route uses for "your file, not our fault".
+  if ([400, 413, 415, 422].includes(response.status)) {
+    const body: unknown = await response.json().catch(() => null)
+    const message =
+      body !== null && typeof body === 'object'
+        ? (body as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.images.refusedWithoutReason,
+    }
+  }
+  throw new Error(`image upload returned ${response.status}`)
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */
