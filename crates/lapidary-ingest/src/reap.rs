@@ -34,15 +34,68 @@ pub async fn sweep(
 ) -> Result<ReapReport, DbError> {
     let store = SourceStore::open(blob_root, &WorkerRole::assume());
     PgBlobs(db.clone())
-        .reap(retention, |hash| {
-            // Source blobs and derivative rungs share one sharded tree, so one handle
-            // removes either. `SourceStore` and not `DerivativeStore` because this runs in
-            // the worker, which is the role that holds the proof — and because a rung
-            // whose row this sweep just deleted is no more evictable-cache than a source
-            // file is: by this point nothing points at either.
-            store.remove(hash).map_err(|error| error.to_string())
-        })
+        .reap(
+            retention,
+            |hash| {
+                // Source blobs and derivative rungs share one sharded tree, so one handle
+                // removes either. `SourceStore` and not `DerivativeStore` because this runs
+                // in the worker, which is the role that holds the proof — and because a
+                // rung whose row this sweep just deleted is no more evictable-cache than a
+                // source file is: by this point nothing points at either.
+                store.remove(hash).map_err(|error| error.to_string())
+            },
+            |path| remove_model_file(&store, path),
+        )
         .await
+}
+
+/// A purged model file, its manifest, and the directory that held them.
+///
+/// Three removals where the hash-addressed half has one, because a model directory is a
+/// place rather than an address: `metadata.json` sits beside the file by design (the store
+/// is something the owner opens in a file manager), and a directory holding a stale
+/// manifest and nothing else is an orphan every walk of the store has to explain.
+///
+/// **The order is for the crash, not for the success.** File first means every partial
+/// state is "the bytes are gone, the tidying is unfinished", which the next sweep
+/// completes. Manifest first would leave a directory holding bytes and no manifest, which
+/// the folder-tree spec calls an orphan and which reads differently to anything walking
+/// the store.
+///
+/// The directory is the one failure that does not abort the sweep. `remove_dir_if_empty`
+/// answers `DirectoryNotEmpty` for a directory the owner has put something of their own
+/// into — a note, a photo, a re-exported STL — and removing that is the data loss reaping
+/// exists to prevent. Failing the sweep over it would be worse still: it stops every other
+/// removal for as long as their file sits there. So it is skipped, and the directory stays
+/// holding exactly what they left in it.
+fn remove_model_file(store: &SourceStore, path: &str) -> Result<(), String> {
+    store.remove_at(path).map_err(|error| error.to_string())?;
+
+    let Some((model_dir, _file)) = path.rsplit_once('/') else {
+        // A store-relative path with no directory in it names a file at the root, which no
+        // writer produces — `put_at` is only ever called with `libraries/<library>/…`.
+        // Nothing to tidy above it, and inventing a parent to remove would be the one
+        // guess in this function that could take something that is not ours.
+        return Ok(());
+    };
+
+    store
+        .remove_at(&format!("{model_dir}/metadata.json"))
+        .map_err(|error| error.to_string())?;
+
+    match store.remove_dir_if_empty(model_dir) {
+        Ok(()) => Ok(()),
+        Err(lapidary_storage::StorageError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::DirectoryNotEmpty =>
+        {
+            tracing::info!(
+                directory = model_dir,
+                "the model file is gone; its directory still holds something that is not ours, so it stays"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// The timer. Ticks hourly until cancelled, and never fails the process: a sweep that

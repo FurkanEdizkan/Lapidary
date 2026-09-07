@@ -187,12 +187,20 @@ field has always meant.
 
 ## 6. Non-goals
 
-- **`PurgeReport.quarantined_bytes` is not corrected.** For a migrated source it counts
-  `blob.stored_bytes` — a figure describing `blobs/<ab>/<cd>/<hash>`, which
-  `migrate_storage` emptied. That is a pre-existing wrinkle in what the *blob* row means
-  after the folder tree, not something this slice introduces, and correcting it means
-  deciding what a `blob` row's size means for a hash with no content-addressed copy left.
-  Left for the slice that answers that.
+- **Phantom blob bytes are not corrected, in either report.** For a migrated source the
+  `blob` row's `stored_bytes` describes `blobs/<ab>/<cd>/<hash>` — a path `migrate_storage`
+  emptied — so both `PurgeReport.quarantined_bytes` and `ReapReport.bytes` count it twice
+  over: once as a blob that is not there, once as the model file that is. Measured on the
+  running stack, purging one 9,684-byte part with one 3,292-byte rung: the purge reported
+  12,976 bytes quarantined, the sweep reported **22,660** freed, and **12,976** actually
+  left the volume.
+
+  The error is the same 9,684 with or without this slice — before it, the sweep reported
+  12,976 while freeing 3,292 — so nothing here made it worse, and `ReapReport.bytes` gained
+  only bytes that genuinely left. It is left alone because correcting it means deciding
+  what a `blob` row's size means for a hash with no content-addressed copy, which is the
+  same question `storage_totals` defers, and because the figure reaches an operator log and
+  no user-facing string. The slice that answers it should take both reports together.
 - **No restore.** `DATA.md` §1.6 calls a quarantined blob "restorable"; nothing implements
   restore for either quarantine today, and this slice does not start.
 - **No instance-wide storage view.** A quarantined file's library *is* knowable — the

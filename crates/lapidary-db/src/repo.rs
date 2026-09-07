@@ -457,6 +457,10 @@ impl PgBlobs {
         // depend on `lapidary-storage` to describe a failure to unlink a file. The message
         // is the caller's; all this does is carry it out through `DbError`.
         mut remove: impl FnMut(&BlobHash) -> Result<(), String>,
+        // The path-addressed half, and a second closure rather than a widened first one:
+        // the two name different things (a hash, a store-relative path) and the caller
+        // does different work for each — one unlink against three plus a directory.
+        mut remove_file: impl FnMut(&str) -> Result<(), String>,
     ) -> Result<ReapReport, DbError> {
         let mut tx = self.0.begin().await?;
 
@@ -486,6 +490,53 @@ impl PgBlobs {
             bytes += bytes_column("blob.stored_bytes", *stored_bytes)?;
         }
 
+        // The path-addressed half, in this same transaction and under the same ordering:
+        // the unlink happens while the transaction still holds the deleted row, so a crash
+        // that loses the commit leaves a row naming bytes that are gone rather than bytes
+        // that no row will ever collect.
+        //
+        // `NOT EXISTS` is the whole guard here, not the politeness in front of one that it
+        // is above. `file.blake3` references `blob`, so a referenced blob row cannot be
+        // deleted whatever this query says and the check merely lets the sweep decline;
+        // nothing references `file.storage_path`, so this clause is the only thing standing
+        // between a live part and its bytes.
+        let doomed_files: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "DELETE FROM quarantined_file q \
+             WHERE q.quarantined_at < now() - make_interval(secs => $1) \
+               AND NOT EXISTS (SELECT 1 FROM file f WHERE f.storage_path = q.storage_path) \
+             RETURNING q.storage_path, q.stored_bytes",
+        )
+        .bind(older_than.as_secs_f64())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut removed_files = Vec::with_capacity(doomed_files.len());
+        for (path, stored_bytes) in &doomed_files {
+            remove_file(path).map_err(|message| DbError::ReapRemove {
+                hash: path.clone(),
+                message,
+            })?;
+            removed_files.push(path.clone());
+            // A row written before migration `0013` may have no recorded size. It is still
+            // removable; it just contributes nothing to the total, which is the same answer
+            // `bytes` gives for a figure nobody wrote down.
+            if let Some(stored) = stored_bytes {
+                bytes += bytes_column("quarantined_file.stored_bytes", *stored)?;
+            }
+        }
+
+        // A path a live `file` row has claimed since the purge. Dropped rather than
+        // un-flagged, which is where this differs from the blob branch below: there is no
+        // `ref_count` to correct and no state to go back to, so a record saying these bytes
+        // are doomed is simply wrong and goes.
+        let revived_files: Vec<String> = sqlx::query_scalar(
+            "DELETE FROM quarantined_file q \
+             WHERE EXISTS (SELECT 1 FROM file f WHERE f.storage_path = q.storage_path) \
+             RETURNING q.storage_path",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
         // The other half, and it is not conditional on the cutoff: bytes somebody pointed
         // at again stop being candidates the moment they are pointed at, not thirty days
         // later. `ref_count` is recomputed here for the same reason purge recomputes it —
@@ -508,8 +559,9 @@ impl PgBlobs {
         tx.commit().await?;
         Ok(ReapReport {
             removed,
+            removed_files,
             bytes,
-            un_quarantined: revived.len() as u32,
+            un_quarantined: (revived.len() + revived_files.len()) as u32,
         })
     }
 
@@ -658,9 +710,15 @@ pub enum Purged {
 pub struct ReapReport {
     /// Blobs whose rows and bytes are both gone.
     pub removed: Vec<BlobHash>,
-    /// What those blobs occupied — `stored_bytes`, so it is the space actually recovered.
+    /// Model files whose rows and bytes are both gone, by store-relative path — which is
+    /// what identifies one, the way a hash identifies a blob. Their `metadata.json` and,
+    /// where nothing else was left in it, their directory went too.
+    pub removed_files: Vec<String>,
+    /// What all of that occupied — `stored_bytes` on both halves, so it is the space
+    /// actually recovered rather than the length the bytes decompress to.
     pub bytes: u64,
-    /// Quarantined blobs something points at again. Their clocks are cleared, not paused.
+    /// Quarantined blobs something points at again, and quarantined paths a live `file`
+    /// row has claimed. Both clocks are cleared, not paused.
     pub un_quarantined: u32,
 }
 
@@ -1377,10 +1435,46 @@ impl PgParts {
         .fetch_all(&mut *tx)
         .await?;
 
+        // Collected here, beside the hashes, and for the identical reason: after the chain
+        // comes down there is no path from the part to its files, and `storage_path` is
+        // the only record of where a migrated part's bytes are. `blob` cannot stand in for
+        // it -- one hash, several model files (migration `0014`'s header states why).
+        //
+        // No `role` filter, unlike `storage_totals` and the grid's source LATERAL. Those
+        // ask "what is this part's source file"; this asks "what has this part put on
+        // disk", and a row carrying a path is a file in a model directory whatever its
+        // role. Only `source` rows have one today, so the clause is inert now and right
+        // when that stops being true.
+        //
+        // A part with no `storage_path` on any row writes nothing here. That is the
+        // un-migrated case and the blob quarantine below already covers it: the two are
+        // complementary, not alternatives.
+        #[allow(clippy::type_complexity)]
+        let doomed_files: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT f.storage_path, f.blake3, f.stored_bytes \
+             FROM file f JOIN revision r ON r.id = f.revision_id \
+             WHERE r.part_id = $1 AND f.storage_path IS NOT NULL",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&mut *tx)
+        .await?;
+
         for statement in [
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",
+            // The move audit trail. It references `part` and arrived a slice after this
+            // list was written, so a purge of any part anyone had ever moved failed on
+            // `part_move_part_id_fkey` -- caught on the running stack, not by the suite,
+            // because slice 7's purge tests never move and the folder tree's move tests
+            // never purge. `child-first` is the rule this list already follows; this row
+            // is a child of `part` and belongs above it.
+            //
+            // Deleted rather than kept: the trail records where a part was filed, and a
+            // purged part is not filed anywhere. Keeping it would leave rows pointing at
+            // an id nothing else in the database knows, which is the shape of orphan the
+            // no-`ON DELETE CASCADE` rule exists to make impossible.
+            "DELETE FROM part_move WHERE part_id = $1",
             "DELETE FROM part WHERE id = $1",
         ] {
             sqlx::query(statement)
@@ -1416,6 +1510,44 @@ impl PgParts {
         .bind(&doomed)
         .fetch_all(&mut *tx)
         .await?;
+
+        // The path half of quarantine. Written after the chain comes down rather than
+        // before it, so a `storage_path` a `file` row still holds cannot briefly appear in
+        // both tables at once -- the sweep's guard reads exactly that overlap and would
+        // decline a row this transaction is about to make removable.
+        //
+        // `quarantined_at = now()` on conflict, where the blob branch above keeps the
+        // running clock with `coalesce`. Not an inconsistency: the clock belongs to the
+        // bytes, a hash identifies its bytes and a path does not. The same path can arrive
+        // holding something else, and it takes a person to do it -- `model_dir_for`
+        // disambiguates against a directory that exists, so what puts a quarantined path
+        // back in play is the owner removing that directory in a file manager, which is
+        // what a browsable store is for. Restarting is the safe answer, and it is this
+        // sweep's own rule: losing bytes is worse than keeping them.
+        if !doomed_files.is_empty() {
+            let (paths, hashes, sizes) = doomed_files.iter().fold(
+                (Vec::new(), Vec::new(), Vec::new()),
+                |(mut paths, mut hashes, mut sizes), (path, hash, stored)| {
+                    paths.push(path.as_str());
+                    hashes.push(hash.as_str());
+                    sizes.push(*stored);
+                    (paths, hashes, sizes)
+                },
+            );
+            sqlx::query(
+                "INSERT INTO quarantined_file (storage_path, blake3, stored_bytes) \
+                 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]) \
+                 ON CONFLICT (storage_path) DO UPDATE \
+                     SET blake3 = excluded.blake3, \
+                         stored_bytes = excluded.stored_bytes, \
+                         quarantined_at = now()",
+            )
+            .bind(&paths)
+            .bind(&hashes)
+            .bind(&sizes)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
 
