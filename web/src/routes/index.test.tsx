@@ -113,6 +113,13 @@ const ok = (body: unknown) => async (): Promise<StubResponse> => ({
 });
 
 /**
+ * An empty list. The default for a part's gallery and its sources, because "this part has
+ * no pictures and nothing recorded about where it came from" is what almost every test in
+ * this file means — and unlike `pending`, it lets the panel finish rendering.
+ */
+const empty = ok([]);
+
+/**
  * The page makes two requests through one `fetch`, so a blanket mock would feed the
  * healthz body to the parts query and vice versa. Dispatch on the URL instead. Routes
  * left unstubbed hang rather than resolve, so a test never accidentally asserts against
@@ -134,6 +141,8 @@ function stubFetch(routes: {
   folderDelete?: () => Promise<StubResponse>;
   instanceStorage?: () => Promise<StubResponse>;
   partDetail?: () => Promise<StubResponse>;
+  partImages?: () => Promise<StubResponse>;
+  partSources?: () => Promise<StubResponse>;
   libraries?: () => Promise<StubResponse>;
   libraryCreate?: () => Promise<StubResponse>;
 }) {
@@ -153,6 +162,17 @@ function stubFetch(routes: {
     // asserting against a shape it never asked for.
     if (init?.method === "PATCH" && url.startsWith("/api/parts/"))
       return (routes.move ?? pending)();
+    // **Above the bare-GET rule below, and that rule is why.** `Detail` reads a gallery and
+    // a list of sources as well as the part, all three by GET under `/api/parts/`, so the
+    // one rule answered all three with a `PartDetail` — and a component that does `.map`
+    // over an object throws. It did not fail anything only because those queries had not
+    // resolved by the time the assertions ran, which is a flake waiting rather than a pass.
+    // They default to empty rather than `pending`: a panel with no pictures and no recorded
+    // source is what almost every test here means.
+    if (url.startsWith("/api/parts/") && url.endsWith("/images"))
+      return (routes.partImages ?? empty)();
+    if (url.startsWith("/api/parts/") && url.endsWith("/sources"))
+      return (routes.partSources ?? empty)();
     // A bare GET of one part: what the quick-look and the detail page both ask for, under
     // the same query key. Below the PATCH rule so a move is never answered with a detail.
     if (url.startsWith("/api/parts/") && init?.method === undefined)
@@ -2927,3 +2947,41 @@ function conflict(reason: string, message: string) {
     json: async () => ({ reason, message }),
   });
 }
+
+/**
+ * **The licence is readable from the quick-look, and the form is not offered there.**
+ *
+ * `PartDetail.tsx` says what changes the part stays with the page — that is why `Remove`
+ * arrives through a slot. A seven-field form is the same rule one step further: the dialog
+ * closes on Escape, and a half-typed source lost to a reflex is a worse outcome than one
+ * more click. What the panel does carry is the reading, which is the whole reason to look:
+ * somebody selling prints has to see `CC-BY-NC` before they print.
+ */
+test("the quick-look reads a source without offering to record one", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+    partSources: ok([
+      {
+        id: "01931b6e-0000-7000-8000-0000000000bb",
+        url: "https://www.printables.com/model/482910",
+        vendor: "Printables",
+        externalId: "482910",
+        title: "Motor mount, NEMA 17",
+        license: "CC-BY-NC-SA 4.0",
+        priceMinor: null,
+        currency: null,
+      },
+    ]),
+  });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("article", { name: MOTOR_MOUNT.name }));
+  const dialog = await screen.findByRole("dialog");
+  await within(dialog).findByText(/CC-BY-NC-SA 4\.0/);
+
+  expect(
+    within(dialog).queryByRole("button", { name: strings.sources.add }),
+  ).toBeNull();
+});
