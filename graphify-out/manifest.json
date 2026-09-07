@@ -1,0 +1,1252 @@
+{
+  ".githooks/commit-msg": {
+    "mtime": 1788517807.9066904,
+    "ast_hash": "4ec3a2487beba4dc5f92384a0c97a7c2",
+    "semantic_hash": "4ec3a2487beba4dc5f92384a0c97a7c2"
+  },
+  ".githooks/pre-commit": {
+    "mtime": 1788680085.5337827,
+    "ast_hash": "2cee1598a3e355aee8e08eae05a0fb0d",
+    "semantic_hash": "2cee1598a3e355aee8e08eae05a0fb0d"
+  },
+  "bin/lapidary-server/src/main.rs": {
+    "mtime": 1788787918.3780332,
+    "ast_hash": "5abc41970ec0f38e032f037e75160ddd",
+    "semantic_hash": "5abc41970ec0f38e032f037e75160ddd"
+  },
+  "bin/lapidary/src/main.rs": {
+    "mtime": 1788472249.2511008,
+    "ast_hash": "987b8a880adcd38c228de6be8064f49c",
+    "semantic_hash": "987b8a880adcd38c228de6be8064f49c"
+  },
+  "crates/lapidary-api/src/blob.rs": {
+    "mtime": 1788789365.3895507,
+    "ast_hash": "a6871f749847594f4b9f6020118bd841",
+    "semantic_hash": "a6871f749847594f4b9f6020118bd841"
+  },
+  "crates/lapidary-api/src/derive.rs": {
+    "mtime": 1788801987.701514,
+    "ast_hash": "2a424453d50f951d974f39354cee2892",
+    "semantic_hash": "2a424453d50f951d974f39354cee2892"
+  },
+  "crates/lapidary-api/src/detail.rs": {
+    "mtime": 1788692893.4714758,
+    "ast_hash": "cc07966c13268c2090b60686ae1445e8",
+    "semantic_hash": "cc07966c13268c2090b60686ae1445e8"
+  },
+  "crates/lapidary-api/src/download.rs": {
+    "mtime": 1788769550.9145405,
+    "ast_hash": "08b6a413a0dcbf652a20f6dc5017b574",
+    "semantic_hash": "08b6a413a0dcbf652a20f6dc5017b574"
+  },
+  "crates/lapidary-api/src/error.rs": {
+    "mtime": 1788472249.2513127,
+    "ast_hash": "37ac64eeeff2abf27b8c7b6f7fe4ce16",
+    "semantic_hash": "37ac64eeeff2abf27b8c7b6f7fe4ce16"
+  },
+  "crates/lapidary-api/src/fetch.rs": {
+    "mtime": 1788811723.4809039,
+    "ast_hash": "a27de60c9375c4ac9ee053ec0b944ffd",
+    "semantic_hash": "a27de60c9375c4ac9ee053ec0b944ffd"
+  },
+  "crates/lapidary-api/src/folders.rs": {
+    "mtime": 1788785552.8024864,
+    "ast_hash": "589bacac64d26b6451812fb4e21afbd3",
+    "semantic_hash": "589bacac64d26b6451812fb4e21afbd3"
+  },
+  "crates/lapidary-api/src/health.rs": {
+    "mtime": 1788472249.2513537,
+    "ast_hash": "aa7766f99ff98f0f9d23547d6dec8020",
+    "semantic_hash": "aa7766f99ff98f0f9d23547d6dec8020"
+  },
+  "crates/lapidary-api/src/images.rs": {
+    "mtime": 1788812981.8292017,
+    "ast_hash": "049a7b1ee5526df7e6cea731947b25dc",
+    "semantic_hash": "049a7b1ee5526df7e6cea731947b25dc"
+  },
+  "crates/lapidary-api/src/jobs.rs": {
+    "mtime": 1788692893.4716377,
+    "ast_hash": "b3bee3797c23d8a55b4c304abefd3724",
+    "semantic_hash": "b3bee3797c23d8a55b4c304abefd3724"
+  },
+  "crates/lapidary-api/src/lib.rs": {
+    "mtime": 1788812981.8293793,
+    "ast_hash": "4e889b0d265b44b8a0518aaf72d6cb4a",
+    "semantic_hash": "4e889b0d265b44b8a0518aaf72d6cb4a"
+  },
+  "crates/lapidary-api/src/lifecycle.rs": {
+    "mtime": 1788697786.9284241,
+    "ast_hash": "f021b8fd844869cdda07dff8ed19066f",
+    "semantic_hash": "f021b8fd844869cdda07dff8ed19066f"
+  },
+  "crates/lapidary-api/src/moves.rs": {
+    "mtime": 1788769550.9150705,
+    "ast_hash": "8fd064bb31201316c85fe2efcc2bc740",
+    "semantic_hash": "8fd064bb31201316c85fe2efcc2bc740"
+  },
+  "crates/lapidary-api/src/parts.rs": {
+    "mtime": 1788800665.6103597,
+    "ast_hash": "16e3d532077c797573f76eeec8107306",
+    "semantic_hash": "16e3d532077c797573f76eeec8107306"
+  },
+  "crates/lapidary-api/src/scan.rs": {
+    "mtime": 1788678548.8785105,
+    "ast_hash": "c964753b3020da3f0390092b2f512d93",
+    "semantic_hash": "c964753b3020da3f0390092b2f512d93"
+  },
+  "crates/lapidary-api/src/sources.rs": {
+    "mtime": 1788812981.8295107,
+    "ast_hash": "ee07d862a4d028a469522682f15ec4b7",
+    "semantic_hash": "ee07d862a4d028a469522682f15ec4b7"
+  },
+  "crates/lapidary-api/src/upload.rs": {
+    "mtime": 1788687913.5859566,
+    "ast_hash": "d831df336e785421e80dc40ebd1652d9",
+    "semantic_hash": "d831df336e785421e80dc40ebd1652d9"
+  },
+  "crates/lapidary-api/tests/blob.rs": {
+    "mtime": 1788787918.37872,
+    "ast_hash": "43c45eff402b324bc3aa2b1ae43e9682",
+    "semantic_hash": "43c45eff402b324bc3aa2b1ae43e9682"
+  },
+  "crates/lapidary-api/tests/derive.rs": {
+    "mtime": 1788801987.7018325,
+    "ast_hash": "cd671272c5dd0d6fa8dd5d691027c903",
+    "semantic_hash": "cd671272c5dd0d6fa8dd5d691027c903"
+  },
+  "crates/lapidary-api/tests/detail.rs": {
+    "mtime": 1788787918.3790984,
+    "ast_hash": "aa99721bb07f11d1cf8e735842885574",
+    "semantic_hash": "aa99721bb07f11d1cf8e735842885574"
+  },
+  "crates/lapidary-api/tests/download.rs": {
+    "mtime": 1788787918.3793566,
+    "ast_hash": "8eb6cdcca2252c7ad096017e187a3a5e",
+    "semantic_hash": "8eb6cdcca2252c7ad096017e187a3a5e"
+  },
+  "crates/lapidary-api/tests/folders.rs": {
+    "mtime": 1788801987.7020042,
+    "ast_hash": "b6cb311ae1045a74687525d29b3580a7",
+    "semantic_hash": "b6cb311ae1045a74687525d29b3580a7"
+  },
+  "crates/lapidary-api/tests/health.rs": {
+    "mtime": 1788787918.379674,
+    "ast_hash": "3eaa06536180fed920ff5de25c6b2d4d",
+    "semantic_hash": "3eaa06536180fed920ff5de25c6b2d4d"
+  },
+  "crates/lapidary-api/tests/images.rs": {
+    "mtime": 1788812981.8296864,
+    "ast_hash": "1a4199ee167d22ff05cabf9fac678ab9",
+    "semantic_hash": "1a4199ee167d22ff05cabf9fac678ab9"
+  },
+  "crates/lapidary-api/tests/jobs.rs": {
+    "mtime": 1788787918.3798218,
+    "ast_hash": "07316cbc4fe13de58a32fc8a0d6cf068",
+    "semantic_hash": "07316cbc4fe13de58a32fc8a0d6cf068"
+  },
+  "crates/lapidary-api/tests/libraries.rs": {
+    "mtime": 1788801987.7020814,
+    "ast_hash": "4711511e296e4df7369c3f9635fccc09",
+    "semantic_hash": "4711511e296e4df7369c3f9635fccc09"
+  },
+  "crates/lapidary-api/tests/lifecycle.rs": {
+    "mtime": 1788787918.380025,
+    "ast_hash": "885d15eecc6a1241c614b4cedb576644",
+    "semantic_hash": "885d15eecc6a1241c614b4cedb576644"
+  },
+  "crates/lapidary-api/tests/moves.rs": {
+    "mtime": 1788787918.3801906,
+    "ast_hash": "b532bbf610d12e6ea2184b563940a027",
+    "semantic_hash": "b532bbf610d12e6ea2184b563940a027"
+  },
+  "crates/lapidary-api/tests/parts.rs": {
+    "mtime": 1788801987.702288,
+    "ast_hash": "125d3a5f80417f7192503ef5951484e9",
+    "semantic_hash": "125d3a5f80417f7192503ef5951484e9"
+  },
+  "crates/lapidary-api/tests/scan.rs": {
+    "mtime": 1788787918.3805752,
+    "ast_hash": "649fd5bc2b241774d63910b891641f65",
+    "semantic_hash": "649fd5bc2b241774d63910b891641f65"
+  },
+  "crates/lapidary-api/tests/sources.rs": {
+    "mtime": 1788812981.8298235,
+    "ast_hash": "8877580c0612c2a8fdedca663cb44168",
+    "semantic_hash": "8877580c0612c2a8fdedca663cb44168"
+  },
+  "crates/lapidary-api/tests/upload.rs": {
+    "mtime": 1788787918.38077,
+    "ast_hash": "3eef7a5483da8d2cf49855861325c09e",
+    "semantic_hash": "3eef7a5483da8d2cf49855861325c09e"
+  },
+  "crates/lapidary-build/src/lib.rs": {
+    "mtime": 1788697786.929357,
+    "ast_hash": "c35df1345d2bedfbec190b0f99c4c842",
+    "semantic_hash": "c35df1345d2bedfbec190b0f99c4c842"
+  },
+  "crates/lapidary-cad/src/cluster.rs": {
+    "mtime": 1788612950.2670894,
+    "ast_hash": "45afa4455c3c4b8c88331837bf50704b",
+    "semantic_hash": "45afa4455c3c4b8c88331837bf50704b"
+  },
+  "crates/lapidary-cad/src/glb.rs": {
+    "mtime": 1788527264.5551496,
+    "ast_hash": "fa3f8aa5217c8cbb528072d66ff9ec39",
+    "semantic_hash": "fa3f8aa5217c8cbb528072d66ff9ec39"
+  },
+  "crates/lapidary-cad/src/kernel.rs": {
+    "mtime": 1788811723.4817376,
+    "ast_hash": "2b200a26125bf885b29d96737fb0e5ad",
+    "semantic_hash": "2b200a26125bf885b29d96737fb0e5ad"
+  },
+  "crates/lapidary-cad/src/lib.rs": {
+    "mtime": 1788811723.4819076,
+    "ast_hash": "a78169e9ee3511f39be67dfe91c38c8d",
+    "semantic_hash": "a78169e9ee3511f39be67dfe91c38c8d"
+  },
+  "crates/lapidary-cad/src/measure.rs": {
+    "mtime": 1788472249.2521062,
+    "ast_hash": "593715088ff7c4a0c745bdd58c634d2f",
+    "semantic_hash": "593715088ff7c4a0c745bdd58c634d2f"
+  },
+  "crates/lapidary-cad/src/mesh_kernel.rs": {
+    "mtime": 1788811723.4821,
+    "ast_hash": "c7b654e40367205d45b5712b23f20930",
+    "semantic_hash": "c7b654e40367205d45b5712b23f20930"
+  },
+  "crates/lapidary-cad/src/mock.rs": {
+    "mtime": 1788811723.4822714,
+    "ast_hash": "6e45faf7a87284f770be6a4388ec90ed",
+    "semantic_hash": "6e45faf7a87284f770be6a4388ec90ed"
+  },
+  "crates/lapidary-cad/src/obj.rs": {
+    "mtime": 1788527264.5559146,
+    "ast_hash": "4e349a460ea9e727b57ea2b05704f2a4",
+    "semantic_hash": "4e349a460ea9e727b57ea2b05704f2a4"
+  },
+  "crates/lapidary-cad/src/raster.rs": {
+    "mtime": 1788472249.252292,
+    "ast_hash": "c3cc833e086d1ab9c45e5633c8c21fca",
+    "semantic_hash": "c3cc833e086d1ab9c45e5633c8c21fca"
+  },
+  "crates/lapidary-cad/src/stl.rs": {
+    "mtime": 1788527264.556089,
+    "ast_hash": "c3e0b56017bea2895ec2f301ce55470a",
+    "semantic_hash": "c3e0b56017bea2895ec2f301ce55470a"
+  },
+  "crates/lapidary-cad/src/tmf.rs": {
+    "mtime": 1788552857.1761286,
+    "ast_hash": "a967211c66fd66ac8824776310187a32",
+    "semantic_hash": "a967211c66fd66ac8824776310187a32"
+  },
+  "crates/lapidary-core/src/approximate.rs": {
+    "mtime": 1788472249.2525892,
+    "ast_hash": "ea7d31e8e4606edcde1ed461366058a0",
+    "semantic_hash": "ea7d31e8e4606edcde1ed461366058a0"
+  },
+  "crates/lapidary-core/src/derivative.rs": {
+    "mtime": 1788612950.2679703,
+    "ast_hash": "7c4c12b98f4cd6bfa370fd3ea549a1af",
+    "semantic_hash": "7c4c12b98f4cd6bfa370fd3ea549a1af"
+  },
+  "crates/lapidary-core/src/error.rs": {
+    "mtime": 1788769550.9167902,
+    "ast_hash": "54c87db6c064f4e83cba63d9314e437a",
+    "semantic_hash": "54c87db6c064f4e83cba63d9314e437a"
+  },
+  "crates/lapidary-core/src/ids.rs": {
+    "mtime": 1788812981.8299794,
+    "ast_hash": "a857d0f7420fca90725fcbc454c49e26",
+    "semantic_hash": "a857d0f7420fca90725fcbc454c49e26"
+  },
+  "crates/lapidary-core/src/job.rs": {
+    "mtime": 1788769550.9172697,
+    "ast_hash": "7341d04787f4254bf3759d8b9605e04f",
+    "semantic_hash": "7341d04787f4254bf3759d8b9605e04f"
+  },
+  "crates/lapidary-core/src/lib.rs": {
+    "mtime": 1788812981.8301158,
+    "ast_hash": "b155e2b47f360d023682f1a8637bd738",
+    "semantic_hash": "b155e2b47f360d023682f1a8637bd738"
+  },
+  "crates/lapidary-core/src/manifest.rs": {
+    "mtime": 1788769550.917575,
+    "ast_hash": "3117525c07f23a4bb7985d53cf1157e3",
+    "semantic_hash": "3117525c07f23a4bb7985d53cf1157e3"
+  },
+  "crates/lapidary-core/src/measurement.rs": {
+    "mtime": 1788472249.252812,
+    "ast_hash": "6a71bd1cd39b6cf9b0cce682f63ce11c",
+    "semantic_hash": "6a71bd1cd39b6cf9b0cce682f63ce11c"
+  },
+  "crates/lapidary-core/src/part.rs": {
+    "mtime": 1788801987.7024603,
+    "ast_hash": "06194c447eb4ee849447e58f879f52f3",
+    "semantic_hash": "06194c447eb4ee849447e58f879f52f3"
+  },
+  "crates/lapidary-core/src/slug.rs": {
+    "mtime": 1788769550.9177902,
+    "ast_hash": "eb0ff2aa9dc01b0a576b5c564444e29b",
+    "semantic_hash": "eb0ff2aa9dc01b0a576b5c564444e29b"
+  },
+  "crates/lapidary-db/backfill/0009_backfill.sql": {
+    "mtime": 1788769550.917993,
+    "ast_hash": "c4dda848f74ec359c631f1653401d63d",
+    "semantic_hash": "c4dda848f74ec359c631f1653401d63d"
+  },
+  "crates/lapidary-db/build.rs": {
+    "mtime": 1788472249.2529173,
+    "ast_hash": "72c74ef346e2fd8f0d754b7711ea3fb6",
+    "semantic_hash": "72c74ef346e2fd8f0d754b7711ea3fb6"
+  },
+  "crates/lapidary-db/migrations/0001_init.sql": {
+    "mtime": 1788472249.2529817,
+    "ast_hash": "26d9dd67eda53ea3202ee2db39002fc3",
+    "semantic_hash": "26d9dd67eda53ea3202ee2db39002fc3"
+  },
+  "crates/lapidary-db/migrations/0002_parts.sql": {
+    "mtime": 1788472249.2530212,
+    "ast_hash": "2b1329d6dbe02f13f37e0d6b420fcc16",
+    "semantic_hash": "2b1329d6dbe02f13f37e0d6b420fcc16"
+  },
+  "crates/lapidary-db/migrations/0003_jobs.sql": {
+    "mtime": 1788478635.727146,
+    "ast_hash": "a1d7ddd8fdecf2a55789f96924c05719",
+    "semantic_hash": "a1d7ddd8fdecf2a55789f96924c05719"
+  },
+  "crates/lapidary-db/migrations/0004_derivative_storage.sql": {
+    "mtime": 1788527264.5562375,
+    "ast_hash": "2891a395318f7b6d376de9c35918cf50",
+    "semantic_hash": "2891a395318f7b6d376de9c35918cf50"
+  },
+  "crates/lapidary-db/migrations/0005_derive_on_demand.sql": {
+    "mtime": 1788612950.2684321,
+    "ast_hash": "004e9a63f65cd559a72be394f8fee58a",
+    "semantic_hash": "004e9a63f65cd559a72be394f8fee58a"
+  },
+  "crates/lapidary-db/migrations/0006_scan_as_a_job.sql": {
+    "mtime": 1788642011.572401,
+    "ast_hash": "1b282ada224276fc99b6e190b4b06c9f",
+    "semantic_hash": "1b282ada224276fc99b6e190b4b06c9f"
+  },
+  "crates/lapidary-db/migrations/0007_source_path.sql": {
+    "mtime": 1788687913.587914,
+    "ast_hash": "8e5f0c74749600ff11eb2d3648ef3b98",
+    "semantic_hash": "8e5f0c74749600ff11eb2d3648ef3b98"
+  },
+  "crates/lapidary-db/migrations/0008_quarantine.sql": {
+    "mtime": 1788697786.9298787,
+    "ast_hash": "7361da27df269d548c6fae90cb63d1ec",
+    "semantic_hash": "7361da27df269d548c6fae90cb63d1ec"
+  },
+  "crates/lapidary-db/migrations/0009_folders.sql": {
+    "mtime": 1788769550.9183047,
+    "ast_hash": "4c0f4bd85e1161b3dedb733aedc859bf",
+    "semantic_hash": "4c0f4bd85e1161b3dedb733aedc859bf"
+  },
+  "crates/lapidary-db/migrations/0010_migrate_storage.sql": {
+    "mtime": 1788769550.9184449,
+    "ast_hash": "c655fe1fb5048fb2dc5ce2c2377c7fda",
+    "semantic_hash": "c655fe1fb5048fb2dc5ce2c2377c7fda"
+  },
+  "crates/lapidary-db/migrations/0011_migrate_storage_startup_guard.sql": {
+    "mtime": 1788769550.9186044,
+    "ast_hash": "476b1a14032027e808804d249f2156aa",
+    "semantic_hash": "476b1a14032027e808804d249f2156aa"
+  },
+  "crates/lapidary-db/migrations/0012_drop_migrate_storage_pending_index.sql": {
+    "mtime": 1788769550.9187162,
+    "ast_hash": "4e69b0e023a0301ec995ac50d75b8482",
+    "semantic_hash": "4e69b0e023a0301ec995ac50d75b8482"
+  },
+  "crates/lapidary-db/migrations/0013_file_zstd_level.sql": {
+    "mtime": 1788769550.918833,
+    "ast_hash": "267370c5d2c6e393828bc31fd7ba38bc",
+    "semantic_hash": "267370c5d2c6e393828bc31fd7ba38bc"
+  },
+  "crates/lapidary-db/migrations/0014_quarantined_file.sql": {
+    "mtime": 1788778154.4740999,
+    "ast_hash": "2a5adfcb7d8e1d7a340e2efb8d7e4709",
+    "semantic_hash": "2a5adfcb7d8e1d7a340e2efb8d7e4709"
+  },
+  "crates/lapidary-db/migrations/0015_part_images_and_sources.sql": {
+    "mtime": 1788789365.3904512,
+    "ast_hash": "7473b1884f4b8943d954f7661070e317",
+    "semantic_hash": "7473b1884f4b8943d954f7661070e317"
+  },
+  "crates/lapidary-db/migrations/0016_search_indexes.sql": {
+    "mtime": 1788791757.8644788,
+    "ast_hash": "20400f0de2a4527ffc39278e99fb5dd3",
+    "semantic_hash": "20400f0de2a4527ffc39278e99fb5dd3"
+  },
+  "crates/lapidary-db/migrations/0017_library_name_unique.sql": {
+    "mtime": 1788801987.702581,
+    "ast_hash": "cb9bca60a5fc9b690ed016d5353e8e3d",
+    "semantic_hash": "cb9bca60a5fc9b690ed016d5353e8e3d"
+  },
+  "crates/lapidary-db/migrations/0018_library_slug.sql": {
+    "mtime": 1788801987.7026422,
+    "ast_hash": "727455757987b7c110a1c398fb319451",
+    "semantic_hash": "727455757987b7c110a1c398fb319451"
+  },
+  "crates/lapidary-db/migrations/0019_image_framing.sql": {
+    "mtime": 1788812981.8302386,
+    "ast_hash": "573816fee74db1daa5b129c1a1f46ac5",
+    "semantic_hash": "573816fee74db1daa5b129c1a1f46ac5"
+  },
+  "crates/lapidary-db/src/folders.rs": {
+    "mtime": 1788801987.702869,
+    "ast_hash": "8fd5c30c441784bdb25f631420a9ee59",
+    "semantic_hash": "8fd5c30c441784bdb25f631420a9ee59"
+  },
+  "crates/lapidary-db/src/jobs.rs": {
+    "mtime": 1788769550.919248,
+    "ast_hash": "1801126b0e24d9de1deabef01a0680ef",
+    "semantic_hash": "1801126b0e24d9de1deabef01a0680ef"
+  },
+  "crates/lapidary-db/src/lib.rs": {
+    "mtime": 1788812981.8304722,
+    "ast_hash": "dc590e2d5c8ae3c6ad8e74a3ddbf8932",
+    "semantic_hash": "dc590e2d5c8ae3c6ad8e74a3ddbf8932"
+  },
+  "crates/lapidary-db/src/migrate.rs": {
+    "mtime": 1788769550.9196782,
+    "ast_hash": "39df82c19f1a9ef0c818d7223d8455a9",
+    "semantic_hash": "39df82c19f1a9ef0c818d7223d8455a9"
+  },
+  "crates/lapidary-db/src/repo.rs": {
+    "mtime": 1788812981.8311253,
+    "ast_hash": "3b4b16f7abad9eb9779771aeaa1c85ef",
+    "semantic_hash": "3b4b16f7abad9eb9779771aeaa1c85ef"
+  },
+  "crates/lapidary-db/tests/folders.rs": {
+    "mtime": 1788801987.7037413,
+    "ast_hash": "3ca5eb83a8f050d42c620974624bc212",
+    "semantic_hash": "3ca5eb83a8f050d42c620974624bc212"
+  },
+  "crates/lapidary-db/tests/jobs.rs": {
+    "mtime": 1788801987.7039642,
+    "ast_hash": "8bcf9e32abb0b28c22bdfac60bf0dba5",
+    "semantic_hash": "8bcf9e32abb0b28c22bdfac60bf0dba5"
+  },
+  "crates/lapidary-db/tests/migrations.rs": {
+    "mtime": 1788785886.889241,
+    "ast_hash": "de6ed5fc2487fa626260b0a2150f6ff2",
+    "semantic_hash": "de6ed5fc2487fa626260b0a2150f6ff2"
+  },
+  "crates/lapidary-db/tests/repo.rs": {
+    "mtime": 1788801987.7043593,
+    "ast_hash": "0a89652eaa434f48580547fe96646ee6",
+    "semantic_hash": "0a89652eaa434f48580547fe96646ee6"
+  },
+  "crates/lapidary-db/tests/schema.rs": {
+    "mtime": 1788791757.8657355,
+    "ast_hash": "cb16dc14b126806f8c4ac971641442d1",
+    "semantic_hash": "cb16dc14b126806f8c4ac971641442d1"
+  },
+  "crates/lapidary-enterprise/src/lib.rs": {
+    "mtime": 1788697786.931135,
+    "ast_hash": "83c38d1b888a6e18b9a552d7c05fde57",
+    "semantic_hash": "83c38d1b888a6e18b9a552d7c05fde57"
+  },
+  "crates/lapidary-index/src/lib.rs": {
+    "mtime": 1788697786.9312685,
+    "ast_hash": "d0e73df5946e47e326a7a133b6db862a",
+    "semantic_hash": "d0e73df5946e47e326a7a133b6db862a"
+  },
+  "crates/lapidary-ingest/src/derive.rs": {
+    "mtime": 1788769550.9214897,
+    "ast_hash": "e8f1512dd689214ce4a3125c21612569",
+    "semantic_hash": "e8f1512dd689214ce4a3125c21612569"
+  },
+  "crates/lapidary-ingest/src/handler.rs": {
+    "mtime": 1788811723.4825902,
+    "ast_hash": "acfbe2116de42c93f64735a85bcd562f",
+    "semantic_hash": "acfbe2116de42c93f64735a85bcd562f"
+  },
+  "crates/lapidary-ingest/src/lib.rs": {
+    "mtime": 1788769550.9219868,
+    "ast_hash": "c1d7ab8b065b0596d5d14d05ae806d77",
+    "semantic_hash": "c1d7ab8b065b0596d5d14d05ae806d77"
+  },
+  "crates/lapidary-ingest/src/migrate.rs": {
+    "mtime": 1788779283.6595457,
+    "ast_hash": "ba9d985d938acca38062c8ff4ddc54bb",
+    "semantic_hash": "ba9d985d938acca38062c8ff4ddc54bb"
+  },
+  "crates/lapidary-ingest/src/reap.rs": {
+    "mtime": 1788778154.4750724,
+    "ast_hash": "d17a2366bfead68b7932dc481714c330",
+    "semantic_hash": "d17a2366bfead68b7932dc481714c330"
+  },
+  "crates/lapidary-ingest/src/scan.rs": {
+    "mtime": 1788692893.474468,
+    "ast_hash": "2e4b57a6eef8ec739a75f8590ec13545",
+    "semantic_hash": "2e4b57a6eef8ec739a75f8590ec13545"
+  },
+  "crates/lapidary-ingest/src/seed.rs": {
+    "mtime": 1788692893.474593,
+    "ast_hash": "01e530f78334a3bbb9210586665aa34c",
+    "semantic_hash": "01e530f78334a3bbb9210586665aa34c"
+  },
+  "crates/lapidary-ingest/tests/handler.rs": {
+    "mtime": 1788811723.4830613,
+    "ast_hash": "6b374618dd38d55279f75a6a72e51c5e",
+    "semantic_hash": "6b374618dd38d55279f75a6a72e51c5e"
+  },
+  "crates/lapidary-ingest/tests/migrate.rs": {
+    "mtime": 1788801987.704917,
+    "ast_hash": "6d4807397fdc9f17638cfa4b32d39d46",
+    "semantic_hash": "6d4807397fdc9f17638cfa4b32d39d46"
+  },
+  "crates/lapidary-ingest/tests/migrate_route.rs": {
+    "mtime": 1788769550.9232345,
+    "ast_hash": "fbff9b8399d6fc8d6816c1bb7cee6ddf",
+    "semantic_hash": "fbff9b8399d6fc8d6816c1bb7cee6ddf"
+  },
+  "crates/lapidary-ingest/tests/reap.rs": {
+    "mtime": 1788778243.8591917,
+    "ast_hash": "a0eba4af93a8a0d2f5f4d24843386a30",
+    "semantic_hash": "a0eba4af93a8a0d2f5f4d24843386a30"
+  },
+  "crates/lapidary-ingest/tests/scan.rs": {
+    "mtime": 1788642011.5748022,
+    "ast_hash": "a620a3ec10c6bc4430d22277f52a0240",
+    "semantic_hash": "a620a3ec10c6bc4430d22277f52a0240"
+  },
+  "crates/lapidary-ingest/tests/seed.rs": {
+    "mtime": 1788769550.9236102,
+    "ast_hash": "27f031f9980940684765516b3621f62a",
+    "semantic_hash": "27f031f9980940684765516b3621f62a"
+  },
+  "crates/lapidary-jobs/src/handler.rs": {
+    "mtime": 1788692893.4748662,
+    "ast_hash": "362377fa2c3c7d91f565930f3a3ec784",
+    "semantic_hash": "362377fa2c3c7d91f565930f3a3ec784"
+  },
+  "crates/lapidary-jobs/src/lib.rs": {
+    "mtime": 1788472249.2545013,
+    "ast_hash": "3497dfdd2195ad577180fb77999dc041",
+    "semantic_hash": "3497dfdd2195ad577180fb77999dc041"
+  },
+  "crates/lapidary-jobs/src/policy.rs": {
+    "mtime": 1788472249.2545395,
+    "ast_hash": "7af74edbeaf27aa5f07fdee4bc1556c1",
+    "semantic_hash": "7af74edbeaf27aa5f07fdee4bc1556c1"
+  },
+  "crates/lapidary-jobs/src/worker.rs": {
+    "mtime": 1788476591.5775917,
+    "ast_hash": "9ae9bbc1616eba67dcbb5f3d043b4681",
+    "semantic_hash": "9ae9bbc1616eba67dcbb5f3d043b4681"
+  },
+  "crates/lapidary-jobs/tests/resumption.rs": {
+    "mtime": 1788612950.2707908,
+    "ast_hash": "7503d815cce28e9c6ed4408b4ed9e4c5",
+    "semantic_hash": "7503d815cce28e9c6ed4408b4ed9e4c5"
+  },
+  "crates/lapidary-jobs/tests/worker.rs": {
+    "mtime": 1788476591.5787323,
+    "ast_hash": "45fd16757efc35852d927a271002ce23",
+    "semantic_hash": "45fd16757efc35852d927a271002ce23"
+  },
+  "crates/lapidary-storage/src/lib.rs": {
+    "mtime": 1788769550.923997,
+    "ast_hash": "581f0546f805601a5a76e0005a2d61c7",
+    "semantic_hash": "581f0546f805601a5a76e0005a2d61c7"
+  },
+  "crates/lapidary-targets/src/lib.rs": {
+    "mtime": 1788697786.9324608,
+    "ast_hash": "03d4bcdc5b75f1a5fc7f8ad03ee6e7ee",
+    "semantic_hash": "03d4bcdc5b75f1a5fc7f8ad03ee6e7ee"
+  },
+  "crates/lapidary-vcs/src/lib.rs": {
+    "mtime": 1788697786.9326243,
+    "ast_hash": "8119b75ffbe21fd0b31eaa110a2eb128",
+    "semantic_hash": "8119b75ffbe21fd0b31eaa110a2eb128"
+  },
+  "deploy/db/init/10-extensions.sql": {
+    "mtime": 1788472249.2553868,
+    "ast_hash": "d3d6316ae587f051a51c9c0ef199bb8c",
+    "semantic_hash": "d3d6316ae587f051a51c9c0ef199bb8c"
+  },
+  "design/data.js": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "76639fb2298cda7159b21433d297fccb",
+    "semantic_hash": "76639fb2298cda7159b21433d297fccb"
+  },
+  "design/image-slot.js": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "ff60a935d4107941f0af74de742d57dc",
+    "semantic_hash": "ff60a935d4107941f0af74de742d57dc"
+  },
+  "design/mesh3d.js": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "7399a93b8def0319578e31ccc661a539",
+    "semantic_hash": "7399a93b8def0319578e31ccc661a539"
+  },
+  "design/support.js": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "37cb653323f84c54a810386b6b2c4942",
+    "semantic_hash": "37cb653323f84c54a810386b6b2c4942"
+  },
+  "example/parts/generate.py": {
+    "mtime": 1788472249.2581635,
+    "ast_hash": "61c52e0f46224a510f60379900bd12ba",
+    "semantic_hash": "61c52e0f46224a510f60379900bd12ba"
+  },
+  "skills-lock.json": {
+    "mtime": 1788817275.3181243,
+    "ast_hash": "74445966fb79050ff83f7e3e1bab6ae3",
+    "semantic_hash": "74445966fb79050ff83f7e3e1bab6ae3"
+  },
+  "web/package.json": {
+    "mtime": 1788687913.5917957,
+    "ast_hash": "444d68a9588ea9a968d7cca0df4872a6",
+    "semantic_hash": "444d68a9588ea9a968d7cca0df4872a6"
+  },
+  "web/src/bindings/Approximate.ts": {
+    "mtime": 1788813377.2851162,
+    "ast_hash": "44e2af9f029a8ada1eec68070dc8208f",
+    "semantic_hash": "44e2af9f029a8ada1eec68070dc8208f"
+  },
+  "web/src/bindings/BatchId.ts": {
+    "mtime": 1788813377.280116,
+    "ast_hash": "58e584df58ef5db69614c0f2006f832c",
+    "semantic_hash": "58e584df58ef5db69614c0f2006f832c"
+  },
+  "web/src/bindings/BatchStatus.ts": {
+    "mtime": 1788813377.3351161,
+    "ast_hash": "449167cc9528d1095efe02b47aba713c",
+    "semantic_hash": "449167cc9528d1095efe02b47aba713c"
+  },
+  "web/src/bindings/BlobHash.ts": {
+    "mtime": 1788813377.2951162,
+    "ast_hash": "6fa8a5e82bcec0d24f0b9c14241d9ea9",
+    "semantic_hash": "6fa8a5e82bcec0d24f0b9c14241d9ea9"
+  },
+  "web/src/bindings/ChunkAccepted.ts": {
+    "mtime": 1788813377.2121162,
+    "ast_hash": "956b6d1067e9b6b03f1aff110b3e04dc",
+    "semantic_hash": "956b6d1067e9b6b03f1aff110b3e04dc"
+  },
+  "web/src/bindings/DerivativeKind.ts": {
+    "mtime": 1788813377.290116,
+    "ast_hash": "5b3630266ddd8e4253473e2378f2b178",
+    "semantic_hash": "5b3630266ddd8e4253473e2378f2b178"
+  },
+  "web/src/bindings/FetchImageRequest.ts": {
+    "mtime": 1788813377.1171162,
+    "ast_hash": "bf9bd9b71ec28f248335d4e6af2544d8",
+    "semantic_hash": "bf9bd9b71ec28f248335d4e6af2544d8"
+  },
+  "web/src/bindings/FolderId.ts": {
+    "mtime": 1788813377.300116,
+    "ast_hash": "6b86562ed76bbf5d6926d7978221b50f",
+    "semantic_hash": "6b86562ed76bbf5d6926d7978221b50f"
+  },
+  "web/src/bindings/FolderNode.ts": {
+    "mtime": 1788813377.097116,
+    "ast_hash": "d566d167ab1d73662766fdbc58bfb2ef",
+    "semantic_hash": "d566d167ab1d73662766fdbc58bfb2ef"
+  },
+  "web/src/bindings/FolderPatch.ts": {
+    "mtime": 1788813377.1071162,
+    "ast_hash": "e0fd2aff5f3175877b1b2a6cfafd3a3e",
+    "semantic_hash": "e0fd2aff5f3175877b1b2a6cfafd3a3e"
+  },
+  "web/src/bindings/InstanceStorageView.ts": {
+    "mtime": 1788813377.172116,
+    "ast_hash": "8e847558aeb2c926cddddf388bfec9f9",
+    "semantic_hash": "8e847558aeb2c926cddddf388bfec9f9"
+  },
+  "web/src/bindings/JobFailure.ts": {
+    "mtime": 1788813377.3401163,
+    "ast_hash": "919dea4ee27587804b0845ab102ae368",
+    "semantic_hash": "919dea4ee27587804b0845ab102ae368"
+  },
+  "web/src/bindings/JobId.ts": {
+    "mtime": 1788813377.3101163,
+    "ast_hash": "f4f32f6ff697195fc335d2f4a2e51359",
+    "semantic_hash": "f4f32f6ff697195fc335d2f4a2e51359"
+  },
+  "web/src/bindings/JobState.ts": {
+    "mtime": 1788813377.3451161,
+    "ast_hash": "a433b252b75401db9e8d68e769de01ae",
+    "semantic_hash": "a433b252b75401db9e8d68e769de01ae"
+  },
+  "web/src/bindings/LibraryId.ts": {
+    "mtime": 1788813377.3051162,
+    "ast_hash": "a5b93dfaeaf5650290361fa87e8fc7a7",
+    "semantic_hash": "a5b93dfaeaf5650290361fa87e8fc7a7"
+  },
+  "web/src/bindings/LibraryMode.ts": {
+    "mtime": 1788813377.3701162,
+    "ast_hash": "64de52af2423f86ef82eda792520ab30",
+    "semantic_hash": "64de52af2423f86ef82eda792520ab30"
+  },
+  "web/src/bindings/LibrarySettings.ts": {
+    "mtime": 1788813377.080116,
+    "ast_hash": "408f8c959a89c8bd7936c79d182a3473",
+    "semantic_hash": "408f8c959a89c8bd7936c79d182a3473"
+  },
+  "web/src/bindings/LibraryStorage.ts": {
+    "mtime": 1788813377.182116,
+    "ast_hash": "2458eaa009c4395464b2a4a5e04015ec",
+    "semantic_hash": "2458eaa009c4395464b2a4a5e04015ec"
+  },
+  "web/src/bindings/LibrarySummary.ts": {
+    "mtime": 1788813377.102116,
+    "ast_hash": "9147d01779a0255e7388ae4d136aa25c",
+    "semantic_hash": "9147d01779a0255e7388ae4d136aa25c"
+  },
+  "web/src/bindings/MeshMeasurements.ts": {
+    "mtime": 1788813377.3601162,
+    "ast_hash": "d645a4f3b883975a75954a386224967e",
+    "semantic_hash": "d645a4f3b883975a75954a386224967e"
+  },
+  "web/src/bindings/MovePart.ts": {
+    "mtime": 1788813377.1471162,
+    "ast_hash": "360861ae5b61a51ba62162d8dfa21839",
+    "semantic_hash": "360861ae5b61a51ba62162d8dfa21839"
+  },
+  "web/src/bindings/NewFolder.ts": {
+    "mtime": 1788813377.122116,
+    "ast_hash": "0af7589ace714b9725f09675f9546cbb",
+    "semantic_hash": "0af7589ace714b9725f09675f9546cbb"
+  },
+  "web/src/bindings/NewLibrary.ts": {
+    "mtime": 1788813377.0881162,
+    "ast_hash": "b25131412b14723826e757ac3a02d6a4",
+    "semantic_hash": "b25131412b14723826e757ac3a02d6a4"
+  },
+  "web/src/bindings/NewSource.ts": {
+    "mtime": 1788813377.1971161,
+    "ast_hash": "2cf7b8a6b10f0ece24cf8f41cdde8db3",
+    "semantic_hash": "2cf7b8a6b10f0ece24cf8f41cdde8db3"
+  },
+  "web/src/bindings/Outcome.ts": {
+    "mtime": 1788813377.3501163,
+    "ast_hash": "d83b3170d5889b14bf1c1a61c6929b55",
+    "semantic_hash": "d83b3170d5889b14bf1c1a61c6929b55"
+  },
+  "web/src/bindings/PartCard.ts": {
+    "mtime": 1788813377.1871161,
+    "ast_hash": "6f46b6a42338f5cfd00a4dab14ab95db",
+    "semantic_hash": "6f46b6a42338f5cfd00a4dab14ab95db"
+  },
+  "web/src/bindings/PartDetail.ts": {
+    "mtime": 1788813377.112116,
+    "ast_hash": "d6ae8f32978a0b730ea4fa70c397b142",
+    "semantic_hash": "d6ae8f32978a0b730ea4fa70c397b142"
+  },
+  "web/src/bindings/PartId.ts": {
+    "mtime": 1788813377.3151162,
+    "ast_hash": "08a32f6d8b7da7baf333c2a299dbbe7a",
+    "semantic_hash": "08a32f6d8b7da7baf333c2a299dbbe7a"
+  },
+  "web/src/bindings/PartImage.ts": {
+    "mtime": 1788813377.1271162,
+    "ast_hash": "339509dada1e4048aa9665ca03d7c933",
+    "semantic_hash": "339509dada1e4048aa9665ca03d7c933"
+  },
+  "web/src/bindings/PartImageId.ts": {
+    "mtime": 1788813377.3201163,
+    "ast_hash": "4b9c8187c98db208e2e15eed6e027ffa",
+    "semantic_hash": "4b9c8187c98db208e2e15eed6e027ffa"
+  },
+  "web/src/bindings/PartSource.ts": {
+    "mtime": 1788813377.2021163,
+    "ast_hash": "627176cdc859b88d71a4a111fe3cf295",
+    "semantic_hash": "627176cdc859b88d71a4a111fe3cf295"
+  },
+  "web/src/bindings/PartSourceId.ts": {
+    "mtime": 1788813377.3251162,
+    "ast_hash": "505aa40fc6a9ae5fbe8baaa99cb2f8be",
+    "semantic_hash": "505aa40fc6a9ae5fbe8baaa99cb2f8be"
+  },
+  "web/src/bindings/PartSummary.ts": {
+    "mtime": 1788813377.375116,
+    "ast_hash": "fc0463cb91183951501cf7494266833b",
+    "semantic_hash": "fc0463cb91183951501cf7494266833b"
+  },
+  "web/src/bindings/PartsPage.ts": {
+    "mtime": 1788813377.192116,
+    "ast_hash": "d5cc2977d3e143000e34222a7bc2ba6e",
+    "semantic_hash": "d5cc2977d3e143000e34222a7bc2ba6e"
+  },
+  "web/src/bindings/Provenance.ts": {
+    "mtime": 1788813377.3651161,
+    "ast_hash": "8bc92f34a7a8e9453a78ed2ec35f708f",
+    "semantic_hash": "8bc92f34a7a8e9453a78ed2ec35f708f"
+  },
+  "web/src/bindings/PurgeResult.ts": {
+    "mtime": 1788813377.142116,
+    "ast_hash": "bfcd80d2a74be0c948087c91bef7af6c",
+    "semantic_hash": "bfcd80d2a74be0c948087c91bef7af6c"
+  },
+  "web/src/bindings/RevisionId.ts": {
+    "mtime": 1788813377.3301163,
+    "ast_hash": "f316c5e4dd24bc35c2e9252fc58b8897",
+    "semantic_hash": "f316c5e4dd24bc35c2e9252fc58b8897"
+  },
+  "web/src/bindings/ScanAccepted.ts": {
+    "mtime": 1788813377.3551161,
+    "ast_hash": "97d460dd37a9825181185462616145a0",
+    "semantic_hash": "97d460dd37a9825181185462616145a0"
+  },
+  "web/src/bindings/SetFraming.ts": {
+    "mtime": 1788813377.132116,
+    "ast_hash": "2839dd5acfb82f25709d7972c7423f9e",
+    "semantic_hash": "2839dd5acfb82f25709d7972c7423f9e"
+  },
+  "web/src/bindings/StoredImage.ts": {
+    "mtime": 1788813377.1371162,
+    "ast_hash": "b114d53ee9d7afbf6a3e1c1667c6fc5c",
+    "semantic_hash": "b114d53ee9d7afbf6a3e1c1667c6fc5c"
+  },
+  "web/src/bindings/UploadFile.ts": {
+    "mtime": 1788813377.218116,
+    "ast_hash": "2e9cbfcdeb902f9d357ae54a46014013",
+    "semantic_hash": "2e9cbfcdeb902f9d357ae54a46014013"
+  },
+  "web/src/bindings/UploadManifest.ts": {
+    "mtime": 1788813377.2231162,
+    "ast_hash": "c658d93992a83fdab0f41f4a5c5c65f4",
+    "semantic_hash": "c658d93992a83fdab0f41f4a5c5c65f4"
+  },
+  "web/src/bindings/UploadPlan.ts": {
+    "mtime": 1788813377.227116,
+    "ast_hash": "941d9419d76631d59510a77e7a2f904d",
+    "semantic_hash": "941d9419d76631d59510a77e7a2f904d"
+  },
+  "web/src/components/Dialog.tsx": {
+    "mtime": 1788811268.306641,
+    "ast_hash": "d08967ff33ad6d314c1d458270a6ad78",
+    "semantic_hash": "d08967ff33ad6d314c1d458270a6ad78"
+  },
+  "web/src/components/FolderTree.test.tsx": {
+    "mtime": 1788811268.3068569,
+    "ast_hash": "9c0e0d8cef551649e35bf8e3b7679731",
+    "semantic_hash": "9c0e0d8cef551649e35bf8e3b7679731"
+  },
+  "web/src/components/FolderTree.tsx": {
+    "mtime": 1788811268.3070853,
+    "ast_hash": "4377d28effa852d313878919e9c5ad3f",
+    "semantic_hash": "4377d28effa852d313878919e9c5ad3f"
+  },
+  "web/src/components/PartDetail.tsx": {
+    "mtime": 1788813404.5152485,
+    "ast_hash": "63a63e1ae401a75b93e4ae7a04c3042f",
+    "semantic_hash": "63a63e1ae401a75b93e4ae7a04c3042f"
+  },
+  "web/src/lib/api.ts": {
+    "mtime": 1788812981.8324149,
+    "ast_hash": "82f068a62477b4aefc6b0849ef8420a2",
+    "semantic_hash": "82f068a62477b4aefc6b0849ef8420a2"
+  },
+  "web/src/lib/preferences.ts": {
+    "mtime": 1788811268.3075552,
+    "ast_hash": "887e550a16ad4634002abc3663e37c96",
+    "semantic_hash": "887e550a16ad4634002abc3663e37c96"
+  },
+  "web/src/lib/strings.ts": {
+    "mtime": 1788812981.8327513,
+    "ast_hash": "4bd3c86f09688fc86b14464b94983093",
+    "semantic_hash": "4bd3c86f09688fc86b14464b94983093"
+  },
+  "web/src/lib/types.ts": {
+    "mtime": 1788812981.8328922,
+    "ast_hash": "c55a3bc6d1868684936dd971601bce71",
+    "semantic_hash": "c55a3bc6d1868684936dd971601bce71"
+  },
+  "web/src/lib/upload.test.ts": {
+    "mtime": 1788811268.3080633,
+    "ast_hash": "96abb707fff9d4f4730b37865374ab61",
+    "semantic_hash": "96abb707fff9d4f4730b37865374ab61"
+  },
+  "web/src/lib/upload.ts": {
+    "mtime": 1788811268.30817,
+    "ast_hash": "7270b4edbc6e280a1067d5ac4e1e7965",
+    "semantic_hash": "7270b4edbc6e280a1067d5ac4e1e7965"
+  },
+  "web/src/main.tsx": {
+    "mtime": 1788811268.308315,
+    "ast_hash": "6c98085c39561cea5345bd2155e8bd85",
+    "semantic_hash": "6c98085c39561cea5345bd2155e8bd85"
+  },
+  "web/src/no-bare-strings.test.ts": {
+    "mtime": 1788811268.3084319,
+    "ast_hash": "f30b124c4eaef3bfd815438b0f21a56e",
+    "semantic_hash": "f30b124c4eaef3bfd815438b0f21a56e"
+  },
+  "web/src/routeTree.gen.ts": {
+    "mtime": 1788811268.3085876,
+    "ast_hash": "42922d0456bf43a93a0c5c3036d38e01",
+    "semantic_hash": "42922d0456bf43a93a0c5c3036d38e01"
+  },
+  "web/src/routes/__root.tsx": {
+    "mtime": 1788811268.3086452,
+    "ast_hash": "37fa78b538f33ed3bcc5d78dd5886b79",
+    "semantic_hash": "37fa78b538f33ed3bcc5d78dd5886b79"
+  },
+  "web/src/routes/index.test.tsx": {
+    "mtime": 1788813404.515824,
+    "ast_hash": "79cc2164279a5e71c18c73e2008c1969",
+    "semantic_hash": "79cc2164279a5e71c18c73e2008c1969"
+  },
+  "web/src/routes/index.tsx": {
+    "mtime": 1788811268.3094225,
+    "ast_hash": "4ba9b658d2755fb31d302c2c96d5bfbc",
+    "semantic_hash": "4ba9b658d2755fb31d302c2c96d5bfbc"
+  },
+  "web/src/routes/parts.$partId.test.tsx": {
+    "mtime": 1788812981.8330781,
+    "ast_hash": "533afd9117bf509d4ccee670205f1e6e",
+    "semantic_hash": "533afd9117bf509d4ccee670205f1e6e"
+  },
+  "web/src/routes/parts.$partId.tsx": {
+    "mtime": 1788813404.5160246,
+    "ast_hash": "94f97ecbbe78c3e19865304e7b0353f0",
+    "semantic_hash": "94f97ecbbe78c3e19865304e7b0353f0"
+  },
+  "web/src/routes/removed.test.tsx": {
+    "mtime": 1788787918.3844523,
+    "ast_hash": "92e3e516d5b7e7e132ad3e1e41b1235f",
+    "semantic_hash": "92e3e516d5b7e7e132ad3e1e41b1235f"
+  },
+  "web/src/routes/removed.tsx": {
+    "mtime": 1788811268.3097034,
+    "ast_hash": "5797c8bf896f3f665789bcb227f95fe7",
+    "semantic_hash": "5797c8bf896f3f665789bcb227f95fe7"
+  },
+  "web/tsconfig.json": {
+    "mtime": 1788472249.260564,
+    "ast_hash": "6646b4078077ced5dc8f0e26b99c25b8",
+    "semantic_hash": "6646b4078077ced5dc8f0e26b99c25b8"
+  },
+  "web/vite.config.ts": {
+    "mtime": 1788472249.2606728,
+    "ast_hash": "80f39b729d6502d0bc2b148eef3a51c8",
+    "semantic_hash": "80f39b729d6502d0bc2b148eef3a51c8"
+  },
+  "web/vitest.config.ts": {
+    "mtime": 1788472249.2606728,
+    "ast_hash": "e3f38d5daae11396413c06dfc7f7067d",
+    "semantic_hash": "e3f38d5daae11396413c06dfc7f7067d"
+  },
+  "xtask/src/commit.rs": {
+    "mtime": 1788518154.616368,
+    "ast_hash": "e3a43bed1c03d290d52cfc7acf804264",
+    "semantic_hash": "e3a43bed1c03d290d52cfc7acf804264"
+  },
+  "xtask/src/deploy.rs": {
+    "mtime": 1788769550.9295611,
+    "ast_hash": "4a799dbd081a2101ef8a7196ae036bcf",
+    "semantic_hash": "4a799dbd081a2101ef8a7196ae036bcf"
+  },
+  "xtask/src/layers.rs": {
+    "mtime": 1788472249.2610927,
+    "ast_hash": "92722a31c632cfb6386e161123e4a5b6",
+    "semantic_hash": "92722a31c632cfb6386e161123e4a5b6"
+  },
+  "xtask/src/main.rs": {
+    "mtime": 1788769550.9298382,
+    "ast_hash": "09cbc11a0c792122dbc1170c14fd656c",
+    "semantic_hash": "09cbc11a0c792122dbc1170c14fd656c"
+  },
+  "xtask/src/setup.rs": {
+    "mtime": 1788518193.7234988,
+    "ast_hash": "63cc2694384029f1b4c87ae408fa0395",
+    "semantic_hash": "63cc2694384029f1b4c87ae408fa0395"
+  },
+  "xtask/src/strings.rs": {
+    "mtime": 1788769550.9300616,
+    "ast_hash": "c0d5d4c308bf4216c611308f5aa2524e",
+    "semantic_hash": "c0d5d4c308bf4216c611308f5aa2524e"
+  },
+  "xtask/src/verify.rs": {
+    "mtime": 1788680085.5346186,
+    "ast_hash": "f01990a7d057f760510af0cf3b3b0762",
+    "semantic_hash": "f01990a7d057f760510af0cf3b3b0762"
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1788770989.049265,
+    "ast_hash": "baa6485479aeb265f045bce5bf39659c",
+    "semantic_hash": "baa6485479aeb265f045bce5bf39659c"
+  },
+  ".github/workflows/containers.yml": {
+    "mtime": 1788472249.249889,
+    "ast_hash": "c7ecd538fd0afcdb0280bafce0bcb0b8",
+    "semantic_hash": "c7ecd538fd0afcdb0280bafce0bcb0b8"
+  },
+  "AGENTS.md": {
+    "mtime": 1788813377.4306412,
+    "ast_hash": "8aeec800f01db86ece02f3485c9a662e",
+    "semantic_hash": "8aeec800f01db86ece02f3485c9a662e"
+  },
+  "CLAUDE.md": {
+    "mtime": 1788472249.2500212,
+    "ast_hash": "3fd3a027ce0c23f2620e7dde0a8af7af",
+    "semantic_hash": "3fd3a027ce0c23f2620e7dde0a8af7af"
+  },
+  "CONTRIBUTING.md": {
+    "mtime": 1788680085.5339165,
+    "ast_hash": "228c97e17a6fac59fe4024a6f41590e3",
+    "semantic_hash": "228c97e17a6fac59fe4024a6f41590e3"
+  },
+  "README.md": {
+    "mtime": 1788785552.802322,
+    "ast_hash": "a013327c774ebbfb833f775912202889",
+    "semantic_hash": "a013327c774ebbfb833f775912202889"
+  },
+  "deploy/compose.yaml": {
+    "mtime": 1788787918.3821173,
+    "ast_hash": "e216ea160b852d818f7b1a12ea17abca",
+    "semantic_hash": "e216ea160b852d818f7b1a12ea17abca"
+  },
+  "design/DESIGN_README.md": {
+    "mtime": 1788471546.3354688,
+    "ast_hash": "d686eafa4a96b812d709c5e4399835a5",
+    "semantic_hash": "d686eafa4a96b812d709c5e4399835a5"
+  },
+  "design/Lapidary v1.dc.html": {
+    "mtime": 1788471546.3359678,
+    "ast_hash": "ef607f5ae8aa72caacf6f948bc89514d",
+    "semantic_hash": "ef607f5ae8aa72caacf6f948bc89514d"
+  },
+  "design/Lapidary v2 (mono).dc.html": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "0c273f211857a3b1a236b2b129d03f76",
+    "semantic_hash": "0c273f211857a3b1a236b2b129d03f76"
+  },
+  "design/Lapidary.dc.html": {
+    "mtime": 1788471546.3360674,
+    "ast_hash": "eadb676b53f2492dc94465be0104a324",
+    "semantic_hash": "eadb676b53f2492dc94465be0104a324"
+  },
+  "docs/ARCHITECTURE.md": {
+    "mtime": 1788642011.5753024,
+    "ast_hash": "51178a6f023bb464b481b11e351639a0",
+    "semantic_hash": "51178a6f023bb464b481b11e351639a0"
+  },
+  "docs/DATA.md": {
+    "mtime": 1788813404.5149899,
+    "ast_hash": "728ab9c9f561829422d130406f7a170f",
+    "semantic_hash": "728ab9c9f561829422d130406f7a170f"
+  },
+  "docs/FEATURES.md": {
+    "mtime": 1788812981.8313215,
+    "ast_hash": "496d5a33ece4faf9bcacb39259c983ef",
+    "semantic_hash": "496d5a33ece4faf9bcacb39259c983ef"
+  },
+  "docs/README.md": {
+    "mtime": 1788769550.9249697,
+    "ast_hash": "c23e3071da8e116ca0ed08f33bad3911",
+    "semantic_hash": "c23e3071da8e116ca0ed08f33bad3911"
+  },
+  "docs/ROADMAP.md": {
+    "mtime": 1788811723.4832582,
+    "ast_hash": "c2adf529e3e51ddd157345788c8a1aa9",
+    "semantic_hash": "c2adf529e3e51ddd157345788c8a1aa9"
+  },
+  "docs/prototype-notes.md": {
+    "mtime": 1788472249.2559447,
+    "ast_hash": "030ff80b7e1e45b13bd895f2812c4e83",
+    "semantic_hash": "030ff80b7e1e45b13bd895f2812c4e83"
+  },
+  "docs/superpowers/plans/2026-09-01-phase-0a-followups.md": {
+    "mtime": 1788472249.2561264,
+    "ast_hash": "9990d4fbdc1c399e373935402d2bf685",
+    "semantic_hash": "9990d4fbdc1c399e373935402d2bf685"
+  },
+  "docs/superpowers/plans/2026-09-01-phase-0a-foundation.md": {
+    "mtime": 1788472249.2565434,
+    "ast_hash": "d801afeae1b9a5e42449d0b54149d140",
+    "semantic_hash": "d801afeae1b9a5e42449d0b54149d140"
+  },
+  "docs/superpowers/plans/2026-09-01-phase-0a-verification.md": {
+    "mtime": 1788472249.2566164,
+    "ast_hash": "210a76ad5afe79e2c9fe22c9be056a02",
+    "semantic_hash": "210a76ad5afe79e2c9fe22c9be056a02"
+  },
+  "docs/superpowers/plans/2026-09-02-followup-15-deploy-check.md": {
+    "mtime": 1788472249.2566721,
+    "ast_hash": "60c6e6ec2289ffc29ebf7b9ad1eaa0d6",
+    "semantic_hash": "60c6e6ec2289ffc29ebf7b9ad1eaa0d6"
+  },
+  "docs/superpowers/plans/2026-09-02-phase-0a-followups-execution.md": {
+    "mtime": 1788472249.2567601,
+    "ast_hash": "46cb16f1399325488041a673a89bc97b",
+    "semantic_hash": "46cb16f1399325488041a673a89bc97b"
+  },
+  "docs/superpowers/plans/2026-09-02-phase-0a-followups-round-2.md": {
+    "mtime": 1788472249.2568424,
+    "ast_hash": "aec5ab067ef8499e2cdd06a36ac12454",
+    "semantic_hash": "aec5ab067ef8499e2cdd06a36ac12454"
+  },
+  "docs/superpowers/plans/2026-09-02-phase-1-slice-1-HANDOFF.md": {
+    "mtime": 1788515720.292007,
+    "ast_hash": "ae5110efdf4569ec6719b33c554d7cb3",
+    "semantic_hash": "ae5110efdf4569ec6719b33c554d7cb3"
+  },
+  "docs/superpowers/plans/2026-09-02-phase-1-slice-1-ingest.md": {
+    "mtime": 1788472249.2571728,
+    "ast_hash": "d4103386faffd08569cbb2481d150055",
+    "semantic_hash": "d4103386faffd08569cbb2481d150055"
+  },
+  "docs/superpowers/plans/2026-09-03-phase-1-slice-2-jobs.md": {
+    "mtime": 1788478044.714367,
+    "ast_hash": "470cdca6e8cf335ece23478b3af3a20c",
+    "semantic_hash": "470cdca6e8cf335ece23478b3af3a20c"
+  },
+  "docs/superpowers/plans/2026-09-04-phase-1-slice-2-HANDOFF.md": {
+    "mtime": 1788515720.2917092,
+    "ast_hash": "057ae726e9f0671f90fe9d36fa33b2cd",
+    "semantic_hash": "057ae726e9f0671f90fe9d36fa33b2cd"
+  },
+  "docs/superpowers/plans/2026-09-04-phase-1-slice-3-HANDOFF.md": {
+    "mtime": 1788527264.5581188,
+    "ast_hash": "6f9df2a976bf2b9096640f4725f69432",
+    "semantic_hash": "6f9df2a976bf2b9096640f4725f69432"
+  },
+  "docs/superpowers/plans/2026-09-04-phase-1-slice-3-lod.md": {
+    "mtime": 1788523392.3520663,
+    "ast_hash": "194273ea6e53a4ce759008b3e32b3fd5",
+    "semantic_hash": "194273ea6e53a4ce759008b3e32b3fd5"
+  },
+  "docs/superpowers/plans/2026-09-04-phase-1-slice-3b-3mf.md": {
+    "mtime": 1788552857.1772976,
+    "ast_hash": "e19414c23a826ff9f5dfc6ec4a9359eb",
+    "semantic_hash": "e19414c23a826ff9f5dfc6ec4a9359eb"
+  },
+  "docs/superpowers/plans/2026-09-04-phase-1-slice-3b-HANDOFF.md": {
+    "mtime": 1788552857.1774008,
+    "ast_hash": "8e698cfdb212923d6ca737622f0fed9f",
+    "semantic_hash": "8e698cfdb212923d6ca737622f0fed9f"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-remaining-slices.md": {
+    "mtime": 1788697786.933304,
+    "ast_hash": "91ab57bb9f836ad8a87b38fda52205c6",
+    "semantic_hash": "91ab57bb9f836ad8a87b38fda52205c6"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-slice-4-HANDOFF.md": {
+    "mtime": 1788612950.2714136,
+    "ast_hash": "17c3fdf957c5ee9e42b021b2670b7ebc",
+    "semantic_hash": "17c3fdf957c5ee9e42b021b2670b7ebc"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-slice-4-RESUME.md": {
+    "mtime": 1788612950.271543,
+    "ast_hash": "8c6127d726a999473c9b72d5b70f171a",
+    "semantic_hash": "8c6127d726a999473c9b72d5b70f171a"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-slice-4-derivatives.md": {
+    "mtime": 1788612950.2717702,
+    "ast_hash": "25c07e0854ed02c85cdccdc74de7fc44",
+    "semantic_hash": "25c07e0854ed02c85cdccdc74de7fc44"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-slice-5-HANDOFF.md": {
+    "mtime": 1788642011.575644,
+    "ast_hash": "04fcd806a6ac6b7ae0b51b838c8ddb7e",
+    "semantic_hash": "04fcd806a6ac6b7ae0b51b838c8ddb7e"
+  },
+  "docs/superpowers/plans/2026-09-05-phase-1-slice-5-browser.md": {
+    "mtime": 1788642011.57582,
+    "ast_hash": "acb40c46090ff410903a9fe64223820d",
+    "semantic_hash": "acb40c46090ff410903a9fe64223820d"
+  },
+  "docs/superpowers/plans/2026-09-06-folder-tree-and-moves.md": {
+    "mtime": 1788769550.9253995,
+    "ast_hash": "3439d66fb7b295e212b9c44eb69ad143",
+    "semantic_hash": "3439d66fb7b295e212b9c44eb69ad143"
+  },
+  "docs/superpowers/plans/2026-09-06-phase-1-slice-7-HANDOFF.md": {
+    "mtime": 1788697786.9333968,
+    "ast_hash": "47a9606399108e9f66e840dff05be5c7",
+    "semantic_hash": "47a9606399108e9f66e840dff05be5c7"
+  },
+  "docs/superpowers/plans/2026-09-07-after-the-folder-tree-what-is-next.md": {
+    "mtime": 1788791757.865861,
+    "ast_hash": "f680109f7306414b5e40f0cc93c3ccc2",
+    "semantic_hash": "f680109f7306414b5e40f0cc93c3ccc2"
+  },
+  "docs/superpowers/plans/2026-09-07-folder-tree-and-moves-followups.md": {
+    "mtime": 1788769550.925543,
+    "ast_hash": "18ae8dd0fd4ddbfc2256daf867f7cf15",
+    "semantic_hash": "18ae8dd0fd4ddbfc2256daf867f7cf15"
+  },
+  "docs/superpowers/specs/2026-09-01-phase-0a-foundation-design.md": {
+    "mtime": 1788472249.2575784,
+    "ast_hash": "954de592f5b93f4ed7b5535773a1a5f4",
+    "semantic_hash": "954de592f5b93f4ed7b5535773a1a5f4"
+  },
+  "docs/superpowers/specs/2026-09-02-phase-1-slice-1-ingest-design.md": {
+    "mtime": 1788785552.8029525,
+    "ast_hash": "a55fa583856870989e2fd5099887b1a0",
+    "semantic_hash": "a55fa583856870989e2fd5099887b1a0"
+  },
+  "docs/superpowers/specs/2026-09-03-phase-1-slice-2-jobs-design.md": {
+    "mtime": 1788785552.8032203,
+    "ast_hash": "be92c6bf0a2b6ae464c699ba492fb659",
+    "semantic_hash": "be92c6bf0a2b6ae464c699ba492fb659"
+  },
+  "docs/superpowers/specs/2026-09-04-phase-1-slice-3-lod-design.md": {
+    "mtime": 1788522055.6081855,
+    "ast_hash": "6b08e9c23bbc91c2589b877e4cc8d5c8",
+    "semantic_hash": "6b08e9c23bbc91c2589b877e4cc8d5c8"
+  },
+  "docs/superpowers/specs/2026-09-04-phase-1-slice-3b-3mf-design.md": {
+    "mtime": 1788552857.1775675,
+    "ast_hash": "f981f03fc5d966387e190ba157556b31",
+    "semantic_hash": "f981f03fc5d966387e190ba157556b31"
+  },
+  "docs/superpowers/specs/2026-09-04-phase-1-slice-4-derivatives-design.md": {
+    "mtime": 1788642011.5760653,
+    "ast_hash": "8e5cde6875c29751f783d2721486b59a",
+    "semantic_hash": "8e5cde6875c29751f783d2721486b59a"
+  },
+  "docs/superpowers/specs/2026-09-05-phase-1-slice-5-browser-design.md": {
+    "mtime": 1788642011.5762432,
+    "ast_hash": "24679fec765029c4cd8ae298ae248fe6",
+    "semantic_hash": "24679fec765029c4cd8ae298ae248fe6"
+  },
+  "docs/superpowers/specs/2026-09-06-folder-tree-and-moves-design.md": {
+    "mtime": 1788769550.9258068,
+    "ast_hash": "96745a0495fae29c7c8564e40bae3480",
+    "semantic_hash": "96745a0495fae29c7c8564e40bae3480"
+  },
+  "docs/superpowers/specs/2026-09-06-phase-1-slice-6a-corpus-design.md": {
+    "mtime": 1788687913.5912097,
+    "ast_hash": "5a254981b4f85fd1e334d3f2f1391f11",
+    "semantic_hash": "5a254981b4f85fd1e334d3f2f1391f11"
+  },
+  "docs/superpowers/specs/2026-09-06-phase-1-slice-6b-design.md": {
+    "mtime": 1788692893.4754863,
+    "ast_hash": "ed7c025cd078b617ca727225881a6bf6",
+    "semantic_hash": "ed7c025cd078b617ca727225881a6bf6"
+  },
+  "docs/superpowers/specs/2026-09-06-phase-1-slice-7-storage-lifecycle-design.md": {
+    "mtime": 1788697786.933579,
+    "ast_hash": "185cbf9b379b64ce1f1140eee5742043",
+    "semantic_hash": "185cbf9b379b64ce1f1140eee5742043"
+  },
+  "docs/superpowers/specs/2026-09-07-purge-removes-the-model-directory-design.md": {
+    "mtime": 1788778154.475643,
+    "ast_hash": "2b5dcaad332522df1d738c77f29caffe",
+    "semantic_hash": "2b5dcaad332522df1d738c77f29caffe"
+  },
+  "sidecar/occt-bridge/README.md": {
+    "mtime": 1788472249.2587807,
+    "ast_hash": "e70bbacd8205f54a051e16489e488a2e",
+    "semantic_hash": "e70bbacd8205f54a051e16489e488a2e"
+  },
+  "web/index.html": {
+    "mtime": 1788472249.258834,
+    "ast_hash": "cb1f6ff438f1a6af18190397d6ce4980",
+    "semantic_hash": "cb1f6ff438f1a6af18190397d6ce4980"
+  },
+  "fixtures/bracket-lp-1042-03.thumb.webp": {
+    "mtime": 1788472249.2586043,
+    "ast_hash": "5d9a827ec1e76fa8da18208b9a23dde1",
+    "semantic_hash": "5d9a827ec1e76fa8da18208b9a23dde1"
+  }
+}

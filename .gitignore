@@ -64,9 +64,44 @@ Thumbs.db
 # is not, because a binary in git is forever and this one is wrong on any other arch.
 .claude/skills/impeccable/scripts/bin/
 
-# The knowledge graph graphify builds from this tree. 11 MB of generated artefact —
-# graph.json plus a self-contained graph.html — derived entirely from files that are
-# already committed, and stale the moment anything here changes. `/graphify . --update`
-# rebuilds it from the manifest; there is nothing in it that the repository does not
-# already say.
-/graphify-out/
+# The knowledge graph graphify builds from this tree. Split, because the parts are not
+# alike: one of them cost 701,555 tokens to make and the rest are a minute of CPU.
+#
+# **What is kept is `cache/semantic/`** — one JSON per source file, named by that file's
+# SHA-256, holding the concepts and rationale a language model read out of it. It is the
+# only expensive thing here, it is keyed by content rather than by path, and every
+# `source_file` inside it is repository-relative, so it is correct on any clone. A file
+# nobody edits never produces a new entry, which is also the git behaviour you want.
+# Without it, every clone and every CI run re-pays that extraction.
+#
+# `GRAPH_REPORT.md`, `manifest.json` (what `--update` diffs against), the community
+# labels and the cumulative token ledger come along for a few hundred KB more, and all
+# four are worth reading in a diff.
+/graphify-out/*
+!/graphify-out/cache/
+/graphify-out/cache/*
+!/graphify-out/cache/semantic/
+!/graphify-out/GRAPH_REPORT.md
+!/graphify-out/graph.json
+!/graphify-out/manifest.json
+!/graphify-out/cost.json
+!/graphify-out/.graphify_labels.json
+
+# Excluded, and each for its own reason rather than for being big:
+#
+#   graph.html          3 MB, regenerated wholesale by `graphify export html` from
+#                       graph.json. A derived file that changes entirely on every build
+#                       is the thing git stores worst.
+#   cache/ast/          3.4 MB in a single file, and free — AST extraction is
+#                       deterministic and finished in seconds. Paying git for it to
+#                       avoid paying the CPU is the wrong way round.
+#   cache/stat-index    absolute paths plus `mtime_ns`, so it is wrong on every other
+#                       machine and after every fresh clone here.
+#   .graphify_python    an absolute path to one machine's interpreter.
+#   .graphify_root      the same, for the scan root.
+#
+# `graph.json` is kept despite being 3.7 MB and rewritten in full each build, because it
+# is what `graphify query` reads — without it a clone cannot ask the graph anything until
+# it rebuilds. It carries `built_at_commit`, so a reader can tell how stale it is.
+# ponytail: if that churn becomes the complaint, drop it — with cache/semantic committed
+# a rebuild costs no tokens and about a minute.
