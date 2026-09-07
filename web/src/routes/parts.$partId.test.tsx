@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   RouterProvider,
@@ -67,6 +67,11 @@ function stub(part: PartDetail | number, images: unknown[] = []) {
     vi.fn(async (url: string) => {
       if (url.endsWith('/images')) {
         return { ok: true, status: 200, json: async () => images }
+      }
+      // The page reads its sources too. Same reason as the gallery above: a stub that
+      // answered this with a `PartDetail` would hand `[].map` an object.
+      if (url.endsWith('/sources')) {
+        return { ok: true, status: 200, json: async () => [] }
       }
       return typeof part === 'number'
         ? { ok: false, status: part, json: async () => ({}) }
@@ -187,6 +192,9 @@ test('shows the pictures attached to a part, alongside the render', async () => 
       src: 'data:image/webp;base64,UklGRg==',
       origin: 'uploaded',
       sourceUrl: null,
+      fit: 'cover',
+      focusX: 0.5,
+      focusY: 0.5,
     },
   ])
   renderPage()
@@ -214,6 +222,7 @@ test('a refused picture shows the reason the server gave', async () => {
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -253,11 +262,15 @@ test('pasting an address posts it to the fetch route and shows the picture', asy
             src: 'data:image/webp;base64,UklGRg==',
             origin: 'url_supplied',
             sourceUrl: posted.url,
+            fit: 'cover',
+            focusX: 0.5,
+            focusY: 0.5,
           },
         ]
         return { ok: true, status: 201, json: async () => ({ id: 'x', width: 900, height: 600 }) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => gallery }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -296,6 +309,7 @@ test('an address the server will not fetch from keeps the explanation it gave', 
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -311,4 +325,143 @@ test('an address the server will not fetch from keeps the explanation it gave', 
     'textContent',
     'That address is not one this server will fetch from.',
   )
+})
+
+/**
+ * **The framing is CSS, and this is the assertion that says so.** A version that cropped by
+ * re-encoding, or by computing a transform in JavaScript, would fail here — the `src` is
+ * untouched and the framing is two style properties the browser applies.
+ */
+test('a picture is framed by its row rather than by its bytes', async () => {
+  stub(PART, [
+    {
+      id: '01931b6e-0000-7000-8000-0000000000aa',
+      src: 'data:image/webp;base64,UklGRg==',
+      origin: 'uploaded',
+      sourceUrl: null,
+      fit: 'contain',
+      focusX: 0.25,
+      focusY: 0.75,
+    },
+  ])
+  renderPage()
+
+  const picture = await screen.findByAltText(strings.images.alt(PART.name, 0))
+  expect(picture.style.objectFit).toBe('contain')
+  expect(picture.style.objectPosition).toBe('25% 75%')
+})
+
+/** Clicking the picture chooses what stays in frame, and sends it as fractions of an edge. */
+test('clicking a picture sets its focal point', async () => {
+  const image = {
+    id: '01931b6e-0000-7000-8000-0000000000aa',
+    src: 'data:image/webp;base64,UklGRg==',
+    origin: 'uploaded' as const,
+    sourceUrl: null,
+    fit: 'cover' as const,
+    focusX: 0.5,
+    focusY: 0.5,
+  }
+  let patched: { fit: string; focusX: number; focusY: number } | null = null
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'PATCH') {
+        patched = JSON.parse(init.body ?? '{}') as typeof patched
+        return { ok: true, status: 204, json: async () => ({}) }
+      }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  const control = await screen.findByRole('button', {
+    name: strings.images.focusLabel(strings.images.alt(PART.name, 0)),
+  })
+  // jsdom gives every element a zero-sized box, so a click's coordinates cannot be turned
+  // into a fraction. The keyboard path is the same code with a known step, and it is the
+  // path somebody without a pointer uses anyway.
+  fireEvent.keyDown(control, { key: 'ArrowRight' })
+
+  await waitFor(() => expect(patched).not.toBeNull())
+  expect(patched).toEqual({ fit: 'cover', focusX: 0.6, focusY: 0.5 })
+})
+
+/**
+ * A recorded source, shown whole — the licence especially, which is the field this section
+ * exists for: somebody selling prints has to see a model was non-commercial before printing.
+ */
+test('a recorded source shows its licence and its price', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/sources')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              id: '01931b6e-0000-7000-8000-0000000000bb',
+              url: 'https://www.printables.com/model/482910',
+              vendor: 'Printables',
+              externalId: '482910',
+              title: 'Idler pulley, 20 tooth',
+              license: 'CC-BY-NC-SA 4.0',
+              priceMinor: 0,
+              currency: 'USD',
+            },
+          ],
+        }
+      }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  const link = await screen.findByRole('link', { name: 'Idler pulley, 20 tooth' })
+  expect(link.getAttribute('href')).toBe('https://www.printables.com/model/482910')
+  // `noreferrer` as well as `noopener`: this address came from somewhere else, and where a
+  // private parts library lives is not something to hand back to it.
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+  expect(await screen.findByText(/CC-BY-NC-SA 4\.0/)).toBeTruthy()
+})
+
+/**
+ * The price the form sends. A decimal is how a price is written and minor units are how it
+ * is stored, and `12.34 * 100` is `1233.9999999999998` — a price that rounds down by a penny
+ * on the way in is a bug nobody would ever find by looking at it.
+ */
+test('a price typed as a decimal is sent as exact minor units', async () => {
+  let posted: { priceMinor: number | null; license: string | null } | null = null
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (url.endsWith('/sources') && init?.method === 'POST') {
+        posted = JSON.parse(init.body ?? '{}') as typeof posted
+        return { ok: true, status: 201, json: async () => ({}) }
+      }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.sources.add }))
+  fireEvent.change(screen.getByLabelText(strings.sources.priceField), {
+    target: { value: '12.34' },
+  })
+  fireEvent.change(screen.getByLabelText(strings.sources.license), {
+    target: { value: 'CC-BY 4.0' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: strings.sources.save }))
+
+  // Asserted on the object rather than through `posted?.priceMinor`: the variable is only
+  // ever assigned inside the stub's closure, so TypeScript's flow analysis has it as `null`
+  // at this point and an optional chain off it narrows to `never`.
+  await waitFor(() => expect(posted).not.toBeNull())
+  expect(posted).toMatchObject({ priceMinor: 1234, license: 'CC-BY 4.0' })
 })

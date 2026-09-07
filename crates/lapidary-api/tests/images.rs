@@ -372,3 +372,113 @@ async fn a_file_url_is_refused_before_anything_is_opened(pool: sqlx::PgPool) {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", json(&body));
 }
+
+fn reframe(part: PartId, image: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/parts/{part}/images/{image}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builds")
+}
+
+/// Re-framing is data and nothing else: the framing changes, the bytes do not.
+///
+/// **The byte comparison is the point.** A version of this that re-encoded on every
+/// adjustment would pass every other assertion here and quietly cost the picture a
+/// generation of quality each time somebody dragged the focal point.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn re_framing_changes_the_framing_and_not_the_bytes(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+    send(state(pool.clone(), store.path()), upload(part, png(128))).await;
+
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(part)).await;
+    let before = json(&body);
+    let image = before[0]["id"].as_str().expect("an image id").to_owned();
+    assert_eq!(before[0]["fit"], "cover", "the default a card wants");
+    assert_eq!(before[0]["focusX"], 0.5);
+
+    let (status, body) = send(
+        state(pool.clone(), store.path()),
+        reframe(
+            part,
+            &image,
+            serde_json::json!({ "fit": "contain", "focusX": 0.25, "focusY": 0.75 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{}", json(&body));
+
+    let (_, body) = send(state(pool, store.path()), gallery(part)).await;
+    let after = json(&body);
+    assert_eq!(after[0]["fit"], "contain");
+    assert_eq!(after[0]["focusX"], 0.25);
+    assert_eq!(after[0]["focusY"], 0.75);
+    assert_eq!(
+        after[0]["src"], before[0]["src"],
+        "the framing is applied at display time — nothing was re-encoded"
+    );
+}
+
+/// **An image id is not authorization.** The same rule `CLAUDE.md` states for blob hashes:
+/// holding an identifier must never be what grants the right to change what it names. The
+/// route carries both ids and the repo checks the pair, so an id belonging to another part
+/// updates nothing — and says 404 rather than 403, which is also what a part that does not
+/// exist gets.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_image_cannot_be_re_framed_through_a_part_it_does_not_belong_to(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let mine = seed_part(&pool).await;
+    send(state(pool.clone(), store.path()), upload(mine, png(128))).await;
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(mine)).await;
+    let image = json(&body)[0]["id"]
+        .as_str()
+        .expect("an image id")
+        .to_owned();
+
+    let (status, _) = send(
+        state(pool.clone(), store.path()),
+        reframe(
+            PartId::new(),
+            &image,
+            serde_json::json!({ "fit": "contain", "focusX": 0.5, "focusY": 0.5 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (_, body) = send(state(pool, store.path()), gallery(mine)).await;
+    assert_eq!(
+        json(&body)[0]["fit"],
+        "cover",
+        "and the image it named is untouched"
+    );
+}
+
+/// A framing outside the set is refused with a sentence rather than reaching the CHECK
+/// constraint and coming back as a 500 with a constraint name in the log.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_framing_the_columns_would_refuse_is_refused_first(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+    send(state(pool.clone(), store.path()), upload(part, png(128))).await;
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(part)).await;
+    let image = json(&body)[0]["id"]
+        .as_str()
+        .expect("an image id")
+        .to_owned();
+
+    for bad in [
+        serde_json::json!({ "fit": "stretch", "focusX": 0.5, "focusY": 0.5 }),
+        serde_json::json!({ "fit": "cover", "focusX": 1.5, "focusY": 0.5 }),
+        serde_json::json!({ "fit": "cover", "focusX": -0.1, "focusY": 0.5 }),
+    ] {
+        let (status, _) = send(
+            state(pool.clone(), store.path()),
+            reframe(part, &image, bad.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "for {bad}");
+    }
+}

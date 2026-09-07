@@ -489,6 +489,9 @@ pub async fn list(State(state): State<AppState>, Path(part): Path<PartId>) -> Re
                     },
                     origin: row.origin,
                     source_url: row.source_url,
+                    fit: row.fit,
+                    focus_x: row.focus.0,
+                    focus_y: row.focus.1,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -525,7 +528,79 @@ pub struct PartImage {
     /// Where it came from, for one that was fetched. Shown so a person can tell an image
     /// they chose from one that was pulled in for them.
     pub source_url: Option<String>,
+    /// `cover` or `contain` — CSS's own `object-fit` values, because the browser is what
+    /// applies them. The bytes are never re-encoded to match.
+    pub fit: String,
+    /// What to keep when `cover` crops, as a fraction of each edge. CSS's `object-position`.
+    pub focus_x: f64,
+    pub focus_y: f64,
 }
+
+/// How a picture should sit in its frame.
+///
+/// A whole framing rather than a patch of one: there are three fields, a person adjusting
+/// one is looking at the other two, and "omitted means unchanged" is a distinction worth
+/// having only when the fields are independent — `FolderPatch` needed it because a rename
+/// and a move are different intents, and these are one.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFraming {
+    pub fit: String,
+    pub focus_x: f64,
+    pub focus_y: f64,
+}
+
+/// `PATCH /api/parts/{id}/images/{imageId}` — re-frame a picture.
+///
+/// **Nothing is re-encoded and no bytes move.** The framing is three columns applied by the
+/// browser at display time, so this can be done as often as somebody likes, undone, and
+/// never costs the picture a generation of quality.
+///
+/// Both ids are in the path and both are checked, because an image id on its own is a bare
+/// handle to a row — the same shape of mistake `CLAUDE.md` names for blob hashes. An image
+/// that is not on that part is a 404 rather than a 403, which is also what a part that does
+/// not exist gets: telling them apart would confirm a row exists to somebody who cannot see
+/// it.
+pub async fn set_framing(
+    State(state): State<AppState>,
+    Path((part, image)): Path<(PartId, PartImageId)>,
+    Json(body): Json<SetFraming>,
+) -> Response {
+    // Checked here rather than left to the CHECK constraint, so a bad value is a sentence
+    // instead of a 500 with a constraint name in the log. `0.0..=1.0` also catches NaN,
+    // which no comparison against a bound would.
+    if !matches!(body.fit.as_str(), "cover" | "contain")
+        || !(0.0..=1.0).contains(&body.focus_x)
+        || !(0.0..=1.0).contains(&body.focus_y)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "message": BAD_FRAMING })),
+        )
+            .into_response();
+    }
+
+    match PgParts(state.db)
+        .set_image_framing(
+            part,
+            image,
+            lapidary_db::Framing {
+                fit: &body.fit,
+                focus: (body.focus_x, body.focus_y),
+            },
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal_error(&err, "re-framing an image failed"),
+    }
+}
+
+/// The one refusal this route has, and it is a programming error rather than something a
+/// person can do from the interface — the controls only ever send a value from the set.
+const BAD_FRAMING: &str = "That framing is not one Lapidary can apply. `fit` must be `cover` or `contain`, and the focal point must be between 0 and 1 on each axis.";
 
 /// The address to fetch from. An object rather than a bare string so that the crop and fit
 /// fields, which live on the row and not in the bytes, have somewhere to go later.

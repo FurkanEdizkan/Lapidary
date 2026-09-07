@@ -2,7 +2,7 @@ use crate::DbError;
 use crate::folders::constraint_of;
 use lapidary_core::{
     BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartImageId,
-    PartSummary, Provenance, RevisionId,
+    PartSourceId, PartSummary, Provenance, RevisionId,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -2494,6 +2494,12 @@ pub struct PartImageRow {
     pub origin: String,
     pub source_url: Option<String>,
     pub position: i32,
+    /// How the picture is framed. `cover` or `contain`, and CSS's `object-fit` values on
+    /// purpose — the framing is applied by the browser at display time rather than encoded
+    /// into the bytes, so changing it costs nothing and loses nothing.
+    pub fit: String,
+    /// What to keep when `cover` crops, as a fraction of each edge. CSS's `object-position`.
+    pub focus: (f64, f64),
 }
 
 /// A part's gallery, and what goes into it.
@@ -2514,10 +2520,13 @@ impl PgParts {
             String,
             Option<String>,
             i32,
+            String,
+            f64,
+            f64,
         );
 
         let rows: Vec<GalleryRow> = sqlx::query_as(
-            "SELECT id, image_webp, blake3, origin, source_url, position \
+            "SELECT id, image_webp, blake3, origin, source_url, position, fit, focus_x, focus_y \
                  FROM part_image WHERE part_id = $1 ORDER BY position, id",
         )
         .bind(part.as_uuid())
@@ -2525,25 +2534,60 @@ impl PgParts {
         .await?;
 
         rows.into_iter()
-            .map(|(id, inline_webp, hex, origin, source_url, position)| {
-                let hash = hex
-                    .map(|hex| {
-                        BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
-                            column: "part_image.blake3",
-                            value: hex,
+            .map(
+                |(id, inline_webp, hex, origin, source_url, position, fit, focus_x, focus_y)| {
+                    let hash = hex
+                        .map(|hex| {
+                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                                column: "part_image.blake3",
+                                value: hex,
+                            })
                         })
+                        .transpose()?;
+                    Ok(PartImageRow {
+                        id: PartImageId::from_uuid(id),
+                        inline_webp,
+                        hash,
+                        origin,
+                        source_url,
+                        position,
+                        fit,
+                        focus: (focus_x, focus_y),
                     })
-                    .transpose()?;
-                Ok(PartImageRow {
-                    id: PartImageId::from_uuid(id),
-                    inline_webp,
-                    hash,
-                    origin,
-                    source_url,
-                    position,
-                })
-            })
+                },
+            )
             .collect()
+    }
+
+    /// Re-frame one image. Nothing is re-encoded and no bytes move.
+    ///
+    /// **Scoped by `part_id` as well as by `id`, and that is not belt-and-braces.** An image
+    /// id on its own is a bare handle to a row, which is the same shape of mistake
+    /// `CLAUDE.md` names for blobs: knowing an identifier must not be what grants access to
+    /// what it identifies. The pair is what the route has and what this checks, so an id
+    /// guessed or copied from another part updates nothing.
+    ///
+    /// `false` is "no such image on that part", undistinguished from "no such part", because
+    /// the caller turns both into one 404 — telling them apart would confirm a row exists to
+    /// someone who cannot see it.
+    pub async fn set_image_framing(
+        &self,
+        part: PartId,
+        image: PartImageId,
+        framing: Framing<'_>,
+    ) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE part_image SET fit = $3, focus_x = $4, focus_y = $5 \
+             WHERE id = $2 AND part_id = $1",
+        )
+        .bind(part.as_uuid())
+        .bind(image.as_uuid())
+        .bind(framing.fit)
+        .bind(framing.focus.0)
+        .bind(framing.focus.1)
+        .execute(&self.0)
+        .await?;
+        Ok(updated.rows_affected() == 1)
     }
 
     /// Add one image to the end of a part's gallery.
@@ -2601,6 +2645,91 @@ impl PgParts {
         Ok(id)
     }
 
+    /// Where a part came from, oldest first.
+    ///
+    /// A part genuinely can have more than one: the model from one place and the hardware
+    /// from another. Oldest first because the first one recorded is usually where the model
+    /// itself came from, and a list that reorders itself as things are added is a list
+    /// nobody can point at.
+    pub async fn part_sources(&self, part: PartId) -> Result<Vec<PartSourceRow>, DbError> {
+        /// The SELECT's order. Named for the same reason `GalleryRow` is.
+        type SourceRow = (
+            Uuid,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
+
+        let rows: Vec<SourceRow> = sqlx::query_as(
+            "SELECT id, url, vendor, external_id, title, license, price_minor, currency \
+             FROM part_source WHERE part_id = $1 ORDER BY created_at, id",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, url, vendor, external_id, title, license, price_minor, currency)| {
+                    PartSourceRow {
+                        id: PartSourceId::from_uuid(id),
+                        url,
+                        vendor,
+                        external_id,
+                        title,
+                        license,
+                        price_minor,
+                        currency,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Record where a part came from.
+    ///
+    /// **`ON CONFLICT` on `(part_id, url)` updates rather than refuses**, because the same
+    /// URL twice is somebody correcting what they typed, not a second source. `unique
+    /// (part_id, url)` in `0015` treats a NULL url as distinct from every other NULL, which
+    /// is what lets a part carry two sources that have a vendor and a price and no link —
+    /// exactly the trade-show case `0015` describes.
+    pub async fn add_part_source(
+        &self,
+        part: PartId,
+        source: NewPartSource<'_>,
+    ) -> Result<PartSourceId, DbError> {
+        let id = PartSourceId::new();
+        let written: Uuid = sqlx::query_scalar(
+            "INSERT INTO part_source \
+                 (id, part_id, url, vendor, external_id, title, license, price_minor, currency, \
+                  retrieved_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+             ON CONFLICT (part_id, url) DO UPDATE SET \
+                 vendor = excluded.vendor, external_id = excluded.external_id, \
+                 title = excluded.title, license = excluded.license, \
+                 price_minor = excluded.price_minor, currency = excluded.currency, \
+                 retrieved_at = excluded.retrieved_at \
+             RETURNING id",
+        )
+        .bind(id.as_uuid())
+        .bind(part.as_uuid())
+        .bind(source.url)
+        .bind(source.vendor)
+        .bind(source.external_id)
+        .bind(source.title)
+        .bind(source.license)
+        .bind(source.price_minor)
+        .bind(source.currency)
+        .fetch_one(&self.0)
+        .await?;
+        Ok(PartSourceId::from_uuid(written))
+    }
+
     /// Whether any gallery references these bytes.
     ///
     /// The other half of `derivative_is_reachable`, and it exists for the same rule:
@@ -2616,6 +2745,45 @@ impl PgParts {
                 .await?;
         Ok(reachable)
     }
+}
+
+/// Where a part came from. `retrieved_at` and `created_at` are on the row and not here:
+/// nothing shows them, and a field nobody reads is a field that goes stale silently.
+#[derive(Debug)]
+pub struct PartSourceRow {
+    pub id: PartSourceId,
+    pub url: Option<String>,
+    pub vendor: Option<String>,
+    pub external_id: Option<String>,
+    pub title: Option<String>,
+    pub license: Option<String>,
+    /// Minor units, so 12.50 EUR is 1250 — `0015` explains why this is never a float.
+    pub price_minor: Option<i64>,
+    pub currency: Option<String>,
+}
+
+/// What [`PgParts::add_part_source`] writes. Every field optional, because a source with a
+/// vendor and a licence and no link is a real answer — `0015`'s trade-show case.
+#[derive(Debug, Default)]
+pub struct NewPartSource<'a> {
+    pub url: Option<&'a str>,
+    pub vendor: Option<&'a str>,
+    pub external_id: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub license: Option<&'a str>,
+    pub price_minor: Option<i64>,
+    pub currency: Option<&'a str>,
+}
+
+/// How a picture sits in its frame — `part_image_known_fit` and `part_image_focus_in_range`
+/// are what keep both fields meaningful, so a caller passing nonsense gets a constraint
+/// violation rather than a picture rendered somewhere off screen.
+#[derive(Debug, Clone)]
+pub struct Framing<'a> {
+    /// `cover` or `contain`.
+    pub fit: &'a str,
+    /// Fractions of the width and height, each 0 to 1.
+    pub focus: (f64, f64),
 }
 
 /// Where an image's bytes are. Exactly one, matching `part_image_inline_or_blob`.

@@ -15,6 +15,7 @@ mod lifecycle;
 mod moves;
 mod parts;
 mod scan;
+mod sources;
 mod upload;
 
 pub use detail::PartDetail;
@@ -227,6 +228,19 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // different: this is the only route in the application that makes an
                 // outbound request, and it should be legible as that from the route table.
                 .route("/api/parts/{id}/images/from-url", post(images::from_url))
+                // Re-framing carries both ids because an image id on its own is a bare
+                // handle to a row, and the repo checks the pair — see `set_image_framing`.
+                .route(
+                    "/api/parts/{id}/images/{imageId}",
+                    axum::routing::patch(images::set_framing),
+                )
+                // Where a part came from. Deliberately not near `images::from_url`: this
+                // route stores a link and never follows one, and the application has exactly
+                // one place that makes an outbound request.
+                .route(
+                    "/api/parts/{id}/sources",
+                    get(sources::list).post(sources::create),
+                )
                 .route(
                     "/api/libraries/{id}/thumbnails",
                     post(derive::library_thumbnails),

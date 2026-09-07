@@ -1,8 +1,291 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState, type ReactNode } from 'react'
-import { blobUrl, downloadUrl, fetchPartImages, uploadPartImage } from '../lib/api'
+import {
+  addPartSource,
+  blobUrl,
+  downloadUrl,
+  fetchPartImages,
+  fetchPartSources,
+  setImageFraming,
+  uploadPartImage,
+} from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Approximate, PartDetail as PartDetailData, PartId } from '../lib/types'
+import type { Approximate, PartDetail as PartDetailData, PartId, PartImage } from '../lib/types'
+
+/**
+ * One picture in the gallery, framed the way its row says — and adjustable in place.
+ *
+ * **The browser does the framing.** `object-fit` and `object-position` are exactly the two
+ * things stored on the row, so nothing here computes a crop, no canvas is involved, and the
+ * stored WebP is never re-encoded. Adjusting is free, reversible, and costs the picture
+ * nothing — which is the whole reason the framing is data rather than baked into the bytes.
+ *
+ * The focal point is set by clicking the picture, because that is the gesture: point at the
+ * part and it stays in frame when the tile crops. The keyboard gets the same thing through
+ * the arrow keys, since a click target is not an interaction everybody has.
+ */
+function Framed({ part, image, label }: { part: PartId; image: PartImage; label: string }) {
+  const queryClient = useQueryClient()
+  const reframe = useMutation({
+    mutationFn: (framing: { fit: string; focusX: number; focusY: number }) =>
+      setImageFraming(part, image.id, framing),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['part-images', part] }),
+  })
+
+  /** Clamped, because the server refuses anything outside 0–1 and a rounding error is not
+      a reason to lose an adjustment. */
+  const clamp = (value: number) => Math.min(1, Math.max(0, value))
+  const move = (dx: number, dy: number) =>
+    reframe.mutate({
+      fit: image.fit,
+      focusX: clamp(image.focusX + dx),
+      focusY: clamp(image.focusY + dy),
+    })
+
+  // Named above the JSX rather than compared inside it: `no-bare-strings.test.ts` reads a
+  // string literal in a JSX child as a bare user-facing string, and it is right to — the
+  // difference between a label and a comparison operand is not visible in the tree it walks.
+  const filling = image.fit !== 'contain'
+
+  const nudge: Record<string, [number, number]> = {
+    ArrowLeft: [-0.1, 0],
+    ArrowRight: [0.1, 0],
+    ArrowUp: [0, -0.1],
+    ArrowDown: [0, 0.1],
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      {/*
+        A `<button>` and not a bare `<img>` with a handler: this is a control, it is reached
+        by Tab, and the browser's own focus ring is worth more than a div with a role.
+      */}
+      <button
+        type="button"
+        aria-label={strings.images.focusLabel(label)}
+        onClick={(event) => {
+          const box = event.currentTarget.getBoundingClientRect()
+          reframe.mutate({
+            fit: image.fit,
+            focusX: clamp((event.clientX - box.left) / box.width),
+            focusY: clamp((event.clientY - box.top) / box.height),
+          })
+        }}
+        onKeyDown={(event) => {
+          const step = nudge[event.key]
+          if (step === undefined) return
+          event.preventDefault()
+          move(step[0], step[1])
+        }}
+        className="block h-24 w-24 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]"
+      >
+        <img
+          src={image.src}
+          alt={label}
+          title={image.sourceUrl === null ? undefined : strings.images.from(image.sourceUrl)}
+          className="h-full w-full"
+          style={{
+            objectFit: filling ? 'cover' : 'contain',
+            objectPosition: `${image.focusX * 100}% ${image.focusY * 100}%`,
+          }}
+        />
+      </button>
+      {/*
+        Two states, so a toggle rather than a pair of radios. `cover` fills the tile and
+        loses the edges; `contain` shows the whole picture and letterboxes it. Which one is
+        right depends on the picture, which is why this is a control and not a constant.
+      */}
+      <button
+        type="button"
+        onClick={() =>
+          reframe.mutate({
+            fit: filling ? 'contain' : 'cover',
+            focusX: image.focusX,
+            focusY: image.focusY,
+          })
+        }
+        disabled={reframe.isPending}
+        className="ease-mechanical rounded px-1 text-[10px] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:underline disabled:opacity-50"
+      >
+        {filling ? strings.images.fitWhole : strings.images.fitFill}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Where the part came from: the link, the vendor, the price, and the licence.
+ *
+ * **The licence is the field this section exists for.** `docs/DATA.md`: half of hobbyist STL
+ * libraries are non-commercial, and somebody selling prints needs to see that before they
+ * print. It is here and not on the grid card because the grid query is at its column ceiling
+ * — a decision recorded in `crates/lapidary-api/src/sources.rs`, not an omission.
+ *
+ * Nothing here fetches anything. Pasting a product page records the link; the application
+ * has exactly one route that makes an outbound request and this is not it.
+ */
+function Sources({ part }: { part: PartId }) {
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const sources = useQuery({
+    queryKey: ['part-sources', part],
+    queryFn: () => fetchPartSources(part),
+  })
+
+  const add = useMutation({
+    mutationFn: (form: FormData) => {
+      const text = (field: string) => {
+        const value = form.get(field)
+        return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+      }
+      // Money arrives as a decimal because that is how a price is written, and leaves as
+      // minor units because that is how it is stored. `Math.round` and not a cast: 12.34
+      // times 100 is 1233.9999999999998 in binary floating point, and a price that rounds
+      // down by a penny on the way in is a bug nobody would find.
+      const price = text('price')
+      const priceMinor = price === null ? null : Math.round(Number(price) * 100)
+      return addPartSource(part, {
+        url: text('url'),
+        vendor: text('vendor'),
+        externalId: text('externalId'),
+        title: text('title'),
+        license: text('license'),
+        priceMinor: priceMinor !== null && Number.isFinite(priceMinor) ? priceMinor : null,
+        currency: text('currency'),
+      })
+    },
+    onMutate: () => setRefusal(null),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setRefusal(result.message)
+        return
+      }
+      setOpen(false)
+      void queryClient.invalidateQueries({ queryKey: ['part-sources', part] })
+    },
+  })
+
+  const recorded = sources.data ?? []
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
+        {strings.sources.title}
+      </h3>
+      {recorded.length === 0 ? null : (
+        <ul className="mb-2 list-none space-y-2">
+          {recorded.map((source) => (
+            <li
+              key={source.id}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+            >
+              <p>
+                {source.url === null ? (
+                  (source.title ?? source.vendor ?? strings.sources.untitled)
+                ) : (
+                  /*
+                    `noreferrer` as well as `noopener`: this is a link somebody else's page
+                    put in front of us, and the address of a private parts library is not
+                    something to hand to it.
+                  */
+                  <a
+                    href={source.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                  >
+                    {source.title ?? source.vendor ?? source.url}
+                  </a>
+                )}
+              </p>
+              <p className="mt-1 text-xs text-[var(--color-muted)]">
+                {[
+                  source.vendor,
+                  source.externalId,
+                  source.license,
+                  source.priceMinor === null || source.currency === null
+                    ? null
+                    : strings.sources.price(source.priceMinor, source.currency),
+                ]
+                  .filter((part) => part !== null)
+                  .join(' · ')}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open ? (
+        <form
+          className="max-w-lg space-y-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            add.mutate(new FormData(event.currentTarget))
+          }}
+        >
+          {SOURCE_FIELDS.map((field) => (
+            <label key={field.name} className="block text-xs text-[var(--color-muted)]">
+              {field.label}
+              <input
+                name={field.name}
+                type={field.type}
+                step={field.type === 'number' ? '0.01' : undefined}
+                className="mt-0.5 block w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm text-[var(--color-fg)]"
+              />
+            </label>
+          ))}
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={add.isPending}
+              className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            >
+              {add.isPending ? strings.sources.saving : strings.sources.save}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded px-2 py-1 text-xs text-[var(--color-muted)]"
+            >
+              {strings.sources.cancel}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setRefusal(null)
+            setOpen(true)
+          }}
+          className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.sources.add}
+        </button>
+      )}
+      {refusal === null ? null : (
+        <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {refusal}
+        </p>
+      )}
+    </section>
+  )
+}
+
+/**
+ * The form's fields, as data. A table rather than eight hand-written `<label>`s: they differ
+ * only in a name, a label and an input type, and eight copies of the same markup is eight
+ * places for the class list to drift.
+ */
+const SOURCE_FIELDS = [
+  { name: 'url', label: strings.sources.url, type: 'url' },
+  { name: 'title', label: strings.sources.titleField, type: 'text' },
+  { name: 'vendor', label: strings.sources.vendor, type: 'text' },
+  { name: 'externalId', label: strings.sources.externalId, type: 'text' },
+  { name: 'license', label: strings.sources.license, type: 'text' },
+  { name: 'price', label: strings.sources.priceField, type: 'number' },
+  { name: 'currency', label: strings.sources.currency, type: 'text' },
+] as const
 
 /**
  * The part, rendered whole. Exported because the grid's quick-look shows exactly this and
@@ -50,6 +333,8 @@ export function Detail({ part, actions }: { part: PartDetailData; actions?: Reac
       </header>
 
       <Gallery part={part.id} name={part.name} />
+
+      <Sources part={part.id} />
 
       <Section title={strings.detail.geometry}>
         <Row label={strings.detail.triangles}>
@@ -278,12 +563,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
         <ul className="mb-2 flex list-none flex-wrap gap-2">
           {gallery.map((image, index) => (
             <li key={image.id}>
-              <img
-                src={image.src}
-                alt={strings.images.alt(name, index)}
-                title={image.sourceUrl === null ? undefined : strings.images.from(image.sourceUrl)}
-                className="h-24 w-24 rounded border border-[var(--color-border)] bg-[var(--color-surface)] object-cover"
-              />
+              <Framed part={part} image={image} label={strings.images.alt(name, index)} />
             </li>
           ))}
         </ul>
