@@ -1,0 +1,25 @@
+-- Task 8b, fix round 3. `job_migrate_storage_pending_per_library` (migration 0011) is
+-- scoped to `state = 'pending'`, and that scope is exactly what makes it not do what it
+-- was believed to do: it constrains pending rows only, and never constrained two
+-- `migrate_storage` jobs EXECUTING concurrently for one library -- that is already
+-- ordinary today, index and all, because `reenqueue_migration_if_absent` fires
+-- `pg_notify` on success and this worker's own dequeue loop can start the successor
+-- before the predecessor's `complete()` lands. The real hazard between two concurrently
+-- executing migrations lives at that execution boundary in `lapidary-ingest`, and this
+-- index neither caused it nor closed it.
+--
+-- What it did constrain -- pending rows -- cost more than it bought. `release_leases`
+-- and `reschedule` are bulk `UPDATE`s that move every job kind a worker holds in one
+-- statement, and both had to carry `NOT EXISTS` exclusions to keep a `migrate_storage`
+-- row that could not become `pending` from throwing a raw `23505` and aborting the whole
+-- statement -- stranding unrelated `ingest_file` and `derive` rows mid-shutdown or
+-- mid-retry along with it. Those exclusions are per-statement, evaluated against a
+-- snapshot fixed before either statement scans a row, so they can serialise rows within
+-- one statement but cannot serialise across two -- they could not be made correct
+-- against a second worker doing the same release or reschedule at the same time.
+--
+-- Duplicate `migrate_storage` queue rows are wasteful, not harmful: the execution
+-- boundary is what decides whether a run actually has work left to do, so a redundant
+-- row costs a no-op claim, not a lost or double move. That is a worse trade than the
+-- correctness it was costing in code every job kind routes through.
+drop index if exists job_migrate_storage_pending_per_library;

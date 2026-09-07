@@ -1,14 +1,18 @@
 //! Every SQL statement in Lapidary lives in this crate. Other crates go through the
 //! repository traits below.
 
+mod folders;
 mod jobs;
+mod migrate;
 mod repo;
 
+pub use folders::{FolderRow, PgFolders};
 pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
+pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
-    DerivativeBytes, DownloadSource, IngestRequest, PartDetailRow, PartRepository, PartRow,
-    PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, Shows, StorageTotals,
-    StoredBlobRow, TessellationRow,
+    DerivativeBytes, DownloadSource, IngestRequest, MoveRow, MoveSource, PartDetailRow,
+    PartRepository, PartRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport,
+    RevisionSource, Shows, StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -16,7 +20,7 @@ pub use sqlx::PgPool;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
-use lapidary_core::RevisionId;
+use lapidary_core::{FolderId, LibraryId, RevisionId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -112,6 +116,52 @@ pub enum DbError {
         kind: &'static str,
         revision: RevisionId,
     },
+
+    /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
+    /// the per-library advisory lock and runs the ancestry check — never by a caller's own
+    /// prior call to `would_cycle`. Two callers can each observe `would_cycle == false` and
+    /// then both commit, each moving one folder under the other; only a check made
+    /// atomically with the write closes that window.
+    #[error(
+        "Moving folder {folder} under {new_parent} would put it inside its own subtree, which stops it from being a tree at all. Choose a parent that is not {folder} itself or anything already inside it."
+    )]
+    WouldCreateCycle {
+        folder: FolderId,
+        new_parent: FolderId,
+    },
+
+    /// `folder_name_unique_per_parent`, read off the constraint rather than guessed from
+    /// the message text. Deliberately not overridable the way a colliding *part* name is:
+    /// two parts called `bracket` are told apart by `source_path`, and two sibling
+    /// categories called `Terrain` are told apart by nothing at all.
+    #[error(
+        "This category already has a subcategory called `{name}`. Two of them would be indistinguishable — there is no path or number telling categories apart the way there is for models. Pick a different name, or use the one that is already there."
+    )]
+    FolderNameTaken { name: String },
+
+    /// `folder_slug_unique_per_parent`. Distinct names, one directory: `Rocks?` and
+    /// `Rocks*` both become `Rocks-` on a filesystem that will hold neither character.
+    #[error(
+        "`{name}` would live in the directory `{slug}`, and a sibling category already occupies it — the two names differ only in characters no filesystem can store. Pick a name that differs somewhere a directory name can show it."
+    )]
+    FolderSlugTaken { name: String, slug: String },
+
+    /// `folder_library_id_fkey`, read off the constraint the same way the two collisions
+    /// above are. Reached only through [`PgFolders::create`]: `get_or_create` is the scan's,
+    /// and the scan always has a library in hand.
+    #[error(
+        "There is no library with the id {library}, so there is nowhere to put this category. Reload the library list and try again."
+    )]
+    NoSuchLibrary { library: LibraryId },
+
+    /// The filesystem half of a move failed, so the transaction that had already written
+    /// the new location was rolled back and nothing moved. Carries the storage layer's own
+    /// message: this crate cannot name that error type (both crates are L1, and
+    /// `cargo xtask check-layers` forbids L1 → L1), so the caller passes the text in.
+    #[error(
+        "Could not move this model's directory, so nothing was moved and the database is unchanged: {detail}"
+    )]
+    RenameFailed { detail: String },
 }
 
 impl DbError {
@@ -148,6 +198,14 @@ impl DbError {
             | DbError::UnknownProvenance { .. }
             | DbError::ThumbnailNotInline { .. }
             | DbError::EmptyDerivative { .. }
+            | DbError::WouldCreateCycle { .. }
+            | DbError::FolderNameTaken { .. }
+            | DbError::FolderSlugTaken { .. }
+            | DbError::NoSuchLibrary { .. }
+            // Composed here from the storage layer's own `Display`, which is already
+            // operator-facing and carries no connection string — the same audit the
+            // variants above pass.
+            | DbError::RenameFailed { .. }
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),

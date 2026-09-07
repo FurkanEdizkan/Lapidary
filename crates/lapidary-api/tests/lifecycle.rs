@@ -66,6 +66,10 @@ async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
             library: library(),
             name,
             source_path: path,
+            // Staged through the content-addressed writer, so this row is one that has
+            // not migrated: no folder, no storage path.
+            folder: None,
+            storage_path: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 204_800,
@@ -301,6 +305,10 @@ async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> 
             library: library(),
             name,
             source_path: path,
+            // Staged through the content-addressed writer, so this row is one that has
+            // not migrated: no folder, no storage path.
+            folder: None,
+            storage_path: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 204_800,

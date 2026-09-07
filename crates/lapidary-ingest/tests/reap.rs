@@ -52,6 +52,11 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: path,
+            // This fixture stages its bytes through the content-addressed writer, so the
+            // row it makes is one that has not migrated: no folder, no storage path. That
+            // is the state quarantine was built against and the one this file is about.
+            folder: None,
+            storage_path: None,
             blob: &blob,
             measurements: &MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
@@ -306,4 +311,115 @@ async fn re_ingesting_quarantined_bytes_clears_the_flag_without_waiting_for_a_sw
         "the flag must be gone the moment the reference exists, not an hour later"
     );
     assert!(bytes_exist(blob_root.path(), 0xf1));
+}
+
+// ---------------------------------------------------------------------------------------
+// A purged model directory, which the sweep does not reach.
+// ---------------------------------------------------------------------------------------
+
+/// The same bytes, written where a real ingest writes them since the folder tree: inside
+/// the model's own directory, at `file.storage_path`, rather than under the hash fan-out.
+fn stage_bytes_at(blob_root: &Path, seed: u8, rel: &str) -> StoredBlobRow {
+    let store = SourceStore::open(blob_root, &WorkerRole::assume());
+    let stored = store
+        .put_at(rel, &[seed; 4096], lapidary_storage::Compression::AsIs)
+        .expect("stage a model file");
+    assert_eq!(
+        stored.hash,
+        hash_of(seed),
+        "the fixture addresses its own bytes"
+    );
+    StoredBlobRow {
+        hash: stored.hash,
+        size_bytes: 4096,
+        stored_bytes: stored.stored_bytes,
+        zstd_level: 0,
+    }
+}
+
+async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel: &str) -> PartId {
+    let blob = stage_bytes_at(blob_root, seed, rel);
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            source_path: path,
+            folder: None,
+            storage_path: Some(rel),
+            blob: &blob,
+            measurements: &MeshMeasurements {
+                bbox_mm: [61.0, 42.0, 18.5],
+                triangle_count: 48_112,
+                surface_area_mm2: 9_804.25,
+                volume_mm3: Some(21_478.5),
+                is_watertight: true,
+            },
+            thumbnail_webp: Some(b"webp-preview"),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("seed a migrated part")
+}
+
+/// **A known gap, pinned rather than described.** Purging a part whose bytes have migrated
+/// out of the blob store removes the row and leaves the file.
+///
+/// The sweep unlinks `blobs/<ab>/<cd>/<hash>`, which is where the bytes were before the
+/// folder tree and where they still are for anything `migrate_storage` has not reached.
+/// For a migrated part they are at `file.storage_path` instead, and `purge` deletes the
+/// `file` row — so by the time the thirty days are up, the only record of where the bytes
+/// sit is gone and `SourceStore::remove` unlinks a path that holds nothing. A missing file
+/// is success to the reaper, deliberately, so the sweep reports the hash as removed and
+/// the model directory stays on disk for good.
+///
+/// Nothing is lost, which is the right way round for a bug in this area to fail. What is
+/// wrong is the promise: `strings.parts.purgeConfirm` tells a user their bytes are kept
+/// for 30 days and then deleted, and for a migrated part the second half does not happen.
+///
+/// Closing it needs somewhere to record the path a purge is about to forget — `blob` is
+/// per-hash and one hash can be several model files now — so it is a slice, not a patch,
+/// and it is written up in the folder-tree follow-ups. This test is the tripwire: it
+/// asserts today's behaviour, so whoever fixes it has to come here and say so.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_purged_model_directory_outlives_the_sweep_that_reports_removing_it(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
+    let part = seed_part_at(
+        &pool,
+        blob_root.path(),
+        0xc7,
+        "brackets/LP-1042-03.stl",
+        rel,
+    )
+    .await;
+    assert!(
+        blob_root.path().join(rel).exists(),
+        "the fixture has to put a file where a migrated part keeps one"
+    );
+    assert!(
+        !bytes_exist(blob_root.path(), 0xc7),
+        "and must not also leave one under the hash, or this proves nothing"
+    );
+
+    retire(&pool, part).await;
+    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
+        .await
+        .expect("sweep");
+
+    assert_eq!(
+        report.removed,
+        vec![hash_of(0xc7)],
+        "the sweep reports the hash as removed"
+    );
+    assert_eq!(
+        quarantined(&pool, 0xc7).await,
+        None,
+        "and the blob row really is gone"
+    );
+    assert!(
+        blob_root.path().join(rel).exists(),
+        "but the bytes are still there, because nothing told the sweep where they went"
+    );
 }

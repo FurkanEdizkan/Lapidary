@@ -1,0 +1,809 @@
+//! Moving an existing content-addressed store into the model directories that replaced it.
+//!
+//! A store ingested before slice 7 holds every source file at `blobs/ab/cd/<hash>`, zstd-3,
+//! with `file.storage_path` null. This job walks those rows, writes each file into its
+//! model's own directory under its real name with a `metadata.json` beside it, and only
+//! then removes the old copy. Migration `0009` states the rule this closes: *a null
+//! `storage_path` means the bytes are still at the old content-addressed path*, and every
+//! reader of `file` inherits it until this job has drained.
+//!
+//! # Copy before delete
+//!
+//! At every instant the bytes are readable at the old path, the new path, or both — never
+//! at neither. Per hash, in this order, and the order is the whole design:
+//!
+//! 1. read the old copy, decoded at the level the `blob` row RECORDS
+//! 2. BLAKE3 the result and compare it to the hash the row is keyed on
+//! 3. write the new copy (`write_atomic`: temp file, `sync_all`, rename, fsync the parent)
+//! 4. write `metadata.json` beside it
+//! 5. one transaction: the `file` rows get their paths, the `blob` row drops to level 0
+//! 6. **only now** unlink `blobs/ab/cd/<hash>`
+//!
+//! Steps 1 through 5 happen under a CLAIM on the hash
+//! ([`lapidary_db::PgStorageMigration::claim_hash`]): a transaction-scoped advisory lock,
+//! and the rows re-read inside it. Two `migrate_storage` jobs for one library overlap as a
+//! matter of course, and without the claim the second one acts on a row set the first has
+//! already settled — see "Two runners" below.
+//!
+//! A crash between any two of those leaves a store that still serves every file. Step 5
+//! failing is the one case that must NOT reap what steps 3 and 4 wrote: a `commit` can
+//! return an error after the server has already applied it (the connection drops between
+//! `COMMIT` and its acknowledgement), and reaping then would delete the file a committed
+//! row now points at. A failure in step 3 or 4 is different — the claim is still open, so
+//! nothing is committed and nothing else could have committed either, the old copy is
+//! untouched, and the bytes are reaped so a retry lands on the same directory rather than
+//! on a disambiguated one.
+//!
+//! # Two runners
+//!
+//! The claim is what makes the paragraph above true of a store with more than one worker.
+//! Without it, both halves of this job read a row set once and act on it later:
+//!
+//! - The reap in step 3 removes the paths this run wrote. If another run settled those
+//!   same rows in between, those paths are what the committed rows now name, and the reap
+//!   is deleting the user's file — with the old copy already unlinked by that other run's
+//!   step 6, which is the case the section above calls forbidden.
+//! - `model_dir_for` disambiguates around any directory that already exists, without asking
+//!   whose it is. A second runner re-processing a row the first has committed writes a
+//!   complete duplicate of the file and its manifest into `<slug>_<hash6>` and then settles
+//!   nothing, because the row already holds a path.
+//!
+//! Under the claim neither is reachable: the loser's re-read returns no rows for that hash,
+//! so it writes nothing, disambiguates nothing and reaps nothing. It skips the hash, and
+//! the hash is still there for whoever finishes first.
+//!
+//! # Why the batch is a hash and not a file row
+//!
+//! [`lapidary_db::PgStorageMigration`]'s module doc has this in full. In short: source bytes
+//! used to be deduplicated, so one `blob` row can carry several `file` rows, and
+//! `zstd_level` is a single column they all read through. Every un-migrated row for one hash
+//! settles in one transaction, whatever library it belongs to.
+//!
+//! # What this job does not move
+//!
+//! **A quarantined or purged blob.** Purge removes the `file` row, so its bytes are reachable
+//! from no row this job can select, and they stay under `blobs/ab/cd/…` after everything
+//! else has moved. That is deliberate: those bytes are already scheduled for removal by the
+//! purge slice's own 30-day hold, and a job that walked orphaned blobs would be deleting
+//! user data on a path whose whole reason to exist is that deletion is explicit and
+//! separate. It is stated here so a later reader finds a decision rather than a bug.
+//!
+//! **Derivatives.** They stay content-addressed, freely evictable and reachable by hash.
+//! Only source files moved.
+
+use crate::AppState;
+use crate::handler::{WorkerHandler, classify_db, reap_source};
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
+use lapidary_core::slug::slugify;
+use lapidary_core::{BatchId, BlobHash, FolderId, LibraryId, Outcome, PartId, ScanAccepted};
+use lapidary_db::{PendingSource, PgFolders, PgJobs, PgParts, PgStorageMigration};
+use lapidary_jobs::HandlerError;
+use lapidary_storage::{Compression, SourceStore, StorageError, WorkerRole};
+use std::collections::{HashMap, HashSet};
+use std::path::Path as FsPath;
+
+/// `POST /api/libraries/{id}/migrate-storage` -- enqueue one `migrate_storage` job for
+/// `library`, guarded exactly like the worker's own startup sweep
+/// (`bin/lapidary-server`, which calls this same `PgJobs::enqueue_migration_if_absent`
+/// once per library it finds un-migrated on boot). This route exists so an operator
+/// does not have to wait for the next worker restart, or hand-write `INSERT INTO job`,
+/// to start one.
+///
+/// Deliberately identical in shape to this crate's own `scan`: `queued: 0` is a success,
+/// not an error, matching `ScanAccepted`'s own convention. Unlike a render sweep's
+/// `queued: 0` -- which means nothing is running at all, so the batch id in that
+/// response names nothing real -- `queued: 0` here means a migration for `library` IS
+/// running, under a real, pollable batch, and `active_migration_batch` is what finds it:
+/// fabricating an id instead would send an operator polling a batch that can never
+/// resolve, a 404 for a migration genuinely in progress.
+pub async fn migrate(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
+    let jobs = PgJobs(state.db.clone());
+    match jobs.enqueue_migration_if_absent(library).await {
+        Ok(Some(batch_id)) => accepted(batch_id, 1),
+        Ok(None) => match jobs.active_migration_batch(library).await {
+            Ok(Some(batch_id)) => accepted(batch_id, 0),
+            // No active chain was found either -- an extremely narrow window where the
+            // migration this call collided with finished draining between the two
+            // reads. Nothing is running, so there is genuinely no batch to name; this
+            // id is as inert as a render sweep's `queued: 0` batch id.
+            Ok(None) => accepted(BatchId::new(), 0),
+            Err(source) => enqueue_failed(&source),
+        },
+        Err(source) => enqueue_failed(&source),
+    }
+}
+
+fn accepted(batch_id: BatchId, queued: u32) -> Response {
+    (
+        StatusCode::ACCEPTED,
+        Json(ScanAccepted { batch_id, queued }),
+    )
+        .into_response()
+}
+
+fn enqueue_failed(source: &lapidary_db::DbError) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "message": format!(
+                "Could not queue a storage migration for this library: {source}. \
+                 Nothing was queued, so it is safe to try again once the database is \
+                 reachable."
+            )
+        })),
+    )
+        .into_response()
+}
+
+/// How many distinct blobs one run moves before it hands the queue back and re-enqueues
+/// itself.
+///
+/// Not a tuning knob for throughput — a bound on how long one job holds its lease. A run
+/// that tried to drain a 23 GB corpus in one go would outlive its lease, be reclaimed
+/// mid-copy by a second worker, and have both of them writing the same directories.
+const HASHES_PER_RUN: i64 = 200;
+
+impl WorkerHandler {
+    /// One slice of the move, and a re-enqueue if anything is left.
+    ///
+    /// Returns [`Outcome::Migrated`] — including for a run that found nothing, because a
+    /// drained store is a success and re-running the job is a no-op rather than an error.
+    /// See the module doc for the per-hash ordering and why it is that ordering.
+    pub(crate) async fn migrate_storage(
+        &self,
+        batch: BatchId,
+        library: LibraryId,
+    ) -> Result<Outcome, HandlerError> {
+        let migrations = PgStorageMigration(self.db.clone());
+        let pending = migrations
+            .pending_sources(library, HASHES_PER_RUN)
+            .await
+            .map_err(classify_db)?;
+        if pending.is_empty() {
+            return Ok(Outcome::Migrated);
+        }
+
+        // Before any directory is resolved, and for every library this page touches — not
+        // just the one whose job is running. A page can pull in another library's rows
+        // through a shared hash, and `model_dir_for` builds those rows' paths out of THAT
+        // library's folder slugs.
+        let mut libraries: Vec<LibraryId> = pending.iter().map(|row| row.library).collect();
+        libraries.sort_by_key(LibraryId::as_uuid);
+        libraries.dedup();
+        for library in libraries {
+            self.reslug_back_filled_categories(library).await?;
+        }
+
+        let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
+        let mut moved = 0usize;
+        let mut skipped = 0usize;
+        let mut refused: Option<HandlerError> = None;
+        // Rows arrive ordered by hash, so consecutive equal hashes are the whole group —
+        // and all this loop takes from a group is its hash. The rows a move acts on are the
+        // ones `claim_hash` re-reads under the lock; these are a work list and a page can
+        // be stale by the time its turn comes.
+        for group in pending.chunk_by(|a, b| a.hash == b.hash) {
+            let Some(hash) = group.first().map(|row| row.hash) else {
+                continue;
+            };
+            match self.migrate_one_hash(&source, &migrations, &hash).await {
+                // Not an error and not progress: another live runner holds this hash.
+                Ok(0) => skipped += 1,
+                Ok(rows) => moved += rows,
+                Err(error) => {
+                    tracing::warn!(
+                        hash = %hash.to_hex(),
+                        reason = ?error,
+                        "could not move a blob into its model directory; its bytes are \
+                         still readable where they were"
+                    );
+                    if displaces(refused.as_ref(), &error) {
+                        refused = Some(error);
+                    }
+                }
+            }
+        }
+
+        if moved == 0 {
+            // Nothing moved and something refused: report it rather than re-enqueue. A run
+            // that makes no progress and queues itself again is a queue that never drains —
+            // the refusal repeats, the batch never settles, and the operator sees a scan bar
+            // that moves forever. Progress is what earns another run.
+            if let Some(error) = refused {
+                return Err(error);
+            }
+            // Nothing moved, nothing refused, and every hash this page saw was held by
+            // another runner. Re-enqueueing here is a spin: `any_pending` is a live read and
+            // says yes for exactly the hashes we just skipped, so the successor would skip
+            // them again, and again, as fast as the queue turns jobs around, for as long as
+            // the holders are copying. Stopping is safe because a holder is a running job
+            // that evaluates its own `any_pending` on the way out — whatever is left when
+            // the last one finishes gets a successor from that one, not from us.
+            if skipped > 0 {
+                return Ok(Outcome::Migrated);
+            }
+        }
+
+        if migrations.any_pending(library).await.map_err(classify_db)? {
+            // Guarded, not a plain insert: this run's own row is still `running` while
+            // this executes, and a worker that hit its shutdown grace period or lost a
+            // lease mid-run can already have put it back to `pending` in the
+            // background (`lapidary_jobs::worker`'s `SHUTDOWN_GRACE`) -- either way, a
+            // successor may already be queued. The guard is a check, not a constraint:
+            // migration `0012` dropped the partial unique index that used to back it,
+            // because that index constrained `pending` rows and had no opinion about
+            // `running` ones, which is the state two overlapping migrations are actually
+            // in. So this can still lose its race and queue a second pending row, and
+            // that is now harmless rather than merely rare: the two runs claim hashes
+            // one at a time and the loser skips what the winner holds. What the guard
+            // buys is fewer redundant jobs, not correctness -- correctness is
+            // `claim_hash`, above.
+            PgJobs(self.db.clone())
+                .reenqueue_migration_if_absent(batch, library)
+                .await
+                .map_err(|e| HandlerError::Transient {
+                    message: format!(
+                        "Moved {moved} file(s) into their model directories, but could not \
+                         queue the next batch: {e}. Wait for the database to come back and \
+                         start the migration again — everything already moved is skipped, \
+                         never moved twice."
+                    ),
+                })?;
+        }
+        Ok(Outcome::Migrated)
+    }
+
+    /// Every un-migrated `file` row that names one hash, moved together, under a claim no
+    /// second runner can hold at the same time.
+    ///
+    /// Returns how many rows moved. `Ok(0)` is a SKIP, not a failure: another runner owns
+    /// this hash, and the caller goes on to the next one without counting a retry.
+    ///
+    /// Everything below reads the CLAIM's rows, never the caller's page. The page was read
+    /// without exclusion and a hash another runner settled since is still in it; the claim's
+    /// re-read is what makes "every row in this group still says NULL" true for as long as
+    /// the files are being written — which the reap arm below depends on.
+    async fn migrate_one_hash(
+        &self,
+        source: &SourceStore,
+        migrations: &PgStorageMigration,
+        hash: &BlobHash,
+    ) -> Result<usize, HandlerError> {
+        let Some(claim) = migrations.claim_hash(hash).await.map_err(classify_db)? else {
+            return Ok(0);
+        };
+        let group = claim.rows();
+        let Some(first) = group.first() else {
+            // Claimed, and there is nothing left in it: the runner that held this hash
+            // settled it between the page read and this lock. Its work, and it is done.
+            return Ok(0);
+        };
+
+        // The level the row RECORDS, never one re-derived from the format — `SourceReader`'s
+        // rule, and it applies with more force here than anywhere else: this is the read
+        // whose result gets written back under a new name and whose original is then
+        // unlinked. `None` and `Some(0)` both mean stored as-is.
+        let compression = if first.zstd_level.is_some_and(|level| level != 0) {
+            Compression::Zstd
+        } else {
+            Compression::AsIs
+        };
+        let bytes = source
+            .get(hash, compression)
+            .map_err(|e| HandlerError::Transient {
+                message: format!(
+                    "Could not read the stored copy of {} before moving it: {e}. Check that \
+                     the blob volume is mounted and readable, then start the migration \
+                     again.",
+                    first.name
+                ),
+            })?;
+
+        // The one line between "the recorded level was wrong" and "wrote a zstd frame as
+        // cliff.stl, then deleted the original". Nothing decides anything on the recomputed
+        // hash except this: bytes that do not hash to the row's own key are not the bytes
+        // that row describes, and copying them somewhere else would launder the corruption
+        // into a file the user opens.
+        //
+        // Permanent: the same blob decodes to the same bytes on every attempt, so three
+        // retries would produce three identical refusals.
+        let read = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+        if read != *hash {
+            return Err(HandlerError::Permanent {
+                message: format!(
+                    "The stored copy of {} does not match the hash recorded for it — it \
+                     reads as {}… where the database says {}… . The blob may have been \
+                     corrupted or written by something other than Lapidary; re-scan this \
+                     part from its source file. Nothing was moved or removed.",
+                    first.name,
+                    &read.to_hex()[..8],
+                    &hash.to_hex()[..8],
+                ),
+            });
+        }
+
+        let mut written: Vec<(String, String, PartId)> = Vec::with_capacity(group.len());
+        let mut moved = Vec::with_capacity(group.len());
+        for row in group {
+            match self.copy_into_model_dir(source, row, &bytes).await {
+                Ok((model_dir, storage_path)) => {
+                    moved.push((row.file_id, storage_path.clone()));
+                    written.push((model_dir, storage_path, row.part));
+                }
+                Err(error) => {
+                    // Safe to reap because the CLAIM is still open and nothing has been
+                    // committed under it: every row it holds still says NULL, and no second
+                    // runner could have settled one, because settling this hash needs the
+                    // lock this claim has not released. So the bytes at these paths are
+                    // bytes nothing points at, and the old copy is still where it was.
+                    // Dropping the claim below rolls its transaction back and releases the
+                    // hash. Without the claim this reap deletes committed files: see the
+                    // module doc's "Two runners".
+                    for (model_dir, storage_path, part) in &written {
+                        reap_copy(source, model_dir, storage_path, *part);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let count = moved.len();
+        let unreferenced = claim.settle(&moved).await.map_err(classify_db)?;
+
+        // The delete half, and the only place it happens. `unreferenced` was read inside
+        // the transaction that just committed, so a row that still needs the old copy — an
+        // un-migrated sibling in a library this page did not reach — keeps it.
+        if unreferenced && let Err(error) = source.remove(hash) {
+            tracing::warn!(
+                hash = %hash.to_hex(),
+                %error,
+                "could not remove the content-addressed copy after moving it; the file is \
+                 stored twice until it is removed by hand"
+            );
+        }
+        Ok(count)
+    }
+
+    /// One row's file and its manifest, written into the directory its model owns. Returns
+    /// that directory and the store-relative path the `file` row will name.
+    ///
+    /// `model_dir_for` rather than a second copy of the layout rule: it is `ingest_one`'s
+    /// own resolver, and two implementations of "where does this model go" would drift the
+    /// moment either changed — a store that then fails to re-scan.
+    ///
+    /// `metadata.json` is written from the database rows, never read back and rewritten, so
+    /// `ModelManifest::is_future_schema` has nothing to guard here: there is no round trip
+    /// in which a newer build's unknown fields could be dropped. The only manifest that can
+    /// already exist at this path is one this same build wrote on an earlier attempt at
+    /// this same file — a newer build's directory would have made `model_dir_for`
+    /// disambiguate away from it, and a row a newer build had already migrated has a
+    /// `storage_path`, so the claim's re-read does not return it. (The page might still
+    /// carry it; the claim's rows are what this walks.)
+    async fn copy_into_model_dir(
+        &self,
+        source: &SourceStore,
+        row: &PendingSource,
+        bytes: &[u8],
+    ) -> Result<(String, String), HandlerError> {
+        let (_folder, model_dir) = self
+            .model_dir_for(row.library, &row.source_path, &row.name, &row.hash)
+            .await?;
+        // The name the user gave it, exactly as ingest writes it: the promise is that the
+        // directory holds the file they recognise.
+        let file_name = FsPath::new(&row.source_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&row.name);
+        let storage_path = format!("{model_dir}/{file_name}");
+
+        // `AsIs`, and the `blob` row is dropped to level 0 by the same transaction that
+        // records this path. A model directory is something the owner opens in a file
+        // manager, and a zstd frame named `cliff.stl` is not that — but the recorded level
+        // is what every reader follows, so writing the file uncompressed and leaving the
+        // row saying 3 would make every later read decode bytes that were never encoded.
+        source
+            .put_at(&storage_path, bytes, Compression::AsIs)
+            .map_err(|e| HandlerError::Transient {
+                message: format!(
+                    "Could not write {storage_path}: {e}. Check that the blob volume is \
+                     mounted and writable, then start the migration again — the original \
+                     copy has not been touched."
+                ),
+            })?;
+
+        let manifest = manifest_for(row, file_name);
+        let written = serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                source
+                    .put_at(
+                        &format!("{model_dir}/metadata.json"),
+                        &json,
+                        Compression::AsIs,
+                    )
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            });
+        // Not warn-only, unlike ingest's. Ingest writes its manifest after the part is
+        // committed and a retry would settle as `Skipped`, so failing there would report a
+        // file as not ingested when it was. Nothing is committed here, so a retry really
+        // does get another attempt — and a model directory whose manifest is missing is
+        // exactly the orphan this migration exists to stop producing.
+        if let Err(error) = written {
+            reap_copy(source, &model_dir, &storage_path, row.part);
+            return Err(HandlerError::Transient {
+                message: format!(
+                    "Could not write {model_dir}/metadata.json: {error}. Check that the blob \
+                     volume is mounted and writable, then start the migration again — the \
+                     original copy has not been touched."
+                ),
+            });
+        }
+        Ok((model_dir, storage_path))
+    }
+
+    /// Give every category in `library` the slug its name actually slugifies to.
+    ///
+    /// Migration `0009`'s back-fill wrote `folder.slug = name`, unslugged. That was defensible
+    /// for the ingest directory, which we only ever read — but a slug names a directory in
+    /// OUR store, which we create, so a back-filled category called `Rocks?` yields a path
+    /// no Windows client can hold. `slugify` lives in Rust, which is why the fix lands here
+    /// rather than in the plpgsql that produced it.
+    ///
+    /// Siblings that slug alike (`Rocks?` and `Rocks*` both become `Rocks-`) would violate
+    /// `folder_slug_unique_per_parent`, so the loser takes the last six hex digits of its own
+    /// id — the shape `slug::disambiguate` uses for a model directory, with the folder's id
+    /// standing in for a source hash the folder does not have. The LAST six, not the first:
+    /// a uuidv7's leading digits are a millisecond timestamp, and two folders back-filled by
+    /// one statement share them.
+    ///
+    /// No intermediate state can violate the constraint, so the updates need no transaction
+    /// of their own: a folder is only changed when `slug == name != slugify(name)`, so its
+    /// current slug is not a slugify output, while every slug assigned here is — and a slug
+    /// being assigned can therefore never collide with one still waiting to be replaced.
+    /// Siblings cannot share a name (`folder_name_unique_per_parent`), so no two changing
+    /// folders compete for the same target on that route either.
+    async fn reslug_back_filled_categories(&self, library: LibraryId) -> Result<(), HandlerError> {
+        let folders = PgFolders(self.db.clone());
+        let tree = folders.tree(library).await.map_err(classify_db)?;
+
+        // Folders already carrying a correct slug own it. They are the ones with a directory
+        // on disk under that name, so a colliding back-filled sibling is the one that moves.
+        let mut taken: HashMap<Option<FolderId>, HashSet<String>> = HashMap::new();
+        for row in &tree {
+            if row.slug == slugify(&row.name) {
+                taken
+                    .entry(row.parent_id)
+                    .or_default()
+                    .insert(row.slug.clone());
+            }
+        }
+
+        let mut changes = Vec::new();
+        for row in &tree {
+            let want = slugify(&row.name);
+            if row.slug == want {
+                continue;
+            }
+            let siblings = taken.entry(row.parent_id).or_default();
+            let mut slug = want;
+            if !siblings.insert(slug.clone()) {
+                let id = row.id.as_uuid().simple().to_string();
+                slug = format!("{slug}_{}", &id[id.len() - 6..]);
+                if !siblings.insert(slug.clone()) {
+                    // Both the target and its disambiguated form are already held by
+                    // siblings that legitimately slug to them. Leaving this one alone costs
+                    // one category a hostile directory name; renaming it anyway raises a
+                    // bare `folder_slug_unique_per_parent` violation that propagates out of
+                    // `migrate_storage` before a single file moves, stalling the whole
+                    // library's migration behind a message no operator can act on.
+                    tracing::warn!(
+                        folder = %row.id,
+                        name = %row.name,
+                        wanted = %slug,
+                        "left a category's slug as it is: the name it slugs to, and its \
+                         disambiguated form, are both already taken by sibling categories. \
+                         Rename one of them and start the migration again to give this one \
+                         a filesystem-safe directory"
+                    );
+                    continue;
+                }
+            }
+            changes.push((row.id, row.name.clone(), row.slug.clone(), slug));
+        }
+        if changes.is_empty() {
+            return Ok(());
+        }
+
+        // Every old path is read BEFORE any rename lands, so an ancestor that is itself
+        // about to change still reports the directory that is really on disk.
+        let library_slug = PgParts(self.db.clone())
+            .library_slug(library)
+            .await
+            .map_err(classify_db)?
+            .ok_or_else(|| HandlerError::Permanent {
+                message: format!(
+                    "There is no library {library} whose categories could be re-slugged. The \
+                     library may have been removed after this job was queued; start the \
+                     migration again for the library you meant."
+                ),
+            })?;
+        let mut on_disk = Vec::with_capacity(changes.len());
+        for (id, ..) in &changes {
+            let path = folders.slug_path(*id).await.map_err(classify_db)?;
+            on_disk.push(
+                FsPath::new(&self.blob_root)
+                    .join(format!("libraries/{library_slug}/{path}"))
+                    .exists(),
+            );
+        }
+
+        for ((id, name, was, slug), existed) in changes.into_iter().zip(on_disk) {
+            if existed {
+                // Renaming the directory too, and rewriting every `storage_path` beneath
+                // it, is what a category move does — Task 10's job, not a second
+                // implementation here. Nothing is lost either way: the rows already written
+                // still name the directory the files are really in, and they still read.
+                tracing::warn!(
+                    folder = %id,
+                    from = %was,
+                    to = %slug,
+                    "re-slugged a category that already has a directory under its old name; \
+                     files already written stay there and stay readable, and new ones land \
+                     under the new slug until the category is moved"
+                );
+            }
+            folders
+                .rename(id, &name, &slug)
+                .await
+                .map_err(classify_db)?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether `next` should replace the refusal this run is already holding.
+///
+/// The first refusal stands, except that a permanent one displaces a transient one. It
+/// matters only when a run makes no progress at all, because then the refusal it returns is
+/// what decides whether the queue retries — and three backoffs spent rediscovering a corrupt
+/// blob is exactly the delay `classify_db` already refuses to introduce for a guard refusal.
+fn displaces(refused: Option<&HandlerError>, next: &HandlerError) -> bool {
+    matches!(
+        (refused, next),
+        (None, _)
+            | (
+                Some(HandlerError::Transient { .. }),
+                HandlerError::Permanent { .. }
+            )
+    )
+}
+
+/// Remove a model directory this job wrote for a move that then failed before anything was
+/// committed. `handler::reap_source`'s rule, plus the manifest, because a directory that
+/// still holds one cannot be removed and a retry would then disambiguate around it.
+///
+/// The manifest is removed only if it names `part`. `model_dir_for` disambiguates around a
+/// directory that already exists without asking whose it is, and that check is not atomic
+/// with the write that follows it, so a migration and an ingest can resolve the same
+/// directory inside one window — and this reap would then delete a committed part's only
+/// self-identifying record. The window is microseconds wide and no bytes are at risk either
+/// way; it is guarded because the manifest is the thing a repair walk reads to work out what
+/// a directory holds, and deleting one is exactly what this job exists to stop producing.
+///
+/// A manifest that cannot be read or parsed is left where it is. It is not provably this
+/// job's, and this project does not delete what it cannot identify — the cost is that the
+/// directory survives, so the retry disambiguates and the model keeps a suffixed directory
+/// name. That is visible and repairable; a deleted manifest is neither.
+fn reap_copy(source: &SourceStore, model_dir: &str, storage_path: &str, part: PartId) {
+    let manifest_path = format!("{model_dir}/metadata.json");
+    match source.get_at(&manifest_path, None) {
+        Ok(bytes) => match serde_json::from_slice::<ModelManifest>(&bytes) {
+            Ok(manifest) if manifest.part.id == part => {
+                if let Err(error) = source.remove_at(&manifest_path) {
+                    tracing::warn!(
+                        model_dir,
+                        %error,
+                        "failed to reap a metadata.json after a failed move; it may now be an orphan on disk"
+                    );
+                }
+            }
+            Ok(manifest) => tracing::warn!(
+                model_dir,
+                theirs = %manifest.part.id,
+                ours = %part,
+                "left a metadata.json in place: it names another part, so this directory is \
+                 somebody else's and reaping it would delete their record"
+            ),
+            Err(error) => tracing::warn!(
+                model_dir,
+                %error,
+                "left an unreadable metadata.json in place: it cannot be shown to belong to \
+                 this move, and an unidentifiable manifest is not something to delete"
+            ),
+        },
+        // Nothing there is the ordinary case when the manifest write is what failed.
+        Err(StorageError::NotFound { .. }) => {}
+        Err(error) => tracing::warn!(
+            model_dir,
+            %error,
+            "could not read a metadata.json to decide whether this move wrote it; leaving it"
+        ),
+    }
+    reap_source(source, storage_path, model_dir);
+}
+
+/// The `metadata.json` for one migrated file, built entirely from the rows that describe it.
+///
+/// One revision, not the part's whole history: the manifest describes the directory it sits
+/// in, and a directory holds one revision's file. That matches what ingest writes for a
+/// freshly ingested model, so a migrated store and an ingested one read the same.
+fn manifest_for(row: &PendingSource, file_name: &str) -> ModelManifest {
+    ModelManifest {
+        schema: ModelManifest::SCHEMA,
+        part: ManifestPart {
+            id: row.part,
+            library: row.library,
+            name: row.name.clone(),
+            part_number: row.part_number.clone(),
+            classification: row.classification.clone(),
+            source_path: row.source_path.clone(),
+            metadata: row.metadata.clone(),
+        },
+        revisions: vec![ManifestRevision {
+            id: row.revision,
+            rev_label: row.rev_label.clone(),
+            origin: row.origin.clone(),
+            volume_mm3: row.volume_mm3,
+            volume_source: row.volume_source.clone(),
+            bbox_mm: row.bbox_mm,
+            triangle_count: row.triangle_count,
+            is_watertight: row.is_watertight,
+            units: row.units.clone(),
+            files: vec![ManifestFile {
+                role: row.role.clone(),
+                format: row.format.clone(),
+                blake3: row.hash,
+                size_bytes: row.size_bytes,
+                file_name: file_name.to_owned(),
+            }],
+        }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision};
+    use lapidary_core::{BlobHash, RevisionId};
+
+    fn a_part() -> PartId {
+        PartId::from_uuid(
+            "01931b6e-0000-7000-8000-0000000000aa"
+                .parse()
+                .expect("a valid uuid"),
+        )
+    }
+
+    fn manifest_naming(part: PartId) -> ModelManifest {
+        ModelManifest {
+            schema: ModelManifest::SCHEMA,
+            part: ManifestPart {
+                id: part,
+                library: LibraryId::from_uuid(
+                    "01931b6e-0000-7000-8000-000000000001"
+                        .parse()
+                        .expect("a valid uuid"),
+                ),
+                name: "Cliff face, LP-7712-04".to_owned(),
+                part_number: Some("LP-7712-04".to_owned()),
+                classification: None,
+                source_path: "Terrain/cliff-face-lp-7712-04.stl".to_owned(),
+                metadata: serde_json::json!({}),
+            },
+            revisions: vec![ManifestRevision {
+                id: RevisionId::new(),
+                rev_label: "1".to_owned(),
+                origin: "ingest".to_owned(),
+                volume_mm3: Some(21_478.5),
+                volume_source: Some("tessellated".to_owned()),
+                bbox_mm: Some([61.0, 42.0, 18.5]),
+                triangle_count: Some(48_112),
+                is_watertight: Some(true),
+                units: Some("mm".to_owned()),
+                files: vec![ManifestFile {
+                    role: "source".to_owned(),
+                    format: "stl".to_owned(),
+                    blake3: BlobHash::from_bytes([0xf7; 32]),
+                    size_bytes: 204_800,
+                    file_name: "cliff-face-lp-7712-04.stl".to_owned(),
+                }],
+            }],
+        }
+    }
+
+    /// `model_dir_for` resolves a directory without asking whose it is, and does it with a
+    /// check that is not atomic with the write after it. So a migration whose group then
+    /// fails can be standing in a directory an ingest committed in the meantime, and an
+    /// unconditional reap deletes that part's only self-identifying record.
+    #[test]
+    fn a_failed_move_reaps_its_own_manifest_and_leaves_somebody_elses() {
+        let root = tempfile::tempdir().expect("temp store");
+        let store = SourceStore::open(root.path(), &WorkerRole::assume());
+        let dir = "libraries/default/Terrain/cliff-face-lp-7712-04";
+        let manifest_path = format!("{dir}/metadata.json");
+        let file_path = format!("{dir}/cliff-face-lp-7712-04.stl");
+
+        let write = |part: PartId| {
+            let json = serde_json::to_vec_pretty(&manifest_naming(part)).expect("serialises");
+            store
+                .put_at(&manifest_path, &json, Compression::AsIs)
+                .expect("writes the manifest");
+            store
+                .put_at(&file_path, b"solid cliff\n", Compression::AsIs)
+                .expect("writes the file");
+        };
+
+        // Somebody else's directory: the manifest names a part this move knows nothing
+        // about, so the manifest stays exactly where it is.
+        write(PartId::new());
+        reap_copy(&store, dir, &file_path, a_part());
+        assert!(
+            root.path().join(&manifest_path).exists(),
+            "a manifest naming another part is that part's record, not this job's to delete"
+        );
+
+        // Its own: written by this move, for this part, and reaped with the file.
+        write(a_part());
+        reap_copy(&store, dir, &file_path, a_part());
+        assert!(
+            !root.path().join(&manifest_path).exists(),
+            "the manifest this move wrote is the one it has to take away, or the retry \
+             disambiguates around a directory nothing points at"
+        );
+        assert!(
+            !root.path().join(&file_path).exists(),
+            "and the file with it"
+        );
+    }
+
+    fn transient() -> HandlerError {
+        HandlerError::Transient {
+            message: "the volume went away".to_owned(),
+        }
+    }
+
+    fn permanent() -> HandlerError {
+        HandlerError::Permanent {
+            message: "the blob does not match its hash".to_owned(),
+        }
+    }
+
+    /// A run where several hashes refuse reports one of them, and which one decides whether
+    /// the queue spends three backoffs rediscovering an answer it already had.
+    #[test]
+    fn a_permanent_refusal_displaces_a_transient_one_but_not_the_other_way() {
+        assert!(
+            displaces(None, &transient()),
+            "the first refusal always stands"
+        );
+        assert!(displaces(None, &permanent()));
+        assert!(
+            displaces(Some(&transient()), &permanent()),
+            "a refusal that will never succeed must not wait behind one that might"
+        );
+        assert!(
+            !displaces(Some(&permanent()), &transient()),
+            "and must not then be displaced back"
+        );
+        assert!(
+            !displaces(Some(&transient()), &transient()),
+            "otherwise the reported refusal changes for no reason between two equal ones"
+        );
+        assert!(!displaces(Some(&permanent()), &permanent()));
+    }
+}

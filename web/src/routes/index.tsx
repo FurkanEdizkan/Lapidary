@@ -18,9 +18,16 @@ import {
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
+import {
+  FolderTree,
+  MovePartDialog,
+  PART_DRAG_TYPE,
+  partDragPayload,
+} from '../components/FolderTree'
 import type {
   BatchId,
   BatchStatus,
+  FolderId,
   LibraryStorage,
   PartCard,
   PartId,
@@ -43,20 +50,41 @@ export const Route = createFileRoute('/')({
    * hands back nothing, so the poll below would simply never enable — silently, and
    * identically to there being no scan.
    */
-  validateSearch: (search: Record<string, unknown>): { batch?: string } => {
+  validateSearch: (search: Record<string, unknown>): { batch?: string; folderId?: string } => {
     const batch = search.batch
-    return typeof batch === 'string' && batch.length > 0 ? { batch } : {}
+    const folderId = search.folderId
+    return {
+      ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
+      // Absent, never empty. No category selected is the whole library, which the parts
+      // route spells as no parameter at all — so a selection that is cleared has to leave
+      // nothing behind rather than leave `?folderId=` behind.
+      ...(typeof folderId === 'string' && folderId.length > 0 ? { folderId } : {}),
+    }
   },
 })
 
 /**
- * Reads the search param and hands it to `Index` as a prop. `Index` takes the batch
- * rather than calling `useSearch` itself so it stays renderable without a router — which
- * is how `index.test.tsx` renders it.
+ * Reads the search params and hands them to `Index` as props. `Index` takes the batch and
+ * the selected category rather than calling `useSearch` itself so it stays renderable
+ * without a router — which is how `index.test.tsx` renders it.
+ *
+ * The selection lives in the URL for the reason every other filter does: it survives a
+ * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch } = Route.useSearch()
-  return <Index batch={batch} />
+  const { batch, folderId } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  return (
+    <Index
+      batch={batch}
+      folderId={folderId}
+      onSelectFolder={(folder) =>
+        void navigate({
+          search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
+        })
+      }
+    />
+  )
 }
 
 /**
@@ -81,23 +109,37 @@ function jobsSettled(status: BatchStatus): number {
  * Which copy the progress line uses. `BatchStatus` carries counters, not job kinds, so
  * this is read from two things instead: a batch this page started is whichever kind the
  * click that started it was — the state below carries that alongside the id, and it has
- * to, now that this page can start both a scan and a render. Failing that, a batch that
- * has rendered something is a render, which covers a sweep started with `curl` and opened
- * as `/?batch=<id>`: it has no trigger to be read from and would otherwise report "Scan
- * complete — 0 added." over a batch of successful renders.
+ * to, now that this page can start a scan, a render or a migration. Failing that, a
+ * batch is read by what it CONTAINS: any `migrate_storage` row at all means a migration,
+ * else any settled `derive` job means a render, else it is read as a scan. This is what
+ * a batch this page never clicked into falls back to: a sweep or a migration started
+ * with `curl`, or a migration the worker queued on its own at startup and nothing on
+ * this page ever asked for.
  *
- * What neither reads is a batch mixing both kinds. Nothing enqueues one — `enqueue` is
- * called once per payload kind, and a scan's own children are all `ingest_file` — and
- * telling them apart properly means putting the job kind on `BatchStatus`, which is a
- * backend change.
+ * Migration is checked on `migrating` (rows of that kind), not `migrated` (settled
+ * outcomes), and checked first. `migrated` stays 0 until a `migrate_storage` job
+ * actually finishes, but the worker's startup enqueue is the ONLY way a migration batch
+ * can exist, so every migration a browser can watch starts at `migrating: 1, migrated:
+ * 0` — reading `migrated` here would misreport every migration as a scan for the whole
+ * duration of its first run, which is worst on exactly the large corpus where that run
+ * is slowest. `render` has no rows-based equivalent yet and keeps reading `rendered`
+ * (settled outcomes), so it keeps the same one-job blind window `migrate` used to have —
+ * a pre-existing gap this task does not extend, not one it closes.
+ *
+ * What this reads at all is a batch mixing more than one kind: nothing enqueues one —
+ * `enqueue` is called once per payload kind, a scan's own children are all
+ * `ingest_file`, and a migration's are all `migrate_storage`.
  */
-type BatchKind = 'scan' | 'render'
+type BatchKind = 'scan' | 'render' | 'migrate'
 
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
     const settled = jobsSettled(status)
     if (kind === 'render') {
       return strings.render.running(settled, status.total)
+    }
+    if (kind === 'migrate') {
+      return strings.migrate.running
     }
     // `total` counts jobs and the walk is one of them, so both halves are shifted by the
     // number of walks that have finished. While that is still 0 the batch holds nothing
@@ -108,12 +150,27 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     }
     return strings.scan.running(settled - status.scanned, status.total - status.scanned)
   }
-  return kind === 'render'
-    ? strings.render.finished(status.rendered)
-    : strings.scan.finished(status.ingested, status.skipped)
+  if (kind === 'render') {
+    return strings.render.finished(status.rendered)
+  }
+  if (kind === 'migrate') {
+    // The failure count, so the sentence can stop claiming every file arrived when the
+    // line beside it says some did not. `scan.finished` and `render.finished` both report
+    // what happened and let the failure line qualify them; this used to assert a total.
+    return strings.migrate.finished(status.failedTotal)
+  }
+  return strings.scan.finished(status.ingested, status.skipped)
 }
 
-export function Index({ batch }: { batch?: string }) {
+export function Index({
+  batch,
+  folderId,
+  onSelectFolder,
+}: {
+  batch?: string
+  folderId?: string
+  onSelectFolder?: (folder: FolderId | null) => void
+}) {
   const queryClient = useQueryClient()
 
   /**
@@ -137,10 +194,15 @@ export function Index({ batch }: { batch?: string }) {
    * for one page and never asked for another, so a library of 1,000 parts showed 50 and
    * the other 950 were unreachable from the UI — "every part appears" failed for a reason
    * no amount of virtualization addresses.
+   *
+   * The selected category is part of the key, not a filter applied after the fact: two
+   * categories are two different sequences of pages, and a cursor from one of them means
+   * nothing in the other. The invalidation the scan effect fires still reaches both —
+   * `['parts', library]` is a prefix of every one of them.
    */
   const parts = useInfiniteQuery({
-    queryKey: ['parts', DEFAULT_LIBRARY_ID],
-    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam),
+    queryKey: ['parts', DEFAULT_LIBRARY_ID, folderId ?? null],
+    queryFn: ({ pageParam }) => fetchParts(DEFAULT_LIBRARY_ID, pageParam, undefined, folderId),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -198,7 +260,13 @@ export function Index({ batch }: { batch?: string }) {
     return () => source.close()
   }, [activeBatch, queryClient])
 
-  const kind: BatchKind = started?.kind ?? ((scan.data?.rendered ?? 0) > 0 ? 'render' : 'scan')
+  const kind: BatchKind =
+    started?.kind ??
+    ((scan.data?.migrating ?? 0) > 0
+      ? 'migrate'
+      : (scan.data?.rendered ?? 0) > 0
+        ? 'render'
+        : 'scan')
 
   /**
    * What this library is actually set to. Its own query rather than a field on the grid's
@@ -323,76 +391,88 @@ export function Index({ batch }: { batch?: string }) {
         : null
 
   return (
-    <section>
-      <ActionBar
-        // Three sources, most authoritative first, and `undefined` when none of them has
-        // an answer. The server's echo is the truth once it lands; `variables` is what this
-        // click asked for and covers the round trip, since react-query clears `data` the
-        // moment a mutation goes pending — without it the box springs back to its old
-        // position and sits there, disabled, for as long as the request takes, which reads
-        // as the click having been ignored. A click the server refused is dropped, because
-        // a value it rejected is not a position this library is in and there is now
-        // something true to fall back to: the `GET`, which is the starting position and
-        // the reason design §3.2's default is not. The default is what a library is set to
-        // until someone changes it, not what this one is set to.
-        autoThumbnail={
-          settings.data?.autoThumbnail ??
-          (settings.isError ? undefined : settings.variables) ??
-          librarySettings.data?.autoThumbnail
-        }
-        onAutoThumbnail={(on) => settings.mutate(on)}
-        settingsBusy={settings.isPending}
-        settingsNote={
-          settings.isError
-            ? strings.library.autoThumbnailFailed
-            : librarySettings.isError
-              ? strings.library.autoThumbnailUnknown
-              : null
-        }
-        onScan={() => scanNow.mutate()}
-        scanBusy={scanNow.isPending}
-        onSweep={() => sweep.mutate()}
-        sweepBusy={sweep.isPending}
-        note={note}
+    <section className="flex items-start gap-6">
+      {/*
+        The tree and the grid are siblings, and the drag between them needs nothing
+        shared: a card writes its identity into the drag payload and a category row
+        reads it back on drop, so neither holds state for the other.
+      */}
+      <FolderTree
+        library={DEFAULT_LIBRARY_ID}
+        selected={folderId ?? null}
+        onSelect={(folder) => onSelectFolder?.(folder)}
       />
-      <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
-      {uploadNote === null ? null : (
-        <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
-      )}
-      {activeBatch === undefined ? null : (
-        <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
-      )}
-      {parts.isPending ? (
-        <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
-      ) : parts.isError ? (
-        <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
-      ) : loaded.length === 0 ? (
-        // An empty page and a page still in flight are different facts, so only a page
-        // that came back empty gets the empty state.
-        <EmptyLibrary />
-      ) : (
-        <>
-          <Grid
-            parts={loaded}
-            onRender={(part) => renderPart.mutate(part)}
-            busyPart={renderPart.isPending ? renderPart.variables : undefined}
-          />
-          <MorePages
-            count={loaded.length}
-            hasMore={parts.hasNextPage}
-            fetching={parts.isFetchingNextPage}
-            onMore={() => void parts.fetchNextPage()}
-          />
-          <StorageTotals storage={storage.data} isError={storage.isError} />
-        </>
-      )}
-      <p className="mt-6 text-sm text-[var(--color-muted)]">
-        {health.isPending
-          ? strings.health.checking
-          : health.isError
-            ? strings.health.failed
-            : strings.health.ok(health.data.database.major)}
-      </p>
+      <div className="min-w-0 flex-1">
+        <ActionBar
+          // Three sources, most authoritative first, and `undefined` when none of them has
+          // an answer. The server's echo is the truth once it lands; `variables` is what this
+          // click asked for and covers the round trip, since react-query clears `data` the
+          // moment a mutation goes pending — without it the box springs back to its old
+          // position and sits there, disabled, for as long as the request takes, which reads
+          // as the click having been ignored. A click the server refused is dropped, because
+          // a value it rejected is not a position this library is in and there is now
+          // something true to fall back to: the `GET`, which is the starting position and
+          // the reason design §3.2's default is not. The default is what a library is set to
+          // until someone changes it, not what this one is set to.
+          autoThumbnail={
+            settings.data?.autoThumbnail ??
+            (settings.isError ? undefined : settings.variables) ??
+            librarySettings.data?.autoThumbnail
+          }
+          onAutoThumbnail={(on) => settings.mutate(on)}
+          settingsBusy={settings.isPending}
+          settingsNote={
+            settings.isError
+              ? strings.library.autoThumbnailFailed
+              : librarySettings.isError
+                ? strings.library.autoThumbnailUnknown
+                : null
+          }
+          onScan={() => scanNow.mutate()}
+          scanBusy={scanNow.isPending}
+          onSweep={() => sweep.mutate()}
+          sweepBusy={sweep.isPending}
+          note={note}
+        />
+        <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
+        {uploadNote === null ? null : (
+          <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
+        )}
+        {activeBatch === undefined ? null : (
+          <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
+        )}
+        {parts.isPending ? (
+          <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
+        ) : parts.isError ? (
+          <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
+        ) : loaded.length === 0 ? (
+          // An empty page and a page still in flight are different facts, so only a page
+          // that came back empty gets the empty state.
+          <EmptyLibrary />
+        ) : (
+          <>
+            <Grid
+              parts={loaded}
+              onRender={(part) => renderPart.mutate(part)}
+              busyPart={renderPart.isPending ? renderPart.variables : undefined}
+            />
+            <MorePages
+              count={loaded.length}
+              hasMore={parts.hasNextPage}
+              fetching={parts.isFetchingNextPage}
+              onMore={() => void parts.fetchNextPage()}
+            />
+            <StorageTotals storage={storage.data} isError={storage.isError} />
+          </>
+        )}
+        <p className="mt-6 text-sm text-[var(--color-muted)]">
+          {health.isPending
+            ? strings.health.checking
+            : health.isError
+              ? strings.health.failed
+              : strings.health.ok(health.data.database.major)}
+        </p>
+      </div>
     </section>
   )
 }
@@ -631,7 +711,15 @@ function ScanProgress({
   // Picked once, out here: a `kind === 'render' ? … : …` inside JSX puts the discriminator
   // itself in a child expression, where `no-bare-strings.test.ts` reads it — correctly —
   // as a bare literal reaching the screen.
-  const copy = kind === 'render' ? strings.render : strings.scan
+  //
+  // All three kinds, and `migrate` is not a fall-through to `scan`'s copy. A failed
+  // migration used to render "3 files could not be read. They will not appear in the grid"
+  // about models that already exist and are already in the grid, and a status poll that
+  // failed rendered "No scan with that id has run in this library" to an operator who
+  // never started a scan. A non-destructive failure worded as data loss is the one class of
+  // mistake this product treats as a correctness bug.
+  const copy =
+    kind === 'render' ? strings.render : kind === 'migrate' ? strings.migrate : strings.scan
   if (isError) {
     return <p className="mb-4 max-w-prose text-[var(--color-muted)]">{copy.unknown}</p>
   }
@@ -750,10 +838,10 @@ function MorePages({
  * What the whole library occupies, under the page that shows part of it.
  *
  * Rendered only where the grid has cards: a line of zeroes over an empty library says
- * nothing the empty state has not already said better. Both totals are bytes on disk
- * after compression and deduplicated — `PgParts::storage_totals` is where that
- * accounting is written down — and the ratio arrives computed rather than divided here,
- * so a second reader cannot report the same library the other way up.
+ * nothing the empty state has not already said better. Both totals are bytes on disk —
+ * source files counted one per part, derivatives deduplicated, and `PgParts::storage_totals`
+ * is where that accounting is written down — and the ratio arrives computed rather than
+ * divided here, so a second reader cannot report the same library the other way up.
  */
 function StorageTotals({ storage, isError }: { storage?: LibraryStorage; isError: boolean }) {
   if (isError) {
@@ -826,9 +914,31 @@ function Card({
   busy: boolean
 }) {
   const nameId = `part-name-${part.id}`
+  const [moving, setMoving] = useState(false)
+  const directory = part.directory
+  // A model still in the shared store has no directory to rename, and the move route
+  // refuses it. The card withholds the move rather than letting the user discover that
+  // from a `409` — the same status the route uses for a name collision, which the UI
+  // would otherwise present as one.
+  const movable = directory !== null
   return (
     <article
       aria-labelledby={nameId}
+      draggable={movable}
+      onDragStart={(event) =>
+        event.dataTransfer.setData(
+          PART_DRAG_TYPE,
+          partDragPayload({ id: part.id, name: part.name }),
+        )
+      }
+      // Right-click opens the same chooser the button does, so the pointer gesture people
+      // expect from a file manager is there without being the only way in.
+      onContextMenu={(event) => {
+        if (movable) {
+          event.preventDefault()
+          setMoving(true)
+        }
+      }}
       className="ease-mechanical flex h-full flex-col overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5"
     >
       <div className="flex aspect-square items-center justify-center bg-[var(--color-bg)]">
@@ -871,17 +981,118 @@ function Card({
           as the sweep lands is harder to hit than one that stays put. The accessible name
           says which part, since the visible label is identical on every card.
         */}
-        <button
-          type="button"
-          onClick={() => onRender(part.id)}
-          disabled={busy}
-          aria-label={strings.render.partFor(part.name)}
-          className="ease-mechanical mt-2 self-start rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {strings.render.part}
-        </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onRender(part.id)}
+            disabled={busy}
+            aria-label={strings.render.partFor(part.name)}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.render.part}
+          </button>
+          {/*
+            The keyboard path to a move, and not a fallback: dragging a card into a
+            scrolled tree is a poor trackpad target and impossible without a pointer. A
+            model with no directory of its own gets the reason instead of a control that
+            would fail at the server.
+          */}
+          {movable ? (
+            <button
+              type="button"
+              onClick={() => setMoving(true)}
+              aria-label={strings.folders.moveToFor(part.name)}
+              className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.folders.moveTo}
+            </button>
+          ) : (
+            <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
+          )}
+        </div>
+        <ShowInFolder part={part} directory={directory} />
+        {/*
+          Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
+          This card is `overflow-hidden hover:-translate-y-0.5`, Tailwind emits that lift as
+          the `translate` property, and an element with a `translate` other than `none` is a
+          containing block for fixed-position descendants — so a dialog rendered in the
+          card's own subtree resolved its `fixed inset-0` against the card and was clipped
+          to it for as long as the pointer stayed over the card. Nothing here may hoist that
+          markup back out of the portal.
+        */}
+        {moving ? (
+          <MovePartDialog
+            part={{ id: part.id, name: part.name }}
+            library={part.library}
+            onClose={() => setMoving(false)}
+          />
+        ) : null}
       </div>
     </article>
+  )
+}
+
+/**
+ * Where this model is on disk — shown, not opened.
+ *
+ * No browser opens a host file manager: `file://` navigation from a page is blocked
+ * everywhere, and a button that claimed otherwise would be a control that cannot work. So
+ * this reveals the path as selectable, copyable text and says why it is a path. A native
+ * reveal belongs to the Tauri shell, which has a host to ask.
+ *
+ * The path is never assembled here from category names. The server disambiguates
+ * colliding directory names — the second `cliff` becomes `cliff_a1b2c3` — and the client
+ * cannot know when it did, so a path joined from slugs would be confidently wrong exactly
+ * where it matters.
+ */
+function ShowInFolder({
+  part,
+  directory,
+}: {
+  part: PartCard
+  directory: string | null
+}) {
+  const [open, setOpen] = useState(false)
+  // Narrowed out here rather than in the JSX below: a `typeof x !== 'string'` inside a
+  // child expression puts the literal `'string'` in a position `no-bare-strings.test.ts`
+  // reads — correctly — as a label reaching the screen.
+  const path = typeof directory === 'string' ? directory : null
+  return (
+    <div className="mt-2 text-xs text-[var(--color-muted)]">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-label={strings.folders.showInFolderFor(part.name)}
+        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.folders.showInFolder}
+      </button>
+      {!open ? null : path === null ? (
+        <p className="mt-2">{strings.folders.directoryPending}</p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {/* `select-all` so one click takes the whole path, which is what a person does
+              with it — and `break-all` because a nested category path is longer than a
+              card is wide. */}
+          <code className="block font-mono break-all select-all text-[var(--color-text)]">
+            {path}
+          </code>
+          <button
+            type="button"
+            onClick={() => {
+              // Absent in an insecure context, and a rejected permission is not worth an
+              // error state: the path is on screen and selectable either way.
+              void navigator.clipboard?.writeText(path).catch(() => undefined)
+            }}
+            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.folders.copyPath}
+          </button>
+          <p>{strings.folders.directoryHint}</p>
+        </div>
+      )}
+    </div>
   )
 }
 

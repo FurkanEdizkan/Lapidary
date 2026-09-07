@@ -1,5 +1,6 @@
 //! The handler, exercised the way the worker exercises it.
 
+use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
     RevisionId,
@@ -458,6 +459,63 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         .await
         .expect("counts");
     assert_eq!(parts, 1, "the race must not produce two parts");
+
+    // The half this test did not check until a review restored the bug and watched it stay
+    // green: the LOSER must not reap. The outcome and the row count cannot see a reap at
+    // all, so this crosses to the filesystem.
+    //
+    // For the source file the two workers usually do NOT collide, and that is worth saying
+    // plainly because it is easy to assume otherwise: `model_dir_for` disambiguates, so a
+    // loser that resolves its directory after the winner has written one takes
+    // `bracket-lp-1042-03_<hash6>/` and reaps only its own. Measured over 20 runs against a
+    // restored bug, the source path never collided. What this assertion pins is therefore
+    // the weaker but still real claim that the winner's file is intact and unaltered; the
+    // rungs below are where the collision is deterministic.
+    let (storage_path, blake3): (Option<String>, String) =
+        sqlx::query_as("SELECT storage_path, blake3 FROM file WHERE role = 'source'")
+            .fetch_one(&pool)
+            .await
+            .expect("the winner's file row");
+    let storage_path = storage_path.expect("the winner recorded where its bytes went");
+    let on_disk = std::fs::read(blob_root.path().join(&storage_path))
+        .unwrap_or_else(|e| panic!("the winner's bytes must still be at {storage_path}: {e}"));
+    assert_eq!(
+        BlobHash::from_bytes(*blake3::hash(&on_disk).as_bytes()).to_hex(),
+        blake3,
+        "the bytes on disk must still be the bytes the winning row recorded"
+    );
+
+    // The rungs are where the loser's reap bites deterministically. Both workers meshed
+    // the same file, so both produced the same rung bytes and both saw `blobs.exists`
+    // answer false for them -- the loser therefore holds every one of the winner's rungs
+    // in its own reapable list. Reaping them on the way to `Skipped` leaves the winner's
+    // `derivative` rows pointing at bytes that are no longer there, and every assertion
+    // above this one still passes while it happens.
+    let rungs: Vec<String> =
+        sqlx::query_scalar("SELECT blake3 FROM derivative WHERE blake3 IS NOT NULL")
+            .fetch_all(&pool)
+            .await
+            .expect("the winner's hash-addressed derivatives");
+    // Verified by restoring the bug: with the guard flipped to an unconditional reap this
+    // goes red on the runs where the two handlers genuinely overlap, and stays green on the
+    // runs where the scheduler serialises them -- in which case the second job
+    // short-circuits at `library_holds` and never writes anything to reap. A review
+    // measured that at 2 catches in 20 runs, so this is a corroborating check and not the
+    // guard: `only_a_lost_race_for_the_same_path_is_a_skip_rather_than_an_error` in
+    // `handler.rs` pins the branch condition itself, deterministically and without a
+    // scheduler. Forcing the overlap here would mean a barrier in the pipeline, which is a
+    // larger change than the thing it would pin.
+    assert!(!rungs.is_empty(), "the ingest wrote at least one rung");
+    for hash in rungs {
+        let path = blob_root
+            .path()
+            .join(format!("blobs/{}/{}/{hash}", &hash[0..2], &hash[2..4]));
+        assert!(
+            path.exists(),
+            "a derivative row points at {hash}, which is not on disk: the losing worker \
+             reaped bytes the winning row still serves"
+        );
+    }
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -493,6 +551,8 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            folder: None,
+            storage_path: None,
             library: seeded(),
             name: "notes",
             // Must be the path the job below carries, not the part name: since slice 6a
@@ -551,8 +611,10 @@ async fn a_second_library_gets_its_own_part_for_bytes_another_library_holds(pool
     assert_eq!(parts_in(&pool, seeded()).await, 1);
     assert_eq!(parts_in(&pool, second).await, 1);
 
-    // And the bytes are stored exactly once: reuse is the point of content addressing,
-    // and it is what makes the second library cost a row rather than a copy.
+    // One blob ROW, still: `ref_count` counts `file` rows naming a hash, and that meaning
+    // is unchanged. What it stopped implying is one copy on disk -- each library's model
+    // directory holds its own file, which is the price the spec (§0) names for a store
+    // the owner can open in a file manager.
     assert_eq!(blob_rows(&pool).await, 1, "one blob row, not two");
     assert_eq!(
         ref_count(&pool).await,
@@ -561,9 +623,18 @@ async fn a_second_library_gets_its_own_part_for_bytes_another_library_holds(pool
     );
     assert_eq!(
         all_files(&blob_root.path().join("blobs")).len(),
+        1,
+        "derivatives are still content-addressed and still deduplicated: every rung of a \
+         20-triangle bracket clusters to the same mesh, so the ladder is one blob"
+    );
+    let copies: Vec<PathBuf> = all_files(&blob_root.path().join("libraries"))
+        .into_iter()
+        .filter(|f| f.ends_with(BRACKET))
+        .collect();
+    assert_eq!(
+        copies.len(),
         2,
-        "one copy of the source bytes, plus one rung: every rung of a 20-triangle bracket \
-         clusters to the same mesh, so the ladder is one blob with three references"
+        "each library holds its own copy of the file, under its own name: {copies:?}"
     );
 
     // A third run against either library is a genuine re-scan and does nothing.
@@ -606,9 +677,10 @@ async fn two_differently_named_files_with_identical_bytes_are_two_parts_sharing_
     assert_eq!(part_count(&pool).await, 2);
     assert_eq!(blob_rows(&pool).await, 1);
     assert_eq!(ref_count(&pool).await, 2);
-    // Source bytes once, plus the ladder: both parts are the same mesh, so their rungs
-    // are the same bytes too.
-    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 2);
+    // One blob row and one rung on disk -- both parts are the same mesh, so their rungs
+    // are the same bytes -- but two source files, because two models are two directories.
+    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 1);
+    assert_eq!(all_files(&blob_root.path().join("libraries")).len(), 4);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -620,44 +692,52 @@ async fn a_failure_after_the_blob_write_leaves_no_orphan_blob_on_disk(pool: PgPo
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
 
-    // Syntactically a library id, but not a row in `library` -- the part insert's foreign
-    // key fails inside PgIngest::record, after step 5 (source.put) has already written
-    // the blob to blob_root. That is what puts the failure after the write instead of
-    // before it, which is the only way to exercise the reap at all.
-    let nonexistent = LibraryId::from_uuid(
-        Uuid::parse_str("01931b6e-0000-7000-8000-000000000099").expect("parses"),
-    );
+    // The failure has to land AFTER the writes, which is the only way to exercise the reap
+    // at all. It used to be injected by naming a library that is not a row -- but that has
+    // been refused at step 3a (`auto_thumbnail` answers `None` for a missing library) since
+    // slice 4, before a single byte is written, so the assertions below were passing over a
+    // tree nothing had touched. A constraint the file insert violates puts the failure back
+    // where the test says it is: inside the transaction, with the source file, its
+    // directory and the rungs already on disk.
+    refuse_this_file(&pool, "%bracket-lp-1042-03%").await;
 
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler
-        .handle(&job_for_library(nonexistent, BRACKET))
+        .handle(&job_for(BRACKET))
         .await
-        .expect_err("a part row against a library that does not exist cannot be written");
+        .expect_err("a file row the schema refuses cannot be written");
 
-    // The mutation this pins: delete `source.remove(&hash)`, or the `reap` beside it, from
-    // the record() error arm and a file survives on disk, failing the next assertion. The
+    // The mutation this pins: delete `reap_source`, or the `reap` beside it, from the
+    // failure arm and a file survives on disk, failing one of the assertions below. The
     // returned error looks identical either way, which is why this checks the filesystem,
     // not the message.
-    //
-    // Slice 3 widened what "the blob" means here. Four writes now precede the failed
-    // transaction -- the source and three rungs -- and the successful path above shows
-    // they really are written, so an empty tree is the ladder being reaped as well.
-    let orphans = all_files(&blob_root.path().join("blobs"));
+    let orphans = all_files(blob_root.path());
     assert!(
         orphans.is_empty(),
-        "expected no orphaned blob or rung under {}, found {orphans:?}",
+        "expected no orphaned source file, rung or directory under {}, found {orphans:?}",
         blob_root.path().display()
+    );
+    // The empty directory goes too: `model_dir_for` reads "this directory exists" as "this
+    // name is taken", so one left behind would make the retry of this same file store the
+    // model under a disambiguated name it never earned.
+    assert!(
+        !blob_root
+            .path()
+            .join("libraries/default/bracket-lp-1042-03")
+            .exists(),
+        "the model directory must not survive the transaction that failed inside it"
     );
     assert_eq!(part_count(&pool).await, 0);
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_failed_link_to_existing_bytes_leaves_the_first_parts_blobs_alone(pool: PgPool) {
-    // The other half of the reap, and the dangerous half. The link_existing branch writes
-    // no source blob, so it must not reap one -- and its rungs are usually bytes some
-    // earlier revision already stores, so reaping those would delete a part that ingested
-    // perfectly well. A reap keyed on "this job wrote it" rather than "this job's
-    // transaction failed" is what stops that.
+    // The other half of the reap, and the dangerous half. The second file's rungs are
+    // bytes the first part already stores, so reaping those would delete a part that
+    // ingested perfectly well. A reap keyed on "this job wrote it" rather than "this job's
+    // transaction failed" is what stops that -- and the source file is no longer shared at
+    // all: two models are two files now, so the failing job owns its own copy and takes
+    // exactly that one with it.
     const MIRRORED: &str = "bracket-lp-1042-03-mirrored.stl";
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
@@ -669,29 +749,48 @@ async fn a_failed_link_to_existing_bytes_leaves_the_first_parts_blobs_alone(pool
         handler.handle(&job_for(BRACKET)).await.expect("ingests"),
         Outcome::Ingested
     );
-    let after_first = all_files(&blob_root.path().join("blobs"));
+    let after_first = all_files(blob_root.path());
     assert_eq!(
         after_first.len(),
-        2,
-        "the source blob and the ladder's one rung"
+        3,
+        "the ladder's one rung, the first model's file and its manifest: {after_first:?}"
     );
 
-    // Same bytes, so `blobs.exists` sends this down link_existing; a library that is not
-    // a row fails the part insert after the rungs have been written.
-    let nonexistent = LibraryId::from_uuid(
-        Uuid::parse_str("01931b6e-0000-7000-8000-000000000099").expect("parses"),
-    );
+    // Same bytes, so `blobs.exists` sends this down link_existing; a constraint only the
+    // second file violates fails its transaction after its own rungs and its own copy of
+    // the source have been written.
+    refuse_this_file(&pool, "%mirrored%").await;
     handler
-        .handle(&job_for_library(nonexistent, MIRRORED))
+        .handle(&job_for(MIRRORED))
         .await
-        .expect_err("a part row against a library that does not exist cannot be written");
+        .expect_err("a file row the schema refuses cannot be written");
 
     assert_eq!(
-        all_files(&blob_root.path().join("blobs")),
+        all_files(blob_root.path()),
         after_first,
         "the failed second ingest must leave the first part's bytes exactly as they were"
     );
     assert_eq!(part_count(&pool).await, 1, "the first part is still there");
+}
+
+/// Make the `file` insert fail for one path, and only for it.
+///
+/// A failure injected *inside* the transaction, which is where the reap's whole reason to
+/// exist lives: the source file, its directory and the rungs are already on disk by then.
+/// A `CHECK` on `storage_path` is the smallest thing that fires there and nowhere earlier
+/// -- naming a library that does not exist is refused at step 3a, before anything is
+/// written, which is what made two reap tests pass over a tree nothing had touched.
+async fn refuse_this_file(pool: &PgPool, pattern: &str) {
+    // `AssertSqlSafe` because `ALTER TABLE` cannot take a bind parameter and sqlx refuses
+    // a non-static statement otherwise. `pattern` is a literal from the two call sites
+    // below, never anything a test reads back out of the database.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER TABLE file ADD CONSTRAINT file_storage_path_refused \
+         CHECK (storage_path NOT LIKE '{pattern}')"
+    )))
+    .execute(pool)
+    .await
+    .expect("adds the refusing constraint");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -923,9 +1022,14 @@ async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_3mf_source_blob_is_stored_uncompressed(pool: PgPool) {
-    // DATA.md §1.2: 3MF is already a deflate ZIP. Re-compressing it spends CPU on every
-    // ingest to make the file very slightly larger.
+async fn a_source_file_is_stored_as_itself_whatever_its_format(pool: PgPool) {
+    // This test used to assert DATA.md §1.2's table -- a 3MF stored as-is, an STL
+    // compressed at zstd -3 -- against `blobs/ab/cd/<hash>`. Half of that is now the wrong
+    // question. The store is a folder the owner opens in a file manager (spec §0), and a
+    // zstd frame named `bracket-lp-1042-03.stl` is not a file they can open, so ingest
+    // writes every source as itself. The compression policy is not deleted, it moved: the
+    // recorded `zstd_level` is what every reader follows, so §1.3's opt-out and
+    // sub-project 4's cold tiering can turn it back on per file without a reader changing.
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
@@ -934,24 +1038,37 @@ async fn a_3mf_source_blob_is_stored_uncompressed(pool: PgPool) {
     handler.handle(&job_for(CARRIER)).await.expect("3mf");
     handler.handle(&job_for(BRACKET)).await.expect("stl");
 
-    let rows: Vec<(String, i64, i64, Option<i16>)> = sqlx::query_as(
-        "SELECT f.format, b.size_bytes, b.stored_bytes, b.zstd_level \
+    /// One source file as the two tables record it: format, the two sizes, the recorded
+    /// compression level, and where the bytes were written.
+    type StoredSource = (String, i64, i64, Option<i16>, Option<String>);
+
+    let rows: Vec<StoredSource> = sqlx::query_as(
+        "SELECT f.format, b.size_bytes, b.stored_bytes, b.zstd_level, f.storage_path \
          FROM blob b JOIN file f ON f.blake3 = b.blake3 ORDER BY f.format",
     )
     .fetch_all(&pool)
     .await
     .expect("rows");
-    let three_mf = rows.iter().find(|r| r.0 == "3mf").expect("the 3mf row");
-    assert_eq!(three_mf.1, three_mf.2, "a 3MF is stored at its own size");
-    // And the STL beside it still compresses, so this proves a policy rather than a
-    // pipeline that stopped compressing everything.
-    let stl = rows.iter().find(|r| r.0 == "stl").expect("the stl row");
-    assert!(
-        stl.2 < stl.1,
-        "an STL still compresses: {} vs {}",
-        stl.2,
-        stl.1
-    );
+    assert_eq!(rows.len(), 2, "one source blob row per file");
+
+    for (format, size_bytes, stored_bytes, zstd_level, storage_path) in rows {
+        assert_eq!(
+            size_bytes, stored_bytes,
+            "a {format} is stored at its own size"
+        );
+        assert_eq!(zstd_level, Some(0), "a {format} records no compression");
+        let path = storage_path.expect("every ingested file records where it was written");
+        let fixture: &[u8] = if format == "3mf" {
+            CARRIER_FIXTURE
+        } else {
+            BRACKET_FIXTURE
+        };
+        assert_eq!(
+            std::fs::read(blob_root.path().join(&path)).expect("the file is at that path"),
+            fixture,
+            "the file in the folder is byte-identical to the one ingested ({path})"
+        );
+    }
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -1037,7 +1154,7 @@ async fn a_library_that_declines_to_render_gets_no_thumbnail_and_still_fills_the
     );
 
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10, Shows::Live)
+        .page(seeded(), None, None, 10, Shows::Live)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "a part with no preview is still a part");
@@ -1071,7 +1188,7 @@ async fn a_derive_job_fills_the_missing_thumbnail_and_reports_rendered(pool: PgP
 
     assert_eq!(thumbnail_rows(&pool).await, 1);
     let page = PgParts(pool.clone())
-        .page(seeded(), None, 10, Shows::Live)
+        .page(seeded(), None, None, 10, Shows::Live)
         .await
         .expect("page");
     let thumb = page[0]
@@ -1664,7 +1781,7 @@ async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: P
         match handler.handle(&job_for(escape)).await {
             Err(HandlerError::Permanent { message }) => {
                 assert!(
-                    message.contains("outside the ingest directory"),
+                    message.contains("outside the directory it belongs to"),
                     "the message must say what was wrong with {escape:?}: {message}"
                 );
             }
@@ -1786,4 +1903,295 @@ async fn still_deleted(pool: &PgPool, part: Uuid) -> bool {
         .await
         .expect("deleted_at reads")
         .is_some()
+}
+// ---------------------------------------------------------------------------------------
+// The model directory: one folder per model, holding its file and its metadata.
+// ---------------------------------------------------------------------------------------
+
+/// The seeded library is named `Default`, and its directory is that slugged and
+/// lowercased. Every path below hangs off this, exactly as the layout in spec §1 does.
+const LIBRARY_DIR: &str = "libraries/default";
+
+/// The manifest beside a model's file, parsed back into the type that wrote it. Parsing
+/// rather than reading strings out of the JSON is the point: `metadata.json` is what
+/// re-adoption rebuilds rows from, so what matters is that it round-trips into a
+/// `ModelManifest`, not that it contains some expected substrings.
+fn manifest_in(dir: &Path) -> ModelManifest {
+    let bytes = std::fs::read(dir.join("metadata.json"))
+        .unwrap_or_else(|e| panic!("no metadata.json in {}: {e}", dir.display()));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("metadata.json in {} does not parse: {e}", dir.display()))
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
+    // The shape the owner asked for: one directory per model, holding its file under its
+    // own name and its metadata beside it, reachable by opening the storage folder in a
+    // file manager.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "Terrain/Rocks/cliff.stl",
+        BRACKET_FIXTURE,
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    assert_eq!(
+        handler
+            .handle(&job_for("Terrain/Rocks/cliff.stl"))
+            .await
+            .expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let dir = blob_root
+        .path()
+        .join(LIBRARY_DIR)
+        .join("Terrain/Rocks/cliff");
+    assert_eq!(
+        std::fs::read(dir.join("cliff.stl")).expect("the source sits under its own name"),
+        BRACKET_FIXTURE,
+        "byte-identical: nothing converts, compresses or renames what was ingested"
+    );
+
+    let manifest = manifest_in(&dir);
+    assert_eq!(manifest.schema, ModelManifest::SCHEMA);
+    assert_eq!(
+        manifest.part.source_path, "Terrain/Rocks/cliff.stl",
+        "the ingest identity key, not the storage path — spec §3 keeps the two distinct"
+    );
+    assert_eq!(manifest.part.name, "cliff");
+    assert_eq!(manifest.revisions[0].files[0].file_name, "cliff.stl");
+    assert_eq!(manifest.revisions[0].files[0].format, "stl");
+    assert_eq!(
+        manifest.revisions[0].triangle_count,
+        Some(20),
+        "the fixture's real triangle count, so the manifest carries measurements and not \
+         a shell"
+    );
+    assert_eq!(manifest.revisions[0].units.as_deref(), Some("mm"));
+
+    // The ids in the manifest are the ids in the database. This is the whole of
+    // re-adoption: delete the rows and the directory still says which part it was.
+    let (part_id, revision_id): (Uuid, Uuid) =
+        sqlx::query_as("SELECT p.id, r.id FROM part p JOIN revision r ON r.part_id = p.id")
+            .fetch_one(&pool)
+            .await
+            .expect("the part and its revision");
+    assert_eq!(manifest.part.id.as_uuid(), part_id);
+    assert_eq!(manifest.revisions[0].id.as_uuid(), revision_id);
+
+    // And the category tree mirrors the directories the file sat in.
+    let (folder, parent): (String, String) = sqlx::query_as(
+        "SELECT child.name, parent.name FROM part p \
+         JOIN folder child ON child.id = p.folder_id \
+         JOIN folder parent ON parent.id = child.parent_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the part sits in a folder that has a parent");
+    assert_eq!((folder.as_str(), parent.as_str()), ("Rocks", "Terrain"));
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_recorded_storage_path_is_where_the_bytes_actually_are(pool: PgPool) {
+    // `file.storage_path` is what every later reader resolves bytes through — the download
+    // route, the derive job, the move. A path that does not name the file on disk is a
+    // grid full of parts nobody can open, and it looks exactly like a working ingest from
+    // the database side, so the assertion has to cross to the filesystem.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "Terrain/Rocks/cliff.stl",
+        BRACKET_FIXTURE,
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler
+        .handle(&job_for("Terrain/Rocks/cliff.stl"))
+        .await
+        .expect("ingests");
+
+    let storage_path: Option<String> =
+        sqlx::query_scalar("SELECT storage_path FROM file WHERE role = 'source'")
+            .fetch_one(&pool)
+            .await
+            .expect("reads");
+    let storage_path = storage_path.expect("an ingested file records where it was written");
+    assert_eq!(
+        storage_path,
+        format!("{LIBRARY_DIR}/Terrain/Rocks/cliff/cliff.stl")
+    );
+    assert_eq!(
+        std::fs::read(blob_root.path().join(&storage_path))
+            .expect("the recorded path names a real file"),
+        BRACKET_FIXTURE
+    );
+
+    // And nothing was left at the content-addressed path: source dedup is gone, and a
+    // second copy under `blobs/` would be 23 GB of it on the owner's corpus.
+    let hash: String = sqlx::query_scalar("SELECT blake3 FROM file WHERE role = 'source'")
+        .fetch_one(&pool)
+        .await
+        .expect("reads");
+    assert!(
+        !blob_root
+            .path()
+            .join(format!("blobs/{}/{}/{hash}", &hash[0..2], &hash[2..4]))
+            .exists(),
+        "the source must not also be written to the content-addressed path"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn two_models_with_one_name_get_two_directories(pool: PgPool) {
+    // 6a decided two parts called `cliff` are the truth. Two directories called `cliff/`
+    // are impossible, so the second gets a deterministic suffix -- but only when they
+    // land in the same category. In different ones there is no collision to resolve, and
+    // suffixing anyway would put a hash in a name a person reads for no reason at all.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), "Terrain/cliff.stl", BRACKET_FIXTURE);
+    stage(ingest_dir.path(), "Bases/cliff.stl", GEAR_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    handler
+        .handle(&job_for("Terrain/cliff.stl"))
+        .await
+        .expect("a");
+    handler
+        .handle(&job_for("Bases/cliff.stl"))
+        .await
+        .expect("b");
+
+    let terrain = blob_root.path().join(LIBRARY_DIR).join("Terrain/cliff");
+    let bases = blob_root.path().join(LIBRARY_DIR).join("Bases/cliff");
+    assert_eq!(
+        std::fs::read(terrain.join("cliff.stl")).expect("the terrain cliff"),
+        BRACKET_FIXTURE
+    );
+    assert_eq!(
+        std::fs::read(bases.join("cliff.stl")).expect("the base cliff"),
+        GEAR_FIXTURE,
+        "each directory holds its own model's bytes, not the other's"
+    );
+    assert_eq!(manifest_in(&terrain).part.source_path, "Terrain/cliff.stl");
+    assert_eq!(manifest_in(&bases).part.source_path, "Bases/cliff.stl");
+
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM part ORDER BY source_path")
+        .fetch_all(&pool)
+        .await
+        .expect("reads");
+    assert_eq!(
+        names,
+        vec!["cliff", "cliff"],
+        "one name, two parts — 6a's decision stands"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_second_model_of_the_same_name_in_one_category_takes_a_suffix(pool: PgPool) {
+    // The collision that cannot be talked out of: one category, two models called `cliff`
+    // -- the same model exported twice, which is ordinary in a parts library. The second
+    // takes `_` plus six hex of its own hash (spec §2), and both directories are real,
+    // each describing itself.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "Terrain/Rocks/cliff.stl",
+        BRACKET_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        "Terrain/Rocks/cliff.3mf",
+        CARRIER_FIXTURE,
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    handler
+        .handle(&job_for("Terrain/Rocks/cliff.stl"))
+        .await
+        .expect("the stl");
+    handler
+        .handle(&job_for("Terrain/Rocks/cliff.3mf"))
+        .await
+        .expect("the 3mf");
+
+    let category = blob_root.path().join(LIBRARY_DIR).join("Terrain/Rocks");
+    let mut dirs: Vec<String> = std::fs::read_dir(&category)
+        .expect("the category directory")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    assert_eq!(dirs.len(), 2, "two models, two directories: {dirs:?}");
+    assert_eq!(dirs[0], "cliff", "the first keeps the plain name");
+
+    let suffixed = &dirs[1];
+    let hash: String = sqlx::query_scalar(
+        "SELECT f.blake3 FROM file f JOIN revision r ON r.id = f.revision_id \
+         JOIN part p ON p.id = r.part_id WHERE p.source_path = 'Terrain/Rocks/cliff.3mf'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("reads");
+    assert_eq!(
+        *suffixed,
+        format!("cliff_{}", &hash[..6]),
+        "the suffix is six hex of the source hash, so a re-ingest lands on the same name"
+    );
+
+    // Both describe themselves, and each names its own file.
+    assert_eq!(
+        manifest_in(&category.join("cliff")).revisions[0].files[0].file_name,
+        "cliff.stl"
+    );
+    let second = manifest_in(&category.join(suffixed));
+    assert_eq!(second.revisions[0].files[0].file_name, "cliff.3mf");
+    assert_eq!(second.part.source_path, "Terrain/Rocks/cliff.3mf");
+    assert_eq!(
+        second.part.name, "cliff",
+        "the directory name is cosmetic; the part is still called what it is called"
+    );
+    assert!(
+        category.join(suffixed).join("cliff.3mf").exists(),
+        "the file itself sits in the suffixed directory"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_rescan_after_a_move_creates_no_folder_and_no_directory(pool: PgPool) {
+    // Spec §6: categories are created only for files that actually ingest, which is why
+    // `model_dir_for` runs after the `library_holds` short-circuit and not during the
+    // walk. Deleting the category rows and the directory stands in for the move task 9
+    // will perform: a re-scan must not put them back.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "Terrain/Rocks/cliff.stl",
+        BRACKET_FIXTURE,
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler
+        .handle(&job_for("Terrain/Rocks/cliff.stl"))
+        .await
+        .expect("ingests");
+
+    std::fs::remove_dir_all(blob_root.path().join(LIBRARY_DIR).join("Terrain"))
+        .expect("the model moves away");
+
+    assert_eq!(
+        handler
+            .handle(&job_for("Terrain/Rocks/cliff.stl"))
+            .await
+            .expect("re-scans"),
+        Outcome::Skipped,
+        "same library, same path, same bytes — the short-circuit settles it"
+    );
+    assert!(
+        !blob_root.path().join(LIBRARY_DIR).join("Terrain").exists(),
+        "a re-scan must not re-create a directory the user emptied"
+    );
 }

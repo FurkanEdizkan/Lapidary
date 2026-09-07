@@ -1,6 +1,7 @@
-//! The grid: listing parts in a library. `GET /api/libraries/{id}/parts?after=&limit=`,
-//! `api` role only. The open path's main read — this is what the grid renders from —
-//! and it reads metadata and derivatives only, never a source file and never the CAD
+//! The grid: listing parts in a library.
+//! `GET /api/libraries/{id}/parts?folderId=&after=&limit=`, `api` role only. The open
+//! path's main read — this is what the grid renders from — and it reads metadata and
+//! derivatives only, never a source file and never the CAD
 //! kernel (structurally: this crate cannot link `lapidary-cad`, see `lib.rs`). The
 //! storage figures on a card are `file` and `blob` rows — how large a source file is
 //! and how it was stored — and reading a row about a file is not opening one; nothing
@@ -24,7 +25,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
-use lapidary_core::{BlobHash, LibraryId, PartId, RevisionId};
+use lapidary_core::{BlobHash, FolderId, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, PartRepository, PartRow, PgParts, Shows};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -91,6 +92,21 @@ pub struct PartCard {
     /// Whether the stored bytes are a zstd frame. `Some(false)` covers both "stored
     /// raw" and "level unrecorded" — see `PartSummary.compressed`.
     pub compressed: Option<bool>,
+    /// The model's own directory in the store, relative to the storage root:
+    /// `libraries/default/Terrain/rock`. Shown, never opened — no browser can navigate a
+    /// `file://` URL from a page, and the api runs in a container where an absolute path
+    /// would name a filesystem the user is not looking at. The Tauri shell is what will
+    /// eventually have a host to ask.
+    ///
+    /// `directory`, not `storagePath`: this names a directory, not the file inside it, and
+    /// a field named for a path a caller could then try to download would be a small lie
+    /// of the kind measurement rules already forbid.
+    ///
+    /// `None` is a real state and not a missing value — the part predates the folder layout
+    /// and its bytes are still content-addressed, so it has no directory to show and cannot
+    /// be moved until `migrate_storage` reaches it. The card says so rather than offering a
+    /// move that the route would refuse.
+    pub directory: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -143,10 +159,20 @@ pub struct LibraryStorage {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageQuery {
     /// The previous page's last id, or absent/empty for the first page.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     after: Option<PartId>,
+    /// One category, **and everything under it**. Absent is the whole library, which is
+    /// what the sidebar's "All models" row selects — there is no id meaning "no category",
+    /// so dropping the parameter is how the client says that.
+    ///
+    /// Subtree-inclusive is the route's own promise, not the client's: a client cannot
+    /// walk the tree and send a list without racing every move and rename in flight, and
+    /// two clients doing it would disagree. See `PartRepository::page`.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    folder_id: Option<FolderId>,
     /// Parsed as `i64`, not `u16`: the query string is untrusted text, and a value
     /// like `100000` must reach the `clamp` below and come out as `MAX_LIMIT`, not
     /// fail deserialization because it does not fit a 16-bit type before the clamp
@@ -197,6 +223,7 @@ pub async fn page(
 ) -> Response {
     let PageQuery {
         after,
+        folder_id,
         limit,
         state,
     } = match query {
@@ -220,7 +247,10 @@ pub async fn page(
         Shows::Live
     };
 
-    match PgParts(app.db).page(library, after, limit, shows).await {
+    match PgParts(app.db)
+        .page(library, folder_id, after, limit, shows)
+        .await
+    {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -282,8 +312,9 @@ fn bad_query(rejection: &QueryRejection) -> Response {
         Json(serde_json::json!({
             "message": format!(
                 "Could not read the query string: {rejection}. `after` must be a part id \
-                 from a previous page (or omitted/empty for the first page); `limit` must \
-                 be a whole number."
+                 from a previous page (or omitted/empty for the first page); `folderId` \
+                 must be a category id from this library's folder tree (or omitted for the \
+                 whole library); `limit` must be a whole number."
             )
         })),
     )
@@ -327,6 +358,7 @@ fn to_card(row: PartRow) -> PartCard {
         source_bytes: summary.source_bytes,
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,
+        directory: row.directory,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

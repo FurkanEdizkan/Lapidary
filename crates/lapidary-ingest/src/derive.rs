@@ -49,7 +49,7 @@ impl WorkerHandler {
         want: DerivativeKind,
     ) -> Result<Outcome, HandlerError> {
         let kind = want.as_str();
-        let Some((hash, format)) = PgParts(self.db.clone())
+        let Some(stored) = PgParts(self.db.clone())
             .revision_source(library, revision)
             .await
             .map_err(classify_db)?
@@ -63,12 +63,28 @@ impl WorkerHandler {
             });
         };
 
+        // Two ways of naming the same file, and the row says which applies. A part
+        // ingested since the store became a folder tree carries the path its bytes are
+        // actually at; one from before that carries NULL and its bytes are still at
+        // `blobs/ab/cd/<hash>` until the `migrate_storage` job reaches them (migration
+        // `0009`). Reading the path when it is there is not an optimisation — nothing
+        // writes the content-addressed copy any more, so the fallback alone would fail on
+        // every part ingested from now on.
+        //
+        // The recorded `zstd_level`, never `for_source_format`, for the path-addressed
+        // read: that is `SourceReader::get`'s rule and it applies here for the same
+        // reason. The content-addressed fallback keeps the call it has always made, so
+        // rows written before `blob.zstd_level` was worth consulting read exactly as they
+        // did yesterday.
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
-        let bytes = source
-            .get(&hash, Compression::for_source_format(&format))
-            .map_err(|e| HandlerError::Transient {
-                message: e.to_string(),
-            })?;
+        let format = stored.format;
+        let bytes = match stored.storage_path.as_deref() {
+            Some(rel) => source.get_at(rel, stored.zstd_level),
+            None => source.get(&stored.hash, Compression::for_source_format(&format)),
+        }
+        .map_err(|e| HandlerError::Transient {
+            message: e.to_string(),
+        })?;
 
         let kernel = MeshKernel;
         let params = KernelParams {

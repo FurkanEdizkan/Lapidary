@@ -123,6 +123,11 @@ pub const EXEMPT: &[Exemption] = &[
         reason: "a multi-line SQL query string, indented for readability across its four sub-selects; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose)",
     },
     Exemption {
+        file: "crates/lapidary-db/tests/migrations.rs",
+        content: "b7e7d3d829cd0250",
+        reason: "a multi-line recursive CTE string reading the folder tree back out, indented for readability across its base case and recursive step; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose) -- the same reason as the crates/lapidary-db/tests/repo.rs entry above",
+    },
+    Exemption {
         file: "xtask/src/deploy.rs",
         content: "c967147b7cf9b3e2",
         reason: "a doc comment quoting a real indented BuildKit RUN-continuation example (RUN foo, a comment line, then an indented bar) where the indentation is the example itself",
