@@ -977,7 +977,49 @@ export const strings = {
     cancelUrl: 'Cancel',
     urlLabel: 'Address of the picture',
     urlPlaceholder: 'https://example.com/bracket.jpg',
+    /**
+     * The framing controls. `cover` and `contain` are CSS's names and the database's, and
+     * deliberately not the labels: "Fill the frame" and "Show the whole picture" say what
+     * happens, where `cover` says nothing to somebody who has not written CSS.
+     */
+    fitFill: 'Fill the frame',
+    fitWhole: 'Show the whole picture',
+    /** What clicking the picture does, for a screen reader that cannot see the crop. */
+    focusLabel: (label: string) =>
+      `${label} — click or use the arrow keys to choose what stays in frame`,
   },
+  sources: {
+    /**
+     * Where the model came from. The licence is the field this exists for: `docs/DATA.md`
+     * is emphatic that half of hobbyist STL libraries are non-commercial and somebody
+     * selling prints needs to see that before they print.
+     */
+    title: 'Where this came from',
+    add: 'Record a source',
+    save: 'Save',
+    saving: 'Saving…',
+    cancel: 'Cancel',
+    url: 'Link',
+    titleField: 'Title',
+    vendor: 'Vendor',
+    /** Whatever the seller calls it — an SKU, a Thingiverse id, a catalogue number. */
+    externalId: 'Their reference',
+    license: 'Licence',
+    priceField: 'Price',
+    currency: 'Currency',
+    /** A source with nothing to show for itself but a row. */
+    untitled: 'Recorded source',
+    /**
+     * Minor units to money. `Intl.NumberFormat` does the placement, the symbol and the
+     * separators, all of which differ by currency and none of which is worth hand-rolling —
+     * and `en-US` is the locale everything else in this file already uses.
+     */
+    price: (minor: number, currency: string) =>
+      new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(minor / 100),
+    refusedWithoutReason:
+      'That source was not recorded and the reason did not come back. Check that the api service is running, then try again.',
+  },
+
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means

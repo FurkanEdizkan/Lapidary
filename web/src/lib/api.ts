@@ -4,6 +4,10 @@ import type {
   BlobHash,
   ChunkAccepted,
   FetchImageRequest,
+  NewSource,
+  PartSource,
+  PartImageId,
+  SetFraming,
   FolderId,
   FolderNode,
   FolderPatch,
@@ -618,6 +622,77 @@ export async function uploadPartImage(
     }
   }
   throw new Error(`image upload returned ${response.status}`)
+}
+
+/**
+ * `PATCH /api/parts/{id}/images/{imageId}` — how a picture sits in its frame.
+ *
+ * Three numbers and a word, and **no bytes**: the framing is applied by the browser at
+ * display time, so this can be done as often as somebody likes and the picture never loses
+ * a generation of quality to it.
+ *
+ * Both ids go in the path because an image id on its own is a bare handle to a row — the
+ * server checks the pair, and a mismatch is a 404.
+ */
+export async function setImageFraming(
+  part: PartId,
+  image: PartImageId,
+  framing: SetFraming,
+): Promise<void> {
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/images/${encodeURIComponent(image)}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(framing),
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`re-framing returned ${response.status}`)
+  }
+}
+
+/** `GET /api/parts/{id}/sources` — where a part came from, oldest first. */
+export async function fetchPartSources(part: PartId): Promise<PartSource[]> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/sources`)
+  if (!response.ok) {
+    throw new Error(`part sources returned ${response.status}`)
+  }
+  return (await response.json()) as PartSource[]
+}
+
+/**
+ * `POST /api/parts/{id}/sources` — record where a part came from.
+ *
+ * **The link is stored, not followed.** Nothing here fetches the page: the one route in the
+ * application that makes an outbound request is the image fetch, and keeping it the only one
+ * is what makes that boundary findable.
+ *
+ * The refusals — a price with no currency, a form of empty boxes — come back with the
+ * server's own sentence, for the same reason the image ones do.
+ */
+export async function addPartSource(
+  part: PartId,
+  source: NewSource,
+): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/sources`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(source),
+  })
+  if (response.ok) return { kind: 'saved' }
+  if (response.status === 422) {
+    const body: unknown = await response.json().catch(() => null)
+    const message =
+      body !== null && typeof body === 'object'
+        ? (body as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.sources.refusedWithoutReason,
+    }
+  }
+  throw new Error(`recording a source returned ${response.status}`)
 }
 
 /**

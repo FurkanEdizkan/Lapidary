@@ -70,6 +70,11 @@ uuid_newtype!(
      `source_path`."
 );
 uuid_newtype!(
+    PartSourceId,
+    "Identifies one record of where a part came from. A part can carry several — the model \
+     from one place and the hardware from another."
+);
+uuid_newtype!(
     PartImageId,
     "Identifies one picture in a part's gallery. Its own id and not a position, because \
      the gallery is reorderable and a client holding \"the second image\" would be holding \

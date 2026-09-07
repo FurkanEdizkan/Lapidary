@@ -107,15 +107,41 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 
 ## 6. Source links and images
 
+Pulled forward from Phase 5 by owner decision, 2026-09-07 — a part with a photograph and a
+link to where it came from is most of what makes a library worth sitting in front of, and
+none of it depends on anything Phase 2 onwards adds.
+
 | Feature | Phase |
 |---|---|
-| Attach product/source URL, vendor, SKU, price | 5 |
-| Licence field surfaced on the card (CC-BY-NC matters to sellers) | 5 |
-| Image: upload file | 5 |
-| Image: paste URL, cached locally, never hotlinked | 5 |
-| Image: fetch OpenGraph preview on explicit button press | 5 |
-| SSRF controls + bounded image decode + EXIF strip | 5 |
+| Attach product/source URL, vendor, SKU, price | 1 |
+| Licence field surfaced on the **detail page and quick-look**, not the card | 1 |
+| Image: upload file | 1 |
+| Image: paste URL, cached locally, never hotlinked | 1 |
+| Image: adjust the framing, non-destructively, with size bounds both ends | 1 |
+| Image: fetch OpenGraph preview on explicit button press | **[—]** |
+| SSRF controls + bounded image decode + EXIF strip | 1 |
 | Catalogue scraping | **[—]** |
+
+Three rows changed meaning rather than only phase, and each is a decision:
+
+- **The licence is not on the grid card.** `DATA.md` §4 asks for it there and the reason is
+  good — somebody selling prints needs to see `CC-BY-NC` before they print. The grid query
+  is at its 16-column `FromRow` ceiling, and reworking that tuple to put a sentence on a tile
+  somebody is scanning at a glance is the wrong trade. It is one click away, on the detail
+  page and in the quick-look, which is where the decision to print is actually made.
+- **Framing is a new row, and it is what "adjust the image view" turned into.** The framing
+  is three columns on `part_image` applied by the browser as `object-fit` and
+  `object-position` — so nothing is re-encoded, the adjustment is free and reversible, and
+  the picture never loses a generation of quality to being re-cropped. Bounds are 64 px
+  minimum edge (below that it is an icon somebody dragged off a web page), 2048 px maximum
+  (over which it is resized, not refused), 10 MB input.
+- **OpenGraph fetching is out**, by owner decision, and `DATA.md` §4 is emphatic about where
+  that road ends: do not build a scraper. `part_image.origin` still carries `og_fetched`, so
+  adding it later stays additive.
+
+A user image does not yet win over the render on a grid card. A blob-backed image cannot
+reach the grid without either a 17th column or a card-sized second copy on the row, and
+neither is worth it for a picture the gallery already shows one click away.
 
 ## 7. Build graph (blueprint board)
 

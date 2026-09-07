@@ -15,4 +15,13 @@ origin: string,
  * Where it came from, for one that was fetched. Shown so a person can tell an image
  * they chose from one that was pulled in for them.
  */
-sourceUrl: string | null, };
+sourceUrl: string | null, 
+/**
+ * `cover` or `contain` — CSS's own `object-fit` values, because the browser is what
+ * applies them. The bytes are never re-encoded to match.
+ */
+fit: string, 
+/**
+ * What to keep when `cover` crops, as a fraction of each edge. CSS's `object-position`.
+ */
+focusX: number, focusY: number, };
