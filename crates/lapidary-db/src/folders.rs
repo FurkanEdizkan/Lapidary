@@ -378,7 +378,7 @@ impl PgFolders {
 
 /// Name the sibling that is in the way, instead of handing back a raw constraint failure.
 ///
-/// Two constraints, two different things to tell the user, and `0008_folders.sql` says why
+/// Two constraints, two different things to tell the user, and `0009_folders.sql` says why
 /// both exist: `folder_name_unique_per_parent` is the one a person can see — a sibling
 /// already carries this name — while `folder_slug_unique_per_parent` catches the pair that
 /// looks distinct on screen and is not on disk, `Rocks?` and `Rocks*` both wanting the

@@ -1215,7 +1215,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
     // bytes are byte-identical to an existing rung lands as a `role = 'source'` row over
     // a NULL-level blob. Contrived under an STL-only scan; not unreachable.
     //
-    // Since migration `0012` the level is on the `file` row, so the source row records the
+    // Since migration `0013` the level is on the `file` row, so the source row records the
     // 0 that `put_at` reported for the file it actually wrote, and the rung's blob row is
     // still left exactly as it was found.
     let ingest = PgIngest(pool.clone());
@@ -1941,7 +1941,7 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
     // file writes level 3, so without this leg the assertion above passes just as well
     // against the COALESCE.
     //
-    // Cleared on `file`, not on `blob`, since migration `0012` moved the column readers
+    // Cleared on `file`, not on `blob`, since migration `0013` moved the column readers
     // follow — and clearing `blob` here would now prove nothing at all.
     sqlx::query("UPDATE file SET zstd_level = NULL WHERE revision_id = $1 AND role = 'source'")
         .bind(revision.as_uuid())

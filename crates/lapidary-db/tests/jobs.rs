@@ -452,7 +452,7 @@ async fn releasing_a_workers_leases_makes_its_jobs_immediately_available(pool: P
     );
 }
 
-/// Fix rounds 1 and 2 added, and fix round 3 (`0011_drop_migrate_storage_pending_index.sql`)
+/// Fix rounds 1 and 2 added, and fix round 3 (`0012_drop_migrate_storage_pending_index.sql`)
 /// removed, a pair of exclusions that kept this bulk `UPDATE` from colliding with
 /// `job_migrate_storage_pending_per_library`: one for a `migrate_storage` row whose
 /// library already had a pending successor queued, one for a second `running`
@@ -507,9 +507,9 @@ async fn releasing_a_workers_leases_moves_every_kind_it_holds_migrate_storage_in
 // `two_workers_forced_to_start_together_still_enqueue_exactly_one_migration` (an
 // `ACCESS EXCLUSIVE` table lock forcing the race open deterministically, run ten times).
 // Both existed to prove `winners == 1` / `total == 1` under real concurrency, backed by
-// `job_migrate_storage_pending_per_library` (migration 0010) and the `ON CONFLICT ...
+// `job_migrate_storage_pending_per_library` (migration 0011) and the `ON CONFLICT ...
 // DO NOTHING` it gave `enqueue_migration_if_absent` something to target. Neither claim
-// survives `0011_drop_migrate_storage_pending_index.sql`: two concurrent callers can now
+// survives `0012_drop_migrate_storage_pending_index.sql`: two concurrent callers can now
 // each see nothing under `WHERE NOT EXISTS` and each insert, so a library can briefly
 // hold two pending `migrate_storage` rows -- tolerable, per `enqueue_migration_if_absent`'s
 // doc comment, because the execution boundary in `lapidary-ingest` is what makes a

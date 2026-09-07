@@ -417,7 +417,7 @@ async fn a_model_the_storage_migration_has_not_reached_cannot_be_moved(pool: sql
             name: "corner bracket",
             source_path: "corner bracket.stl",
             folder: None,
-            // The live state migration 0008 documents: the bytes are still at
+            // The live state migration 0009 documents: the bytes are still at
             // `blobs/ab/cd/<hash>`, and no model directory exists to move.
             storage_path: None,
             blob: &blob,

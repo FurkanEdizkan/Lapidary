@@ -33,7 +33,7 @@ pub struct PartRow {
 /// Two ways of naming the same file, and which one applies is `storage_path`'s
 /// nullability: a row written since ingest started writing model directories carries the
 /// path the bytes are actually at, and a row from before that carries NULL, meaning they
-/// are still at `blobs/ab/cd/<hash>`. Migration `0008` states that rule, and it stays
+/// are still at `blobs/ab/cd/<hash>`. Migration `0009` states that rule, and it stays
 /// true until the `migrate_storage` job has drained every library.
 #[derive(Debug)]
 pub struct RevisionSource {
@@ -65,7 +65,7 @@ pub struct DownloadSource {
     /// `file.storage_path`. Same nullability, same meaning, as [`RevisionSource::storage_path`]:
     /// `Some` names where the bytes actually sit, relative to the storage root; `None`
     /// means this row predates the folder tree and the bytes are still content-addressed.
-    /// Migration `0008`'s comment states the rule and how long it holds — for as long as
+    /// Migration `0009`'s comment states the rule and how long it holds — for as long as
     /// `migrate_storage` takes to drain every library, which is hours on a real corpus.
     pub storage_path: Option<String>,
     /// `file.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
@@ -84,7 +84,7 @@ pub struct DownloadSource {
     /// *recorded* `0` written over zstd bytes during slice 7's rewrite window. Nothing
     /// about `None` produces it.
     ///
-    /// `file`, not `blob`, since migration `0012`. The per-hash column could not describe a
+    /// `file`, not `blob`, since migration `0013`. The per-hash column could not describe a
     /// hash that has a zstd-3 legacy copy and a raw model file at once, which is every hash
     /// a scan re-meets during the migration window.
     pub zstd_level: Option<i16>,
@@ -127,7 +127,7 @@ pub struct StorageTotals {
 
 /// What a part looks like to the move route, before it moves.
 ///
-/// The three location facts kept apart, exactly as migration `0008` insists: `folder` is
+/// The three location facts kept apart, exactly as migration `0009` insists: `folder` is
 /// the mutable category, `directory`/`storage_path` are where the bytes actually sit, and
 /// `source_path` — the immutable identity — is deliberately absent, because a move must
 /// never read it, let alone write it.
@@ -249,12 +249,12 @@ pub struct IngestRequest<'a> {
     ///
     /// Location, never identity — the third column beside `source_path` and
     /// `storage_path`, and the only one of the three a user can change afterwards
-    /// (migration `0008`'s header states all three).
+    /// (migration `0009`'s header states all three).
     pub folder: Option<FolderId>,
     /// Where the bytes were written, relative to the storage root. Distinct from
     /// `source_path`: that names a directory we only ever read, this names one we own.
     ///
-    /// `None` writes the column NULL, which has the meaning `0008` gives it — *the bytes
+    /// `None` writes the column NULL, which has the meaning `0009` gives it — *the bytes
     /// are still at the old content-addressed path*. A caller that wrote through
     /// `SourceStore::put` rather than `put_at` says `None` and is telling the truth; an
     /// empty string would be a path that exists nowhere, and every reader would then have
@@ -615,7 +615,7 @@ async fn insert_part_chain(
     .await?;
 
     // `zstd_level` and `stored_bytes` are recorded on the file row and not read back off
-    // `blob` (migration `0012`): the blob row is per-hash and a hash can have a compressed
+    // `blob` (migration `0013`): the blob row is per-hash and a hash can have a compressed
     // legacy copy and a raw model file at the same time, all through the migration window.
     // `record` and `link_existing` both arrive here, and both pass what `put_at` reported
     // for the write they just did — so `link_existing` describes its own file instead of
@@ -895,7 +895,7 @@ impl PgParts {
     /// day the policy changed (spec §2.5). It is passed through as the nullable column it
     /// is; see [`DownloadSource::zstd_level`].
     ///
-    /// The `file` row and not the `blob` row, since migration `0012`: one hash can have a
+    /// The `file` row and not the `blob` row, since migration `0013`: one hash can have a
     /// zstd-3 copy at the old content-addressed path and a raw copy in a model directory at
     /// the same time — that is the whole migration window — and the per-hash column cannot
     /// answer for both. `blob` is not joined here at all any more; nothing else on this
@@ -1222,7 +1222,7 @@ impl PgParts {
         Ok(())
     }
 
-    /// Where this part has been filed, newest first. The audit trail migration `0008`
+    /// Where this part has been filed, newest first. The audit trail migration `0009`
     /// created the `part_move` table for.
     pub async fn moves(&self, part: PartId) -> Result<Vec<MoveRow>, DbError> {
         let rows: Vec<(Option<Uuid>, Option<Uuid>, i64)> = sqlx::query_as(
@@ -1299,7 +1299,7 @@ impl PartRepository for PgParts {
         // download link always describe the same `file` row — `file` has no unique
         // constraint on `(revision_id, role)`, so that agreement is a choice, not a
         // property of the schema. Every column here now comes off that one row, `blob`
-        // included no longer: since migration `0012` a file records its own
+        // included no longer: since migration `0013` a file records its own
         // `stored_bytes` and `zstd_level`, because a hash can have a compressed legacy
         // copy and a raw model file at once and the shared row could only describe one of
         // them. That also makes this grid checkable against the storage panel over it —
@@ -1367,7 +1367,7 @@ impl PartRepository for PgParts {
         // `bytes_column` refuses a negative one rather than wrapping it — the same
         // silent wraparound the triangle count below refuses.
         //
-        // Read off `file` and not `blob` since migration `0012`, and that is also what
+        // Read off `file` and not `blob` since migration `0013`, and that is also what
         // makes this grid checkable against the storage panel above it: `storage_totals`
         // sums `f.size_bytes`, so both now describe the same rows rather than agreeing by
         // coincidence.
@@ -1424,7 +1424,7 @@ impl PartRepository for PgParts {
                     // answers 500 for it rather than serving anything (spec §2.5.1), so
                     // reporting `false` is the display field declining to be the place a
                     // data error surfaces. Reachable only from outside `insert_part_chain`
-                    // now that migration `0012` records the level on the `file` row: every
+                    // now that migration `0013` records the level on the `file` row: every
                     // row this crate writes carries the level `put_at` reported for it,
                     // including `link_existing`'s, which used to inherit whatever the
                     // shared `blob` row said. See `PartSummary::compressed`.

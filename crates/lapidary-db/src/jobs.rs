@@ -42,7 +42,7 @@ const FAILED_SAMPLE: i64 = 100;
 ///
 /// `reschedule` used to carry a second cause -- a `migrate_storage` guard that could leave
 /// a row deliberately `running` rather than collide with a pending sibling. Migration
-/// `0011` dropped the index that guard existed for and the guard went with it, so the one
+/// `0012` dropped the index that guard existed for and the guard went with it, so the one
 /// cause below is the only one left.
 fn log_if_stale(id: JobId, verb: &str, rows_affected: u64) {
     if rows_affected == 0 {
@@ -159,7 +159,7 @@ impl PgJobs {
     /// trigger route (`lapidary_ingest::migrate::migrate`) calls.
     ///
     /// The `WHERE NOT EXISTS` check below is best-effort, not race-free, and there is no
-    /// unique constraint backing it (migration 0011 removed the one that used to). Under
+    /// unique constraint backing it (migration 0012 removed the one that used to). Under
     /// READ COMMITTED, two workers booting at the same instant against the same
     /// un-migrated library each take their own snapshot before either commits, so both
     /// can see "nothing exists yet" and both insert -- a library can briefly hold two
@@ -221,7 +221,7 @@ impl PgJobs {
     /// lease and run this same re-enqueue concurrently.
     ///
     /// The check is best-effort, not race-free, and there is no unique constraint behind
-    /// it (migration 0011 removed the one that used to back `enqueue_migration_if_absent`
+    /// it (migration 0012 removed the one that used to back `enqueue_migration_if_absent`
     /// and this method alike). Two concurrent callers can each see nothing pending under
     /// READ COMMITTED and each insert, so the library can briefly hold two pending
     /// `migrate_storage` rows. That is acceptable: the second runner finds the work

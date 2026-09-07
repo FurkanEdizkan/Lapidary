@@ -49,7 +49,7 @@ TanStack Router/Query, Tailwind v4.
 |---|---|
 | `crates/lapidary-core/src/slug.rs` | Filesystem-safe names: `slugify`, `disambiguate`, `reject_escaping_path` |
 | `crates/lapidary-core/src/manifest.rs` | `ModelManifest` — the `metadata.json` shape and its schema version |
-| `crates/lapidary-db/migrations/0008_folders.sql` | `folder`, `part.folder_id`, `file.storage_path`, `part_move`, tree backfill |
+| `crates/lapidary-db/migrations/0009_folders.sql` | `folder`, `part.folder_id`, `file.storage_path`, `part_move`, tree backfill |
 | `crates/lapidary-db/src/folders.rs` | `PgFolders` — get-or-create, tree, cycle check, subtree delete, moves |
 | `crates/lapidary-api/src/folders.rs` | Folder CRUD routes |
 | `crates/lapidary-api/src/moves.rs` | Part move route and move history |
@@ -682,10 +682,10 @@ git commit -m "feat(core): give a model directory a manifest that describes itse
 
 At the end of this phase the tree exists in the database and every existing library has one.
 
-### Task 4: Migration `0008`
+### Task 4: Migration `0009`
 
 **Files:**
-- Create: `crates/lapidary-db/migrations/0008_folders.sql`
+- Create: `crates/lapidary-db/migrations/0009_folders.sql`
 - Create tests in: `crates/lapidary-db/tests/migrations.rs` (append)
 
 **Interfaces:**
@@ -749,7 +749,7 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
     // Without this backfill they are stranded flat forever: folders are only created for
     // files that actually ingest, and a re-scan settles every one of them as Skipped.
     //
-    // This test seeds the table the way 6a leaves it, runs 0008's backfill by hand against
+    // This test seeds the table the way 6a leaves it, runs 0009's backfill by hand against
     // the already-migrated pool, and asserts the tree. Because sqlx has already run the
     // migration on an empty database, the rows are inserted first and the backfill's
     // statement is re-executed here.
@@ -767,7 +767,7 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
             .execute(&pool).await.expect("seeds a part");
     }
 
-    sqlx::query(include_str!("../migrations/0008_backfill.sql"))
+    sqlx::query(include_str!("../migrations/0009_backfill.sql"))
         .execute(&pool).await.expect("the backfill runs");
 
     let paths: Vec<String> = sqlx::query_scalar(
@@ -797,7 +797,7 @@ Expected: FAIL — `relation "folder" does not exist`.
 
 - [ ] **Step 3: Write the migration**
 
-Create `crates/lapidary-db/migrations/0008_folders.sql`:
+Create `crates/lapidary-db/migrations/0009_folders.sql`:
 
 ```sql
 -- Location becomes a thing the user can change, and the store becomes a folder they can
@@ -853,9 +853,9 @@ create index part_move_part_id on part_move (part_id, moved_at desc);
 ```
 
 Then the backfill, in its own file so the test above can `include_str!` it — and appended
-to `0008_folders.sql` by the same content so there is one definition:
+to `0009_folders.sql` by the same content so there is one definition:
 
-Create `crates/lapidary-db/migrations/0008_backfill.sql`:
+Create `crates/lapidary-db/migrations/0009_backfill.sql`:
 
 ```sql
 -- Rebuild the category tree from the nested source_paths slice 6a's recursive scan wrote.
@@ -910,10 +910,10 @@ begin
 end $$;
 ```
 
-Append its contents to the end of `0008_folders.sql` so `sqlx` runs it as one migration.
-(`0008_backfill.sql` is not itself a migration — prefix it so `sqlx` ignores it: name it
-`crates/lapidary-db/backfill/0008_backfill.sql` and adjust the `include_str!` path in the
-test to `../backfill/0008_backfill.sql`.)
+Append its contents to the end of `0009_folders.sql` so `sqlx` runs it as one migration.
+(`0009_backfill.sql` is not itself a migration — prefix it so `sqlx` ignores it: name it
+`crates/lapidary-db/backfill/0009_backfill.sql` and adjust the `include_str!` path in the
+test to `../backfill/0009_backfill.sql`.)
 
 **Note the slug on backfilled rows:** the backfill writes `slug = name`, unslugged, because
 the names came from real directories that already exist on disk and are therefore already
@@ -1532,7 +1532,7 @@ In `job.rs`:
     /// Move every source blob in this library out of the content-addressed store and into
     /// its model's own directory, writing a `metadata.json` beside it.
     ///
-    /// A job rather than part of migration `0008`, because sqlx runs a migration in one
+    /// A job rather than part of migration `0009`, because sqlx runs a migration in one
     /// transaction at startup and copying a corpus is neither transactional nor fast.
     /// Resumable because the queue is: it selects the next batch of `file` rows whose
     /// `storage_path` is still null, so a killed worker resumes where it stopped.
@@ -1540,7 +1540,7 @@ In `job.rs`:
 ```
 
 `pub const MIGRATE_STORAGE: &'static str = "migrate_storage";` and the `kind()` arm.
-Add `Outcome::Migrated` and extend `job_outcome_known` in a new migration `0009`:
+Add `Outcome::Migrated` and extend `job_outcome_known` in a new migration `0010`:
 
 ```sql
 alter table job drop constraint job_outcome_known;
@@ -1861,7 +1861,7 @@ with the doc rewrites that the two reversals oblige — without them `DATA.md` �
 `compose.yaml` describe a store that no longer exists.
 
 **Second gap found and closed:** `Outcome::Migrated` needs a `job_outcome_known` change, and
-`0006` shows that constraint is drop-and-add, not alter. Migration `0009` is named in Task 8.
+`0006` shows that constraint is drop-and-add, not alter. Migration `0010` is named in Task 8.
 
 **Type consistency.** `FolderId` (Task 5) is used identically in Tasks 6, 9, 10.
 `storage_path` is `Option<String>` at every reader (Tasks 7, 8, 9) because it stays nullable

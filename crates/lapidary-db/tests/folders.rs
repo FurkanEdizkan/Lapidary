@@ -362,7 +362,7 @@ async fn deleting_a_deep_category_hides_the_models_below_the_old_walk_cap(pool: 
 #[sqlx::test(migrations = "./migrations")]
 async fn a_part_in_another_library_is_not_counted_under_this_librarys_category(pool: sqlx::PgPool) {
     // Correct today only by luck. Every writer of `part.folder_id` -- the scan, the move
-    // route, migration `0008`'s backfill -- keeps a part and its folder in one library, so
+    // route, migration `0009`'s backfill -- keeps a part and its folder in one library, so
     // the count join never had to say so. Nothing in the schema requires it: `part.folder_id`
     // references `folder(id)` and no constraint relates the two `library_id`s, so one bad
     // row from a repair script or a future writer would put a foreign model in this

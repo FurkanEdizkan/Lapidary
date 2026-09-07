@@ -1,7 +1,7 @@
 -- How a source file was written and what it occupies, recorded on the row that names it.
 --
 -- `blob.zstd_level` described one copy of one hash, which was true while source bytes were
--- deduplicated and every hash had exactly one file on disk. Slice 7 ended that (0008): a
+-- deduplicated and every hash had exactly one file on disk. Slice 7 ended that (0009): a
 -- file now lives in its model's own directory, one copy per model, written uncompressed so
 -- the owner opening the folder sees `cliff.stl` and not a zstd frame named `cliff.stl`.
 --

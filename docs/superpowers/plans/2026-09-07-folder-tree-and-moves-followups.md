@@ -86,7 +86,7 @@ trip. Nothing else depends on the answer.
 
 ## 6. Adjacent, not this slice: `file.storage_path` is still nullable
 
-Migration `0008` says a later migration makes it `NOT NULL`, once `migrate_storage` has
+Migration `0009` says a later migration makes it `NOT NULL`, once `migrate_storage` has
 drained every library. Until then `null` is a live state and three places encode it: the
 move route's `409 migrationPending`, the card's "not migrated yet" note, and
 `PartCard.directory` being nullable at all. When that migration lands, all three simplify —

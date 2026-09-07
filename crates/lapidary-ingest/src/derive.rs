@@ -67,7 +67,7 @@ impl WorkerHandler {
         // ingested since the store became a folder tree carries the path its bytes are
         // actually at; one from before that carries NULL and its bytes are still at
         // `blobs/ab/cd/<hash>` until the `migrate_storage` job reaches them (migration
-        // `0008`). Reading the path when it is there is not an optimisation — nothing
+        // `0009`). Reading the path when it is there is not an optimisation — nothing
         // writes the content-addressed copy any more, so the fallback alone would fail on
         // every part ingested from now on.
         //

@@ -96,7 +96,7 @@ pub async fn original(
         None => return missing_variant(),
     }
 
-    // Spec §2.5.1. Since migration `0012` the level is recorded on the `file` row, by the
+    // Spec §2.5.1. Since migration `0013` the level is recorded on the `file` row, by the
     // same transaction that inserts it, from what `put_at` reported — so every row ingest
     // writes has one, including `link_existing`'s, which used to inherit the shared `blob`
     // row's and could name a level the file on disk was never written at. A NULL reaching
@@ -114,7 +114,7 @@ pub async fn original(
 
     // `storage_path` is null while `migrate_storage` is still draining a library — a live
     // state for as long as that job takes, hours on a real corpus, and not an edge case to
-    // special-case away (migration `0008`, `CLAUDE.md`). `Some` names where the bytes
+    // special-case away (migration `0009`, `CLAUDE.md`). `Some` names where the bytes
     // actually sit and reads through `get_at`; `None` means they are still at the old
     // content-addressed path and reads exactly as this route always has. Either way the
     // `zstd_level` above came off the same row, so both branches follow the same recorded

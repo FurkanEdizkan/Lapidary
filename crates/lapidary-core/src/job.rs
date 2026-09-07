@@ -67,7 +67,7 @@ pub enum JobPayload {
     /// Move every source blob in this library out of the content-addressed store and into
     /// its model's own directory, writing a `metadata.json` beside it.
     ///
-    /// A job rather than part of migration `0008`, because sqlx runs a migration in one
+    /// A job rather than part of migration `0009`, because sqlx runs a migration in one
     /// transaction at startup and copying a corpus is neither transactional nor fast.
     /// Resumable because the queue is: it selects the next batch of `file` rows whose
     /// `storage_path` is still null, so a killed worker resumes where it stopped.

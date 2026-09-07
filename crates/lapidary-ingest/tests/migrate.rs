@@ -3,7 +3,7 @@
 //!
 //! Every fixture here is a store as it existed before slice 7 — the source file at
 //! `blobs/ab/cd/<hash>` under zstd, `file.storage_path` null, and the category tree
-//! back-filled by migration `0008` with `slug = name`, unslugged. That is what
+//! back-filled by migration `0009` with `slug = name`, unslugged. That is what
 //! `seed_cas_part` reproduces, and nothing below is testing this job against a store this
 //! job has already touched.
 
@@ -74,7 +74,7 @@ fn measurements() -> MeshMeasurements {
 
 /// A part as it existed before the store became a folder tree: bytes at
 /// `blobs/ab/cd/<hash>`, `file.storage_path` null, and its categories back-filled the way
-/// migration `0008` back-fills them — `slug = name`, straight off the ingest directory and
+/// migration `0009` back-fills them — `slug = name`, straight off the ingest directory and
 /// never slugified. Returns the hash so a test can name the old path.
 async fn seed_cas_part(
     pool: &PgPool,
@@ -443,7 +443,7 @@ async fn a_back_filled_category_ends_up_at_a_windows_safe_path(pool: PgPool) {
     assert_eq!(
         slug_of(&pool, "Rocks?").await,
         "Rocks?",
-        "migration 0008 back-fills the slug unslugged; that is what this fixes"
+        "migration 0009 back-fills the slug unslugged; that is what this fixes"
     );
 
     handler_over(&pool, store.path())

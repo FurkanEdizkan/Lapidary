@@ -503,7 +503,7 @@ impl SourceReader {
 
     /// Read source bytes back from `file.storage_path` — the path-addressed twin of
     /// [`SourceReader::get`], for a row whose bytes have already migrated off the
-    /// content-addressed store (migration `0008`). `rel` is resolved through the same
+    /// content-addressed store (migration `0009`). `rel` is resolved through the same
     /// [`reject_escaping_path`](lapidary_core::slug::reject_escaping_path) guard every
     /// other path-addressed method in this crate runs, because a `storage_path` reaching
     /// here came off a database row, not off a hash — data, in the sense `resolve`'s own

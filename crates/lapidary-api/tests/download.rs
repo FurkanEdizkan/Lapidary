@@ -14,7 +14,7 @@
 //!
 //! Two more fixtures, `seed` and `seed_at_path`, are not a coverage pair either, for the
 //! matching reason: `file.storage_path` is nullable and stays that way for as long as
-//! `migrate_storage` takes to drain a real corpus (migration `0008`), so `None` and `Some`
+//! `migrate_storage` takes to drain a real corpus (migration `0009`), so `None` and `Some`
 //! are two live layouts, not a before-and-after. `seed`'s hash-addressed fixtures cover
 //! every part ingested before the previous task; `seed_at_path`'s folder-addressed ones
 //! cover every part ingested since.
@@ -139,7 +139,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
 /// (`handler.rs`, always `Compression::AsIs`), and it is the state every part ingested
 /// from now on is in, where `seed`'s `storage_path: None` is the state every part ingested
 /// before it is in. Both are live on the same corpus for as long as `migrate_storage`
-/// takes to drain (migration `0008`), so the route has to answer both.
+/// takes to drain (migration `0009`), so the route has to answer both.
 async fn seed_at_path(
     pool: &sqlx::PgPool,
     root: &Path,
@@ -339,7 +339,7 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
 async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: sqlx::PgPool) {
     // The other half of the layout the previous task introduced: `file.storage_path` is
     // `Some` and the bytes live under the model's own directory, not at `blobs/ab/cd/
-    // <hash>`. Every part ingested from now on is in this state, and migration `0008`
+    // <hash>`. Every part ingested from now on is in this state, and migration `0009`
     // states that both this and the null-path state are supported for as long as
     // `migrate_storage` takes to drain a real corpus — hours, not an edge case.
     let root = tempfile::tempdir().expect("temp dir");
@@ -634,7 +634,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // Cleared directly, because this test is about the route's answer and not about how
-    // the row got that way. Since migration `0012` no ingest path produces one — the level
+    // the row got that way. Since migration `0013` no ingest path produces one — the level
     // is written on the `file` row from what `put_at` reported — so this is now a row from
     // outside, which is exactly the case spec §2.5.1's refusal is for. Reading it raw would
     // be a guess that happens to be wrong here, since the bytes on disk are a zstd frame.

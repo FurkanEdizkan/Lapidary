@@ -1,4 +1,4 @@
--- Task 8b, fix round 3. `job_migrate_storage_pending_per_library` (migration 0010) is
+-- Task 8b, fix round 3. `job_migrate_storage_pending_per_library` (migration 0011) is
 -- scoped to `state = 'pending'`, and that scope is exactly what makes it not do what it
 -- was believed to do: it constrains pending rows only, and never constrained two
 -- `migrate_storage` jobs EXECUTING concurrently for one library -- that is already

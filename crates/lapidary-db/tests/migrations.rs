@@ -437,7 +437,7 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
     // Without this backfill they are stranded flat forever: folders are only created for
     // files that actually ingest, and a re-scan settles every one of them as Skipped.
     //
-    // This test seeds the table the way 6a leaves it, runs 0008's backfill by hand against
+    // This test seeds the table the way 6a leaves it, runs 0009's backfill by hand against
     // the already-migrated pool, and asserts the tree. Because sqlx has already run the
     // migration on an empty database, the rows are inserted first and the backfill's
     // statement is re-executed here.
@@ -463,7 +463,7 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
             .expect("seeds a part");
     }
 
-    sqlx::query(include_str!("../backfill/0008_backfill.sql"))
+    sqlx::query(include_str!("../backfill/0009_backfill.sql"))
         .execute(&pool)
         .await
         .expect("the backfill runs");
@@ -527,18 +527,18 @@ async fn the_backfill_rebuilds_the_tree_from_nested_source_paths(pool: PgPool) {
     );
 }
 
-/// Beyond the brief: the test above seeds parts into a database `0008` has already
+/// Beyond the brief: the test above seeds parts into a database `0009` has already
 /// migrated and re-runs the backfill statement by hand. It never exercises the copy of
-/// that same statement appended to `0008_folders.sql` itself -- every `sqlx::test` above
+/// that same statement appended to `0009_folders.sql` itself -- every `sqlx::test` above
 /// migrates an *empty* database, so on that path `_dirs` is empty, `maxlvl` is null, the
 /// loop never runs, and the inline copy is a no-op in every test in this file.
 ///
 /// The real upgrade path is a database that already has parts with nested source_paths
-/// (written by slice 6a's recursive scan) when `0008` runs against it. This drives that
-/// path directly: migrate up to `0007`, seed the parts, then run `0008` for real and
+/// (written by slice 6a's recursive scan) when `0009` runs against it. This drives that
+/// path directly: migrate up to `0007`, seed the parts, then run `0009` for real and
 /// check the tree it leaves behind matches the hand-run backfill above.
 #[sqlx::test(migrations = false)]
-async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool) {
+async fn migration_0009_backfills_a_database_that_already_has_parts(pool: PgPool) {
     let migrator = sqlx::migrate!("./migrations");
     migrator
         .run_to(7, &pool)
@@ -561,13 +561,13 @@ async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool
             .bind(path)
             .execute(&pool)
             .await
-            .expect("seeds a part before 0008 runs");
+            .expect("seeds a part before 0009 runs");
     }
 
     migrator
         .run(&pool)
         .await
-        .expect("0008 applies against an already-populated database");
+        .expect("0009 applies against an already-populated database");
 
     let paths: Vec<String> = sqlx::query_scalar(
         "WITH RECURSIVE t AS (SELECT id, name::text AS path FROM folder WHERE parent_id IS NULL \
@@ -598,24 +598,24 @@ async fn migration_0008_backfills_a_database_that_already_has_parts(pool: PgPool
 
 /// Task 8b's own opening line: an operator could only start a `migrate_storage` job by
 /// hand-writing `INSERT INTO job` -- and nothing stopped them from writing it twice for
-/// the same library. `0010_migrate_storage_startup_guard.sql` added a unique index that a
+/// the same library. `0011_migrate_storage_startup_guard.sql` added a unique index that a
 /// database in exactly that state would otherwise have failed to create at all
 /// (`CREATE UNIQUE INDEX` refuses to build over an existing duplicate), so it
 /// de-duplicated first, keeping the oldest pending row per library.
 ///
-/// Fix round 3: the index itself is gone (`0011_drop_migrate_storage_pending_index.sql`)
+/// Fix round 3: the index itself is gone (`0012_drop_migrate_storage_pending_index.sql`)
 /// -- it only ever constrained `pending` rows, never the concurrent *execution* it was
 /// believed to guard, and the guards it forced into `release_leases` and `reschedule`
-/// cost more correctness than the deduplication bought. The de-duplication in `0010`
+/// cost more correctness than the deduplication bought. The de-duplication in `0011`
 /// still ran and is still worth pinning; the index it built is not, and must be absent
-/// once `0011` has applied too.
+/// once `0012` has applied too.
 #[sqlx::test(migrations = false)]
-async fn migration_0010_de_duplicates_pending_migrations_and_0011_drops_its_index(pool: PgPool) {
+async fn migration_0011_de_duplicates_pending_migrations_and_0012_drops_its_index(pool: PgPool) {
     let migrator = sqlx::migrate!("./migrations");
     migrator
         .run_to(9, &pool)
         .await
-        .expect("migrations up to 0009 apply");
+        .expect("migrations up to 0010 apply");
 
     let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
     let mut oldest = None;
@@ -650,16 +650,16 @@ async fn migration_0010_de_duplicates_pending_migrations_and_0011_drops_its_inde
     .expect("counts");
     assert_eq!(
         count_before, 3,
-        "three hand-written rows exist before 0010 runs"
+        "three hand-written rows exist before 0011 runs"
     );
 
-    // Runs every remaining migration, 0010 and 0011 alike -- this is the same
+    // Runs every remaining migration, 0011 and 0012 alike -- this is the same
     // round-trip point 4 of the round-3 brief asks for, just entered from a database
     // that already holds duplicates rather than an empty one.
     migrator
         .run(&pool)
         .await
-        .expect("0010 must not fail against a database already holding duplicates, and 0011 must not fail after it");
+        .expect("0011 must not fail against a database already holding duplicates, and 0012 must not fail after it");
 
     let survivors: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
@@ -672,7 +672,7 @@ async fn migration_0010_de_duplicates_pending_migrations_and_0011_drops_its_inde
     assert_eq!(
         survivors,
         vec![oldest.expect("set in the loop above")],
-        "0010's de-duplication still ran: exactly the oldest pending row survives"
+        "0011's de-duplication still ran: exactly the oldest pending row survives"
     );
 
     let index_exists: bool = sqlx::query_scalar(
@@ -684,25 +684,25 @@ async fn migration_0010_de_duplicates_pending_migrations_and_0011_drops_its_inde
     .expect("checks pg_indexes");
     assert!(
         !index_exists,
-        "0011 must have dropped the index 0010 created"
+        "0012 must have dropped the index 0011 created"
     );
 }
 
-/// `backfill/0008_backfill.sql` and the copy appended inside `migrations/0008_folders.sql`
+/// `backfill/0009_backfill.sql` and the copy appended inside `migrations/0009_folders.sql`
 /// exist for two different reasons — the standalone file is what this test file re-runs by
 /// hand against an already-migrated database, the appended copy is what upgrades a database
-/// that already has parts when `0008` itself runs — and nothing stops the two drifting
+/// that already has parts when `0009` itself runs — and nothing stops the two drifting
 /// apart. This is not a live-database test: it reads both files as text and checks the
 /// migration contains the standalone file's contents verbatim, so an edit to one that is
 /// not carried to the other fails here instead of shipping two silently different rebuilds
 /// of the same tree.
 #[test]
-fn the_standalone_backfill_file_and_the_copy_inside_0008_agree() {
-    let standalone = include_str!("../backfill/0008_backfill.sql");
-    let migration = include_str!("../migrations/0008_folders.sql");
+fn the_standalone_backfill_file_and_the_copy_inside_0009_agree() {
+    let standalone = include_str!("../backfill/0009_backfill.sql");
+    let migration = include_str!("../migrations/0009_folders.sql");
     assert!(
         migration.contains(standalone),
-        "migrations/0008_folders.sql must contain backfill/0008_backfill.sql verbatim, or \
+        "migrations/0009_folders.sql must contain backfill/0009_backfill.sql verbatim, or \
          the two have drifted apart"
     );
 }

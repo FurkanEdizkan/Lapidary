@@ -207,7 +207,7 @@ database pointing at a path that does not exist, which every read then hits. A d
 ahead of the database is a repair job; a database that is ahead of the disk is a broken
 grid.
 
-## 5. Schema — migration `0008_folders.sql`
+## 5. Schema — migration `0009_folders.sql`
 
 ```sql
 create table folder (
@@ -265,7 +265,7 @@ Written down here because a purge that deletes "the blob" would take another mod
 
 ### 5.1 The backfill, and why skipping it strands every existing library
 
-The tempting claim is that every pre-`0008` part sits at the library root. **That was true
+The tempting claim is that every pre-`0009` part sits at the library root. **That was true
 before slice 6a and is false after it.** 6a made the scan recursive, so every part ingested
 since carries a nested `source_path` like `Terrain/Rocks/rock.stl`. Only rows predating 6a
 are flat, because `0007` rebuilt them as `name || '.' || format`.
@@ -296,13 +296,13 @@ then use the ids it just generated as the next level's parents.
 ### 5.2 Moving the files is a job, not part of the migration
 
 Existing blobs sit at `blobs/ab/cd/<hash>` and have to end up in per-model directories with a
-`metadata.json` beside them. **That cannot go in `0008`.** `sqlx` runs a migration in one
+`metadata.json` beside them. **That cannot go in `0009`.** `sqlx` runs a migration in one
 transaction at startup and it either finishes or rolls back; copying 23 GB is not that, and
 it needs a worker the migration cannot assume is running.
 
 So it splits, and the split is the design:
 
-- **`0008` is schema plus the SQL tree backfill above.** Fast, transactional, and correct as
+- **`0009` is schema plus the SQL tree backfill above.** Fast, transactional, and correct as
   validated.
 - **A new `migrate_storage` job kind** does the files. Enqueued once, reported through the
   existing batch and SSE machinery the scan already uses, and resumable because the job queue
@@ -333,7 +333,7 @@ needs no coordination the database half does not already provide.
 short-circuit. Creating them during the walk would mean a re-scan of a directory whose models
 have all been moved away silently re-creates the now-empty originals on every scan — on disk
 as well as in the database. This is also what makes §5.1's backfill mandatory: a library
-ingested between 6a and `0008` never reaches this code path again.
+ingested between 6a and `0009` never reaches this code path again.
 
 ## 7. Moving, renaming, deleting
 
@@ -404,7 +404,7 @@ All three go through `src/lib/strings.ts`, which `web/src/no-bare-strings.test.t
    assert the row still points at the original path and the model still opens.
 10. **Deleting a category cascades to subcategories and touches no file** — assert every
     descendant is hidden and every file is still on disk and still readable.
-11. **The `0008` backfill rebuilds the tree and moves the files** — seed a library the way
+11. **The `0009` backfill rebuilds the tree and moves the files** — seed a library the way
     6a's scan leaves it, run it, assert the tree of §5.1 *and* that every source is now at
     its `storage_path` with a `metadata.json` beside it. Then **re-scan and assert nothing
     changed** — that half catches a backfill that works once and then misbehaves.

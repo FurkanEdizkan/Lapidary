@@ -12,7 +12,7 @@
 //! A model directory holds its file uncompressed, so moving one of those rows means the
 //! blob row has to say level 0 afterwards. Do that for one row while a sibling still points
 //! at the compressed content-addressed copy and the sibling's every read decodes bytes that
-//! were never encoded. Migration `0012` is what stops that being unsurvivable — readers of
+//! were never encoded. Migration `0013` is what stops that being unsurvivable — readers of
 //! a file follow `file.zstd_level` now, so a sibling keeps its own recorded level whatever
 //! the blob row says — but the *old copy* is still one file for the whole group, and only
 //! this batching knows when the last row has stopped needing it.
@@ -27,7 +27,7 @@
 //!
 //! Two `migrate_storage` jobs for one library run at once as a matter of course --
 //! `PgJobs::reenqueue_migration_if_absent` is a best-effort check with no unique
-//! constraint behind it since migration `0011`, and its own doc says the safety of two
+//! constraint behind it since migration `0012`, and its own doc says the safety of two
 //! runs overlapping is established at the execution boundary rather than in the queue.
 //! This module is that boundary.
 //!
@@ -429,7 +429,7 @@ impl HashClaim {
         // written `Compression::AsIs`, so it is uncompressed and occupies its real size.
         // Splitting them would leave a window — and, worse, a crash — in which a row points
         // at a raw file while still describing the legacy compressed copy, which is exactly
-        // the stale-metadata hazard migration `0012` exists to close.
+        // the stale-metadata hazard migration `0013` exists to close.
         sqlx::query(
             "UPDATE file SET storage_path = t.path, zstd_level = 0, \
                              stored_bytes = file.size_bytes \
@@ -445,7 +445,7 @@ impl HashClaim {
         // uncompressed while reporting a compressed size on disk is a row that contradicts
         // itself — and `DATA.md` §1.1's storage panel reads the second column.
         //
-        // Still worth writing since migration `0012` moved the level readers follow onto
+        // Still worth writing since migration `0013` moved the level readers follow onto
         // `file`: this column is what an un-migrated *sibling* row reads, and dropping it
         // to 0 here is what records that the old copy is gone. The reap below only runs
         // when there is no such sibling, so the two agree.

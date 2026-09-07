@@ -3,7 +3,7 @@
 //! A store ingested before slice 7 holds every source file at `blobs/ab/cd/<hash>`, zstd-3,
 //! with `file.storage_path` null. This job walks those rows, writes each file into its
 //! model's own directory under its real name with a `metadata.json` beside it, and only
-//! then removes the old copy. Migration `0008` states the rule this closes: *a null
+//! then removes the old copy. Migration `0009` states the rule this closes: *a null
 //! `storage_path` means the bytes are still at the old content-addressed path*, and every
 //! reader of `file` inherits it until this job has drained.
 //!
@@ -234,7 +234,7 @@ impl WorkerHandler {
             // lease mid-run can already have put it back to `pending` in the
             // background (`lapidary_jobs::worker`'s `SHUTDOWN_GRACE`) -- either way, a
             // successor may already be queued. The guard is a check, not a constraint:
-            // migration `0011` dropped the partial unique index that used to back it,
+            // migration `0012` dropped the partial unique index that used to back it,
             // because that index constrained `pending` rows and had no opinion about
             // `running` ones, which is the state two overlapping migrations are actually
             // in. So this can still lose its race and queue a second pending row, and
@@ -448,7 +448,7 @@ impl WorkerHandler {
 
     /// Give every category in `library` the slug its name actually slugifies to.
     ///
-    /// Migration `0008`'s back-fill wrote `folder.slug = name`, unslugged. That was defensible
+    /// Migration `0009`'s back-fill wrote `folder.slug = name`, unslugged. That was defensible
     /// for the ingest directory, which we only ever read — but a slug names a directory in
     /// OUR store, which we create, so a back-filled category called `Rocks?` yields a path
     /// no Windows client can hold. `slugify` lives in Rust, which is why the fix lands here

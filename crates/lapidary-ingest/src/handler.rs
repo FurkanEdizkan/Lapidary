@@ -360,7 +360,7 @@ impl WorkerHandler {
         // It decides nothing about compression. `link_existing` leaves the existing `blob`
         // row alone — it has to, because that row still describes a legacy copy an
         // un-migrated sibling reads — and the level of *this* file rides on the `file` row
-        // it inserts (migration `0012`). Before that column existed this branch left a
+        // it inserts (migration `0013`). Before that column existed this branch left a
         // level-3 row over the raw file it had just written, and the download route
         // zstd-decoded an STL and 500ed.
         let written = if blob_row_exists {
