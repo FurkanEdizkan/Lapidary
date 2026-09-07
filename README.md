@@ -12,15 +12,22 @@ already use.
 
 ## Status
 
-**Pre-alpha.** `main` holds the Node/Fastify prototype that validated the product idea. It
-is a reference implementation to read, not a base to build on. The Rust implementation
-described in `docs/` is being built fresh on `rust-rewrite`, and that is the only thing
-that will ship.
+**Pre-alpha.** `main` is the Rust implementation described in `docs/`, and it is the only
+thing that will ship. The Node/Fastify prototype that validated the product idea is gone;
+what it established is written up in `docs/prototype-notes.md`, which is the part worth
+keeping.
 
-`rust-rewrite` now runs: the first slice of Phase 1 ingests a directory of STL files and
-renders them as a grid of cards with real thumbnails. Everything else in the list below is
-still ahead — no viewer, no search and no versioning. The scan is a background job and
-walks nested directories; files can also be uploaded from the browser.
+Phase 1 runs. A library ingests STL, 3MF and OBJ from a mounted directory or a browser
+drop, through a crash-resumable job queue, and renders a paged grid of cards with real
+thumbnails. Parts live in a folder tree mirrored on disk — one directory per model, its
+file under its own name with a `metadata.json` beside it — under categories you can create
+and drag models between. Removing a part is reversible; purging it is a separate, explicit
+action.
+
+What is still ahead, from the list below: **no search**, no viewer, no versioning, and no
+library picker — every screen is the one library migration `0002_parts.sql` seeds. Search
+is the next substantial piece of Phase 1; `docs/superpowers/plans/` holds the current
+plan and what it is blocked on.
 
 ## What it does
 
