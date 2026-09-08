@@ -934,7 +934,17 @@ export const strings = {
   },
   search: {
     label: 'Search this library',
-    placeholder: 'Search by name or part number',
+    /**
+     * Names what the query actually reaches, which changed when `0020` indexed
+     * `source_path`: the filename a model arrived as, and the directory holding it, are
+     * both searchable now. A placeholder that still said "name or part number" would be
+     * hiding the one field a person is most likely to remember about a download.
+     *
+     * It does not say "tag" or "creator" the way `v2`'s does. There is no tag table and no
+     * user table — a placeholder promising either would be a search box that answers
+     * nothing for two of the four things it names.
+     */
+    placeholder: 'Search by name, part number or file path',
     /**
      * The chip that appears when a search runs inside a selected category.
      *

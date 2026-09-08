@@ -626,6 +626,26 @@ export function Index({
           />
         ) : (
           <>
+            {/*
+              The scope line, which `v2` puts above the grid and this page had only below
+              it. Two facts a person needs before they start scanning rather than after
+              they finish: what they are looking at, and how much of it there is.
+
+              `h2` because it names the region the grid fills, and the grid is a list under
+              it — the page's `h1` is the application's name in the bar. The count is
+              `.tabular`, so it is set in the mono face like every other figure here, and a
+              number that changes as pages load does not shift the words beside it.
+            */}
+            <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 className="text-[15px] leading-none font-semibold text-[var(--color-bright)]">
+                {selectedFolderName ?? strings.folders.root}
+              </h2>
+              <p className="tabular text-[10.5px] text-[var(--color-muted)]">
+                {parts.hasNextPage
+                  ? strings.parts.showingSoFar(loaded.length)
+                  : strings.parts.showingAll(loaded.length)}
+              </p>
+            </div>
             <Grid
               parts={loaded}
               onRender={(part) => renderPart.mutate(part)}
@@ -634,7 +654,6 @@ export function Index({
               density={density}
             />
             <MorePages
-              count={loaded.length}
               hasMore={parts.hasNextPage}
               fetching={parts.isFetchingNextPage}
               onMore={() => void parts.fetchNextPage()}
@@ -842,7 +861,7 @@ function ActionBar({
         type="button"
         onClick={onScan}
         disabled={scanBusy}
-        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.scan.start}
       </button>
@@ -850,7 +869,7 @@ function ActionBar({
         type="button"
         onClick={onSweep}
         disabled={sweepBusy}
-        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.render.sweep}
       </button>
@@ -992,7 +1011,7 @@ function LibrarySwitcher({
           <select
             value={library}
             onChange={(event) => onSelect?.(event.target.value as LibraryId)}
-            className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
+            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
           >
             {all.map((one) => (
               <option key={one.id} value={one.id}>
@@ -1005,7 +1024,7 @@ function LibrarySwitcher({
       <button
         type="button"
         onClick={() => setCreating(true)}
-        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.libraries.create}
       </button>
@@ -1061,14 +1080,14 @@ function NewLibraryDialog({
           onChange={(event) => setName(event.target.value)}
           aria-label={strings.libraries.nameLabel}
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
         />
         <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
           {strings.libraries.modeLabel}
           <select
             value={mode}
             onChange={(event) => setMode(event.target.value as NewLibrary['mode'])}
-            className="rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
           >
             {LIBRARY_MODES.map((option) => (
               <option key={option} value={option}>
@@ -1086,14 +1105,14 @@ function NewLibraryDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
           >
             {strings.folders.cancel}
           </button>
           <button
             type="submit"
             disabled={busy || trimmed === ''}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {strings.libraries.createConfirm}
           </button>
@@ -1151,7 +1170,7 @@ function GridSettings({
         <select
           value={pageSize}
           onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
-          className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
+          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
         >
           {PAGE_SIZES.map((size) => (
             <option key={size} value={size}>
@@ -1165,7 +1184,7 @@ function GridSettings({
         <select
           value={density}
           onChange={(event) => onDensity(event.target.value as Density)}
-          className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
+          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
         >
           {DENSITIES.map((option) => (
             <option key={option} value={option}>
@@ -1231,14 +1250,27 @@ function SearchBox({
   const waiting = typed.trim().length === 1
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
-      <input
-        type="search"
-        value={typed}
-        onChange={(event) => setTyped(event.target.value)}
-        aria-label={strings.search.label}
-        placeholder={strings.search.placeholder}
-        className="min-w-64 flex-1 rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1.5 text-sm focus:border-[var(--color-accent)]"
-      />
+      {/*
+        The field sits *below* the ground rather than on it — `--color-raised` against the
+        page, which is how `v2` draws every input. A control you type into reads as a well;
+        one you press reads as a surface.
+      */}
+      <div className="relative flex min-w-64 flex-1 items-center">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute left-[11px] text-sm text-[var(--color-muted)]"
+        >
+          ⌕
+        </span>
+        <input
+          type="search"
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+          aria-label={strings.search.label}
+          placeholder={strings.search.placeholder}
+          className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-3 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
+        />
+      </div>
       {/*
         The disclosure, not a control that narrows. The sidebar has already narrowed the
         grid; a search that quietly kept that narrowing without saying so is how somebody
@@ -1315,7 +1347,7 @@ function EmptyLibrary({
         <button
           type="button"
           onClick={filtered ? onWiden : onClearSearch}
-          className="ease-mechanical mt-3 rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical mt-3 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {filtered ? strings.search.widen : strings.search.clear}
         </button>
@@ -1352,12 +1384,10 @@ function EmptyLibrary({
  * null.
  */
 function MorePages({
-  count,
   hasMore,
   fetching,
   onMore,
 }: {
-  count: number
   hasMore: boolean
   fetching: boolean
   onMore: () => void
@@ -1386,23 +1416,24 @@ function MorePages({
   return (
     <>
       <div ref={sentinel} aria-hidden className="h-px" />
-      <p className="mt-4 max-w-prose text-xs text-[var(--color-muted)]">
-        {hasMore ? (
-          <>
-            {strings.parts.showingSoFar(count)}{' '}
-            <button
-              type="button"
-              onClick={onMore}
-              disabled={fetching}
-              className="underline underline-offset-2 disabled:opacity-50"
-            >
-              {fetching ? strings.parts.loadingMore : strings.parts.loadMore}
-            </button>
-          </>
-        ) : (
-          strings.parts.showingAll(count)
-        )}
-      </p>
+      {/*
+        The count moved to the scope line above the grid, where `v2` puts it and where it is
+        legible before the scanning starts rather than after it. What is left here is the
+        control, and only when there is another page — a sentence saying the library is all
+        on screen is what the header now says by naming the whole count.
+      */}
+      {!hasMore ? null : (
+        <p className="mt-4 max-w-prose text-xs text-[var(--color-muted)]">
+          <button
+            type="button"
+            onClick={onMore}
+            disabled={fetching}
+            className="underline underline-offset-2 disabled:opacity-50"
+          >
+            {fetching ? strings.parts.loadingMore : strings.parts.loadMore}
+          </button>
+        </p>
+      )}
     </>
   )
 }
@@ -1512,7 +1543,7 @@ function InstanceStorage({
         <button
           type="button"
           onClick={onMeasure}
-          className="ease-mechanical mt-1 rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical mt-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.storage.measureOnDisk}
         </button>
@@ -1645,13 +1676,30 @@ function Card({
         )
       }
       /*
-        No border. The render is its own edge, and a box drawn around a picture is a second
-        frame competing with the first — so tiles are separated by the grid's gutter and by
-        the step from ground to surface, never by a line.
+        **A border, which reverses what stood here.** The old note argued that the render is
+        its own edge and a box around a picture is a second frame competing with the first.
+        That held while the render went edge to edge; `v2` insets it instead, so the card's
+        own ground is visible all the way round and the tile has no edge of its own left.
+        A hairline is what puts one back — and it is the thing that lifts on hover, which is
+        how a pointer says which tile it is on without moving the picture.
+
+        `--color-border` at rest and `--color-edge` under the pointer: the card is a control
+        and 1.4.11 wants 3:1 on the boundary that identifies one, but only while it is the
+        one being addressed. A wall of forty tiles all drawn at 3:1 is a grid of boxes
+        rather than a page of parts.
       */
-      className="ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px"
+      className="ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]"
     >
-      <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-bg)]">
+      {/*
+        The well the render sits in, one step *down* from the card and inset from it.
+
+        `v2` paints the thumbnail `center/86%` on `#17171b` rather than filling the tile:
+        the render floats with air around it, which is what makes a wall of parts read as
+        objects on shelves instead of as a mosaic. `p-[7%]` is the same 86% from the other
+        side, in the one unit that keeps it proportional as the density control changes the
+        column width.
+      */}
+      <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]">
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,
           // and "the worker has not rasterized this yet" is not one.
@@ -1813,7 +1861,7 @@ function QuickLook({
                 onClick={() => onRender(part.id)}
                 disabled={busy}
                 aria-label={strings.render.partFor(part.name)}
-                className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
               >
                 {strings.render.part}
               </button>
@@ -1826,7 +1874,7 @@ function QuickLook({
                   type="button"
                   onClick={onMove}
                   aria-label={strings.folders.moveToFor(part.name)}
-                  className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+                  className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
                 >
                   {strings.folders.moveTo}
                 </button>
@@ -1841,7 +1889,7 @@ function QuickLook({
         <Link
           to="/parts/$partId"
           params={{ partId: part.id }}
-          className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.quickLook.fullPage}
         </Link>

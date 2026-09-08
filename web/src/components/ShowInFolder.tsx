@@ -49,7 +49,7 @@ export function ShowInFolder({
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         aria-label={strings.folders.showInFolderFor(part.name)}
-        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.folders.showInFolder}
       </button>
@@ -70,7 +70,7 @@ export function ShowInFolder({
               // error state: the path is on screen and selectable either way.
               void navigator.clipboard?.writeText(path).catch(() => undefined)
             }}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
           >
             {strings.folders.copyPath}
           </button>

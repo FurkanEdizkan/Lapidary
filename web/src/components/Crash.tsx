@@ -22,7 +22,7 @@ export function Crash() {
       <button
         type="button"
         onClick={() => window.location.reload()}
-        className="ease-mechanical mt-4 rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical mt-4 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.crash.reload}
       </button>

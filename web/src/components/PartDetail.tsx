@@ -243,7 +243,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
                 name={field.name}
                 type={field.type}
                 step={field.type === 'number' ? '0.01' : undefined}
-                className="mt-0.5 block w-full rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+                className="mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
               />
             </label>
           ))}
@@ -251,7 +251,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             <button
               type="submit"
               disabled={add.isPending}
-              className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
             >
               {add.isPending ? strings.sources.saving : strings.sources.save}
             </button>
@@ -271,7 +271,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             setRefusal(null)
             setOpen(true)
           }}
-          className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.sources.add}
         </button>
@@ -358,7 +358,7 @@ export function Detail({
               <a
                 href={downloadUrl(part.revision)}
                 download
-                className="ease-mechanical inline-block rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+                className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
               >
                 {strings.download.original}
               </a>
@@ -639,7 +639,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
           type="button"
           onClick={() => picker.current?.click()}
           disabled={add.isPending}
-          className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
         >
           {add.isPending ? strings.images.adding : strings.images.add}
         </button>
@@ -650,7 +650,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
               setRefusal(null)
               setUrl('')
             }}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
           >
             {strings.images.addFromUrl}
           </button>
@@ -678,12 +678,12 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
             onChange={(event) => setUrl(event.target.value)}
             placeholder={strings.images.urlPlaceholder}
             aria-label={strings.images.urlLabel}
-            className="min-w-64 flex-1 rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+            className="min-w-64 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-xs"
           />
           <button
             type="submit"
             disabled={add.isPending || url.trim() === ''}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {add.isPending ? strings.images.fetching : strings.images.fetch}
           </button>

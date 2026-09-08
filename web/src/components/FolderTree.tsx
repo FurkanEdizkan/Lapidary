@@ -313,7 +313,7 @@ export function FolderTree({
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="ease-mechanical flex min-h-6 items-center rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical flex min-h-6 items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.folders.newCategory}
         </button>
@@ -772,7 +772,7 @@ function MoveRow({
         onClick={onMove}
         disabled={busy}
         aria-label={strings.folders.moveInto(name)}
-        className="ease-mechanical shrink-0 rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical shrink-0 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.folders.moveHere}
       </button>
@@ -910,7 +910,7 @@ function NameDialog({
           onChange={(event) => setName(event.target.value)}
           aria-label={strings.folders.createLabel}
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
         />
         {hint === undefined ? null : (
           <p className="mt-2 text-xs text-[var(--color-muted)]">{hint}</p>
@@ -926,7 +926,7 @@ function NameDialog({
           <button
             type="submit"
             disabled={busy || trimmed === ''}
-            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {confirm}
           </button>
@@ -953,7 +953,7 @@ function DialogButton({
       onClick={onClick}
       disabled={disabled}
       autoFocus={autoFocus}
-      className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
     >
       {children}
     </button>

@@ -1,60 +1,76 @@
-<!-- Implemented 2026-09-08. This file described a target for one day; the code now carries
-     it — Inter self-hosted, the display voice, the radius ladder, borderless tiles, the
-     reveal panel, the accent's expanded role, and the browser surfaces. What is still
-     outstanding is named in "What is not built yet" at the end of Overview, and it is short.
-     Two numbers in Layout were corrected against the build rather than the build against
-     them: the grid's own density was a considered decision older than this document. -->
+<!-- Superseded in part on 2026-09-08 by `Lapidary Library v2.dc.html`, the design project
+     at claude.ai/design/p/e221a512. The frontmatter below is updated to what the code now
+     carries; the prose sections after "Overview" still argue the v1 system and are marked
+     where they no longer match.
 
+     v2 is a refinement rather than a replacement — the same dark neutral register, lifted
+     off black, with the blue-grey cast taken out of the greys and a colder accent. What
+     actually changed: Archivo replaces Inter, JetBrains Mono arrives for every figure, the
+     grounds move up one step, tiles get a border back (v2 insets the render, so a tile has
+     no edge of its own any more), and a control radius joins the ladder.
+
+     Two of v2's values are NOT carried, and both are contrast: its fourth text grey
+     (#6a6a72) measures 3.2:1 on a card where SC 1.4.3 wants 4.5:1, and its control border
+     (#3a3a42) is 1.5:1 where 1.4.11 wants 3:1. PRODUCT.md commits to WCAG 2.2 AA. The
+     substitutes and the measurements are in `web/src/styles.css`. -->
 ---
 name: Lapidary
 description: A visual index for 3D part libraries, where the part is lit and the bench is not.
 colors:
-  anodised-black: "#0b0c0e"
-  machined-slate: "#131519"
-  scribe-line: "#24272d"
-  edge: "#606368"
-  chalk: "#e6e8ec"
-  graphite: "#9aa1ac"
-  layout-blue: "#6ea8fe"
+  anodised-black: "#121214"
+  machined-slate: "#1a1a1d"
+  bench-grey: "#17171b"
+  scribe-line: "#26262b"
+  edge: "#65656d"
+  chalk: "#e6e6e9"
+  quicklime: "#f0f0f2"
+  ash: "#c8c8ce"
+  graphite: "#8a8a92"
+  layout-blue: "#2cb4f5"
+  brass: "#e8b06a"
+  patina: "#4f9e94"
+  verdigris: "#8fd7d0"
+  oxide: "#e88a8a"
 typography:
   display:
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
-    fontSize: "clamp(1.75rem, 3vw, 2rem)"
-    fontWeight: 900
-    lineHeight: 1.05
-    letterSpacing: "-0.02em"
+    fontFamily: "Archivo, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+    fontSize: "0.75rem"
+    fontWeight: 700
+    lineHeight: 1
+    letterSpacing: "0.16em"
   headline:
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+    fontFamily: "Archivo, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
     fontSize: "1.25rem"
     fontWeight: 700
     lineHeight: 1.2
     letterSpacing: "-0.01em"
   title:
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+    fontFamily: "Archivo, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "normal"
   body:
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+    fontFamily: "Archivo, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.5
     letterSpacing: "normal"
   label:
-    fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+    fontFamily: "Archivo, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
     fontSize: "0.75rem"
     fontWeight: 500
     lineHeight: 1.2
     letterSpacing: "0.08em"
   mono:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-    fontSize: "0.75rem"
+    fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace"
+    fontSize: "0.65rem"
     fontWeight: 400
     lineHeight: 1.4
     letterSpacing: "normal"
 rounded:
   sm: "4px"
+  ctl: "7px"
   md: "10px"
   full: "9999px"
 spacing:
@@ -164,6 +180,9 @@ Blue. Nothing uses that licence yet.
 
 ## Colors
 
+<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
+     live system; the frontmatter above matches it. -->
+
 Six values, named for the machine shop the product serves. The greys are a single stepped
 ramp from unlit ground to hairline; there is no second hue anywhere in the system.
 
@@ -207,6 +226,9 @@ it leaves the screen rather than fading.
 line between them.
 
 ## Typography
+
+<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
+     live system; the frontmatter above matches it. -->
 
 **Display / Body Font:** Inter (with `-apple-system, BlinkMacSystemFont, Segoe UI, Roboto,
 sans-serif`)
@@ -285,6 +307,9 @@ from above — the light is on the parts, not on the furniture. The only shadow 
 overlay throws by being in front of the page rather than in it.
 
 ## Shapes
+
+<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
+     live system; the frontmatter above matches it. -->
 
 Three radii and no others. **4px** for chrome that must feel machined — buttons, inputs,
 selects, hairlined panels. **10px** for image tiles, which are the softest thing on screen

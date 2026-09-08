@@ -13,68 +13,137 @@
 */
 
 /*
-  Inter, self-hosted, variable.
+  Archivo and JetBrains Mono, self-hosted, both variable.
 
-  Self-hosted and not linked: Lapidary ships into air-gapped deployments, and a
-  `fonts.googleapis.com` link is a defect that only shows up on the one network that matters
-  most. One variable file per subset covers the whole 400–900 axis this system uses, so the
-  display voice costs no extra request over the body voice.
+  Self-hosted and not linked: Lapidary ships into air-gapped deployments, and the
+  `fonts.googleapis.com` link the design file carries in its `<helmet>` is a defect that
+  only shows up on the one network that matters most. One variable file per subset covers
+  the whole weight axis each face uses, so the display voice costs no extra request over
+  the body voice.
 
-  Two subsets, because Turkish is the planned second locale: `latin` carries the body of the
-  interface and `latin-ext` carries ı, İ, ş, ğ — the characters that would otherwise fall
-  back mid-word to a different face. `swap` because a parts grid is legible in the fallback
-  and a blocking font is a blank screen over a local network hiccup.
+  Vendored from `@fontsource-variable/*` (jsDelivr), same as Inter was before them, and
+  committed rather than installed: `web/public/fonts/` is the pin. Archivo replaces Inter
+  outright — the v2 design specifies it, and two humanist sans faces in one build is one
+  more than the interface can use. Inter's files are deleted in the same commit.
+
+  Two subsets each, because Turkish is the planned second locale: `latin` carries the body
+  of the interface and `latin-ext` carries İ, ş, ğ — the characters that would otherwise
+  fall back mid-word to a different face. (ı is U+0131 and rides in `latin`.) `swap`
+  because a parts grid is legible in the fallback and a blocking font is a blank screen
+  over a local network hiccup.
+
+  JetBrains Mono is not decoration. Every figure in this interface is a measurement or a
+  count being compared against another one, and the design sets all of them in mono for
+  the reason `.tabular` already existed: a column of proportional digits is ragged.
 */
 @font-face {
-  font-family: "Inter";
+  font-family: "Archivo";
   font-style: normal;
-  font-weight: 400 900;
+  font-weight: 400 700;
   font-display: swap;
-  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  src: url("/fonts/archivo-latin-wght-normal.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Archivo";
   font-style: normal;
-  font-weight: 400 900;
+  font-weight: 400 700;
   font-display: swap;
-  src: url("/fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
-    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
-    U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: url("/fonts/archivo-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/*
+  The palette, from `Lapidary Library v2.dc.html`.
+
+  It is a refinement of what was here rather than a replacement: the same dark neutral
+  register, lifted a little off black, with the blue-grey cast taken out of the greys and
+  a brighter, colder accent. Three greys of text, not four — see `--color-muted`.
+*/
 @theme {
-  --color-bg: #0b0c0e;
-  --color-surface: #131519;
-  --color-border: #24272d;
-  --color-text: #e6e8ec;
-  --color-muted: #9aa1ac;
-  --color-accent: #6ea8fe;
-
+  --color-bg: #121214;
+  --color-surface: #1a1a1d;
   /*
-    The second border, and the reason there are two.
-
-    `--color-border` is a scribe line: a divider between things, at 1.22:1 against a raised
-    surface. That is right for a rule and wrong for the *boundary of a control* — WCAG 2.2
-    SC 1.4.11 asks for 3:1 there, and PRODUCT.md commits to AA. An input, a select, the drop
-    target and a button are identified only by their edge, so their edge has to be visible
-    to someone who cannot see 1.2:1. Measured: 3.24:1 on the ground, 3.03:1 on a surface.
-
-    Dividers keep the hairline. Only things you can operate get this one.
+    Between the ground and a card: the sign-in panel, the sidebar and the inspector rail
+    all sit on this in the design. A third ground rather than reusing `surface`, because a
+    card *on* the rail has to read as raised and two identical values cannot say that.
   */
-  --color-edge: #606368;
+  --color-raised: #17171b;
+  --color-border: #26262b;
 
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --color-text: #e6e6e9;
+  /* Headings and the one value a row exists to show. */
+  --color-bright: #f0f0f2;
+  /* Body copy that is not a label — notes, blurbs, secondary sentences. */
+  --color-dim: #c8c8ce;
+  /*
+    **The design's fourth grey is not here, and that is deliberate.**
+
+    `v2` sets small mono captions in `#6a6a72`. Measured against the grounds it actually
+    sits on that is 3.24:1 on a card and 3.49:1 on the page — under the 4.5:1 SC 1.4.3
+    asks of body text, and these are 9–10.5px, so no large-text exemption applies. Lifting
+    it to pass lands on `#82828a`, eight values off `#8a8a92`, which is a distinction
+    nobody can see. So the tier collapses into this one and the system keeps three text
+    greys, all of which clear AA: 14.0:1, 10.4:1 and 5.1:1 on a card.
+  */
+  --color-muted: #8a8a92;
+  --color-accent: #2cb4f5;
 
   /*
-    Three radii and no others. 4px for chrome that must feel machined, 10px for image tiles —
-    the softest thing on screen, because they hold the only organic content — and a pill for
-    filter chips, where the shape carries "one choice among a set" without needing a border.
+    The boundary of a control, at 3:1 per SC 1.4.11 — the same job the old `#606368` did.
+    Lifted with the palette rather than carried over: the surfaces moved up, and `#606368`
+    measures 2.88:1 against `#1a1a1d`, which is a promise this token had been keeping and
+    would have quietly stopped keeping. `#65656d` is 3.01:1 on a card, 3.24:1 on the page.
+
+    The design's own control border is `#3a3a42` at 1.54:1. Dividers may look like that;
+    a thing you can operate may not.
+  */
+  --color-edge: #65656d;
+
+  /*
+    Four semantics, each earned by a state the interface actually has. Measured on a card:
+    9.0, 5.5, 10.6, 6.9 — all clear 4.5:1, so any of them may carry text.
+  */
+  --color-warn: #e8b06a;
+  --color-good: #4f9e94;
+  --color-info: #8fd7d0;
+  --color-bad: #e88a8a;
+
+  --font-sans: "Archivo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /*
+    Three radii and no others. 4px for chips and chrome that must feel machined, 7px for
+    things you operate — buttons, rows, small thumbnails — and 10px for the cards that hold
+    the only organic content on screen. Filter chips take a pill, where the shape carries
+    "one choice among a set" without needing a border.
   */
   --radius-sm: 4px;
+  --radius-ctl: 7px;
   --radius-md: 10px;
 
   --ease-mechanical: cubic-bezier(0.2, 0, 0, 1);
@@ -226,7 +295,13 @@ a {
   Figures that line up column to column. Every number in this interface is a measurement or a
   count being compared against another one — triangle counts, byte sizes, page numbers — and
   proportional digits make a column of them ragged.
+
+  The mono face as well as the figure setting, which is what `v2` does everywhere a number
+  appears: `tabular-nums` lines the digits up, and the face is what makes a part number and
+  a dimension read as data rather than as prose. `font-feature-settings` off nothing — the
+  variable file's default is what the design was drawn against.
 */
 .tabular {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }

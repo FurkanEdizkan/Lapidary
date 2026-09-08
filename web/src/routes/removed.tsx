@@ -148,7 +148,7 @@ function RemovedRow({ card }: { card: PartCard }) {
         type="button"
         onClick={() => restore.mutate()}
         disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {restore.isPending ? strings.removal.restoring : strings.removal.restore}
       </button>
@@ -163,7 +163,7 @@ function RemovedRow({ card }: { card: PartCard }) {
           }
         }}
         disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {purge.isPending ? strings.removal.purging : strings.removal.purge}
       </button>
