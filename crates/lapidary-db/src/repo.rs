@@ -2401,6 +2401,31 @@ impl PartRepository for PgParts {
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
         //
+        // # The four tiers, and why they are 8/4/2/1 rather than 4/2/1
+        //
+        // Identifier, then title, then word, then filename — a part's name is usually
+        // derived from its filename, so a path hit that is *not* also a name hit is the
+        // weaker signal by construction: a directory fragment, or a filename that outlived
+        // a rename of the part.
+        //
+        // **The tiers double because they must sum without crossing.** When `source_path`
+        // joined at 1 under the old 4/2/1, the tiers stopped being ordered: `source_path`
+        // repeats the filename that a part's `name` was derived from, so a name hit almost
+        // always carries a path hit *and* a `tsvector` hit with it — 2 + 1 + 1 + `ts_rank`
+        // is more than the 4 a bare `part_number` match scores, and the part merely *named*
+        // for a fragment overtook the part identified by it. That is `ROADMAP.md`'s Phase 2
+        // exit criterion, and the test guarding it is what caught this.
+        //
+        // Powers of two fix it by construction rather than by argument: every lower tier
+        // added together (4 + 2 + 1) is less than the tier above them, so no accumulation
+        // of weak evidence can outrank one strong match. Which is what a tier *is*.
+        //
+        // `least(…, 0.999)` is the same property for the fraction. `ts_rank` is documented
+        // as unbounded — it grows with the number of matching query terms, measured at 0.24
+        // for one and 0.40 for six on this corpus — and one that reached 1.0 would carry a
+        // tsvector hit into the tier above it. Capping it keeps it what it is meant to be:
+        // a tiebreaker *within* the word tier, never a promotion out of it.
+        //
         // # The three things that make this query the shape it is
         //
         // **1. `coalesce(part_number, '')` belongs in the rank and must NOT be in the
@@ -2454,15 +2479,17 @@ impl PartRepository for PgParts {
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
              hits AS ( \
                SELECT p.id, \
-                      ( (coalesce(p.part_number, '') ILIKE $9)::int * 4 \
-                      + (p.name ILIKE $9)::int * 2 \
-                      + (p.search @@ plainto_tsquery('simple', $8))::int \
-                      + ts_rank(p.search, plainto_tsquery('simple', $8)) ) AS rank \
+                      ( (coalesce(p.part_number, '') ILIKE $9)::int * 8 \
+                      + (p.name ILIKE $9)::int * 4 \
+                      + (p.search @@ plainto_tsquery('simple', $8))::int * 2 \
+                      + (p.source_path ILIKE $9)::int \
+                      + least(ts_rank(p.search, plainto_tsquery('simple', $8)), 0.999) ) AS rank \
                  FROM part p \
                 WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                   AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
+                     OR p.source_path ILIKE $9 \
                      OR p.search @@ plainto_tsquery('simple', $8) ) ), \
              anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
              top AS ( \

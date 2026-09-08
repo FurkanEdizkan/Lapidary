@@ -2916,6 +2916,13 @@ async fn seed_named(
 ///
 /// The decoy is the point. Without it, "returns it" passes with one row in the table and
 /// says nothing about *position one*.
+///
+/// It has since become the guard on the tier *arithmetic* as well, and that was not
+/// planned. The decoy matches three ways at once — its name, its `source_path` (which
+/// `seed_part` sets to the name, as a real ingest very nearly does) and its `tsvector` —
+/// so it is the row that goes first if the weak tiers can ever sum past a strong one.
+/// Adding `source_path` to the rank made exactly that happen under the old 4/2/1 weights,
+/// and this assertion is what said so. Do not simplify the decoy.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_part_number_fragment_returns_the_part_at_position_one(pool: sqlx::PgPool) {
     seed_named(&pool, 0xd1, "Bracket 1234 mount", None).await;
@@ -3070,5 +3077,117 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
             .len(),
         1,
         "and present on the list that exists to get it back"
+    );
+}
+
+/// One part whose file on disk is named nothing like the part.
+///
+/// `seed_part` passes `source_path: name`, so in every other search test in this file the
+/// two columns hold the same string — and a query that searched only the path would pass
+/// all of them. This is the seed that can tell the terms apart.
+async fn seed_pathed(pool: &sqlx::PgPool, blob: u8, name: &str, source_path: &str) -> PartId {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name,
+            source_path,
+            blob: &blob_row(blob),
+            measurements: &watertight(),
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("records")
+}
+
+/// **`FEATURES.md` §2: "Trigram search for part numbers and filenames", Phase 1.**
+///
+/// `0016` built the part-number half and the name half. The filename half was the row's
+/// second noun and had never worked: `part.search` covers `part_number` and `name` only
+/// (`0002`), so a person who knows the file they downloaded — and often knows nothing
+/// else about it — could not find it by that name.
+///
+/// The decoy is a part whose *name* contains the fragment, so this cannot pass by finding
+/// everything: only the path term can reach the first row, and only the name term the
+/// second.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_fragment_of_a_filename_finds_the_part_it_names(pool: sqlx::PgPool) {
+    let by_path = seed_pathed(
+        &pool,
+        0xe1,
+        "Motor mount, stepper",
+        "motors/nema-17/nema-17-motor-mount.stl",
+    )
+    .await;
+    seed_pathed(
+        &pool,
+        0xe2,
+        "Coupler, flexible",
+        "couplers/rigid-coupler-8mm.stl",
+    )
+    .await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "nema-17", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        vec![by_path],
+        "the fragment is in no name and no part number — the path is the only column holding it"
+    );
+}
+
+/// A directory name is searchable, which is the other half of what the path buys.
+///
+/// A person who filed everything under `brackets/steel` can ask for it, and no other
+/// column in this table has ever held that string: the folder tree knows it, but the
+/// folder tree is a filter rather than a search term.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_directory_fragment_finds_what_is_filed_under_it(pool: sqlx::PgPool) {
+    let filed = seed_pathed(&pool, 0xe3, "Angle bracket", "brackets/steel/angle-90.stl").await;
+    seed_pathed(&pool, 0xe4, "Vee block", "fixtures/aluminium/vee-block.stl").await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "brackets/steel", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        vec![filed]
+    );
+}
+
+/// The tier, asserted as an order rather than trusted as an arithmetic argument.
+///
+/// A path hit scores 1 flat and a name hit 2, so the part *named* for the fragment comes
+/// first. Which is right: a part's name is usually derived from its filename, so a path
+/// hit that is not also a name hit is the weaker signal by construction.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_name_that_matches_outranks_a_path_that_matches(pool: sqlx::PgPool) {
+    let by_path = seed_pathed(
+        &pool,
+        0xe5,
+        "Stepper adapter",
+        "motors/nema-17/adapter-plate.stl",
+    )
+    .await;
+    let by_name = seed_pathed(&pool, 0xe6, "nema-17 mount plate", "plates/mount.stl").await;
+
+    let found = PgParts(pool)
+        .search(library(), None, "nema-17", None, 50, Shows::Live)
+        .await
+        .expect("searches");
+
+    assert_eq!(
+        found.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        vec![by_name, by_path],
+        "name scores 2, path scores 1"
     );
 }
