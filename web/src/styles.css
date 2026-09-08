@@ -113,6 +113,39 @@
 }
 
 /*
+  The panel's arrival.
+
+  A dialog that pops has no relationship to the thing that opened it. The scrim fades and the
+  box rises four pixels — enough to read as "this came forward", short enough that nobody
+  waits for it. `--duration-base`, because an overlay opening is a routine state change; the
+  render carried across inside it is the authored moment and it gets `--duration-slow`.
+
+  Keyframes rather than a transition, because there is no previous state to transition from:
+  the element is portalled into the document already open.
+*/
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .scrim-in {
+    animation: scrim-in var(--duration-fast) var(--ease-mechanical);
+  }
+  .panel-in {
+    animation: panel-in var(--duration-base) var(--ease-mechanical);
+  }
+}
+
+/*
   The surfaces nobody draws.
 
   Selection, the caret, scrollbars, placeholders and the focus ring all ship with browser

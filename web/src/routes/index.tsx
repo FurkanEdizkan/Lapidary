@@ -1,6 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
   batchEventsUrl,
@@ -19,6 +19,7 @@ import {
   setAutoThumbnail,
   startScan,
 } from '../lib/api'
+import { flipFrom } from '../lib/flip'
 import { Dialog } from '../components/Dialog'
 import { Detail } from '../components/PartDetail'
 import {
@@ -1551,6 +1552,13 @@ function Grid({
   )
 }
 
+/**
+ * The origin for a tile with no render yet. `flipFrom` declines on a zero-area rectangle, so
+ * a part still waiting on the worker opens its panel without a flight rather than bursting
+ * out of a point.
+ */
+const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
+
 function Card({
   part,
   onRender,
@@ -1564,7 +1572,9 @@ function Card({
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
-  const [looking, setLooking] = useState(false)
+  // The rect the panel's render should fly from, or `null` when the panel is closed. A rect
+  // rather than a boolean because "open" and "opened from here" are the same event.
+  const [looking, setLooking] = useState<DOMRect | null>(null)
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -1586,7 +1596,11 @@ function Card({
       onClick={(event) => {
         if (!(event.target instanceof Element)) return
         if (event.target.closest('a, button, input')) return
-        setLooking(true)
+        // Measured here rather than in the panel, because by the time the panel exists this
+        // tile may have been scrolled, re-laid-out by a density change, or replaced by the
+        // next page. Where the render *was* when it was clicked is the only honest origin.
+        const render = event.currentTarget.querySelector('img')
+        setLooking(render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
       }}
       draggable={movable}
       onDragStart={(event) =>
@@ -1654,16 +1668,17 @@ function Card({
           to it for as long as the pointer stayed over the card. Nothing here may hoist that
           markup back out of the portal.
         */}
-        {looking ? (
+        {looking === null ? null : (
           <QuickLook
             part={part}
+            from={looking}
             hostRoot={hostRoot}
             busy={busy}
             onRender={onRender}
             onMove={movable ? () => setMoving(true) : null}
-            onClose={() => setLooking(false)}
+            onClose={() => setLooking(null)}
           />
-        ) : null}
+        )}
         {moving ? (
           <MovePartDialog
             part={{ id: part.id, name: part.name }}
@@ -1696,6 +1711,7 @@ function Card({
  */
 function QuickLook({
   part,
+  from,
   hostRoot,
   busy,
   onRender,
@@ -1703,6 +1719,8 @@ function QuickLook({
   onClose,
 }: {
   part: PartCard
+  /** Where this part's render sat on the grid when it was clicked. */
+  from: DOMRect
   hostRoot: string | null
   busy: boolean
   onRender: (id: PartId) => void
@@ -1714,8 +1732,22 @@ function QuickLook({
     queryKey: ['part', part.id],
     queryFn: () => fetchPartDetail(part.id),
   })
+  const panel = useRef<HTMLDivElement>(null)
+  /*
+    The authored moment, and the only one in the application.
+
+    `useLayoutEffect` and not `useEffect`: the render has to be measured and moved in the
+    same frame it is painted, or it lands at its destination first and then jumps back to
+    begin the flight. Keyed on the detail arriving, because the image does not exist until
+    then — the panel is open and empty for as long as the fetch takes.
+  */
+  useLayoutEffect(() => {
+    const image = panel.current?.querySelector('img')
+    if (image != null) flipFrom(image, from)
+  }, [detail.data, from])
   return (
     <Dialog title={part.name} onClose={onClose}>
+      <div ref={panel}>
       {detail.isPending ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
       ) : detail.isError ? (
@@ -1760,6 +1792,7 @@ function QuickLook({
           }
         />
       )}
+      </div>
       <ShowInFolder part={part} hostRoot={hostRoot} />
       <div className="mt-4 flex justify-end gap-2">
         <Link

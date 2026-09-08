@@ -160,7 +160,7 @@ Blue. Nothing uses that licence yet.
 - One saturated colour, reserved for live interaction
 - Flat by tonal layering; no shadow except beneath an overlay
 - Image tiles borderless and edge-to-edge; chrome tiles hairlined
-- Motion is mechanical: transform and opacity, 120/180 ms, always reduced-motion aware
+- Motion is mechanical: transform and opacity, 120/180/280 ms, always reduced-motion aware
 
 ## Colors
 
@@ -373,6 +373,24 @@ render, move, pictures, source links, the storage path — over a scrim, closabl
 control in its corner, by the scrim, or by Escape. Owner decision, 2026-09-08. Depth lives on
 the part's own page, one link away; the panel is for deciding and acting without leaving the
 wall of parts.
+
+**The render flies in from the tile, and it is the system's one authored moment.** The scrim
+fades at 120 ms and the box rises four pixels at 180 ms — routine, unnoticed. The part's
+render then travels from the rectangle the tile occupied to the one the panel gives it, at
+280 ms on the mechanical curve. It is a single `transform`, measured at the click rather than
+when the panel mounts, because by then the grid may have scrolled underneath it.
+
+This is the only place `--duration-slow` is spent. A panel opening is not a state change, so
+the 180 ms ceiling does not bind it; it is the longest move the system makes, and carrying
+the picture is the thing worth making it for. Under reduced motion the flight does not
+happen — there is no gentler version of a 300-pixel journey — while the panel still opens and
+every state transition that carries meaning still runs.
+
+### Named Rules
+
+**The Carried Picture Rule.** When a surface opens *about* something on screen, the thing
+itself moves into it. A panel that merely appears makes a person look back at the grid to
+check they opened what they meant to.
 
 ## Do's and Don'ts
 
