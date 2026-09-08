@@ -643,12 +643,14 @@ test('Tab stays inside the dialog and comes back when focus has fallen out of it
     await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
   )
   const dialog = screen.getByRole('dialog')
-  const cancel = within(dialog).getByRole('button', { name: strings.folders.cancel })
+  // Close is first in the box, and that is deliberate: the way out should not be behind
+  // the destructive control. Escape worked before it existed and said so nowhere.
+  const close = within(dialog).getByRole('button', { name: strings.dialog.close })
   const confirm = within(dialog).getByRole('button', { name: strings.folders.deleteConfirm })
 
   confirm.focus()
   fireEvent.keyDown(document, { key: 'Tab' })
-  expect(document.activeElement).toBe(cancel)
+  expect(document.activeElement).toBe(close)
 
   fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
   expect(document.activeElement).toBe(confirm)
@@ -658,7 +660,34 @@ test('Tab stays inside the dialog and comes back when focus has fallen out of it
   // page.
   dialog.focus()
   fireEvent.keyDown(document, { key: 'Tab' })
-  expect(document.activeElement).toBe(cancel)
+  expect(document.activeElement).toBe(close)
+})
+
+/**
+ * The mouse's way out, which did not exist. Escape was the only dismissal, so every dialog
+ * in the application was keyboard-only to leave and impossible to leave on touch.
+ */
+test('the scrim and the close control both dismiss the dialog', async () => {
+  stubFetch({ folders: ok([TERRAIN, ROCKS]), folderDelete: pending })
+  renderTree()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
+  )
+  fireEvent.click(
+    within(screen.getByRole('dialog')).getByRole('button', { name: strings.dialog.close }),
+  )
+  expect(screen.queryByRole('dialog')).toBeNull()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.deleteFor(TERRAIN.name) }),
+  )
+  // The scrim, not the box: a click that lands on the panel itself must not close it.
+  const box = screen.getByRole('dialog')
+  fireEvent.click(box)
+  expect(screen.queryByRole('dialog')).not.toBeNull()
+  fireEvent.click(box.parentElement as HTMLElement)
+  expect(screen.queryByRole('dialog')).toBeNull()
 })
 
 /**

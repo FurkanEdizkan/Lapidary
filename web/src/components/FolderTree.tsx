@@ -313,7 +313,7 @@ export function FolderTree({
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="ease-mechanical rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical flex min-h-6 items-center rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.folders.newCategory}
         </button>
@@ -906,7 +906,7 @@ function NameDialog({
           onChange={(event) => setName(event.target.value)}
           aria-label={strings.folders.createLabel}
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
         />
         {hint === undefined ? null : (
           <p className="mt-2 text-xs text-[var(--color-muted)]">{hint}</p>

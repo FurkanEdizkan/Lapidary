@@ -42,6 +42,19 @@
   --color-muted: #9aa1ac;
   --color-accent: #6ea8fe;
 
+  /*
+    The second border, and the reason there are two.
+
+    `--color-border` is a scribe line: a divider between things, at 1.22:1 against a raised
+    surface. That is right for a rule and wrong for the *boundary of a control* — WCAG 2.2
+    SC 1.4.11 asks for 3:1 there, and PRODUCT.md commits to AA. An input, a select, the drop
+    target and a button are identified only by their edge, so their edge has to be visible
+    to someone who cannot see 1.2:1. Measured: 3.24:1 on the ground, 3.03:1 on a surface.
+
+    Dividers keep the hairline. Only things you can operate get this one.
+  */
+  --color-edge: #606368;
+
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
   /*
@@ -67,6 +80,12 @@
 }
 
 /*
+  **Wrapped in `@layer base`, and that is load-bearing rather than tidy.** Tailwind emits its
+  utilities inside `@layer utilities`; an unlayered declaration beats a layered one whatever
+  its specificity. This block sat unlayered, so it won against every
+  `duration-[var(--duration-fast)]` in the application and every one of them computed to
+  180ms. The 120ms in `CLAUDE.md`'s motion spec had never once run.
+
   Transform and opacity only, per CLAUDE.md — `translate` is the first of those two and not
   a third property. Tailwind 4 compiles `-translate-y-px` and `-translate-y-0.5` to the
   independent `translate` property rather than to a `transform` function, so a list naming
@@ -74,12 +93,14 @@
   one of them snapped, under comments claiming 120 ms. Naming both is what makes those
   comments true.
 */
-*,
-*::before,
-*::after {
-  transition-timing-function: var(--ease-mechanical);
-  transition-duration: var(--duration-base);
-  transition-property: transform, translate, opacity;
+@layer base {
+  *,
+  *::before,
+  *::after {
+    transition-timing-function: var(--ease-mechanical);
+    transition-duration: var(--duration-base);
+    transition-property: transform, translate, opacity;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
