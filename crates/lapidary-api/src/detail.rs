@@ -97,6 +97,17 @@ pub struct PartDetail {
     pub tessellation_l0: Option<BlobHash>,
     #[ts(type = "number | null")]
     pub tessellation_l0_bytes: Option<u64>,
+    /// The model's own directory in the store, relative to the storage root.
+    ///
+    /// Relative and never an absolute host path: the api runs in a container and its view
+    /// of the filesystem is not the operator's. `LAPIDARY_HOST_STORAGE_ROOT` is what turns
+    /// this into something a person can paste, and the client joins them.
+    ///
+    /// `None` for a part whose bytes are still content-addressed — it has no directory of
+    /// its own to show, and inventing one would be confidently wrong.
+    pub directory: Option<String>,
+    /// The directory above with the model's filename back on. `None` alongside `directory`.
+    pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -163,6 +174,8 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         compressed: row.compressed,
         tessellation_l0: row.tessellation_l0,
         tessellation_l0_bytes: row.tessellation_l0_bytes,
+        directory: row.directory,
+        storage_path: row.storage_path,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }

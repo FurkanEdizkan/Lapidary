@@ -625,9 +625,13 @@ function FolderButton({
  * The per-card move path, and the reason drag is not the only one.
  *
  * Drag into a scrolled tree is a poor trackpad target and impossible from a keyboard, so
- * this is not a fallback: it is the complete path, reachable by tab and operable by
- * Enter. Plain buttons in a labelled list rather than `role="menu"` — that role promises
- * arrow-key navigation this would then owe.
+ * this is not a fallback: it is the complete path, reachable by tab and operable by Enter.
+ * Plain buttons in a labelled list rather than `role="menu"` — that role promises arrow-key
+ * navigation this would then owe.
+ *
+ * "Reachable by tab" is true through `parts.$partId.tsx` and only through it. The grid's
+ * panel also opens this dialog, but the panel opens on a click of a tile with no key
+ * handler, so the page is the keyboard's route to it. This sentence was false for a day.
  */
 export function MovePartDialog({
   part,
@@ -768,7 +772,7 @@ function MoveRow({
         onClick={onMove}
         disabled={busy}
         aria-label={strings.folders.moveInto(name)}
-        className="ease-mechanical shrink-0 rounded border border-[var(--color-border)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical shrink-0 rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.folders.moveHere}
       </button>
@@ -922,7 +926,7 @@ function NameDialog({
           <button
             type="submit"
             disabled={busy || trimmed === ''}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {confirm}
           </button>
@@ -949,7 +953,7 @@ function DialogButton({
       onClick={onClick}
       disabled={disabled}
       autoFocus={autoFocus}
-      className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
     >
       {children}
     </button>

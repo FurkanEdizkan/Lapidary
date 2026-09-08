@@ -10,6 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{LibraryId, PartId, RevisionId};
+use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow};
 use tower::ServiceExt;
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -226,4 +227,68 @@ async fn the_worker_role_serves_no_detail_route(pool: sqlx::PgPool) {
         .await
         .expect("router responds");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// The two fields the "show in folder" and "move to…" controls are built on.
+///
+/// Written after they shipped without a check: `s.storage_path` was selected from a
+/// LATERAL that never produced the column, and the six tests that caught it are about
+/// provenance and deletion — every one of them failed with a 500 that named nothing.
+/// A page's own claim about where its bytes sit needs an assertion that says so.
+///
+/// Ingested rather than hand-inserted, because `directory` is derived from
+/// `file.storage_path` and only the ingest path writes that column the way the query
+/// reads it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_page_names_the_file_on_disk_and_the_directory_holding_it(pool: sqlx::PgPool) {
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: Some("libraries/default/vee-block-lp-3072-02/vee-block-lp-3072-02.stl"),
+            library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid")),
+            name: "Vee block, LP-3072-02",
+            source_path: "vee-block-lp-3072-02.stl",
+            blob: &StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([0x5a; 32]),
+                size_bytes: 82_144,
+                stored_bytes: 82_144,
+                zstd_level: 0,
+            },
+            measurements: &lapidary_core::MeshMeasurements {
+                bbox_mm: [60.0, 60.0, 40.0],
+                triangle_count: 1_648,
+                surface_area_mm2: 18_400.0,
+                volume_mm3: Some(64_800.0),
+                is_watertight: true,
+            },
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("a part with a source file on disk");
+
+    let (status, json) = get(pool, &part.to_string()).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["storagePath"],
+        "libraries/default/vee-block-lp-3072-02/vee-block-lp-3072-02.stl"
+    );
+    // The parent, and not a path assembled from slugs on the client: a store that has not
+    // been migrated to this layout yet has no directory to name, and only the server knows.
+    assert_eq!(json["directory"], "libraries/default/vee-block-lp-3072-02");
+}
+
+/// A part ingested before the store had a layout still has a page. Both fields are absent
+/// rather than guessed — the same rule the measurement labelling follows.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_whose_bytes_are_content_addressed_names_no_directory(pool: sqlx::PgPool) {
+    let part = seed(&pool, true, Some(21478.5), Some("tessellated")).await;
+    let (status, json) = get(pool, &part.to_string()).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["storagePath"], serde_json::Value::Null);
+    assert_eq!(json["directory"], serde_json::Value::Null);
 }
