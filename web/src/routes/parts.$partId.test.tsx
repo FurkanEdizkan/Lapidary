@@ -63,16 +63,23 @@ beforeEach(() => {
  * these tests — the gallery query had not resolved by the time they asserted — which is the
  * kind of latent flake worth closing at the stub rather than discovering later.
  */
-function stub(part: PartDetail | number, images: unknown[] = []) {
+function stub(
+  part: PartDetail | number,
+  images: unknown[] = [],
+  /** Which of the page's two secondary fetches should fail, for the tests that need one to. */
+  broken: { images?: boolean; sources?: boolean } = {},
+) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
       if (url.endsWith('/images')) {
+        if (broken.images) return { ok: false, status: 503, json: async () => ({}) }
         return { ok: true, status: 200, json: async () => images }
       }
       // The page reads its sources too. Same reason as the gallery above: a stub that
       // answered this with a `PartDetail` would hand `[].map` an object.
       if (url.endsWith('/sources')) {
+        if (broken.sources) return { ok: false, status: 503, json: async () => ({}) }
         return { ok: true, status: 200, json: async () => [] }
       }
       return typeof part === 'number'
@@ -512,4 +519,49 @@ test('show storage path reveals the part path on the detail page', async () => {
     await screen.findByRole('button', { name: strings.folders.showInFolderFor(PART.name) }),
   )
   expect(await screen.findByText(PART.storagePath as string)).toBeTruthy()
+})
+
+
+/**
+ * SC 2.4.2, Level A. `index.html` ships one static `<title>` for the whole application,
+ * and `document.title` reads the *first* title in tree order — so this seeds that tag
+ * before rendering. Without it the assertion passes in an empty jsdom head whether the
+ * route sets a title or not, which is a check that cannot fail.
+ */
+test('the tab carries the part name, not the application name', async () => {
+  document.head.innerHTML = '<title>Lapidary</title>'
+  stub(PART)
+  renderPage()
+
+  await waitFor(() => expect(document.title).toBe('Bearing block, 608ZZ — Lapidary'))
+})
+
+/** A part page that has not resolved yet must not name a part it does not have. */
+test('the tab does not guess a name before the page has one', async () => {
+  document.head.innerHTML = '<title>Lapidary</title>'
+  stub(404)
+  renderPage()
+
+  await screen.findByText(strings.detail.failed)
+  expect(document.title).toBe('Part — Lapidary')
+})
+
+/**
+ * `sources.data ?? []` reads a failed fetch as a part with nothing recorded. The licence
+ * is the field this section exists for — `docs/DATA.md` is emphatic that somebody selling
+ * prints needs to see a non-commercial licence before they print — so "we could not load
+ * it" and "there is none" have to be different sentences.
+ */
+test('sources that could not be loaded do not read as sources that do not exist', async () => {
+  stub(PART, [], { sources: true })
+  renderPage()
+
+  await screen.findByText(strings.sources.failed)
+})
+
+test('a gallery that could not be loaded does not read as a part with no pictures', async () => {
+  stub(PART, [], { images: true })
+  renderPage()
+
+  await screen.findByText(strings.images.galleryFailed)
 })

@@ -52,6 +52,17 @@ export function PartPage({ partId }: { partId: string }) {
 
   return (
     <section>
+      {/*
+        The part's own name, once the fetch has it. Rendered rather than assigned: React 19
+        hoists a `<title>` from wherever it is written and removes it on unmount, so this
+        needs neither a router head option nor a loader — which is what it would have taken
+        to get the name into the title, since this page fetches inside the component.
+
+        SC 2.4.2, Level A. `null` while it loads, because a title is not a place to guess:
+        a tab that says `LP-1042-03` before the page knows the name would be lying on the
+        one part page that turns out to 404.
+      */}
+      <title>{strings.titles.part(part.data?.name ?? null)}</title>
       <Link
         to="/"
         className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"

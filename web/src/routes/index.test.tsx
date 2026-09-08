@@ -3073,3 +3073,43 @@ test("the quick-look reads a source without offering to record one", async () =>
     within(dialog).queryByRole("button", { name: strings.sources.add }),
   ).toBeNull();
 });
+
+/**
+ * SC 2.4.2, Level A, with `index.html`'s static tag seeded first: `document.title` reads
+ * the first `<title>` in tree order, so in an empty jsdom head this passes whether or not
+ * the route sets one.
+ */
+test("the tab says which page this is", async () => {
+  document.head.innerHTML = "<title>Lapidary</title>";
+  stubFetch({});
+  renderIndex();
+
+  await waitFor(() => expect(document.title).toBe(strings.titles.library));
+});
+
+/**
+ * SC 2.4.1, Level A. The category tree comes before the grid in the source order and is
+ * dozens of tab stops that repeat on every visit, so without this the keyboard route to
+ * the first part runs through every category in the library.
+ *
+ * Asserted as position and target rather than as appearance: jsdom applies no stylesheet,
+ * so whether the link is off-screen until focused is not a fact this environment holds. It
+ * has to be the FIRST focusable element — a bypass link that is not first bypasses
+ * nothing — and its target has to be focusable, since a fragment link that moves the
+ * viewport without moving focus leaves a keyboard user exactly where they were.
+ */
+test("the first tab stop skips the category tree", async () => {
+  stubFetch({});
+  const { container } = renderIndex();
+
+  await screen.findByRole("link", { name: strings.skipToParts });
+  const focusable = container.querySelectorAll(
+    'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  );
+  expect(focusable[0]?.textContent).toBe(strings.skipToParts);
+  expect(focusable[0]?.getAttribute("href")).toBe("#parts");
+
+  const target = container.querySelector("#parts");
+  expect(target).not.toBeNull();
+  expect(target?.getAttribute("tabindex")).toBe("-1");
+});
