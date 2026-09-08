@@ -116,7 +116,7 @@ export function Dialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6"
+      className="scrim-in fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6"
       /*
         The scrim dismisses. `event.target === event.currentTarget` so only the scrim itself
         counts — a click that started inside the box and released out here is a drag, not a
@@ -140,7 +140,7 @@ export function Dialog({
             current.focus()
           }
         }}
-        className="w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+        className="panel-in w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id={titleId} className="text-sm font-medium">
