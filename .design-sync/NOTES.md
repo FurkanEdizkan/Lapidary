@@ -43,13 +43,17 @@ empty API contract, which is worse than useless to the design agent. All four co
 therefore have hand-written bodies in `cfg.dtsPropsFor`. **When a component's props change
 in source, update `dtsPropsFor` in the same commit** — nothing checks this automatically.
 
-## When the upload finally runs
+## Upload
 
-Nothing has been uploaded yet and **no project exists** — the first run had no
-`DesignSync` authorization (`/design-login` was never completed in that session). There is
-deliberately **no `projectId` in `config.json`**: the un-anchored state is intentional and
-safe, not an interrupted upload. The next run creates the project, records the id at
-settlement, and takes the incremental path.
+The first import is **uploaded and anchored**: project `20053b00-d7ba-496e-abb6-06e58c40f99d`
+("Lapidary"), 28 files, `_ds_sync.json` written last. The id is pinned in `config.json`, so
+the next run is a re-sync — fetch that project's `_ds_sync.json` into
+`.design-sync/.cache/remote-sync.json` and pass it as `--remote` to `resync.mjs`, which
+re-verifies only what moved.
+
+Note the first run needed `/design-login` partway through: `DesignSync` returns an
+authorization error rather than a permission prompt when design scopes are missing. Relay
+its message and wait — do not treat it as a tool failure, and do not poll it.
 
 Two ordering rules that are cheap to honour and permanent to get wrong:
 
@@ -61,8 +65,8 @@ Two ordering rules that are cheap to honour and permanent to get wrong:
 - Any write or delete failure that retries do not clear means **stop**: no sentinel re-arm,
   no `_ds_sync.json`. An un-anchored project merely re-verifies next sync.
 
-`DesignSync(report_validate)` is still **pending** — it is blocked by the same auth wall.
-The counts to send are `{total: 4, bad: 0, thin: 0, variantsIdentical: 0, iterations: 3}`.
+`DesignSync(report_validate)` was sent with
+`{total: 4, bad: 0, thin: 0, variantsIdentical: 0, iterations: 3}`.
 
 ## Known render warns
 
