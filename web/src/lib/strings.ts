@@ -923,6 +923,17 @@ export const strings = {
      */
     noMatches: (query: string) => `Nothing matches ${query}.`,
     /**
+     * The heading over a search that found nothing.
+     *
+     * Not `emptyLibrary.categoryTitle`, which is what shipped: "Nothing filed here yet"
+     * told somebody with no category selected that their library was empty, in the exact
+     * moment they had searched for a part they knew was in it.
+     */
+    noMatchesTitle: 'No matching parts',
+    /** What search actually covers, said once rather than left to be inferred. */
+    scope: 'Search covers part names and part numbers.',
+    clear: 'Clear the search',
+    /**
      * The same, narrowed — and this is the one that matters. A query that finds nothing
      * *inside a category* must say the search was narrowed, or the reasonable conclusion is
      * that the part is not in the library at all.
@@ -1018,6 +1029,14 @@ export const strings = {
       new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(minor / 100),
     refusedWithoutReason:
       'That source was not recorded and the reason did not come back. Check that the api service is running, then try again.',
+  },
+
+  dialog: {
+    /**
+     * The mouse's way out. Escape has always worked and was signposted nowhere, which made
+     * every dialog in the application keyboard-only to dismiss — and unusable on touch.
+     */
+    close: 'Close',
   },
 
   quickLook: {

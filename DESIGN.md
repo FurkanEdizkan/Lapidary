@@ -12,6 +12,7 @@ colors:
   anodised-black: "#0b0c0e"
   machined-slate: "#131519"
   scribe-line: "#24272d"
+  edge: "#606368"
   chalk: "#e6e8ec"
   graphite: "#9aa1ac"
   layout-blue: "#6ea8fe"
@@ -138,17 +139,19 @@ The one place the system permits weight is the display line. A library title or 
 heading may be genuinely heavy — 900, tight-tracked — because a wall of identical tiles needs
 a horizon. Everything below that horizon stays recessive.
 
-**What is not built yet.** The world above is implemented. Three things in it are still
-only written down:
+**What is not built yet.** The world above is implemented. Two things in it are still only
+written down:
 
 - **The rail does not collapse.** There is not one responsive breakpoint in the application;
   the grid is fluid because `auto-fill` makes it so, and the 240px sidebar holds its width
   down to a phone. The breakpoints named in Layout are intent, not behaviour.
-- **Only one chip is a chip.** The search-scope pill carries the selected treatment. Nothing
-  else in the interface has become one yet, because nothing else filters.
 - **Headline and Label are roles without systematic callers.** Display, Title, Body and Mono
   are applied; the other two are satisfied incidentally by Tailwind sizes that happen to
   match, which is not the same as being applied.
+
+And one thing is licensed but unspent: **the image well is exempt from The Marking Dye Rule**
+(owner decision, 2026-09-08) so that dimension callouts can be drawn over a render in Layout
+Blue. Nothing uses that licence yet.
 
 **Key Characteristics:**
 
@@ -177,8 +180,13 @@ ramp from unlit ground to hairline; there is no second hue anywhere in the syste
   render loads. The unlit bench.
 - **Machined Slate** (`#131519`): every raised surface — tiles, dialogs, inputs, the standing
   button. One step up from the ground, never two.
-- **Scribe Line** (`#24272d`): hairline borders and dividers on *chrome*. A scribed mark, not
-  a drawn box.
+- **Scribe Line** (`#24272d`): hairline *dividers* — a rule between two things. A scribed
+  mark, not a drawn box.
+- **Edge** (`#606368`): the boundary of anything you can operate — an input, a select, the
+  drop target, a button. Measured 3.24:1 on the ground and 3.03:1 on a surface, because WCAG
+  2.2 SC 1.4.11 asks 3:1 of a control's visual boundary and PRODUCT.md commits to AA. The
+  scribe line is 1.22:1 and was carrying both jobs; a divider may whisper, a control that is
+  identified by nothing but its outline may not.
 - **Chalk** (`#e6e8ec`): primary text. Reserved for the thing the user is reading right now —
   a part name, a dialog title, a value they asked for.
 - **Graphite** (`#9aa1ac`): secondary text, which is most text. Labels, metadata, helper
@@ -292,6 +300,10 @@ drawn around a picture is a second frame competing with the first.
 **The Frameless Picture Rule.** Never put a border on a tile whose content is an image. The
 image is the edge.
 
+**The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
+Edge, not Scribe Line. A divider gets the hairline. The test is not how it looks at rest, it
+is whether the outline is the only thing saying the control is there.
+
 ## Components
 
 ### Buttons
@@ -340,11 +352,27 @@ Layout Blue outline and a 1px lift.
 ### The Part Tile
 
 The signature component and the reason the system exists. A square image well on Anodised
-Black holding the render, a Title-weight name beneath it, and nothing else at rest. On hover
-or focus the metadata row and the action row fade up over 120ms. It is deliberately *not* an
-anchor — it holds a render button, a move button and a download link, and nesting those in an
-`<a>` is invalid HTML — so the whole tile takes a click handler while the name stays a real
-link for the keyboard, middle-click and screen readers.
+Black holding the render, a Title-weight name beneath it, the part number, and the triangle
+count with its Approximate label. Nothing is behind a hover and nothing overlays the render.
+
+**It had a reveal panel and it was a mistake.** The panel covered the picture the moment you
+reached for a control — a visual index whose interaction model hid the visual — and its four
+rows measured 255.9px inside a 179px well, so it also clipped its own top: the Approximate
+badge, which `CLAUDE.md` requires *always*, was invisible at every desktop width, and the
+Download link was 96% clipped while remaining the first Tab stop on every card. The tile now
+carries one focusable, its name, down from five.
+
+The tile is deliberately *not* an anchor — the name inside it is a link, and an anchor inside
+an anchor is invalid HTML — so the tile takes a click handler while the name stays a real
+link for the keyboard, middle-click and screen readers. Right-click belongs to the browser.
+
+### The Panel
+
+What a click opens: the part's essential information and every tool for it — download,
+render, move, pictures, source links, the storage path — over a scrim, closable by the
+control in its corner, by the scrim, or by Escape. Owner decision, 2026-09-08. Depth lives on
+the part's own page, one link away; the panel is for deciding and acting without leaving the
+wall of parts.
 
 ## Do's and Don'ts
 

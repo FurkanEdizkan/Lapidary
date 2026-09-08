@@ -593,6 +593,7 @@ export function Index({
             categoryName={selectedFolderName}
             query={q ?? null}
             onWiden={() => onSelectFolder?.(null)}
+            onClearSearch={() => onSearch?.('')}
           />
         ) : (
           <>
@@ -675,7 +676,9 @@ function DropTarget({
       className={`ease-mechanical mb-6 rounded border border-dashed p-6 text-center text-sm duration-[var(--duration-fast)] ${
         over
           ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
-          : 'border-[var(--color-border)]'
+          : // The dashed rectangle *is* the affordance — there is no label, no icon and no
+            // fill saying "drop here", only this line. SC 1.4.11 wants 3:1 for exactly that.
+            'border-[var(--color-edge)]'
       }`}
     >
       {busy && progress !== undefined ? (
@@ -827,7 +830,9 @@ function ActionBar({
       */}
       <Link
         to="/removed"
-        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+        // `min-h-6` and not padding alone: WCAG 2.2 SC 2.5.8 measures the target, and a
+        // 20px text link in a row of 26px buttons was the smallest thing on the page.
+        className="ease-mechanical flex min-h-6 items-center text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
       >
         {strings.removal.removedTitle}
       </Link>
@@ -951,7 +956,7 @@ function LibrarySwitcher({
           <select
             value={library}
             onChange={(event) => onSelect?.(event.target.value as LibraryId)}
-            className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+            className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
           >
             {all.map((one) => (
               <option key={one.id} value={one.id}>
@@ -1020,14 +1025,14 @@ function NewLibraryDialog({
           onChange={(event) => setName(event.target.value)}
           aria-label={strings.libraries.nameLabel}
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
         />
         <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
           {strings.libraries.modeLabel}
           <select
             value={mode}
             onChange={(event) => setMode(event.target.value as NewLibrary['mode'])}
-            className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+            className="rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
           >
             {LIBRARY_MODES.map((option) => (
               <option key={option} value={option}>
@@ -1110,7 +1115,7 @@ function GridSettings({
         <select
           value={pageSize}
           onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+          className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
         >
           {PAGE_SIZES.map((size) => (
             <option key={size} value={size}>
@@ -1124,7 +1129,7 @@ function GridSettings({
         <select
           value={density}
           onChange={(event) => onDensity(event.target.value as Density)}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1"
+          className="rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1"
         >
           {DENSITIES.map((option) => (
             <option key={option} value={option}>
@@ -1196,7 +1201,7 @@ function SearchBox({
         onChange={(event) => setTyped(event.target.value)}
         aria-label={strings.search.label}
         placeholder={strings.search.placeholder}
-        className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm focus:border-[var(--color-accent)]"
+        className="min-w-64 flex-1 rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1.5 text-sm focus:border-[var(--color-accent)]"
       />
       {/*
         The disclosure, not a control that narrows. The sidebar has already narrowed the
@@ -1238,12 +1243,15 @@ function EmptyLibrary({
   categoryName,
   query,
   onWiden,
+  onClearSearch,
 }: {
   filtered: boolean
   categoryName: string | null
   /** The query that found nothing, or `null` when nobody searched. */
   query: string | null
   onWiden: () => void
+  /** Drops the query and keeps the category, for the case the sidebar was not the reason. */
+  onClearSearch: () => void
 }) {
   // A search that found nothing is not an empty library, and saying so is worse than
   // useless: the user did not empty anything, they typed something, and "drop a folder of
@@ -1251,7 +1259,9 @@ function EmptyLibrary({
   if (query !== null) {
     return (
       <div className="max-w-prose">
-        <h2 className="text-lg">{strings.emptyLibrary.categoryTitle}</h2>
+        <h2 className="text-lg">
+          {filtered ? strings.emptyLibrary.categoryTitle : strings.search.noMatchesTitle}
+        </h2>
         <p className="mt-2 text-[var(--color-muted)]">
           {filtered
             ? strings.search.noMatchesInCategory(
@@ -1260,20 +1270,19 @@ function EmptyLibrary({
               )
             : strings.search.noMatches(query)}
         </p>
+        <p className="mt-2 text-xs text-[var(--color-muted)]">{strings.search.scope}</p>
         {/*
-          The narrowed case is the one that matters. Somebody searching inside a category
-          and finding nothing has to be able to widen without first working out that the
-          sidebar was the reason.
+          Both cases get a way out. The narrowed one widens; the unnarrowed one clears —
+          which used to be nothing at all, a dead end on the one screen this product's
+          primary user reaches by doing exactly what the product is for.
         */}
-        {!filtered ? null : (
-          <button
-            type="button"
-            onClick={onWiden}
-            className="ease-mechanical mt-3 rounded border border-[var(--color-border)] px-2 py-1 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
-            {strings.search.widen}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={filtered ? onWiden : onClearSearch}
+          className="ease-mechanical mt-3 rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {filtered ? strings.search.widen : strings.search.clear}
+        </button>
       </div>
     )
   }
@@ -1566,16 +1575,13 @@ function Card({
     <article
       aria-labelledby={nameId}
       /*
-        The whole card opens the quick look, and it is a handler rather than an anchor for
-        the reason the name's own comment gives below: this card holds a render button, a
-        move button, a download link and a path disclosure, and nesting those inside an
-        `<a>` is invalid HTML that browsers resolve by guessing.
+        The whole card opens the panel. It stays a handler rather than an anchor because the
+        name inside it is itself a link, and an anchor inside an anchor is invalid HTML that
+        browsers resolve by guessing — the click is filtered instead of the markup reshaped.
 
-        So the click is filtered instead of the markup being reshaped. Anything that
-        originated inside a control belongs to that control — including a click on a label
-        inside a button, which is why this asks `closest` rather than comparing the target.
-        The name stays a real `Link`: it is the keyboard path, the middle-click path, and
-        what a screen reader announces for the card.
+        The filter still asks `closest`, because the name is the one control left in here and
+        a click on it belongs to it: the name is the keyboard path, the middle-click path,
+        and what a screen reader announces for the card.
       */
       onClick={(event) => {
         if (!(event.target instanceof Element)) return
@@ -1589,20 +1595,12 @@ function Card({
           partDragPayload({ id: part.id, name: part.name }),
         )
       }
-      // Right-click opens the same chooser the button does, so the pointer gesture people
-      // expect from a file manager is there without being the only way in.
-      onContextMenu={(event) => {
-        if (movable) {
-          event.preventDefault()
-          setMoving(true)
-        }
-      }}
       /*
         No border. The render is its own edge, and a box drawn around a picture is a second
         frame competing with the first — so tiles are separated by the grid's gutter and by
         the step from ground to surface, never by a line.
       */
-      className="ease-mechanical group relative flex h-full flex-col overflow-hidden rounded-md bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px"
+      className="ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px"
     >
       <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-bg)]">
         {part.thumbnail === null ? (
@@ -1616,75 +1614,18 @@ function Card({
             className="h-full w-full object-contain"
           />
         )}
-        {/*
-          At rest a tile is a render and a name. The measurements, the download and the two
-          actions live here and fade up over the foot of the picture on hover — and on
-          `focus-within`, which is not decoration: without it every control on this card is
-          reachable by Tab and invisible while focused.
-
-          `pointer-events-none` while transparent, because an invisible download link that
-          still swallows a click is worse than one that is merely hidden — the card's own
-          click opens the quick look and has to reach it.
-
-          `inset-0` and a solid ground, not a strip under a gradient. Measured: the four rows
-          come to 212px inside a 210px well, so a strip sized to its own content grew past the
-          top of the tile and clipped the first row off — and the rows that escaped the
-          gradient's solid end sat over a pale render at nowhere near 4.5:1. There is no room
-          for a fade in a panel that fills its own well, so it does not pretend to have one.
-          The render is what a person scans; this is what they act on, and legibility wins the
-          two seconds it is up.
-        */}
-        <div className="pointer-events-none absolute inset-0 flex flex-col justify-end gap-1 bg-[var(--color-bg)]/95 p-3 opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-        <Measurements part={part} />
-        <SourceFile part={part} />
-        {/*
-          Every card carries it, not only the ones showing "No preview yet": re-rendering
-          a stale preview is the same request, and a control that appears and disappears
-          as the sweep lands is harder to hit than one that stays put. The accessible name
-          says which part, since the visible label is identical on every card.
-        */}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onRender(part.id)}
-            disabled={busy}
-            aria-label={strings.render.partFor(part.name)}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-          >
-            {strings.render.part}
-          </button>
-          {/*
-            The keyboard path to a move, and not a fallback: dragging a card into a
-            scrolled tree is a poor trackpad target and impossible without a pointer. A
-            model with no directory of its own gets the reason instead of a control that
-            would fail at the server.
-          */}
-          {movable ? (
-            <button
-              type="button"
-              onClick={() => setMoving(true)}
-              aria-label={strings.folders.moveToFor(part.name)}
-              className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
-            >
-              {strings.folders.moveTo}
-            </button>
-          ) : (
-            <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
-          )}
-        </div>
-          <ShowInFolder part={part} hostRoot={hostRoot} />
-        </div>
       </div>
+
       {/*
         The footer, and the only thing besides the render that survives at rest. A tile a
         person is scanning has to answer "which part is this" without being hovered.
       */}
       <div className="flex flex-1 flex-col gap-1 p-3">
         {/*
-          The name is the link, not the whole card. A card holds a render button and a
-          download link already, and nesting those inside an anchor is invalid HTML that
-          browsers resolve by guessing. The name is also what a keyboard user tabs to and
-          what a screen reader announces for the card, so it is the right target.
+          The name is the link, not the whole card — the keyboard path, the middle-click
+          path, and what a screen reader announces. It is now the card's only tab stop; the
+          four controls that used to follow it moved into the panel, which is why reaching
+          the fiftieth part costs fifty Tab presses rather than two hundred and sixty.
         */}
         <h2 id={nameId} className="text-sm leading-snug font-semibold">
           <Link
@@ -1699,6 +1640,12 @@ function Card({
           <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
         )}
         {/*
+          `CLAUDE.md` says a mesh-derived measurement is labelled approximate *always*. It
+          used to sit in the hover panel, where "always" quietly meant "never" — the row was
+          clipped off the top of the tile at every desktop width. Always means here.
+        */}
+        <Measurements part={part} />
+        {/*
           Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
           This card is `overflow-hidden hover:-translate-y-px`, Tailwind emits that lift as
           the `translate` property, and an element with a `translate` other than `none` is a
@@ -1707,7 +1654,16 @@ function Card({
           to it for as long as the pointer stayed over the card. Nothing here may hoist that
           markup back out of the portal.
         */}
-        {looking ? <QuickLook part={part} onClose={() => setLooking(false)} /> : null}
+        {looking ? (
+          <QuickLook
+            part={part}
+            hostRoot={hostRoot}
+            busy={busy}
+            onRender={onRender}
+            onMove={movable ? () => setMoving(true) : null}
+            onClose={() => setLooking(false)}
+          />
+        ) : null}
         {moving ? (
           <MovePartDialog
             part={{ id: part.id, name: part.name }}
@@ -1738,7 +1694,22 @@ function Card({
  * the page costs one request rather than two — the look warms the cache for the page it
  * links to.
  */
-function QuickLook({ part, onClose }: { part: PartCard; onClose: () => void }) {
+function QuickLook({
+  part,
+  hostRoot,
+  busy,
+  onRender,
+  onMove,
+  onClose,
+}: {
+  part: PartCard
+  hostRoot: string | null
+  busy: boolean
+  onRender: (id: PartId) => void
+  /** `null` for a model still in the shared store, which has no directory to rename. */
+  onMove: (() => void) | null
+  onClose: () => void
+}) {
   const detail = useQuery({
     queryKey: ['part', part.id],
     queryFn: () => fetchPartDetail(part.id),
@@ -1752,8 +1723,44 @@ function QuickLook({ part, onClose }: { part: PartCard; onClose: () => void }) {
           {strings.quickLook.failed}
         </p>
       ) : (
-        <Detail part={detail.data} />
+        <Detail
+          part={detail.data}
+          /*
+            The tools the card used to carry. They are here because the card is a picture and
+            a name now: a control that hides the render it sits on is a control fighting the
+            one job this product has. Owner decision, 2026-09-08 — click gives you the
+            essential information and the tools; the full page gives you depth.
+          */
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={() => onRender(part.id)}
+                disabled={busy}
+                aria-label={strings.render.partFor(part.name)}
+                className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+              >
+                {strings.render.part}
+              </button>
+              {onMove === null ? (
+                <span className="text-xs text-[var(--color-muted)]">
+                  {strings.folders.notMigrated}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onMove}
+                  aria-label={strings.folders.moveToFor(part.name)}
+                  className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+                >
+                  {strings.folders.moveTo}
+                </button>
+              )}
+            </>
+          }
+        />
       )}
+      <ShowInFolder part={part} hostRoot={hostRoot} />
       <div className="mt-4 flex justify-end gap-2">
         <Link
           to="/parts/$partId"
@@ -1846,64 +1853,6 @@ function ShowInFolder({
   )
 }
 
-/**
- * The download control, the hash to check what arrives against, and what the file costs
- * on disk.
- *
- * A plain `<a href download>`, never a fetch. The browser is what reads
- * `Content-Disposition`, and the route works to get the RFC 5987 `filename*` right so
- * that a Turkish part name survives the save dialog; pulling the bytes through `fetch`
- * into a blob URL would discard that header and name every download after the revision
- * id. It also costs no JavaScript, no request until it is clicked, and nothing at all
- * when it is middle-clicked into a background tab.
- *
- * The four source fields are absent together (`PartCard.sourceHash`), so a revision with
- * no source row renders a sentence in place of the whole line rather than a link that
- * would 404. Deliberately not a disabled-looking link either: clicking it again would
- * not help, and a control that cannot work must not look like one that can.
- */
-function SourceFile({ part }: { part: PartCard }) {
-  // Narrowed with typeof for the reason `Measurements` narrows: the response is cast
-  // rather than validated, so a field the server stops sending arrives here as undefined
-  // and would reach a formatter as one.
-  const hash = typeof part.sourceHash === 'string' ? part.sourceHash : null
-  const stored = typeof part.storedBytes === 'number' ? part.storedBytes : null
-  const ingested = typeof part.sourceBytes === 'number' ? part.sourceBytes : null
-  if (hash === null || stored === null) {
-    return <p className="mt-2 text-xs text-[var(--color-muted)]">{strings.download.noSource}</p>
-  }
-  return (
-    <p className="tabular mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
-      <a
-        href={downloadUrl(part.revision)}
-        download
-        aria-label={strings.download.originalFor(part.name)}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px"
-      >
-        {strings.download.original}
-      </a>
-      {/* The head of the digest on screen, the whole of it on the title — DATA.md §5.1. */}
-      <span className="font-mono" title={hash}>
-        {strings.parts.shortHash(hash)}
-      </span>
-      {/*
-        `compressed` is `boolean | null`, and null means "no source file", never "unknown
-        compression" — a card that got this far has a source row and knows which of the
-        two it is. Three branches rather than two, because the third combination has no
-        honest sentence: a compressed part whose ingested size did not arrive cannot be
-        called uncompressed, which is what a fallback to `storedRaw` would say. That is
-        not the claim that says less, it is the claim that is wrong.
-      */}
-      <span>
-        {part.compressed !== true
-          ? strings.parts.storedRaw(stored)
-          : ingested !== null
-            ? strings.parts.storedCompressed(stored, ingested)
-            : strings.parts.storedSize(stored)}
-      </span>
-    </p>
-  )
-}
 
 /**
  * The card's measurement line, rendered as one indivisible unit.
@@ -1932,7 +1881,7 @@ function Measurements({ part }: { part: PartCard }) {
       {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
       <span
         title={strings.parts.approximateDetail}
-        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[0.65rem] tracking-wider uppercase"
+        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs tracking-wider uppercase"
       >
         {strings.parts.approximate}
       </span>

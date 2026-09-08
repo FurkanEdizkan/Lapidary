@@ -233,7 +233,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
                 name={field.name}
                 type={field.type}
                 step={field.type === 'number' ? '0.01' : undefined}
-                className="mt-0.5 block w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+                className="mt-0.5 block w-full rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
               />
             </label>
           ))}
@@ -334,13 +334,25 @@ export function Detail({
             <p className="mt-1 text-sm text-[var(--color-muted)]">{part.partNumber}</p>
           )}
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <a
-              href={downloadUrl(part.revision)}
-              download
-              className="ease-mechanical inline-block rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-            >
-              {strings.download.original}
-            </a>
+            {/*
+              Guarded, because a revision can exist with no `file` row of role `source` —
+              `0007`'s recovered parts are exactly that shape. The control used to be on the
+              card, which withheld it; moving it here without the guard would have offered a
+              download that 404s at the route, and the card's own test is what caught it.
+            */}
+            {part.sourceHash === null ? (
+              <span className="text-sm text-[var(--color-muted)]">
+                {strings.download.noSource}
+              </span>
+            ) : (
+              <a
+                href={downloadUrl(part.revision)}
+                download
+                className="ease-mechanical inline-block rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+              >
+                {strings.download.original}
+              </a>
+            )}
             {/*
               A slot rather than a component, so that what changes the part stays with the
               page and the panel gets only what is safe to show in something transient.
@@ -650,7 +662,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
             onChange={(event) => setUrl(event.target.value)}
             placeholder={strings.images.urlPlaceholder}
             aria-label={strings.images.urlLabel}
-            className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+            className="min-w-64 flex-1 rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-xs"
           />
           <button
             type="submit"

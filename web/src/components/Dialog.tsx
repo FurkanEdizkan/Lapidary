@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { strings } from '../lib/strings'
 
 /** Everything inside the box that a Tab can land on. `:not([disabled])` is the point. */
 const FOCUSABLE =
@@ -114,7 +115,17 @@ export function Dialog({
   }, [])
 
   return createPortal(
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6">
+    <div
+      className="fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6"
+      /*
+        The scrim dismisses. `event.target === event.currentTarget` so only the scrim itself
+        counts — a click that started inside the box and released out here is a drag, not a
+        dismissal, and closing on it loses whatever the person was doing.
+      */
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
       <div
         ref={box}
         role="dialog"
@@ -131,9 +142,27 @@ export function Dialog({
         }}
         className="w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
       >
-        <h2 id={titleId} className="text-sm font-medium">
-          {title}
-        </h2>
+        <div className="flex items-start justify-between gap-4">
+          <h2 id={titleId} className="text-sm font-medium">
+            {title}
+          </h2>
+          {/*
+            Escape worked and said so nowhere, so every dialog here was keyboard-only to
+            dismiss and impossible on touch. 24px square: WCAG 2.2 SC 2.5.8's minimum, which
+            PRODUCT.md commits to.
+          */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={strings.dialog.close}
+            className="ease-mechanical -m-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none"
+                 stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M4 4l8 8M12 4l-8 8" />
+            </svg>
+          </button>
+        </div>
         {children}
       </div>
     </div>,

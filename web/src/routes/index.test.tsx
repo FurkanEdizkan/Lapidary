@@ -140,7 +140,7 @@ function stubFetch(routes: {
   move?: () => Promise<StubResponse>;
   folderDelete?: () => Promise<StubResponse>;
   instanceStorage?: () => Promise<StubResponse>;
-  partDetail?: () => Promise<StubResponse>;
+  partDetail?: (url?: string) => Promise<StubResponse>;
   partImages?: () => Promise<StubResponse>;
   partSources?: () => Promise<StubResponse>;
   libraries?: () => Promise<StubResponse>;
@@ -176,7 +176,10 @@ function stubFetch(routes: {
     // A bare GET of one part: what the quick-look and the detail page both ask for, under
     // the same query key. Below the PATCH rule so a move is never answered with a detail.
     if (url.startsWith("/api/parts/") && init?.method === undefined)
-      return (routes.partDetail ?? pending)();
+      // The url is passed so a test with two parts on screen can answer for each of them.
+      // Without it every panel showed the first part's numbers, which is an assertion that
+      // passes for the wrong reason in the most literal way available.
+      return (routes.partDetail ?? pending)(url);
     if (url.startsWith("/api/folders/"))
       return (routes.folderDelete ?? pending)();
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
@@ -1469,12 +1472,13 @@ test("the per-card action renders that part, and polls the batch it was handed",
     parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
     partThumbnail: ok({ batchId: RENDER_BATCH_ID, queued: 1 }),
     batch: ok(batchStatus({ batchId: RENDER_BATCH_ID, total: 1, pending: 1 })),
+    partDetail: ok(detailFor(HEX_NUT)),
   });
   renderIndex();
 
-  const nut = await screen.findByRole("article", { name: HEX_NUT.name });
+  const panel = await openPanel(HEX_NUT.name);
   fireEvent.click(
-    within(nut).getByRole("button", {
+    within(panel).getByRole("button", {
       name: strings.render.partFor(HEX_NUT.name),
     }),
   );
@@ -1653,26 +1657,29 @@ test("each card links to its own revision and asks for the original bytes", asyn
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partDetail: detailByPart(MOTOR_MOUNT, HEX_NUT),
   });
   renderIndex();
 
-  const mount = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  const nut = screen.getByRole("article", { name: HEX_NUT.name });
+  const mount = await openPanel(MOTOR_MOUNT.name);
+  const mountLinkHref = within(mount)
+    .getByRole("link", { name: strings.download.original })
+    .getAttribute("href");
+  await closePanel();
+  const nut = await openPanel(HEX_NUT.name);
 
   // `getByRole` throws when there is no link, so this cannot pass over a card that
   // renders no download control at all — which is the shape slice 4's SET-B ruling
   // caught, an assertion equally true of an element that is not there.
-  const mountLink = within(mount).getByRole("link", {
-    name: strings.download.originalFor(MOTOR_MOUNT.name),
+  const mountLink = within(nut).getByRole("link", {
+    name: strings.download.original,
   });
-  const nutLink = within(nut).getByRole("link", {
-    name: strings.download.originalFor(HEX_NUT.name),
-  });
+  const nutLink = mountLink;
 
   // The revision, never the part: a download URL names a revision, and every fixture
   // here carries a revision id that differs from its part id so that a link built from
   // the wrong one cannot pass.
-  expect(mountLink.getAttribute("href")).toBe(
+  expect(mountLinkHref).toBe(
     `/api/revisions/${MOTOR_MOUNT.revision}/download?variant=original`,
   );
   expect(nutLink.getAttribute("href")).toBe(
@@ -1680,7 +1687,7 @@ test("each card links to its own revision and asks for the original bytes", asyn
   );
   // Called out on its own as well: the route 400s without `variant`, and a URL that
   // dropped it would still carry the revision id and still look entirely plausible.
-  expect(mountLink.getAttribute("href")).toContain("variant=original");
+  expect(mountLinkHref).toContain("variant=original");
   // An anchor the browser treats as a download, not a navigation.
   expect(mountLink.getAttribute("download")).not.toBeNull();
   // And nothing fetched it. A `fetch` here would discard `Content-Disposition` and hand
@@ -1689,13 +1696,10 @@ test("each card links to its own revision and asks for the original bytes", asyn
     fetchMock.mock.calls.some(([url]) => String(url).includes("/download")),
   ).toBe(false);
 
-  // The hash beside the link is this card's own, at the length the card renders it, with
-  // the whole digest available to check the downloaded file against (DATA.md §5.1).
-  const shortHash = within(mount).getByText(
-    MOTOR_MOUNT.sourceHash!.slice(0, 12),
-  );
-  expect(shortHash.getAttribute("title")).toBe(MOTOR_MOUNT.sourceHash);
-  expect(within(nut).getByText(HEX_NUT.sourceHash!.slice(0, 12))).toBeDefined();
+  // The panel prints the whole digest rather than the tile's twelve characters — it is
+  // what a person checks a downloaded file against (DATA.md §5.1), so it is selectable and
+  // complete rather than elided.
+  expect(within(nut).getByText(HEX_NUT.sourceHash!)).toBeDefined();
 });
 
 // Literals, not the constants: this copy exists to state two specific facts — what the
@@ -1706,14 +1710,17 @@ test("the card says what the file costs on disk and whether it was compressed", 
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT, SHAFT_COUPLER])),
+    partDetail: detailByPart(MOTOR_MOUNT, SHAFT_COUPLER),
   });
   renderIndex();
 
-  const mount = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  const coupler = screen.getByRole("article", { name: SHAFT_COUPLER.name });
+  const mount = await openPanel(MOTOR_MOUNT.name);
   expect(
     within(mount).getByText("197 kB on disk, compressed from 624.4 kB"),
   ).toBeDefined();
+  await closePanel();
+
+  const coupler = await openPanel(SHAFT_COUPLER.name);
   expect(
     within(coupler).getByText("148.9 kB on disk, stored uncompressed"),
   ).toBeDefined();
@@ -1724,6 +1731,7 @@ test("a revision with no source file keeps its card and offers no download", asy
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([RECOVERED_BRACKET, HEX_NUT])),
+    partDetail: detailByPart(RECOVERED_BRACKET, HEX_NUT),
   });
   renderIndex();
 
@@ -1731,16 +1739,14 @@ test("a revision with no source file keeps its card and offers no download", asy
   // that never rendered, so the card and its message are asserted first — otherwise this
   // test passes over a grid that dropped the part entirely, which is the failure it
   // exists to forbid.
-  const card = await screen.findByRole("article", {
-    name: RECOVERED_BRACKET.name,
-  });
+  const card = await openPanel(RECOVERED_BRACKET.name);
   expect(within(card).getByText(strings.download.noSource)).toBeDefined();
   // The DOWNLOAD link, by its accessible name, not "any link on this card": the card's
   // name became a link to the part's detail page, so a bare `queryByRole('link')` now
   // finds that one and would fail here for a reason that has nothing to do with sources.
   expect(
     within(card).queryByRole("link", {
-      name: strings.download.originalFor(RECOVERED_BRACKET.name),
+      name: strings.download.original,
     }),
   ).toBeNull();
   // No size line invented out of nulls either.
@@ -1748,10 +1754,11 @@ test("a revision with no source file keeps its card and offers no download", asy
 
   // And the neighbouring part still has its link, so the absence above is this card's
   // and not the page failing to render links at all.
-  const nut = screen.getByRole("article", { name: HEX_NUT.name });
+  await closePanel();
+  const nut = await openPanel(HEX_NUT.name);
   expect(
     within(nut).getByRole("link", {
-      name: strings.download.originalFor(HEX_NUT.name),
+      name: strings.download.original,
     }),
   ).toBeDefined();
 });
@@ -1790,11 +1797,15 @@ test("a compressed part whose ingested size is missing claims no compression sta
     parts: ok(
       page([{ ...MOTOR_MOUNT, sourceBytes: null } as unknown as PartCard]),
     ),
+    partDetail: detailByPart({
+      ...MOTOR_MOUNT,
+      sourceBytes: null,
+    } as unknown as typeof MOTOR_MOUNT),
     storage: ok(LIBRARY_STORAGE),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const card = await openPanel(MOTOR_MOUNT.name);
   // The size is still stated — a card that dropped the line entirely would satisfy the
   // absence assertion below while telling the user less than it knows.
   expect(within(card).getByText("197 kB on disk")).toBeDefined();
@@ -2211,12 +2222,13 @@ test("show in folder reveals the model's own path as copyable text and opens not
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
+    partDetail: ok(detailFor(CLIFF_FACE)),
     folders: ok([TERRAIN]),
     instanceStorage: ok(instanceStorage(null)),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  const card = await openPanel(CLIFF_FACE.name);
   fireEvent.click(
     within(card).getByRole("button", {
       name: strings.folders.showInFolderFor(CLIFF_FACE.name),
@@ -2250,12 +2262,13 @@ test("a deployment that says where the store is gets the full path on the card",
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
+    partDetail: ok(detailFor(CLIFF_FACE)),
     folders: ok([TERRAIN]),
     instanceStorage: ok(instanceStorage("/srv/lapidary-storage")),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  const card = await openPanel(CLIFF_FACE.name);
   fireEvent.click(
     within(card).getByRole("button", {
       name: strings.folders.showInFolderFor(CLIFF_FACE.name),
@@ -2275,12 +2288,13 @@ test("a host root with a trailing slash still joins to one separator", async () 
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
+    partDetail: ok(detailFor(CLIFF_FACE)),
     folders: ok([TERRAIN]),
     instanceStorage: ok(instanceStorage("/srv/lapidary-storage/")),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  const card = await openPanel(CLIFF_FACE.name);
   fireEvent.click(
     within(card).getByRole("button", {
       name: strings.folders.showInFolderFor(CLIFF_FACE.name),
@@ -2295,11 +2309,15 @@ test("a model still in the shared store says so rather than showing an invented 
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([OLD_BRACKET])),
+    partDetail: ok(detailFor(OLD_BRACKET)),
     folders: ok([TERRAIN]),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: OLD_BRACKET.name });
+  const tile = await screen.findByRole("article", { name: OLD_BRACKET.name });
+  expect(tile.getAttribute("draggable")).toBe("false");
+
+  const card = await openPanel(OLD_BRACKET.name);
   fireEvent.click(
     within(card).getByRole("button", {
       name: strings.folders.showInFolderFor(OLD_BRACKET.name),
@@ -2318,27 +2336,32 @@ test("a model still in the shared store says so rather than showing an invented 
     }),
   ).toBeNull();
   expect(within(card).getByText(strings.folders.notMigrated)).toBeDefined();
-  expect(card.getAttribute("draggable")).toBe("false");
 });
 
 test("a card offers the move chooser, and is draggable for the tree to catch", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([CLIFF_FACE])),
+    partDetail: ok(detailFor(CLIFF_FACE)),
     folders: ok([TERRAIN, ROCKS]),
   });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
-  expect(card.getAttribute("draggable")).toBe("true");
+  // Dragging is the tile's; the chooser is the panel's. Two handles, because they are two
+  // different objects since the tools moved off the card.
+  const tile = await screen.findByRole("article", { name: CLIFF_FACE.name });
+  expect(tile.getAttribute("draggable")).toBe("true");
 
-  // The keyboard path: a plain button on the card, no pointer gesture anywhere in it.
+  const panel = await openPanel(CLIFF_FACE.name);
   fireEvent.click(
-    within(card).getByRole("button", {
+    within(panel).getByRole("button", {
       name: strings.folders.moveToFor(CLIFF_FACE.name),
     }),
   );
-  const dialog = await screen.findByRole("dialog");
+  // Two dialogs are stacked here — the panel, and the move chooser it opened. The chooser
+  // is the last one mounted.
+  const dialogs = await screen.findAllByRole("dialog");
+  const dialog = dialogs[dialogs.length - 1] as HTMLElement;
   expect(
     within(dialog).getByText(strings.folders.moveTitle(CLIFF_FACE.name)),
   ).toBeDefined();
@@ -2349,24 +2372,24 @@ test("a card offers the move chooser, and is draggable for the tree to catch", a
   ).toBeDefined();
 });
 
-test("right-clicking a card opens the same chooser the button does", async () => {
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([CLIFF_FACE])),
-    folders: ok([TERRAIN, ROCKS]),
-  });
+/**
+ * Right-click belongs to the browser again.
+ *
+ * The card used to `preventDefault` it and open the move chooser, which took "open in a new
+ * tab" away from a person whose whole workflow is opening parts in Orca and Blender. The
+ * control it shadowed now lives in the panel, and a hidden gesture whose visible twin has
+ * moved is worse than no gesture.
+ */
+test("right-clicking a card leaves the browser's own menu alone", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
 
-  const card = await screen.findByRole("article", { name: CLIFF_FACE.name });
-  // The pointer gesture a file manager would give you, opening the same chooser rather
-  // than a menu of its own — so neither path can drift from the other.
-  fireEvent.contextMenu(card);
+  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+  card.dispatchEvent(event);
 
-  expect(
-    within(await screen.findByRole("dialog")).getByRole("button", {
-      name: strings.folders.moveInto(ROCKS.name),
-    }),
-  ).toBeDefined();
+  expect(event.defaultPrevented).toBe(false);
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 /**
@@ -2515,6 +2538,70 @@ test("measuring the disk asks the server to walk it and explains the difference"
 });
 
 /** What `GET /api/parts/{id}` answers for the card these tests click. */
+/**
+ * A `PartDetail` built from a card, so any test can open a card's panel.
+ *
+ * The panel is where the per-part tools live since 2026-09-08 — render, move, the download
+ * and the storage path all moved off the tile, because a control that covers the render is
+ * a control fighting the one job this product has. A test that wants one of them opens the
+ * panel first, which is also what a user now does.
+ */
+function detailFor(card: typeof MOTOR_MOUNT) {
+  return {
+    id: card.id,
+    library: card.library,
+    revision: card.revision,
+    revLabel: "1",
+    name: card.name,
+    partNumber: card.partNumber,
+    sourcePath: card.sourcePath,
+    thumbnail: card.thumbnail,
+    triangleCount: card.triangleCount,
+    isWatertight: true,
+    bboxMm: { value: [61, 42, 18.5], approximate: true },
+    volumeMm3: { value: 21478.5, approximate: true },
+    surfaceAreaMm2: { value: 9804.25, approximate: true },
+    kernelVersion: "mesh stl-1+cpu-1",
+    sourceHash: card.sourceHash,
+    sourceFormat: "stl",
+    sourceBytes: card.sourceBytes,
+    storedBytes: card.storedBytes,
+    compressed: card.compressed,
+    tessellationL0: null,
+    tessellationL0Bytes: null,
+    createdAt: card.createdAt,
+    updatedAt: card.updatedAt,
+  };
+}
+
+/** A url-aware `partDetail` responder, so two parts on screen each answer for themselves. */
+function detailByPart(first: typeof MOTOR_MOUNT, ...rest: (typeof MOTOR_MOUNT)[]) {
+  const cards = [first, ...rest];
+  return async (url?: string): Promise<StubResponse> => {
+    // Falls back to the first rather than throwing: a test that opens one panel should not
+    // have to care that the url carries an id at all.
+    const card = cards.find((c) => (url ?? "").includes(c.id)) ?? first;
+    return { ok: true, status: 200, json: async () => detailFor(card) };
+  };
+}
+
+/** Click a card, wait for its panel, and hand back the dialog to assert inside. */
+async function openPanel(name: string) {
+  fireEvent.click(await screen.findByRole("article", { name }));
+  const dialog = await screen.findByRole("dialog");
+  // The panel fetches its own detail; the tools only exist once it lands.
+  await within(dialog).findByText(strings.detail.geometry);
+  return dialog;
+}
+
+/** Open a panel, assert inside it, and close it again — for a test that opens two. */
+async function closePanel() {
+  const open = screen.queryByRole("dialog");
+  if (open === null) return;
+  fireEvent.click(within(open).getByRole("button", { name: strings.dialog.close }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+}
+
 const MOTOR_MOUNT_DETAIL = {
   id: MOTOR_MOUNT.id,
   library: MOTOR_MOUNT.library,
@@ -2585,10 +2672,11 @@ test("a control inside a card does its own job and does not open the panel", asy
   });
   renderIndex();
 
+  // The name is the one control left on a tile, and it is a link to the part's own page.
+  // A click on it belongs to it: the card's handler filters anything inside an `a`, which
+  // is what stops the panel opening under a navigation the user asked for.
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  fireEvent.click(
-    within(card).getByRole("button", { name: strings.render.partFor(MOTOR_MOUNT.name) }),
-  );
+  fireEvent.click(within(card).getByRole("link", { name: MOTOR_MOUNT.name }));
 
   expect(screen.queryByRole("dialog")).toBeNull();
 });
