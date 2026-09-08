@@ -23,7 +23,15 @@ const FALLBACK_PX: [u32; 2] = [384, 256];
 /// between runs is not comparable, and the grid wants every card framed alike.
 const VIEW_DIR: [f64; 3] = [0.577_350_27, -0.577_350_27, 0.577_350_27];
 const LIGHT_DIR: [f64; 3] = [0.408_248_3, -0.408_248_3, 0.816_496_6];
-const BG: [u8; 3] = [10, 10, 12]; // matches the app's dark surface
+/// What an uncovered pixel holds in its colour channels. It is never seen — those pixels
+/// are written fully transparent below — and it is kept neutral only so a decoder that
+/// discards alpha shows something dark rather than something arbitrary.
+///
+/// It used to be the app's background, baked in, with a comment saying so. That was a
+/// coupling nobody would think to check: the palette moved to `v2`'s and every thumbnail
+/// in the database went on carrying a `#0a0a0c` square that no longer matched the card it
+/// sat on. A transparent background cannot fall out of step with a colour it does not know.
+const BG: [u8; 3] = [10, 10, 12];
 const BASE: [f64; 3] = [0.82, 0.84, 0.88];
 const AMBIENT: f64 = 0.18;
 const MARGIN: f64 = 0.92; // fraction of the frame the model fills
@@ -76,9 +84,15 @@ pub fn render_thumbnail(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
         fill(&mut colour, &mut depth, n, &px, shade);
     }
 
+    // Transparent where nothing was drawn, so the part floats on whatever ground the card
+    // gives it rather than in a square of its own. `depth` is the record of what the
+    // rasterizer touched — it starts at `NEG_INFINITY` and only a covered pixel moves it —
+    // so it answers "was this pixel part of the model" exactly, with no second buffer and
+    // no colour comparison that a model shaded the same as its background would fool.
     let mut rgba = Vec::with_capacity(n * n * 4);
-    for px in colour.chunks_exact(3) {
-        rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    for (px, covered) in colour.chunks_exact(3).zip(&depth) {
+        let alpha = if covered.is_finite() { 255 } else { 0 };
+        rgba.extend_from_slice(&[px[0], px[1], px[2], alpha]);
     }
     let img = image::RgbaImage::from_raw(THUMB_PX, THUMB_PX, rgba).ok_or_else(|| {
         CadError::Unrenderable {
@@ -328,6 +342,24 @@ mod tests {
              say so in the commit; if not, something perturbed the camera, the light or \
              the projection."
         );
+    }
+
+    /// Rewrites the committed golden. `#[ignore]` because it asserts nothing — run it on
+    /// purpose (`cargo test -p lapidary-cad bless_the_golden -- --ignored --exact`) when a
+    /// change to the rasterizer is deliberate, **then open the file and look at it**. A
+    /// golden committed without being viewed pins whatever bug it contains.
+    #[test]
+    #[ignore = "writes a fixture; run deliberately"]
+    fn bless_the_golden_image() {
+        let bytes = render_thumbnail(&bracket()).expect("renders");
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/bracket-lp-1042-03.thumb.webp"
+            ),
+            &bytes,
+        )
+        .expect("golden is writable");
     }
 
     #[test]

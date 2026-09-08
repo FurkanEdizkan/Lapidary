@@ -146,14 +146,14 @@ function PartTools({ part }: { part: PartDetail }) {
         type="button"
         onClick={() => render.mutate()}
         disabled={render.isPending}
-        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.render.part}
       </button>
       <button
         type="button"
         onClick={() => setMoving(true)}
-        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.folders.moveTo}
       </button>
@@ -195,7 +195,7 @@ function Remove({ part }: { part: PartDetail }) {
         type="button"
         onClick={() => remove.mutate()}
         disabled={remove.isPending}
-        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {remove.isPending ? strings.removal.removing : strings.removal.remove}
       </button>
