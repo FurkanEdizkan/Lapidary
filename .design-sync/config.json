@@ -1,6 +1,7 @@
 {
   "pkg": "lapidary-web",
   "globalName": "Lapidary",
+  "projectId": "20053b00-d7ba-496e-abb6-06e58c40f99d",
   "shape": "package",
   "entry": "web/.ds-entry.tsx",
   "srcDir": "src",
