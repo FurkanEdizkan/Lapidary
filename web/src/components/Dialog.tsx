@@ -129,7 +129,7 @@ export function Dialog({
             current.focus()
           }
         }}
-        className="w-full max-w-md rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
+        className="w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
       >
         <h2 id={titleId} className="text-sm font-medium">
           {title}

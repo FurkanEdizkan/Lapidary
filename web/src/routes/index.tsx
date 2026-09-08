@@ -690,7 +690,7 @@ function DropTarget({
               <button
                 type="button"
                 onClick={() => input.current?.click()}
-                className="underline underline-offset-2 hover:text-[var(--color-fg)]"
+                className="underline hover:text-[var(--color-text)]"
               >
                 {strings.upload.choose}
               </button>
@@ -1196,7 +1196,7 @@ function SearchBox({
         onChange={(event) => setTyped(event.target.value)}
         aria-label={strings.search.label}
         placeholder={strings.search.placeholder}
-        className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm"
+        className="min-w-64 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1.5 text-sm focus:border-[var(--color-accent)]"
       />
       {/*
         The disclosure, not a control that narrows. The sidebar has already narrowed the
@@ -1209,7 +1209,7 @@ function SearchBox({
           type="button"
           onClick={onWiden}
           title={strings.search.widen}
-          className="ease-mechanical rounded-full border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical rounded-full border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-1 text-xs text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {categoryName === null
             ? strings.search.inThisCategory
@@ -1597,9 +1597,14 @@ function Card({
           setMoving(true)
         }
       }}
-      className="ease-mechanical flex h-full flex-col overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5"
+      /*
+        No border. The render is its own edge, and a box drawn around a picture is a second
+        frame competing with the first — so tiles are separated by the grid's gutter and by
+        the step from ground to surface, never by a line.
+      */
+      className="ease-mechanical group relative flex h-full flex-col overflow-hidden rounded-md bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px"
     >
-      <div className="flex aspect-square items-center justify-center bg-[var(--color-bg)]">
+      <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-bg)]">
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,
           // and "the worker has not rasterized this yet" is not one.
@@ -1611,26 +1616,25 @@ function Card({
             className="h-full w-full object-contain"
           />
         )}
-      </div>
-      <div className="flex flex-1 flex-col gap-1 p-3">
         {/*
-          The name is the link, not the whole card. A card holds a render button and a
-          download link already, and nesting those inside an anchor is invalid HTML that
-          browsers resolve by guessing. The name is also what a keyboard user tabs to and
-          what a screen reader announces for the card, so it is the right target.
+          At rest a tile is a render and a name. The measurements, the download and the two
+          actions live here and fade up over the foot of the picture on hover — and on
+          `focus-within`, which is not decoration: without it every control on this card is
+          reachable by Tab and invisible while focused.
+
+          `pointer-events-none` while transparent, because an invisible download link that
+          still swallows a click is worse than one that is merely hidden — the card's own
+          click opens the quick look and has to reach it.
+
+          `inset-0` and a solid ground, not a strip under a gradient. Measured: the four rows
+          come to 212px inside a 210px well, so a strip sized to its own content grew past the
+          top of the tile and clipped the first row off — and the rows that escaped the
+          gradient's solid end sat over a pale render at nowhere near 4.5:1. There is no room
+          for a fade in a panel that fills its own well, so it does not pretend to have one.
+          The render is what a person scans; this is what they act on, and legibility wins the
+          two seconds it is up.
         */}
-        <h2 id={nameId} className="text-sm leading-snug">
-          <Link
-            to="/parts/$partId"
-            params={{ partId: part.id }}
-            className="ease-mechanical duration-[var(--duration-fast)] hover:underline hover:underline-offset-2"
-          >
-            {part.name}
-          </Link>
-        </h2>
-        {part.partNumber === null ? null : (
-          <p className="font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
-        )}
+        <div className="pointer-events-none absolute inset-0 flex flex-col justify-end gap-1 bg-[var(--color-bg)]/95 p-3 opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
         <Measurements part={part} />
         <SourceFile part={part} />
         {/*
@@ -1668,10 +1672,35 @@ function Card({
             <span className="text-xs text-[var(--color-muted)]">{strings.folders.notMigrated}</span>
           )}
         </div>
-        <ShowInFolder part={part} hostRoot={hostRoot} />
+          <ShowInFolder part={part} hostRoot={hostRoot} />
+        </div>
+      </div>
+      {/*
+        The footer, and the only thing besides the render that survives at rest. A tile a
+        person is scanning has to answer "which part is this" without being hovered.
+      */}
+      <div className="flex flex-1 flex-col gap-1 p-3">
+        {/*
+          The name is the link, not the whole card. A card holds a render button and a
+          download link already, and nesting those inside an anchor is invalid HTML that
+          browsers resolve by guessing. The name is also what a keyboard user tabs to and
+          what a screen reader announces for the card, so it is the right target.
+        */}
+        <h2 id={nameId} className="text-sm leading-snug font-semibold">
+          <Link
+            to="/parts/$partId"
+            params={{ partId: part.id }}
+            className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
+          >
+            {part.name}
+          </Link>
+        </h2>
+        {part.partNumber === null ? null : (
+          <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
+        )}
         {/*
           Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
-          This card is `overflow-hidden hover:-translate-y-0.5`, Tailwind emits that lift as
+          This card is `overflow-hidden hover:-translate-y-px`, Tailwind emits that lift as
           the `translate` property, and an element with a `translate` other than `none` is a
           containing block for fixed-position descendants — so a dialog rendered in the
           card's own subtree resolved its `fixed inset-0` against the card and was clipped
@@ -1844,7 +1873,7 @@ function SourceFile({ part }: { part: PartCard }) {
     return <p className="mt-2 text-xs text-[var(--color-muted)]">{strings.download.noSource}</p>
   }
   return (
-    <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
+    <p className="tabular mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--color-muted)]">
       <a
         href={downloadUrl(part.revision)}
         download
@@ -1899,7 +1928,7 @@ function Measurements({ part }: { part: PartCard }) {
     return null
   }
   return (
-    <p className="mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
+    <p className="tabular mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
       {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
       <span
         title={strings.parts.approximateDetail}
