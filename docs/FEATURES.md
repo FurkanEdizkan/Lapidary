@@ -15,6 +15,32 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Non-blocking ingest with live SSE progress; UI stays interactive | 1 |
 | Crash-resumable job queue (rows in Postgres, not memory) | 1 |
 | Per-file stage names: hashing, parsing, tessellating, rendering | 1 |
+<!--
+  **Half of this row is delivered and half of it is not**, recorded here on 2026-09-08
+  after a Phase 1 audit rather than left for a reader to discover by looking for a stage
+  name that is not there.
+
+  *Delivered:* the upload half, per file, client-side. `web/src/lib/upload.ts` reports
+  `hashing`, `probing`, `transferring` and `committing` for each file as it goes, which is
+  the first noun in this row and the slowest part of a drag-drop of 1,700 meshes.
+
+  *Not delivered:* the server half. `parsing`, `tessellating` and `rendering` all happen
+  inside the worker, and what the worker publishes is a **batch** count by outcome —
+  `pending`, `running`, `ingested`, `skipped`, `rendered`, `scanned` — plus a per-file list
+  of the ones that *failed*, with the path and the reason. So a person watching a scan
+  reads "Scanning — 320 of 1,703 files" and can see exactly which files broke, but cannot
+  see that `nema-17-motor-mount.stl` is tessellating right now.
+
+  The gap is not an oversight in a slice; it is a shape the job queue does not have. Per-
+  file stages need a `stage` column on `job`, the worker writing it at each transition, the
+  SSE stream carrying per-file rows rather than one aggregate, and a UI that can show a
+  list that long without becoming the page. That is a slice, not a fix.
+
+  **Open question, deliberately not decided here:** build it, or amend this row to the
+  aggregate-plus-failures shape that shipped — the way the "per library" row above was
+  amended, with the reason recorded. Worth noting for whoever decides: the failure list is
+  the part an operator acts on, and it is per file already.
+-->
 | Mesh formats: STL, 3MF, OBJ | 1 |
 | Folder tree per library, mirrored on disk — one directory per part | 1 |
 | Move a part between folders; renames its directory, `source_path` unchanged | 1 |
@@ -41,6 +67,22 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Feature | Phase |
 |---|---|
 | Virtualized part grid, keyset pagination | 1 |
+<!--
+  "Virtualized" shipped as `content-visibility: auto` plus a 500-row ceiling on a page,
+  not as a windowing library, and that substitution is argued in `index.tsx` but was never
+  recorded here — amended for the same reason "per library" below was.
+
+  What the row asks for is that a page of cards stays cheap when most of them are off
+  screen. One CSS property gets that: the browser skips layout, paint and image decode for
+  a card outside the viewport, which is what a virtualizer buys, without a component that
+  has to be told the viewport's size and re-measured whenever the density control changes
+  it. The keyset pagination half is delivered as written.
+
+  The ceiling is what makes it hold: `MAX_LIMIT` is 500 (`parts.rs`), so a page is bounded
+  even though the DOM is not windowed. A library of 100,000 parts is 200 pages, not one
+  enormous one. If a page size ever exceeds what the DOM can hold, this row needs the real
+  thing rather than another amendment.
+-->
 | Page size 50/100/250/500 and card density, both persisted per viewer, per library | 1 |
 <!--
   "per library" was the original wording and would have meant a column. There is no user
@@ -52,6 +94,22 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | Thumbnails inline from Postgres `bytea`, rendered at ingest or on demand per library | 1 |
 | Full-text search over names, tags, materials | 1 |
+<!--
+  **Names only.** Recorded 2026-09-08, from the same audit as the stage-names row above.
+
+  `part.search` is `setweight(part_number, 'A') || setweight(name, 'B')` and has been since
+  `0002`. Tags and materials are not missing from the tsvector — they do not exist: there
+  is no `tag` table, no `material` column, and nothing anywhere in the tree writes either.
+  `part.classification` and `part.metadata_json` exist and are likewise unwritten.
+
+  So this is a dependency rather than a gap. Phase 2's metadata extractor is what produces
+  tags and materials, and the search that indexes them belongs in the same slice as the
+  thing that fills them — indexing an empty column now would be `0016`'s `part_number_trgm`
+  again, which is a defensible thing to build early but not a feature anyone can use.
+
+  The names half is delivered and does the work the row is really about: multi-word AND
+  over names, either order, neither adjacent, plus the trigram half for fragments.
+-->
 | Trigram search for part numbers and filenames | 1 |
 | Faceted filters: format, material, library, tags, lifecycle | 2 |
 | Sort by any promoted geometric column | 2 |
