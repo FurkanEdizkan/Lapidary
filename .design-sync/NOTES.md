@@ -26,6 +26,12 @@ Repo-specific gotchas for `/design-sync`. Read this before a re-sync.
   change and the config would rot. `dist/ds.css` is the stable copy. Equally, do not point
   it at `web/src/styles.css`: that is Tailwind *source*, where `@import "tailwindcss"` is
   unresolved and `@theme` is uncompiled.
+- **Vite empties `web/dist/` on every build**, which takes `dist/ds.css` with it. Run the
+  `cp` *after* the build, every time — that is why `buildCmd` chains them rather than listing
+  them separately. Symptom when you forget: the converter prints `[CSS_RUNTIME] no static CSS
+  found` and ships a bundle with no tokens, no fonts and no component styles, while the render
+  check still passes 4/4 and validate still exits 0. Nothing else catches it, so treat that
+  warn line as fatal for this repo.
 - `--entry` must NOT be used on the command line for this repo — `cfg.entry` covers it.
   Passing a `dist/assets/index-*.js` would bundle the *app*, which runs `main.tsx`'s
   `createRouter`/`RouterProvider` bootstrap on import.
@@ -37,7 +43,31 @@ empty API contract, which is worse than useless to the design agent. All four co
 therefore have hand-written bodies in `cfg.dtsPropsFor`. **When a component's props change
 in source, update `dtsPropsFor` in the same commit** — nothing checks this automatically.
 
+## When the upload finally runs
+
+Nothing has been uploaded yet and **no project exists** — the first run had no
+`DesignSync` authorization (`/design-login` was never completed in that session). There is
+deliberately **no `projectId` in `config.json`**: the un-anchored state is intentional and
+safe, not an interrupted upload. The next run creates the project, records the id at
+settlement, and takes the incremental path.
+
+Two ordering rules that are cheap to honour and permanent to get wrong:
+
+- **`_ds_sync.json` is the absolute final write**, in its own `write_files` call, after every
+  content write and every delete. It is the anchor that vouches for the rest; written early,
+  a failure part-way leaves it vouching for files the project does not have, and no future
+  diff ever repairs them.
+- **`_ds_needs_recompile` fences the upload** — write it first, and re-write it at the end.
+- Any write or delete failure that retries do not clear means **stop**: no sentinel re-arm,
+  no `_ds_sync.json`. An un-anchored project merely re-verifies next sync.
+
+`DesignSync(report_validate)` is still **pending** — it is blocked by the same auth wall.
+The counts to send are `{total: 4, bad: 0, thin: 0, variantsIdentical: 0, iterations: 3}`.
+
 ## Known render warns
+
+- None. The final render check reported `bad: 0`, `thin: 0`, `variantsIdentical: 0` across
+  all four components. Any warn on a future run is genuinely new — look at it.
 
 - Three of four components (`Detail`, `FolderTree`, `MovePartDialog`) ship the **floor
   card** by design — the user scoped preview authoring to `Dialog` only on the first sync.

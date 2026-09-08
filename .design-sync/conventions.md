@@ -5,7 +5,10 @@ usually a grid of part renders plus the numbers that tell you whether a part fit
 
 ## Setup
 
-No provider, no theme object, no wrapper. Import `styles.css` and the components are styled.
+There is no theme object and no theme provider anywhere in this system: importing `styles.css`
+is the whole of the styling setup. `Dialog` needs nothing else. The other three components
+need a data provider the bundle does not ship — see **The components** below before reaching
+for one.
 
 The palette is **dark only** — there is no light mode and no toggle. `:root` already sets
 `color-scheme: dark`, `background-color: var(--color-bg)`, `color: var(--color-text)` and
@@ -66,9 +69,10 @@ screens from tokens plus `Dialog`.
 
 ## Where the truth is
 
-`_ds/<folder>/styles.css` and the `_ds_bundle.css` it imports — the full token block, the
-base layer and the focus ring. Per-component props are in
-`components/general/<Name>/<Name>.d.ts`.
+Read the bound `styles.css` and the `_ds_bundle.css` it imports — that is where the full
+token block, the base layer, the focus ring and the real utility set live. Per-component
+props are in `components/general/<Name>/<Name>.d.ts`, and `<Name>.prompt.md` beside it.
+Reading those beats trusting this summary.
 
 ## An idiomatic snippet
 
