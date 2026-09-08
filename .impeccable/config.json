@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-09-08T05:32:43.792Z",
+        "reason": "Derived from the user's pinned reference, not chosen for taste: artstation.com/?sort_by=community serves Inter (measured computed fontFamily, 2026-09-08). The user pinned that page as the North Star and then answered that its register is the system of record, which SKILL.md's brief-wins rule makes binding over a saturated-pattern warning. Recorded in DESIGN.md as The Self-Hosted Font Rule. The user did not name Inter itself."
+      }
+    ]
+  }
+}
