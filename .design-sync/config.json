@@ -1,0 +1,33 @@
+{
+  "pkg": "lapidary-web",
+  "globalName": "Lapidary",
+  "shape": "package",
+  "entry": "web/.ds-entry.tsx",
+  "srcDir": "src",
+  "buildCmd": "cd web && npm run build && cp dist/assets/index-*.css dist/ds.css",
+  "cssEntry": "dist/ds.css",
+  "extraFonts": [
+    "public/fonts/inter-latin-wght-normal.woff2",
+    "public/fonts/inter-latin-ext-wght-normal.woff2"
+  ],
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "Dialog": {
+      "cardMode": "single",
+      "primaryStory": "Confirmation",
+      "viewport": "560x360"
+    }
+  },
+  "componentSrcMap": {
+    "Dialog": "src/components/Dialog.tsx",
+    "FolderTree": "src/components/FolderTree.tsx",
+    "MovePartDialog": "src/components/FolderTree.tsx",
+    "Detail": "src/components/PartDetail.tsx"
+  },
+  "dtsPropsFor": {
+    "Dialog": "/** Heading text. Also the dialog's accessible name, via `aria-labelledby`. */\n  title: string;\n  /** Escape, a click on the scrim, and the close button all call this. */\n  onClose: () => void;\n  /** The body. `Dialog` renders the scrim, panel, title row and close button — everything below the title is the caller's. */\n  children: React.ReactNode;",
+    "FolderTree": "/** Library whose category tree is shown. */\n  library: string;\n  /** The selected folder, or `null` for the whole library. */\n  selected: string | null;\n  /** Fired when a row is chosen. `null` means the selection was cleared. */\n  onSelect: (folder: string | null) => void;",
+    "MovePartDialog": "/** The part being moved. */\n  part: { id: string; name: string };\n  /** The library the move happens within. Moves never cross libraries. */\n  library: string;\n  /** Called on cancel and after a completed move. */\n  onClose: () => void;",
+    "Detail": "/** One part's full record, exactly as `GET /api/parts/{id}` returns it (the ts-rs `PartDetail` type). */\n  part: {\n    id: string; library: string; revision: string; revLabel: string;\n    name: string; partNumber: string | null; sourcePath: string;\n    /** `data:image/webp;base64,...`, or null. */\n    thumbnail: string | null;\n    triangleCount: number | null; isWatertight: boolean | null;\n    /** Millimetres. `approximate: true` means mesh-derived, and must be labelled so. */\n    bboxMm: { value: [number, number, number]; approximate: boolean } | null;\n    /** Absent for an open mesh, deliberately — integrating volume over one would lie. */\n    volumeMm3: { value: number; approximate: boolean } | null;\n    surfaceAreaMm2: { value: number; approximate: boolean } | null;\n    kernelVersion: string | null; sourceHash: string | null;\n    sourceFormat: string | null; sourceBytes: number | null;\n    storedBytes: number | null; compressed: boolean | null;\n    tessellationL0: string | null; tessellationL0Bytes: number | null;\n    createdAt: string; updatedAt: string;\n  };\n  /** Controls for the header. The part page passes Remove; the quick-look passes none. */\n  actions?: React.ReactNode;\n  /** Whether the record-a-source form is offered. Off for the quick-look, on for the full page. */\n  recordable?: boolean;"
+  }
+}
