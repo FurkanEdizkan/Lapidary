@@ -1,0 +1,20 @@
+-- The third trigram index, and the one the Phase 1 feature row actually named.
+--
+-- `FEATURES.md` §2 promises "Trigram search for part numbers and filenames" in Phase 1.
+-- `0016` built the part-number half and the name half and stopped there, so the filename
+-- half has never worked: `part.search` is `part_number` and `name` only (`0002`), and a
+-- person searching `nema-17` for a file called `nema-17-motor-mount.stl` sitting under a
+-- part named "Motor mount" got nothing back.
+--
+-- That is the case this index is for. A part's name is usually derived from its filename,
+-- so most path hits co-occur with a name hit and change nothing — the ones that do not are
+-- the two that matter: a directory fragment (`brackets/steel/`), which appears in no other
+-- column, and an original filename that survives a rename of the part.
+--
+-- `gin_trgm_ops`, not GiST, and not `CONCURRENTLY`: both arguments are in `0016` and
+-- neither has changed. `source_path` is NOT NULL since `0007`, so this one needs no
+-- `coalesce` on the read side, unlike `part_number`.
+--
+-- No partial `where deleted_at is null`, same as `0016`: the removed list searches through
+-- the same predicate the grid does, and a partial index would quietly stop serving it.
+create index part_source_path_trgm on part using gin (source_path gin_trgm_ops);
