@@ -1,7 +1,9 @@
-<!-- TARGET: this file records the visual world committed on 2026-09-08, not the code as it
-     stands. The incumbent grid is the anti-reference. Where a token here differs from
-     web/src/styles.css, this file is the intent and the code is the backlog. The
-     "Incumbent gap" block in Overview names every difference. -->
+<!-- Implemented 2026-09-08. This file described a target for one day; the code now carries
+     it — Inter self-hosted, the display voice, the radius ladder, borderless tiles, the
+     reveal panel, the accent's expanded role, and the browser surfaces. What is still
+     outstanding is named in "What is not built yet" at the end of Overview, and it is short.
+     Two numbers in Layout were corrected against the build rather than the build against
+     them: the grid's own density was a considered decision older than this document. -->
 
 ---
 name: Lapidary
@@ -136,13 +138,17 @@ The one place the system permits weight is the display line. A library title or 
 heading may be genuinely heavy — 900, tight-tracked — because a wall of identical tiles needs
 a horizon. Everything below that horizon stays recessive.
 
-**Incumbent gap.** The code as of 2026-09-08 does not implement this world yet. It matches
-the palette, the flatness, the motion grammar and the recessive controls. It differs on:
-type (system stack at 16px, max weight 500 — no display voice at all), radius (a single 4px
-step, no tile or pill), tiles (1px-bordered cards with four buttons and four metadata rows
-visible at rest, where this world wants a borderless image tile that reveals on hover), and
-accent role (three uses, drag-only). Closing that gap is a redesign of the grid, not a
-polish pass.
+**What is not built yet.** The world above is implemented. Three things in it are still
+only written down:
+
+- **The rail does not collapse.** There is not one responsive breakpoint in the application;
+  the grid is fluid because `auto-fill` makes it so, and the 240px sidebar holds its width
+  down to a phone. The breakpoints named in Layout are intent, not behaviour.
+- **Only one chip is a chip.** The search-scope pill carries the selected treatment. Nothing
+  else in the interface has become one yet, because nothing else filters.
+- **Headline and Label are roles without systematic callers.** Display, Title, Body and Mono
+  are applied; the other two are satisfied incidentally by Tailwind sizes that happen to
+  match, which is not the same as being applied.
 
 **Key Characteristics:**
 
@@ -231,9 +237,13 @@ hierarchy, it is a competition.
 ## Layout
 
 A fluid tile grid over a fixed chrome frame. The sidebar is a fixed 240px rail; the grid
-takes the rest and reflows by whole tiles — `repeat(auto-fill, minmax(220px, 1fr))` at
-comfortable density, `minmax(160px, 1fr)` at compact. Gutters are 12px; the grid never
+takes the rest and reflows by whole tiles — `repeat(auto-fill, minmax(11rem, 1fr))` with a
+16px gutter at comfortable density, `minmax(8rem, 1fr)` with 12px at compact. The grid never
 introduces a border to separate tiles, because the gutter already does it.
+
+Those figures are the build's, not this document's first guess at them. The density was
+chosen for somebody scanning a few thousand parts and it is tighter than the gallery this
+world takes its cue from; a gallery is browsed and a parts library is searched.
 
 Spacing runs 4 / 8 / 12 / 16 / 24 / 32. Inside a tile, padding is 12px; inside a dialog,
 16px; between sections on a detail page, 24px.

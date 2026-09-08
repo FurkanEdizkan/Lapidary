@@ -233,7 +233,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
                 name={field.name}
                 type={field.type}
                 step={field.type === 'number' ? '0.01' : undefined}
-                className="mt-0.5 block w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm text-[var(--color-fg)]"
+                className="mt-0.5 block w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
               />
             </label>
           ))}
