@@ -318,7 +318,7 @@ export function FolderTree({
           {strings.folders.newCategory}
         </button>
       </div>
-      <ul className="space-y-0.5">
+      <ul role="list" className="space-y-0.5">
         <li>
           <FolderButton
             name={strings.folders.root}
@@ -497,7 +497,7 @@ function FolderLevel({
     return null
   }
   return (
-    <ul className="mt-0.5 space-y-0.5">
+    <ul role="list" className="mt-0.5 space-y-0.5">
       {children.map((folder) => (
         <li key={folder.id}>
           <div
@@ -656,7 +656,7 @@ export function MovePartDialog({
   }
   return (
     <Dialog title={strings.folders.moveTitle(part.name)} onClose={onClose}>
-      <ul className="mt-3 max-h-72 space-y-1 overflow-y-auto">
+      <ul role="list" className="mt-3 max-h-72 space-y-1 overflow-y-auto">
         <li>
           <MoveRow
             name={strings.folders.root}
@@ -730,7 +730,7 @@ function MoveLevel({
               busy={busy}
               onMove={() => onMove(folder)}
             />
-            <ul className="space-y-1">
+            <ul role="list" className="space-y-1">
               <MoveLevel
                 folders={folders}
                 parentId={folder.id}

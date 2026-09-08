@@ -199,3 +199,17 @@ test("an empty list says so rather than rendering nothing", async () => {
   renderPage();
   await screen.findByText(strings.removal.removedEmpty);
 });
+
+/**
+ * SC 2.4.2, Level A. Seeded with `index.html`'s static tag first, because `document.title`
+ * reads the first `<title>` in tree order — in an empty jsdom head this assertion would
+ * pass whether or not the route sets one, which is a check that cannot fail.
+ */
+test("the tab says which page this is", async () => {
+  document.head.innerHTML = "<title>Lapidary</title>";
+  stub([]);
+  renderPage();
+
+  await screen.findByText(strings.removal.removedEmpty);
+  expect(document.title).toBe(strings.titles.removed);
+});

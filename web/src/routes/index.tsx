@@ -508,6 +508,32 @@ export function Index({
   return (
     <section className="flex items-start gap-6">
       {/*
+        Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
+        is written and removes it again on unmount, so the route that owns the page owns
+        its title and `index.html`'s static one stays as the pre-hydration fallback.
+        SC 2.4.2, Level A — one title for the whole application titles none of its pages.
+      */}
+      <title>{strings.titles.library}</title>
+      {/*
+        The first tab stop on the page, and off-screen until it is one.
+
+        SC 2.4.1, Level A. The category tree below is dozens of tab stops that repeat on
+        every visit and it comes first in the source order, so without this the keyboard
+        route to the first part runs through every category in the library.
+
+        Moved by `translate` rather than hidden: `display: none` and `visibility: hidden`
+        both remove it from the tab order, which is the one thing it must stay in. The
+        target takes `tabIndex={-1}` because a `<div>` is not focusable, and a fragment
+        link that moves the viewport without moving focus leaves a keyboard user exactly
+        where they were.
+      */}
+      <a
+        href="#parts"
+        className="ease-mechanical fixed top-4 left-4 z-30 -translate-y-20 rounded-sm border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-2 text-sm duration-[var(--duration-fast)] focus:translate-y-0"
+      >
+        {strings.skipToParts}
+      </a>
+      {/*
         The tree and the grid are siblings, and the drag between them needs nothing
         shared: a card writes its identity into the drag payload and a category row
         reads it back on drop, so neither holds state for the other.
@@ -517,7 +543,7 @@ export function Index({
         selected={folderId ?? null}
         onSelect={(folder) => onSelectFolder?.(folder)}
       />
-      <div className="min-w-0 flex-1">
+      <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
         <ActionBar
           library={library}
           // Three sources, most authoritative first, and `undefined` when none of them has
@@ -905,7 +931,7 @@ function ScanProgress({
         {status.failedTotal === 0 ? null : <span>{copy.failed(status.failedTotal)}</span>}
       </p>
       {status.failed.length === 0 ? null : (
-        <ul className="mt-2 space-y-1 text-sm">
+        <ul role="list" className="mt-2 space-y-1 text-sm">
           {status.failed.map((failure) => (
             // The path is not unique — two jobs can name the same file across retries,
             // and a `scan_directory` failure has no path at all — so the key is the pair
@@ -1533,7 +1559,7 @@ function Grid({
       ? '[contain-intrinsic-size:auto_31rem]'
       : '[contain-intrinsic-size:auto_26rem]'
   return (
-    <ul className={`grid list-none ${columns}`}>
+    <ul role="list" className={`grid list-none ${columns}`}>
       {parts.map((part) => (
         // `content-visibility: auto` is the virtualization, and it is one CSS property
         // rather than a dependency. It tells the browser to skip layout, paint and image

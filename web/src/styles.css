@@ -1,6 +1,18 @@
 @import "tailwindcss";
 
 /*
+  Every `<ul>` in this application carries `role="list"`, and this import is why.
+
+  Tailwind's preflight sets `list-style: none` on `ul, ol, menu` globally — not the
+  `list-none` utility, the reset — and WebKit drops list semantics from any list styled
+  that way, so VoiceOver stops announcing "list, 6 items" and stops offering list
+  navigation. The role puts back what the reset removed. SC 1.3.1, Level A.
+
+  A tenth list added without it is a silent regression, which is what
+  `web/src/lists-have-roles.test.ts` exists to catch.
+*/
+
+/*
   Inter, self-hosted, variable.
 
   Self-hosted and not linked: Lapidary ships into air-gapped deployments, and a

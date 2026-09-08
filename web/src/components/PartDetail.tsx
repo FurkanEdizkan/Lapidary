@@ -170,14 +170,24 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
   const recorded = sources.data ?? []
   // Nothing recorded and no way to record it here: a heading over an empty space says less
   // than the space it takes. The full page still offers the button.
-  if (recorded.length === 0 && !recordable) return null
+  //
+  // `isError` guards the early return as well as the list below it, because `?? []` reads
+  // a failed fetch as a part with nothing recorded — and on a non-recordable part that
+  // would take the whole section off the page. The licence this exists to show would be
+  // missing with nothing on screen saying so, which is the one failure mode it has.
+  if (!sources.isError && recorded.length === 0 && !recordable) return null
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
         {strings.sources.title}
       </h3>
+      {sources.isError ? (
+        <p role="alert" className="mb-2 max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.sources.failed}
+        </p>
+      ) : null}
       {recorded.length === 0 ? null : (
-        <ul className="mb-2 list-none space-y-2">
+        <ul role="list" className="mb-2 list-none space-y-2">
           {recorded.map((source) => (
             <li
               key={source.id}
@@ -591,8 +601,14 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
         {strings.images.title}
       </h3>
+      {/* Same reason as `Sources`: an empty gallery and one we could not read are different. */}
+      {images.isError ? (
+        <p role="alert" className="mb-2 max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.images.galleryFailed}
+        </p>
+      ) : null}
       {gallery.length === 0 ? null : (
-        <ul className="mb-2 flex list-none flex-wrap gap-2">
+        <ul role="list" className="mb-2 flex list-none flex-wrap gap-2">
           {gallery.map((image, index) => (
             <li key={image.id}>
               <Framed part={part} image={image} label={strings.images.alt(name, index)} />

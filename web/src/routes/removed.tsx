@@ -51,6 +51,12 @@ export function RemovedPage({ library }: { library: LibraryId }) {
 
   return (
     <section>
+      {/*
+        Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
+        is written and removes it on unmount, so the route that owns the page owns its
+        title — and `index.html`'s static one stays as the pre-hydration fallback. SC 2.4.2.
+      */}
+      <title>{strings.titles.removed}</title>
       <Link
         to="/"
         className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
@@ -73,7 +79,7 @@ export function RemovedPage({ library }: { library: LibraryId }) {
           <p className="mt-6 text-sm text-[var(--color-muted)]">
             {strings.removal.removedCount(removed.data.parts.length)}
           </p>
-          <ul className="mt-3 flex flex-col gap-2">
+          <ul role="list" className="mt-3 flex flex-col gap-2">
             {removed.data.parts.map((card) => (
               <RemovedRow key={card.id} card={card} />
             ))}

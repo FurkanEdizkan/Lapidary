@@ -60,6 +60,42 @@ function opensSentence(clause: string): string {
 
 export const strings = {
   appName: 'Lapidary',
+  /**
+   * What the browser tab says. WCAG 2.2 SC 2.4.2 is Level A and asks that a page be
+   * titled by topic or purpose; `index.html` carries one static title for the whole
+   * application, which is a title for none of these pages.
+   *
+   * Product name last, subject first: a person with six part pages open reads the tab
+   * strip left to right and the first twelve characters are all they get.
+   */
+  titles: {
+    library: 'Parts — Lapidary',
+    /**
+     * The part's own name when the page has it, and a plain heading while it loads or
+     * when it does not exist. Named rather than numbered — a page called `LP-1042-03`
+     * is findable in a tab strip and one called `Part 0193…` is not.
+     */
+    part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
+    removed: 'Removed parts — Lapidary',
+  },
+  /**
+   * The first tab stop on the library page, visible only once focused.
+   *
+   * SC 2.4.1, Level A. The category tree is dozens of tab stops that repeat on every
+   * visit, and it sits before the grid in the source order — without this, reaching the
+   * first part by keyboard means tabbing through every category first.
+   */
+  skipToParts: 'Skip to the parts',
+  /**
+   * The last thing the application can say. A crash inside a route unmounts everything
+   * below it, so this replaces the page rather than annotating it — and it names the
+   * one action that has ever fixed one, rather than apologising.
+   */
+  crash: {
+    title: 'This page stopped working',
+    body: 'Something in the application failed rather than something in your library — your parts and files are untouched. Reloading usually clears it.',
+    reload: 'Reload the page',
+  },
   health: {
     checking: 'Checking the server…',
     ok: (major: number) => `Connected — PostgreSQL ${major}`,
@@ -954,6 +990,16 @@ export const strings = {
      * the honest picture of the geometry, and `part_image`'s ordering keeps both.
      */
     title: 'Pictures',
+    /**
+     * Same reason as `sources.failed`: an empty gallery and an unknown one are different.
+     *
+     * `galleryFailed` and not `failed`, which this key was first — a duplicate object key
+     * TypeScript rejected and no render test could have: `images.failed` already exists a
+     * few hundred lines down and means a picture that could not be *stored*. The later
+     * literal wins at runtime, so the section would have rendered an upload error for a
+     * read failure while every assertion comparing the two through `strings` agreed.
+     */
+    galleryFailed: 'Could not load the pictures for this part.',
     add: 'Add a picture',
     adding: 'Storing…',
     /** Named alt text, because "image" tells a screen reader nothing it did not know. */
@@ -1006,6 +1052,12 @@ export const strings = {
      * selling prints needs to see that before they print.
      */
     title: 'Where this came from',
+    /**
+     * A fetch that failed renders this instead of an empty list. `sources.data ?? []`
+     * reads a network failure as "nothing recorded", which is the one thing this section
+     * must never say about a part whose licence it could not load.
+     */
+    failed: 'Could not load where this came from.',
     add: 'Record a source',
     save: 'Save',
     saving: 'Saving…',
