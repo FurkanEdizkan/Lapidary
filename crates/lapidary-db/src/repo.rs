@@ -1186,6 +1186,16 @@ pub struct PartDetailRow {
     pub compressed: Option<bool>,
     pub tessellation_l0: Option<BlobHash>,
     pub tessellation_l0_bytes: Option<u64>,
+    /// The model's own directory in the store, relative to the storage root — the same
+    /// value and the same nullability as [`PartRow::directory`], derived the same way.
+    ///
+    /// Carried here as well as on the card because the detail page is the surface a
+    /// keyboard reaches, and for a while "where does this file live" was answerable only
+    /// from a panel a keyboard could not open.
+    pub directory: Option<String>,
+    /// The directory above with the model's filename back on. `None` alongside
+    /// `directory`, and for the same reason: the bytes are still content-addressed.
+    pub storage_path: Option<String>,
     pub created_at: jiff::Timestamp,
     pub updated_at: jiff::Timestamp,
 }
@@ -1222,6 +1232,7 @@ struct DetailColumns {
     source_size_bytes: Option<i64>,
     source_stored_bytes: Option<i64>,
     source_zstd_level: Option<i16>,
+    storage_path: Option<String>,
     l0_blake3: Option<String>,
     l0_stored_bytes: Option<i64>,
     created_us: i64,
@@ -1297,7 +1308,7 @@ impl PgParts {
                     s.blake3 AS source_blake3, s.format AS source_format, \
                     s.size_bytes AS source_size_bytes, \
                     s.stored_bytes AS source_stored_bytes, \
-                    s.zstd_level AS source_zstd_level, \
+                    s.zstd_level AS source_zstd_level, s.storage_path, \
                     l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
@@ -1308,7 +1319,7 @@ impl PgParts {
                                 JOIN blob b ON b.blake3 = dv.blake3 \
                                 WHERE dv.revision_id = r.id AND dv.kind = $3 \
                                 ORDER BY dv.created_at DESC, dv.id DESC LIMIT 1) l0 ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.format, b.size_bytes, b.stored_bytes, b.zstd_level \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
@@ -1371,6 +1382,11 @@ impl PgParts {
                 .l0_stored_bytes
                 .map(|v| bytes_column("blob.stored_bytes", v))
                 .transpose()?,
+            // Derived here rather than on the client, for the reason `PartRow::directory`
+            // gives: the client cannot know when the store has not been migrated yet, and a
+            // path assembled from slugs would be confidently wrong exactly where it matters.
+            directory: c.storage_path.as_deref().and_then(model_directory),
+            storage_path: c.storage_path,
             created_at: detail_stamp("part.created_at", c.created_us)?,
             updated_at: detail_stamp("part.updated_at", c.updated_us)?,
         }))

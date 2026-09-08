@@ -7,7 +7,7 @@ import {
   restorePart,
 } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { PartCard } from '../lib/types'
+import type { LibraryId, PartCard } from '../lib/types'
 
 /**
  * The parts a person removed, and the only route back to any of them.
@@ -22,16 +22,31 @@ import type { PartCard } from '../lib/types'
  * the library has no purge button anywhere.
  */
 export const Route = createFileRoute('/removed')({
-  component: RemovedPage,
+  component: RouteComponent,
+  /*
+    The library travels in the URL, exactly as it does on the grid.
+
+    This page addressed `DEFAULT_LIBRARY_ID` directly, which was right while there was one
+    library and became a wrong-library bug the moment there could be two: an operator who
+    removed a part from their second library came here and was shown the first library's
+    removed parts, with no indication the page was answering about somewhere else.
+  */
+  validateSearch: (search: Record<string, unknown>): { library?: string } =>
+    typeof search.library === 'string' ? { library: search.library } : {},
 })
 
-export function RemovedPage() {
+function RouteComponent() {
+  const { library } = Route.useSearch()
+  return <RemovedPage library={(library as LibraryId | undefined) ?? DEFAULT_LIBRARY_ID} />
+}
+
+export function RemovedPage({ library }: { library: LibraryId }) {
   // Not paged. A removed list that needs paging is a library someone has emptied, which is
   // not the case this page is for — and `MAX_LIMIT` on the route caps it regardless. When
   // that stops being true it wants the grid's `useInfiniteQuery`, not a second pager here.
   const removed = useQuery({
-    queryKey: ['parts', DEFAULT_LIBRARY_ID, 'removed'],
-    queryFn: () => fetchParts(DEFAULT_LIBRARY_ID, undefined, 'removed'),
+    queryKey: ['parts', library, 'removed'],
+    queryFn: () => fetchParts(library, undefined, 'removed'),
   })
 
   return (
@@ -82,8 +97,9 @@ function RemovedRow({ card }: { card: PartCard }) {
   // Both mutations change both lists — the library's and this one — so both invalidate the
   // shared prefix rather than only the key they were read from. A restore that refreshed
   // this page alone would leave the grid missing the part it just brought back.
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+  // The card's own library, not the seeded one — `PartCard` carries it, so a restore in the
+  // second library refreshes the second library's grid.
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['parts', card.library] })
 
   const restore = useMutation({
     mutationFn: () => restorePart(card.id),
@@ -126,7 +142,7 @@ function RemovedRow({ card }: { card: PartCard }) {
         type="button"
         onClick={() => restore.mutate()}
         disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {restore.isPending ? strings.removal.restoring : strings.removal.restore}
       </button>
@@ -141,7 +157,7 @@ function RemovedRow({ card }: { card: PartCard }) {
           }
         }}
         disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {purge.isPending ? strings.removal.purging : strings.removal.purge}
       </button>

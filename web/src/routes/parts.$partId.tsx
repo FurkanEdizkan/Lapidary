@@ -1,7 +1,17 @@
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { DEFAULT_LIBRARY_ID, blobUrl, downloadUrl, fetchPartDetail, removePart } from '../lib/api'
+import { useState } from 'react'
+import {
+  blobUrl,
+  downloadUrl,
+  fetchInstanceStorage,
+  fetchPartDetail,
+  removePart,
+  renderPartThumbnail,
+} from '../lib/api'
 import { Detail } from '../components/PartDetail'
+import { MovePartDialog } from '../components/FolderTree'
+import { ShowInFolder } from '../components/ShowInFolder'
 import { strings } from '../lib/strings'
 import type { Approximate, PartDetail } from '../lib/types'
 
@@ -60,6 +70,18 @@ export function PartPage({ partId }: { partId: string }) {
           recordable
           actions={
             <>
+              {/*
+                Render and Move live here as well as in the grid's panel, and that is not
+                duplication for its own sake.
+
+                The panel opens on a click of the tile and the tile has no keyboard path to
+                it, so for a while these two controls — and the storage path below — existed
+                nowhere a keyboard could reach. That is WCAG 2.2 SC 2.1.1, Level A, and it is
+                about whether a *function* is available at all, not about which surface
+                offers it. This page is the surface a keyboard reaches: the card's name is a
+                real link, and it comes here.
+              */}
+              <PartTools part={part.data} />
               <Remove part={part.data} />
               {/*
                 The reassurance sits beside the button rather than behind a confirmation
@@ -83,6 +105,62 @@ export function PartPage({ partId }: { partId: string }) {
   )
 }
 
+/**
+ * The per-part actions that are not destructive: render a preview, file it in a category.
+ *
+ * Download lives in `Detail` already and Remove is beside this in the page's `actions`,
+ * deliberately kept out of here — this component is the pair of controls the grid's panel
+ * carries, put where a keyboard can reach them.
+ */
+function PartTools({ part }: { part: PartDetail }) {
+  const queryClient = useQueryClient()
+  const [moving, setMoving] = useState(false)
+  // The host's own view of the store, so the path this page prints is one a person can
+  // paste. `false` because the walk behind `onDisk` is the expensive figure and this page
+  // wants only the root.
+  const instance = useQuery({
+    queryKey: ['instance-storage', false],
+    queryFn: () => fetchInstanceStorage(false),
+  })
+  const render = useMutation({
+    mutationFn: () => renderPartThumbnail(part.id),
+    // The preview arrives through the worker, so there is nothing to refetch here except
+    // this part — the grid picks its own up on the next poll.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['part', part.id] }),
+  })
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => render.mutate()}
+        disabled={render.isPending}
+        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {strings.render.part}
+      </button>
+      <button
+        type="button"
+        onClick={() => setMoving(true)}
+        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.folders.moveTo}
+      </button>
+      {render.isError ? (
+        <span className="text-xs text-[var(--color-muted)]">{strings.render.queueFailed}</span>
+      ) : null}
+      <ShowInFolder part={part} hostRoot={instance.data?.hostStorageRoot ?? null} />
+      {moving ? (
+        <MovePartDialog
+          part={{ id: part.id, name: part.name }}
+          library={part.library}
+          onClose={() => setMoving(false)}
+        />
+      ) : null}
+    </>
+  )
+}
+
 function Remove({ part }: { part: PartDetail }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -92,7 +170,10 @@ function Remove({ part }: { part: PartDetail }) {
       // Both lists change: this part leaves the grid and joins the removed list. Awaited
       // so the navigation lands on a grid that has already dropped the card, rather than
       // showing it for one frame and then blinking it away.
-      await queryClient.invalidateQueries({ queryKey: ['parts', DEFAULT_LIBRARY_ID] })
+      // This part's own library, not the seeded one. `PartDetail` carries it, so the key
+      // needs no new field — the hard-coded id was simply the wrong library on any
+      // deployment with more than one.
+      await queryClient.invalidateQueries({ queryKey: ['parts', part.library] })
       await navigate({ to: '/' })
     },
   })
@@ -103,7 +184,7 @@ function Remove({ part }: { part: PartDetail }) {
         type="button"
         onClick={() => remove.mutate()}
         disabled={remove.isPending}
-        className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {remove.isPending ? strings.removal.removing : strings.removal.remove}
       </button>

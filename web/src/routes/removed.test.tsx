@@ -13,6 +13,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { beforeEach, expect, test, vi } from "vitest";
+import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { RemovedPage } from "./removed";
 import { strings } from "../lib/strings";
 import type { PartCard } from "../lib/types";
@@ -94,7 +95,9 @@ function stub(
 }
 
 function renderPage() {
-  const rootRoute = createRootRoute({ component: () => <RemovedPage /> });
+  const rootRoute = createRootRoute({
+    component: () => <RemovedPage library={DEFAULT_LIBRARY_ID} />,
+  });
   const router = createRouter({
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ["/"] }),

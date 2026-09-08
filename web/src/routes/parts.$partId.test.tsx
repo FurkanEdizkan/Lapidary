@@ -44,6 +44,8 @@ const PART: PartDetail = {
   compressed: true,
   tessellationL0: '3333333333333333333333333333333333333333333333333333333333333333',
   tessellationL0Bytes: 7500,
+  directory: 'libraries/default/Brackets/nema-17-motor-mount',
+  storagePath: 'libraries/default/Brackets/nema-17-motor-mount/nema-17-motor-mount.stl',
   createdAt: '2026-09-06T10:00:00Z',
   updatedAt: '2026-09-06T10:00:00Z',
 }
@@ -464,4 +466,50 @@ test('a price typed as a decimal is sent as exact minor units', async () => {
   // at this point and an optional chain off it narrows to `never`.
   await waitFor(() => expect(posted).not.toBeNull())
   expect(posted).toMatchObject({ priceMinor: 1234, license: 'CC-BY 4.0' })
+})
+
+/**
+ * **Every per-part function is reachable without a mouse, and this is the test that says so.**
+ *
+ * WCAG 2.2 SC 2.1.1 is Level A and it is about whether a *function* is available from a
+ * keyboard at all — not about which surface offers it. For a while three were not: Render
+ * preview, Move to… and Show storage path lived only in the grid's quick-look panel, and the
+ * panel opens on a click of a tile that carries no `role`, no `tabIndex` and no key handler.
+ * The card's name is a real link and it comes here, so here is where they have to be.
+ *
+ * Asserted by role and accessible name rather than by class, so a restyle cannot break it and
+ * a control that stops being a button will.
+ */
+test('every per-part action is reachable on the page a keyboard can get to', async () => {
+  stub(PART)
+  renderPage()
+
+  // The three that were mouse-only, plus the two that were always here.
+  for (const name of [
+    strings.render.part,
+    strings.folders.moveTo,
+    strings.folders.showInFolderFor(PART.name),
+    strings.removal.remove,
+  ]) {
+    expect(await screen.findByRole('button', { name })).toBeTruthy()
+  }
+  expect(screen.getByRole('link', { name: strings.download.original })).toBeTruthy()
+
+  // And none of them is hidden from the accessibility tree behind an inert wrapper: a
+  // control that exists but is `aria-hidden` or `display:none` satisfies a query that asks
+  // only for presence, which is the assertion this repository keeps catching.
+  for (const name of [strings.render.part, strings.folders.moveTo]) {
+    expect(screen.getByRole('button', { name, hidden: false })).toBeTruthy()
+  }
+})
+
+/** The storage path is a disclosure, so the button has to actually reveal something. */
+test('show storage path reveals the part path on the detail page', async () => {
+  stub(PART)
+  renderPage()
+
+  fireEvent.click(
+    await screen.findByRole('button', { name: strings.folders.showInFolderFor(PART.name) }),
+  )
+  expect(await screen.findByText(PART.storagePath as string)).toBeTruthy()
 })

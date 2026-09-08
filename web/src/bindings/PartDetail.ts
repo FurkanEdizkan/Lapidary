@@ -68,4 +68,19 @@ sourceFormat: string | null, sourceBytes: number | null, storedBytes: number | n
  * address. Showing its hash and size is what tells a user their part has a usable
  * derivative at all.
  */
-tessellationL0: BlobHash | null, tessellationL0Bytes: number | null, createdAt: string, updatedAt: string, };
+tessellationL0: BlobHash | null, tessellationL0Bytes: number | null, 
+/**
+ * The model's own directory in the store, relative to the storage root.
+ *
+ * Relative and never an absolute host path: the api runs in a container and its view
+ * of the filesystem is not the operator's. `LAPIDARY_HOST_STORAGE_ROOT` is what turns
+ * this into something a person can paste, and the client joins them.
+ *
+ * `None` for a part whose bytes are still content-addressed — it has no directory of
+ * its own to show, and inventing one would be confidently wrong.
+ */
+directory: string | null, 
+/**
+ * The directory above with the model's filename back on. `None` alongside `directory`.
+ */
+storagePath: string | null, createdAt: string, updatedAt: string, };

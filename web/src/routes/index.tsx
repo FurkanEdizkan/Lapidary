@@ -21,6 +21,7 @@ import {
 } from '../lib/api'
 import { flipFrom } from '../lib/flip'
 import { Dialog } from '../components/Dialog'
+import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail } from '../components/PartDetail'
 import {
   DENSITIES,
@@ -518,6 +519,7 @@ export function Index({
       />
       <div className="min-w-0 flex-1">
         <ActionBar
+          library={library}
           // Three sources, most authoritative first, and `undefined` when none of them has
           // an answer. The server's echo is the truth once it lands; `variables` is what this
           // click asked for and covers the round trip, since react-query clears `data` the
@@ -767,6 +769,7 @@ function ActionBar({
   onSweep,
   sweepBusy,
   note,
+  library,
 }: {
   autoThumbnail: boolean | undefined
   onAutoThumbnail: (on: boolean) => void
@@ -777,6 +780,8 @@ function ActionBar({
   onSweep: () => void
   sweepBusy: boolean
   note: string | null
+  /** Carried only so the Removed link can hand it on; nothing here reads it otherwise. */
+  library: LibraryId
 }) {
   return (
     <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--color-border)] pb-4">
@@ -811,7 +816,7 @@ function ActionBar({
         type="button"
         onClick={onScan}
         disabled={scanBusy}
-        className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.scan.start}
       </button>
@@ -819,7 +824,7 @@ function ActionBar({
         type="button"
         onClick={onSweep}
         disabled={sweepBusy}
-        className="ease-mechanical rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        className="ease-mechanical rounded border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.render.sweep}
       </button>
@@ -831,6 +836,10 @@ function ActionBar({
       */}
       <Link
         to="/removed"
+        // The library travels with the link. Without it the removed list answered about the
+        // seeded library whatever you were looking at, which is a wrong answer rather than a
+        // missing one.
+        search={library === DEFAULT_LIBRARY_ID ? undefined : { library }}
         // `min-h-6` and not padding alone: WCAG 2.2 SC 2.5.8 measures the target, and a
         // 20px text link in a row of 26px buttons was the smallest thing on the page.
         className="ease-mechanical flex min-h-6 items-center text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
@@ -970,7 +979,7 @@ function LibrarySwitcher({
       <button
         type="button"
         onClick={() => setCreating(true)}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.libraries.create}
       </button>
@@ -1051,14 +1060,14 @@ function NewLibraryDialog({
           <button
             type="button"
             onClick={onCancel}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
           >
             {strings.folders.cancel}
           </button>
           <button
             type="submit"
             disabled={busy || trimmed === ''}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {strings.libraries.createConfirm}
           </button>
@@ -1477,7 +1486,7 @@ function InstanceStorage({
         <button
           type="button"
           onClick={onMeasure}
-          className="ease-mechanical mt-1 rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical mt-1 rounded border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.storage.measureOnDisk}
         </button>
@@ -1637,9 +1646,17 @@ function Card({
       <div className="flex flex-1 flex-col gap-1 p-3">
         {/*
           The name is the link, not the whole card — the keyboard path, the middle-click
-          path, and what a screen reader announces. It is now the card's only tab stop; the
-          four controls that used to follow it moved into the panel, which is why reaching
-          the fiftieth part costs fifty Tab presses rather than two hundred and sixty.
+          path, and what a screen reader announces. It is the card's only tab stop, which is
+          why reaching the fiftieth part costs fifty Tab presses rather than two hundred and
+          sixty.
+
+          That count is only defensible because the controls it replaced went somewhere a
+          keyboard can reach. They live in this panel *and* on the part's own page, which
+          this link goes to — for a while they were in the panel alone, and the panel opens
+          on a click of a tile that has no key handler, so Render, Move and the storage path
+          existed nowhere a keyboard could get to. WCAG 2.2 SC 2.1.1 is Level A and it asks
+          whether a function is available, not which surface offers it. Do not move a
+          control out of `parts.$partId.tsx` without checking this again.
         */}
         <h2 id={nameId} className="text-sm leading-snug font-semibold">
           <Link
@@ -1798,7 +1815,7 @@ function QuickLook({
         <Link
           to="/parts/$partId"
           params={{ partId: part.id }}
-          className="ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical rounded border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.quickLook.fullPage}
         </Link>
@@ -1807,84 +1824,6 @@ function QuickLook({
   )
 }
 
-/**
- * Where this model is on disk — shown, not opened.
- *
- * No browser opens a host file manager: `file://` navigation from a page is blocked
- * everywhere, and a button that claimed otherwise would be a control that cannot work. So
- * this reveals the path as selectable, copyable text and says why it is a path. A native
- * reveal belongs to the Tauri shell, which has a host to ask.
- *
- * The path is never assembled here from category names. The server disambiguates
- * colliding directory names — the second `cliff` becomes `cliff_a1b2c3` — and the client
- * cannot know when it did, so a path joined from slugs would be confidently wrong exactly
- * where it matters.
- */
-function ShowInFolder({
-  part,
-  hostRoot,
-}: {
-  part: PartCard
-  /**
-   * Where the store is on the host, or `null` when the deployment has not said.
-   *
-   * Never derived here and never guessed. The api sees the store at a container path that
-   * exists on nobody's machine, so if this is `null` the honest answer is the path within
-   * the store — which is what the copy then says, along with how to fix it.
-   */
-  hostRoot: string | null
-}) {
-  const [open, setOpen] = useState(false)
-  // The file, not its directory: "where is this model" is answered by the path to the
-  // model, and the directory is one `rsplit` away for anyone who wants it. Narrowed with
-  // `typeof` rather than in the JSX because a `!== 'string'` inside a child expression puts
-  // the literal `'string'` where `no-bare-strings.test.ts` reads it — correctly — as a
-  // label reaching the screen.
-  const relative = typeof part.storagePath === 'string' ? part.storagePath : null
-  // Joined with a single slash and no path library: `hostRoot` is absolute or absent (the
-  // server drops a relative one), and the store-relative path never starts with one, so the
-  // only case to handle is a trailing slash on the root.
-  const path =
-    relative === null ? null : hostRoot === null ? relative : `${hostRoot.replace(/\/$/, '')}/${relative}`
-  return (
-    <div className="mt-2 text-xs text-[var(--color-muted)]">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        aria-label={strings.folders.showInFolderFor(part.name)}
-        className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
-      >
-        {strings.folders.showInFolder}
-      </button>
-      {!open ? null : path === null ? (
-        <p className="mt-2">{strings.folders.directoryPending}</p>
-      ) : (
-        <div className="mt-2 space-y-2">
-          {/* `select-all` so one click takes the whole path, which is what a person does
-              with it — and `break-all` because a nested category path is longer than a
-              card is wide. */}
-          <code className="block font-mono break-all select-all text-[var(--color-text)]">
-            {path}
-          </code>
-          <button
-            type="button"
-            onClick={() => {
-              // Absent in an insecure context, and a rejected permission is not worth an
-              // error state: the path is on screen and selectable either way.
-              void navigator.clipboard?.writeText(path).catch(() => undefined)
-            }}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
-            {strings.folders.copyPath}
-          </button>
-          <p>{hostRoot === null ? strings.folders.directoryHint : strings.folders.directoryHintAbsolute}</p>
-          {hostRoot === null ? <p>{strings.folders.directoryPartial}</p> : null}
-        </div>
-      )}
-    </div>
-  )
-}
 
 
 /**

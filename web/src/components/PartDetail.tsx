@@ -241,7 +241,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             <button
               type="submit"
               disabled={add.isPending}
-              className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+              className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
             >
               {add.isPending ? strings.sources.saving : strings.sources.save}
             </button>
@@ -261,7 +261,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             setRefusal(null)
             setOpen(true)
           }}
-          className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.sources.add}
         </button>
@@ -623,7 +623,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
           type="button"
           onClick={() => picker.current?.click()}
           disabled={add.isPending}
-          className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
         >
           {add.isPending ? strings.images.adding : strings.images.add}
         </button>
@@ -634,7 +634,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
               setRefusal(null)
               setUrl('')
             }}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+            className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
           >
             {strings.images.addFromUrl}
           </button>
@@ -667,7 +667,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
           <button
             type="submit"
             disabled={add.isPending || url.trim() === ''}
-            className="ease-mechanical rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className="ease-mechanical rounded border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
             {add.isPending ? strings.images.fetching : strings.images.fetch}
           </button>
