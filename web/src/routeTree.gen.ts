@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as OrganizeRouteImport } from './routes/organize'
 import { Route as RemovedRouteImport } from './routes/removed'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrganizeRoute = OrganizeRouteImport.update({
+  id: '/organize',
+  path: '/organize',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RemovedRoute = RemovedRouteImport.update({
@@ -31,30 +37,34 @@ const PartsPartIdRoute = PartsPartIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/organize': typeof OrganizeRoute
   '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/organize': typeof OrganizeRoute
   '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/organize': typeof OrganizeRoute
   '/removed': typeof RemovedRoute
   '/parts/$partId': typeof PartsPartIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/removed' | '/parts/$partId'
+  fullPaths: '/' | '/organize' | '/removed' | '/parts/$partId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/removed' | '/parts/$partId'
-  id: '__root__' | '/' | '/removed' | '/parts/$partId'
+  to: '/' | '/organize' | '/removed' | '/parts/$partId'
+  id: '__root__' | '/' | '/organize' | '/removed' | '/parts/$partId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  OrganizeRoute: typeof OrganizeRoute
   RemovedRoute: typeof RemovedRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
 }
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/organize': {
+      id: '/organize'
+      path: '/organize'
+      fullPath: '/organize'
+      preLoaderRoute: typeof OrganizeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/removed': {
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  OrganizeRoute: OrganizeRoute,
   RemovedRoute: RemovedRoute,
   PartsPartIdRoute: PartsPartIdRoute,
 }

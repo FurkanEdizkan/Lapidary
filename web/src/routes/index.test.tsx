@@ -17,7 +17,7 @@ import {
 import { beforeEach, expect, test, vi } from "vitest";
 import { Index, Route } from "./index";
 import {
-  densityFor,
+  cardSizeFor,
   pageSizeFor,
   setPageSize,
 } from "../lib/preferences";
@@ -394,6 +394,17 @@ function pushStatus(status: unknown) {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  /*
+    **View preferences are persisted, so they leak between tests unless this runs.**
+
+    `layout`, `cardSize` and `namesAlways` all live in `localStorage` keyed by library, and
+    jsdom keeps one storage for the whole file. A test that switched to the list layout used
+    to leave every test after it looking at a table, and the failure surfaced far from the
+    cause: thirty assertions for `role="article"` failing in tests that never touched the
+    View menu. Three tests cleared storage by hand for the same reason; doing it here is
+    what makes the isolation a property of the suite rather than of remembering.
+  */
+  window.localStorage.clear();
   observers = [];
   streams = [];
   vi.stubGlobal(
@@ -609,34 +620,75 @@ test("renders a thumbnailed part and a thumbnail-less part side by side", async 
   expect(screen.getAllByRole("img")).toHaveLength(1);
 });
 
-// CLAUDE.md: mesh-derived measurements are labelled "approximate" in the UI, always. The
-// triangle count is tessellation-derived by construction, so it must never appear
-// unlabelled. Both strings are literals: this is the exact wording the non-negotiable
-// exists to produce, and a badge reading "Exact" over a mesh figure is the failure mode.
-test("shows the triangle count only alongside the approximate label", async () => {
+/**
+ * Open the View menu and switch to the list layout. Two clicks that four tests need, and
+ * the count column only exists in one of the two layouts.
+ */
+async function showList() {
+  fireEvent.click(await screen.findByRole("button", { name: strings.shell.view }));
+  fireEvent.click(await screen.findByRole("button", { name: strings.layout.list }));
+}
+
+// CLAUDE.md: mesh-derived measurements are labelled "approximate" in the UI, always. On a
+// card that means the bounding box, which is the one figure a tile now shows — the triangle
+// count moved to the list, where a column of counts can actually be compared. Both strings
+// are literals: this is the exact wording the non-negotiable exists to produce, and a badge
+// reading "Exact" over a mesh figure is the failure mode.
+test("shows a card's dimensions only alongside the approximate label", async () => {
   stubFetch({ parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  expect(within(card).getByText("12,486 triangles")).toBeDefined();
+  expect(within(card).getByText("60.0 × 42.3 × 35.0 mm")).toBeDefined();
   const badge = within(card).getByText("Approximate");
   expect(badge.getAttribute("title")).toBe(
     "At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.",
   );
 });
 
+// The triangle count, where it now lives. Same rule, different surface: a row showing a
+// count is showing a tessellated figure, so the row must carry the label.
+test("shows the triangle count only alongside the approximate label", async () => {
+  stubFetch({ parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+  await showList();
+  const row = (await screen.findByText("12,486 triangles")).closest("tr") as HTMLElement;
+  expect(within(row).getByText("Approximate")).toBeDefined();
+});
+
 // The one case that made the rule an accident rather than a guarantee: a part carrying a
 // triangle count while the wire says approximate=false. No fixture paired those, and the
 // count and the badge were independent conditionals, so the count rendered unlabelled —
 // latent only because the ingest path currently hardcodes the flag to true. A triangle
-// count IS a mesh-derived figure, so the label is not optional here; the component makes
-// the pair indivisible rather than trusting the flag.
+// count IS a mesh-derived figure, so the label is not optional here; the row makes the pair
+// indivisible rather than trusting the flag.
 test("labels a triangle count even when the wire claims the part is not approximate", async () => {
   const inconsistent: PartCard = { ...MOTOR_MOUNT, approximate: false };
   stubFetch({ parts: ok(page([inconsistent])) });
   renderIndex();
-  const card = await screen.findByRole("article", { name: inconsistent.name });
-  expect(within(card).getByText("12,486 triangles")).toBeDefined();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  await showList();
+  const row = (await screen.findByText("12,486 triangles")).closest("tr") as HTMLElement;
+  expect(within(row).getByText("Approximate")).toBeDefined();
+});
+
+// And the other direction, which the card is now the place to assert: a part with an
+// analytic box and no count must NOT be labelled. Adding the bounding box to the card was
+// what made this reachable — keying the badge to "has a measurement" would stamp
+// APPROXIMATE on every B-rep part from Phase 2 on.
+test("leaves a part with an analytic measurement and no count unlabelled", async () => {
+  const analytic: PartCard = {
+    ...MOTOR_MOUNT,
+    name: "Sensor bracket, 20 x 40 extrusion",
+    partNumber: "LP-2210-C",
+    triangleCount: null,
+    approximate: false,
+  };
+  stubFetch({ parts: ok(page([analytic])) });
+  renderIndex();
+  const card = await screen.findByRole("article", { name: analytic.name });
+  // The figure is there…
+  expect(within(card).getByText("60.0 × 42.3 × 35.0 mm")).toBeDefined();
+  // …and it is not called approximate, because nothing says it is.
+  expect(within(card).queryByText("Approximate")).toBeNull();
 });
 
 // strings.parts.triangles has a singular branch, and nothing exercised it: every fixture
@@ -654,10 +706,9 @@ test("renders the singular form for a one-triangle mesh", async () => {
   };
   stubFetch({ parts: ok(page([singleFacet])) });
   renderIndex();
-  const card = await screen.findByRole("article", { name: singleFacet.name });
-  expect(within(card).getByText("1 triangle")).toBeDefined();
-  expect(within(card).queryByText("1 triangles")).toBeNull();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  await showList();
+  expect(await screen.findByText("1 triangle")).toBeDefined();
+  expect(screen.queryByText("1 triangles")).toBeNull();
 });
 
 // The binding says `number | null`, but fetchParts casts the response rather than
@@ -671,9 +722,16 @@ test("survives a triangle count the server stopped sending", async () => {
   } as unknown as PartCard;
   stubFetch({ parts: ok(page([drifted])) });
   renderIndex();
-  const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  expect(within(card).queryByText(/triangle/)).toBeNull();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  await showList();
+  const row = (await screen.findByText(MOTOR_MOUNT.name)).closest("tr") as HTMLElement;
+  // No count, and no `NaN triangles` either — the cell says nobody measured it.
+  expect(within(row).queryByText(/triangle/)).toBeNull();
+  expect(
+    within(row).getAllByRole("cell", { name: strings.layout.unmeasuredLabel }).length,
+  ).toBeGreaterThan(0);
+  // The flag still stands on its own: it means *any* figure on the part is mesh-derived,
+  // not that this count is, so it survives the count going away.
+  expect(within(row).getByText("Approximate")).toBeDefined();
 });
 
 // The flag means "any figure on this part is mesh-derived", so a part can be approximate
@@ -2376,10 +2434,10 @@ test("a card offers the move chooser, and is draggable for the tree to catch", a
       name: strings.folders.moveToFor(CLIFF_FACE.name),
     }),
   );
-  // Two dialogs are stacked here — the panel, and the move chooser it opened. The chooser
-  // is the last one mounted.
-  const dialogs = await screen.findAllByRole("dialog");
-  const dialog = dialogs[dialogs.length - 1] as HTMLElement;
+  // One dialog, not two. The panel that opened it is a rail rather than a modal now, so
+  // the move chooser is the only `dialog` on screen — and it should be: choosing where a
+  // model goes is a decision, and the grid behind it must not be clickable while it is up.
+  const dialog = await screen.findByRole("dialog");
   expect(
     within(dialog).getByText(strings.folders.moveTitle(CLIFF_FACE.name)),
   ).toBeDefined();
@@ -2407,7 +2465,9 @@ test("right-clicking a card leaves the browser's own menu alone", async () => {
   card.dispatchEvent(event);
 
   expect(event.defaultPrevented).toBe(false);
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(
+    screen.queryByRole("complementary", { name: strings.inspector.title }),
+  ).toBeNull();
 });
 
 /**
@@ -2603,21 +2663,30 @@ function detailByPart(first: typeof MOTOR_MOUNT, ...rest: (typeof MOTOR_MOUNT)[]
   };
 }
 
-/** Click a card, wait for its panel, and hand back the dialog to assert inside. */
+/**
+ * Click a card, wait for the rail, and hand it back to assert inside.
+ *
+ * `complementary` and not `dialog`, which is the whole of what changed when the panel
+ * became a rail beside the grid rather than a modal over it: it is a landmark describing
+ * the current selection, the grid stays operable, and there is no focus trap to announce.
+ * See `Inspector`.
+ */
 async function openPanel(name: string) {
   fireEvent.click(await screen.findByRole("article", { name }));
-  const dialog = await screen.findByRole("dialog");
-  // The panel fetches its own detail; the tools only exist once it lands.
-  await within(dialog).findByText(strings.detail.geometry);
-  return dialog;
+  const rail = await screen.findByRole("complementary", { name: strings.inspector.title });
+  // The rail fetches its own detail; the tools only exist once it lands.
+  await within(rail).findByText(strings.detail.geometry);
+  return rail;
 }
 
-/** Open a panel, assert inside it, and close it again — for a test that opens two. */
+/** Open the rail, assert inside it, and close it again — for a test that opens two. */
 async function closePanel() {
-  const open = screen.queryByRole("dialog");
+  const open = screen.queryByRole("complementary", { name: strings.inspector.title });
   if (open === null) return;
-  fireEvent.click(within(open).getByRole("button", { name: strings.dialog.close }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(within(open).getByRole("button", { name: strings.inspector.close }));
+  await waitFor(() =>
+    expect(screen.queryByRole("complementary", { name: strings.inspector.title })).toBeNull(),
+  );
 }
 
 const MOTOR_MOUNT_DETAIL = {
@@ -2664,13 +2733,88 @@ test("clicking a card opens the part in place, rendered by the detail page's own
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   fireEvent.click(card);
 
-  const dialog = await screen.findByRole("dialog");
-  // `find`, not `get`: the panel opens immediately and fills when the detail arrives, which
+  const rail = await screen.findByRole("complementary", { name: strings.inspector.title });
+  // `find`, not `get`: the rail opens immediately and fills when the detail arrives, which
   // is the point of opening it immediately.
-  expect((await within(dialog).findAllByText(strings.detail.approximate)).length).toBeGreaterThan(0);
+  expect((await within(rail).findAllByText(strings.detail.approximate)).length).toBeGreaterThan(0);
   expect(
-    within(dialog).getByRole("link", { name: strings.quickLook.fullPage }),
+    within(rail).getByRole("link", { name: strings.quickLook.fullPage }),
   ).toBeDefined();
+});
+
+/**
+ * **The rail is a rail, and this is what that buys.**
+ *
+ * A modal cost an open and a close per part: you could not see the row you were working
+ * along while reading one of them, and every part meant dismissing the last. Clicking a
+ * second tile with the first still open is the gesture that was impossible before and is
+ * the whole reason `v2` moves this panel beside the grid — so it is asserted rather than
+ * left to be true by accident.
+ *
+ * Three things, and each is a different way to get it wrong: the rail follows the click,
+ * there is still exactly one of them, and the tile it came from says so.
+ */
+test("clicking a second card moves the rail to it without closing anything", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partDetail: detailByPart(MOTOR_MOUNT, HEX_NUT),
+  });
+  renderIndex();
+
+  const rail = await openPanel(MOTOR_MOUNT.name);
+  expect(within(rail).getByRole("link", { name: strings.quickLook.fullPage })
+    .getAttribute("href")).toBe(`/parts/${MOTOR_MOUNT.id}`);
+  expect(
+    (await screen.findByRole("article", { name: MOTOR_MOUNT.name })).getAttribute("aria-current"),
+  ).toBe("true");
+
+  // No close in between — the grid was never covered, so there was nothing to dismiss.
+  fireEvent.click(screen.getByRole("article", { name: HEX_NUT.name }));
+
+  await waitFor(() =>
+    expect(
+      screen
+        .getByRole("complementary", { name: strings.inspector.title })
+        .querySelector(`a[href="/parts/${HEX_NUT.id}"]`),
+    ).not.toBeNull(),
+  );
+  // Still one rail, not two stacked panels.
+  expect(
+    screen.getAllByRole("complementary", { name: strings.inspector.title }),
+  ).toHaveLength(1);
+  // And the mark moved with it: two tiles claiming to be the open one is the failure a
+  // border alone would hide from a screen reader entirely.
+  expect(
+    screen.getByRole("article", { name: HEX_NUT.name }).getAttribute("aria-current"),
+  ).toBe("true");
+  expect(
+    screen.getByRole("article", { name: MOTOR_MOUNT.name }).getAttribute("aria-current"),
+  ).toBeNull();
+});
+
+/**
+ * Escape closes the rail, and the listener is on the document because focus is not in it.
+ *
+ * Clicking a tile fills the rail and leaves focus on the grid, so a handler bound to the
+ * rail's own subtree would hear nothing — which is the opposite of `Dialog`'s reason for
+ * listening on the document and arrives at the same place. Dispatched at `document` here
+ * for exactly that reason: a key sent to the rail would pass a test that a real user fails.
+ */
+test("escape closes the rail even though focus never entered it", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(MOTOR_MOUNT_DETAIL),
+  });
+  renderIndex();
+
+  await openPanel(MOTOR_MOUNT.name);
+  fireEvent.keyDown(document, { key: "Escape" });
+
+  await waitFor(() =>
+    expect(screen.queryByRole("complementary", { name: strings.inspector.title })).toBeNull(),
+  );
 });
 
 /**
@@ -2696,7 +2840,9 @@ test("a control inside a card does its own job and does not open the panel", asy
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   fireEvent.click(within(card).getByRole("link", { name: MOTOR_MOUNT.name }));
 
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(
+    screen.queryByRole("complementary", { name: strings.inspector.title }),
+  ).toBeNull();
 });
 
 /** The name is still a real link, so a keyboard and a middle click both still reach the page. */
@@ -2727,12 +2873,12 @@ test("the quick-look shows the part without offering to remove it", async () => 
   renderIndex();
 
   fireEvent.click(await screen.findByRole("article", { name: MOTOR_MOUNT.name }));
-  const dialog = await screen.findByRole("dialog");
-  // Waited for, so the assertion is about a filled panel and not an empty one.
-  await within(dialog).findAllByText(strings.detail.approximate);
+  const rail = await screen.findByRole("complementary", { name: strings.inspector.title });
+  // Waited for, so the assertion is about a filled rail and not an empty one.
+  await within(rail).findAllByText(strings.detail.approximate);
 
-  expect(within(dialog).queryByText(strings.removal.removeHint)).toBeNull();
-  expect(within(dialog).queryByRole("button", { name: strings.removal.remove })).toBeNull();
+  expect(within(rail).queryByText(strings.removal.removeHint)).toBeNull();
+  expect(within(rail).queryByRole("button", { name: strings.removal.remove })).toBeNull();
 });
 
 /**
@@ -2868,7 +3014,9 @@ test("choosing a page size asks for it and remembers it", async () => {
   const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
 
-  fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.pageSize }), {
+  // In the View popover now rather than in a row above the grid, so it has to be opened.
+  fireEvent.click(await screen.findByRole("button", { name: strings.shell.view }));
+  fireEvent.change(screen.getByRole("combobox", { name: strings.grid.pageSize }), {
     target: { value: "250" },
   });
 
@@ -2882,22 +3030,83 @@ test("choosing a page size asks for it and remembers it", async () => {
 });
 
 /**
- * Density is a viewport preference and never had a server side, so it changes the grid and
+ * Card size is a viewport preference and never had a server side, so it changes the grid and
  * nothing else. Asserted through the column template rather than a class name, because that
  * is the thing that actually makes cards smaller.
+ *
+ * The control is inside the View popover now rather than beside the grid, so the menu has
+ * to be opened first — which is itself worth asserting: a slider nobody can reach is a
+ * preference nobody can set.
  */
-test("choosing a compact density packs the grid tighter and remembers it", async () => {
+test("choosing a smaller card size packs the grid tighter and remembers it", async () => {
   window.localStorage.clear();
   stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
 
-  fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.density }), {
-    target: { value: "compact" },
+  fireEvent.click(await screen.findByRole("button", { name: strings.shell.view }));
+  fireEvent.change(await screen.findByRole("slider", { name: strings.layout.cardSize }), {
+    // Index 0 of `CARD_SIZES`, which is `small`. The slider carries indices and stores
+    // names — see `ViewMenu` for why the two are not the same thing.
+    target: { value: "0" },
   });
 
   const list = document.querySelector("ul.grid");
   expect(list?.className).toContain("minmax(8rem,1fr)");
-  expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("compact");
+  expect(cardSizeFor(DEFAULT_LIBRARY_ID)).toBe("small");
+});
+
+/**
+ * The list layout, which is the reason the bounding box had to reach `PartCard` at all.
+ *
+ * Asserted as a table with column headers rather than as "some rows appeared": the whole
+ * argument for this layout is that figures can be compared down a column, and a screen
+ * reader can only say which column a cell is in if the markup is a table.
+ */
+test("the list layout shows each part's dimensions in a column", async () => {
+  window.localStorage.clear();
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, HEX_NUT])) });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.shell.view }));
+  fireEvent.click(await screen.findByRole("button", { name: strings.layout.list }));
+
+  expect(
+    await screen.findByRole("columnheader", { name: strings.layout.columnDimensions }),
+  ).toBeTruthy();
+  // Both parts, and their own figures: a row wired to `parts[0]` would pass on one fixture.
+  expect(
+    screen.getByRole("cell", { name: strings.parts.dimensions(MOTOR_MOUNT.bboxMm!) }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("cell", { name: strings.parts.dimensions(HEX_NUT.bboxMm!) }),
+  ).toBeTruthy();
+});
+
+/**
+ * A part nobody has measured says so, and says it in words a screen reader can read.
+ *
+ * The em dash on screen is announced as nothing at all, so a row of three of them would
+ * arrive as three empty cells with no reason for them. This is the assertion that the
+ * visually hidden half exists — the visible half cannot be tested for its absence.
+ */
+test("an unmeasured part's figures read as not measured rather than as blanks", async () => {
+  window.localStorage.clear();
+  const unmeasured: PartCard = { ...MOTOR_MOUNT, bboxMm: null, volumeMm3: null };
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([unmeasured])) });
+  renderIndex();
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.shell.view }));
+  fireEvent.click(await screen.findByRole("button", { name: strings.layout.list }));
+
+  // Two of the three figure columns, not all three: the fixture keeps its triangle count,
+  // so that cell holds a figure and must NOT be marked. Counting is what asserts both
+  // halves at once — a component that marked every cell, or none, fails here.
+  expect(
+    await screen.findAllByRole("cell", { name: strings.layout.unmeasuredLabel }),
+  ).toHaveLength(2);
+  expect(
+    screen.getByRole("cell", { name: strings.parts.triangles(MOTOR_MOUNT.triangleCount!) }),
+  ).toBeTruthy();
 });
 
 /**
@@ -2908,10 +3117,10 @@ test("choosing a compact density packs the grid tighter and remembers it", async
 test("a stored page size that is not one of the offered sizes falls back to the default", () => {
   window.localStorage.setItem(
     "lapidary.grid.v1." + DEFAULT_LIBRARY_ID,
-    JSON.stringify({ pageSize: 37, density: "enormous" }),
+    JSON.stringify({ pageSize: 37, cardSize: "enormous" }),
   );
   expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(50);
-  expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("comfortable");
+  expect(cardSizeFor(DEFAULT_LIBRARY_ID)).toBe("medium");
   window.localStorage.clear();
 });
 
@@ -2930,7 +3139,7 @@ test("preferences survive storage being unavailable", () => {
   });
   try {
     expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(50);
-    expect(densityFor(DEFAULT_LIBRARY_ID)).toBe("comfortable");
+    expect(cardSizeFor(DEFAULT_LIBRARY_ID)).toBe("medium");
     // And writing is a no-op rather than a throw: the setting still applies for this
     // session, it simply will not be there next time.
     expect(() => setPageSize(DEFAULT_LIBRARY_ID, 250)).not.toThrow();
@@ -2961,11 +3170,18 @@ const LIBRARIES = [SEEDED_LIBRARY_ROW, SECOND_LIBRARY_ROW];
 
 
 /**
- * **One library means no switcher.** A control offering a single choice explains nothing
- * and takes a row of the screen to do it — and that is every deployment until somebody
- * makes a second. The button that makes one stays, because that is how they do.
+ * **The switcher is a list of rows now, and one library still gets a row.**
+ *
+ * The `<select>` this replaces hid itself below two libraries, on the argument that a
+ * control offering one choice explains nothing. A row explains something a select could
+ * not: the count beside the name, which is how somebody tells two similarly named
+ * libraries apart. So the reason to hide it went away with the control, and a single
+ * library reads as a label with a figure — which is true and useful.
+ *
+ * Asserted through `aria-current`, not through a class: what makes this a switcher rather
+ * than a list is that it says which one you are looking at.
  */
-test("the library switcher is hidden until there is more than one library", async () => {
+test("the rail lists every library and marks the one being shown", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT])),
@@ -2973,12 +3189,13 @@ test("the library switcher is hidden until there is more than one library", asyn
   });
   renderIndex();
 
-  expect(await screen.findByRole("button", { name: strings.libraries.create })).toBeDefined();
-  expect(screen.queryByRole("combobox", { name: strings.libraries.label })).toBeNull();
+  const row = await screen.findByRole("button", { name: /Default/ });
+  expect(row.getAttribute("aria-current")).toBe("true");
+  expect(screen.getByRole("button", { name: strings.libraries.create })).toBeDefined();
 });
 
-/** With two, it appears — and says how many models each holds, so it points somewhere. */
-test("with two libraries the switcher appears and names what is in each", async () => {
+/** With two, both appear — and each says how many models it holds, so it points somewhere. */
+test("with two libraries the rail names both and counts what is in each", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT])),
@@ -2986,9 +3203,16 @@ test("with two libraries the switcher appears and names what is in each", async 
   });
   renderIndex();
 
-  const switcher = await screen.findByRole("combobox", { name: strings.libraries.label });
-  expect(switcher.textContent).toContain(strings.libraries.option("Default", 156));
-  expect(switcher.textContent).toContain(strings.libraries.option("Tabletop terrain", 0));
+  // The count is the button's own text; the accessible name adds the noun, which is what a
+  // screen reader needs beside a figure that has no column heading.
+  const seeded = await screen.findByRole("button", { name: /Default/ });
+  expect(seeded.textContent).toContain(strings.libraries.count(156));
+  expect(seeded.getAttribute("aria-current")).toBe("true");
+
+  const second = screen.getByRole("button", { name: /Tabletop terrain/ });
+  expect(second.textContent).toContain(strings.libraries.count(0));
+  // Only one row can be the one on screen, and it is not this one.
+  expect(second.getAttribute("aria-current")).toBeNull();
 });
 
 /**
@@ -3084,11 +3308,11 @@ test("the quick-look reads a source without offering to record one", async () =>
   renderIndex();
 
   fireEvent.click(await screen.findByRole("article", { name: MOTOR_MOUNT.name }));
-  const dialog = await screen.findByRole("dialog");
-  await within(dialog).findByText(/CC-BY-NC-SA 4\.0/);
+  const rail = await screen.findByRole("complementary", { name: strings.inspector.title });
+  await within(rail).findByText(/CC-BY-NC-SA 4\.0/);
 
   expect(
-    within(dialog).queryByRole("button", { name: strings.sources.add }),
+    within(rail).queryByRole("button", { name: strings.sources.add }),
   ).toBeNull();
 });
 

@@ -7,6 +7,7 @@ import {
   restorePart,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { TopBar } from '../components/TopBar'
 import type { LibraryId, PartCard } from '../lib/types'
 
 /**
@@ -50,13 +51,20 @@ export function RemovedPage({ library }: { library: LibraryId }) {
   })
 
   return (
-    <section>
+    <>
       {/*
         Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
         is written and removes it on unmount, so the route that owns the page owns its
         title — and `index.html`'s static one stays as the pre-hydration fallback. SC 2.4.2.
       */}
       <title>{strings.titles.removed}</title>
+      {/*
+        The bar, which `__root` used to draw for every route and now does not — see there
+        for why. `sidebar={null}`: this page has no rail, and a toggle that claims to hide
+        something absent is a control that lies about the screen it is on.
+      */}
+      <TopBar library={library} sidebar={null} />
+      <section className="px-[18px] py-[13px]">
       <Link
         to="/"
         className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
@@ -86,7 +94,8 @@ export function RemovedPage({ library }: { library: LibraryId }) {
           </ul>
         </>
       )}
-    </section>
+      </section>
+    </>
   )
 }
 

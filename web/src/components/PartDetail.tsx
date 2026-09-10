@@ -529,11 +529,30 @@ function Figure<T>({
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="mb-6">
+    /*
+      The container is declared here, on the section, and queried on the `<dl>` inside it.
+      A container query never matches the element that *declares* the container — only its
+      descendants — so `@container/rows` and `@min-[19rem]/rows:` on one element is a query
+      that silently never fires, which is what the first attempt at this did.
+    */
+    <section className="@container/rows mb-6">
       <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
         {title}
       </h3>
-      <dl className="grid grid-cols-[minmax(8rem,max-content)_1fr] gap-x-6 gap-y-1 text-sm">
+      {/*
+        Two columns where there is room for two, one where there is not.
+
+        `Detail` renders on the part's own page — a wide column — and inside the inspector
+        rail, which is 340px. The fixed `minmax(8rem,max-content)` label track was sized for
+        the first and left about 160px for a value in the second, which is not enough for a
+        BLAKE3 prefix or for "197 kB on disk, compressed from 610 kB": both ran off the edge
+        of the rail rather than wrapping.
+
+        A container query and not a viewport one, because the thing that varies is the
+        *container* — the rail is narrow on a 2,560px screen, and `md:` would give it two
+        columns there and one on a phone, which is backwards in both cases.
+      */}
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm @min-[19rem]/rows:grid-cols-[minmax(6.5rem,max-content)_1fr] @sm/rows:gap-x-6">
         {children}
       </dl>
     </section>
@@ -544,7 +563,15 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
       <dt className="text-[var(--color-muted)]">{label}</dt>
-      <dd>{children}</dd>
+      {/*
+        `min-w-0` so the value track may actually shrink — a grid track's default minimum is
+        `auto`, which is the content's own minimum size, so a long unbroken string pushes the
+        track wider than the column rather than wrapping inside it. `anywhere` rather than
+        `break-word` because the string this is for is a hex digest: it has no break
+        opportunity at all, and `overflow-wrap: break-word` will not create one mid-"word"
+        when the word already starts a line.
+      */}
+      <dd className="min-w-0 [overflow-wrap:anywhere]">{children}</dd>
     </>
   )
 }

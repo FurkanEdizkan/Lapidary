@@ -24,15 +24,21 @@ import { Dialog } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail } from '../components/PartDetail'
 import {
-  DENSITIES,
-  PAGE_SIZES,
-  densityFor,
+  cardSizeFor,
+  layoutFor,
+  namesAlwaysFor,
   pageSizeFor,
-  setDensity,
+  setCardSize,
+  setLayout,
+  setNamesAlways,
   setPageSize,
-  type Density,
+  type CardSize,
+  type Layout,
   type PageSize,
 } from '../lib/preferences'
+import { TopBar } from '../components/TopBar'
+import { ViewMenu } from '../components/ViewMenu'
+import { Sidebar } from '../components/Sidebar'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
@@ -301,7 +307,35 @@ export function Index({
    * catch.
    */
   const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(library))
-  const [density, setDensityState] = useState<Density>(() => densityFor(library))
+  const [layout, setLayoutState] = useState<Layout>(() => layoutFor(library))
+  const [cardSize, setCardSizeState] = useState<CardSize>(() => cardSizeFor(library))
+  const [namesAlways, setNamesAlwaysState] = useState<boolean>(() => namesAlwaysFor(library))
+  /**
+   * Whether the rail is showing. Not persisted, unlike everything above it: hiding the
+   * sidebar is what somebody does to look at one wide thing for a moment, and a panel that
+   * is still gone tomorrow is a panel they have to remember they hid.
+   */
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  /*
+    Hoisted out of the JSX for the reason `ViewMenu`'s `gallery` is: a `layout === 'list'`
+    inside a child expression puts the literal `'list'` where `no-bare-strings.test.ts`
+    reads it — correctly — as a label reaching the screen.
+  */
+  const showList = layout === 'list'
+  /**
+   * The part the rail is showing, and where its render sat when it was clicked.
+   *
+   * Held here rather than in the card that was clicked, because the rail is a sibling of
+   * the grid rather than a child of a tile — which is the whole difference between this and
+   * the modal it replaces. A card owning its own panel meant forty components each able to
+   * open one, and two open at once was prevented only by the fact that a click closed the
+   * other. One selection, in one place, cannot get into that state.
+   *
+   * The rect rides along because "open" and "opened from here" are the same event: the FLIP
+   * flight needs an origin, and the only honest one is where the render was at the moment
+   * of the click.
+   */
+  const [selected, setSelected] = useState<{ part: PartCard; from: DOMRect } | null>(null)
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
     queryFn: () => fetchInstanceStorage(measure),
@@ -506,7 +540,13 @@ export function Index({
         : null
 
   return (
-    <section className="flex items-start gap-6">
+    /*
+      The shell: a bar, then a row of a rail and a scrolling middle. `h-screen` and not
+      `min-h-screen`, because the two panes scroll independently — the rail keeps its
+      storage footer on screen while a long category tree moves under it, and that is only
+      possible if the shell itself is exactly the height of the window and never taller.
+    */
+    <div className="flex h-screen flex-col">
       {/*
         Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
         is written and removes it again on unmount, so the route that owns the page owns
@@ -517,15 +557,17 @@ export function Index({
       {/*
         The first tab stop on the page, and off-screen until it is one.
 
-        SC 2.4.1, Level A. The category tree below is dozens of tab stops that repeat on
-        every visit and it comes first in the source order, so without this the keyboard
-        route to the first part runs through every category in the library.
+        **Before the bar, not after it.** SC 2.4.1 is Level A and asks for a mechanism to
+        skip repeated blocks; the bar is now five controls and the rail below it is dozens
+        of category rows, all of which repeat on every visit and all of which come before
+        the first part in the source order. A skip link placed after the thing it skips is
+        not a skip link, which is what this became the moment the bar moved above it.
 
         Moved by `translate` rather than hidden: `display: none` and `visibility: hidden`
         both remove it from the tab order, which is the one thing it must stay in. The
-        target takes `tabIndex={-1}` because a `<div>` is not focusable, and a fragment
-        link that moves the viewport without moving focus leaves a keyboard user exactly
-        where they were.
+        target takes `tabIndex={-1}` because a `<main>` is not focusable by default, and a
+        fragment link that moves the viewport without moving focus leaves a keyboard user
+        exactly where they were.
       */}
       <a
         href="#parts"
@@ -533,17 +575,72 @@ export function Index({
       >
         {strings.skipToParts}
       </a>
-      {/*
-        The tree and the grid are siblings, and the drag between them needs nothing
-        shared: a card writes its identity into the drag payload and a category row
-        reads it back on drop, so neither holds state for the other.
-      */}
-      <FolderTree
+      <TopBar
         library={library}
-        selected={folderId ?? null}
-        onSelect={(folder) => onSelectFolder?.(folder)}
-      />
-      <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
+        sidebar={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((open) => !open)}
+      >
+        <SearchBox
+          q={q ?? ''}
+          categoryName={selectedFolderName}
+          filtered={folderId !== undefined}
+          onSearch={onSearch}
+          onWiden={() => onSelectFolder?.(null)}
+        />
+        {/*
+          The spacer that pushes the two trailing controls to the right end of the bar,
+          which is where `v2` puts Upload and the account menu. A flexible span rather than
+          `ml-auto` on the button, because the bar wraps at narrow widths and `ml-auto` on a
+          wrapped row shoves the button to the far edge of a line it is alone on.
+        */}
+        <span className="flex-1" />
+        <ViewMenu
+          layout={layout}
+          onLayout={(next) => {
+            setLayoutState(next)
+            setLayout(library, next)
+          }}
+          cardSize={cardSize}
+          onCardSize={(next) => {
+            setCardSizeState(next)
+            setCardSize(library, next)
+          }}
+          namesAlways={namesAlways}
+          onNamesAlways={(next) => {
+            setNamesAlwaysState(next)
+            setNamesAlways(library, next)
+          }}
+          pageSize={pageSize}
+          onPageSize={(size) => {
+            setPageSizeState(size)
+            setPageSize(library, size)
+          }}
+        />
+      </TopBar>
+      {/*
+        The body: the rail and the grid, side by side, each scrolling on its own. The rail
+        and the grid are siblings and the drag between them needs nothing shared — a card
+        writes its identity into the drag payload and a category row reads it back on drop,
+        so neither holds state for the other.
+      */}
+      <div className="flex min-h-0 flex-1">
+        {!sidebarOpen ? null : (
+          <Sidebar
+            library={library}
+            onSelectLibrary={onSelectLibrary}
+            folder={folderId ?? null}
+            onSelectFolder={(folder) => onSelectFolder?.(folder)}
+            instance={instance.data}
+            partsLoaded={loaded.length}
+          >
+            <NewLibraryButton onSelect={onSelectLibrary} />
+          </Sidebar>
+        )}
+        <main
+          id="parts"
+          tabIndex={-1}
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-[18px] py-[13px]"
+        >
         <ActionBar
           library={library}
           // Three sources, most authoritative first, and `undefined` when none of them has
@@ -575,31 +672,6 @@ export function Index({
           onSweep={() => sweep.mutate()}
           sweepBusy={sweep.isPending}
           note={note}
-        />
-        {/*
-          Between the action bar and the drop target, and not inside the action bar. That row
-          is a row of *actions* — a checkbox and two buttons — and putting a persistent text
-          filter among them makes it read as "type here, then press Scan".
-        */}
-        <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
-        <GridSettings
-          pageSize={pageSize}
-          density={density}
-          onPageSize={(size) => {
-            setPageSizeState(size)
-            setPageSize(library, size)
-          }}
-          onDensity={(next) => {
-            setDensityState(next)
-            setDensity(library, next)
-          }}
-        />
-        <SearchBox
-          q={q ?? ''}
-          categoryName={selectedFolderName}
-          filtered={folderId !== undefined}
-          onSearch={onSearch}
-          onWiden={() => onSelectFolder?.(null)}
         />
         <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
         {uploadNote === null ? null : (
@@ -646,13 +718,24 @@ export function Index({
                   : strings.parts.showingAll(loaded.length)}
               </p>
             </div>
-            <Grid
-              parts={loaded}
-              onRender={(part) => renderPart.mutate(part)}
-              busyPart={renderPart.isPending ? renderPart.variables : undefined}
-              hostRoot={instance.data?.hostStorageRoot ?? null}
-              density={density}
-            />
+            {/*
+              One set of cards, two arrangements. Both take the same `loaded` array and
+              both open the same panel, so a part cannot mean one thing in the gallery and
+              another in the list — the difference is what is on screen at rest, which is
+              the difference between "which of these is it" and "which of these is
+              tallest".
+            */}
+            {showList ? (
+              <PartList parts={loaded} />
+            ) : (
+              <Grid
+                parts={loaded}
+                onOpen={(part, from) => setSelected({ part, from })}
+                selectedPart={selected?.part.id}
+                cardSize={cardSize}
+                namesAlways={namesAlways}
+              />
+            )}
             <MorePages
               hasMore={parts.hasNextPage}
               fetching={parts.isFetchingNextPage}
@@ -675,8 +758,29 @@ export function Index({
               ? strings.health.failed
               : strings.health.ok(health.data.database.major)}
         </p>
+        </main>
+        {/*
+          The rail, a flex sibling of the grid rather than an overlay on it — see
+          `Inspector` for why that is the whole change and not a styling choice.
+
+          Keyed on the part, so switching from one to another remounts rather than updates:
+          the FLIP flight runs on mount, and a rail that only re-rendered would show the
+          next part's image arriving with no flight at all while the previous one's origin
+          rect sat in an effect dependency that had not changed.
+        */}
+        {selected === null ? null : (
+          <Inspector
+            key={selected.part.id}
+            part={selected.part}
+            from={selected.from}
+            hostRoot={instance.data?.hostStorageRoot ?? null}
+            busy={renderPart.isPending && renderPart.variables === selected.part.id}
+            onRender={(part) => renderPart.mutate(part)}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
-    </section>
+    </div>
   )
 }
 
@@ -967,23 +1071,25 @@ function ScanProgress({
 }
 
 /**
- * Which library this screen is of, and the control that makes another one.
+ * The control that makes a library, at the foot of the rail's library list.
  *
- * Hidden entirely while there is one library — which is every deployment until somebody
- * makes a second. A switcher offering one choice is a control that explains nothing and
- * takes a row of the screen to do it; the "New library" button stays, because that is how
- * the second one gets made.
+ * # What this used to be
+ *
+ * A `LibrarySwitcher`: a `<select>` of every library plus this button, which hid the select
+ * entirely below two libraries on the argument that a control offering one choice explains
+ * nothing. `v2` draws the libraries as rows in the sidebar instead, and a row carries the
+ * part count — the figure that tells somebody which of two similarly named libraries is the
+ * one they filled, and which a select never had room for. `Sidebar` renders those rows, so
+ * what is left here is the half a list of rows cannot do: add one.
+ *
+ * It stays in this file rather than moving into `Sidebar` because of what it opens.
+ * `NewLibraryDialog` navigates on success — somebody who just made a library meant to use
+ * it — and the navigation is `onSelectLibrary`, which is the route's search param. The rail
+ * takes this as a child for exactly that reason: the rail draws it, the route wires it.
  */
-function LibrarySwitcher({
-  library,
-  onSelect,
-}: {
-  library: LibraryId
-  onSelect?: (library: LibraryId) => void
-}) {
+function NewLibraryButton({ onSelect }: { onSelect?: (library: LibraryId) => void }) {
   const [creating, setCreating] = useState(false)
   const queryClient = useQueryClient()
-  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
   const [refusal, setRefusal] = useState<string | null>(null)
 
   const add = useMutation({
@@ -1002,33 +1108,15 @@ function LibrarySwitcher({
     },
   })
 
-  const all = libraries.data ?? []
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
-      {all.length < 2 ? null : (
-        <label className="flex items-center gap-2">
-          {strings.libraries.label}
-          <select
-            value={library}
-            onChange={(event) => onSelect?.(event.target.value as LibraryId)}
-            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-          >
-            {all.map((one) => (
-              <option key={one.id} value={one.id}>
-                {strings.libraries.option(one.name, one.partCount)}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
+    <div className="mt-1 px-2 text-xs text-[var(--color-muted)]">
       <button
         type="button"
         onClick={() => setCreating(true)}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        className="ease-mechanical w-full rounded-[var(--radius-ctl)] border border-dashed border-[var(--color-border)] px-2 py-[7px] text-left duration-[var(--duration-fast)] hover:border-[var(--color-edge)] hover:text-[var(--color-text)]"
       >
         {strings.libraries.create}
       </button>
-      {libraries.isError ? <span role="alert">{strings.libraries.failed}</span> : null}
       {!creating ? null : (
         <NewLibraryDialog
           busy={add.isPending}
@@ -1131,73 +1219,6 @@ const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
 }
 
 /**
- * How many cards a page holds, and how tightly they pack.
- *
- * Two `<select>`s and no custom widget: a native select is keyboard-operable, screen-reader
- * announced and correct on a touch screen for free, and this is a preference rather than a
- * place to spend design on.
- *
- * Both are remembered per library in this browser — not on the server. There is no user
- * table and no auth in Phase 1, so a column would make one operator's choice everybody's;
- * `FEATURES.md` says "per viewer, per library" now, because that is what this is.
- */
-/**
- * The label for each density. A lookup and not a ternary in the JSX: a `option === 'compact'`
- * inside a child expression puts the literal `'compact'` where `no-bare-strings.test.ts`
- * reads it — correctly — as a label reaching the screen. Same trap `ShowInFolder` and
- * `InstanceStorage` both carry a comment about.
- */
-const DENSITY_LABEL: Record<Density, string> = {
-  comfortable: strings.grid.comfortable,
-  compact: strings.grid.compact,
-}
-
-function GridSettings({
-  pageSize,
-  density,
-  onPageSize,
-  onDensity,
-}: {
-  pageSize: PageSize
-  density: Density
-  onPageSize: (size: PageSize) => void
-  onDensity: (density: Density) => void
-}) {
-  return (
-    <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-[var(--color-muted)]">
-      <label className="flex items-center gap-2">
-        {strings.grid.pageSize}
-        <select
-          value={pageSize}
-          onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-        >
-          {PAGE_SIZES.map((size) => (
-            <option key={size} value={size}>
-              {strings.grid.pageSizeOption(size)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center gap-2">
-        {strings.grid.density}
-        <select
-          value={density}
-          onChange={(event) => onDensity(event.target.value as Density)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-        >
-          {DENSITIES.map((option) => (
-            <option key={option} value={option}>
-              {DENSITY_LABEL[option]}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
-  )
-}
-
-/**
  * The search box, and the chip that says what it is searching.
  *
  * A `<input type="search">`, so the clear affordance, Escape-to-clear and the right mobile
@@ -1249,13 +1270,25 @@ function SearchBox({
 
   const waiting = typed.trim().length === 1
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-2">
+    /*
+      A fragment, and the three pieces are siblings in the bar rather than one box.
+
+      The field is width-constrained and the two things that appear beside it — the category
+      chip and the "keep typing" note — are not: wrapping all three in one 380px box would
+      squeeze a chip carrying a category name into an ellipsis, when the bar it sits in has
+      room to spare. In the bar now rather than above the grid, which is where `v2` puts it.
+    */
+    <>
       {/*
         The field sits *below* the ground rather than on it — `--color-raised` against the
-        page, which is how `v2` draws every input. A control you type into reads as a well;
+        bar, which is how `v2` draws every input. A control you type into reads as a well;
         one you press reads as a surface.
+
+        `max-w-[380px]` is the design's own ceiling, and it matters more here than the
+        minimum does: the bar holds five controls, and a field that grows to fill a 2,560px
+        window pushes the view menu off the end of it.
       */}
-      <div className="relative flex min-w-64 flex-1 items-center">
+      <div className="relative flex min-w-[170px] max-w-[380px] flex-1 items-center">
         <span
           aria-hidden="true"
           className="pointer-events-none absolute left-[11px] text-sm text-[var(--color-muted)]"
@@ -1268,7 +1301,7 @@ function SearchBox({
           onChange={(event) => setTyped(event.target.value)}
           aria-label={strings.search.label}
           placeholder={strings.search.placeholder}
-          className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-3 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
+          className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-raised)] py-[8px] pr-3 pl-[30px] text-[12.5px] focus:border-[var(--color-accent)]"
         />
       </div>
       {/*
@@ -1293,7 +1326,7 @@ function SearchBox({
       {!waiting ? null : (
         <p className="text-xs text-[var(--color-muted)]">{strings.search.keepTyping}</p>
       )}
-    </div>
+    </>
   )
 }
 
@@ -1552,43 +1585,65 @@ function InstanceStorage({
   )
 }
 
+/**
+ * The four card widths, as whole Tailwind class strings.
+ *
+ * Whole strings and not interpolation, which is the same rule the two `intrinsic` values
+ * below follow and for the same reason: Tailwind scans source for literals, so a class
+ * built at runtime — `` `minmax(${width},1fr)` `` — is a class that was never generated and
+ * a grid that silently falls back to one column.
+ *
+ * `medium` is 11rem, which is what the grid has always drawn at its comfortable density, so
+ * the default card is the same size it was before the slider existed. The other three step
+ * around it: 8rem is the old compact width, and the two above are for judging a surface
+ * rather than triaging a library.
+ */
+const CARD_COLUMNS: Record<CardSize, string> = {
+  small: 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3',
+  medium: 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4',
+  large: 'grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] gap-4',
+  huge: 'grid-cols-[repeat(auto-fill,minmax(20rem,1fr))] gap-5',
+}
+
 function Grid({
   parts,
-  onRender,
-  busyPart,
-  hostRoot,
-  density,
+  onOpen,
+  selectedPart,
+  cardSize,
+  namesAlways,
 }: {
   parts: readonly PartCard[]
-  onRender: (part: PartId) => void
-  busyPart?: PartId
-  /** Passed down rather than fetched per card: it is one fact about the deployment. */
-  hostRoot: string | null
-  density: Density
+  onOpen: (part: PartCard, from: DOMRect) => void
+  /** The part the rail is showing, so its tile can say so. */
+  selectedPart?: PartId
+  cardSize: CardSize
+  /** Whether each card paints its caption at rest, or reveals it under the pointer. */
+  namesAlways: boolean
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
   // Give the compact grid the comfortable card's height and the scrollbar jumps as cards
   // enter and leave — which is what makes `content-visibility` look broken.
-  //
-  // Whole class strings rather than interpolation: Tailwind scans source for literals, and
-  // a class built at runtime is a class that was never generated.
-  const columns =
-    density === 'compact'
-      ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
-      : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
-  //
-  // **A compact card is TALLER, not shorter**, and guessing the other way was the first
-  // thing this got wrong. A narrower column wraps more of the name and more of the "9.7 kB
-  // on disk, stored uncompressed" line, so 8rem-wide cards run past 11rem-wide ones.
-  // Measured in Chrome over 24 cards of the real 156-part library: comfortable 442–461px
-  // (median 27.6rem), compact 478–516px (median 31.1rem). The same mistake the 26rem figure
-  // below already records making once — a guess, in the wrong direction, about a height
-  // that has to be measured.
-  const intrinsic =
-    density === 'compact'
-      ? '[contain-intrinsic-size:auto_31rem]'
-      : '[contain-intrinsic-size:auto_26rem]'
+  const columns = CARD_COLUMNS[cardSize]
+  /*
+    The placeholder height for a card that has not rendered, and it is now simply the
+    column width — because a card is a square.
+
+    **The measured figures this used to carry no longer apply, and saying why matters.**
+    The old note recorded that a compact card was *taller* than a comfortable one (measured
+    in Chrome over the real 156-part library: 442-461px against 478-516px), because a
+    narrower column wrapped more of a name and more of a "9.7 kB on disk, stored
+    uncompressed" line into a footer under the render. `v2` has no footer: the caption is an
+    overlay inside the tile, so nothing below the render grows, and a card's height is its
+    width plus two hairlines. That removes the trap rather than re-measuring it — a card
+    can no longer be a height nobody predicted.
+
+    Whole class strings and not interpolation, the same rule `CARD_COLUMNS` follows:
+    Tailwind scans source for literals, and a class built at runtime is a class that was
+    never generated. The leading `auto` still means the browser substitutes each card's real
+    size once it has rendered one, so these only have to be close on the first paint.
+  */
+  const intrinsic = CARD_INTRINSIC[cardSize]
   return (
     <ul role="list" className={`grid list-none ${columns}`}>
       {parts.map((part) => (
@@ -1603,19 +1658,25 @@ function Grid({
         // a skipped card measures zero, so the page height collapses and the scrollbar
         // jumps as cards enter and leave — which is what makes `content-visibility` look
         // broken.
-        //
-        // 26rem is 416px, which is a rendered card measured in Chrome (415px, uniform
-        // across 1,000 of them) and not arithmetic — the first guess was 20rem from a
-        // card measured before its thumbnail had loaded, and it under-reported the page
-        // height by 23%. The leading `auto` means the browser substitutes each card's
-        // real size once it has rendered one, so this figure only has to be close for the
-        // first paint rather than exact forever.
         <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
-          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} />
+          <Card
+            part={part}
+            onOpen={onOpen}
+            selected={part.id === selectedPart}
+            namesAlways={namesAlways}
+          />
         </li>
       ))}
     </ul>
   )
+}
+
+/** One per entry in `CARD_COLUMNS`, and the same widths — see `intrinsic` above. */
+const CARD_INTRINSIC: Record<CardSize, string> = {
+  small: '[contain-intrinsic-size:auto_8rem]',
+  medium: '[contain-intrinsic-size:auto_11rem]',
+  large: '[contain-intrinsic-size:auto_15rem]',
+  huge: '[contain-intrinsic-size:auto_20rem]',
 }
 
 /**
@@ -1627,26 +1688,71 @@ const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
 
 function Card({
   part,
-  onRender,
-  busy,
-  hostRoot,
+  onOpen,
+  selected,
+  namesAlways,
 }: {
   part: PartCard
-  onRender: (part: PartId) => void
-  busy: boolean
-  hostRoot: string | null
+  /**
+   * Open this part in the rail, flying its render from where the tile has it.
+   *
+   * The rect is measured by the card and passed up rather than measured by the rail,
+   * because by the time the rail exists this tile may have scrolled, been re-laid-out by a
+   * card-size change, or been replaced by the next page. Where the render *was* when it was
+   * clicked is the only honest origin.
+   */
+  onOpen: (part: PartCard, from: DOMRect) => void
+  /** Whether this is the part the rail is showing. */
+  selected: boolean
+  namesAlways: boolean
 }) {
   const nameId = `part-name-${part.id}`
-  const [moving, setMoving] = useState(false)
-  // The rect the panel's render should fly from, or `null` when the panel is closed. A rect
-  // rather than a boolean because "open" and "opened from here" are the same event.
-  const [looking, setLooking] = useState<DOMRect | null>(null)
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
   // from a `409` — the same status the route uses for a name collision, which the UI
   // would otherwise present as one.
   const movable = directory !== null
+  /*
+    Whether the caption is painted. `namesAlways` pins it; otherwise it arrives with the
+    pointer *or with focus* — `group-focus-within`, which is not a nicety.
+
+    Opacity does not remove an element from the tab order, so the name inside the overlay
+    stays focusable whether or not it is visible. Without the focus-within half, tabbing
+    into a grid would move focus onto a link nobody can see, which is SC 2.4.7 failed
+    outright. And `pointer-events` is what keeps the other direction honest: an invisible
+    link lying over the bottom third of every tile would swallow the click that is supposed
+    to open the panel, and navigate instead.
+  */
+  /*
+    **Two layouts, not one styled two ways.** `v2` draws the caption as a gradient over the
+    foot of the render when it is revealed on hover, and as a *solid footer with space
+    reserved for it* when it is pinned — `paddingBottom: detail ? '58px' : 0` in the design
+    file, beside a background that switches from a gradient to a flat surface.
+
+    That is not decoration. Pinned, the caption is three lines and it is on screen for every
+    tile at once; laid over the render it takes the bottom third of every part in the
+    library and collides with the "no preview yet" placeholder on the ones the worker has
+    not reached. Revealed, it is over one tile for as long as a pointer rests on it, where
+    covering the picture costs nothing and reserving space for it would make forty tiles
+    permanently smaller for a caption thirty-nine of them are not showing.
+
+    So pinned is a flow footer under a flexible well, and revealed is an absolute overlay.
+    The card stays `aspect-square` either way, so `contain-intrinsic-size` is unaffected.
+  */
+  const caption = namesAlways
+    ? 'flex-none border-t border-[var(--color-border)] bg-[var(--color-surface)] px-[9px] pt-[7px] pb-[8px]'
+    : /*
+        Revealed by the pointer *or by focus* — `group-focus-within`, which is not a nicety.
+
+        Opacity does not remove an element from the tab order, so the name inside the
+        overlay stays focusable whether or not it is visible. Without the focus-within half,
+        tabbing into a grid would move focus onto a link nobody can see, which is SC 2.4.7
+        failed outright. And `pointer-events` is what keeps the other direction honest: an
+        invisible link lying over the bottom third of every tile would swallow the click
+        that is supposed to open the rail, and navigate instead.
+      */
+      'absolute inset-x-0 bottom-0 bg-gradient-to-t from-[rgba(18,18,20,0.97)] via-[rgba(18,18,20,0.88)] to-transparent px-[11px] pt-[22px] pb-[11px] pointer-events-none opacity-0 translate-y-2 group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 group-focus-within:opacity-100'
   return (
     <article
       aria-labelledby={nameId}
@@ -1663,10 +1769,10 @@ function Card({
         if (!(event.target instanceof Element)) return
         if (event.target.closest('a, button, input')) return
         // Measured here rather than in the panel, because by the time the panel exists this
-        // tile may have been scrolled, re-laid-out by a density change, or replaced by the
+        // tile may have been scrolled, re-laid-out by a card-size change, or replaced by the
         // next page. Where the render *was* when it was clicked is the only honest origin.
         const render = event.currentTarget.querySelector('img')
-        setLooking(render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
+        onOpen(part, render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
       }}
       draggable={movable}
       onDragStart={(event) =>
@@ -1676,30 +1782,43 @@ function Card({
         )
       }
       /*
-        **A border, which reverses what stood here.** The old note argued that the render is
-        its own edge and a box around a picture is a second frame competing with the first.
-        That held while the render went edge to edge; `v2` insets it instead, so the card's
-        own ground is visible all the way round and the tile has no edge of its own left.
-        A hairline is what puts one back — and it is the thing that lifts on hover, which is
-        how a pointer says which tile it is on without moving the picture.
+        **The card is the render now, and the caption sits on it.** What stood here was a
+        render in a well with a footer of text under it, which made a tile as tall as its
+        longest name — `v2` puts the picture edge to edge and floats the words over its
+        bottom edge instead, so a wall of parts reads as objects on shelves rather than as a
+        table with pictures in the first column.
 
-        `--color-border` at rest and `--color-edge` under the pointer: the card is a control
+        `aspect-square` is what makes that safe to virtualize: a card's height is its width,
+        so `contain-intrinsic-size` is a figure rather than a measurement — see `Grid`.
+
+        A hairline border at rest and `--color-edge` under the pointer: the card is a control
         and 1.4.11 wants 3:1 on the boundary that identifies one, but only while it is the
-        one being addressed. A wall of forty tiles all drawn at 3:1 is a grid of boxes
-        rather than a page of parts.
+        one being addressed. A wall of forty tiles all drawn at 3:1 is a grid of boxes rather
+        than a page of parts.
       */
-      className="ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]"
+      /*
+        `aria-current` and an accent border on the selected tile. The rail shows one part and
+        the grid holds forty; without this the only thing saying *which* of them is open is
+        the name inside the rail, which is off at the other side of the screen. The attribute
+        is what carries that to a screen reader, where a border carries nothing.
+      */
+      aria-current={selected ? 'true' : undefined}
+      className={`ease-mechanical group relative flex aspect-square cursor-pointer flex-col overflow-hidden rounded-md border bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)] ${
+        selected
+          ? 'border-[var(--color-accent)]'
+          : 'border-[var(--color-border)] hover:border-[var(--color-edge)]'
+      }`}
     >
       {/*
-        The well the render sits in, one step *down* from the card and inset from it.
+        The well the render sits in — one step *down* from the card, and the render inset
+        from it rather than filling it.
 
-        `v2` paints the thumbnail `center/86%` on `#17171b` rather than filling the tile:
-        the render floats with air around it, which is what makes a wall of parts read as
-        objects on shelves instead of as a mosaic. `p-[7%]` is the same 86% from the other
-        side, in the one unit that keeps it proportional as the density control changes the
-        column width.
+        `v2` paints the thumbnail `center/86%` on `#17171b` rather than cropping it to the
+        tile: the render floats with air around it, which is what stops a wall of parts
+        becoming a mosaic. `p-[7%]` is the same 86% from the other side, in the one unit that
+        stays proportional as the card-size control changes the column width.
       */}
-      <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]">
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-raised)] p-[7%]">
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,
           // and "the worker has not rasterized this yet" is not one.
@@ -1714,10 +1833,14 @@ function Card({
       </div>
 
       {/*
-        The footer, and the only thing besides the render that survives at rest. A tile a
-        person is scanning has to answer "which part is this" without being hovered.
+        The caption. Which of the two shapes it takes is `caption` above — a flow footer
+        when pinned, an absolute gradient overlay when revealed.
+
+        The gradient starts transparent at the top and the stops are the design's: clear
+        until halfway, then near-opaque. A flat panel would crop the render at a hard line,
+        and the whole reason the picture goes edge to edge is that nothing crops it.
       */}
-      <div className="flex flex-1 flex-col gap-1 p-3">
+      <div className={`ease-mechanical flex flex-col gap-[3px] duration-[var(--duration-fast)] ${caption}`}>
         {/*
           The name is the link, not the whole card — the keyboard path, the middle-click
           path, and what a screen reader announces. It is the card's only tab stop, which is
@@ -1732,7 +1855,7 @@ function Card({
           whether a function is available, not which surface offers it. Do not move a
           control out of `parts.$partId.tsx` without checking this again.
         */}
-        <h2 id={nameId} className="text-sm leading-snug font-semibold">
+        <h2 id={nameId} className="truncate text-[12.5px] leading-snug font-semibold text-[var(--color-bright)]">
           <Link
             to="/parts/$partId"
             params={{ partId: part.id }}
@@ -1741,72 +1864,86 @@ function Card({
             {part.name}
           </Link>
         </h2>
+        {/*
+          The part number, in the slot `v2` gives the author's avatar and name.
+
+          It is here rather than nowhere because the design's line is a *person*, and this
+          application has no user table to name one — so the choice was to drop the row or
+          to put the identifier a mechanical library is actually searched by into it. A card
+          in a shop library answers "is this LP-3105-A" far more often than it answers "who
+          uploaded this", and the number is the thing somebody arrives with.
+        */}
         {part.partNumber === null ? null : (
-          <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
+          <p className="tabular truncate text-[10px] text-[var(--color-muted)]">
+            {part.partNumber}
+          </p>
         )}
         {/*
           `CLAUDE.md` says a mesh-derived measurement is labelled approximate *always*. It
-          used to sit in the hover panel, where "always" quietly meant "never" — the row was
-          clipped off the top of the tile at every desktop width. Always means here.
+          used to sit in a hover panel where "always" quietly meant "never" — the row was
+          clipped off the top of the tile at every desktop width — and the fix was to move it
+          into a footer that could not be clipped.
+
+          It is inside a reveal again, and the thing that made the old placement a lie is
+          absent from this one: this overlay is anchored to the bottom edge of the tile and
+          cannot be clipped by it, and it renders as one indivisible unit, so no state shows
+          a figure without its badge. What a person has to do to see the numbers is point at
+          the card, which is the same gesture that opens it.
         */}
         <Measurements part={part} />
-        {/*
-          Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
-          This card is `overflow-hidden hover:-translate-y-px`, Tailwind emits that lift as
-          the `translate` property, and an element with a `translate` other than `none` is a
-          containing block for fixed-position descendants — so a dialog rendered in the
-          card's own subtree resolved its `fixed inset-0` against the card and was clipped
-          to it for as long as the pointer stayed over the card. Nothing here may hoist that
-          markup back out of the portal.
-        */}
-        {looking === null ? null : (
-          <QuickLook
-            part={part}
-            from={looking}
-            hostRoot={hostRoot}
-            busy={busy}
-            onRender={onRender}
-            onMove={movable ? () => setMoving(true) : null}
-            onClose={() => setLooking(null)}
-          />
-        )}
-        {moving ? (
-          <MovePartDialog
-            part={{ id: part.id, name: part.name }}
-            library={part.library}
-            onClose={() => setMoving(false)}
-          />
-        ) : null}
       </div>
+
     </article>
   )
 }
 
 /**
- * The part, in a panel, without leaving the grid.
+ * The part, in a rail beside the grid — `v2`'s inspector.
  *
- * Scanning a library means looking at one part and then the next, and a round trip through
- * a full page and the back button for each of them is what makes that tiring. So this is a
- * look; the page is where the controls that change something live, and where a URL someone
- * can share lives.
+ * # Why this is not a dialog any more
+ *
+ * It was one, and the argument for it was right about the problem and wrong about the
+ * shape: scanning a library means looking at one part and then the next, and a round trip
+ * through a full page and the back button for each of them is what makes that tiring. A
+ * modal fixes the round trip and introduces its own version of the same cost — it covers
+ * the grid, so every part costs an open and a close, and you cannot see the row you were
+ * working along while you read one of them.
+ *
+ * A rail costs nothing per part. Click a tile, the rail changes; click the next, it changes
+ * again. That is the whole interaction `v2` is built around, and it is why the selected
+ * tile wears the accent border: with the grid still visible, something has to say which of
+ * the forty the rail is about.
+ *
+ * The consequences of dropping `Dialog` are all deliberate, and each one is a thing that
+ * component was doing that this must **not** do:
+ *
+ *   - **No focus trap.** The grid beside it stays operable, which is the point.
+ *   - **No `aria-modal`, no `role="dialog"`.** It is a `complementary` landmark, which is
+ *     what a panel of details about the current selection is. Announcing it as a dialog
+ *     would promise a trap that is deliberately absent.
+ *   - **No portal.** `Dialog` portals to `<body>` because a card's hover `translate` makes
+ *     it a containing block for `fixed` descendants and clipped the overlay to an 11rem
+ *     tile. This is a flex sibling of `<main>` in normal flow, so there is nothing to
+ *     escape from and nothing to clip it.
+ *   - **Escape still closes it.** SC 2.1.2 is about not being trapped, and this never traps
+ *     — but Escape is what a person presses, and there is no reason to make them find the
+ *     button.
  *
  * **It renders `Detail`, the detail page's own article, rather than a version of it.** Two
  * renderings of one measurement that can disagree is a defect here, and measurements are
  * the case that matters: every figure goes through `Figure`, which cannot render a value
- * without its `approximate` flag, because a mesh-derived number must be labelled wherever
- * it appears.
+ * without its `approximate` flag.
  *
- * **And it fetches under the detail route's own query key**, so opening the panel and then
- * the page costs one request rather than two — the look warms the cache for the page it
+ * **And it fetches under the detail route's own query key**, so opening the rail and then
+ * the page costs one request rather than two — the rail warms the cache for the page it
  * links to.
  */
-function QuickLook({
+function Inspector({
   part,
   from,
   hostRoot,
   busy,
   onRender,
-  onMove,
   onClose,
 }: {
   part: PartCard
@@ -1815,10 +1952,16 @@ function QuickLook({
   hostRoot: string | null
   busy: boolean
   onRender: (id: PartId) => void
-  /** `null` for a model still in the shared store, which has no directory to rename. */
-  onMove: (() => void) | null
   onClose: () => void
 }) {
+  const [moving, setMoving] = useState(false)
+  /*
+    A model still in the shared store has no directory to rename and the move route refuses
+    it. The rail withholds the control rather than letting a person discover that from a
+    `409` — the same status the route uses for a name collision, which the UI would then
+    present as one.
+  */
+  const movable = part.directory !== null
   const detail = useQuery({
     queryKey: ['part', part.id],
     queryFn: () => fetchPartDetail(part.id),
@@ -1830,75 +1973,127 @@ function QuickLook({
     `useLayoutEffect` and not `useEffect`: the render has to be measured and moved in the
     same frame it is painted, or it lands at its destination first and then jumps back to
     begin the flight. Keyed on the detail arriving, because the image does not exist until
-    then — the panel is open and empty for as long as the fetch takes.
+    then — the rail is open and empty for as long as the fetch takes.
   */
   useLayoutEffect(() => {
     const image = panel.current?.querySelector('img')
     if (image != null) flipFrom(image, from)
   }, [detail.data, from])
+
+  /*
+    Escape closes it, listened for on the document rather than on the rail.
+
+    On the document because focus is usually not in here: a person clicks a tile and the
+    rail fills while focus stays on the grid, so a handler bound to this subtree would hear
+    nothing. That is the opposite of `Dialog`'s reason for doing the same thing — there,
+    focus is trapped inside and falls to `<body>` when a button disables itself — and it
+    arrives at the same place.
+  */
+  const close = useRef(onClose)
+  useEffect(() => {
+    close.current = onClose
+  })
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close.current()
+    }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [])
+
   return (
-    <Dialog title={part.name} onClose={onClose}>
-      <div ref={panel}>
-      {detail.isPending ? (
-        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
-      ) : detail.isError ? (
-        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
-          {strings.quickLook.failed}
-        </p>
-      ) : (
-        <Detail
-          part={detail.data}
-          /*
-            The tools the card used to carry. They are here because the card is a picture and
-            a name now: a control that hides the render it sits on is a control fighting the
-            one job this product has. Owner decision, 2026-09-08 — click gives you the
-            essential information and the tools; the full page gives you depth.
-          */
-          actions={
-            <>
-              <button
-                type="button"
-                onClick={() => onRender(part.id)}
-                disabled={busy}
-                aria-label={strings.render.partFor(part.name)}
-                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-              >
-                {strings.render.part}
-              </button>
-              {onMove === null ? (
-                <span className="text-xs text-[var(--color-muted)]">
-                  {strings.folders.notMigrated}
-                </span>
-              ) : (
+    <aside
+      aria-label={strings.inspector.title}
+      className="panel-in flex w-[340px] flex-none flex-col overflow-y-auto border-l border-[var(--color-border)] bg-[var(--color-raised)]"
+    >
+      <div className="sticky top-0 z-10 flex flex-none items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-raised)] px-[14px] py-[11px]">
+        <h2 className="tabular flex-1 text-[9px] tracking-[0.22em] text-[var(--color-muted)] uppercase">
+          {strings.inspector.title}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={strings.inspector.close}
+          className="ease-mechanical grid size-[26px] flex-none place-items-center rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:border-[var(--color-edge)] hover:text-[var(--color-text)]"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
+
+      <div ref={panel} className="flex-1 px-[14px] py-[13px]">
+        {detail.isPending ? (
+          <p className="text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
+        ) : detail.isError ? (
+          <p className="max-w-prose text-sm text-[var(--color-muted)]">
+            {strings.quickLook.failed}
+          </p>
+        ) : (
+          <Detail
+            part={detail.data}
+            /*
+              The tools the card used to carry. They are here because the card is a picture
+              and a name now: a control that hides the render it sits on is a control
+              fighting the one job this product has. Owner decision, 2026-09-08 — click
+              gives you the essential information and the tools; the full page gives you
+              depth.
+            */
+            actions={
+              <>
                 <button
                   type="button"
-                  onClick={onMove}
-                  aria-label={strings.folders.moveToFor(part.name)}
-                  className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+                  onClick={() => onRender(part.id)}
+                  disabled={busy}
+                  aria-label={strings.render.partFor(part.name)}
+                  className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
                 >
-                  {strings.folders.moveTo}
+                  {strings.render.part}
                 </button>
-              )}
-            </>
-          }
+                {!movable ? (
+                  <span className="text-xs text-[var(--color-muted)]">
+                    {strings.folders.notMigrated}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setMoving(true)}
+                    aria-label={strings.folders.moveToFor(part.name)}
+                    className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+                  >
+                    {strings.folders.moveTo}
+                  </button>
+                )}
+              </>
+            }
+          />
+        )}
+        <ShowInFolder part={part} hostRoot={hostRoot} />
+        <div className="mt-4">
+          <Link
+            to="/parts/$partId"
+            params={{ partId: part.id }}
+            className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.quickLook.fullPage}
+          </Link>
+        </div>
+      </div>
+
+      {/*
+        Still a modal, and correctly so: choosing where a model goes is a decision, the grid
+        behind it must not be clicked while it is open, and it is the one place a duplicate
+        name is answered. `Dialog` portals itself out to `<body>` — nothing here may hoist
+        that markup back.
+      */}
+      {moving ? (
+        <MovePartDialog
+          part={{ id: part.id, name: part.name }}
+          library={part.library}
+          onClose={() => setMoving(false)}
         />
-      )}
-      </div>
-      <ShowInFolder part={part} hostRoot={hostRoot} />
-      <div className="mt-4 flex justify-end gap-2">
-        <Link
-          to="/parts/$partId"
-          params={{ partId: part.id }}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          {strings.quickLook.fullPage}
-        </Link>
-      </div>
-    </Dialog>
+      ) : null}
+    </aside>
   )
 }
-
-
 
 /**
  * The card's measurement line, rendered as one indivisible unit.
@@ -1915,22 +2110,255 @@ function QuickLook({
  * means *any* figure on this part is mesh-derived — not that this count is.
  */
 function Measurements({ part }: { part: PartCard }) {
-  // Narrowed with typeof rather than compared to null: the binding says `number | null`,
-  // but the response is cast rather than validated, so a field that disappears upstream
-  // arrives here as undefined and would reach .toLocaleString() as one.
-  const count = typeof part.triangleCount === 'number' ? part.triangleCount : null
-  if (!part.approximate && count === null) {
+  const bbox = usableBbox(part.bboxMm)
+  /*
+    Whether this line carries a mesh-derived figure, and so whether the badge belongs on it.
+
+    **A bounding box is not evidence of tessellation.** That is the whole of this predicate.
+    A B-rep part carries an analytic box, and from Phase 2 that is a part this grid will
+    show — so keying the badge to "has a measurement" would stamp `APPROXIMATE` on every
+    measured part, analytic ones included. That is the measurement rule broken in the
+    direction that matters: a figure claiming to be less exact than it is still misstates
+    its provenance, and a user deciding whether to trust a tolerance cannot tell an
+    over-cautious label from a true one.
+
+    `part.approximate` means *any* figure on this part is mesh-derived, which is weaker than
+    "this box is" and is the strongest claim a card-level flag can make. Phase 2 is when it
+    stops being enough — see `PartSummary::volume_mm3` for the trigger to widen it.
+  */
+  const labelled = part.approximate
+  if (bbox === null && !labelled) {
     return null
   }
   return (
-    <p className="tabular mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
-      {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
-      <span
-        title={strings.parts.approximateDetail}
-        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs tracking-wider uppercase"
-      >
-        {strings.parts.approximate}
-      </span>
+    <p className="tabular flex flex-wrap items-center gap-x-[6px] gap-y-[2px] text-[9px] text-[var(--color-dim)]">
+      {/*
+        The box, and only the box.
+
+        **The triangle count is deliberately not here**, and it used to be. A tile is 176px
+        of caption at the default card size, and the count competed for it with the one
+        figure somebody scanning a grid is actually comparing — a count says how heavy a
+        mesh is, which is not why anyone opens a parts library. `v2`'s card shows dimensions
+        and no count, which is the same judgement.
+
+        It is not lost: the list layout gives it a column of its own, where a column of
+        counts *can* be compared, and the detail page states it with its own provenance.
+      */}
+      {bbox === null ? null : <span>{strings.parts.dimensions(bbox)}</span>}
+      {!labelled ? null : (
+        <span
+          title={strings.parts.approximateDetail}
+          className="rounded border border-[var(--color-border)] px-1 py-px tracking-wider uppercase"
+        >
+          {strings.parts.approximate}
+        </span>
+      )}
     </p>
+  )
+}
+
+/**
+ * A bounding box that can actually be rendered, or `null`.
+ *
+ * The wire type says `[number, number, number] | null` and the response is cast rather than
+ * validated, so this is the one place that checks it is true. Three finite numbers or
+ * nothing: `Number.isFinite` refuses `NaN` and both infinities as well as a string, and a
+ * partial box must not render as two dimensions and a `NaN` — `CLAUDE.md` treats a figure
+ * that states something untrue as a correctness bug, and a box is three figures.
+ *
+ * Shared by the card, the list row and the list's own sort, so a part that is unmeasured is
+ * unmeasured in all three rather than in whichever of them remembered to look.
+ */
+function usableBbox(
+  bbox: PartCard['bboxMm'],
+): readonly [number, number, number] | null {
+  if (!Array.isArray(bbox) || bbox.length !== 3) return null
+  return bbox.every((axis) => typeof axis === 'number' && Number.isFinite(axis)) ? bbox : null
+}
+
+/**
+ * The same parts, one per row, with the figures in columns.
+ *
+ * # What this is for
+ *
+ * A gallery answers "which of these is the one I want" and cannot answer "which of these is
+ * tallest": forty square renders at 11rem give no way to compare a number down a column,
+ * because there is no column. This is the layout that does, and it is why the bounding box
+ * had to reach `PartCard` — a list of names and thumbnails would be a worse gallery rather
+ * than a different tool.
+ *
+ * # It is a table, and it says so
+ *
+ * `<table>` and not a stack of flex rows. The figures here are a grid of values with row and
+ * column headers, which is the one thing table semantics exist for: a screen-reader user
+ * moving down the Volume column is told they are in the Volume column, and a `role="list"`
+ * of divs cannot say that at all. The cost is that column widths need stating, which
+ * `table-fixed` and the widths below do.
+ *
+ * No `content-visibility` here, unlike the grid. A row is text and one 46px thumbnail, so
+ * there is little layout to skip and — more to the point — a row's height does not depend on
+ * an image that has not decoded yet, so the placeholder figure the grid needs has no
+ * equivalent to be wrong about.
+ */
+function PartList({ parts }: { parts: readonly PartCard[] }) {
+  return (
+    <table className="w-full table-fixed border-collapse text-left">
+      <caption className="sr-only">{strings.folders.root}</caption>
+      <thead>
+        <tr className="border-b border-[var(--color-border)]">
+          <Th className="w-auto">{strings.layout.columnName}</Th>
+          <Th className="hidden w-[9rem] sm:table-cell">{strings.layout.columnPartNumber}</Th>
+          <Th className="w-[11rem] text-right">{strings.layout.columnDimensions}</Th>
+          <Th className="hidden w-[7rem] text-right md:table-cell">
+            {strings.layout.columnVolume}
+          </Th>
+          <Th className="hidden w-[7rem] text-right lg:table-cell">
+            {strings.layout.columnTriangles}
+          </Th>
+        </tr>
+      </thead>
+      <tbody>
+        {parts.map((part) => (
+          <ListRow key={part.id} part={part} />
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+/**
+ * A column heading. `scope="col"` is what makes the association a screen reader announces —
+ * without it a `th` is a styled cell and the column name is never read with the value.
+ *
+ * The narrow columns drop out below their breakpoints rather than compressing: a part number
+ * ellipsised to `LP-10…` identifies nothing, and the two columns that survive at every width
+ * are the name and the box, which are the two the layout exists for.
+ */
+function Th({ className, children }: { className: string; children: React.ReactNode }) {
+  return (
+    <th
+      scope="col"
+      className={`tabular pb-2 text-[9px] font-normal tracking-[0.18em] text-[var(--color-muted)] uppercase ${className}`}
+    >
+      {children}
+    </th>
+  )
+}
+
+function ListRow({ part }: { part: PartCard }) {
+  const bbox = usableBbox(part.bboxMm)
+  const volume = typeof part.volumeMm3 === 'number' ? part.volumeMm3 : null
+  const count = typeof part.triangleCount === 'number' ? part.triangleCount : null
+  /*
+    Whether this row carries a mesh-derived figure — the same predicate the card uses, plus
+    the count, which the card no longer shows and this does.
+
+    **A triangle count is tessellation-derived by construction**, so a row showing one is
+    showing a mesh figure whatever the wire's `approximate` says. That is not a hypothetical
+    inconsistency to guard against: nothing stops a revision carrying a count beside a flag
+    set false, and the card's own history is that the count and the badge were independent
+    conditionals until a test paired them.
+
+    One badge for the row rather than one per cell. `approximate` is a fact about the part,
+    not about a column, so a badge in each of three cells would be the same word three times
+    saying one thing — and forty rows of that is a column of nothing but the word.
+  */
+  const labelled = part.approximate || count !== null
+  return (
+    <tr className="ease-mechanical border-b border-[var(--color-border)] duration-[var(--duration-fast)] hover:bg-[var(--color-surface)]">
+      {/*
+        `th scope="row"`, not a `td`. The name is what identifies the row, and a screen
+        reader reading the Volume cell announces the row header with it — "Bearing block,
+        608ZZ, Volume, 9.84 cm³" rather than a figure with no subject.
+      */}
+      <th scope="row" className="py-[7px] pr-3 font-normal">
+        <span className="flex min-w-0 items-center gap-3">
+          <span className="grid size-[46px] flex-none place-items-center overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-raised)] p-[5px]">
+            {part.thumbnail === null ? null : (
+              <img
+                src={part.thumbnail}
+                alt={strings.parts.thumbnailAlt(part.name)}
+                className="h-full w-full object-contain"
+              />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2">
+              <Link
+                to="/parts/$partId"
+                params={{ partId: part.id }}
+                className="ease-mechanical min-w-0 truncate text-[12.5px] font-semibold text-[var(--color-text)] duration-[var(--duration-fast)] hover:underline"
+              >
+                {part.name}
+              </Link>
+              {/*
+                The row's one badge, beside the thing it is a fact about. `CLAUDE.md` says a
+                mesh-derived measurement is labelled always, and the figures it qualifies are
+                three cells to the right — which is fine on a row, where the eye and a screen
+                reader both travel along one part, and is exactly why it may not be dropped
+                just because the columns are elsewhere.
+              */}
+              {!labelled ? null : (
+                <span
+                  title={strings.parts.approximateDetail}
+                  className="tabular flex-none rounded border border-[var(--color-border)] px-1 py-px text-[9px] tracking-wider text-[var(--color-dim)] uppercase"
+                >
+                  {strings.parts.approximate}
+                </span>
+              )}
+            </span>
+            {/*
+              The path under the name, which is a part's identity — two parts can share a
+              name and only the path tells them apart. It is the one thing this layout has
+              room for that the card does not.
+
+              Plain text, not `ShowInFolder`. That component is a disclosure with a button
+              to open it, which is right on a page showing one part and wrong on forty rows:
+              it put a 26px control in every row and turned a dense table back into a stack
+              of cards. The full host path it reveals is a per-part question, and the rail
+              and the detail page both still answer it.
+            */}
+            <span className="tabular block truncate text-[10px] text-[var(--color-muted)]">
+              {part.sourcePath}
+            </span>
+          </span>
+        </span>
+      </th>
+      <Figure className="hidden sm:table-cell">{part.partNumber}</Figure>
+      {/*
+        The figures. Their provenance is the one badge in the name cell above; the detail
+        page this row links to states each figure's own — see `Figure` in `PartDetail.tsx`.
+      */}
+      <Figure className="text-right">{bbox === null ? null : strings.parts.dimensions(bbox)}</Figure>
+      <Figure className="hidden text-right md:table-cell">
+        {volume === null ? null : strings.parts.volume(volume)}
+      </Figure>
+      <Figure className="hidden text-right lg:table-cell">
+        {count === null ? null : strings.parts.triangles(count)}
+      </Figure>
+    </tr>
+  )
+}
+
+/**
+ * One figure cell, or the mark for a part nobody has measured.
+ *
+ * An em dash on screen and "Not measured" to a screen reader, which is not the same string
+ * twice: a screen reader reads `—` as nothing at all, so a row with three of them announces
+ * three empty cells and no reason for them. `aria-hidden` on the dash and a visually hidden
+ * word beside it is what makes the cell say one thing rather than none.
+ */
+function Figure({ className, children }: { className: string; children: string | null }) {
+  return (
+    <td className={`tabular py-[7px] text-[10.5px] text-[var(--color-muted)] ${className}`}>
+      {children === null ? (
+        <>
+          <span aria-hidden="true">{strings.layout.unmeasured}</span>
+          <span className="sr-only">{strings.layout.unmeasuredLabel}</span>
+        </>
+      ) : (
+        children
+      )}
+    </td>
   )
 }

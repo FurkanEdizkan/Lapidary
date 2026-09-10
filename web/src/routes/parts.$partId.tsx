@@ -2,6 +2,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
+  DEFAULT_LIBRARY_ID,
   blobUrl,
   downloadUrl,
   fetchInstanceStorage,
@@ -13,6 +14,7 @@ import { Detail } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { strings } from '../lib/strings'
+import { TopBar } from '../components/TopBar'
 import type { Approximate, PartDetail } from '../lib/types'
 
 /**
@@ -51,7 +53,18 @@ export function PartPage({ partId }: { partId: string }) {
   })
 
   return (
-    <section>
+    <>
+      {/*
+        The bar, which `__root` used to draw for every route and now does not — see there
+        for why. `sidebar={null}`: this page has no rail to toggle.
+
+        The library comes off the part once the fetch lands, and falls back to the seeded
+        one until it does. That fallback only decides where the bar's own tabs point for the
+        moment before the part arrives — it is never used to fetch anything, which is the
+        thing it would be wrong for.
+      */}
+      <TopBar library={part.data?.library ?? DEFAULT_LIBRARY_ID} sidebar={null} />
+      <section className="px-[18px] py-[13px]">
       {/*
         The part's own name, once the fetch has it. Rendered rather than assigned: React 19
         hoists a `<title>` from wherever it is written and removes it on unmount, so this
@@ -112,7 +125,8 @@ export function PartPage({ partId }: { partId: string }) {
           }
         />
       )}
-    </section>
+      </section>
+    </>
   )
 }
 

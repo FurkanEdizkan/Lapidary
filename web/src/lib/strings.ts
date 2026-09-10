@@ -58,6 +58,23 @@ function opensSentence(clause: string): string {
   return clause.charAt(0).toUpperCase() + clause.slice(1)
 }
 
+/**
+ * One linear dimension in millimetres.
+ *
+ * One decimal, and it is not a style choice. Ingest measures a tessellated mesh, whose
+ * vertices are `f32` in the file — so the third decimal of a bounding box is noise from the
+ * format, and printing it would be the interface claiming a precision the geometry does not
+ * carry. `CLAUDE.md`: measurement must not lie. The `APPROXIMATE` badge beside these says
+ * the same thing in words; this says it in the number of digits.
+ *
+ * Trailing zeros are kept — `62.0`, not `62` — because these render in a column of
+ * `.tabular` figures and a ragged decimal point in a list of forty parts is the thing the
+ * mono face was chosen to prevent.
+ */
+function millimetres(value: number): string {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
 export const strings = {
   appName: 'Lapidary',
   /**
@@ -77,6 +94,12 @@ export const strings = {
      */
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
+    /**
+     * The filing screen. Titled by what a person does there rather than by the tab's label
+     * — "Groups" is a fine four-character tab and a poor tab-strip title, because it does
+     * not say which application it belongs to until the dash.
+     */
+    organize: 'Organize — Lapidary',
   },
   /**
    * The first tab stop on the library page, visible only once focused.
@@ -164,6 +187,39 @@ export const strings = {
     showingSoFar: (count: number) => `${count.toLocaleString('en-US')} parts so far.`,
     loadMore: 'Load more',
     loadingMore: 'Loading…',
+    /**
+     * The box a part has to fit in, as the grid writes it: `96.4 × 62.0 × 38.0 mm`.
+     *
+     * `×` is U+00D7 MULTIPLICATION SIGN, not the letter `x`. This is a dimension, the
+     * design sets it with the sign, and a lowercase `x` in the mono face beside three
+     * figures reads as a variable.
+     *
+     * The unit is once, at the end, rather than on each axis — three `mm` in one cell is
+     * two more than the reader needs, and the design's card overlay has room for one line.
+     */
+    dimensions: (bbox: readonly [number, number, number]) =>
+      `${millimetres(bbox[0])} × ${millimetres(bbox[1])} × ${millimetres(bbox[2])} mm`,
+    /**
+     * Volume, in cm³ — the wire carries mm³ and this is the one place that converts.
+     *
+     * cm³ because a printed part is tens of cm³ and a mm³ figure for one is six digits of
+     * false precision; it is also the unit a slicer quotes filament in, which is the number
+     * a person is comparing this against. Two decimals, matching the design's `41.86 cm³`.
+     */
+    volume: (mm3: number) =>
+      `${(mm3 / 1000).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })} cm³`,
+    /**
+     * The tallest axis on its own, for the list layout's height column.
+     *
+     * Z and not the largest of the three: the question this column answers is whether a
+     * part clears the gantry, and a part is printed in the orientation it was modelled in
+     * until somebody rotates it. Calling the largest dimension "height" would answer a
+     * different question — will it fit at all — which needs the whole box, not one figure.
+     */
+    height: (bbox: readonly [number, number, number]) => `${millimetres(bbox[2])} mm`,
   },
   upload: {
     /**
@@ -608,6 +664,20 @@ export const strings = {
      * instead by `everything` below, which is the panel that *can* report them.
      */
     removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
+    /**
+     * The sidebar's one-line version of the split — sources against derivatives, across the
+     * whole store rather than one library.
+     *
+     * Deliberately not a fraction of a pool. `v2`'s footer reads `812 GB of 2,048 GB`,
+     * which needs a quota; the store is a volume somebody mounted and no route reports its
+     * capacity, so a denominator here would be invented. What this says instead is the
+     * split the application does know and the one Phase 4's tiering acts on: how much of
+     * the disk is geometry that cannot be regenerated, and how much is derivatives that
+     * can. Same `bytes` helper as `totals` above, so the rail and the panel below the grid
+     * never disagree about what a megabyte is.
+     */
+    poolSplit: (source: number, derivative: number) =>
+      `${bytes(source)} sources · ${bytes(derivative)} derivatives`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
 
@@ -900,9 +970,35 @@ export const strings = {
      * rather than the answer.
      */
     label: 'Library',
-    /** How many models are in it, so a switcher says where anything is. */
+    /**
+     * The rail's heading over the list of them. Plural, where `label` is the singular name
+     * of the `<select>` it replaced — a heading over eight rows that reads "Library" is a
+     * heading that disagrees with what is under it.
+     */
+    heading: 'Libraries',
+    /**
+     * How many models are in it, so a switcher says where anything is.
+     *
+     * Unused by the rail, which draws the name and the count as two aligned columns rather
+     * than one sentence, and kept because `libraries.option` is still what a `<select>`
+     * would need — `MovePartDialog`'s target list is the shape that would want it next.
+     */
     option: (name: string, parts: number) =>
       parts === 1 ? `${name} — 1 model` : `${name} — ${parts.toLocaleString('en-US')} models`,
+    /**
+     * The figure alone, for the rail's count column. A formatter and not
+     * `count.toLocaleString('en-US')` at the call site, because the locale is the thing
+     * Turkish changes — a thousands separator inlined in a component is a separator the
+     * translator never sees. `no-bare-strings.test.ts` reports exactly that, by design.
+     */
+    count: (parts: number) => parts.toLocaleString('en-US'),
+    /**
+     * The same figure with its noun, as the accessible name for that column. A screen
+     * reader gets no column heading and no alignment, so without this a library row
+     * announces a name followed by a bare number.
+     */
+    partsIn: (parts: number) =>
+      parts === 1 ? '1 model' : `${parts.toLocaleString('en-US')} models`,
     create: 'New library',
     createTitle: 'New library',
     nameLabel: 'Library name',
@@ -931,6 +1027,102 @@ export const strings = {
     density: 'Card size',
     comfortable: 'Comfortable',
     compact: 'Compact',
+  },
+  /**
+   * The bar across the top and the menu hanging off it — `v2`'s chrome.
+   *
+   * The design puts the wordmark, the navigation, the search field, the upload button and
+   * the account control in one 38px row. Four of those five are here; the account control
+   * is not, because there is no auth in Phase 1 and a menu showing a name nobody signed in
+   * as would be the interface inventing a user.
+   */
+  shell: {
+    /**
+     * The two places this application has. `v2`'s bar carries four tabs — Home, Grid,
+     * Groups and Assembly — and two of them describe screens that do not exist: Home is a
+     * feed of featured tag sections (there is no tag table), and Assembly is the build
+     * graph, which `ROADMAP.md` Phase 7 says in as many words not to start early. A tab
+     * that navigates to a page explaining that the page is not built yet is worse than no
+     * tab, so this ships the two that go somewhere.
+     */
+    grid: 'Grid',
+    groups: 'Groups',
+    /** The label the tab group answers to as a whole, for a screen reader. */
+    navLabel: 'Sections',
+    /**
+     * The panel toggle at the far left of the bar. One control with two meanings, so the
+     * label is the *action* and changes with the state — a button permanently reading
+     * "Sidebar" tells a screen-reader user nothing about what pressing it will do.
+     */
+    hideSidebar: 'Hide the sidebar',
+    showSidebar: 'Show the sidebar',
+    /** The view-options popover's trigger and the region it opens. */
+    view: 'View',
+    viewOptions: 'View options',
+    /**
+     * Where these settings live, said plainly at the foot of the menu. The design's line
+     * reads `SAVED FOR <handle> · PER LIBRARY`; there is no handle to name, and the scope
+     * that is actually true is narrower than "for you" — it is this browser.
+     */
+    viewScope: 'Saved in this browser, per library',
+  },
+  /**
+   * How the grid draws itself: which layout, and how big the cards are.
+   *
+   * `v2` offers three layouts — gallery, detail and list. Two are here. "Detail" in the
+   * design is the gallery card with the overlay pinned open rather than revealed on hover,
+   * which is what the `namesAlways` toggle below already controls — shipping it as a third
+   * layout as well would give one behaviour two switches that can disagree.
+   */
+  layout: {
+    label: 'Layout',
+    gallery: 'Gallery',
+    list: 'List',
+    /**
+     * The card-size control. Four steps, replacing the two-value density select: the
+     * design's slider runs 0–3, and the difference between a wall of 8rem thumbnails for
+     * triage and 16rem ones for judging a surface finish is the whole reason it exists.
+     */
+    cardSize: 'Card size',
+    cardSizeSmall: 'Small',
+    cardSizeMedium: 'Medium',
+    cardSizeLarge: 'Large',
+    cardSizeHuge: 'Huge',
+    /**
+     * Whether a card's name and figures stay on screen or arrive with the pointer.
+     *
+     * Off by default — `v2` draws the render edge to edge with the name over it, and a
+     * permanent caption on every tile is what turns a wall of parts back into a table. It
+     * is a toggle and not a preference buried in the design, because "which one is this"
+     * and "how many of these are there" are different tasks and the answer is different.
+     *
+     * The name is never *gone*: it is the card's accessible name in every state, so a
+     * screen reader and the keyboard path read it whether or not a pointer is over the
+     * tile. What this hides is the painted caption, which is why it can default to off
+     * without failing SC 2.4.4.
+     */
+    namesAlways: 'Always show names',
+    namesAlwaysHint: 'Otherwise the caption appears when the pointer is over a card.',
+    /**
+     * The list layout's columns, as headers. Four figures and a name — everything a card
+     * shows, in a row a person can compare down a column, which is the one thing a gallery
+     * cannot do.
+     */
+    columnName: 'Part',
+    columnPartNumber: 'Part number',
+    columnDimensions: 'Dimensions',
+    columnVolume: 'Volume',
+    columnTriangles: 'Triangles',
+    /**
+     * What a figure column says when the part has no measurement. An em dash and not a
+     * zero: nobody measured this part, and `0.0 mm` is a measurement.
+     */
+    unmeasured: '—',
+    /**
+     * The same fact, for a screen reader, which reads an em dash as nothing at all — so a
+     * row with three of them announces three empty cells and no reason for them.
+     */
+    unmeasuredLabel: 'Not measured',
   },
   search: {
     label: 'Search this library',
@@ -1101,6 +1293,21 @@ export const strings = {
     close: 'Close',
   },
 
+  /**
+   * The rail beside the grid — `v2`'s inspector.
+   *
+   * A separate section from `quickLook`, which still names the two states of the fetch it
+   * shares. Those strings are about *a part not having arrived yet*, and they read the same
+   * whether the part is arriving into a rail or a dialog; these are about the rail itself.
+   */
+  inspector: {
+    /**
+     * The panel's own name, as the landmark's accessible name and as the eyebrow over it.
+     * One string for both, so a screen reader hears what the eye reads.
+     */
+    title: 'Inspector',
+    close: 'Close the inspector',
+  },
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means
@@ -1117,6 +1324,45 @@ export const strings = {
     loading: 'Loading…',
     failed:
       'Could not open this part. Check that the api service is running, then try again.',
+  },
+  /**
+   * The filing screen — `v2`'s Groups tab, minus the tag column it has no table for.
+   */
+  organize: {
+    /** Shown while nothing is ticked: what this screen is for, in one line. */
+    hint: 'Tick models to file them, or drag one onto a category.',
+    selected: (count: number) =>
+      count === 1 ? '1 selected' : `${count.toLocaleString('en-US')} selected`,
+    clear: 'Clear',
+    fileInto: 'File into',
+    /**
+     * The select's resting option. It is a verb because the select is an action rather than
+     * a setting — "Category" would read as a label for a value that is currently unset.
+     */
+    chooseCategory: 'Choose a category…',
+    /**
+     * What a bulk move did. Both halves always, and the refusals are named as *left where
+     * they were* rather than as failures: a model refused for a duplicate name has not been
+     * lost, moved or altered, and `CLAUDE.md` treats a non-destructive outcome worded as
+     * data loss as a correctness bug.
+     *
+     * The second sentence only appears when there is something to say — a clean move of
+     * forty models should not end with "and 0 were left behind", which invites the reader to
+     * work out whether that is good news.
+     */
+    filed: (moved: number, refused: number) => {
+      const first =
+        moved === 1 ? 'Filed 1 model.' : `Filed ${moved.toLocaleString('en-US')} models.`
+      if (refused === 0) return first
+      const rest =
+        refused === 1
+          ? '1 kept its place — a model of that name is already in that category. It is still selected.'
+          : `${refused.toLocaleString('en-US')} kept their place — a model of each name is already in that category. They are still selected.`
+      return `${first} ${rest}`
+    },
+    filedFailed:
+      'Could not finish filing these models. Some may have moved before it stopped — reload to see where they are now.',
+    empty: 'Nothing filed here yet — tick models in another category and file them in.',
   },
   emptyLibrary: {
     title: 'Nothing here yet',

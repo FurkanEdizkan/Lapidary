@@ -299,7 +299,13 @@ export function FolderTree({
   }
 
   return (
-    <nav aria-label={strings.folders.title} className="w-56 shrink-0">
+    /*
+      Full width, sized by whatever holds it. This used to be `w-56 shrink-0`, which was
+      right while the tree was a column standing beside the grid; `v2` puts it inside a
+      sidebar that owns the width, and a fixed 14rem inside a resizable rail is a tree that
+      cannot use the space it is given.
+    */
+    <nav aria-label={strings.folders.title} className="w-full">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <h2 className="text-xs tracking-wider text-[var(--color-muted)] uppercase">
           {strings.folders.title}
