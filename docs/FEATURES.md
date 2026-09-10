@@ -91,6 +91,40 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   storage keyed by library id: each library remembers its own setting, which is the intent,
   and the memory is that browser's, which is the limit. Amended rather than left to read as
   met by something narrower than it says.
+
+  **"Card density" is four card sizes now, not two densities.** Recorded 2026-09-10, with
+  the v2 shell. `v2`'s View menu is a 0-3 slider, and the difference between a wall of 8rem
+  thumbnails for triage and 20rem ones for judging a surface is the whole reason it exists;
+  two values could not express it. The two-value `Density` type is deleted rather than kept
+  beside it — it had one remaining reader, the grid's `content-visibility` placeholder, and
+  that figure is now the column width directly because a card is a square.
+
+  The same storage entry gained `layout` and `namesAlways` alongside them, on the same
+  key, with the same per-viewer-per-library scope and the same `try`/`catch` around every
+  read. The View menu says so at its foot rather than leaving it to be discovered.
+-->
+| Gallery and list layouts, and a caption that pins or reveals | 1 |
+<!--
+  Added 2026-09-10, with the v2 shell, and it is the row the bounding box on `PartCard`
+  exists for.
+
+  A gallery answers "which of these is the one I want" and cannot answer "which of these is
+  tallest": forty square renders give no way to compare a figure down a column, because
+  there is no column. The list is one row per part with part number, dimensions, volume and
+  triangle count in aligned mono columns — a real `<table>` with `scope="col"` and
+  `scope="row"`, so a screen reader announces which column a figure is in, which a stack of
+  flex rows cannot say at all.
+
+  **`v2` offers three layouts and two shipped.** Its third, "detail", is the gallery card
+  with the caption pinned open rather than revealed on hover — which is what the
+  `namesAlways` toggle controls. Shipping it as a layout *and* a toggle would give one
+  behaviour two switches that can disagree.
+
+  The two caption states are two layouts rather than one styled twice, and that is the
+  design's own answer: pinned, it is a flow footer with space reserved for it under the
+  render; revealed, it is a gradient overlay across the foot of the render. Laying a pinned
+  three-line caption over every tile takes the bottom third of every part in the library and
+  collides with the "no preview yet" placeholder.
 -->
 | Thumbnails inline from Postgres `bytea`, rendered at ingest or on demand per library | 1 |
 | Full-text search over names, tags, materials | 1 |
@@ -112,7 +146,24 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | Trigram search for part numbers and filenames | 1 |
 | Faceted filters: format, material, library, tags, lifecycle | 2 |
+<!--
+  Still Phase 2, and the v2 design's sidebar slider for maximum height is not an early
+  down payment on it. That slider *could* be built against the cards already in hand, and
+  it would lie: the grid is keyset-paged, so what is in hand is the first 50 parts of an
+  arbitrary number, and a control that hides four of them while leaving 1,700 unexamined
+  would report "12 parts under 80 mm" about a library holding two hundred. A filter belongs
+  in the query or nowhere. The list layout's height figure states one part's height instead,
+  which is a fact rather than a filter.
+-->
 | Sort by any promoted geometric column | 2 |
+<!--
+  Still Phase 2, and deliberately not taken with the v2 View menu, which offers four sort
+  orders. The grid's pagination is keyset — `?after=<PartId>`, ordered by id — so a sort
+  the client picks needs the cursor to encode the sort key, or the ordering silently applies
+  within a page and not across the library. Sorting the pages already loaded would be the
+  same lie the height filter above would tell. The work is in `PartRepository::page`, not in
+  the menu.
+-->
 | Saved filters / smart collections | 5 |
 | User-defined custom fields, max 8 indexed | 5 |
 | Turkish text search config per library | 5 |
@@ -248,6 +299,50 @@ The largest subsystem. Detailed spec below.
 | Export-everything bundle (non-lock-in) | 8 |
 | Cloud sync, per-GB, zero-egress storage | 9 |
 | Phone-home licence checks | **[—]** ever |
+
+---
+
+## The v2 design file, and which phase each of its screens is
+
+`Lapidary Library v2.dc.html` (claude.ai/design, imported 2026-09-10) is a working
+prototype of the **whole product**, not of one phase. It is 3,740 lines covering eleven
+screens, and the tables above are what say when each of them is due — so this is the map
+between the two, recorded once rather than re-derived by whoever opens the file next.
+
+| Design screen | Where it lands |
+|---|---|
+| Top bar, tabs, search, upload, View menu | **Built.** §2, above |
+| Sidebar: libraries, folders, storage footer | **Built.** §1 and §2 |
+| Grid: gallery and list, card captions | **Built.** §2, above |
+| Inspector, as a rail rather than a modal | **Built.** The panel existed; `v2` moved it beside the grid |
+| Organize / Groups: folders and bulk filing | **Built**, minus its tag column |
+| Sidebar tags, collections, format and process filters | §2 faceted filters, Phase 2; tags need Phase 5 |
+| View menu sort | §2 sort, Phase 2 — the cursor has to carry the sort key |
+| Sidebar max-height slider | §2 faceted filters, Phase 2 — see the note there on why not now |
+| Home: hero carousel, channel rail, featured tag sections | **Not on the roadmap.** It is a feed of featured *tags*, so it is Phase 5 at the earliest |
+| Duplicate clusters | §2 near-duplicate clustering, Phase 6 |
+| Settings: storage tiers, compression policy | `ROADMAP.md` Phase 4, the storage tiering job |
+| Settings: process limits, per-part manufacturing spec | §7, Phase 7 |
+| Assembly board, work order export, runs | §7, Phase 7 — `ROADMAP.md` says *do not start early* in as many words |
+| Sign in, roles, admin panel, audit log, invites | §9, Phase 8 |
+| Settings: local folder, shared spaces, seeding swarm | **Not on the roadmap at all.** A peer-to-peer sharing layer is a product decision nobody has made |
+
+Two things the design carries that this application deliberately does not, on every screen
+it drew them:
+
+- **An account control and an author on every card.** There is no user table before Phase
+  8, so a name, an avatar and a role chip would be the interface inventing a person. The
+  card's author line carries the part number instead — which is what a shop library is
+  actually searched by.
+- **A pool quota** — `812 GB of 2,048 GB` in its sidebar footer. The store is a volume
+  somebody mounted and no route reports its capacity, so a denominator would be invented.
+  The footer reports the split the application does know, sources against derivatives,
+  which is the figure Phase 4's tiering acts on.
+
+Its `<helmet>` links Archivo and JetBrains Mono from `fonts.googleapis.com`. Both faces are
+self-hosted and vendored under `web/public/fonts/` — Lapidary ships into air-gapped
+deployments, and a font link is a defect that only shows up on the one network that matters
+most.
 
 ---
 
