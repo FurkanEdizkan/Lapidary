@@ -272,6 +272,10 @@ const MOTOR_MOUNT: PartCard = {
   sourceBytes: 624_384,
   storedBytes: 197_012,
   compressed: true,
+  // A NEMA 17 face is 42.3 mm square; this is a mount that carries one, so the box is
+  // that face plus the arm that reaches the extrusion.
+  bboxMm: [60.0, 42.3, 35.0],
+  volumeMm3: 27_940.0,
   directory: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face",
   storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
   createdAt: "2026-08-14T09:12:44Z",
@@ -294,6 +298,10 @@ const HEX_NUT: PartCard = {
   sourceBytes: 99_284,
   storedBytes: 26_741,
   compressed: true,
+  // DIN 934 M8: 13 mm across the flats, 15.01 across the corners, 6.8 high. The volume
+  // is that hexagonal prism less the M8 bore.
+  bboxMm: [15.0, 13.0, 6.8],
+  volumeMm3: 651.9,
   directory: "libraries/default/Fasteners/Hex nut M8, DIN 934",
   storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
   createdAt: "2026-08-14T09:12:51Z",
@@ -323,6 +331,10 @@ const SHAFT_COUPLER: PartCard = {
   sourceBytes: 148_930,
   storedBytes: 148_930,
   compressed: false,
+  // A 20 mm jaw coupler for a 5 mm motor shaft into an 8 mm leadscrew — the outer
+  // cylinder, less the two bores and the helical slot cut between them.
+  bboxMm: [20.0, 20.0, 25.0],
+  volumeMm3: 5_890.0,
   directory: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm",
   storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
   createdAt: "2026-08-14T09:13:02Z",
@@ -2131,6 +2143,10 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   sourceBytes: 7_412_880,
   storedBytes: 2_104_331,
   compressed: true,
+  // The one fixture over 200 mm in a dimension, and the widest of the three axes is the
+  // span its name claims.
+  bboxMm: [180.0, 62.5, 96.0],
+  volumeMm3: 214_600.0,
   createdAt: "2026-08-30T11:04:19Z",
   updatedAt: "2026-08-30T11:04:19Z",
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
@@ -2154,6 +2170,8 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   sourceBytes: 212_004,
   storedBytes: 64_118,
   compressed: true,
+  bboxMm: [40.0, 40.0, 40.0],
+  volumeMm3: 15_360.0,
   createdAt: "2026-05-02T08:41:07Z",
   updatedAt: "2026-05-02T08:41:07Z",
   directory: null,

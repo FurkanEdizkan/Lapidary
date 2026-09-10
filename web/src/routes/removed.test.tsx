@@ -46,6 +46,8 @@ const MOUNTING: PartCard = {
   sourceBytes: 204800,
   storedBytes: 91204,
   compressed: true,
+  bboxMm: [40.0, 30.0, 12.0],
+  volumeMm3: 9_842.6,
   createdAt: "2026-09-06T10:00:00Z",
   updatedAt: "2026-09-06T10:00:00Z",
   // Removed, and still where it was: a soft delete moves no file, so the removed list

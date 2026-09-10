@@ -102,4 +102,41 @@ storedBytes: number | null,
  * are written with `zstd_level NULL`, so ingesting bytes byte-identical to a
  * derivative writes a `role = 'source'` file row over a `NULL`-level blob.
  */
-compressed: boolean | null, createdAt: string, updatedAt: string, };
+compressed: boolean | null, 
+/**
+ * The box this part has to fit in, in millimetres, X/Y/Z.
+ *
+ * On the summary and not only on [`PartDetail`] because the grid asks a question the
+ * detail page cannot answer: *which* of these fits. A card showing a triangle count
+ * and nothing else tells a person how heavy a mesh is, which is not a reason anyone
+ * opens a parts library. Every layout the grid now offers reads this — the tile's
+ * overlay, the list row's dimension column, and the height filter that hides what
+ * will not go on the plate — and none of them could exist while the only route to a
+ * bounding box was one request per part.
+ *
+ * `None` where the revision has no measurement: a part whose derive job has not run,
+ * or one ingested before measurement existed. Absent, never zeroed — a zero-size box
+ * is a real (if degenerate) measurement, and reporting one for a part nobody has
+ * measured would put a figure on a card that no one computed.
+ *
+ * Three `f64`s and not a struct, matching [`MeshMeasurements::bbox_mm`] and
+ * [`PartDetail::bbox_mm`] so a dimension means one thing in all three places.
+ */
+bboxMm: [number, number, number] | null, 
+/**
+ * Solid volume in cubic millimetres, or `None` where the revision has none.
+ *
+ * Here for the same reason `bbox_mm` is, and it is the figure the list layout sorts a
+ * column by. Millimetres cubed on the wire and displayed in cm³ — the conversion
+ * belongs to the one place that formats it, not to a field every reader would have to
+ * remember to divide.
+ *
+ * ponytail: no per-figure provenance on the card, unlike [`PartDetail`]'s
+ * `Approximate<f64>`. The card carries `approximate` for the whole part, and Phase 1
+ * ingests only meshes so that flag is unconditionally true — every figure a card shows
+ * is tessellated. The trigger to widen this into an `Approximate<f64>` is the first
+ * analytic figure reaching a card, which is Phase 2's STEP ingest: from then on a part
+ * can carry an analytic volume beside a tessellated triangle count, and one flag for
+ * the whole card is wrong about one of them whichever way it is set.
+ */
+volumeMm3: number | null, createdAt: string, updatedAt: string, };

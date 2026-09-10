@@ -1239,22 +1239,41 @@ struct DetailColumns {
     updated_us: i64,
 }
 
-/// The sixteen columns a card is made of.
+/// The twenty columns a card is made of, every one of them aliased.
 ///
-/// A `const` and not two copies, because `page` and `search` must select the same list in
-/// the same order or [`to_part_row`]'s positional tuple decodes one query's columns into
-/// another query's fields — a failure that type-checks. `repo.rs`'s LATERAL comment already
-/// argues this about the joins; two hand-copied SELECT lists would be worse, because the
-/// tuple's safety would then *depend* on nobody editing one without the other.
+/// A `const` and not two copies, because `page` and `search` must select the same list or
+/// [`to_part_row`] decodes one query's columns into another query's fields. `repo.rs`'s
+/// LATERAL comment already argues this about the joins; two hand-copied SELECT lists would
+/// be worse, because the row's safety would then *depend* on nobody editing one without the
+/// other.
 ///
 /// A macro rather than a `const`, and only because `concat!` takes literals: a `const &str`
 /// is not one. The effect is what a const would have given — one definition, spliced at
 /// compile time, no string building anywhere near a query.
+///
+/// # Every column is aliased now, and that is the change
+///
+/// This list used to be unaliased and decoded positionally into a 16-tuple, at sqlx's
+/// `FromRow` ceiling for tuples. The old note beside [`GridRow`] recorded the trade — the
+/// SELECT has two `id`s and two `blake3`s, so mapping by name needed aliases nobody had
+/// written — and recorded the trigger for paying it: *"A seventeenth column is the trigger
+/// to alias the SELECT and move to a named `FromRow` struct, not a reason to drop a column
+/// again."*
+///
+/// The bounding box and volume below are columns seventeen through twenty, so this is that
+/// trigger arriving. Aliasing every column rather than only the four ambiguous ones: a
+/// SELECT where some names are the decoder's and some are the schema's invites the next
+/// column to guess which kind it is, and a name that silently disagrees with the field it
+/// fills is exactly the failure the positional tuple was chosen to avoid.
 macro_rules! grid_columns {
     () => {
-        "p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
-     d.thumb_bytes, r.triangle_count, \
-     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, l0.blake3, \
+        "p.id AS part_id, p.library_id AS library_id, r.id AS revision_id, \
+     p.name AS name, p.part_number AS part_number, p.source_path AS source_path, \
+     d.thumb_bytes AS thumb_bytes, r.triangle_count AS triangle_count, \
+     s.blake3 AS source_blake3, s.size_bytes AS source_size_bytes, \
+     s.stored_bytes AS source_stored_bytes, s.zstd_level AS source_zstd_level, \
+     s.storage_path AS storage_path, l0.blake3 AS tessellation_blake3, \
+     r.bbox_x AS bbox_x, r.bbox_y AS bbox_y, r.bbox_z AS bbox_z, r.volume AS volume, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us"
     };
@@ -2851,59 +2870,71 @@ pub struct NewPartImage<'a> {
     pub source_url: Option<&'a str>,
 }
 
-/// One grid row, decoded. `page` and `search` select the same sixteen columns and both end
+/// One grid row, decoded. `page` and `search` select the same twenty columns and both end
 /// here, so a card cannot mean one thing on the grid and another in a set of results.
 ///
-/// The tuple is positional and stays that way: `#[derive(sqlx::FromRow)]` maps by column
-/// *name*, and this SELECT has two `id`s and two `blake3`s. Adopting it would mean aliasing
-/// the grid's crown-jewel query for a benefit nothing needs yet.
-///
-/// ponytail: a positional 16-tuple at sqlx's ceiling. A seventeenth column is the trigger to
-/// alias the SELECT and move to a named `FromRow` struct, not a reason to drop a column
-/// again.
-#[allow(clippy::type_complexity)]
-type GridRow = (
-    Uuid,
-    Uuid,
-    Uuid,
-    String,
-    Option<String>,
-    String,
-    Option<Vec<u8>>,
-    Option<i32>,
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-    Option<i16>,
-    Option<String>,
-    Option<String>,
-    i64,
-    i64,
-);
+/// Named fields mapped by [`sqlx::FromRow`], which is what [`grid_columns`]'s aliases are
+/// for. The 16-tuple this replaces was positional and sat exactly on sqlx's tuple ceiling,
+/// so the bounding box had nowhere to go — see that macro for the trade and the trigger.
+/// The names here are the aliases there, character for character; a field renamed on one
+/// side and not the other is a decode error at runtime rather than a silent shift of every
+/// column after it, which is the failure mode the tuple had and this does not.
+#[derive(sqlx::FromRow)]
+struct GridRow {
+    part_id: Uuid,
+    library_id: Uuid,
+    revision_id: Uuid,
+    name: String,
+    part_number: Option<String>,
+    source_path: String,
+    thumb_bytes: Option<Vec<u8>>,
+    triangle_count: Option<i32>,
+    source_blake3: Option<String>,
+    source_size_bytes: Option<i64>,
+    source_stored_bytes: Option<i64>,
+    source_zstd_level: Option<i16>,
+    storage_path: Option<String>,
+    tessellation_blake3: Option<String>,
+    /// Three nullable columns and not one nullable triple, because that is how the schema
+    /// stores them. They are written together by `insert_part_chain` and so arrive together
+    /// in practice, but the database does not enforce that — [`to_part_row`] rebuilds the
+    /// array only when all three are present rather than defaulting a missing axis to zero,
+    /// which would report a measurement nobody took.
+    bbox_x: Option<f64>,
+    bbox_y: Option<f64>,
+    bbox_z: Option<f64>,
+    volume: Option<f64>,
+    created_us: i64,
+    updated_us: i64,
+}
 
 fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
     fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
         value.map(|v| bytes_column(column, v)).transpose()
     }
 
-    let (
-        id,
-        lib,
-        revision,
+    let GridRow {
+        part_id: id,
+        library_id: lib,
+        revision_id: revision,
         name,
         part_number,
         source_path,
         thumb_bytes,
-        triangles,
-        source_hash,
-        source_bytes,
-        stored_bytes,
-        zstd_level,
+        triangle_count: triangles,
+        source_blake3: source_hash,
+        source_size_bytes: source_bytes,
+        source_stored_bytes: stored_bytes,
+        source_zstd_level: zstd_level,
         storage_path,
-        tessellation_l0,
+        tessellation_blake3: tessellation_l0,
+        bbox_x,
+        bbox_y,
+        bbox_z,
+        volume,
         created_us,
         updated_us,
-    ) = row;
+    } = row;
     {
         // `as u32` previously turned a negative column value into a number
         // near 4.29 billion instead of failing — the same silent-wraparound
@@ -2974,6 +3005,15 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                 source_bytes: bytes("file.size_bytes", source_bytes)?,
                 stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
                 compressed,
+                // All three axes or none. `detail`'s decoder makes the same match on the
+                // same three columns, and the two must agree: a card and the page it opens
+                // reporting different dimensions for one part is the class of thing
+                // `CLAUDE.md` calls a measurement that lies.
+                bbox_mm: match (bbox_x, bbox_y, bbox_z) {
+                    (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                    _ => None,
+                },
+                volume_mm3: volume,
                 created_at: jiff::Timestamp::from_microsecond(created_us).map_err(|_| {
                     DbError::TimestampOutOfRange {
                         column: "part.created_at",

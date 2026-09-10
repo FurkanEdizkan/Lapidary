@@ -134,6 +134,23 @@ pub struct PartCard {
     ///
     /// `None` alongside `directory`, and for the same reason.
     pub storage_path: Option<String>,
+    /// The box this part has to fit in, X/Y/Z in millimetres, carried verbatim from
+    /// `PartSummary.bbox_mm`. See there for why the grid carries it at all and why it is
+    /// absent rather than zeroed when nothing has measured the part.
+    ///
+    /// Every layout the grid offers reads it: the tile's overlay, the list row's dimension
+    /// column, and the height filter. `[number, number, number] | null` on the wire and not
+    /// three fields, so a client cannot hold two axes of a box and think it has one.
+    #[ts(type = "[number, number, number] | null")]
+    pub bbox_mm: Option<[f64; 3]>,
+    /// Solid volume in cubic **millimetres** — displayed in cm³, converted by the one place
+    /// that formats it. Carried verbatim from `PartSummary.volume_mm3`.
+    ///
+    /// Labelled by the card's `approximate` flag above rather than carrying an
+    /// `Approximate<f64>` of its own, as `PartDetail` does. See `PartSummary::volume_mm3`
+    /// for the trade and for what triggers widening it.
+    #[ts(type = "number | null")]
+    pub volume_mm3: Option<f64>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -550,6 +567,8 @@ fn to_card(row: PartRow) -> PartCard {
         compressed: summary.compressed,
         directory: row.directory,
         storage_path: row.storage_path,
+        bbox_mm: summary.bbox_mm,
+        volume_mm3: summary.volume_mm3,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

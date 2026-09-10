@@ -65,6 +65,10 @@ mod tests {
             source_bytes: Some(204_800),
             stored_bytes: Some(91_204),
             compressed: Some(true),
+            // A block that takes a 608ZZ — 22 mm outer diameter, 7 mm wide — so 40 × 30 × 12
+            // is a plausible envelope for one, and the volume is that block less the bore.
+            bbox_mm: Some([40.0, 30.0, 12.0]),
+            volume_mm3: Some(9_842.6),
             created_at: now,
             updated_at: now,
         };
@@ -80,6 +84,17 @@ mod tests {
             json["sourceBytes"].is_u64(),
             "a size is a JSON number, which is why the binding says `number` — ts-rs 12 \
              types a bare u64 as `bigint`, and JSON.parse never produces one"
+        );
+        assert_eq!(
+            json["bboxMm"],
+            serde_json::json!([40.0, 30.0, 12.0]),
+            "a bounding box goes over the wire as one array of three, not as three fields — \
+             a client must not be able to hold two axes and think it has a box"
+        );
+        assert!(
+            json.get("volumeMm3").is_some(),
+            "the unit is in the name on the wire as well as in Rust: the grid displays cm³, \
+             and a field called `volume` would leave every reader to remember which"
         );
     }
 

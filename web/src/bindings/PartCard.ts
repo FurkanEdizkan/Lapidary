@@ -99,4 +99,23 @@ directory: string | null,
  *
  * `None` alongside `directory`, and for the same reason.
  */
-storagePath: string | null, createdAt: string, updatedAt: string, };
+storagePath: string | null, 
+/**
+ * The box this part has to fit in, X/Y/Z in millimetres, carried verbatim from
+ * `PartSummary.bbox_mm`. See there for why the grid carries it at all and why it is
+ * absent rather than zeroed when nothing has measured the part.
+ *
+ * Every layout the grid offers reads it: the tile's overlay, the list row's dimension
+ * column, and the height filter. `[number, number, number] | null` on the wire and not
+ * three fields, so a client cannot hold two axes of a box and think it has one.
+ */
+bboxMm: [number, number, number] | null, 
+/**
+ * Solid volume in cubic **millimetres** — displayed in cm³, converted by the one place
+ * that formats it. Carried verbatim from `PartSummary.volume_mm3`.
+ *
+ * Labelled by the card's `approximate` flag above rather than carrying an
+ * `Approximate<f64>` of its own, as `PartDetail` does. See `PartSummary::volume_mm3`
+ * for the trade and for what triggers widening it.
+ */
+volumeMm3: number | null, createdAt: string, updatedAt: string, };
