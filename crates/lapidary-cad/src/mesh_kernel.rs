@@ -101,6 +101,7 @@ impl Kernel for MeshKernel {
             entities: Vec::new(),
             provenance: crate::MeasurementProvenance::TESSELLATED,
             structure: None,
+            metadata: None,
         })
     }
 }

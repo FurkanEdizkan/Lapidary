@@ -1,7 +1,7 @@
 //! The handler, exercised the way the worker exercises it.
 
 use lapidary_cad::{
-    AssemblyNode, AssemblyTree, CadError, Entity, Kernel, KernelOutput, KernelParams,
+    AssemblyNode, AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams,
     KernelVersion, MeasurementProvenance, MeshKernel,
 };
 use lapidary_core::manifest::ModelManifest;
@@ -2437,6 +2437,15 @@ impl Kernel for FakeCad {
         let mut output = MeshKernel.process(bytes, &as_mesh).await?;
         output.provenance = MeasurementProvenance::ANALYTIC;
         output.structure = Some(fake_tree());
+        output.metadata = Some(CadMetadata {
+            file_name: Some("fixture-plate-lp-9000-00.step".to_owned()),
+            authors: vec!["J. Okafor".to_owned()],
+            organizations: vec!["Lapidary fixtures".to_owned()],
+            originating_system: Some("SOLIDWORKS 2025".to_owned()),
+            schemas: vec!["AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF".to_owned()],
+            materials: vec!["AISI 1045 steel".to_owned()],
+            ..CadMetadata::default()
+        });
         output.entities = vec![Entity::Cylinder {
             prototype: "0:1:1:1".to_owned(),
             face: 1,
@@ -2590,4 +2599,83 @@ async fn a_step_files_tree_and_entities_are_stored_beside_its_rungs(pool: PgPool
         serde_json::from_slice(&read(&rows[0].2)).expect("the entities parse");
     assert_eq!(entities[0]["type"], "cylinder");
     assert_eq!(entities[0]["radius"], 11.0);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_step_files_header_is_stored_on_its_part_and_in_its_manifest(pool: PgPool) {
+    // Stage 4, semantic: what the file says about itself. Kept on the part row, where a
+    // later filter can reach it, and in metadata.json, which re-adoption rebuilds rows from.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+    handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("the STEP file ingests");
+
+    let (metadata, storage_path): (serde_json::Value, String) = sqlx::query_as(
+        "SELECT p.metadata_json, f.storage_path FROM part p \
+         JOIN revision r ON r.part_id = p.id JOIN file f ON f.revision_id = r.id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the part");
+    assert_eq!(metadata["cad"]["originating_system"], "SOLIDWORKS 2025");
+    assert_eq!(metadata["cad"]["materials"][0], "AISI 1045 steel");
+
+    let model_dir = blob_root.path().join(
+        Path::new(&storage_path)
+            .parent()
+            .expect("a model directory"),
+    );
+    assert_eq!(
+        manifest_in(&model_dir).part.metadata["cad"]["authors"][0],
+        "J. Okafor"
+    );
+}
+
+/// `FakeCad`, with an author Postgres will not store: `jsonb` refuses a NUL character.
+struct NulHeaderCad;
+
+#[async_trait::async_trait]
+impl Kernel for NulHeaderCad {
+    fn version(&self, params: &KernelParams) -> KernelVersion {
+        FakeCad.version(params)
+    }
+
+    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
+        let mut output = FakeCad.process(bytes, params).await?;
+        if let Some(metadata) = output.metadata.as_mut() {
+            metadata.authors = vec!["J. Okafor\0".to_owned()];
+        }
+        Ok(output)
+    }
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_header_the_database_refuses_still_leaves_the_part_ingested(pool: PgPool) {
+    // Stages commit independently (`docs/DATA.md` §3.1): the part is measured and searchable
+    // before its header is written, so losing the header must not lose the part.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(NulHeaderCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+
+    let outcome = handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("a refused header does not fail the file");
+    assert_eq!(outcome, Outcome::Ingested);
+    let metadata: serde_json::Value = sqlx::query_scalar("SELECT metadata_json FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("the part is there");
+    assert_eq!(metadata, serde_json::json!({}), "and carries no header");
 }

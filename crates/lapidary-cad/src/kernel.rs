@@ -91,6 +91,23 @@ pub enum Entity {
     },
 }
 
+/// What a CAD file says about itself: its STEP header or IGES global section, and the
+/// materials it names. Stage 4 of `docs/DATA.md` §3.1, stored on `part.metadata_json` under
+/// `cad`. Each field is what the file wrote, and empty when it wrote nothing; none is inferred.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct CadMetadata {
+    pub file_name: Option<String>,
+    pub time_stamp: Option<String>,
+    pub authors: Vec<String>,
+    pub organizations: Vec<String>,
+    pub originating_system: Option<String>,
+    pub preprocessor: Option<String>,
+    pub descriptions: Vec<String>,
+    pub schemas: Vec<String>,
+    pub materials: Vec<String>,
+}
+
 /// Everything one kernel call produces for one file.
 ///
 /// Replaces both the placeholder `{ triangle_count, bbox_mm, entities: Vec<String> }` that
@@ -116,6 +133,8 @@ pub struct KernelOutput {
     pub provenance: MeasurementProvenance,
     /// The assembly tree, for a CAD file that has one.
     pub structure: Option<AssemblyTree>,
+    /// What a CAD file says about itself. `None` for a mesh, which says nothing.
+    pub metadata: Option<CadMetadata>,
     /// Derivatives that were asked for and could not be made, with the reason.
     ///
     /// **A derivative is not the part.** The mesh parsed — measurements are above and are

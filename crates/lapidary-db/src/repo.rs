@@ -1326,6 +1326,21 @@ macro_rules! grid_laterals {
 pub struct PgParts(pub PgPool);
 
 impl PgParts {
+    /// Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Written after
+    /// the part commits and on its own, so a refusal here leaves a part already searchable.
+    pub async fn set_metadata(
+        &self,
+        part: PartId,
+        metadata: &serde_json::Value,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE part SET metadata_json = $2 WHERE id = $1")
+            .bind(part.as_uuid())
+            .bind(metadata)
+            .execute(&self.0)
+            .await?;
+        Ok(())
+    }
+
     /// Everything the detail route shows about one part, in one query.
     ///
     /// Four LATERALs, the same shape and the same reasons as `page`'s: the revision

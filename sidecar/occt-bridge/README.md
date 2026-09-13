@@ -9,8 +9,8 @@ linked library, so an OCCT crash takes down one job instead of the worker.
 `occt-kernel` feature. Its unit tests drive a fake bridge, a shell script, so they run
 everywhere. `cargo xtask verify occt` builds the `occt-test` stage of `deploy/Containerfile`,
 which runs `crates/lapidary-cad/tests/occt_bridge.rs` against this bridge and real OCCT and
-times the Phase 0 exit. Ingest does not call the kernel yet: routing STEP and IGES files to it is
-Phase 2.
+times the Phase 0 exit. Ingest sends STEP and IGES files here, and stores the tree, the entities
+and the header beside the part (Phase 2).
 
 ## `convert`
 
@@ -18,7 +18,7 @@ Phase 2.
 occt-bridge convert --in <file> --format step|iges --out <dir> [--deflection <mm>]
 ```
 
-Writes four files into `<dir>` and prints a one-line JSON summary on stdout
+Writes five files into `<dir>` and prints a one-line JSON summary on stdout
 (`{"parts":200,"prototypes":8,"solids":200,"triangles":28576}`):
 
 | File | What it holds |
@@ -27,6 +27,7 @@ Writes four files into `<dir>` and prints a one-line JSON summary on stdout
 | `structure.json` | The assembly tree: names, a prototype id per node, and each node's 4×4 transform relative to its parent. `parts` counts the leaves. |
 | `entities.json` | Analytic faces (plane, cylinder, cone, sphere, torus) and circular edges, **once per prototype**, in that prototype's own coordinates. `structure.json` places them. Two hundred instances of eight parts would otherwise repeat the same geometry two hundred times. |
 | `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. `volume_mm3` is `null` when nothing in the file is a solid. |
+| `header.json` | What the file says about itself: the STEP header (file name, time stamp, authors, organizations, originating system, preprocessor, descriptions, schemas) or the IGES global section, and the names of the materials XCAF reads. Empty fields are `null` or `[]`; nothing is inferred. |
 
 **Units come from the file.** The document is set to millimetres before transfer, and the
 readers scale into it, so a part written in inches arrives converted.

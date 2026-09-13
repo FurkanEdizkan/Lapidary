@@ -107,6 +107,7 @@ impl Kernel for MockKernel {
             entities: Vec::new(),
             provenance: crate::MeasurementProvenance::TESSELLATED,
             structure: None,
+            metadata: None,
             // The mock's fixtures are chosen to be renderable, so nothing here refuses.
             // A test that wants a refusal wants the real kernel and a degenerate mesh —
             // `mesh_kernel.rs` has that fixture, because inventing one here would prove

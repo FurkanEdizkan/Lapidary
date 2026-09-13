@@ -18,7 +18,7 @@ mod tmf;
 pub use cluster::{Lod, Tessellation, cluster};
 pub use glb::GLB_VERSION;
 pub use kernel::{
-    AssemblyNode, AssemblyTree, CadError, Entity, Kernel, KernelOutput, KernelParams,
+    AssemblyNode, AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams,
     KernelVersion, MeasurementProvenance, Unproduced,
 };
 pub use measure::measure;

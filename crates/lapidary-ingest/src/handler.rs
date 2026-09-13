@@ -625,6 +625,25 @@ impl WorkerHandler {
             }
         };
 
+        // 9a. Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Its own
+        // statement after the part's transaction, so a refusal leaves a part that is already
+        // measured and searchable, and is logged rather than failing the file.
+        let mut metadata = serde_json::json!({});
+        if let Some(cad) = &output.metadata {
+            let described = serde_json::json!({ "cad": cad });
+            match PgParts(self.db.clone())
+                .set_metadata(part, &described)
+                .await
+            {
+                Ok(()) => metadata = described,
+                Err(error) => tracing::warn!(
+                    source_path,
+                    %error,
+                    "could not record what the file says about itself; the part is ingested without it"
+                ),
+            }
+        }
+
         // 10. `metadata.json`, beside the file it describes. This is the whole of
         // re-adoption: delete the database and each directory still says what it is.
         //
@@ -649,7 +668,7 @@ impl WorkerHandler {
                         part_number: None,
                         classification: None,
                         source_path: source_path.to_owned(),
-                        metadata: serde_json::json!({}),
+                        metadata,
                     },
                     revisions: vec![ManifestRevision {
                         id: revision,
