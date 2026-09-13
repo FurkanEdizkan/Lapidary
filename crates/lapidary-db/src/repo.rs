@@ -434,6 +434,39 @@ impl PgBlobs {
         )
     }
 
+    /// Where copies of these bytes are filed in the folder tree: each source `file` row's
+    /// `storage_path`, with the level that file was written at, live parts first.
+    ///
+    /// For the upload arm, which is handed a hash rather than bytes when the probe found
+    /// them already held. A scanned file's only copy is its model directory's — the store
+    /// stopped being content-addressed for sources (`handler.rs`'s module doc) — so the
+    /// hash-addressed copy [`PgBlobs::blob`] describes is not always there to read. The
+    /// level is `file.zstd_level`, never the `blob` row's: migration `0013` moved it to the
+    /// row that knows the file. Newest first with `f.id` breaking ties, as
+    /// [`PgParts::source_for_download`] orders, so every attempt walks the same copies in
+    /// the same order.
+    ///
+    /// Content addressing is not authorization, and this is no exception: it names paths
+    /// for the worker to read bytes it was already told the hash of, and nothing it returns
+    /// is served to anyone.
+    pub async fn source_copies(
+        &self,
+        hash: &BlobHash,
+    ) -> Result<Vec<(String, Option<i16>)>, DbError> {
+        let rows: Vec<(String, Option<i16>)> = sqlx::query_as(
+            "SELECT f.storage_path, f.zstd_level FROM file f \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id \
+             WHERE f.blake3 = $1 AND f.role = 'source' AND f.storage_path IS NOT NULL \
+             ORDER BY (p.deleted_at IS NULL) DESC, f.created_at DESC, f.id DESC \
+             LIMIT 8",
+        )
+        .bind(hash.to_hex())
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows)
+    }
+
     /// Record bytes that are on disk but that nothing references yet, `ref_count = 0`.
     ///
     /// The upload route's, and only the upload route's. Every other producer of source
