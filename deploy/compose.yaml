@@ -45,6 +45,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
+      # No OCCT in this image: see the two targets at the end of deploy/Containerfile.
+      target: api
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8080
@@ -126,6 +128,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
+      # OCCT and occt-bridge ride in this target, and only in this one.
+      target: worker
       args:
         # Only the worker links the CAD kernel — the open path (api) never invokes it.
         SERVER_FEATURES: mock-kernel

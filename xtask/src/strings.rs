@@ -134,7 +134,7 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "9275fdc4d65e5485",
+        content: "0a67009f512772bf",
         reason: "CORRECT_COMPOSE: a deliberate compose.yaml fixture; YAML indentation is meaningful",
     },
     Exemption {
@@ -159,8 +159,8 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "1707e268aca66049",
-        reason: "a compose.yaml worker-service fixture, same reason as CORRECT_COMPOSE",
+        content: "104ad5eaecb7a380",
+        reason: "a compose.yaml worker-service fixture (the whole block, build target included), same reason as CORRECT_COMPOSE",
     },
     Exemption {
         file: "xtask/src/deploy.rs",
