@@ -122,6 +122,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Trigram search for part numbers and filenames | 1 |
 | Faceted filters: format, material, library, tags, lifecycle | 2 |
 | Sort by any promoted geometric column | 2 |
+| Quick look beside the grid at 1280px and up, a dialog below it; the open part rides in the URL | 2 |
 | Saved filters / smart collections | 5 |
 | User-defined custom fields, max 8 indexed | 5 |
 | Turkish text search config per library | 5 |

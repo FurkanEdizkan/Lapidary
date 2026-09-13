@@ -153,6 +153,13 @@ routes and the search, and `psql` read the stored headers and derivative kinds. 
 concurrency 2, kernel `occt-8.0.1-bridge-2+deflection-0.1+glb-1+cpu-1`, on the 12-core
 development machine.
 
+**Addendum, the same day.** The tree those 200 parts read back into was not yet navigable in the
+sense the phase means: a browser check on an isolated stack found every placed part named
+`=>[0:1:1:9]`, OCCT's name for an instance the file leaves unnamed. Bridge 3 falls back to the
+prototype's name (`2152e3b`), and the kernel now reads
+`occt-8.0.1-bridge-3+deflection-0.1+glb-1+cpu-1`. The measurement above stands as taken; the
+names it did not check are what changed.
+
 **Where the part number came from.** Nothing reads a part number out of a file. Ingest writes
 none, because one made up from a filename is one nobody gave the part, and the fixtures' STEP
 headers carry only OCCT's defaults. The number in the second clause was set by a request, which
