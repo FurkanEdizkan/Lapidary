@@ -26,7 +26,7 @@ Writes five files into `<dir>` and prints a one-line JSON summary on stdout
 | `mesh.stl` | Every placed part triangulated in world coordinates, as binary STL. The worker's existing mesh pipeline — clustering into LOD rungs, the thumbnail, the GLB writer — reads it, so this program does not grow a second one. |
 | `structure.json` | The assembly tree: names, a prototype id per node, and each node's 4×4 transform relative to its parent. `parts` counts the leaves. |
 | `entities.json` | Analytic faces (plane, cylinder, cone, sphere, torus) and circular edges, **once per prototype**, in that prototype's own coordinates. `structure.json` places them. Two hundred instances of eight parts would otherwise repeat the same geometry two hundred times. |
-| `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. `volume_mm3` is `null` when nothing in the file is a solid. |
+| `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. Faces that arrive without a solid are sewn first, and only shells that close are measured, so `volume_mm3` is `null` exactly when nothing in the file closes. |
 | `header.json` | What the file says about itself: the STEP header (file name, time stamp, authors, organizations, originating system, preprocessor, descriptions, schemas) or the IGES global section, and the names of the materials XCAF reads. Empty fields are `null` or `[]`; nothing is inferred. |
 
 **Units come from the file.** The document is set to millimetres before transfer, and the
@@ -50,7 +50,7 @@ geometry.
 | File | What it is |
 |---|---|
 | `fixture-plate-assembly-lp-9000-00.step` | The Phase 0 exit fixture: a welding fixture of **200 placed parts** from 8 prototypes through three levels of assembly — plate, 4 levelling feet, 12 bracket stations of 12 parts each, a rail of 6 V-blocks and a rack of 45 stop pins. AP242. |
-| `cylinder-d22-lp-9010-00.step` | A 22.000 mm cylinder, 30 mm long — the one Phase 3's exit measures. |
+| `cylinder-d22-lp-9010-00.step` | A 22.000 mm cylinder, 30 mm long — the one Phase 3's exit measures — carrying the material "Stainless steel 1.4301", so a fixture exercises what `header.json` reads. |
 | `cylinder-d22-inch-units-lp-9011-00.step` | The same cylinder, written in inches, to prove units are read from the file. |
 | `angle-bracket-60x60x40-lp-9004-00.igs` | One part as IGES. |
 
@@ -126,21 +126,25 @@ Inside the `occt` stage image, deflection 0.1 mm, process start included:
 | `fixture-plate-assembly-lp-9000-00.step` (190 KB) | 200 | 200 | 28,576 | **91 ms** | 8 prototypes; bounding box 315 × 315 × 120 mm |
 | `cylinder-d22-lp-9010-00.step` | 1 | 1 | 128 | 21 ms | volume πr²h, box 22 × 22 × 30, one cylinder face of radius 11 |
 | `cylinder-d22-inch-units-lp-9011-00.step` | 1 | 1 | 128 | 20 ms | the same volume to ~1e-12, radius 11.0000000000068 — read back in mm |
-| `angle-bracket-60x60x40-lp-9004-00.igs` | 1 | **0** | 28 | 20 ms | box 60 × 40 × 60; no volume, see below |
+| `angle-bracket-60x60x40-lp-9004-00.igs` | 1 | **0**, 1 once sewn | 28 | 20 ms | box 60 × 40 × 60; volume 35,840 mm³ from bridge 4, see below |
 
 That 91 ms is the bridge alone. **The Phase 0 exit, end to end through `OcctKernel` — bridge,
 mesh pipeline, GLB rung and thumbnail — measured 111 ms** for the 200-part assembly, in a release
 build inside the `occt-test` stage (`cargo xtask verify occt`); `docs/ROADMAP.md` records it, and
 what that number does not say about real files.
 
-**IGES arrives as faces, not solids.** OCCT's IGES writer stores trimmed surfaces by default,
-and most CAD tools' IGES files are the same shape, so `volume_mm3` is `null` rather than a
-number integrated over surfaces that do not close. Sewing faces into solids
-(`BRepBuilderAPI_Sewing`) is the follow-up that gives IGES a volume; it is not done yet.
+**IGES arrives as faces, not solids,** because OCCT's IGES writer stores trimmed surfaces by
+default and most CAD tools' IGES files are the same shape. Since bridge 4, a file that transfers
+faces but no solids is sewn (`BRepBuilderAPI_Sewing`, at 1e-4 of the shape's diagonal), and every
+shell that closes becomes a solid, oriented outward, before its volume is taken. The bracket then
+measures 35,840 mm³ exactly: two 8 mm plates of 60 × 40, less the corner they share. A shell that
+stays open is left out, so an open surface still reports `null` rather than a number integrated
+over a boundary that does not close. Area and the box stay the faces' own. The 20 ms above was
+timed before sewing was added and has not been re-taken.
 
 ## Kernel version
 
-`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>` — `occt 8.0.1 bridge 3` today. Different OCCT
+`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>` — `occt 8.0.1 bridge 4` today. Different OCCT
 builds tessellate identical input differently, so this string is what the worker fleet pins
 (`ARCHITECTURE.md`); bump `BRIDGE_VERSION` in `src/main.cpp` whenever the bridge changes what
 it writes.

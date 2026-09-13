@@ -83,6 +83,11 @@ async fn a_22_mm_cylinder_reads_as_an_exact_cylinder() {
         metadata.originating_system.as_deref(),
         Some("Open CASCADE 8.0")
     );
+    assert_eq!(
+        metadata.materials,
+        ["Stainless steel 1.4301"],
+        "the material the fixture generator attached, read back by name"
+    );
     let radii = cylinder_radii(&out.entities);
     assert!(
         radii.iter().any(|r| (r - 11.0).abs() <= 1e-9),
@@ -128,7 +133,7 @@ async fn a_file_written_in_inches_is_read_in_millimetres() {
 
 #[tokio::test]
 #[ignore = "needs occt-bridge and OCCT: run cargo xtask verify occt"]
-async fn iges_reads_and_claims_no_volume_it_does_not_have() {
+async fn iges_faces_are_sewn_into_the_solid_they_bound() {
     let out = kernel()
         .process(
             &fixture("angle-bracket-60x60x40-lp-9004-00.igs"),
@@ -137,9 +142,15 @@ async fn iges_reads_and_claims_no_volume_it_does_not_have() {
         .await
         .expect("converts");
 
-    assert_eq!(
-        out.measurements.volume_mm3, None,
-        "trimmed faces that were never sewn into a solid have no volume to report"
+    // Two plates of 8 mm, 60 by 40, meeting in an 8 by 8 by 40 corner counted once.
+    let bracket = 60.0 * 40.0 * 8.0 + 8.0 * 40.0 * 60.0 - 8.0 * 40.0 * 8.0;
+    let volume = out
+        .measurements
+        .volume_mm3
+        .expect("the bracket's IGES faces close into a solid once sewn");
+    assert!(
+        (volume - bracket).abs() <= 1e-6 * bracket,
+        "volume {volume} is the bracket's {bracket} mm³, integrated over the sewn B-rep"
     );
     assert_eq!(
         out.metadata

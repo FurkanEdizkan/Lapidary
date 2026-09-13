@@ -26,8 +26,11 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepGProp.hxx>
+#include <BRepLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -81,6 +84,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -95,7 +99,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 3;
+constexpr int BRIDGE_VERSION = 4;
 
 const double PI = std::acos(-1.0);
 
@@ -259,6 +263,39 @@ bool readDocument(const std::string& path, const std::string& format,
     return false;
   }
   return true;
+}
+
+// Faces sewn into shells, and every shell that closes made a solid. For a file that transferred
+// faces but no solids — IGES as most CAD tools write it, and the occasional STEP surface model —
+// this is what lets a part that bounds a volume report one. A shell that stays open is left out
+// and `solids` does not count it, so an open surface still reports no volume rather than a
+// number integrated over a boundary that does not close.
+//
+// The tolerance is 1e-4 of the shape's diagonal: enough to close the seams a writer rounds,
+// small enough not to fuse gaps the part really has.
+TopoDS_Shape sewnSolids(const TopoDS_Shape& faces, int& solids) {
+  Bnd_Box extent;
+  BRepBndLib::Add(faces, extent);
+  const double diagonal = extent.IsVoid() ? 0.0 : std::sqrt(extent.SquareExtent());
+  BRepBuilderAPI_Sewing sewing(std::max(diagonal * 1e-4, 1e-6));
+  sewing.Add(faces);
+  sewing.Perform();
+  TopoDS_Compound result;
+  BRep_Builder builder;
+  builder.MakeCompound(result);
+  solids = 0;
+  for (TopExp_Explorer shells(sewing.SewedShape(), TopAbs_SHELL); shells.More(); shells.Next()) {
+    const TopoDS_Shell& shell = TopoDS::Shell(shells.Current());
+    if (!BRep_Tool::IsClosed(shell)) continue;
+    BRepBuilderAPI_MakeSolid make(shell);
+    if (!make.IsDone()) continue;
+    TopoDS_Solid solid = make.Solid();
+    // A shell's faces may point inward, which integrates to a negative volume.
+    BRepLib::OrientClosedSolid(solid);
+    builder.Add(result, solid);
+    ++solids;
+  }
+  return result;
 }
 
 std::string nameOf(const TDF_Label& label) {
@@ -489,8 +526,11 @@ int convert(const std::string& in, const std::string& format, const std::string&
   const TopoDS_Shape whole = tool->GetOneShape();
   int solids = 0;
   for (TopExp_Explorer explorer(whole, TopAbs_SOLID); explorer.More(); explorer.Next()) ++solids;
+  // No solids came across: sew the faces and measure whatever closes. Area and the box stay the
+  // faces' own, which is what the file holds either way.
+  const TopoDS_Shape solidsToMeasure = solids > 0 ? whole : sewnSolids(whole, solids);
   GProp_GProps volume;
-  BRepGProp::VolumeProperties(whole, volume);
+  BRepGProp::VolumeProperties(solidsToMeasure, volume);
   GProp_GProps area;
   BRepGProp::SurfaceProperties(whole, area);
   // From the B-rep, not the mesh: `useTriangulation` off, so the box is the geometry's.
@@ -552,6 +592,7 @@ bool writeStep(const occ::handle<TDocStd_Document>& doc, const std::string& path
   params.WriteSchema = DESTEP_Parameters::WriteMode_StepSchema_AP242DIS;
   params.WriteUnit = unit;
   STEPCAFControl_Writer writer;
+  writer.SetMaterialMode(true);
   return writer.Transfer(doc, params) && writer.Write(path.c_str()) == IFSelect_RetDone;
 }
 
@@ -644,7 +685,14 @@ int generateFixtures(const std::string& dir) {
 
   const occ::handle<TDocStd_Document> single = newDocument();
   const occ::handle<XCAFDoc_ShapeTool> singleTool = XCAFDoc_DocumentTool::ShapeTool(single->Main());
-  TDataStd_Name::Set(singleTool->AddShape(cylinder(11.0, 30.0), false), "cylinder-d22-lp-9010-00");
+  const TDF_Label cylinderLabel = singleTool->AddShape(cylinder(11.0, 30.0), false);
+  TDataStd_Name::Set(cylinderLabel, "cylinder-d22-lp-9010-00");
+  // A material, so one fixture carries what `header.json` reads and the material facet counts.
+  XCAFDoc_DocumentTool::MaterialTool(single->Main())
+      ->SetMaterial(cylinderLabel, new TCollection_HAsciiString("Stainless steel 1.4301"),
+                    new TCollection_HAsciiString("X5CrNi18-10"), 7.9,
+                    new TCollection_HAsciiString("density"),
+                    new TCollection_HAsciiString("POSITIVE_RATIO_MEASURE"));
 
   const occ::handle<TDocStd_Document> iges = newDocument();
   const occ::handle<XCAFDoc_ShapeTool> igesTool = XCAFDoc_DocumentTool::ShapeTool(iges->Main());
