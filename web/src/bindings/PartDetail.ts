@@ -22,6 +22,10 @@ revision: RevisionId,
  */
 revLabel: string, name: string, partNumber: string | null, 
 /**
+ * The tags a person gave the part, in their order. Empty when nobody has.
+ */
+tags: Array<string>, 
+/**
  * The part's identity within its library since slice 6a: the path a scan found it
  * at, or the path the browser reported when it was dropped. Two parts named
  * `bracket` in two folders are told apart by this and by nothing else, which is

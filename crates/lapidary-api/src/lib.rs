@@ -17,6 +17,7 @@ mod part_number;
 mod parts;
 mod scan;
 mod sources;
+mod tags;
 mod upload;
 
 pub use detail::PartDetail;
@@ -232,6 +233,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/parts/{id}/part-number",
                     axum::routing::put(part_number::set),
                 )
+                // The tags a person gives a part, the whole list in one write.
+                .route("/api/parts/{id}/tags", axum::routing::put(tags::set))
                 // A part's gallery. The upload body is the file itself, capped at the same
                 // 10 MB `images::MAX_INPUT_BYTES` refuses past — set here as well because a
                 // limit checked after the body is buffered is a limit that has already cost

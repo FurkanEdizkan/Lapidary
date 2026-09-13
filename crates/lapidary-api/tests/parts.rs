@@ -1347,3 +1347,139 @@ async fn the_facets_route_counts_materials_and_the_grid_filters_by_one(pool: sql
     let (_, grid) = get_uri(pool.clone(), &format!("{base}/parts?{chosen}")).await;
     assert_eq!(card_names(&grid), ["cylinder-d22-lp-9010-00.step"]);
 }
+
+/// One JSON request through the api router, answering its status and body (`Null` when empty).
+async fn tags_request(
+    pool: sqlx::PgPool,
+    method: &str,
+    uri: String,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+        .expect("request builds");
+    let response = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    )
+    .oneshot(request)
+    .await
+    .expect("router responds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Tags are set by request as the whole list: trimmed, blanks and repeats dropped, kept in order,
+/// and refused past 32 tags or 64 characters by a message that names the limit. A chosen tag
+/// narrows the grid, the facets count tags, and the part's page lists them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn tags_set_through_the_api_narrow_the_grid_and_are_counted(pool: sqlx::PgPool) {
+    seed_part(
+        &pool,
+        library(),
+        0xe1,
+        "bracket-lp-1042-03",
+        b"webp-bracket",
+    )
+    .await;
+    seed_part(&pool, library(), 0xe2, "coupler-flexible", b"webp-coupler").await;
+    let (_, coupler) = get_page_with(pool.clone(), "q=coupler").await;
+    let id = coupler["parts"][0]["id"]
+        .as_str()
+        .expect("the coupler's id")
+        .to_owned();
+    let tags = format!("/api/parts/{id}/tags");
+
+    let given = serde_json::json!({ "tags": [" spare ", "", "welding jig", "spare"] });
+    let (status, _) = tags_request(pool.clone(), "PUT", tags.clone(), Some(given)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, page) = get_page_with(pool.clone(), "tag=spare").await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<_> = page["parts"]
+        .as_array()
+        .expect("parts")
+        .iter()
+        .map(|part| part["name"].clone())
+        .collect();
+    assert_eq!(names, ["coupler-flexible"], "narrowed to the tagged part");
+    let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
+    assert_eq!(
+        detail["tags"],
+        serde_json::json!(["spare", "welding jig"]),
+        "trimmed, blanks and repeats dropped, in the order given"
+    );
+    let (_, facets) = tags_request(
+        pool.clone(),
+        "GET",
+        format!("/api/libraries/{}/facets", library()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        facets["tags"],
+        serde_json::json!([{ "value": "spare", "count": 1 }, { "value": "welding jig", "count": 1 }])
+    );
+
+    let long = serde_json::json!({ "tags": ["x".repeat(65)] });
+    let (status, refusal) = tags_request(pool.clone(), "PUT", tags.clone(), Some(long)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("64 characters")),
+        "{refusal}"
+    );
+    let many: Vec<String> = (0..33).map(|n| format!("batch {n}")).collect();
+    let (status, refusal) = tags_request(
+        pool.clone(),
+        "PUT",
+        tags.clone(),
+        Some(serde_json::json!({ "tags": many })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("32 tags")),
+        "{refusal}"
+    );
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        "/api/parts/01931b6e-0000-7000-8000-00000000dead/tags".to_owned(),
+        Some(serde_json::json!({ "tags": ["spare"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        tags,
+        Some(serde_json::json!({ "tags": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, page) = get_page_with(pool, "tag=spare").await;
+    assert_eq!(
+        page["parts"],
+        serde_json::json!([]),
+        "an empty list clears them"
+    );
+}

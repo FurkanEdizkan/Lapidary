@@ -74,6 +74,8 @@ function renderIndex(
     onOpenPart?: (part: string | null) => void;
     material?: string;
     onSelectMaterial?: (material: string | null) => void;
+    tag?: string;
+    onSelectTag?: (tag: string | null) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -94,6 +96,8 @@ function renderIndex(
         onOpenPart={props.onOpenPart}
         material={props.material}
         onSelectMaterial={props.onSelectMaterial}
+        tag={props.tag}
+        onSelectTag={props.onSelectTag}
       />
     ),
   });
@@ -2837,6 +2841,7 @@ function detailFor(card: typeof MOTOR_MOUNT) {
     revLabel: "1",
     name: card.name,
     partNumber: card.partNumber,
+    tags: [],
     sourcePath: card.sourcePath,
     thumbnail: card.thumbnail,
     triangleCount: card.triangleCount,
@@ -2915,6 +2920,7 @@ const MOTOR_MOUNT_DETAIL = {
   revLabel: "1",
   name: MOTOR_MOUNT.name,
   partNumber: MOTOR_MOUNT.partNumber,
+  tags: [],
   sourcePath: MOTOR_MOUNT.sourcePath,
   thumbnail: MOTOR_MOUNT.thumbnail,
   triangleCount: MOTOR_MOUNT.triangleCount,
@@ -3809,4 +3815,32 @@ test("without WebGL the quick look keeps the rendered preview and says why", asy
   const panel = await openPanel(HEX_NUT.name);
 
   expect(within(panel).getByText(strings.viewer.noWebGL)).toBeTruthy();
+});
+
+/** Tags are a third list, named as people wrote them, and a chosen tag narrows the grid and the facets. */
+test("the tag facet lists what people tagged, and a chosen tag narrows the grid", async () => {
+  const fetchMock = stubFetch({
+    parts: ok(page([])),
+    facets: ok({
+      formats: [{ value: "step", count: 3 }],
+      materials: [],
+      tags: [{ value: "welding jig", count: 2 }],
+    }),
+  });
+  const onSelectTag = vi.fn();
+  renderIndex({ tag: "welding jig", onSelectTag });
+
+  const jig = await screen.findByRole("button", {
+    name: strings.facets.tagOption("welding jig", 2),
+  });
+  expect(jig.getAttribute("aria-pressed")).toBe("true");
+  const urls = () => fetchMock.mock.calls.map(([url]) => String(url));
+  await waitFor(() =>
+    expect(urls().some((url) => url.includes("/parts?") && url.includes("tag=welding+jig"))).toBe(
+      true,
+    ),
+  );
+  expect(urls().some((url) => url.includes("/facets") && url.includes("tag=welding+jig"))).toBe(true);
+  fireEvent.click(jig);
+  expect(onSelectTag).toHaveBeenCalledWith(null);
 });

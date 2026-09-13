@@ -7,37 +7,38 @@ import type {
   ChunkAccepted,
   Entity,
   Facets,
+  FailurePage,
   FetchImageRequest,
-  NewSource,
-  PartSource,
-  PartImageId,
-  SetFraming,
   FolderId,
   FolderNode,
   FolderPatch,
   InstanceStorageView,
+  JobId,
   LibraryId,
-  LibrarySummary,
-  NewLibrary,
-  PartImage,
-  StoredImage,
   LibrarySettings,
   LibraryStorage,
+  LibrarySummary,
   MovePart,
   NewFolder,
+  NewLibrary,
+  NewSource,
   PartDetail,
   PartId,
+  PartImage,
+  PartImageId,
+  PartSource,
   PartsPage,
   PurgeResult,
+  RetryAccepted,
   RevisionId,
+  RungReady,
   ScanAccepted,
+  SetFraming,
+  SetTags,
+  StoredImage,
   UploadFile,
   UploadManifest,
   UploadPlan,
-  FailurePage,
-  JobId,
-  RetryAccepted,
-  RungReady,
 } from './types'
 import { strings } from './strings'
 
@@ -84,6 +85,7 @@ export async function fetchParts(
   format?: string,
   sort?: Sort,
   material?: string,
+  tag?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -108,6 +110,7 @@ export async function fetchParts(
   // with no order asked for, so every URL the grid sent before sorting existed keeps its shape.
   if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
+  if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
@@ -127,6 +130,7 @@ export async function fetchFacets(
   q?: string,
   format?: string,
   material?: string,
+  tag?: string,
 ): Promise<Facets> {
   const query = new URLSearchParams()
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
@@ -135,6 +139,7 @@ export async function fetchFacets(
   // obeying its own, which would show every other value as zero.
   if (typeof format === 'string' && format.length > 0) query.set('format', format)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
+  if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
   if (!response.ok) {
@@ -774,6 +779,36 @@ export async function addPartSource(
     }
   }
   throw new Error(`recording a source returned ${response.status}`)
+}
+
+/**
+ * `PUT /api/parts/{id}/tags` — replace a part's tags with `tags`. The server trims them and drops
+ * blanks and repeats; a list past its limits, or a part that is gone, comes back refused with the
+ * server's own sentence.
+ */
+export async function setPartTags(
+  part: PartId,
+  tags: readonly string[],
+): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  const body: SetTags = { tags: [...tags] }
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/tags`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (response.ok) return { kind: 'saved' }
+  if (response.status === 400 || response.status === 404) {
+    const answer: unknown = await response.json().catch(() => null)
+    const message =
+      answer !== null && typeof answer === 'object'
+        ? (answer as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.tags.refusedWithoutReason,
+    }
+  }
+  throw new Error(`saving tags returned ${response.status}`)
 }
 
 /**

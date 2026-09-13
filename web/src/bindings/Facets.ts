@@ -5,4 +5,8 @@ export type Facets = { formats: Array<FacetValue>,
 /**
  * The materials the parts' files declare. Empty for a library of meshes, which declare none.
  */
-materials: Array<FacetValue>, };
+materials: Array<FacetValue>, 
+/**
+ * The tags people gave the parts. Empty until somebody tags one.
+ */
+tags: Array<FacetValue>, };

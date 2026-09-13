@@ -4,10 +4,11 @@ import {
   addPartSource,
   blobUrl,
   downloadUrl,
-  fetchStructure,
   fetchPartImages,
   fetchPartSources,
+  fetchStructure,
   setImageFraming,
+  setPartTags,
   uploadPartImage,
 } from '../lib/api'
 import { strings } from '../lib/strings'
@@ -324,6 +325,95 @@ const SOURCE_FIELDS = [
  * requires a mesh-derived number to be labelled wherever it appears. A dialog with its own
  * `<dl>` would be one refactor away from dropping that.
  */
+/**
+ * The tags a person gave the part. Listed wherever the part is shown, and edited only where
+ * `recordable` is on, for the reason `Detail` gives: a tag half-typed into a dialog that closes on
+ * Escape is a tag somebody loses.
+ *
+ * Every change sends the whole list, which is what the route takes, and the part is read again
+ * afterwards, so the page shows what the server kept rather than what was typed.
+ */
+function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean }) {
+  const queryClient = useQueryClient()
+  const [draft, setDraft] = useState('')
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const save = useMutation({
+    mutationFn: (tags: readonly string[]) => setPartTags(part.id, tags),
+    onMutate: () => setRefusal(null),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setRefusal(result.message)
+        return
+      }
+      setDraft('')
+      void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
+    },
+  })
+  // `?? []` for a server from before tags, which sends a part without them.
+  const tags = part.tags ?? []
+  if (tags.length === 0 && !recordable) return null
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
+        {strings.tags.title}
+      </h3>
+      {tags.length === 0 ? null : (
+        <ul role="list" className="mb-2 flex list-none flex-wrap gap-1">
+          {tags.map((tag) => (
+            <li
+              key={tag}
+              className="flex items-center gap-1 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-sm"
+            >
+              {tag}
+              {recordable ? (
+                <button
+                  type="button"
+                  aria-label={strings.tags.remove(tag)}
+                  disabled={save.isPending}
+                  onClick={() => save.mutate(tags.filter((kept) => kept !== tag))}
+                  className="text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
+                >
+                  ×
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {recordable ? (
+        <form
+          className="flex max-w-sm items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (draft.trim() !== '') save.mutate([...tags, draft])
+          }}
+        >
+          <label className="block flex-1 text-xs text-[var(--color-muted)]">
+            {strings.tags.field}
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              className="mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={save.isPending}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {save.isPending ? strings.tags.saving : strings.tags.add}
+          </button>
+        </form>
+      ) : null}
+      {refusal === null ? null : (
+        <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {refusal}
+        </p>
+      )}
+    </section>
+  )
+}
+
 /** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
 const loadViewer = () => import('./Viewer')
 const Viewer = lazy(loadViewer)
@@ -452,6 +542,8 @@ export function Detail({
       </header>
 
       <Gallery part={part.id} name={part.name} />
+
+      <Tags part={part} recordable={recordable} />
 
       <Sources part={part.id} recordable={recordable} />
 

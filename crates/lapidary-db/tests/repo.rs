@@ -3293,12 +3293,12 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
     let parts = PgParts(pool.clone());
 
     let facet = parts
-        .format_facet(library(), None, None, Shows::Live, None)
+        .format_facet(library(), None, None, Shows::Live, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [("step", Some(1)), ("stl", Some(2))]);
     let searched = parts
-        .format_facet(library(), None, Some("bracket"), Shows::Live, None)
+        .format_facet(library(), None, Some("bracket"), Shows::Live, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3335,7 +3335,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
 
     parts.soft_delete(plate).await.expect("removes");
     let live = parts
-        .format_facet(library(), None, None, Shows::Live, None)
+        .format_facet(library(), None, None, Shows::Live, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3344,7 +3344,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
         "a removed part leaves the count"
     );
     let removed = parts
-        .format_facet(library(), None, None, Shows::Removed, None)
+        .format_facet(library(), None, None, Shows::Removed, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&removed), [("step", Some(1))]);
@@ -3554,12 +3554,12 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
     }
 
     let facet = parts
-        .material_facet(library(), None, None, Shows::Live, None)
+        .material_facet(library(), None, None, Shows::Live, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [(aluminium, Some(1)), (steel, Some(2))]);
     let chosen_stl = parts
-        .material_facet(library(), None, None, Shows::Live, Some("stl"))
+        .material_facet(library(), None, None, Shows::Live, Some("stl"), None)
         .await
         .expect("facet");
     assert!(
@@ -3567,7 +3567,7 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
         "narrowed by the chosen format: an STL declares no material"
     );
     let formats = parts
-        .format_facet(library(), None, None, Shows::Live, Some(steel))
+        .format_facet(library(), None, None, Shows::Live, Some(steel), None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3604,5 +3604,126 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
         parts.search(&narrowed, "lp").await.expect("search").len(),
         2,
         "and so does a search"
+    );
+}
+
+/// Tags are a third facet beside formats and materials: counted over what the grid shows, narrowed
+/// by the other two choices and never by its own, and a chosen tag narrows the page, every sort and
+/// a search. Search finds a part by a word of its tags and of its materials too.
+#[sqlx::test(migrations = "./migrations")]
+async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let cylinder = seed_with_format(&ingest, "cylinder-d22-lp-9010-00.step", 0xd1, "step").await;
+    let plate = seed_with_format(
+        &ingest,
+        "fixture-plate-assembly-lp-9000-00.step",
+        0xd2,
+        "step",
+    )
+    .await;
+    let bracket = seed_with_format(&ingest, "bracket-lp-1042-03.stl", 0xd3, "stl").await;
+    let parts = PgParts(pool.clone());
+    let jig = "welding jig";
+    let spare = "spare";
+    for (part, tags) in [
+        (cylinder, vec![jig]),
+        (plate, vec![jig, spare]),
+        (bracket, vec![spare]),
+    ] {
+        let tags: Vec<String> = tags.into_iter().map(str::to_owned).collect();
+        assert!(parts.set_tags(part, &tags).await.expect("tags a live part"));
+    }
+    let steel = "Stainless steel 1.4301";
+    parts
+        .set_metadata(
+            cylinder,
+            &serde_json::json!({ "cad": { "materials": [steel] } }),
+            &[steel.to_owned()],
+        )
+        .await
+        .expect("records the material");
+
+    let facet = parts
+        .tag_facet(library(), None, None, Shows::Live, None, None)
+        .await
+        .expect("facet");
+    assert_eq!(pairs(&facet), [(spare, Some(2)), (jig, Some(2))]);
+    let chosen_stl = parts
+        .tag_facet(library(), None, None, Shows::Live, Some("stl"), None)
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&chosen_stl),
+        [(spare, Some(1))],
+        "narrowed by the chosen format"
+    );
+    let chosen_steel = parts
+        .tag_facet(library(), None, None, Shows::Live, None, Some(steel))
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&chosen_steel),
+        [(jig, Some(1))],
+        "and by the chosen material"
+    );
+    let formats = parts
+        .format_facet(library(), None, None, Shows::Live, None, Some(spare))
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&formats),
+        [("step", Some(1)), ("stl", Some(1))],
+        "and formats are narrowed by the chosen tag"
+    );
+
+    let ids = |rows: Vec<lapidary_db::PartRow>| {
+        let mut ids: Vec<_> = rows.iter().map(|row| row.summary.id.as_uuid()).collect();
+        ids.sort();
+        ids
+    };
+    let mut jigs = vec![cylinder.as_uuid(), plate.as_uuid()];
+    jigs.sort();
+    let narrowed = GridQuery {
+        tag: Some(jig),
+        ..GridQuery::new(library(), 50)
+    };
+    assert_eq!(
+        ids(parts.page(&narrowed, Sort::Newest).await.expect("page")),
+        jigs
+    );
+    assert_eq!(
+        ids(parts.page(&narrowed, Sort::Volume).await.expect("sorted")),
+        jigs,
+        "every sort narrows the same way"
+    );
+    assert_eq!(
+        ids(parts.search(&narrowed, "lp").await.expect("search")),
+        jigs,
+        "and so does a search"
+    );
+
+    let everything = GridQuery::new(library(), 50);
+    assert_eq!(
+        ids(parts.search(&everything, "welding").await.expect("search")),
+        jigs,
+        "a word of a tag finds the parts carrying it"
+    );
+    assert_eq!(
+        ids(parts
+            .search(&everything, "stainless")
+            .await
+            .expect("search")),
+        vec![cylinder.as_uuid()],
+        "and so does a word of a material"
+    );
+    assert_eq!(
+        parts
+            .detail(plate)
+            .await
+            .expect("detail")
+            .expect("live")
+            .tags,
+        [jig, spare],
+        "kept in the order given"
     );
 }

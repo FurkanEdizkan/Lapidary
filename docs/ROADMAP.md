@@ -135,9 +135,9 @@ number was taken for it.
 **Exit:** ingest a mixed folder of STEP and STL with no manual steps; searching a part
 number like `A1234-56-B` by the fragment `1234` returns it at position one.
 
-**Measured 2026-09-13, both clauses pass. The phase is not finished:** the facets are format
-and material — tags and lifecycle wait for their columns — and stage 4 does not read PMI or
-GD&T yet. The failed files are listed inline under the progress line rather than in a drawer:
+**Measured 2026-09-13, both clauses pass. The phase is not finished:** the facets are format,
+material and tag (`0022`) — lifecycle waits for revision states, which are Phase 8's — and stage 4
+does not read PMI or GD&T yet. The failed files are listed inline under the progress line rather than in a drawer:
 every failure, a page past the first hundred at a press, with a Retry per file and for the batch. Sorting by a measured figure shipped without an
 index, for the reason `DATA.md` §3.2 records.
 

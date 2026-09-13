@@ -95,7 +95,7 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; part?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
@@ -103,6 +103,7 @@ export const Route = createFileRoute('/')({
     const format = search.format
     const part = search.part
     const material = search.material
+    const tag = search.tag
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -133,6 +134,13 @@ export const Route = createFileRoute('/')({
       ...(typeof part === 'string' && part.length > 0 ? { part } : {}),
       // A material as the file names it. Case is kept: `S235JR` and `s235jr` are not one name.
       ...(typeof material === 'string' && material.length > 0 ? { material } : {}),
+      // A tag as a person wrote it. A tag can be all digits, which arrives as a number for the
+      // reason `q` gives.
+      ...(typeof tag === 'string' && tag.length > 0
+        ? { tag }
+        : typeof tag === 'number'
+          ? { tag: String(tag) }
+          : {}),
     }
   },
 })
@@ -146,7 +154,7 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library, format, material, part } = Route.useSearch()
+  const { batch, folderId, q, library, format, material, tag, part } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
@@ -174,6 +182,12 @@ function RouteComponent() {
       onSelectMaterial={(value) =>
         void navigate({
           search: (previous) => ({ ...previous, material: value ?? undefined, part: undefined }),
+        })
+      }
+      tag={tag}
+      onSelectTag={(value) =>
+        void navigate({
+          search: (previous) => ({ ...previous, tag: value ?? undefined, part: undefined }),
         })
       }
       format={format}
@@ -298,6 +312,8 @@ export function Index({
   onSelectFormat,
   material,
   onSelectMaterial,
+  tag,
+  onSelectTag,
   part,
   onOpenPart,
 }: {
@@ -317,6 +333,9 @@ export function Index({
   /** The material the grid is narrowed to, as the URL carries it. Absent is every material. */
   material?: string
   onSelectMaterial?: (material: string | null) => void
+  /** The tag the grid is narrowed to, as the URL carries it. Absent is every tag. */
+  tag?: string
+  onSelectTag?: (tag: string | null) => void
   /** The part the quick look is open on, as the URL carries it. */
   part?: string
   /** Writes the open part to the URL; `null` closes it. */
@@ -404,9 +423,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, order],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, order],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -479,7 +498,7 @@ export function Index({
   // Ids picked out of one grid mean nothing in another: a category, format or search that
   // changes which parts are on screen would otherwise leave hidden parts selected, and a
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
-  const scope = [library, folderId ?? '', format ?? '', material ?? '', q ?? ''].join('\u0000')
+  const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? ''].join('\u0000')
   const [selectionScope, setSelectionScope] = useState(scope)
   useEffect(() => () => prefetch.cancel(), [scope, prefetch])
   if (scope !== selectionScope) {
@@ -791,8 +810,10 @@ export function Index({
           q={q}
           format={format}
           material={material}
+          tag={tag}
           onSelectFormat={(value) => onSelectFormat?.(value)}
           onSelectMaterial={(value) => onSelectMaterial?.(value)}
+          onSelectTag={(value) => onSelectTag?.(value)}
         />
         <FolderTree
           library={library}
@@ -2839,10 +2860,10 @@ function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean
 }
 
 /**
- * The facets beside the grid: the formats and the materials among the parts it shows for the same
- * category and query, as buttons that narrow the grid to one.
+ * The facets beside the grid: the formats, the materials and the tags among the parts it shows for
+ * the same category and query, as buttons that narrow the grid to one.
  *
- * Each list's counts follow the other list's choice and never their own. Counts that obeyed their
+ * Each list's counts follow the other lists' choices and never their own. Counts that obeyed their
  * own choice would show every other value as zero, and nobody could choose a second one; counts
  * that ignored the other choice would offer parts the grid is not showing. The server applies the
  * rule, and both choices ride on the request so it can.
@@ -2853,20 +2874,24 @@ function Facets({
   q,
   format,
   material,
+  tag,
   onSelectFormat,
   onSelectMaterial,
+  onSelectTag,
 }: {
   library: LibraryId
   folderId?: string
   q?: string
   format?: string
   material?: string
+  tag?: string
   onSelectFormat: (format: string | null) => void
   onSelectMaterial: (material: string | null) => void
+  onSelectTag: (tag: string | null) => void
 }) {
   const facets = useQuery({
-    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null],
-    queryFn: () => fetchFacets(library, folderId, q, format, material),
+    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null, tag ?? null],
+    queryFn: () => fetchFacets(library, folderId, q, format, material, tag),
   })
   if (facets.isError) {
     return (
@@ -2896,6 +2921,16 @@ function Facets({
         onSelect={onSelectMaterial}
         name={(value) => value}
         option={strings.facets.materialOption}
+      />
+      <FacetList
+        id="tag-facet"
+        title={strings.facets.tag}
+        // `?? []` for a server from before tags, which answers without them.
+        values={facets.data.tags ?? []}
+        selected={tag}
+        onSelect={onSelectTag}
+        name={(value) => value}
+        option={strings.facets.tagOption}
       />
     </>
   )
