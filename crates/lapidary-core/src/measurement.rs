@@ -39,8 +39,33 @@ impl std::str::FromStr for Provenance {
     }
 }
 
-/// What a mesh can tell us about itself. Every figure here is tessellated by
-/// construction — a mesh has no analytic entities to read.
+/// Where each figure in a [`MeshMeasurements`] came from.
+///
+/// Per figure, because the kinds do not agree within one part: a STEP part's triangle count
+/// is always tessellated while its volume is read off the B-rep. Ingest writes it to the
+/// `*_source` columns, so an exact figure is never stored as approximate or the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasurementProvenance {
+    pub volume: Provenance,
+    pub surface_area: Provenance,
+    pub bbox: Provenance,
+}
+
+impl MeasurementProvenance {
+    pub const TESSELLATED: Self = Self {
+        volume: Provenance::Tessellated,
+        surface_area: Provenance::Tessellated,
+        bbox: Provenance::Tessellated,
+    };
+    pub const ANALYTIC: Self = Self {
+        volume: Provenance::Analytic,
+        surface_area: Provenance::Analytic,
+        bbox: Provenance::Analytic,
+    };
+}
+
+/// The figures a kernel measured. A mesh's are all tessellated; a CAD kernel reads some
+/// off the B-rep instead, and [`MeasurementProvenance`] travels beside them saying which.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

@@ -261,6 +261,7 @@ async fn a_part_page_names_the_file_on_disk_and_the_directory_holding_it(pool: s
                 volume_mm3: Some(64_800.0),
                 is_watertight: true,
             },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
             tessellations: &[],

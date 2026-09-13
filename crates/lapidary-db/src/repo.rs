@@ -1,8 +1,8 @@
 use crate::DbError;
 use crate::folders::constraint_of;
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, LibraryId, MeshMeasurements, PartId, PartImageId,
-    PartSourceId, PartSummary, Provenance, RevisionId,
+    BlobHash, DerivativeKind, FolderId, LibraryId, MeasurementProvenance, MeshMeasurements, PartId,
+    PartImageId, PartSourceId, PartSummary, Provenance, RevisionId,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -369,6 +369,8 @@ pub struct IngestRequest<'a> {
     pub storage_path: Option<&'a str>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
+    /// Where each of `measurements`' figures came from; written to the `*_source` columns.
+    pub provenance: MeasurementProvenance,
     /// The rendered preview, or `None` when nothing rendered one — a library with
     /// `auto_thumbnail = false`, or a kernel that was not asked for a thumbnail.
     ///
@@ -999,7 +1001,7 @@ async fn insert_part_chain(
     let part = PartId::new();
     let revision = Uuid::now_v7();
     let m = req.measurements;
-    let tess = Provenance::Tessellated.as_str();
+    let p = req.provenance;
     // Converted — and, deliberately, checked — before the first INSERT below: a
     // triangle count that does not fit `revision.triangle_count`'s 32-bit column (a
     // mesh kernel bug, or corrupt input) must fail before any row is written, not
@@ -1035,13 +1037,13 @@ async fn insert_part_chain(
     .bind(m.volume_mm3)
     // No volume means no provenance for one — writing 'tessellated' beside a NULL would
     // claim we measured something we refused to measure.
-    .bind(m.volume_mm3.map(|_| tess))
+    .bind(m.volume_mm3.map(|_| p.volume.as_str()))
     .bind(m.surface_area_mm2)
-    .bind(tess)
+    .bind(p.surface_area.as_str())
     .bind(m.bbox_mm[0])
     .bind(m.bbox_mm[1])
     .bind(m.bbox_mm[2])
-    .bind(tess)
+    .bind(p.bbox.as_str())
     .bind(triangle_count)
     .bind(m.is_watertight)
     .execute(&mut **tx)

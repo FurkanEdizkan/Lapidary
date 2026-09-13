@@ -132,7 +132,7 @@ services:
       target: worker
       args:
         # Only the worker links the CAD kernel — the open path (api) never invokes it.
-        SERVER_FEATURES: mock-kernel
+        SERVER_FEATURES: mock-kernel,occt-kernel
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8081
@@ -161,6 +161,7 @@ services:
       # deploy/.env.example documents what each knob does and what it defaults to.
       LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-2}
       LAPIDARY_JOB_LEASE_SECS: ${LAPIDARY_JOB_LEASE_SECS:-}
+      LAPIDARY_KERNEL_TIMEOUT: ${LAPIDARY_KERNEL_TIMEOUT:-}
       LAPIDARY_JOB_POLL_SECS: ${LAPIDARY_JOB_POLL_SECS:-}
       LAPIDARY_WORKER_ID: ${LAPIDARY_WORKER_ID:-}
     depends_on:

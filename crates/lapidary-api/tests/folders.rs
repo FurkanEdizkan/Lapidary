@@ -134,6 +134,7 @@ async fn seed_part(
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
             },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             thumbnail_webp: None,
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",

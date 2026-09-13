@@ -1,5 +1,8 @@
 //! The handler, exercised the way the worker exercises it.
 
+use lapidary_cad::{
+    CadError, Kernel, KernelOutput, KernelParams, KernelVersion, MeasurementProvenance, MeshKernel,
+};
 use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
@@ -10,6 +13,7 @@ use lapidary_ingest::WorkerHandler;
 use lapidary_jobs::{HandlerError, JobHandler};
 use sqlx::PgPool;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -50,6 +54,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
+        cad: None,
     }
 }
 
@@ -190,6 +195,7 @@ async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let outcome = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -283,6 +289,7 @@ async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPo
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let outcome = handler
@@ -328,6 +335,7 @@ async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool:
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
     let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
 
@@ -366,6 +374,7 @@ async fn an_upload_of_bytes_a_scan_already_filed_reads_them_from_that_part_direc
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
     let scanned = handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -418,6 +427,7 @@ async fn an_upload_whose_only_filed_copy_was_edited_fails_permanently_and_indexe
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
     handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -467,6 +477,7 @@ async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let err = handler
@@ -493,6 +504,7 @@ async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let first = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -522,6 +534,7 @@ async fn a_truncated_stl_fails_permanently_so_it_is_never_retried(pool: PgPool) 
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let error = handler
@@ -552,11 +565,13 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
     let handler_b = WorkerHandler {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        cad: None,
     };
 
     let job_a = job_for(BRACKET);
@@ -677,6 +692,7 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             source_path: "notes.stl",
             blob: &blob,
             measurements: &measurements,
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
@@ -2393,4 +2409,104 @@ async fn a_file_that_does_not_parse_still_fails_and_creates_no_part(pool: PgPool
         "an unreadable file is still an error"
     );
     assert_eq!(parts_in(&pool, seeded()).await, 0);
+}
+
+// ---- STEP and IGES -------------------------------------------------------------------
+
+/// A CAD kernel with no OCCT behind it: it measures the bytes as an STL and reports every
+/// figure as read off a B-rep, which is what `OcctKernel` does for a solid. Enough to prove
+/// a STEP file reaches the CAD kernel and its provenance reaches the rows, without OCCT in
+/// every test run; `cargo xtask verify occt` drives the real one.
+struct FakeCad;
+
+#[async_trait::async_trait]
+impl Kernel for FakeCad {
+    fn version(&self, _params: &KernelParams) -> KernelVersion {
+        KernelVersion {
+            implementation: "occt".to_owned(),
+            version: "test".to_owned(),
+        }
+    }
+
+    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
+        let as_mesh = KernelParams {
+            format: "stl".to_owned(),
+            ..params.clone()
+        };
+        let mut output = MeshKernel.process(bytes, &as_mesh).await?;
+        output.provenance = MeasurementProvenance::ANALYTIC;
+        Ok(output)
+    }
+}
+
+const FIXTURE_PLATE: &str = "fixture-plate-lp-9000-00.step";
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_step_files_exact_figures_are_stored_as_exact(pool: PgPool) {
+    // Measurement must not lie in either direction. Before this, ingest wrote
+    // 'tessellated' beside every figure whatever the kernel said, so an exact CAD volume
+    // would have been labelled approximate forever.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+
+    let outcome = handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("a STEP file ingests through the CAD kernel");
+    assert_eq!(outcome, Outcome::Ingested);
+
+    type Sources = (Option<String>, Option<String>, Option<String>, String);
+    let (volume, area, bbox, storage_path): Sources = sqlx::query_as(
+        "SELECT r.volume_source, r.surface_area_source, r.bbox_source, f.storage_path \
+         FROM revision r JOIN file f ON f.revision_id = r.id AND f.role = 'source'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("one revision with its source file");
+    assert_eq!(
+        (volume.as_deref(), area.as_deref(), bbox.as_deref()),
+        (Some("analytic"), Some("analytic"), Some("analytic")),
+        "each figure keeps the provenance the kernel reported"
+    );
+
+    let model_dir = blob_root.path().join(
+        Path::new(&storage_path)
+            .parent()
+            .expect("a model directory"),
+    );
+    assert_eq!(
+        manifest_in(&model_dir).revisions[0]
+            .volume_source
+            .as_deref(),
+        Some("analytic"),
+        "and metadata.json, which re-adoption rebuilds the rows from, says the same"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_step_file_on_a_worker_without_a_cad_kernel_fails_and_says_why(pool: PgPool) {
+    // Not the mesh parser's "no parser for step": the file is fine, the build is not, and
+    // the message has to say which build reads it.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    match handler.handle(&job_for(FIXTURE_PLATE)).await {
+        Err(HandlerError::Permanent { message }) => assert!(
+            message.contains("STEP") && message.contains("occt-kernel"),
+            "names the format and the build that reads it: {message}"
+        ),
+        other => panic!("a worker that cannot read STEP must say so, got {other:?}"),
+    }
+    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(parts, 0, "and adds no part");
 }

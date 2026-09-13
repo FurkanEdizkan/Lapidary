@@ -1,5 +1,6 @@
 use crate::cluster::Tessellation;
-use lapidary_core::{DerivativeKind, MeshMeasurements, Provenance};
+pub use lapidary_core::MeasurementProvenance;
+use lapidary_core::{DerivativeKind, MeshMeasurements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -87,32 +88,6 @@ pub enum Entity {
         center: [f64; 3],
         normal: [f64; 3],
     },
-}
-
-/// Where each figure in [`KernelOutput::measurements`] came from.
-///
-/// Per figure, because the kinds do not agree within one part: a STEP part's triangle count
-/// is always tessellated while its volume is read off the B-rep. Ingest does not write this
-/// yet — every kernel that reaches ingest today is the mesh kernel, whose figures are all
-/// tessellated — and it becomes the `*_source` columns when STEP ingest routes here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeasurementProvenance {
-    pub volume: Provenance,
-    pub surface_area: Provenance,
-    pub bbox: Provenance,
-}
-
-impl MeasurementProvenance {
-    pub const TESSELLATED: Self = Self {
-        volume: Provenance::Tessellated,
-        surface_area: Provenance::Tessellated,
-        bbox: Provenance::Tessellated,
-    };
-    pub const ANALYTIC: Self = Self {
-        volume: Provenance::Analytic,
-        surface_area: Provenance::Analytic,
-        bbox: Provenance::Analytic,
-    };
 }
 
 /// An assembly's tree as the CAD file describes it. `None` on [`KernelOutput::structure`]
@@ -221,7 +196,7 @@ pub enum CadError {
     Unrenderable { detail: String },
 
     #[error(
-        "This build has no parser for the {format} format. The mesh kernel reads STL and OBJ; 3MF and STEP are not yet ingested."
+        "This build has no parser for the {format} format. The mesh kernel reads STL, OBJ and 3MF, and STEP and IGES go to the CAD kernel; export to one of those and retry."
     )]
     UnsupportedFormat { format: String },
 

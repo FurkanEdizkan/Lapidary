@@ -198,6 +198,7 @@ async fn the_count_belongs_to_the_library_that_holds_the_parts(pool: sqlx::PgPoo
                 volume_mm3: Some(106_830.0),
                 is_watertight: true,
             },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
             tessellations: &[],
