@@ -1,5 +1,5 @@
 use crate::cluster::Tessellation;
-use lapidary_core::{DerivativeKind, MeshMeasurements};
+use lapidary_core::{DerivativeKind, MeshMeasurements, Provenance};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -35,13 +35,106 @@ pub struct KernelParams {
 
 /// Analytic B-rep entities — axes, radii, normals — that measurement snaps to.
 ///
-/// Deliberately a type with no variants rather than the `Vec<String>` it was. Phase 2's
-/// STEP ingest fills it; until then the only thing that can be said about a mesh is that
-/// it has none, and that emptiness is load-bearing: it is what stops tessellated numbers
-/// being presented as exact. Measurement cannot snap to `"CYLINDRICAL_SURFACE:22.000"`
-/// without parsing it back out of a string, which is why the strings are gone.
+/// Typed, never the `Vec<String>` it once was: measurement cannot snap to
+/// `"CYLINDRICAL_SURFACE:22.000"` without parsing it back out of a string. A mesh has none,
+/// and that emptiness is load-bearing — it is what stops tessellated numbers being presented
+/// as exact. `OcctKernel` fills it from `occt-bridge`'s `entities.json`.
+///
+/// Each entity is in its prototype's own coordinates, once per prototype rather than once per
+/// placed instance: `KernelOutput::structure` holds the transforms that place it. `face` and
+/// `edge` are 1-based indices into the prototype's faces and edges in OCCT's map order.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Entity {}
+pub enum Entity {
+    Plane {
+        prototype: String,
+        face: u32,
+        origin: [f64; 3],
+        normal: [f64; 3],
+    },
+    Cylinder {
+        prototype: String,
+        face: u32,
+        radius: f64,
+        origin: [f64; 3],
+        axis: [f64; 3],
+    },
+    Cone {
+        prototype: String,
+        face: u32,
+        ref_radius: f64,
+        semi_angle_rad: f64,
+        origin: [f64; 3],
+        axis: [f64; 3],
+    },
+    Sphere {
+        prototype: String,
+        face: u32,
+        radius: f64,
+        center: [f64; 3],
+    },
+    Torus {
+        prototype: String,
+        face: u32,
+        major_radius: f64,
+        minor_radius: f64,
+        origin: [f64; 3],
+        axis: [f64; 3],
+    },
+    Circle {
+        prototype: String,
+        edge: u32,
+        radius: f64,
+        center: [f64; 3],
+        normal: [f64; 3],
+    },
+}
+
+/// Where each figure in [`KernelOutput::measurements`] came from.
+///
+/// Per figure, because the kinds do not agree within one part: a STEP part's triangle count
+/// is always tessellated while its volume is read off the B-rep. Ingest does not write this
+/// yet — every kernel that reaches ingest today is the mesh kernel, whose figures are all
+/// tessellated — and it becomes the `*_source` columns when STEP ingest routes here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasurementProvenance {
+    pub volume: Provenance,
+    pub surface_area: Provenance,
+    pub bbox: Provenance,
+}
+
+impl MeasurementProvenance {
+    pub const TESSELLATED: Self = Self {
+        volume: Provenance::Tessellated,
+        surface_area: Provenance::Tessellated,
+        bbox: Provenance::Tessellated,
+    };
+    pub const ANALYTIC: Self = Self {
+        volume: Provenance::Analytic,
+        surface_area: Provenance::Analytic,
+        bbox: Provenance::Analytic,
+    };
+}
+
+/// An assembly's tree as the CAD file describes it. `None` on [`KernelOutput::structure`]
+/// for a mesh, which has no tree to describe.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct AssemblyTree {
+    pub roots: Vec<AssemblyNode>,
+    /// Leaves: placed parts, counting every instance.
+    pub parts: u32,
+    /// Distinct part definitions the leaves are instances of.
+    pub prototypes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct AssemblyNode {
+    pub name: String,
+    pub prototype: String,
+    /// Row-major 4×4, relative to the parent node.
+    pub transform: [f64; 16],
+    #[serde(default)]
+    pub children: Vec<AssemblyNode>,
+}
 
 /// Everything one kernel call produces for one file.
 ///
@@ -64,6 +157,10 @@ pub struct KernelOutput {
     /// one rung. Consumers search by `.lod` now.
     pub tessellations: Vec<Tessellation>,
     pub entities: Vec<Entity>,
+    /// Where each figure in `measurements` came from.
+    pub provenance: MeasurementProvenance,
+    /// The assembly tree, for a CAD file that has one.
+    pub structure: Option<AssemblyTree>,
     /// Derivatives that were asked for and could not be made, with the reason.
     ///
     /// **A derivative is not the part.** The mesh parsed — measurements are above and are
@@ -132,6 +229,30 @@ pub enum CadError {
         "Refused this {format} — {detail}. The file may be corrupt or deliberately crafted; re-export it from a trusted tool and retry."
     )]
     ArchiveRefused { format: String, detail: String },
+
+    #[error(
+        "Could not read this {format} file — {detail}. Re-export it from your CAD tool (STEP as AP214 or AP242) and retry; the same file will be refused the same way every time."
+    )]
+    CadRefused { format: String, detail: String },
+
+    #[error(
+        "The CAD kernel stopped while reading this {format} file ({status}): {stderr_tail}. This is a kernel crash, not a verdict on the file; it is retried, and a file that crashes it every time should be reported with the file attached."
+    )]
+    KernelCrashed {
+        format: String,
+        status: String,
+        stderr_tail: String,
+    },
+
+    #[error(
+        "The CAD kernel could not be started — {detail}. This worker image may be missing occt-bridge or its libraries; rebuild the worker target of deploy/Containerfile."
+    )]
+    KernelUnavailable { detail: String },
+
+    #[error(
+        "The CAD kernel finished but its {file} could not be read — {detail}. The bridge and this worker disagree about the output format; rebuild both from the same commit."
+    )]
+    KernelOutputUnreadable { file: String, detail: String },
 }
 
 /// One shipped implementation. The trait exists so tests have a double.

@@ -9,18 +9,25 @@ mod mesh_kernel;
 #[cfg(feature = "mock-kernel")]
 mod mock;
 mod obj;
+#[cfg(feature = "occt-kernel")]
+mod occt;
 mod raster;
 mod stl;
 mod tmf;
 
 pub use cluster::{Lod, Tessellation, cluster};
 pub use glb::GLB_VERSION;
-pub use kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, Unproduced};
+pub use kernel::{
+    AssemblyNode, AssemblyTree, CadError, Entity, Kernel, KernelOutput, KernelParams,
+    KernelVersion, MeasurementProvenance, Unproduced,
+};
 pub use measure::measure;
 pub use mesh_kernel::MeshKernel;
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
 pub use obj::parse_obj;
+#[cfg(feature = "occt-kernel")]
+pub use occt::OcctKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
 pub use stl::{Mesh, parse_stl};
 pub use tmf::parse_3mf;

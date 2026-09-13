@@ -4,10 +4,15 @@ The C++ sidecar wrapping Open CASCADE (OCCT): STEP and IGES reading, tessellatio
 B-rep entities for measurement, and format conversion. A separate process rather than a
 linked library, so an OCCT crash takes down one job instead of the worker.
 
-**Status: Phase 0b, step 2.2.** Four commands — `version`, `selftest`, `convert` and
-`generate-fixtures`. `OcctKernel`, the Rust side that runs `convert` and turns its output into
-derivatives, is next; the plan is item 2 of `~/.claude/plans`, and the shape is
-`docs/ARCHITECTURE.md`'s kernel section.
+**Status: Phase 0b, step 2.3.** Four commands — `version`, `selftest`, `convert` and
+`generate-fixtures` — and a Rust driver for them: `OcctKernel` in `crates/lapidary-cad`, behind
+the `occt-kernel` feature. It runs `convert` in a scratch directory with a timeout, sends
+`mesh.stl` through the mesh kernel for LOD rungs and the thumbnail, and replaces the mesh's
+volume, surface area and bounding box with the B-rep's, marked analytic. Its tests drive a fake
+bridge — a shell script — so they run everywhere; step 2.4 runs it against this bridge and real
+OCCT and measures the Phase 0 exit. Ingest does not call it yet: routing STEP and IGES files to
+it is Phase 2. The plan is item 2 of `~/.claude/plans`, and the shape is `docs/ARCHITECTURE.md`'s
+kernel section.
 
 ## `convert`
 
