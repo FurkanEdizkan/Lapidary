@@ -5,6 +5,7 @@ import type {
   BatchStatus,
   BlobHash,
   ChunkAccepted,
+  Entity,
   Facets,
   FetchImageRequest,
   NewSource,
@@ -967,6 +968,18 @@ export async function fetchStructure(hash: BlobHash): Promise<AssemblyTree> {
     throw new Error(`assembly tree returned ${response.status}`)
   }
   return (await response.json()) as AssemblyTree
+}
+
+/**
+ * `GET /api/blob/{hash}` for a CAD part's entities: the analytic surfaces and edges measurement
+ * snaps to, each in its prototype's own coordinates. `placeEntities` in `measure.ts` places them.
+ */
+export async function fetchEntities(hash: BlobHash): Promise<Entity[]> {
+  const response = await fetch(blobUrl(hash))
+  if (!response.ok) {
+    throw new Error(`entities returned ${response.status}`)
+  }
+  return (await response.json()) as Entity[]
 }
 
 /**

@@ -3,6 +3,7 @@
 mod approximate;
 mod assembly;
 mod derivative;
+mod entity;
 mod error;
 mod ids;
 mod job;
@@ -14,6 +15,7 @@ pub mod slug;
 pub use approximate::Approximate;
 pub use assembly::{AssemblyNode, AssemblyTree};
 pub use derivative::DerivativeKind;
+pub use entity::Entity;
 pub use error::CoreError;
 pub use ids::{
     BatchId, BlobHash, FolderId, JobId, LibraryId, PartId, PartImageId, PartSourceId, RevisionId,
