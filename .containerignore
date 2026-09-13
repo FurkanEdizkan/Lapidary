@@ -4,7 +4,9 @@ web/dist/
 .git/
 docs/
 design/
-fixtures/
+# fixtures/ is sent, not ignored: the occt-test stage of deploy/Containerfile compiles
+# lapidary-cad's tests, which include fixture files, and converts fixtures/step. A few
+# hundred kilobytes.
 # The sample part library is both a runtime bind mount (deploy/compose.yaml mounts it at
 # /ingest) and, since the seeding of a first run, a COPY — deploy/Containerfile bakes the
 # meshes in at /usr/share/lapidary/example-parts. So the meshes must reach the build

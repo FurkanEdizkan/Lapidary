@@ -19,6 +19,10 @@
 //!   string literal *contents*, which fmt, clippy and every test are blind to.
 //! - [`Tier::Task`] — the whole bar, paid once per task rather than once per commit.
 //! - [`Tier::Slice`] — the same, with the change-gated gates forced on, for a merge.
+//! - [`Tier::Occt`] — not a tier of the bar but the CAD kernel's own check: builds the
+//!   `occt-test` stage of `deploy/Containerfile`, which runs `OcctKernel` against the real
+//!   bridge and OCCT and times the Phase 0 exit. Minutes the first time, since it builds
+//!   OCCT, so it is run when the kernel or the bridge changes, not per task.
 //!
 //! **Nothing is weakened.** No gate is dropped from `Tier::Task`; two are skipped when the
 //! diff proves they cannot have anything to say. `cargo deny check` answers a question
@@ -45,6 +49,8 @@ pub enum Tier {
     Task,
     /// Before a merge. The whole bar, nothing gated.
     Slice,
+    /// The CAD kernel against real OCCT, inside the `occt-test` container stage.
+    Occt,
 }
 
 impl Tier {
@@ -55,9 +61,11 @@ impl Tier {
             None | Some("task") => Ok(Tier::Task),
             Some("fast") => Ok(Tier::Fast),
             Some("slice") => Ok(Tier::Slice),
+            Some("occt") => Ok(Tier::Occt),
             Some(other) => Err(format!(
                 "Unknown verify tier '{other}'. Use `fast` (every commit), `task` (the \
-                 whole bar, the default) or `slice` (the whole bar with nothing gated)."
+                 whole bar, the default), `slice` (the whole bar with nothing gated) or \
+                 `occt` (the CAD kernel against real OCCT, in a container)."
             )),
         }
     }
@@ -123,6 +131,23 @@ fn touches_web(path: &str) -> bool {
 /// which compiles and links every test target — placing it *after* `cargo test` makes both
 /// of its invocations cache hits instead of a third build.
 pub fn steps(tier: Tier, changed: Option<&[String]>) -> Vec<Step> {
+    if tier == Tier::Occt {
+        // `docker`, which Podman users alias; the stage is the whole check, and its own
+        // `RUN cargo test` is what fails.
+        return vec![Step::Command {
+            name: "occt-test stage",
+            program: "docker",
+            args: &[
+                "build",
+                "--progress=plain",
+                "-f",
+                "deploy/Containerfile",
+                "--target",
+                "occt-test",
+                ".",
+            ],
+        }];
+    }
     let mut steps = vec![
         Step::Command {
             name: "fmt",
@@ -364,5 +389,20 @@ mod tests {
     fn check_commit_msg_is_not_one_of_the_steps() {
         let got = names(&steps(Tier::Slice, None));
         assert!(!got.iter().any(|n| n.contains("commit")));
+    }
+
+    #[test]
+    fn the_occt_tier_builds_the_occt_test_stage_and_nothing_else() {
+        assert_eq!(Tier::parse(Some("occt")), Ok(Tier::Occt));
+        let got = steps(Tier::Occt, None);
+        assert_eq!(names(&got), vec!["occt-test stage"]);
+        match &got[0] {
+            Step::Command { args, .. } => assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--target", "occt-test"]),
+                "builds the occt-test stage: {args:?}"
+            ),
+            other => panic!("expected a command, got {other:?}"),
+        }
     }
 }

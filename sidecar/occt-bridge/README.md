@@ -4,15 +4,13 @@ The C++ sidecar wrapping Open CASCADE (OCCT): STEP and IGES reading, tessellatio
 B-rep entities for measurement, and format conversion. A separate process rather than a
 linked library, so an OCCT crash takes down one job instead of the worker.
 
-**Status: Phase 0b, step 2.3.** Four commands — `version`, `selftest`, `convert` and
-`generate-fixtures` — and a Rust driver for them: `OcctKernel` in `crates/lapidary-cad`, behind
-the `occt-kernel` feature. It runs `convert` in a scratch directory with a timeout, sends
-`mesh.stl` through the mesh kernel for LOD rungs and the thumbnail, and replaces the mesh's
-volume, surface area and bounding box with the B-rep's, marked analytic. Its tests drive a fake
-bridge — a shell script — so they run everywhere; step 2.4 runs it against this bridge and real
-OCCT and measures the Phase 0 exit. Ingest does not call it yet: routing STEP and IGES files to
-it is Phase 2. The plan is item 2 of `~/.claude/plans`, and the shape is `docs/ARCHITECTURE.md`'s
-kernel section.
+**Status: Phase 0b, step 2.4.** Four commands — `version`, `selftest`, `convert` and
+`generate-fixtures` — driven from Rust by `OcctKernel` in `crates/lapidary-cad`, behind the
+`occt-kernel` feature. Its unit tests drive a fake bridge, a shell script, so they run
+everywhere. `cargo xtask verify occt` builds the `occt-test` stage of `deploy/Containerfile`,
+which runs `crates/lapidary-cad/tests/occt_bridge.rs` against this bridge and real OCCT and
+times the Phase 0 exit. Ingest does not call the kernel yet: routing STEP and IGES files to it is
+Phase 2.
 
 ## `convert`
 
@@ -129,9 +127,10 @@ Inside the `occt` stage image, deflection 0.1 mm, process start included:
 | `cylinder-d22-inch-units-lp-9011-00.step` | 1 | 1 | 128 | 20 ms | the same volume to ~1e-12, radius 11.0000000000068 — read back in mm |
 | `angle-bracket-60x60x40-lp-9004-00.igs` | 1 | **0** | 28 | 20 ms | box 60 × 40 × 60; no volume, see below |
 
-That 91 ms is the bridge alone, not the Phase 0 exit: the exit converts to glTF, tree and
-entities, and the glTF half is written by the worker from `mesh.stl` (step 2.4 measures it
-end to end).
+That 91 ms is the bridge alone. **The Phase 0 exit, end to end through `OcctKernel` — bridge,
+mesh pipeline, GLB rung and thumbnail — measured 111 ms** for the 200-part assembly, in a release
+build inside the `occt-test` stage (`cargo xtask verify occt`); `docs/ROADMAP.md` records it, and
+what that number does not say about real files.
 
 **IGES arrives as faces, not solids.** OCCT's IGES writer stores trimmed surfaces by default,
 and most CAD tools' IGES files are the same shape, so `volume_mm3` is `null` rather than a

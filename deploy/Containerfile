@@ -92,6 +92,29 @@ RUN cmake -S /bridge -B /bridge/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_
  && /bridge/build/occt-bridge version \
  && /bridge/build/occt-bridge selftest /tmp
 
+# ---------------------------------------------------------------------------------------
+# `cargo xtask verify occt` — OcctKernel against this bridge and real OCCT, and the Phase 0
+# exit: the 200-part fixture converted to glTF, tree and entities in under 30 s.
+#
+# A stage rather than a script, so the tests run beside the same libraries and the same
+# `LD_LIBRARY_PATH` the worker target carries. Release, because the exit is a timing and the
+# worker runs release; one test thread, so the timing is not shared with the other tests.
+# Nothing copies from this stage, and `check-deploy` would fail the `api` target if anything
+# it is built from did. It sits above the runtime stages so `worker` stays the file's last.
+FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS occt-test
+WORKDIR /src
+COPY --from=occt /opt/occt/lib/ /opt/occt/lib/
+COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
+ENV LD_LIBRARY_PATH=/opt/occt/lib
+ENV LAPIDARY_OCCT_BRIDGE=/usr/local/bin/occt-bridge
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+COPY bin ./bin
+COPY xtask ./xtask
+COPY fixtures ./fixtures
+RUN cargo test --locked --release -p lapidary-cad --features occt-kernel --test occt_bridge \
+      -- --ignored --nocapture --test-threads 1
+
 FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
