@@ -79,7 +79,7 @@
 //! candidates the walk finds.
 
 use crate::AppState;
-use crate::handler::WorkerHandler;
+use crate::handler::{CAD_FORMATS, WorkerHandler};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -160,12 +160,17 @@ impl WorkerHandler {
 /// Not a byte sniff: OBJ is plain text with no magic number, so sniffing reduces to
 /// guessing from the first non-comment line. The extension is also what an operator sees
 /// in the directory, so a file that is skipped is skipped for a reason they can see.
-fn is_mesh_candidate(path: &FsPath) -> bool {
+fn is_model_candidate(path: &FsPath) -> bool {
     path.is_file()
         && path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| MESH_EXTENSIONS.iter().any(|k| ext.eq_ignore_ascii_case(k)))
+            .is_some_and(|ext| {
+                MESH_EXTENSIONS
+                    .iter()
+                    .chain(&CAD_FORMATS)
+                    .any(|k| ext.eq_ignore_ascii_case(k))
+            })
 }
 
 pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
@@ -230,7 +235,7 @@ fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
             let path = entry.path();
             // `DirEntry::file_type` does not traverse a symlink, so this is false for a
             // symlinked directory and following one is impossible — which is what makes
-            // cycles unreachable. A symlinked *file* still reaches `is_mesh_candidate`
+            // cycles unreachable. A symlinked *file* still reaches `is_model_candidate`
             // below, which uses `Path::is_file` and does follow: an operator who symlinks
             // an STL into their library meant it.
             match entry.file_type() {
@@ -245,7 +250,7 @@ fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
                     }
                     queue.push((path, depth + 1));
                 }
-                Ok(_) if is_mesh_candidate(&path) => {
+                Ok(_) if is_model_candidate(&path) => {
                     if let Some(relative) = relative_to(root, &path) {
                         found.push(relative);
                     }
@@ -411,10 +416,35 @@ mod tests {
         let mut found: Vec<String> = std::fs::read_dir(dir.path())
             .expect("read dir")
             .flatten()
-            .filter(|e| is_mesh_candidate(&e.path()))
+            .filter(|e| is_model_candidate(&e.path()))
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         found.sort();
         assert_eq!(found, vec!["bracket.stl", "carrier.3MF", "carrier.3mf"]);
+    }
+
+    #[test]
+    fn step_and_iges_are_candidates_in_both_spellings() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for name in [
+            "plate.step",
+            "plate.STP",
+            "bracket.iges",
+            "bracket.igs",
+            "plate.step.bak",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").expect("write");
+        }
+        let mut found: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .flatten()
+            .filter(|e| is_model_candidate(&e.path()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec!["bracket.iges", "bracket.igs", "plate.STP", "plate.step"]
+        );
     }
 }

@@ -18,14 +18,17 @@ default = []
 # it into two feature names would mean touching deploy/compose.yaml, deploy/Containerfile
 # and xtask/src/deploy.rs's tests for no behavioural gain. `deploy/Containerfile` takes
 # the value as a build arg (SERVER_FEATURES), empty by default, so `api` builds without
-# linking lapidary-cad, lapidary-ingest, or anything reachable through either. The real
-# OCCT kernel is Phase 0b; expect it gated the same way.
+# linking lapidary-cad, lapidary-ingest, or anything reachable through either.
 mock-kernel = [
     "dep:lapidary-cad",
     "dep:lapidary-ingest",
     "dep:lapidary-jobs",
     "lapidary-cad/mock-kernel",
 ]
+# The real CAD kernel: STEP and IGES go to occt-bridge, which only the `worker` target of
+# deploy/Containerfile installs. Implies `mock-kernel`, the feature that compiles a worker
+# in at all, so a build with this one alone is never a kernel with no worker to drive it.
+occt-kernel = ["mock-kernel", "lapidary-cad/occt-kernel"]
 
 [dependencies]
 lapidary-api.workspace = true

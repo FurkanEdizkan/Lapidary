@@ -103,11 +103,11 @@
 //! When genuinely unsure, this module chooses `Transient`: a retried permanent failure
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
-use lapidary_cad::{Kernel, KernelParams, MeshKernel};
+use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::{disambiguate, slugify};
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, Outcome, Provenance, source_format,
+    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, Outcome, source_format,
 };
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, StoredBlobRow,
@@ -118,6 +118,7 @@ use lapidary_storage::{
     Compression, DerivativeStore, SourceReader, SourceStore, StorageError, WorkerRole,
 };
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::Arc;
 
 pub struct WorkerHandler {
     pub db: PgPool,
@@ -128,6 +129,11 @@ pub struct WorkerHandler {
     /// Root of the blob store. This crate is the one place in the workspace allowed to
     /// construct a `SourceStore` over it — see `lib.rs`'s module doc.
     pub blob_root: PathBuf,
+    /// Where STEP and IGES files go. `None` on a build or a test with no CAD kernel, where
+    /// such a file fails saying so instead of reaching the mesh parser. A trait object, not
+    /// `OcctKernel`, so this crate needs no feature flag and a test can hand it a kernel
+    /// with no OCCT behind it.
+    pub cad: Option<Arc<dyn Kernel>>,
 }
 
 impl JobHandler for WorkerHandler {
@@ -163,7 +169,29 @@ impl JobHandler for WorkerHandler {
     }
 }
 
+/// The formats that go to the CAD kernel, as `source_format` spells them. The scan walk
+/// accepts these beside the mesh extensions, so the two cannot disagree.
+pub(crate) const CAD_FORMATS: [&str; 4] = ["step", "stp", "iges", "igs"];
+
 impl WorkerHandler {
+    /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
+    /// one they fail here: the mesh parser's "no parser for step" would blame a file for
+    /// what is the build's gap. Everything else goes to the mesh kernel, which answers an
+    /// unknown format itself.
+    pub(crate) fn kernel_for(&self, format: &str) -> Result<&dyn Kernel, HandlerError> {
+        if !CAD_FORMATS.contains(&format) {
+            return Ok(&MeshKernel);
+        }
+        self.cad.as_deref().ok_or_else(|| HandlerError::Permanent {
+            message: format!(
+                "This worker was built without a CAD kernel, so it cannot read {} files. \
+                 Rebuild the worker with `--features occt-kernel`; deploy/compose.yaml does \
+                 this for the worker service.",
+                format.to_ascii_uppercase()
+            ),
+        })
+    }
+
     /// One file on the ingest mount, start to finish. See this module's doc for the
     /// ordering, why each step is where it is, and the full reasoning behind the
     /// library-and-path short-circuit.
@@ -349,7 +377,6 @@ impl WorkerHandler {
         bytes: Vec<u8>,
         hash: BlobHash,
     ) -> Result<Outcome, HandlerError> {
-        let kernel = MeshKernel;
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
         // roles, which is what lets `lapidary-api` serve a rung without ever being able
@@ -397,6 +424,7 @@ impl WorkerHandler {
             format: source_format(source_path),
             produce,
         };
+        let kernel = self.kernel_for(&params.format)?;
         let version = kernel.version(&params);
         let kernel_version = format!("{} {}", version.implementation, version.version);
 
@@ -404,14 +432,12 @@ impl WorkerHandler {
         // needs no cleanup. This runs even when the bytes are already in the blob store,
         // because the new part needs its own measurements and its own thumbnail; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
-        // immutable, so this error is the final answer about them.
-        let output =
-            kernel
-                .process(&bytes, &params)
-                .await
-                .map_err(|e| HandlerError::Permanent {
-                    message: e.to_string(),
-                })?;
+        // immutable, so a refusal is the final answer about them; a kernel that crashed or
+        // ran out of time says nothing about the file and is retried (`classify_cad`).
+        let output = kernel
+            .process(&bytes, &params)
+            .await
+            .map_err(classify_cad)?;
 
         // 4a. What could not be made, said out loud.
         //
@@ -523,6 +549,7 @@ impl WorkerHandler {
             storage_path: Some(&storage_path),
             blob: &blob,
             measurements: &output.measurements,
+            provenance: output.provenance,
             thumbnail_webp: output.thumbnail_webp.as_deref(),
             kernel_version: &kernel_version,
             format: &params.format,
@@ -576,7 +603,6 @@ impl WorkerHandler {
         match PgParts(self.db.clone()).latest_revision(part).await {
             Ok(Some(revision)) => {
                 let m = &output.measurements;
-                let tessellated = Provenance::Tessellated.as_str().to_owned();
                 let manifest = ModelManifest {
                     schema: ModelManifest::SCHEMA,
                     part: ManifestPart {
@@ -599,7 +625,9 @@ impl WorkerHandler {
                         // No volume means no provenance for one, exactly as
                         // `insert_part_chain` writes it: claiming a measurement beside a
                         // NULL would say we measured something we refused to measure.
-                        volume_source: m.volume_mm3.map(|_| tessellated),
+                        volume_source: m
+                            .volume_mm3
+                            .map(|_| output.provenance.volume.as_str().to_owned()),
                         bbox_mm: Some(m.bbox_mm),
                         triangle_count: i32::try_from(m.triangle_count).ok(),
                         is_watertight: Some(m.is_watertight),
@@ -784,7 +812,7 @@ pub(crate) fn reap(derivatives: &DerivativeStore, hashes: &[BlobHash]) {
 /// The part name shown in the grid. Slice 1 has no part-numbering convention to draw on,
 /// so the file's stem (its name without the extension) is the whole story; falls back to
 /// the full file name on the pathological case where a candidate file (already proven by
-/// `is_mesh_candidate` to have one of the mesh extensions) somehow has no stem.
+/// `is_model_candidate` to have one of the mesh extensions) somehow has no stem.
 pub(crate) fn part_name(file_name: &str) -> &str {
     FsPath::new(file_name)
         .file_stem()
@@ -810,6 +838,19 @@ pub(crate) fn classify_db(error: DbError) -> HandlerError {
             HandlerError::Permanent { message }
         }
         _ => HandlerError::Transient { message },
+    }
+}
+
+/// A kernel error, sorted the way `classify_db` sorts a database one. A crash, a timeout
+/// and a kernel that would not start are the worker's trouble, not the file's, so they are
+/// retried. Every other `CadError` is the file's own verdict, the same on every attempt.
+pub(crate) fn classify_cad(error: CadError) -> HandlerError {
+    let message = error.to_string();
+    match error {
+        CadError::KernelCrashed { .. }
+        | CadError::Timeout { .. }
+        | CadError::KernelUnavailable { .. } => HandlerError::Transient { message },
+        _ => HandlerError::Permanent { message },
     }
 }
 
@@ -846,6 +887,42 @@ mod tests {
     /// this ever reads `Transient` again, the queue will retry a write that is refused
     /// deterministically -- three attempts, three identical refusals, and a failure
     /// recorded four backoffs after it was already known.
+    /// A crash, a timeout and a bridge that would not start say nothing about the file,
+    /// so they are retried. A refusal is the file's own verdict, and retrying it three
+    /// times only delays the same answer.
+    #[test]
+    fn a_kernel_crash_is_retried_not_recorded_as_a_refusal() {
+        let retried = [
+            CadError::KernelCrashed {
+                format: "step".to_owned(),
+                status: "signal 11".to_owned(),
+                stderr_tail: String::new(),
+            },
+            CadError::Timeout {
+                path: "fixture-plate-lp-9000-00.step".to_owned(),
+                seconds: 45,
+            },
+            CadError::KernelUnavailable {
+                detail: "No such file or directory".to_owned(),
+            },
+        ];
+        for error in retried {
+            let text = error.to_string();
+            match classify_cad(error) {
+                HandlerError::Transient { message } => assert_eq!(message, text),
+                other => panic!("a kernel failure must be retried, got {other:?}"),
+            }
+        }
+        let refusal = CadError::CadRefused {
+            format: "step".to_owned(),
+            detail: "no shapes in the file".to_owned(),
+        };
+        assert!(matches!(
+            classify_cad(refusal),
+            HandlerError::Permanent { .. }
+        ));
+    }
+
     #[test]
     fn a_refused_derivative_shape_is_permanent_not_a_retry() {
         let revision = lapidary_core::RevisionId::new();

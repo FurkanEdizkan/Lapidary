@@ -50,6 +50,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
+        cad: None,
     }
 }
 

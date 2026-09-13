@@ -78,6 +78,7 @@ async fn seed_part(
             source_path: name,
             blob: &blob,
             measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             thumbnail_webp: thumbnail,
             kernel_version: "mesh stl-1+cpu-1",
             format: "stl",

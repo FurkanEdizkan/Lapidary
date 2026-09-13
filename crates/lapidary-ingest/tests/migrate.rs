@@ -37,6 +37,7 @@ fn handler_over(pool: &PgPool, store: &Path) -> WorkerHandler {
         // source file would find the blob tree there and nothing it could use.
         ingest_dir: store.to_path_buf(),
         blob_root: store.to_path_buf(),
+        cad: None,
     }
 }
 
@@ -127,6 +128,7 @@ async fn seed_cas_part(
             storage_path: None,
             blob: &blob,
             measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             thumbnail_webp: None,
             kernel_version: "lapidary-mesh 0.1.0",
             format: "stl",
@@ -1212,6 +1214,7 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
             storage_path: Some("libraries/terrain packs/Cliffs/cliff/cliff.stl"),
             blob: &blob,
             measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             thumbnail_webp: None,
             kernel_version: "lapidary-mesh 0.1.0",
             format: "stl",

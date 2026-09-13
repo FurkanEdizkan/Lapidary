@@ -29,8 +29,8 @@
 //! `upsert_derivative`'s two shape guards is `Permanent` too — `classify_db` decides
 //! that, per variant, so a new call site cannot get it wrong by picking the mapper.
 
-use crate::handler::{WorkerHandler, classify_db, reap};
-use lapidary_cad::{Kernel, KernelParams, MeshKernel};
+use crate::handler::{WorkerHandler, classify_cad, classify_db, reap};
+use lapidary_cad::KernelParams;
 use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
 use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgParts, StoredBlobRow};
 use lapidary_jobs::HandlerError;
@@ -86,21 +86,18 @@ impl WorkerHandler {
             message: e.to_string(),
         })?;
 
-        let kernel = MeshKernel;
         let params = KernelParams {
             linear_deflection_mm: None,
             format,
             produce: vec![want],
         };
+        let kernel = self.kernel_for(&params.format)?;
         let version = kernel.version(&params);
         let kernel_version = format!("{} {}", version.implementation, version.version);
-        let output =
-            kernel
-                .process(&bytes, &params)
-                .await
-                .map_err(|e| HandlerError::Permanent {
-                    message: e.to_string(),
-                })?;
+        let output = kernel
+            .process(&bytes, &params)
+            .await
+            .map_err(classify_cad)?;
 
         let ingest = PgIngest(self.db.clone());
         // `want` is what gets written, never a kind read back off the output: the kernel

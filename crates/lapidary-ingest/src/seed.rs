@@ -91,6 +91,7 @@ pub async fn seed_examples(db: PgPool, blob_root: &Path, examples: &Path) -> u32
         db,
         ingest_dir: examples.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
+        cad: None,
     };
     let mut added = 0;
     for file in &files {
