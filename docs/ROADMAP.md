@@ -358,6 +358,40 @@ DevTools protocol on SwiftShader, reading `info.render.triangles` from the page'
   restart rebuilds them, which the stale-rung sweep does.
 - **A mesh file is one part,** and has nothing to hide.
 
+**Addendum, 2026-09-14: the viewer warmed with no hover.** For the point above that a press with no
+hover first is still cold, the grid now also warms the viewer once the browser is idle
+(`warmViewerWhenIdle`). A part's own page starts the warm-up as it mounts, alongside its detail
+fetch. Timed over the six example parts, medians of 18 opens each:
+
+| | Before (`39ff56e`) | After (`cabddbc`) |
+|---|---|---|
+| A part's page from a link, navigation start to first frame, SwiftShader | 1,230 ms | 1,222 ms |
+| The same on the GPU | 1,176 ms | 802 ms |
+| The grid, pressed with no dwell, a session's first open, SwiftShader | 564 ms, 2 shaders linked in it | 583 ms, none |
+| The same on the GPU | 335 ms, 2 shaders linked in it | 339 ms, none |
+
+- **A link got faster on the GPU only**, by 374 ms at the median. SwiftShader did not move; why was
+  not measured.
+- **A press with no hover no longer compiles during the open, and is no faster for it.** Taking the
+  two links out saved nothing measurable on either renderer, so a session's first open spends its
+  time somewhere else, which was not measured. It stays over 400 ms on SwiftShader and under it on
+  the GPU.
+- **A link is over 400 ms on both.** That time runs from navigation start, so it includes loading
+  the page and fetching the part. It is not the grid's open, and not the target's.
+- **A grid visitor who never opens a part now pays for the viewer anyway:** its 669 kB chunk
+  (167 kB gzipped) and a WebGL context.
+- **Only before and after compare with each other.** The Phase 3 lines above were served through
+  compose's `web` service. These came from `vite preview` in front of a natively run
+  `lapidary-server` (`api` and `worker`, `mock-kernel`), which serves with different compression
+  and caching.
+
+How it was measured: `web/scripts/open-timing.mjs` against that stack, over the bundled example
+parts, in headless Chrome on SwiftShader and on the machine's GPU, three rounds each, after one
+throwaway pass that built every part's L1. `--direct` opened each part in a fresh session.
+`--dwell 0` pressed right away, after the script's own 500 ms pause once the grid shows. Under
+`--direct`, the shaders-linked count includes the warm-up's own compile, because in a fresh session
+every link comes before the first frame, so it reads 2 before and after.
+
 ---
 
 ## Phase 4 — Versioning, agent, round-trip
