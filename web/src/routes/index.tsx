@@ -199,7 +199,7 @@ function jobsSettled(status: BatchStatus): number {
  * `enqueue` is called once per payload kind, a scan's own children are all
  * `ingest_file`, and a migration's are all `migrate_storage`.
  */
-type BatchKind = 'scan' | 'render' | 'migrate'
+type BatchKind = 'scan' | 'render' | 'migrate' | 'upload'
 
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
@@ -209,6 +209,10 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     }
     if (kind === 'migrate') {
       return strings.migrate.running
+    }
+    // No walk job in an upload's batch, so nothing to subtract and no walk to wait for.
+    if (kind === 'upload') {
+      return strings.upload.batchRunning(settled, status.total)
     }
     // `total` counts jobs and the walk is one of them, so both halves are shifted by the
     // number of walks that have finished. While that is still 0 the batch holds nothing
@@ -227,6 +231,9 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     // line beside it says some did not. `scan.finished` and `render.finished` both report
     // what happened and let the failure line qualify them; this used to assert a total.
     return strings.migrate.finished(status.failedTotal)
+  }
+  if (kind === 'upload') {
+    return strings.upload.batchFinished(status.ingested, status.skipped)
   }
   return strings.scan.finished(status.ingested, status.skipped)
 }
@@ -261,8 +268,14 @@ export function Index({
    * carry it: a scan of 150 new files and a preview sweep are told apart by what was
    * clicked, not by anything in `BatchStatus`.
    */
-  const [started, setStarted] = useState<{ id: BatchId; kind: BatchKind } | undefined>(undefined)
-  const activeBatch = started?.id ?? batch
+  const [started, setStarted] = useState<
+    { id: BatchId; kind: BatchKind; library: typeof library } | undefined
+  >(undefined)
+  // Only while the page is still on the library that started it. Switching libraries does
+  // not remount this component, so the state outlives the library it belongs to — and a
+  // live stack went on asking the new library about the old one's scan, and got 404 twice.
+  const mine = started?.library === library ? started : undefined
+  const activeBatch = mine?.id ?? batch
 
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth })
   /**
@@ -381,10 +394,10 @@ export function Index({
     // code or a body. Closing hands the batch back to the poll above, which can.
     source.onerror = () => source.close()
     return () => source.close()
-  }, [activeBatch, queryClient])
+  }, [activeBatch, library, queryClient])
 
   const kind: BatchKind =
-    started?.kind ??
+    mine?.kind ??
     ((scan.data?.migrating ?? 0) > 0
       ? 'migrate'
       : (scan.data?.rendered ?? 0) > 0
@@ -421,7 +434,7 @@ export function Index({
    */
   const watch = (accepted: ScanAccepted, kind: BatchKind) => {
     if (accepted.queued > 0) {
-      setStarted({ id: accepted.batchId, kind })
+      setStarted({ id: accepted.batchId, kind, library })
     }
   }
   // Always `queued: 1` — the directory walk — so this always arms the poll. The file
@@ -457,7 +470,7 @@ export function Index({
       setUploadNote(
         accepted.queued === 0 ? strings.upload.nothingToDo : saved === '' ? null : saved,
       )
-      watch(accepted, 'scan')
+      watch(accepted, 'upload')
     },
     onError: () => {
       setUploading(undefined)
@@ -1085,14 +1098,22 @@ function ScanProgress({
   // itself in a child expression, where `no-bare-strings.test.ts` reads it — correctly —
   // as a bare literal reaching the screen.
   //
-  // All three kinds, and `migrate` is not a fall-through to `scan`'s copy. A failed
+  // Every kind, and `migrate` is not a fall-through to `scan`'s copy. A failed
   // migration used to render "3 files could not be read. They will not appear in the grid"
   // about models that already exist and are already in the grid, and a status poll that
   // failed rendered "No scan with that id has run in this library" to an operator who
   // never started a scan. A non-destructive failure worded as data loss is the one class of
   // mistake this product treats as a correctness bug.
   const copy =
-    kind === 'render' ? strings.render : kind === 'migrate' ? strings.migrate : strings.scan
+    kind === 'render'
+      ? strings.render
+      : kind === 'migrate'
+        ? strings.migrate
+        : kind === 'upload'
+          ? // Scan's per-file failure line, which never says "scan", and an unknown line of its
+            // own: `scan.unknown` tells somebody who never started one about a scan.
+            { failed: strings.scan.failed, unknown: strings.upload.batchUnknown }
+          : strings.scan
   if (isError) {
     return <p className="mb-4 max-w-prose text-[var(--color-muted)]">{copy.unknown}</p>
   }

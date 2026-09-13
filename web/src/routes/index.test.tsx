@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -15,6 +16,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { beforeEach, expect, test, vi } from "vitest";
+import { useState } from "react";
 import { Index, Route } from "./index";
 import {
   densityFor,
@@ -26,6 +28,15 @@ import {
 import { routeTree } from "../routeTree.gen";
 import { DEFAULT_LIBRARY_ID } from "../lib/api";
 import { strings } from "../lib/strings";
+import { uploadFiles } from "../lib/upload";
+
+// jsdom's `File` has no `.stream()`, which `hashFile` reads through — `upload.test.ts`
+// runs the transfer engine under node for exactly that reason. What this file owns is
+// what the page does with the answer, so the engine answers directly.
+vi.mock("../lib/upload", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/upload")>()),
+  uploadFiles: vi.fn(),
+}));
 import type {
   BatchStatus,
   FolderNode,
@@ -225,6 +236,9 @@ const RENDER_BATCH_ID = "01a069c4-1d3e-7a10-b6f2-4f0c8b2d5e91";
 
 /** The same, for the scan button, and distinct for the same reason. */
 const SCAN_BATCH_ID = "01a06a11-77b2-7c4d-9f18-2ab6e0c31d45";
+
+/** The same, for an upload's commit. */
+const UPLOAD_BATCH_ID = "01a09a05-f2ec-7bd0-87d6-f6d36cda6f6c";
 
 /** A `BatchStatus` as the API sends it, with the counters a test cares about overridden. */
 const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
@@ -1559,6 +1573,120 @@ test("the scan button starts a scan and watches it as a scan, not as a render", 
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${SCAN_BATCH_ID}`,
   );
+});
+
+/**
+ * `Index` under a library that changes without remounting it — the way the switcher
+ * changes it, and the way component state like the batch this page started survives.
+ */
+function renderSwitchableIndex(first: string) {
+  let select: (library: string) => void = () => {};
+  function Switchable() {
+    const [library, setLibrary] = useState(first);
+    select = setLibrary;
+    return <Index library={library} onSelectFolder={vi.fn()} />;
+  }
+  const rootRoute = createRootRoute({ component: Switchable });
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/parts/$partId",
+    component: () => null,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([detailRoute]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(
+    <QueryClientProvider client={newClient()}>
+      <RouterProvider router={router as never} />
+    </QueryClientProvider>,
+  );
+  return (library: string) => act(() => select(library));
+}
+
+test("a scan started in one library is not polled under the next one", async () => {
+  // A live stack asked `/api/libraries/<new>/jobs/<the old scan>` twice after a library
+  // was created and switched to, and got 404 both times: the batch this page started is
+  // component state, and it outlived the library it belonged to.
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    libraries: ok(LIBRARIES),
+    scan: ok({ batchId: SCAN_BATCH_ID, queued: 1 }),
+    batch: ok(
+      batchStatus({ batchId: SCAN_BATCH_ID, total: 1, pending: 0, running: 1 }),
+    ),
+  });
+  const switchTo = renderSwitchableIndex(DEFAULT_LIBRARY_ID);
+  await openMenu(strings.toolbar.library);
+  fireEvent.click(
+    await screen.findByRole("button", { name: strings.scan.start }),
+  );
+  expect(await screen.findByText(strings.scan.walking)).toBeTruthy();
+
+  switchTo(SECOND_LIBRARY_ROW.id);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${SECOND_LIBRARY_ROW.id}/parts?limit=50`,
+    ),
+  );
+  expect(fetchMock).not.toHaveBeenCalledWith(
+    `/api/libraries/${SECOND_LIBRARY_ROW.id}/jobs/${SCAN_BATCH_ID}`,
+  );
+  expect(screen.queryByText(strings.scan.walking)).toBeNull();
+});
+
+test("an upload's batch reads as an upload, not as a scan", async () => {
+  // An upload's batch has no walk job, so the scan copy said "Reading the folder…" for as
+  // long as the files were adding, then "Scan complete" over files nobody scanned.
+  vi.mocked(uploadFiles).mockResolvedValue({
+    accepted: { batchId: UPLOAD_BATCH_ID, queued: 3 },
+    alreadyHere: 0,
+    bytesSkipped: 0,
+  });
+  let calls = 0;
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        json: async () =>
+          calls === 1
+            ? batchStatus({ batchId: UPLOAD_BATCH_ID, total: 3, pending: 2, running: 1 })
+            : batchStatus({
+                batchId: UPLOAD_BATCH_ID,
+                total: 3,
+                pending: 0,
+                ingested: 3,
+                finishedAt: "2026-09-13T09:30:00.000Z",
+              }),
+      };
+    },
+  });
+  renderIndex();
+  await waitFor(() =>
+    expect(document.querySelector("input[webkitdirectory]")).not.toBeNull(),
+  );
+
+  fireEvent.change(document.querySelector("input[webkitdirectory]") as HTMLInputElement, {
+    target: {
+      files: [
+        new File(["solid parallel-bar\nendsolid parallel-bar\n"], "parallel-bar-150x25x8-lp-6620-00.stl"),
+      ],
+    },
+  });
+
+  expect(await screen.findByText(strings.upload.batchRunning(0, 3))).toBeTruthy();
+  expect(screen.queryByText(strings.scan.walking)).toBeNull();
+  expect(
+    await screen.findByText(strings.upload.batchFinished(3, 0), undefined, {
+      timeout: 4000,
+    }),
+  ).toBeTruthy();
+  expect(screen.queryByText(/Scan complete/)).toBeNull();
 });
 
 // The batch a scan grows under the poll. `batch_status` computes `total` by counting rows
