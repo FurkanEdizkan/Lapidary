@@ -79,6 +79,26 @@ export const strings = {
     removed: 'Removed parts — Lapidary',
   },
   /**
+   * The bar above the grid: where you are, what you are looking for, how it is laid out, and
+   * what can be done to the library. `v2` draws all of it in one row; the menus are what let
+   * it fit, and every control inside them is the same control it was when it had a row of
+   * its own.
+   */
+  toolbar: {
+    /** The accessible name of the segmented nav — "navigation" alone says nothing. */
+    views: 'Library views',
+    grid: 'Grid',
+    view: 'View',
+    library: 'Library',
+    layout: 'Layout',
+    upload: 'Upload a folder',
+  },
+  layouts: {
+    detail: 'Detail',
+    gallery: 'Gallery',
+    list: 'List',
+  },
+  /**
    * The first tab stop on the library page, visible only once focused.
    *
    * SC 2.4.1, Level A. The category tree is dozens of tab stops that repeat on every

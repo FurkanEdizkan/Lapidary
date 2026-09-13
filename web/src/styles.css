@@ -227,6 +227,33 @@
 }
 
 /*
+  The toolbar's menus: native popovers, not a component.
+
+  `popover="auto"` gives what a menu owes its reader without a line of script — Escape
+  closes it, a click outside closes it, it sits in the top layer above every stacking
+  context in the page, and focus goes back to the button that opened it. `Dialog` does all
+  of that for a modal; a menu is not one, and a scrim over the grid to change a card size
+  would be a modal pretending.
+
+  Anchored under its button where the browser supports CSS anchor positioning. Where it does
+  not, the rules below are skipped whole and the browser's own popover styles centre it in
+  the viewport — a menu in the wrong place, never a menu that cannot be reached.
+  `--anchor` carries each menu's own name, set inline, so two menus never share one.
+*/
+@supports (anchor-name: --menu) {
+  .menu-anchor {
+    anchor-name: var(--anchor);
+  }
+  .menu {
+    position-anchor: var(--anchor);
+    inset: auto;
+    top: anchor(bottom);
+    right: anchor(right);
+    margin: 6px 0 0;
+  }
+}
+
+/*
   The surfaces nobody draws.
 
   Selection, the caret, scrollbars, placeholders and the focus ring all ship with browser

@@ -18,7 +18,9 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { Index, Route } from "./index";
 import {
   densityFor,
+  layoutFor,
   pageSizeFor,
+  setLayout,
   setPageSize,
 } from "../lib/preferences";
 import { routeTree } from "../routeTree.gen";
@@ -491,6 +493,7 @@ test("renders the empty-library copy from strings.ts", async () => {
 test("the empty state offers both ways in, and each has a control behind it", async () => {
   stubFetch({ parts: ok(page([])) });
   renderIndex();
+  await openMenu(strings.toolbar.library);
   await screen.findByText(strings.emptyLibrary.body);
   const rendered = (document.body.textContent ?? "").toLowerCase();
   expect(rendered).toContain("drop");
@@ -1349,6 +1352,7 @@ test("the auto-thumbnail toggle shows off for a library the server says is off",
     library: () => new Promise<StubResponse>((resolve) => (release = resolve)),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   // Before the read lands there is no position to take, and a confident "on" here is the
   // same lie in a shorter window.
@@ -1380,6 +1384,7 @@ test("a settings read that fails leaves the toggle unknown rather than guessing"
     library: async () => ({ ok: false, status: 503 }),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   expect(
     await screen.findByText(strings.library.autoThumbnailUnknown),
@@ -1405,6 +1410,7 @@ test("a rejected setting change falls back to what the server said, not to the c
     settings: async () => ({ ok: false, status: 503 }),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   const toggle = (await screen.findByRole("checkbox", {
     name: strings.library.autoThumbnail,
@@ -1437,6 +1443,7 @@ test("the auto-thumbnail toggle sends the setting and reflects what the server e
     settings: () => new Promise<StubResponse>((resolve) => (release = resolve)),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   // The server's answer, not a default: this library is on.
   const toggle = await screen.findByRole("checkbox", {
@@ -1530,6 +1537,7 @@ test("the scan button starts a scan and watches it as a scan, not as a render", 
     ),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   fireEvent.click(
     await screen.findByRole("button", { name: strings.scan.start }),
@@ -1599,6 +1607,7 @@ test("a sweep that finds nothing missing reads as success, not as an error", asy
     sweep: ok({ batchId: RENDER_BATCH_ID, queued: 0 }),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   fireEvent.click(screen.getByRole("button", { name: strings.render.sweep }));
@@ -1896,6 +1905,7 @@ test("finishing a scan re-reads what the library occupies", async () => {
     ),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   const before = storageReads;
@@ -2585,6 +2595,29 @@ function detailByPart(first: typeof MOTOR_MOUNT, ...rest: (typeof MOTOR_MOUNT)[]
   };
 }
 
+/**
+ * Open a toolbar menu the way a browser does.
+ *
+ * The menus are native popovers. jsdom 27 hides a closed one — its default stylesheet carries
+ * the popover rules, so a control inside is not found by role, which is also what a user
+ * sees — but it implements neither `showPopover()` nor `popovertarget` invocation, so a click
+ * on the button opens nothing here. This does the browser's half: it follows the button's own
+ * `popovertarget` to the menu and lifts the closed state off it.
+ *
+ * Following the attribute rather than finding the menu by id is the point. A menu whose
+ * button is wired to nothing fails every test that opens it, instead of every test passing
+ * against controls nobody can reach.
+ */
+async function openMenu(label: string) {
+  const trigger = await screen.findByRole("button", { name: label });
+  const target = trigger.getAttribute("popovertarget");
+  expect(target, `the ${label} button opens no popover`).not.toBeNull();
+  const menu = document.getElementById(target ?? "");
+  expect(menu?.hasAttribute("popover"), `popovertarget="${target}" names no popover`).toBe(true);
+  menu?.removeAttribute("popover");
+  return menu as HTMLElement;
+}
+
 /** Click a card, wait for its panel, and hand back the dialog to assert inside. */
 async function openPanel(name: string) {
   fireEvent.click(await screen.findByRole("article", { name }));
@@ -2849,6 +2882,7 @@ test("choosing a page size asks for it and remembers it", async () => {
   window.localStorage.clear();
   const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
+  await openMenu(strings.toolbar.view);
 
   fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.pageSize }), {
     target: { value: "250" },
@@ -2872,6 +2906,7 @@ test("choosing a compact density packs the grid tighter and remembers it", async
   window.localStorage.clear();
   stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
   renderIndex();
+  await openMenu(strings.toolbar.view);
 
   fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.density }), {
     target: { value: "compact" },
@@ -2954,6 +2989,7 @@ test("the library switcher is hidden until there is more than one library", asyn
     libraries: ok([SEEDED_LIBRARY_ROW]),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   expect(await screen.findByRole("button", { name: strings.libraries.create })).toBeDefined();
   expect(screen.queryByRole("combobox", { name: strings.libraries.label })).toBeNull();
@@ -2967,6 +3003,7 @@ test("with two libraries the switcher appears and names what is in each", async 
     libraries: ok(LIBRARIES),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   const switcher = await screen.findByRole("combobox", { name: strings.libraries.label });
   expect(switcher.textContent).toContain(strings.libraries.option("Default", 156));
@@ -3010,6 +3047,7 @@ test("a library name another library has keeps the dialog open with the reason",
     libraryCreate: conflict("nameTaken", "A library called `Tabletop terrain` already exists."),
   });
   renderIndex();
+  await openMenu(strings.toolbar.library);
 
   fireEvent.click(await screen.findByRole("button", { name: strings.libraries.create }));
   fireEvent.change(screen.getByRole("textbox", { name: strings.libraries.nameLabel }), {
@@ -3131,4 +3169,48 @@ test("the quick-look names its part in one heading, not two", async () => {
   const panel = await openPanel(MOTOR_MOUNT.name);
 
   expect(within(panel).getAllByRole("heading", { name: MOTOR_MOUNT.name })).toHaveLength(1);
+});
+
+/**
+ * `CLAUDE.md`: a mesh-derived measurement is labelled approximate, always. The gallery lays
+ * text over the render and the list squeezes a part into a row, and both are exactly where a
+ * label drops out without anyone deciding it should — which is how "always" came to mean "on
+ * hover" once already in this grid. So the label and the name link are asserted on the card in
+ * every layout, not in the default one.
+ */
+test.each(["detail", "gallery", "list"] as const)(
+  "the %s layout keeps the part's name link and its approximate label on the card",
+  async (layout) => {
+    window.localStorage.clear();
+    setLayout(DEFAULT_LIBRARY_ID, layout);
+    stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+    renderIndex();
+
+    const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+    expect(within(card).getByRole("link", { name: MOTOR_MOUNT.name })).toBeTruthy();
+    expect(within(card).getByText(strings.parts.approximate)).toBeTruthy();
+  },
+);
+
+/**
+ * The layout is chosen from the View menu, marked as chosen, and remembered for the library —
+ * the same per-browser, per-library scope as the page size and density beside it.
+ */
+test("choosing a layout marks it and remembers it for the library", async () => {
+  window.localStorage.clear();
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+
+  const menu = await openMenu(strings.toolbar.view);
+  const list = within(menu).getByRole("button", { name: strings.layouts.list });
+  expect(list.getAttribute("aria-pressed")).toBe("false");
+  expect(
+    within(menu).getByRole("button", { name: strings.layouts.detail }).getAttribute("aria-pressed"),
+  ).toBe("true");
+
+  fireEvent.click(list);
+
+  expect(list.getAttribute("aria-pressed")).toBe("true");
+  expect(layoutFor(DEFAULT_LIBRARY_ID)).toBe("list");
 });
