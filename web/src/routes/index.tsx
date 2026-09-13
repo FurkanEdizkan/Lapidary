@@ -2557,7 +2557,7 @@ function Card({
           aria-label={strings.selection.selectPart(part.name)}
           onChange={() => undefined}
           onClick={(event) => onToggle(part.id, event.shiftKey)}
-          className="absolute top-2 left-2 z-10 size-4 accent-[var(--color-accent)]"
+          className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-accent)]"
         />
       ) : null}
       <div className={WELL[layout]}>
