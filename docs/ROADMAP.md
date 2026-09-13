@@ -445,6 +445,29 @@ What it does not do:
 - **Parts ingested before bridge 6 have none.** The stale-rung sweep rebuilds rungs, not PMI, and
   a known file's hash skips the kernel, so nothing re-reads a stored file for it yet.
 
+**Early, 2026-09-14: section plane.** The viewer cuts the part along X, Y or Z, anywhere across its
+box, and keeps either side (`SectionBar`, and `sectionPlane` in `viewer-math.ts`). The cut clips the
+part's material. three's raycaster ignores clipping, so a pick and the wall-thickness ray count a
+hit only on the side still drawn (`kept`).
+
+Checked in Chrome on SwiftShader, on a natively run stack built from `148e73a`, against
+`flange-dn40-lp-3310-02.stl`, 16 mm thick. Wall thickness was clicked at 81 points on a 9 × 9 grid
+over the view, once uncut and once with a cut at Z = 8 mm:
+- 26 points met the part uncut. The 5 whose picks both lay below the cut read the same with it, to
+  the last digit. The 21 that had landed on the removed half met nothing.
+- Of all 81 clicks with the cut on, none picked a point above it.
+
+What it does not do:
+- **The cut is open.** Behind it, only surfaces facing the viewer are drawn and can be picked, so a
+  cut solid reads as its outline and the walls of its holes rather than as a filled face.
+  - A cap needs the stencil buffer.
+  - Drawing back faces as well would need picks kept off them, since their normals point away
+    from the viewer.
+- **One mesh.** A cut together with an assembly's hidden parts, and a STEP part's exact readings
+  under a cut, need OCCT, which this check did not have.
+- **The first cut in a session compiles a program** for the clipped material. How long that takes
+  was not measured.
+
 **Exit:** paste a Printables URL, get title, licence and cached image; export a 40-part
 assembly as a bundle another user can import with full lineage intact.
 
