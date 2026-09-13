@@ -1811,10 +1811,15 @@ const NAME: Record<Layout, string> = {
 
 const FOOTER: Record<Layout, string> = {
   detail: 'flex flex-1 flex-col gap-1 p-3',
-  // `v2`'s own gradient: clear at the top so the render reads through, near-opaque at the foot
-  // where the smallest text sits.
+  // Clear at the top so the render reads through, and dark enough under the text for the
+  // palette's contrast to hold over any render. `v2`'s own stops (0.88 at 48%) did not: over the
+  // brightest face `raster.rs` can draw, the name's top row measured 4.1:1 and the triangle
+  // count 3.9:1. The name needs alpha 0.53 there and muted text 0.91; these stops give 0.63 and
+  // 0.93. The stop is in rem so it moves with `pt-6` rather than with the overlay's height.
+  // `contrast.test.ts` cannot see text over a picture — re-measure from a screenshot if the
+  // stops, the padding or the text sizes here change.
   gallery:
-    'absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-[linear-gradient(180deg,rgba(18,18,20,0)_0%,rgba(18,18,20,0.88)_48%,rgba(18,18,20,0.97)_100%)] px-3 pt-6 pb-2.5',
+    'absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-[linear-gradient(180deg,rgba(18,18,20,0)_0%,rgba(18,18,20,0.93)_2.5rem,rgba(18,18,20,0.97)_100%)] px-3 pt-6 pb-2.5',
   list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
 }
 
