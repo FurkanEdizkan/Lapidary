@@ -3711,7 +3711,7 @@ test("a part in the URL opens once its card loads, and closing takes it out", as
 
 /**
  * At 1280px and up the look is a pane beside the grid rather than a dialog over it: the grid
- * stays usable, focus goes to the pane's heading, and Escape hands it back to the card's name.
+ * stays usable, focus goes to the pane's Close, and Escape hands it back to the card's name.
  */
 test("on a wide screen the part opens in a pane beside the grid, and Escape returns to its card", async () => {
   vi.stubGlobal(
@@ -3730,7 +3730,7 @@ test("on a wide screen the part opens in a pane beside the grid, and Escape retu
     const pane = await screen.findByRole("complementary", { name: HEX_NUT.name });
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() =>
-      expect(document.activeElement).toBe(within(pane).getByRole("heading", { name: HEX_NUT.name })),
+      expect(document.activeElement).toBe(within(pane).getByRole("button", { name: strings.dialog.close })),
     );
     expect(screen.getByRole("article", { name: MOTOR_MOUNT.name })).toBeTruthy();
 

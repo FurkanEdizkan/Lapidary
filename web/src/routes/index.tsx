@@ -2262,9 +2262,12 @@ function useWide(): boolean {
  * The quick look beside the grid.
  *
  * Not modal, so it traps nothing: the grid stays reachable and the next card swaps what this
- * shows. Opening moves focus to the heading, so a screen reader announces the part and Tab
- * carries on into its details. Escape closes it — but not out from under a dialog opened on
- * top of it, whose own Escape comes first.
+ * shows. Opening moves focus to Close, the pane's first control, rather than to its heading:
+ * the application's one focus ring is unlayered and cannot be taken off a heading, and a ring
+ * round text points at nothing a key can operate — `Dialog` moved off its box for the same
+ * reason. The pane is labelled by the part's name, so arriving inside it still announces the
+ * part. Escape closes it, but not out from under a dialog opened on top of it, whose own
+ * Escape comes first.
  */
 function QuickLookPane({
   title,
@@ -2276,13 +2279,13 @@ function QuickLookPane({
   children: ReactNode
 }) {
   const titleId = useId()
-  const heading = useRef<HTMLHeadingElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
   const close = useRef(onClose)
   useEffect(() => {
     close.current = onClose
   })
   useEffect(() => {
-    heading.current?.focus()
+    closeButton.current?.focus()
   }, [title])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2299,10 +2302,11 @@ function QuickLookPane({
       className="panel-in sticky top-4 max-h-[calc(100vh-2rem)] w-[26rem] shrink-0 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
     >
       <div className="flex items-start justify-between gap-4">
-        <h2 id={titleId} ref={heading} tabIndex={-1} className="text-sm font-medium outline-none">
+        <h2 id={titleId} className="text-sm font-medium">
           {title}
         </h2>
         <button
+          ref={closeButton}
           type="button"
           onClick={onClose}
           aria-label={strings.dialog.close}

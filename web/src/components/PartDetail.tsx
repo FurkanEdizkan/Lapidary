@@ -488,7 +488,9 @@ export function Detail({
           {part.sourceHash === null ? (
             strings.detail.unknown
           ) : (
-            <code className="text-xs">{part.sourceHash}</code>
+            // `break-all`: sixty-four hex digits have no break opportunity, and in the quick look
+            // they ran out past the panel edge.
+            <code className="text-xs break-all">{part.sourceHash}</code>
           )}
         </Row>
         <Row label={strings.detail.preview3d}>
