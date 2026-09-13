@@ -134,7 +134,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Feature | Phase |
 |---|---|
 | three.js viewer, glTF + meshopt, LOD streaming | 3 |
-| Prefetch L0 on hover, L1 on inspector open | 3 |
+| Prefetch L0 and warm the viewer on hover, L1 on inspector open | 3 |
 | Assembly tree navigation, isolate and hide | 3 |
 | Point-to-point, edge length, diameter, angle | 3 |
 | Snap to analytic B-rep entities; exact nominal values | 3 |
