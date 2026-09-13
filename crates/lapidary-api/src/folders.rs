@@ -286,7 +286,7 @@ pub async fn delete(State(state): State<AppState>, Path(folder): Path<FolderId>)
 /// The refusals that carry a machine-readable `reason` beside their prose. The status is
 /// the same for several distinct causes, so the client needs something other than the
 /// message text — which is written for a person and will be rewritten — to tell them apart.
-fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response {
+pub(crate) fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response {
     (
         status,
         Json(serde_json::json!({ "message": message, "reason": reason })),
@@ -357,7 +357,7 @@ fn folder_error(err: &DbError, what: &'static str) -> Response {
 /// The query itself failed. Same shape and same reasoning as `parts.rs`'s: the operator
 /// gets the real error through the log, the caller gets whatever `client_message` has
 /// decided is safe to show.
-fn internal_error(err: &DbError, what: &'static str) -> Response {
+pub(crate) fn internal_error(err: &DbError, what: &'static str) -> Response {
     tracing::error!(error = %err, "{what}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,

@@ -523,6 +523,20 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
 in `part.metadata_json`. When `indexed`, create a matching expression index. **Cap
 indexed custom fields at 8** — each is a write cost on every ingest.
 
+### 3.6 Saved filters
+
+A saved filter is a name for the grid's filters (search, category, format, material, tag), kept
+per library in `saved_filter` (`0023`). It is shared by everyone who opens that library, because
+there are no users yet.
+
+- **JSONB, by §3.2's rule.** Nothing filters, sorts or facets on a saved filter's contents.
+- **The API keeps only what the grid's URL carries,** trimmed. It refuses any other key, and refuses
+  a category from another library.
+- **Removing one removes the name and nothing else.**
+- **A saved category does not follow a deletion.** A filter whose category was deleted still opens
+  to that category's id: an empty grid saying nothing is filed there yet, though the category is
+  gone from the tree.
+
 ---
 
 ## 4. Source links and images

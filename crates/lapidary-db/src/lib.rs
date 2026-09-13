@@ -5,6 +5,7 @@ mod folders;
 mod jobs;
 mod migrate;
 mod repo;
+mod saved_filters;
 
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
@@ -16,6 +17,7 @@ pub use repo::{
     PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows, Sort, StorageTotals,
     StoredBlobRow, TessellationRow,
 };
+pub use saved_filters::{PgSavedFilters, SavedFilterRow};
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
 // its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
@@ -118,6 +120,12 @@ pub enum DbError {
         kind: &'static str,
         revision: RevisionId,
     },
+
+    /// `saved_filter_name_unique_per_library`: a library's saved filters are picked by name.
+    #[error(
+        "A saved filter named `{name}` already exists in this library. Choose another name, or remove that filter first."
+    )]
+    SavedFilterNameTaken { name: String },
 
     /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
     /// the per-library advisory lock and runs the ancestry check — never by a caller's own
@@ -222,6 +230,7 @@ impl DbError {
             | DbError::WouldCreateCycle { .. }
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
+            | DbError::SavedFilterNameTaken { .. }
             | DbError::LibraryNameTaken { .. }
             | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }

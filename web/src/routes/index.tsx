@@ -20,6 +20,9 @@ import {
   fetchPartDetail,
   fetchFacets,
   fetchParts,
+  fetchSavedFilters,
+  removeSavedFilter,
+  saveFilter,
   renderLibraryThumbnails,
   renderPartThumbnail,
   setAutoThumbnail,
@@ -64,6 +67,8 @@ import {
 import type {
   BatchId,
   BatchStatus,
+  FilterSearch,
+  SavedFilterId,
   JobFailure,
   FacetValue,
   JobId,
@@ -214,6 +219,13 @@ function RouteComponent() {
           replace: true,
         })
       }
+      onApplyFilter={(search) =>
+        void navigate({
+          // In place of every filter there, and without the open part: a saved filter is a new
+          // look at the library, and a step the back button can undo.
+          search: (previous) => ({ library: previous.library, ...search }),
+        })
+      }
     />
   )
 }
@@ -316,6 +328,7 @@ export function Index({
   onSelectTag,
   part,
   onOpenPart,
+  onApplyFilter,
 }: {
   batch?: string
   folderId?: string
@@ -340,6 +353,8 @@ export function Index({
   part?: string
   /** Writes the open part to the URL; `null` closes it. */
   onOpenPart?: (part: PartId | null) => void
+  /** Puts a saved filter's filters on the grid in one step, in place of the ones there. */
+  onApplyFilter?: (search: FilterSearch) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -807,6 +822,11 @@ export function Index({
         reads it back on drop, so neither holds state for the other.
       */}
       <div className="w-56 shrink-0">
+        <SavedFilters
+          library={library}
+          current={filtersOf({ q, folderId, format, material, tag })}
+          onApply={(search) => onApplyFilter?.(search)}
+        />
         <Facets
           library={library}
           folderId={folderId}
@@ -2860,6 +2880,158 @@ function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean
       </span>
     </p>
   )
+}
+
+/**
+ * Saved filters, above the facets: the grid's filters kept under a name for this library and put
+ * back in one step, with the one the grid is showing marked. Drawn only where there is something to
+ * list or something to save, so a library nobody has filtered shows nothing here.
+ */
+function SavedFilters({
+  library,
+  current,
+  onApply,
+}: {
+  library: LibraryId
+  current: FilterSearch
+  onApply: (search: FilterSearch) => void
+}) {
+  const queryClient = useQueryClient()
+  const titleId = useId()
+  const filters = useQuery({
+    queryKey: ['savedFilters', library],
+    queryFn: () => fetchSavedFilters(library),
+  })
+  const [naming, setNaming] = useState(false)
+  const [name, setName] = useState('')
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ['savedFilters', library] })
+  const save = useMutation({
+    mutationFn: () => saveFilter(library, { name, search: current }),
+    onSuccess: (answer) => {
+      if (answer.kind === 'refused') {
+        setRefusal(answer.message)
+        return
+      }
+      setNaming(false)
+      setName('')
+      setRefusal(null)
+      refresh()
+    },
+    onError: () => setRefusal(strings.savedFilters.refusedWithoutReason),
+  })
+  const remove = useMutation({
+    mutationFn: (filter: SavedFilterId) => removeSavedFilter(library, filter),
+    onSettled: refresh,
+  })
+  const filtering = Object.keys(current).length > 0
+  const saved = filters.data ?? []
+  if (!filtering && saved.length === 0 && !filters.isError) return null
+  return (
+    <section aria-labelledby={titleId} className="mb-6">
+      <h2 id={titleId} className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
+        {strings.savedFilters.title}
+      </h2>
+      {filters.isError ? (
+        <p role="alert" className="mb-2 text-xs text-[var(--color-muted)]">
+          {strings.savedFilters.failed}
+        </p>
+      ) : null}
+      {saved.length === 0 ? null : (
+        <ul role="list" className="space-y-0.5">
+          {saved.map((filter) => (
+            <li key={filter.id} className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-current={sameFilters(filter.search, current) ? 'true' : undefined}
+                onClick={() => onApply(filter.search)}
+                className="ease-mechanical flex min-h-6 min-w-0 flex-1 items-center rounded-sm px-2 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)] aria-[current=true]:bg-[var(--color-raised)] aria-[current=true]:text-[var(--color-bright)]"
+              >
+                <span className="truncate">{filter.name}</span>
+              </button>
+              <button
+                type="button"
+                aria-label={strings.savedFilters.remove(filter.name)}
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(filter.id)}
+                className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!filtering ? null : naming ? (
+        <form
+          className="mt-2 space-y-1"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (name.trim() !== '') save.mutate()
+          }}
+        >
+          <label className="block text-xs text-[var(--color-muted)]">
+            {strings.savedFilters.name}
+            <input
+              value={name}
+              maxLength={80}
+              onChange={(event) => setName(event.target.value)}
+              className="mt-1 block w-full rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm text-[var(--color-text)]"
+            />
+          </label>
+          <div className="flex gap-1">
+            <button
+              type="submit"
+              disabled={save.isPending || name.trim() === ''}
+              className="ease-mechanical min-h-6 rounded-sm border border-[var(--color-edge)] px-2 text-xs duration-[var(--duration-fast)] hover:text-[var(--color-bright)] disabled:opacity-50"
+            >
+              {strings.savedFilters.save}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNaming(false)
+                setRefusal(null)
+              }}
+              className="ease-mechanical min-h-6 rounded-sm px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+            >
+              {strings.savedFilters.cancel}
+            </button>
+          </div>
+          {refusal === null ? null : (
+            <p role="alert" className="text-xs text-[var(--color-muted)]">
+              {refusal}
+            </p>
+          )}
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setNaming(true)}
+          className="ease-mechanical mt-1 min-h-6 rounded-sm px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+        >
+          {strings.savedFilters.saveThis}
+        </button>
+      )}
+    </section>
+  )
+}
+
+const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag'] as const
+
+/** The grid's filters as a saved filter holds them: only the ones that are set. */
+function filtersOf(filters: { [key in (typeof FILTER_KEYS)[number]]?: string }): FilterSearch {
+  const set: FilterSearch = {}
+  for (const key of FILTER_KEYS) {
+    const value = filters[key]
+    if (value !== undefined) set[key] = value
+  }
+  return set
+}
+
+/** Whether two sets of filters narrow the grid the same way. */
+function sameFilters(a: FilterSearch, b: FilterSearch): boolean {
+  return FILTER_KEYS.every((key) => a[key] === b[key])
 }
 
 /**

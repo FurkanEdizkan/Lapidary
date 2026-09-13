@@ -7,6 +7,7 @@ mod detail;
 mod download;
 mod error;
 mod fetch;
+mod filters;
 mod folders;
 mod health;
 mod images;
@@ -220,6 +221,16 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route(
                     "/api/folders/{id}",
                     axum::routing::patch(folders::patch).delete(folders::delete),
+                )
+                // Saved filters: a name for a set of the grid's filters, per library. See
+                // `filters.rs`.
+                .route(
+                    "/api/libraries/{id}/filters",
+                    get(filters::list).post(filters::create),
+                )
+                .route(
+                    "/api/libraries/{library}/filters/{filter}",
+                    axum::routing::delete(filters::remove),
                 )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
