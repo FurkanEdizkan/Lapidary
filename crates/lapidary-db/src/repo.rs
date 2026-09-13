@@ -1304,6 +1304,9 @@ pub struct PartDetailRow {
     pub tessellation_l2: Option<BlobHash>,
     /// The analytic faces and edges a CAD kernel read, as JSON. `None` for a mesh.
     pub entities: Option<BlobHash>,
+    /// The dimensions, tolerances and datums the file specifies, as JSON. `None` for a mesh, and
+    /// for a CAD file that specifies none.
+    pub pmi: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root — the same
     /// value and the same nullability as [`PartRow::directory`], derived the same way.
     ///
@@ -1358,6 +1361,7 @@ struct DetailColumns {
     l1_blake3: Option<String>,
     l2_blake3: Option<String>,
     entities_blake3: Option<String>,
+    pmi_blake3: Option<String>,
     created_us: i64,
     updated_us: i64,
 }
@@ -1651,6 +1655,7 @@ impl PgParts {
                     l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
                     st.blake3 AS structure_blake3, \
                     l1.blake3 AS l1_blake3, l2.blake3 AS l2_blake3, ent.blake3 AS entities_blake3, \
+                    pm.blake3 AS pmi_blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
@@ -1668,6 +1673,8 @@ impl PgParts {
                                 ORDER BY created_at DESC, id DESC LIMIT 1) l2 ON true \
              LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $7 \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) ent ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $8 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) pm ON true \
              LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -1684,6 +1691,7 @@ impl PgParts {
         .bind(DerivativeKind::TessellationL1.as_str())
         .bind(DerivativeKind::TessellationL2.as_str())
         .bind(DerivativeKind::Entities.as_str())
+        .bind(DerivativeKind::Pmi.as_str())
         .fetch_optional(&self.0)
         .await?;
 
@@ -1743,6 +1751,7 @@ impl PgParts {
             tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
             tessellation_l2: detail_hash("derivative.blake3", c.l2_blake3)?,
             entities: detail_hash("derivative.blake3", c.entities_blake3)?,
+            pmi: detail_hash("derivative.blake3", c.pmi_blake3)?,
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
             created_at: detail_stamp("part.created_at", c.created_us)?,

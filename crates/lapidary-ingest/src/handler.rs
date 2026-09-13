@@ -484,6 +484,12 @@ impl WorkerHandler {
             .then(|| serde_json::to_vec(&output.entities))
             .transpose()
             .map_err(unserializable)?;
+        let pmi = output
+            .pmi
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(unserializable)?;
         let hashed = output
             .tessellations
             .iter()
@@ -497,8 +503,12 @@ impl WorkerHandler {
                 entities
                     .as_deref()
                     .map(|json| (DerivativeKind::Entities.as_str(), json, None)),
+            )
+            .chain(
+                pmi.as_deref()
+                    .map(|json| (DerivativeKind::Pmi.as_str(), json, None)),
             );
-        let mut rungs = Vec::with_capacity(output.tessellations.len() + 2);
+        let mut rungs = Vec::with_capacity(output.tessellations.len() + 3);
         let mut reapable = Vec::new();
         for (kind, bytes, grid) in hashed {
             let stored = derivatives

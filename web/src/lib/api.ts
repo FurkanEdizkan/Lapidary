@@ -28,6 +28,7 @@ import type {
   PartImageId,
   PartSource,
   PartsPage,
+  Pmi,
   PurgeResult,
   RetryAccepted,
   RevisionId,
@@ -1015,6 +1016,18 @@ export async function fetchEntities(hash: BlobHash): Promise<Entity[]> {
     throw new Error(`entities returned ${response.status}`)
   }
   return (await response.json()) as Entity[]
+}
+
+/**
+ * `GET /api/blob/{hash}` for a CAD part's PMI: the dimensions, tolerances and datums its file
+ * specifies, each naming the prototype and face it applies to as `Entity` does.
+ */
+export async function fetchPmi(hash: BlobHash): Promise<Pmi> {
+  const response = await fetch(blobUrl(hash))
+  if (!response.ok) {
+    throw new Error(`pmi returned ${response.status}`)
+  }
+  return (await response.json()) as Pmi
 }
 
 /**

@@ -14,17 +14,20 @@ pub enum DerivativeKind {
     Structure,
     /// The analytic faces and circular edges a CAD kernel read, as JSON. A mesh has none.
     Entities,
+    /// The dimensions, tolerances and datums a CAD file specifies, as JSON. A mesh has none.
+    Pmi,
 }
 
 impl DerivativeKind {
     /// Every kind, ascending — for a caller that genuinely wants all four.
-    pub const ALL: [DerivativeKind; 6] = [
+    pub const ALL: [DerivativeKind; 7] = [
         DerivativeKind::Thumbnail,
         DerivativeKind::TessellationL0,
         DerivativeKind::TessellationL1,
         DerivativeKind::TessellationL2,
         DerivativeKind::Structure,
         DerivativeKind::Entities,
+        DerivativeKind::Pmi,
     ];
 
     /// Exactly the strings already in `derivative.kind`. Changing one orphans every row
@@ -37,6 +40,7 @@ impl DerivativeKind {
             DerivativeKind::TessellationL2 => "tessellation_l2",
             DerivativeKind::Structure => "structure",
             DerivativeKind::Entities => "entities",
+            DerivativeKind::Pmi => "pmi",
         }
     }
 }
@@ -54,6 +58,7 @@ mod tests {
         assert_eq!(DerivativeKind::TessellationL2.as_str(), "tessellation_l2");
         assert_eq!(DerivativeKind::Structure.as_str(), "structure");
         assert_eq!(DerivativeKind::Entities.as_str(), "entities");
+        assert_eq!(DerivativeKind::Pmi.as_str(), "pmi");
     }
 
     #[test]
@@ -80,6 +85,7 @@ mod tests {
                 DerivativeKind::TessellationL2,
                 DerivativeKind::Structure,
                 DerivativeKind::Entities,
+                DerivativeKind::Pmi,
             ]
         );
     }

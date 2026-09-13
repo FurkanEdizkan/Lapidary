@@ -94,7 +94,7 @@ pub fn digest(content: &str) -> String {
 pub const EXEMPT: &[Exemption] = &[
     Exemption {
         file: "crates/lapidary-cad/src/occt.rs",
-        content: "1a4ff1ed06473133",
+        content: "bc67702e1752ac0a",
         reason: "the fake occt-bridge shell script OcctKernel's tests execute; its indentation is the script's own, not a mangled continuation",
     },
     Exemption {

@@ -108,6 +108,9 @@ pub struct PartDetail {
     /// The analytic faces and edges a CAD kernel read, which measurement snaps to. `None` for a
     /// mesh, which has none.
     pub entities: Option<BlobHash>,
+    /// The dimensions, tolerances and datums the file specifies, as JSON at `GET /api/blob/{blake3}`.
+    /// `None` for a mesh, and for a CAD file whose exporter wrote only geometry.
+    pub pmi: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root.
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
@@ -190,6 +193,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         tessellation_l1: row.tessellation_l1,
         tessellation_l2: row.tessellation_l2,
         entities: row.entities,
+        pmi: row.pmi,
         directory: row.directory,
         storage_path: row.storage_path,
         created_at: row.created_at,

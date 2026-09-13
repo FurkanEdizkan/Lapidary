@@ -12,6 +12,8 @@
 //                      it instead of this program growing a second one
 //   parts.json         how many of mesh.stl's triangles each placed part has, in the order
 //                      structure.json lists its leaves, so a viewer can hide one part
+//   pmi.json           the dimensions, geometric tolerances and datums an AP242 file specifies,
+//                      each naming the prototype and face it applies to
 //   structure.json     the assembly tree: names, prototypes, 4x4 transforms relative to parent
 //   entities.json      analytic faces and circular edges, once per prototype, in its own
 //                      coordinates; structure.json places them
@@ -73,7 +75,14 @@
 #include <TopoDS_Shape.hxx>
 #include <UnitsMethods_LengthUnit.hxx>
 #include <XCAFApp_Application.hxx>
+#include <XCAFDimTolObjects_DatumObject.hxx>
+#include <XCAFDimTolObjects_DimensionObject.hxx>
+#include <XCAFDimTolObjects_GeomToleranceObject.hxx>
+#include <XCAFDoc_Datum.hxx>
+#include <XCAFDoc_DimTolTool.hxx>
+#include <XCAFDoc_Dimension.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_GeomTolerance.hxx>
 #include <XCAFDoc_MaterialTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <gp_Ax1.hxx>
@@ -101,7 +110,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 5;
+constexpr int BRIDGE_VERSION = 6;
 
 const double PI = std::acos(-1.0);
 
@@ -222,6 +231,9 @@ bool readDocument(const std::string& path, const std::string& format,
     reader.SetColorMode(false);
     reader.SetLayerMode(false);
     reader.SetMatMode(true);
+    // Semantic PMI: the dimensions, tolerances and datums an AP242 file carries as data. What is
+    // drawn in 3D beside them (the presentation) is not read into anything.
+    reader.SetGDTMode(true);
     if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
       why = "OCCT could not parse this file as STEP";
       return false;
@@ -500,6 +512,156 @@ std::uint32_t writeMesh(const std::string& path, const NCollection_Sequence<TDF_
   return count;
 }
 
+// ---- pmi.json --------------------------------------------------------------------------
+
+std::string dimensionType(XCAFDimTolObjects_DimensionType type) {
+  switch (type) {
+    case XCAFDimTolObjects_DimensionType_Size_Diameter: return "diameter";
+    case XCAFDimTolObjects_DimensionType_Size_Radius: return "radius";
+    case XCAFDimTolObjects_DimensionType_Size_SphericalDiameter: return "spherical_diameter";
+    case XCAFDimTolObjects_DimensionType_Size_SphericalRadius: return "spherical_radius";
+    case XCAFDimTolObjects_DimensionType_Size_Thickness: return "thickness";
+    case XCAFDimTolObjects_DimensionType_Size_Angular:
+    case XCAFDimTolObjects_DimensionType_Location_Angular: return "angle";
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromCenterToOuter:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromCenterToInner:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromOuterToCenter:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromOuterToOuter:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromOuterToInner:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromInnerToCenter:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromInnerToOuter:
+    case XCAFDimTolObjects_DimensionType_Location_LinearDistance_FromInnerToInner: return "distance";
+    default: return "other";
+  }
+}
+
+std::string toleranceType(XCAFDimTolObjects_GeomToleranceType type) {
+  switch (type) {
+    case XCAFDimTolObjects_GeomToleranceType_Angularity: return "angularity";
+    case XCAFDimTolObjects_GeomToleranceType_CircularRunout: return "circular_runout";
+    case XCAFDimTolObjects_GeomToleranceType_CircularityOrRoundness: return "circularity";
+    case XCAFDimTolObjects_GeomToleranceType_Coaxiality: return "coaxiality";
+    case XCAFDimTolObjects_GeomToleranceType_Concentricity: return "concentricity";
+    case XCAFDimTolObjects_GeomToleranceType_Cylindricity: return "cylindricity";
+    case XCAFDimTolObjects_GeomToleranceType_Flatness: return "flatness";
+    case XCAFDimTolObjects_GeomToleranceType_Parallelism: return "parallelism";
+    case XCAFDimTolObjects_GeomToleranceType_Perpendicularity: return "perpendicularity";
+    case XCAFDimTolObjects_GeomToleranceType_Position: return "position";
+    case XCAFDimTolObjects_GeomToleranceType_ProfileOfLine: return "profile_of_line";
+    case XCAFDimTolObjects_GeomToleranceType_ProfileOfSurface: return "profile_of_surface";
+    case XCAFDimTolObjects_GeomToleranceType_Straightness: return "straightness";
+    case XCAFDimTolObjects_GeomToleranceType_Symmetry: return "symmetry";
+    case XCAFDimTolObjects_GeomToleranceType_TotalRunout: return "total_runout";
+    default: return "other";
+  }
+}
+
+// The faces an annotation's shape labels name, as `entities.json` names faces: the prototype the
+// face belongs to and its 1-based index in that prototype's face map. A label that is a whole
+// part rather than one of its faces names the part with no face.
+std::string faceRefs(const NCollection_Sequence<TDF_Label>& labels) {
+  std::string out = "[";
+  for (int i = 1; i <= labels.Length(); ++i) {
+    const TDF_Label& label = labels.Value(i);
+    const TDF_Label owner = label.Father();
+    const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(label);
+    std::string ref;
+    if (shape.ShapeType() == TopAbs_FACE && XCAFDoc_ShapeTool::IsShape(owner)) {
+      ShapeMap faces;
+      TopExp::MapShapes(XCAFDoc_ShapeTool::GetShape(owner), TopAbs_FACE, faces);
+      const int index = faces.FindIndex(shape);
+      if (index > 0) {
+        ref = "{\"prototype\":" + jsonString(entryOf(owner)) + ",\"face\":" + std::to_string(index) + "}";
+      }
+    }
+    if (ref.empty()) ref = "{\"prototype\":" + jsonString(entryOf(label)) + ",\"face\":null}";
+    if (out.size() > 1) out += ",";
+    out += ref;
+  }
+  return out + "]";
+}
+
+// A datum's letter. The reader keeps it on the datum attribute, and on the datum's object when the
+// file gave one; either may be empty.
+std::string datumName(const occ::handle<XCAFDoc_Datum>& datum) {
+  if (!datum->GetObject().IsNull()) {
+    const std::string fromObject = headerText(datum->GetObject()->GetName());
+    if (fromObject != "null") return fromObject;
+  }
+  return headerText(datum->GetName());
+}
+
+std::string writePmi(const occ::handle<TDocStd_Document>& doc) {
+  const occ::handle<XCAFDoc_DimTolTool> tool = XCAFDoc_DocumentTool::DimTolTool(doc->Main());
+  std::string out = "{\"dimensions\":[";
+  NCollection_Sequence<TDF_Label> labels;
+  tool->GetDimensionLabels(labels);
+  bool first = true;
+  for (int i = 1; i <= labels.Length(); ++i) {
+    occ::handle<XCAFDoc_Dimension> attribute;
+    if (!labels.Value(i).FindAttribute(XCAFDoc_Dimension::GetID(), attribute)) continue;
+    const occ::handle<XCAFDimTolObjects_DimensionObject> dimension = attribute->GetObject();
+    if (dimension.IsNull()) continue;
+    NCollection_Sequence<TDF_Label> shapes, second;
+    XCAFDoc_DimTolTool::GetRefShapeLabel(labels.Value(i), shapes, second);
+    shapes.Append(second);
+    const bool bounded = dimension->IsDimWithPlusMinusTolerance();
+    if (!first) out += ",";
+    out += "{\"type\":" + jsonString(dimensionType(dimension->GetType())) +
+           ",\"value\":" + number(dimension->GetValue()) +
+           ",\"upper\":" + (bounded ? number(dimension->GetUpperTolValue()) : "null") +
+           ",\"lower\":" + (bounded ? number(dimension->GetLowerTolValue()) : "null") +
+           ",\"faces\":" + faceRefs(shapes) + "}";
+    first = false;
+  }
+  out += "],\"tolerances\":[";
+  labels.Clear();
+  tool->GetGeomToleranceLabels(labels);
+  first = true;
+  for (int i = 1; i <= labels.Length(); ++i) {
+    occ::handle<XCAFDoc_GeomTolerance> attribute;
+    if (!labels.Value(i).FindAttribute(XCAFDoc_GeomTolerance::GetID(), attribute)) continue;
+    const occ::handle<XCAFDimTolObjects_GeomToleranceObject> tolerance = attribute->GetObject();
+    if (tolerance.IsNull()) continue;
+    NCollection_Sequence<TDF_Label> shapes, second;
+    XCAFDoc_DimTolTool::GetRefShapeLabel(labels.Value(i), shapes, second);
+    NCollection_Sequence<TDF_Label> datums;
+    XCAFDoc_DimTolTool::GetDatumOfTolerLabels(labels.Value(i), datums);
+    std::string names = "[";
+    for (int d = 1; d <= datums.Length(); ++d) {
+      occ::handle<XCAFDoc_Datum> datum;
+      if (!datums.Value(d).FindAttribute(XCAFDoc_Datum::GetID(), datum)) continue;
+      const std::string name = datumName(datum);
+      if (name == "null") continue;
+      if (names.size() > 1) names += ",";
+      names += name;
+    }
+    names += "]";
+    if (!first) out += ",";
+    out += "{\"type\":" + jsonString(toleranceType(tolerance->GetType())) +
+           ",\"value\":" + number(tolerance->GetValue()) + ",\"datums\":" + names +
+           ",\"faces\":" + faceRefs(shapes) + "}";
+    first = false;
+  }
+  out += "],\"datums\":[";
+  labels.Clear();
+  tool->GetDatumLabels(labels);
+  first = true;
+  for (int i = 1; i <= labels.Length(); ++i) {
+    occ::handle<XCAFDoc_Datum> datum;
+    if (!labels.Value(i).FindAttribute(XCAFDoc_Datum::GetID(), datum)) continue;
+    const std::string name = datumName(datum);
+    if (name == "null") continue;
+    NCollection_Sequence<TDF_Label> shapes, second;
+    XCAFDoc_DimTolTool::GetRefShapeLabel(labels.Value(i), shapes, second);
+    if (!first) out += ",";
+    out += "{\"name\":" + name + ",\"faces\":" + faceRefs(shapes) + "}";
+    first = false;
+  }
+  return out + "]}\n";
+}
+
 // ---- convert ---------------------------------------------------------------------------
 
 int convert(const std::string& in, const std::string& format, const std::string& outDir,
@@ -595,6 +757,7 @@ int convert(const std::string& in, const std::string& format, const std::string&
   partsJson += "]\n";
 
   if (!meshWritten || !writeFile(outDir + "/parts.json", partsJson) ||
+      !writeFile(outDir + "/pmi.json", writePmi(doc)) ||
       !writeFile(outDir + "/structure.json", structure) ||
       !writeFile(outDir + "/entities.json", entities) ||
       !writeFile(outDir + "/measurements.json", measurements) ||
@@ -636,6 +799,7 @@ bool writeStep(const occ::handle<TDocStd_Document>& doc, const std::string& path
   params.WriteUnit = unit;
   STEPCAFControl_Writer writer;
   writer.SetMaterialMode(true);
+  writer.SetDimTolMode(true);
   return writer.Transfer(doc, params) && writer.Write(path.c_str()) == IFSelect_RetDone;
 }
 
@@ -737,6 +901,64 @@ int generateFixtures(const std::string& dir) {
                     new TCollection_HAsciiString("density"),
                     new TCollection_HAsciiString("POSITIVE_RATIO_MEASURE"));
 
+  // The same cylinder with the PMI a drawing would give it, written as AP242 semantic data: a
+  // diameter of 22 mm +0.05/-0 on the cylindrical face, datum A on the base, flatness 0.02 mm on
+  // the top face and perpendicularity 0.05 mm of the cylindrical face to A.
+  const occ::handle<TDocStd_Document> pmi = newDocument();
+  const occ::handle<XCAFDoc_ShapeTool> pmiTool = XCAFDoc_DocumentTool::ShapeTool(pmi->Main());
+  const TopoDS_Shape pmiShape = cylinder(11.0, 30.0);
+  const TDF_Label pmiLabel = pmiTool->AddShape(pmiShape, false);
+  TDataStd_Name::Set(pmiLabel, "cylinder-d22-pmi-lp-9012-00");
+  TDF_Label pmiSide, pmiBase, pmiTop;
+  for (TopExp_Explorer explorer(pmiShape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+    const TopoDS_Face face = TopoDS::Face(explorer.Current());
+    const BRepAdaptor_Surface surface(face);
+    const TDF_Label label = pmiTool->AddSubShape(pmiLabel, face);
+    if (surface.GetType() == GeomAbs_Cylinder) {
+      pmiSide = label;
+    } else if (surface.GetType() == GeomAbs_Plane) {
+      (surface.Plane().Location().Z() < 15.0 ? pmiBase : pmiTop) = label;
+    }
+  }
+  const occ::handle<XCAFDoc_DimTolTool> dimTol = XCAFDoc_DocumentTool::DimTolTool(pmi->Main());
+  const TDF_Label diameterLabel = dimTol->AddDimension();
+  dimTol->SetDimension(pmiSide, diameterLabel);
+  const occ::handle<XCAFDimTolObjects_DimensionObject> diameter =
+      new XCAFDimTolObjects_DimensionObject();
+  diameter->SetType(XCAFDimTolObjects_DimensionType_Size_Diameter);
+  diameter->SetValue(22.0);
+  diameter->SetUpperTolValue(0.05);
+  diameter->SetLowerTolValue(0.0);
+  XCAFDoc_Dimension::Set(diameterLabel)->SetObject(diameter);
+
+  const TDF_Label datumLabel = dimTol->AddDatum();
+  NCollection_Sequence<TDF_Label> datumFaces;
+  datumFaces.Append(pmiBase);
+  dimTol->SetDatum(datumFaces, datumLabel);
+  const occ::handle<XCAFDimTolObjects_DatumObject> datumA = new XCAFDimTolObjects_DatumObject();
+  datumA->SetName(new TCollection_HAsciiString("A"));
+  // First in the datum reference frame of the tolerance below. A datum at position 0 has no place
+  // in one, and the writer then drops the tolerance that refers to it.
+  datumA->SetPosition(1);
+  XCAFDoc_Datum::Set(datumLabel)->SetObject(datumA);
+
+  const TDF_Label flatnessLabel = dimTol->AddGeomTolerance();
+  dimTol->SetGeomTolerance(pmiTop, flatnessLabel);
+  const occ::handle<XCAFDimTolObjects_GeomToleranceObject> flatness =
+      new XCAFDimTolObjects_GeomToleranceObject();
+  flatness->SetType(XCAFDimTolObjects_GeomToleranceType_Flatness);
+  flatness->SetValue(0.02);
+  XCAFDoc_GeomTolerance::Set(flatnessLabel)->SetObject(flatness);
+
+  const TDF_Label squareLabel = dimTol->AddGeomTolerance();
+  dimTol->SetGeomTolerance(pmiSide, squareLabel);
+  const occ::handle<XCAFDimTolObjects_GeomToleranceObject> square =
+      new XCAFDimTolObjects_GeomToleranceObject();
+  square->SetType(XCAFDimTolObjects_GeomToleranceType_Perpendicularity);
+  square->SetValue(0.05);
+  XCAFDoc_GeomTolerance::Set(squareLabel)->SetObject(square);
+  dimTol->SetDatumToGeomTol(datumLabel, squareLabel);
+
   const occ::handle<TDocStd_Document> iges = newDocument();
   const occ::handle<XCAFDoc_ShapeTool> igesTool = XCAFDoc_DocumentTool::ShapeTool(iges->Main());
   TDataStd_Name::Set(igesTool->AddShape(fused(box(60.0, 40.0, 8.0), box(8.0, 40.0, 60.0)), false),
@@ -747,6 +969,7 @@ int generateFixtures(const std::string& dir) {
       writeStep(doc, dir + "/fixture-plate-assembly-lp-9000-00.step", UnitsMethods_LengthUnit_Millimeter) &&
       writeStep(single, dir + "/cylinder-d22-lp-9010-00.step", UnitsMethods_LengthUnit_Millimeter) &&
       writeStep(single, dir + "/cylinder-d22-inch-units-lp-9011-00.step", UnitsMethods_LengthUnit_Inch) &&
+      writeStep(pmi, dir + "/cylinder-d22-pmi-lp-9012-00.step", UnitsMethods_LengthUnit_Millimeter) &&
       igesWriter.Transfer(iges) && igesWriter.Write((dir + "/angle-bracket-60x60x40-lp-9004-00.igs").c_str());
   if (!ok) {
     std::fprintf(stderr, "generate-fixtures: could not write into %s\n", dir.c_str());

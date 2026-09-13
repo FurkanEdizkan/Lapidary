@@ -136,8 +136,8 @@ number was taken for it.
 number like `A1234-56-B` by the fragment `1234` returns it at position one.
 
 **Measured 2026-09-13, both clauses pass. The phase is not finished:** the facets are format,
-material and tag (`0022`) — lifecycle waits for revision states, which are Phase 8's — and stage 4
-does not read PMI or GD&T yet. The failed files are listed inline under the progress line rather than in a drawer:
+material and tag (`0022`) — lifecycle waits for revision states, which are Phase 8's. Stage 4
+reads an AP242 file's PMI since bridge 6, as a list on the part; Phase 5 records how it was checked. The failed files are listed inline under the progress line rather than in a drawer:
 every failure, a page past the first hundred at a press, with a Retry per file and for the batch. Sorting by a measured figure shipped without an
 index, for the reason `DATA.md` §3.2 records.
 
@@ -390,6 +390,25 @@ appears automatically with a correct volume delta — on Linux, macOS and Window
 - Streaming ZIP bundles with `manifest.json`
 - Saved filters, custom fields, section plane, PMI display
 - Turkish search config
+
+**Early, 2026-09-13: PMI listed on the part.** The bridge reads an AP242 file's semantic PMI
+(`pmi.json`, bridge 6) and ingest stores it as the `pmi` derivative. The part's page lists it under
+Dimensions and tolerances, each annotation on the face measurement reads there, said as specified
+and never marked exact or approximate. Checked in Chrome on an isolated stack built from `786af76`,
+against the generated `cylinder-d22-pmi-lp-9012-00.step`: the page listed ⌀22 mm +0.05 / 0 on a
+cylindrical face, ⏥ Flatness 0.02 mm on a planar face, ⟂ Perpendicularity 0.05 mm to A on a
+cylindrical face and Datum A on a planar face, with no ≈, and the plain cylinder showed no section.
+`occt_bridge` checks that each annotation lands on the face it was written on.
+
+What it does not do:
+- **No 3D annotation.** The viewer draws nothing for PMI; that needs per-face triangle ranges.
+- **One writer.** The fixture is OCCT reading what OCCT wrote, so AP242 files from other CAD
+  systems are untested.
+- **Datums through tolerances only.** OCCT reads a datum while reading a tolerance that refers to
+  it, so a datum nothing refers to is not listed. OCCT's writer likewise drops a tolerance whose
+  datum has no place in its reference frame, which the fixture generator had to set.
+- **Parts ingested before bridge 6 have none.** The stale-rung sweep rebuilds rungs, not PMI, and
+  a known file's hash skips the kernel, so nothing re-reads a stored file for it yet.
 
 **Exit:** paste a Printables URL, get title, licence and cached image; export a 40-part
 assembly as a bundle another user can import with full lineage intact.

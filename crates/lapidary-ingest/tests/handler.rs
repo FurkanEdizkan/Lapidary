@@ -2455,7 +2455,26 @@ impl Kernel for FakeCad {
             origin: [0.0, 0.0, 0.0],
             axis: [0.0, 0.0, 1.0],
         }];
+        output.pmi = Some(fake_pmi());
         Ok(output)
+    }
+}
+
+/// The one dimension `FakeCad` reports the file specifying: the cylinder's diameter.
+fn fake_pmi() -> lapidary_core::Pmi {
+    lapidary_core::Pmi {
+        dimensions: vec![lapidary_core::PmiDimension {
+            kind: "diameter".to_owned(),
+            value: 22.0,
+            upper: Some(0.05),
+            lower: Some(0.0),
+            faces: vec![lapidary_core::PmiFace {
+                prototype: "0:1:1:1".to_owned(),
+                face: Some(1),
+            }],
+        }],
+        tolerances: Vec::new(),
+        datums: Vec::new(),
     }
 }
 
@@ -2571,7 +2590,7 @@ async fn a_step_files_tree_and_entities_are_stored_beside_its_rungs(pool: PgPool
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT p.name, d.kind, d.blake3 FROM derivative d \
          JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
-         WHERE d.kind IN ('structure', 'entities') ORDER BY d.kind",
+         WHERE d.kind IN ('structure', 'entities', 'pmi') ORDER BY d.kind",
     )
     .fetch_all(&pool)
     .await
@@ -2584,9 +2603,10 @@ async fn a_step_files_tree_and_entities_are_stored_beside_its_rungs(pool: PgPool
         kinds,
         vec![
             ("fixture-plate-lp-9000-00", "entities"),
+            ("fixture-plate-lp-9000-00", "pmi"),
             ("fixture-plate-lp-9000-00", "structure"),
         ],
-        "the STEP part has both, and the mesh neither"
+        "the STEP part has all three, and the mesh none"
     );
 
     let store = lapidary_storage::DerivativeStore::open(blob_root.path());
@@ -2595,7 +2615,14 @@ async fn a_step_files_tree_and_entities_are_stored_beside_its_rungs(pool: PgPool
             .get(&BlobHash::parse_hex(hex).expect("a hash"))
             .expect("the bytes are in the store")
     };
-    let tree: AssemblyTree = serde_json::from_slice(&read(&rows[1].2)).expect("the tree parses");
+    let pmi: lapidary_core::Pmi =
+        serde_json::from_slice(&read(&rows[1].2)).expect("the PMI parses");
+    assert_eq!(
+        pmi,
+        fake_pmi(),
+        "what the file specified is stored as it was read"
+    );
+    let tree: AssemblyTree = serde_json::from_slice(&read(&rows[2].2)).expect("the tree parses");
     assert_eq!(tree, fake_tree());
     let entities: serde_json::Value =
         serde_json::from_slice(&read(&rows[0].2)).expect("the entities parse");

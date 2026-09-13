@@ -95,7 +95,7 @@ impl Kernel for MockKernel {
                 DerivativeKind::TessellationL0 => tessellations.push(canned_rung(Lod::L0)),
                 DerivativeKind::TessellationL1 => tessellations.push(canned_rung(Lod::L1)),
                 DerivativeKind::TessellationL2 => tessellations.push(canned_rung(Lod::L2)),
-                DerivativeKind::Structure | DerivativeKind::Entities => {}
+                DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => {}
             }
         }
         Ok(KernelOutput {
@@ -108,6 +108,7 @@ impl Kernel for MockKernel {
             provenance: crate::MeasurementProvenance::TESSELLATED,
             structure: None,
             metadata: None,
+            pmi: None,
             // The mock's fixtures are chosen to be renderable, so nothing here refuses.
             // A test that wants a refusal wants the real kernel and a degenerate mesh —
             // `mesh_kernel.rs` has that fixture, because inventing one here would prove

@@ -14,7 +14,7 @@ Treating these the same is the most common way this kind of app becomes slow and
 | Class | Examples | Size | Re-derivable? | Access |
 |---|---|---|---|---|
 | **Source** | STEP, STL, 3MF, OBJ, drawing PDF | 1 MB – 2 GB | **Never** | Cold |
-| **Derivative** | glTF LODs, structure, entities | 100 KB – 200 MB | Yes, deterministically | Warm |
+| **Derivative** | glTF LODs, structure, entities, PMI | 100 KB – 200 MB | Yes, deterministically | Warm |
 | **Preview** | thumbnails | 5 – 60 KB | Yes, cheaply | **Hot** |
 
 ```
@@ -443,7 +443,7 @@ blob(
 
 derivative(
   id uuid PRIMARY KEY, revision_id uuid,
-  kind text,                            -- tessellation_l0|l1|l2|structure|entities|thumbnail
+  kind text,                            -- tessellation_l0|l1|l2|structure|entities|pmi|thumbnail
   blake3 text, thumb_bytes bytea,       -- inline if < 64 KB
   kernel_version text, params_json jsonb, created_at timestamptz
 );

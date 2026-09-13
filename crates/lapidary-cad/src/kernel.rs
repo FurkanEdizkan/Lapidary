@@ -1,5 +1,5 @@
 use crate::cluster::Tessellation;
-pub use lapidary_core::{AssemblyNode, AssemblyTree, Entity, MeasurementProvenance};
+pub use lapidary_core::{AssemblyNode, AssemblyTree, Entity, MeasurementProvenance, Pmi};
 use lapidary_core::{DerivativeKind, MeshMeasurements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -78,6 +78,9 @@ pub struct KernelOutput {
     pub structure: Option<AssemblyTree>,
     /// What a CAD file says about itself. `None` for a mesh, which says nothing.
     pub metadata: Option<CadMetadata>,
+    /// The dimensions, tolerances and datums a CAD file specifies. `None` for a mesh, and for a
+    /// CAD file that specifies none.
+    pub pmi: Option<Pmi>,
     /// Derivatives that were asked for and could not be made, with the reason.
     ///
     /// **A derivative is not the part.** The mesh parsed — measurements are above and are

@@ -10,6 +10,7 @@ mod job;
 pub mod manifest;
 mod measurement;
 mod part;
+mod pmi;
 pub mod slug;
 
 pub use approximate::Approximate;
@@ -23,6 +24,7 @@ pub use ids::{
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance};
 pub use part::{LibraryMode, PartSummary, path_escapes, source_format};
+pub use pmi::{Pmi, PmiDatum, PmiDimension, PmiFace, PmiTolerance};
 
 #[cfg(test)]
 mod tests {
