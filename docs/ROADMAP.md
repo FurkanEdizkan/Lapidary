@@ -465,8 +465,12 @@ What it does not do:
     from the viewer.
 - **One mesh.** A cut together with an assembly's hidden parts, and a STEP part's exact readings
   under a cut, need OCCT, which this check did not have.
-- **The first cut in a session compiles a program** for the clipped material. How long that takes
-  was not measured.
+- **The first cut in a session compiles a program** for the clipped material, and how long that
+  takes was not measured. Turning the cut off, or leaving the part, should cost no compile on the
+  next open.
+  - three 0.186 keeps each material's programs by configuration until the material is disposed
+    (`WebGLRenderer.getProgram`), and the session's material never is.
+  - That was read from three's source, not timed.
 
 **Early, 2026-09-14: saved filters.** The grid's filters (search, category, format, material and
 tag) save under a name per library (`saved_filter`, `0023`). They are listed in the grid's rail
