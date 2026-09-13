@@ -139,6 +139,16 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{library}/jobs/{batch}/events",
                     get(jobs::batch_events),
                 )
+                // Every failure past the status's sample, and the retry. Both under the batch
+                // and its library, so the library check is the status route's own.
+                .route(
+                    "/api/libraries/{library}/jobs/{batch}/failed",
+                    get(jobs::failed),
+                )
+                .route(
+                    "/api/libraries/{library}/jobs/{batch}/retry",
+                    post(jobs::retry),
+                )
                 // The library's own settings and the two trigger routes. `Role::Api` out of
                 // necessity, not preference: nothing proxies a browser to the worker, so
                 // mounting these there would make them unreachable from the UI that exists to

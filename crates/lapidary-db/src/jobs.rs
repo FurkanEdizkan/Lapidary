@@ -30,7 +30,7 @@ fn to_timestamp(column: &'static str, micros: i64) -> Result<Timestamp, DbError>
 
 /// The most failures one status response carries. A thousand-file disaster must return a
 /// readable payload, and `failed_total` still reports the real number.
-const FAILED_SAMPLE: i64 = 100;
+pub const FAILED_SAMPLE: i64 = 100;
 
 /// `complete`/`fail`/`reschedule` all guard their `UPDATE` with `AND state = 'running'`
 /// (see `complete`'s doc comment for why), so zero rows affected is not an error -- most
@@ -548,6 +548,48 @@ impl PgJobs {
             return Ok(None);
         }
 
+        let failed = self.failures(library, batch, None, FAILED_SAMPLE).await?;
+
+        Ok(Some(BatchStatus {
+            batch_id: batch,
+            library_id: library,
+            total: total as u32,
+            pending: pending as u32,
+            running: running as u32,
+            ingested: ingested as u32,
+            skipped: skipped as u32,
+            rendered: rendered as u32,
+            scanned: scanned as u32,
+            migrated: migrated as u32,
+            migrating: migrating as u32,
+            failed_total: failed_total as u32,
+            failed,
+            // Microseconds in, jiff out -- the conversion belongs here, at the database
+            // boundary, so no wire type ever carries a raw epoch integer. `started` is
+            // provably `Some` here: `total != 0` means at least one row exists, and
+            // `min(created_at)` over a non-empty set cannot be NULL. `unwrap_or_default`
+            // (not `unwrap()` -- CLAUDE.md bans that outside tests) documents that this
+            // is an invariant, not a real fallback.
+            started_at: to_timestamp("job.created_at", started.unwrap_or_default())?,
+            finished_at: finished
+                .map(|us| to_timestamp("job.updated_at", us))
+                .transpose()?,
+        }))
+    }
+
+    /// One page of a batch's failed jobs, in enqueue order, after the job `after`.
+    ///
+    /// `batch_status` carries the first [`FAILED_SAMPLE`] of these; the failure list pages
+    /// past them by the last job it holds. The cursor's position is read back off that job's
+    /// row whatever state it is in now, so a job retried out of the list still marks where
+    /// the list got to.
+    pub async fn failures(
+        &self,
+        library: LibraryId,
+        batch: BatchId,
+        after: Option<JobId>,
+        limit: i64,
+    ) -> Result<Vec<JobFailure>, DbError> {
         // `, id` is load-bearing, not decoration: `enqueue` inserts a whole batch
         // in one statement, and Postgres's `now()` is constant for the duration of a
         // transaction, so every job in a real batch shares the exact same
@@ -574,54 +616,77 @@ impl PgJobs {
         // revision still shows up as a failure -- the job did fail -- but the join
         // misses and `COALESCE` falls through to `''`, so the response never leaks what
         // that other library calls its own part.
-        let failures: Vec<(Option<String>, String, i32)> = sqlx::query_as(
-            "SELECT COALESCE(j.payload->>'path', p.name, ''), j.last_error, j.attempts \
+        let rows: Vec<(Uuid, Option<String>, String, i32)> = sqlx::query_as(
+            "SELECT j.id, COALESCE(j.payload->>'path', p.name, ''), j.last_error, j.attempts \
              FROM job j \
              LEFT JOIN revision rv \
                     ON rv.id = CASE WHEN j.kind = 'derive' \
                                      THEN (j.payload->>'revision')::uuid END \
              LEFT JOIN part p ON p.id = rv.part_id AND p.library_id = j.library_id \
              WHERE j.batch_id = $1 AND j.library_id = $2 AND j.state = 'failed' \
+               AND ($4::uuid IS NULL \
+                    OR (j.created_at, j.id) > (SELECT created_at, id FROM job WHERE id = $4)) \
              ORDER BY j.created_at, j.id LIMIT $3",
         )
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
-        .bind(FAILED_SAMPLE)
+        .bind(limit)
+        .bind(after.map(|job| job.as_uuid()))
         .fetch_all(&self.0)
         .await?;
 
-        Ok(Some(BatchStatus {
-            batch_id: batch,
-            library_id: library,
-            total: total as u32,
-            pending: pending as u32,
-            running: running as u32,
-            ingested: ingested as u32,
-            skipped: skipped as u32,
-            rendered: rendered as u32,
-            scanned: scanned as u32,
-            migrated: migrated as u32,
-            migrating: migrating as u32,
-            failed_total: failed_total as u32,
-            failed: failures
-                .into_iter()
-                .map(|(path, reason, attempts)| JobFailure {
-                    path: path.unwrap_or_default(),
-                    reason,
-                    attempts: attempts.max(0) as u32,
-                })
-                .collect(),
-            // Microseconds in, jiff out -- the conversion belongs here, at the database
-            // boundary, so no wire type ever carries a raw epoch integer. `started` is
-            // provably `Some` here: `total != 0` means at least one row exists, and
-            // `min(created_at)` over a non-empty set cannot be NULL. `unwrap_or_default`
-            // (not `unwrap()` -- CLAUDE.md bans that outside tests) documents that this
-            // is an invariant, not a real fallback.
-            started_at: to_timestamp("job.created_at", started.unwrap_or_default())?,
-            finished_at: finished
-                .map(|us| to_timestamp("job.updated_at", us))
-                .transpose()?,
-        }))
+        Ok(rows
+            .into_iter()
+            .map(|(id, path, reason, attempts)| JobFailure {
+                job: JobId::from_uuid(id),
+                path: path.unwrap_or_default(),
+                reason,
+                attempts: attempts.max(0) as u32,
+            })
+            .collect())
+    }
+
+    /// Puts a batch's failed jobs back in the queue — all of them, or only `job` — and says
+    /// how many went back.
+    ///
+    /// `attempts` starts again from zero: whoever presses Retry has usually changed something
+    /// (replaced the file, remounted the directory), and a changed input deserves a fresh
+    /// job's tries. `run_after` is now, or a row left behind a backoff would wait it out.
+    /// `last_error` stays, as `reschedule` keeps it — until the job runs again, the last
+    /// reason is still the truth.
+    ///
+    /// The batch reopens by arithmetic rather than by a flag: `batch_status` reports a finish
+    /// only while nothing is pending, so the next read of it sees the batch running again.
+    ///
+    /// `migrate_storage` is left out. `job_migrate_storage_pending_per_library` allows one
+    /// pending migration per library, migrations re-enqueue themselves
+    /// (`reenqueue_migration_if_absent`), and a retry here would collide with that successor.
+    pub async fn retry(
+        &self,
+        library: LibraryId,
+        batch: BatchId,
+        job: Option<JobId>,
+    ) -> Result<u64, DbError> {
+        let retried = sqlx::query(
+            "UPDATE job SET state = 'pending', attempts = 0, run_after = now(), \
+                            leased_by = NULL, lease_expires_at = NULL, updated_at = now() \
+             WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
+               AND kind <> 'migrate_storage' AND ($3::uuid IS NULL OR id = $3)",
+        )
+        .bind(batch.as_uuid())
+        .bind(library.as_uuid())
+        .bind(job.map(|job| job.as_uuid()))
+        .execute(&self.0)
+        .await?
+        .rows_affected();
+
+        if retried > 0 {
+            sqlx::query("SELECT pg_notify($1, '')")
+                .bind(JOB_CHANNEL)
+                .execute(&self.0)
+                .await?;
+        }
+        Ok(retried)
     }
 
     /// A dedicated connection listening for enqueue notifications. Outside the pool by

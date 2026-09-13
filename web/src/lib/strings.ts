@@ -602,9 +602,19 @@ export const strings = {
      * rather than letting a capped page read as the whole library.
      */
     more: (hidden: number) =>
-      hidden === 1
-        ? 'And 1 more not listed here.'
-        : `And ${hidden.toLocaleString('en-US')} more not listed here.`,
+      hidden === 1 ? 'Show 1 more' : `Show ${hidden.toLocaleString('en-US')} more`,
+    moreFailed:
+      'The rest of the list did not load. Check the connection, then press the button again.',
+    retry: 'Retry',
+    /**
+     * The per-row button's accessible name. A list of buttons all named "Retry" tells a
+     * screen reader nothing about which file each one retries.
+     */
+    retryOne: (path: string) => (path === '' ? 'Retry this job' : `Retry ${path}`),
+    /** Offered only with two failures or more; with one, the row's own Retry is that button. */
+    retryAll: (count: number) => `Retry all ${count.toLocaleString('en-US')}`,
+    retryFailed:
+      'The retry did not reach the server. Check the connection, then press Retry again.',
   },
   /**
    * The per-card download control. Its own group rather than a field on `parts`: this is

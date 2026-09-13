@@ -1290,3 +1290,129 @@ async fn a_derive_job_naming_another_librarys_revision_does_not_leak_its_name(po
         status.failed[0].path
     );
 }
+
+async fn fail_all(pool: &PgPool, batch: BatchId) {
+    sqlx::query(
+        "UPDATE job SET state = 'failed', attempts = 3, run_after = now() + interval '1 hour', \
+                        last_error = 'Could not read this STL - the file ends mid-facet.' \
+         WHERE batch_id = $1",
+    )
+    .bind(batch.as_uuid())
+    .execute(pool)
+    .await
+    .expect("fails the batch");
+}
+
+/// Pages past the sample by the last job held, in enqueue order, with nothing repeated and
+/// nothing skipped.
+#[sqlx::test(migrations = "./migrations")]
+async fn failures_page_past_the_sample_in_enqueue_order(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let paths: Vec<String> = (0..5)
+        .map(|n| format!("bracket-lp-{n:04}-00.stl"))
+        .collect();
+    let (batch, _) = jobs.enqueue_scan(seeded(), &paths).await.expect("enqueues");
+    fail_all(&pool, batch).await;
+
+    let mut listed = Vec::new();
+    let mut after = None;
+    loop {
+        let page = jobs
+            .failures(seeded(), batch, after, 2)
+            .await
+            .expect("a page");
+        listed.extend(page.iter().map(|failure| failure.path.clone()));
+        if page.len() < 2 {
+            break;
+        }
+        after = page.last().map(|failure| failure.job);
+    }
+    assert_eq!(listed, paths);
+}
+
+/// Retry puts failed files back as fresh jobs — pending now, attempts from zero, the last
+/// reason kept — and the batch is unfinished again. Only this library's batch, only failed
+/// rows, and one job alone when one is named.
+#[sqlx::test(migrations = "./migrations")]
+async fn retrying_puts_failed_jobs_back_in_the_queue_and_reopens_the_batch(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let paths = ["spacer-lp-2001-00.stl", "vee-block-lp-4410-01.stl"].map(str::to_owned);
+    let (batch, _) = jobs.enqueue_scan(seeded(), &paths).await.expect("enqueues");
+    fail_all(&pool, batch).await;
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    assert!(status.finished_at.is_some());
+    let spacer = status.failed[0].job;
+
+    let elsewhere = LibraryId::from_uuid(Uuid::nil());
+    assert_eq!(jobs.retry(elsewhere, batch, None).await.expect("runs"), 0);
+
+    assert_eq!(
+        jobs.retry(seeded(), batch, Some(spacer))
+            .await
+            .expect("retries"),
+        1
+    );
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    assert_eq!(status.failed_total, 1, "only the named job went back");
+    assert!(
+        status.finished_at.is_none(),
+        "a pending job reopens the batch"
+    );
+    let (state, attempts, due, last_error): (String, i32, bool, Option<String>) = sqlx::query_as(
+        "SELECT state, attempts, run_after <= now(), last_error FROM job WHERE id = $1",
+    )
+    .bind(spacer.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("reads the row");
+    assert_eq!((state.as_str(), attempts, due), ("pending", 0, true));
+    assert!(
+        last_error.is_some(),
+        "the last reason stays until the job runs again"
+    );
+    let claimed = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("the retried job is due now");
+    assert_eq!(claimed.id, spacer);
+
+    assert_eq!(
+        jobs.retry(seeded(), batch, None)
+            .await
+            .expect("retries the rest"),
+        1,
+        "the one still failed, not the one now running"
+    );
+}
+
+/// At most one migration may be pending per library, so a failed one retried beside its
+/// successor would break that index. Retry leaves migrations to re-enqueue themselves.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_migration_is_not_retried_from_the_failure_list(pool: PgPool) {
+    let failed = insert_job(&pool, seeded(), "migrate_storage", "pending", None).await;
+    let (batch,): (Uuid,) = sqlx::query_as(
+        "UPDATE job SET state = 'failed', \
+                        last_error = 'Could not move this model into its directory.' \
+         WHERE id = $1 RETURNING batch_id",
+    )
+    .bind(failed.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("fails the migration");
+    insert_job(&pool, seeded(), "migrate_storage", "pending", None).await;
+
+    let retried = PgJobs(pool.clone())
+        .retry(seeded(), BatchId::from_uuid(batch), None)
+        .await
+        .expect("leaving a migration out is not an error");
+    assert_eq!(retried, 0);
+}

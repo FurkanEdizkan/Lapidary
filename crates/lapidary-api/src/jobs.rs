@@ -10,16 +10,18 @@
 
 use crate::AppState;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BatchId, LibraryId};
-use lapidary_db::{DbError, PgJobs};
+use lapidary_core::{BatchId, JobFailure, JobId, LibraryId};
+use lapidary_db::{DbError, FAILED_SAMPLE, PgJobs};
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use ts_rs::TS;
 
 /// `GET /api/libraries/{library}/jobs/{batch}` — how a scan is going, and how it ended.
 pub async fn batch_status(
@@ -126,6 +128,87 @@ pub async fn batch_events(
     Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
 }
 
+/// One page of a batch's failures, past the sample `BatchStatus` carries.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FailurePage {
+    pub failed: Vec<JobFailure>,
+    /// The last job on a full page, to ask for the next one with. `None` once a page comes
+    /// back short, which proves there is nothing after it.
+    pub next: Option<JobId>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FailedQuery {
+    #[serde(default)]
+    after: Option<JobId>,
+}
+
+/// `GET /api/libraries/{library}/jobs/{batch}/failed?after=` — every failure in a batch, a
+/// page at a time, for the batch whose failures outnumber the sample its status carries.
+///
+/// A batch in another library lists nothing, exactly as a batch with no failures does: the
+/// query is scoped by the library in the path, as `batch_status` is.
+pub async fn failed(
+    State(state): State<AppState>,
+    Path((library, batch)): Path<(LibraryId, BatchId)>,
+    Query(FailedQuery { after }): Query<FailedQuery>,
+) -> Response {
+    match PgJobs(state.db)
+        .failures(library, batch, after, FAILED_SAMPLE)
+        .await
+    {
+        Ok(failed) => {
+            let next = if failed.len() as i64 == FAILED_SAMPLE {
+                failed.last().map(|failure| failure.job)
+            } else {
+                None
+            };
+            Json(FailurePage { failed, next }).into_response()
+        }
+        Err(err) => internal_error(&err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RetryQuery {
+    #[serde(default)]
+    job: Option<JobId>,
+}
+
+/// What a retry did.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RetryAccepted {
+    /// How many failed jobs went back in the queue. Zero is an answer rather than an error:
+    /// the job was retried already, finished another way, or is a migration, which retries
+    /// itself.
+    pub retried: u32,
+}
+
+/// `POST /api/libraries/{library}/jobs/{batch}/retry?job=` — the batch's failed files back in
+/// the queue, or only `job`.
+///
+/// `job` rides in the query rather than the path. `/jobs/{job}/retry` would put a parameter
+/// where `/jobs/{batch}` already has one under another name, which the router refuses — and
+/// scoping the retry under its batch keeps the library check in the same place as the status
+/// route's.
+pub async fn retry(
+    State(state): State<AppState>,
+    Path((library, batch)): Path<(LibraryId, BatchId)>,
+    Query(RetryQuery { job }): Query<RetryQuery>,
+) -> Response {
+    match PgJobs(state.db).retry(library, batch, job).await {
+        Ok(retried) => Json(RetryAccepted {
+            retried: u32::try_from(retried).unwrap_or(u32::MAX),
+        })
+        .into_response(),
+        Err(err) => internal_error(&err),
+    }
+}
+
 /// No job rows for that batch in that library. Three different situations arrive here and
 /// all three are honestly described by "no scan with that id has run in this library":
 /// an id that was never issued, an id belonging to another library (which must not be
@@ -148,7 +231,7 @@ fn no_such_batch() -> Response {
 /// gets the real error through the log, the client gets whatever `client_message` decides
 /// is safe to hand back.
 fn internal_error(err: &DbError) -> Response {
-    tracing::error!(error = %err, "batch status query failed");
+    tracing::error!(error = %err, "job query failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

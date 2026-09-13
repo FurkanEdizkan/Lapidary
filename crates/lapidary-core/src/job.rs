@@ -201,6 +201,8 @@ impl JobPayload {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct JobFailure {
+    /// The job that failed, so one file can be retried by itself.
+    pub job: crate::JobId,
     pub path: String,
     /// The handler's message, verbatim. A person reads this in the UI, so it says what
     /// broke and what to do about it.
@@ -312,6 +314,7 @@ mod tests {
             migrating: 0,
             failed_total: 1,
             failed: vec![JobFailure {
+                job: crate::JobId::new(),
                 path: "spacer-lp-2001-00.stl".to_owned(),
                 reason: "Could not read this STL - it declares 24 facets but the file \
                          ends after 11. Re-export from your CAD tool and retry."

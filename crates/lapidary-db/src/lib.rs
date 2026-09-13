@@ -7,7 +7,7 @@ mod migrate;
 mod repo;
 
 pub use folders::{FolderRow, PgFolders};
-pub use jobs::{JOB_CHANNEL, JobRow, PgJobs};
+pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
     DerivativeBytes, DownloadSource, EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes,

@@ -165,9 +165,14 @@ function stubFetch(routes: {
   libraries?: () => Promise<StubResponse>;
   libraryCreate?: () => Promise<StubResponse>;
   facets?: () => Promise<StubResponse>;
+  retry?: () => Promise<StubResponse>;
+  failures?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    // Above the batch rule further down, which every job route contains.
+    if (url.includes("/jobs/") && url.includes("/retry")) return (routes.retry ?? pending)();
+    if (url.includes("/jobs/") && url.includes("/failed")) return (routes.failures ?? pending)();
     // The library set, not any one library — above the `/api/libraries/{id}` rules below,
     // which would otherwise claim this path too.
     if (url === "/api/libraries" && init?.method === "POST")
@@ -860,6 +865,7 @@ test("reports files that could not be read alongside the progress", async () => 
         failedTotal: 1,
         failed: [
           {
+            job: "0193a0f0-0000-7000-8000-00000000f001",
             path: "truncated-lp-9999-00.stl",
             reason: "truncated",
             attempts: 1,
@@ -896,7 +902,7 @@ test("a failed job shows the reason it failed, not only that it failed", async (
         failedTotal: 1,
         // A `scan_directory` job has no path: it is the directory that failed, and the
         // reason names it. `COALESCE(payload->>'path', p.name, '')` gives back `''`.
-        failed: [{ path: "", reason, attempts: 1 }],
+        failed: [{ job: "0193a0f0-0000-7000-8000-00000000f002", path: "", reason, attempts: 1 }],
         finishedAt: "2026-09-05T09:14:02.114Z",
       }),
     ),
@@ -911,6 +917,7 @@ test("a failed job shows the reason it failed, not only that it failed", async (
 // reason alone does not say which file, and slice 2's `path` column exists for that.
 test("a per-file failure names the file alongside the reason", async () => {
   const failure = {
+    job: "0193a0f0-0000-7000-8000-00000000f003",
     path: "spacer-lp-2001-00.stl",
     reason:
       "Could not read this STL — it declares 24 facets but the file ends after 11. " +
@@ -954,6 +961,7 @@ test("a failure list capped by the server says how many it is not showing", asyn
         failedTotal: 120,
         failed: [
           {
+            job: "0193a0f0-0000-7000-8000-00000000f004",
             path: "vee-block-lp-4410-01.stl",
             reason: "not watertight",
             attempts: 1,
@@ -966,6 +974,120 @@ test("a failure list capped by the server says how many it is not showing", asyn
   renderIndex({ batch: BATCH_ID });
 
   expect(await screen.findByText(strings.failure.more(119))).toBeTruthy();
+});
+
+const FAILED_SPACER = {
+  job: "0193a0f0-0000-7000-8000-00000000f0a1",
+  path: "spacer-lp-2001-00.stl",
+  reason:
+    "Could not read this STL — it declares 24 facets but the file ends after 11. " +
+    "Re-export from your CAD tool and retry.",
+  attempts: 3,
+};
+const FAILED_VEE_BLOCK = {
+  job: "0193a0f0-0000-7000-8000-00000000f0a2",
+  path: "vee-block-lp-4410-01.stl",
+  reason: "Could not read this STL — the file is empty. Re-export from your CAD tool and retry.",
+  attempts: 3,
+};
+
+/**
+ * Retry names the job, and the page reads the batch again afterwards: the server reopened it,
+ * and the poll had stopped on the finished status it held.
+ */
+test("retrying one failed file asks for that job and reads the batch again", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 3,
+        pending: 0,
+        ingested: 1,
+        failedTotal: 2,
+        failed: [FAILED_SPACER, FAILED_VEE_BLOCK],
+        finishedAt: "2026-09-05T09:14:02.114Z",
+      }),
+    ),
+    retry: ok({ retried: 1 }),
+  });
+  renderIndex({ batch: BATCH_ID });
+  const statusUrl = `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}`;
+  const button = await screen.findByRole("button", {
+    name: strings.failure.retryOne(FAILED_SPACER.path),
+  });
+  const readsBefore = fetchMock.mock.calls.filter(([url]) => url === statusUrl).length;
+
+  fireEvent.click(button);
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(`${statusUrl}/retry?job=${FAILED_SPACER.job}`, {
+      method: "POST",
+    }),
+  );
+  await waitFor(() =>
+    expect(fetchMock.mock.calls.filter(([url]) => url === statusUrl).length).toBeGreaterThan(
+      readsBefore,
+    ),
+  );
+});
+
+test("retry all asks for the whole batch", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 3,
+        pending: 0,
+        ingested: 1,
+        failedTotal: 2,
+        failed: [FAILED_SPACER, FAILED_VEE_BLOCK],
+        finishedAt: "2026-09-05T09:14:02.114Z",
+      }),
+    ),
+    retry: ok({ retried: 2 }),
+  });
+  renderIndex({ batch: BATCH_ID });
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.failure.retryAll(2) }));
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}/retry`,
+      { method: "POST" },
+    ),
+  );
+});
+
+/** The failures past the server's sample are one press away, fetched after the last listed. */
+test("showing more lists the failures past the sample", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([])),
+    batch: ok(
+      batchStatus({
+        total: 150,
+        pending: 0,
+        ingested: 30,
+        failedTotal: 2,
+        failed: [FAILED_SPACER],
+        finishedAt: "2026-09-05T09:14:02.114Z",
+      }),
+    ),
+    failures: ok({ failed: [FAILED_VEE_BLOCK], next: null }),
+  });
+  renderIndex({ batch: BATCH_ID });
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.failure.more(1) }));
+
+  expect(
+    await screen.findByText(strings.failure.line(FAILED_VEE_BLOCK.path, FAILED_VEE_BLOCK.reason)),
+  ).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith(
+    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}/failed?after=${FAILED_SPACER.job}`,
+  );
+  expect(screen.queryByRole("button", { name: strings.failure.more(1) })).toBeNull();
 });
 
 test("stops polling once the batch reports it finished", async () => {
@@ -1273,7 +1395,7 @@ file. Nothing was moved or removed.";
         migrating: 5,
         migrated: 4,
         failedTotal: 1,
-        failed: [{ path: "", reason, attempts: 3 }],
+        failed: [{ job: "0193a0f0-0000-7000-8000-00000000f005", path: "", reason, attempts: 3 }],
         finishedAt: "2026-09-06T10:14:02.116Z",
       }),
     ),
