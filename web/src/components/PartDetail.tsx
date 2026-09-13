@@ -325,7 +325,20 @@ const SOURCE_FIELDS = [
  * `<dl>` would be one refactor away from dropping that.
  */
 /** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
-const Viewer = lazy(() => import('./Viewer'))
+const loadViewer = () => import('./Viewer')
+const Viewer = lazy(loadViewer)
+
+/**
+ * Fetch the viewer's chunk and compile its shaders ahead of an open; the grid calls this on hover
+ * (`DATA.md` §2.4). Nothing happens where the browser cannot draw, and a failure is left for the
+ * open itself to meet and report.
+ */
+export function warmViewer(): Promise<void> {
+  if (!hasWebGL()) return Promise.resolve()
+  return loadViewer()
+    .then((viewer) => viewer.prepare())
+    .catch(() => undefined)
+}
 
 const FRAME =
   'relative h-40 w-40 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'

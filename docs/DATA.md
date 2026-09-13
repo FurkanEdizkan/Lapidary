@@ -362,6 +362,14 @@ fast scrolling saturates the queue with parts already passed.
 | Search, 100 k parts | < 150 ms | — |
 | Facet counts, 100 k parts | < 300 ms | — |
 
+**Timing an open.** `web/scripts/open-timing.mjs` measures the part-open rows against a running
+stack, with nothing but Node and `google-chrome`: `node web/scripts/open-timing.mjs --gl
+swiftshader` opens every card in the grid three rounds over, and `--part <name>` times one part's
+open and its L2 from a fresh session each run. `--gl gpu` draws on the machine's GPU instead,
+`--throttle` emulates 100 Mbit, and `--dwell` is how long the pointer rests on a card before it
+presses, which is the time the hover has to prefetch. It needs a stack and a browser, so it is not
+a verify gate; `ROADMAP.md` records what it measured and how.
+
 ---
 
 ## 3. Metadata and search

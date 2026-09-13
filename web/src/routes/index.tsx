@@ -28,7 +28,7 @@ import {
 import { flipFrom } from '../lib/flip'
 import { Dialog } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
-import { Detail } from '../components/PartDetail'
+import { Detail, warmViewer } from '../components/PartDetail'
 import {
   DENSITIES,
   LAYOUTS,
@@ -433,14 +433,16 @@ export function Index({
   const looking = openPart === undefined ? undefined : loaded.find((card) => card.id === openPart)
 
   /**
-   * Prefetch on intent (`DATA.md` §2.4): a hovered card warms its L0 rung, and an opened part warms
-   * its neighbours' — the parts a person looks at next. L0 and not L1 for the neighbours, because a
+   * Prefetch on intent (`DATA.md` §2.4): a hovered card warms its L0 rung and the viewer itself, and
+   * an opened part warms its neighbours' — the parts a person looks at next. L0 and not L1 for the neighbours, because a
    * card carries only its L0 hash and fetching two more details to learn the L1s would cost more
    * than the prefetch saves. Everything in flight is dropped when the grid changes under it.
    */
   const [prefetch] = useState(() => createPrefetch(2))
   const warm = (card: PartCard | undefined) => {
-    if (card !== undefined && card.tessellationL0 !== null) prefetch.request(blobUrl(card.tessellationL0))
+    if (card === undefined || card.tessellationL0 === null) return
+    prefetch.request(blobUrl(card.tessellationL0))
+    void warmViewer()
   }
   const lookingIndex = looking === undefined ? -1 : loaded.indexOf(looking)
   useEffect(() => {
