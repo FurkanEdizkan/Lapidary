@@ -7,6 +7,8 @@ import {
   downloadUrl,
   fetchBatchStatus,
   fetchFailures,
+  movePart,
+  removePart,
   retryFailed,
   fetchHealth,
   createLibrary,
@@ -45,11 +47,14 @@ import {
   type Sort,
 } from '../lib/preferences'
 import { strings } from '../lib/strings'
+import { eachAtMost } from '../lib/bulk'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import {
   FolderTree,
   MovePartDialog,
+  PickCategoryDialog,
+  refusalMessage,
   PART_DRAG_TYPE,
   partDragPayload,
   useFolders,
@@ -373,6 +378,94 @@ export function Index({
   // the extent line and the empty state) and they must agree about how many parts there
   // are.
   const loaded = parts.data?.pages.flatMap((page) => page.parts) ?? []
+
+  /**
+   * Bulk selection. Ids rather than cards, so a refetch that replaces the card objects keeps
+   * what is picked; off by default, so a card keeps its one tab stop.
+   */
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<ReadonlySet<PartId>>(new Set())
+  const [anchor, setAnchor] = useState<PartId | null>(null)
+  const [bulk, setBulk] = useState<BulkProgress | null>(null)
+  const [picking, setPicking] = useState(false)
+  // Ids picked out of one grid mean nothing in another: a category, format or search that
+  // changes which parts are on screen would otherwise leave hidden parts selected, and a
+  // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
+  const scope = [library, folderId ?? '', format ?? '', q ?? ''].join('\u0000')
+  const [selectionScope, setSelectionScope] = useState(scope)
+  if (scope !== selectionScope) {
+    setSelectionScope(scope)
+    setSelected(new Set())
+    setAnchor(null)
+    setBulk(null)
+  }
+  const toggle = (id: PartId, range: boolean) => {
+    setSelected((held) => {
+      const next = new Set(held)
+      const from = range && anchor !== null ? loaded.findIndex((part) => part.id === anchor) : -1
+      const to = loaded.findIndex((part) => part.id === id)
+      if (from !== -1 && to !== -1) {
+        for (const part of loaded.slice(Math.min(from, to), Math.max(from, to) + 1)) {
+          next.add(part.id)
+        }
+      } else if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+    setAnchor(id)
+  }
+  const runBulk = async (task: (part: PartCard) => Promise<string | null>) => {
+    const chosen = loaded.filter((part) => selected.has(part.id))
+    let done = 0
+    setBulk({ done, total: chosen.length, failures: [] })
+    const failures = await eachAtMost(chosen, BULK_CONCURRENCY, async (part) => {
+      const reason = await task(part)
+      done += 1
+      setBulk((now) => (now === null ? now : { ...now, done }))
+      return reason
+    })
+    setBulk({
+      done: chosen.length,
+      total: chosen.length,
+      failures: failures.map(({ item, reason }) => ({ id: item.id, name: item.name, reason })),
+    })
+    // What failed stays selected, so trying again is one press.
+    setSelected(new Set(failures.map(({ item }) => item.id)))
+    void queryClient.invalidateQueries({ queryKey: ['parts', library] })
+    void queryClient.invalidateQueries({ queryKey: ['folders', library] })
+    void queryClient.invalidateQueries({ queryKey: ['facets', library] })
+    void queryClient.invalidateQueries({ queryKey: ['storage', library] })
+  }
+  /**
+   * Every part is sent with the duplicate name acknowledged, which the one-part dialog does not
+   * do. Its warning exists so a person confirms once that two models may share a name; across
+   * forty parts it would be forty dialogs, and the answer to each is already in the choice to
+   * move them all. The refusals that are dead ends still come back, per part.
+   */
+  const moveSelected = (folder: FolderId | null) =>
+    runBulk(async (part) => {
+      try {
+        const outcome = await movePart(part.id, folder, true)
+        if (outcome.kind === 'moved') return null
+        return outcome.reason === 'duplicateName'
+          ? strings.folders.moveRefused
+          : refusalMessage(outcome.reason)
+      } catch {
+        return strings.folders.moveFailed
+      }
+    })
+  const removeSelected = () =>
+    runBulk(async (part) => {
+      try {
+        await removePart(part.id)
+        return null
+      } catch {
+        return strings.removal.removeFailed
+      }
+    })
   const scan = useQuery({
     queryKey: ['batch', library, activeBatch],
     queryFn: () => fetchBatchStatus(library, activeBatch as string),
@@ -656,6 +749,13 @@ export function Index({
             setSort(library, next)
           }}
           searching={q !== undefined}
+          selecting={selecting}
+          onSelecting={(on) => {
+            setSelecting(on)
+            setSelected(new Set())
+            setAnchor(null)
+            setBulk(null)
+          }}
           onUpload={() => picker.current?.click()}
           uploadBusy={upload.isPending}
           search={
@@ -719,6 +819,26 @@ export function Index({
                   : strings.parts.showingAll(loaded.length)}
               </p>
             </div>
+            {selecting ? (
+              <SelectionBar
+                count={selected.size}
+                bulk={bulk}
+                onMove={() => setPicking(true)}
+                onRemove={() => void removeSelected()}
+                onClear={() => setSelected(new Set())}
+              />
+            ) : null}
+            {picking ? (
+              <PickCategoryDialog
+                title={strings.selection.moveTitle(selected.size)}
+                library={library}
+                onPick={(folder) => {
+                  setPicking(false)
+                  void moveSelected(folder)
+                }}
+                onClose={() => setPicking(false)}
+              />
+            ) : null}
             <Grid
               parts={loaded}
               onRender={(part) => renderPart.mutate(part)}
@@ -726,6 +846,10 @@ export function Index({
               hostRoot={instance.data?.hostStorageRoot ?? null}
               density={density}
               layout={layout}
+              selecting={selecting}
+              selected={selected}
+              onToggle={toggle}
+              onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
             />
             <MorePages
               hasMore={parts.hasNextPage}
@@ -913,6 +1037,8 @@ function Toolbar({
   sort,
   onSort,
   searching,
+  selecting,
+  onSelecting,
   onUpload,
   uploadBusy,
   search,
@@ -938,6 +1064,8 @@ function Toolbar({
   onSort: (sort: Sort) => void
   /** A search is running, and a search is in relevance order whatever `sort` says. */
   searching: boolean
+  selecting: boolean
+  onSelecting: (on: boolean) => void
   onUpload: () => void
   uploadBusy: boolean
   /** The search field, built by the route that owns its query. */
@@ -971,6 +1099,14 @@ function Toolbar({
           </Link>
         </nav>
         {search}
+        <button
+          type="button"
+          aria-pressed={selecting}
+          onClick={() => onSelecting(!selecting)}
+          className="ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
+        >
+          {strings.selection.toggle}
+        </button>
         <Menu id="view-menu" label={strings.toolbar.view}>
           <p className="text-xs font-medium text-[var(--color-muted)]">{strings.toolbar.layout}</p>
           <div role="group" aria-label={strings.toolbar.layout} className="flex gap-1.5">
@@ -1901,6 +2037,10 @@ function Grid({
   hostRoot,
   density,
   layout,
+  selecting,
+  selected,
+  onToggle,
+  onSelectAll,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
@@ -1909,6 +2049,11 @@ function Grid({
   hostRoot: string | null
   density: Density
   layout: Layout
+  selecting: boolean
+  selected: ReadonlySet<PartId>
+  /** `range` is a shift-click: everything from the last part toggled to this one. */
+  onToggle: (part: PartId, range: boolean) => void
+  onSelectAll: () => void
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -1952,7 +2097,18 @@ function Grid({
           ? '[contain-intrinsic-size:auto_31rem]'
           : '[contain-intrinsic-size:auto_26rem]'
   return (
-    <ul role="list" className={`grid list-none ${columns}`}>
+    <ul
+      role="list"
+      className={`grid list-none ${columns}`}
+      // Ctrl/Cmd-A inside the grid selects every part loaded, while selecting. Anywhere else
+      // it is still the browser's own select-all.
+      onKeyDown={(event) => {
+        if (selecting && selectsAll(event)) {
+          event.preventDefault()
+          onSelectAll()
+        }
+      }}
+    >
       {parts.map((part) => (
         // `content-visibility: auto` is the virtualization, and it is one CSS property
         // rather than a dependency. It tells the browser to skip layout, paint and image
@@ -1973,7 +2129,16 @@ function Grid({
         // real size once it has rendered one, so this figure only has to be close for the
         // first paint rather than exact forever.
         <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
-          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} layout={layout} />
+          <Card
+            part={part}
+            onRender={onRender}
+            busy={part.id === busyPart}
+            hostRoot={hostRoot}
+            layout={layout}
+            selecting={selecting}
+            selected={selected.has(part.id)}
+            onToggle={onToggle}
+          />
         </li>
       ))}
     </ul>
@@ -1986,6 +2151,82 @@ function Grid({
  * out of a point.
  */
 const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
+
+/** How many parts a bulk action changes at once. See `eachAtMost`. */
+const BULK_CONCURRENCY = 4
+
+type BulkProgress = {
+  done: number
+  total: number
+  failures: { id: PartId; name: string; reason: string }[]
+}
+
+function selectsAll(event: { key: string; ctrlKey: boolean; metaKey: boolean }): boolean {
+  return (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a'
+}
+
+/**
+ * The count, the two actions, and afterwards the parts an action did not change.
+ *
+ * Move and Remove only: purge stays on the Removed page, one part at a time, because it is the
+ * one thing in the product that cannot be undone.
+ */
+function SelectionBar({
+  count,
+  bulk,
+  onMove,
+  onRemove,
+  onClear,
+}: {
+  count: number
+  bulk: BulkProgress | null
+  onMove: () => void
+  onRemove: () => void
+  onClear: () => void
+}) {
+  const busy = bulk !== null && bulk.done < bulk.total
+  const button =
+    'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-60'
+  return (
+    <section
+      aria-label={strings.selection.bar}
+      className="mb-3 flex flex-col gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span aria-live="polite" className="tabular mr-2">
+          {bulk !== null && bulk.done < bulk.total
+            ? strings.selection.working(bulk.done, bulk.total)
+            : strings.selection.count(count)}
+        </span>
+        <button type="button" className={button} disabled={count === 0 || busy} onClick={onMove}>
+          {strings.folders.moveTo}
+        </button>
+        <button
+          type="button"
+          className={button}
+          disabled={count === 0 || busy}
+          onClick={onRemove}
+          title={strings.removal.removeHint}
+        >
+          {strings.removal.remove}
+        </button>
+        <button type="button" className={button} disabled={count === 0 || busy} onClick={onClear}>
+          {strings.selection.clear}
+        </button>
+      </div>
+      {bulk === null || busy || bulk.failures.length === 0 ? null : (
+        <div role="alert">
+          <p>{strings.selection.failedHeading(bulk.failures.length)}</p>
+          <ul role="list" className="mt-1 space-y-1 text-[var(--color-muted)]">
+            {bulk.failures.map((failure) => (
+              <li key={failure.id}>{strings.selection.failure(failure.name, failure.reason)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  )
+}
 
 /**
  * A card's own box, its render's well, and its text, in each layout.
@@ -2051,12 +2292,18 @@ function Card({
   busy,
   hostRoot,
   layout,
+  selecting,
+  selected,
+  onToggle,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
   busy: boolean
   hostRoot: string | null
   layout: Layout
+  selecting: boolean
+  selected: boolean
+  onToggle: (part: PartId, range: boolean) => void
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
@@ -2088,6 +2335,11 @@ function Card({
       onClick={(event) => {
         if (!(event.target instanceof Element)) return
         if (event.target.closest('a, button, input')) return
+        // While selecting, the card is the checkbox's larger target, and the panel waits.
+        if (selecting) {
+          onToggle(part.id, event.shiftKey)
+          return
+        }
         // Measured here rather than in the panel, because by the time the panel exists this
         // tile may have been scrolled, re-laid-out by a density change, or replaced by the
         // next page. Where the render *was* when it was clicked is the only honest origin.
@@ -2114,7 +2366,7 @@ function Card({
         one being addressed. A wall of forty tiles all drawn at 3:1 is a grid of boxes
         rather than a page of parts.
       */
-      className={CARD_SHAPE[layout]}
+      className={selected ? `${CARD_SHAPE[layout]} outline-2 outline-[var(--color-accent)]` : CARD_SHAPE[layout]}
     >
       {/*
         The well the render sits in, one step *down* from the card and inset from it.
@@ -2125,6 +2377,20 @@ function Card({
         side, in the one unit that keeps it proportional as the density control changes the
         column width.
       */}
+      {/*
+        Rendered only while selecting, never rendered and hidden: with selection off the card's
+        name is its one tab stop, and a hidden checkbox would still be a second.
+      */}
+      {selecting ? (
+        <input
+          type="checkbox"
+          checked={selected}
+          aria-label={strings.selection.selectPart(part.name)}
+          onChange={() => undefined}
+          onClick={(event) => onToggle(part.id, event.shiftKey)}
+          className="absolute top-2 left-2 z-10 size-4 accent-[var(--color-accent)]"
+        />
+      ) : null}
       <div className={WELL[layout]}>
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,

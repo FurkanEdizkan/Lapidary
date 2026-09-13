@@ -167,9 +167,12 @@ function stubFetch(routes: {
   facets?: () => Promise<StubResponse>;
   retry?: () => Promise<StubResponse>;
   failures?: () => Promise<StubResponse>;
+  partRemove?: (url?: string) => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    if (init?.method === "DELETE" && url.startsWith("/api/parts/"))
+      return (routes.partRemove ?? pending)(url);
     // Above the batch rule further down, which every job route contains.
     if (url.includes("/jobs/") && url.includes("/retry")) return (routes.retry ?? pending)();
     if (url.includes("/jobs/") && url.includes("/failed")) return (routes.failures ?? pending)();
@@ -3611,3 +3614,67 @@ test("a chosen format rides on the grid request, not on its own counts, and choo
   expect(onSelectFormat).toHaveBeenCalledWith(null);
 });
 
+/**
+ * Selecting is off until asked for, so a card keeps its one tab stop; once on, a shift-click
+ * takes everything from the last part toggled.
+ */
+test("shift-click selects a range, and the count says how many", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, HEX_NUT, SHAFT_COUPLER])) });
+  renderIndex();
+  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const box = (name: string) =>
+    screen.queryByRole("checkbox", { name: strings.selection.selectPart(name) });
+  expect(box(MOTOR_MOUNT.name)).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(box(MOTOR_MOUNT.name) as HTMLElement);
+  fireEvent.click(box(SHAFT_COUPLER.name) as HTMLElement, { shiftKey: true });
+
+  expect(await screen.findByText(strings.selection.count(3))).toBeTruthy();
+  for (const part of [MOTOR_MOUNT, HEX_NUT, SHAFT_COUPLER]) {
+    expect((box(part.name) as HTMLInputElement).checked).toBe(true);
+  }
+});
+
+/** One request per part, and the one that failed is named, with why, and left selected. */
+test("removing a selection reports the part that failed and keeps it selected", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partRemove: async (url) =>
+      url?.includes(HEX_NUT.id) ? { ok: false, status: 500 } : { ok: true, status: 204 },
+  });
+  renderIndex();
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) }),
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: strings.selection.selectPart(HEX_NUT.name) }));
+  fireEvent.click(screen.getByRole("button", { name: strings.removal.remove }));
+
+  expect(
+    await screen.findByText(strings.selection.failure(HEX_NUT.name, strings.removal.removeFailed)),
+  ).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith(`/api/parts/${MOTOR_MOUNT.id}`, { method: "DELETE" });
+  expect(fetchMock).toHaveBeenCalledWith(`/api/parts/${HEX_NUT.id}`, { method: "DELETE" });
+  expect(screen.getByText(strings.selection.count(1))).toBeTruthy();
+});
+
+/** Ids picked in one library mean nothing in the next, even where the cards look the same. */
+test("the selection clears when the library changes", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    libraries: ok(LIBRARIES),
+  });
+  const switchTo = renderSwitchableIndex(DEFAULT_LIBRARY_ID);
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) }),
+  );
+  expect(await screen.findByText(strings.selection.count(1))).toBeTruthy();
+
+  switchTo(SECOND_LIBRARY_ROW.id);
+
+  expect(await screen.findByText(strings.selection.count(0))).toBeTruthy();
+});
