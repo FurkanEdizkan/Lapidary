@@ -1847,6 +1847,7 @@ function QuickLook({
         </p>
       ) : (
         <Detail
+          titled
           part={detail.data}
           /*
             The tools the card used to carry. They are here because the card is a picture and
