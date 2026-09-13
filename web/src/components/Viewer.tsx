@@ -7,7 +7,7 @@ import {
   DirectionalLight,
   Mesh,
   MeshStandardMaterial,
-  PerspectiveCamera,
+  OrthographicCamera,
   Scene,
   WebGLRenderer,
   type Object3D,
@@ -19,9 +19,6 @@ import { strings } from '../lib/strings'
 import type { BatchId, PartDetail } from '../lib/types'
 import { LIGHT_DIR, frameBox, type Vec3 } from '../lib/viewer-math'
 
-/** Vertical field of view, in degrees: long enough a lens that a part does not bulge. */
-const FOV = 35
-
 type View = { show: (model: Object3D) => void; dispose: () => void }
 
 /**
@@ -31,8 +28,11 @@ type View = { show: (model: Object3D) => void; dispose: () => void }
  *
  * Drawn on demand, never in a loop: a frame when the camera moves, the box resizes or a rung
  * arrives, and nothing otherwise. Nothing spins or eases on its own, so there is no motion for
- * `prefers-reduced-motion` to take away. Normals are computed from the winding here, because the
- * GLB carries none on purpose (`glb.rs`).
+ * `prefers-reduced-motion` to take away.
+ *
+ * Drawn as the thumbnail is (`raster.rs`): orthographic, so nothing tapers toward the lens, and
+ * shaded flat, one normal per face. The GLB carries no normals on purpose (`glb.rs`), and
+ * averaging them across a sharp rim is what blurred the first cylinder's cap into its side.
  *
  * The default export, for `lazy()`: three.js is in this chunk and nowhere else.
  */
@@ -140,10 +140,26 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const sun = new DirectionalLight(0xffffff, 1.8)
   sun.position.set(...LIGHT_DIR)
   scene.add(sun)
-  const camera = new PerspectiveCamera(FOV, node.clientWidth / Math.max(node.clientHeight, 1))
+  const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
+  let halfHeight = 1
+  // The view's width follows the box's shape; its height is the framing's, so a resize never
+  // changes how large the part is drawn, only how much room is beside it.
+  const fit = () => {
+    const aspect = node.clientWidth / Math.max(node.clientHeight, 1)
+    camera.left = -halfHeight * aspect
+    camera.right = halfHeight * aspect
+    camera.top = halfHeight
+    camera.bottom = -halfHeight
+    camera.updateProjectionMatrix()
+  }
+  fit()
   const controls = new OrbitControls(camera, renderer.domElement)
-  const material = new MeshStandardMaterial({ color: new Color(0xb8bcc4), roughness: 0.75 })
+  const material = new MeshStandardMaterial({
+    color: new Color(0xb8bcc4),
+    roughness: 0.75,
+    flatShading: true,
+  })
 
   let first = true
   let model: Object3D | null = null
@@ -158,8 +174,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   controls.addEventListener('change', render)
   const resize = new ResizeObserver(() => {
     renderer.setSize(node.clientWidth, node.clientHeight, false)
-    camera.aspect = node.clientWidth / Math.max(node.clientHeight, 1)
-    camera.updateProjectionMatrix()
+    fit()
     render()
   })
   resize.observe(node)
@@ -167,10 +182,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   return {
     show(next) {
       next.traverse((object) => {
-        if (object instanceof Mesh) {
-          object.geometry.computeVertexNormals()
-          object.material = material
-        }
+        if (object instanceof Mesh) object.material = material
       })
       const framing = model === null
       if (model !== null) {
@@ -183,11 +195,12 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       // under someone who has already turned the part.
       if (framing) {
         const box = new Box3().setFromObject(next)
-        const frame = frameBox(box.min.toArray() as Vec3, box.max.toArray() as Vec3, FOV)
+        const frame = frameBox(box.min.toArray() as Vec3, box.max.toArray() as Vec3)
         camera.position.set(...frame.position)
         camera.near = frame.near
         camera.far = frame.far
-        camera.updateProjectionMatrix()
+        halfHeight = frame.halfHeight
+        fit()
         controls.target.set(...frame.target)
         controls.update()
       }
