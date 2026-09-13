@@ -6,11 +6,13 @@
 // nothing but Node's built-ins. A grid card is hovered, pressed after `--dwell` ms, and timed from
 // `pointerdown` to the viewer's `lapidary:viewer-first-frame` mark. With `--part`, the time is from
 // pressing a measuring tool to the measuring line no longer saying it is loading the full-detail mesh.
+// With `--direct`, nothing is hovered or pressed: each part's page is opened from a link in a fresh
+// session, and the time is from navigation start to that first frame.
 // Each open also reports how many shader programs WebGL linked during it, counted by wrapping
 // `linkProgram` before the page loads: zero means everything that open drew was already compiled.
 //
 //   node web/scripts/open-timing.mjs [--url http://localhost:3000] [--gl swiftshader|gpu]
-//     [--dwell 250] [--rounds 3] [--throttle] [--part <name> [--runs 3]]
+//     [--dwell 250] [--rounds 3] [--throttle] [--part <name> [--runs 3]] [--direct [--part <name>]]
 import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,6 +28,7 @@ const { values: args } = parseArgs({
     throttle: { type: 'boolean', default: false },
     part: { type: 'string' },
     runs: { type: 'string', default: '3' },
+    direct: { type: 'boolean', default: false },
   },
 })
 if (!['swiftshader', 'gpu'].includes(args.gl)) throw new Error('--gl is swiftshader or gpu')
@@ -39,7 +42,7 @@ if (LOADING === undefined) throw new Error('strings.measure.loading moved; updat
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function launch() {
+async function launch(url = args.url, ready = `document.querySelectorAll('article').length > 0`) {
   const profile = mkdtempSync(join(tmpdir(), 'lapidary-timing-'))
   const port = 9300 + Math.floor(Math.random() * 600)
   const gl =
@@ -120,8 +123,8 @@ async function launch() {
       offline: false, latency: 2, downloadThroughput: 12_500_000, uploadThroughput: 12_500_000,
     })
   }
-  await send('Page.navigate', { url: args.url })
-  await waitFor(`document.querySelectorAll('article').length > 0`)
+  await send('Page.navigate', { url })
+  await waitFor(ready)
   await sleep(500)
   await evaluate(`addEventListener('pointerdown', () => { window.__down = performance.now() }, { capture: true })`)
   return { send, evaluate, waitFor, close }
@@ -175,7 +178,35 @@ async function describe(page) {
   })()`)
 }
 
-if (args.part === undefined) {
+if (args.direct) {
+  // Parts by id, for their pages' URLs, from the library the grid opens on.
+  const library = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8').match(
+    /DEFAULT_LIBRARY_ID: LibraryId = '([^']+)'/,
+  )?.[1]
+  if (library === undefined) throw new Error('DEFAULT_LIBRARY_ID moved; update open-timing.mjs')
+  const { parts } = await (await fetch(`${args.url}/api/libraries/${library}/parts?limit=500`)).json()
+  const chosen = parts.filter((part) => args.part === undefined || part.name === args.part)
+  const opens = []
+  for (let round = 0; round < Number(args.rounds); round++) {
+    for (const part of chosen) {
+      const page = await launch(`${args.url}/parts/${part.id}`, `performance.getEntriesByName('lapidary:viewer-first-frame').length > 0`)
+      try {
+        if (opens.length === 0) console.log(`${await describe(page)} | from a link, a fresh session each open | ${args.throttle ? '100 Mbit' : 'local'} | ${chosen.length} parts`)
+        opens.push(
+          await page.evaluate(`(() => {
+            const mark = performance.getEntriesByName('lapidary:viewer-first-frame')[0]
+            return { ms: mark.startTime, linked: window.__links.filter((t) => t <= mark.startTime).length }
+          })()`),
+        )
+      } finally {
+        await page.close()
+      }
+    }
+  }
+  console.log(`  navigation start to first frame: ${stats(opens.map((o) => o.ms))}`)
+  console.log(`  per open: ${opens.map((o) => Math.round(o.ms)).join(' ')}`)
+  console.log(`  shaders linked before it: ${opens.map((o) => o.linked).join(' ')}`)
+} else if (args.part === undefined) {
   const page = await launch()
   try {
     const names = await page.evaluate(`[...document.querySelectorAll('article')].map(${cardName})`)

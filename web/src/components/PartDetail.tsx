@@ -433,6 +433,22 @@ export function warmViewer(): Promise<void> {
     .catch(() => undefined)
 }
 
+/**
+ * `warmViewer` once the browser is idle, for a screen a part can be opened from with no hover first:
+ * a tap on a touch screen, or a press before the pointer rested. Returns what calls it off.
+ * `setTimeout` stands in where there is no `requestIdleCallback`.
+ */
+export function warmViewerWhenIdle(): () => void {
+  if (typeof requestIdleCallback === 'function') {
+    // The pair taken together: the call-off can run after whoever supplied the request is gone.
+    const cancel = cancelIdleCallback.bind(globalThis)
+    const id = requestIdleCallback(() => void warmViewer(), { timeout: 2000 })
+    return () => cancel(id)
+  }
+  const id = setTimeout(() => void warmViewer(), 1)
+  return () => clearTimeout(id)
+}
+
 const FRAME =
   'relative h-40 w-40 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'
 

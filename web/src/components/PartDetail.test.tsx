@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
-import { Detail, warmViewer } from './PartDetail'
+import { Detail, warmViewer, warmViewerWhenIdle } from './PartDetail'
 import { strings } from '../lib/strings'
 import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
 
@@ -103,6 +103,26 @@ test('the 3D view starts over for another part, and keeps its place for a finer 
 test('warming the viewer prepares it', async () => {
   await warmViewer()
   expect(prepare).toHaveBeenCalledTimes(1)
+})
+
+/** A tap, or a link straight to a part, has no hover to warm on, so a screen warms once the browser is idle. */
+test('warming when idle waits for the browser to be idle, and can be called off', async () => {
+  let idle: (() => void) | undefined
+  const cancel = vi.fn()
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => {
+    idle = callback
+    return 7
+  })
+  vi.stubGlobal('cancelIdleCallback', cancel)
+  prepare.mockClear()
+  const stop = warmViewerWhenIdle()
+  await Promise.resolve()
+  expect(prepare).not.toHaveBeenCalled()
+  idle?.()
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1))
+  stop()
+  expect(cancel).toHaveBeenCalledWith(7)
+  vi.unstubAllGlobals()
 })
 
 /** On the part page tags are added and removed as the whole list; anywhere else they are only listed. */

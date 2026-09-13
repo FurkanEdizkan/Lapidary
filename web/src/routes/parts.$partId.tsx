@@ -1,6 +1,6 @@
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   blobUrl,
   downloadUrl,
@@ -9,7 +9,7 @@ import {
   removePart,
   renderPartThumbnail,
 } from '../lib/api'
-import { Detail } from '../components/PartDetail'
+import { Detail, warmViewer } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { strings } from '../lib/strings'
@@ -49,6 +49,9 @@ export function PartPage({ partId }: { partId: string }) {
     queryKey: ['part', partId],
     queryFn: () => fetchPartDetail(partId),
   })
+  // Reached from a link, with no grid hover before it: the viewer's chunk and shaders load
+  // alongside the detail fetch rather than after it.
+  useEffect(() => void warmViewer(), [])
 
   return (
     <section>

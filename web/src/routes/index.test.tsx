@@ -519,6 +519,24 @@ test("renders an actionable message when the server is unreachable", async () =>
 // to today's copy. It catches the component drifting from strings.ts later, when the copy
 // next changes and the component does not follow — a wiring test, not a content pin.
 // Provenance itself is enforced at the source level, in no-bare-strings.test.ts.
+/**
+ * A card tapped, or pressed with no hover first, has nothing to warm on (`DATA.md` §2.4), so the
+ * grid warms the viewer once the browser is idle — once for the screen, not once per render.
+ */
+test("the grid warms the viewer when the browser is idle, once", async () => {
+  const idle = vi.fn(() => 1);
+  vi.stubGlobal("requestIdleCallback", idle);
+  vi.stubGlobal("cancelIdleCallback", vi.fn());
+  stubFetch({ parts: ok(page([])) });
+  renderIndex();
+  await waitFor(() => expect(idle).toHaveBeenCalled());
+  const asked = idle.mock.calls.length;
+  // The empty state is a render of its own, after the page arrives.
+  expect(await screen.findByText(strings.emptyLibrary.title)).toBeDefined();
+  expect(idle.mock.calls.length).toBe(asked);
+  vi.unstubAllGlobals();
+});
+
 test("renders the empty-library copy from strings.ts", async () => {
   stubFetch({ parts: ok(page([])) });
   renderIndex();
