@@ -1,3 +1,4 @@
+import type { Sort } from './preferences'
 import type {
   AssemblyTree,
   BatchId,
@@ -76,6 +77,7 @@ export async function fetchParts(
   q?: string,
   limit?: number,
   format?: string,
+  sort?: Sort,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -96,6 +98,9 @@ export async function fetchParts(
   // silently the day somebody changes one of them. The grid has a page size; it says so.
   if (typeof limit === 'number') query.set('limit', String(limit))
   if (typeof format === 'string' && format.length > 0) query.set('format', format)
+  // Omitted for newest, the way an absent category is the whole library: newest is the grid
+  // with no order asked for, so every URL the grid sent before sorting existed keeps its shape.
+  if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {

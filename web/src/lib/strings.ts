@@ -999,6 +999,21 @@ export const strings = {
     density: 'Card size',
     comfortable: 'Comfortable',
     compact: 'Compact',
+    /**
+     * The grid's order. Every option names its end, because "Volume" alone does not say
+     * whether the largest part comes first. Parts without the figure — an open mesh has no
+     * volume — come last, which the grid shows and the options need not say.
+     */
+    sort: 'Order',
+    sortOption: {
+      newest: 'Newest first',
+      volume: 'Largest volume first',
+      surface_area: 'Largest surface area first',
+      longest_side: 'Longest side first',
+      triangles: 'Most triangles first',
+    },
+    /** Under the order while a search runs, which a search does not use. */
+    sortWhileSearching: 'Search results are in order of relevance.',
   },
   search: {
     label: 'Search this library',

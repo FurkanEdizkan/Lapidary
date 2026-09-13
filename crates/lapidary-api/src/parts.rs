@@ -26,7 +26,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{BlobHash, FolderId, LibraryId, PartId, RevisionId};
-use lapidary_db::{DbError, PartRepository, PartRow, PgParts, Shows};
+use lapidary_db::{DbError, GridQuery, PartRepository, PartRow, PgParts, Shows, Sort};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -237,6 +237,11 @@ pub struct PageQuery {
     /// format.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     format: Option<String>,
+    /// `volume`, `surface_area`, `longest_side` or `triangles`, largest first. Absent — or
+    /// anything else, for the reason `state` gives — is newest first. A search ignores it:
+    /// relevance is a search's order.
+    #[serde(default)]
+    sort: Option<String>,
 }
 
 /// Treats an empty query-string value the same as an absent key. `#[serde(default)]`
@@ -272,6 +277,7 @@ pub async fn page(
         state,
         q,
         format,
+        sort,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
@@ -300,26 +306,22 @@ pub async fn page(
     let format = format
         .map(|format| format.trim().to_ascii_lowercase())
         .filter(|format| !format.is_empty());
+    let grid = GridQuery {
+        library,
+        folder: folder_id,
+        after,
+        limit,
+        shows,
+        format: format.as_deref(),
+    };
+    let sort = sort
+        .as_deref()
+        .and_then(Sort::parse)
+        .unwrap_or(Sort::Newest);
     let repository = PgParts(app.db);
     let result = match query {
-        Some(q) => {
-            repository
-                .search(
-                    library,
-                    folder_id,
-                    q,
-                    after,
-                    limit,
-                    shows,
-                    format.as_deref(),
-                )
-                .await
-        }
-        None => {
-            repository
-                .page(library, folder_id, after, limit, shows, format.as_deref())
-                .await
-        }
+        Some(q) => repository.search(&grid, q).await,
+        None => repository.page(&grid, sort).await,
     };
     match result {
         Ok(rows) => {

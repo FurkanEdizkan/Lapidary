@@ -24,6 +24,8 @@ import {
   pageSizeFor,
   setLayout,
   setPageSize,
+  setSort,
+  sortFor,
 } from "../lib/preferences";
 import { routeTree } from "../routeTree.gen";
 import { DEFAULT_LIBRARY_ID } from "../lib/api";
@@ -3031,6 +3033,48 @@ test("choosing a page size asks for it and remembers it", async () => {
   );
   // The next visit starts where this one left off — which is the whole point of storing it.
   expect(pageSizeFor(DEFAULT_LIBRARY_ID)).toBe(250);
+});
+
+/**
+ * The order is remembered per library like the page size, and rides to the route as `sort` —
+ * omitted for newest, so every URL the grid sent before keeps its shape.
+ */
+test("choosing an order asks for it and remembers it", async () => {
+  window.localStorage.clear();
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex();
+  await openMenu(strings.toolbar.view);
+
+  fireEvent.change(await screen.findByRole("combobox", { name: strings.grid.sort }), {
+    target: { value: "volume" },
+  });
+
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?limit=50&sort=volume`,
+    ),
+  );
+  expect(sortFor(DEFAULT_LIBRARY_ID)).toBe("volume");
+});
+
+/** A search is in relevance order, so the order control sits out, says why, and is not sent. */
+test("a search sets the order aside and says why", async () => {
+  window.localStorage.clear();
+  setSort(DEFAULT_LIBRARY_ID, "volume");
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT])) });
+  renderIndex({ q: "bracket" });
+  await openMenu(strings.toolbar.view);
+
+  const order = await screen.findByRole("combobox", { name: strings.grid.sort });
+  expect((order as HTMLSelectElement).disabled).toBe(true);
+  const description = order.getAttribute("aria-describedby") ?? "";
+  expect(document.getElementById(description)?.textContent).toBe(strings.grid.sortWhileSearching);
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/libraries/${DEFAULT_LIBRARY_ID}/parts?q=bracket&limit=50`,
+    ),
+  );
+  expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("sort="));
 });
 
 /**
