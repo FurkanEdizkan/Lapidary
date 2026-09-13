@@ -42,9 +42,21 @@ export type Density = (typeof DENSITIES)[number]
 export const LAYOUTS = ['detail', 'gallery', 'list'] as const
 export type Layout = (typeof LAYOUTS)[number]
 
+/**
+ * The order the grid asks for, in the route's own spellings, so nothing translates between
+ * them.
+ *
+ * `newest` is the default and the order the grid has always had. The rest are largest first,
+ * off the latest revision's measured figures, with the parts that lack one at the end. A
+ * search ignores the choice, because relevance is a search's order.
+ */
+export const SORTS = ['newest', 'volume', 'surface_area', 'longest_side', 'triangles'] as const
+export type Sort = (typeof SORTS)[number]
+
 export const DEFAULT_PAGE_SIZE: PageSize = 50
 export const DEFAULT_DENSITY: Density = 'comfortable'
 export const DEFAULT_LAYOUT: Layout = 'detail'
+export const DEFAULT_SORT: Sort = 'newest'
 
 /**
  * Namespaced and versioned by shape, not by release: `lapidary.grid.v1` says what these keys
@@ -53,7 +65,7 @@ export const DEFAULT_LAYOUT: Layout = 'detail'
  */
 const KEY = 'lapidary.grid.v1'
 
-type Stored = { pageSize?: number; density?: string; layout?: string }
+type Stored = { pageSize?: number; density?: string; layout?: string; sort?: string }
 
 function read(library: string): Stored {
   try {
@@ -99,6 +111,11 @@ export function layoutFor(library: string): Layout {
   return LAYOUTS.find((layout) => layout === stored) ?? DEFAULT_LAYOUT
 }
 
+export function sortFor(library: string): Sort {
+  const stored = read(library).sort
+  return SORTS.find((sort) => sort === stored) ?? DEFAULT_SORT
+}
+
 export function setPageSize(library: string, pageSize: PageSize): void {
   write(library, { ...read(library), pageSize })
 }
@@ -109,4 +126,8 @@ export function setDensity(library: string, density: Density): void {
 
 export function setLayout(library: string, layout: Layout): void {
   write(library, { ...read(library), layout })
+}
+
+export function setSort(library: string, sort: Sort): void {
+  write(library, { ...read(library), sort })
 }

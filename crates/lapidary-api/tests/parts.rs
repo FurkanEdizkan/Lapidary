@@ -1231,3 +1231,85 @@ async fn the_facets_route_counts_formats_and_the_grid_filters_by_one(pool: sqlx:
         "fixture-plate-assembly-lp-9000-00.step"
     );
 }
+
+async fn seed_volume(pool: &sqlx::PgPool, seed: u8, name: &str, volume_mm3: Option<f64>) {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name,
+            source_path: name,
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([seed; 32]),
+                size_bytes: 2_048,
+                stored_bytes: 2_048,
+                zstd_level: 0,
+            },
+            measurements: &MeshMeasurements {
+                volume_mm3,
+                ..measurements()
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("records");
+}
+
+fn card_names(page: &serde_json::Value) -> Vec<&str> {
+    page["parts"]
+        .as_array()
+        .expect("parts is an array")
+        .iter()
+        .map(|card| card["name"].as_str().expect("every card has a name"))
+        .collect()
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_grid_sorts_by_volume_and_a_search_keeps_relevance(pool: sqlx::PgPool) {
+    seed_volume(&pool, 0xe1, "bracket-lp-1042-03.stl", Some(21_478.5)).await;
+    seed_volume(
+        &pool,
+        0xe2,
+        "fixture-plate-lp-9000-00.stl",
+        Some(2_480_000.0),
+    )
+    .await;
+    seed_volume(&pool, 0xe3, "bracket-shroud-lp-3310-02.stl", None).await;
+    let uri = |query: &str| format!("/api/libraries/{SEEDED_LIBRARY}/parts?{query}");
+
+    let (status, sorted) = get_uri(pool.clone(), &uri("sort=volume")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        card_names(&sorted),
+        [
+            "fixture-plate-lp-9000-00.stl",
+            "bracket-lp-1042-03.stl",
+            "bracket-shroud-lp-3310-02.stl"
+        ]
+    );
+
+    let (status, unknown) = get_uri(pool.clone(), &uri("sort=heaviest")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        card_names(&unknown),
+        [
+            "bracket-shroud-lp-3310-02.stl",
+            "fixture-plate-lp-9000-00.stl",
+            "bracket-lp-1042-03.stl"
+        ],
+        "an order the route does not know is newest first, as an unknown state is the library"
+    );
+
+    let (_, searched) = get_uri(pool.clone(), &uri("q=bracket&sort=volume")).await;
+    let (_, relevance) = get_uri(pool.clone(), &uri("q=bracket")).await;
+    assert_eq!(card_names(&searched).len(), 2);
+    assert_eq!(
+        searched, relevance,
+        "a search is in relevance order whatever sort says"
+    );
+}

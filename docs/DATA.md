@@ -387,6 +387,14 @@ A stage-4 failure still leaves a usable, searchable part.
 `ORDER BY (metadata->>'volume')::float` is unindexable in practice and becomes a seq scan
 at ~50k rows.
 
+**Sort has the typed column but not yet the index, and that was measured, not skipped.** The
+grid's order (volume, surface area, longest side, triangle count) reads the *latest* revision's
+typed columns, which a LATERAL finds part by part — so an index on `revision` cannot hand parts
+back in order. On 20,000 parts in one library a sorted page took 63 ms against 0.5 ms newest
+first, and `revision (volume DESC NULLS LAST)` changed neither the plan nor the time
+(2026-09-13, `PgParts::sorted`). The index that would serve it needs the figures on `part`
+itself; that comes when a library outgrows about 100k parts.
+
 ```sql
 part(
   id uuid PRIMARY KEY,                  -- uuid v7

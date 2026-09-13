@@ -242,50 +242,108 @@ pub struct MoveRow {
     pub moved_at: jiff::Timestamp,
 }
 
+/// Which grid a page reads: the library, the category, the filters, and where the last page
+/// ended.
+///
+/// A struct because the filters kept arriving as parameters, and `search` had reached eight.
+/// The defaults are the unfiltered first page of the live library, so a caller names only
+/// what differs: `GridQuery { folder: Some(rocks), ..GridQuery::new(library, 50) }`.
+#[derive(Debug, Clone, Copy)]
+pub struct GridQuery<'a> {
+    pub library: LibraryId,
+    /// One category **and everything under it**; `None` is the whole library. See
+    /// [`PartRepository::page`].
+    pub folder: Option<FolderId>,
+    /// The previous page's last id, or `None` for the first page.
+    pub after: Option<PartId>,
+    pub limit: u16,
+    pub shows: Shows,
+    /// One source format, as ingest records it: the extension, lowercased.
+    pub format: Option<&'a str>,
+}
+
+impl GridQuery<'_> {
+    /// The first page of the whole live library.
+    pub fn new(library: LibraryId, limit: u16) -> Self {
+        Self {
+            library,
+            folder: None,
+            after: None,
+            limit,
+            shows: Shows::Live,
+            format: None,
+        }
+    }
+}
+
+/// The order [`PartRepository::page`] returns.
+///
+/// `Newest` is the id order the grid has always had. The rest read the latest revision's
+/// typed columns, largest first, with the parts that have no such figure last — an open mesh
+/// has no volume. Largest first only: a direction is a second control nobody has asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sort {
+    Newest,
+    Volume,
+    SurfaceArea,
+    /// The largest of the three bounding-box extents.
+    LongestSide,
+    Triangles,
+}
+
+impl Sort {
+    const ALL: [Self; 5] = [
+        Self::Newest,
+        Self::Volume,
+        Self::SurfaceArea,
+        Self::LongestSide,
+        Self::Triangles,
+    ];
+
+    /// The query-string spelling, and the one the sorted query matches on.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Volume => "volume",
+            Self::SurfaceArea => "surface_area",
+            Self::LongestSide => "longest_side",
+            Self::Triangles => "triangles",
+        }
+    }
+
+    /// `None` for a spelling that is not one of these.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|sort| sort.as_str() == value)
+    }
+}
+
 /// Reading parts for the grid. The open path reads metadata and derivatives only and
 /// never touches a source file.
 #[async_trait::async_trait]
 pub trait PartRepository: Send + Sync {
-    /// One keyset page of grid rows, newest first. `after` is the previous page's last
-    /// id.
+    /// One keyset page of grid rows, in `sort` order. `grid.after` is the previous page's
+    /// last id.
     ///
     /// `folder` filters to one category **and everything under it**; `None` is the whole
     /// library. Subtree-inclusive rather than exact-match because the sidebar's parent
     /// categories are real places a user clicks: a tree that showed nothing for `Terrain`
     /// while `Terrain/Rocks` held forty models would be hiding its own contents, and the
     /// count beside the row would contradict the grid next to it.
-    async fn page(
-        &self,
-        library: LibraryId,
-        folder: Option<FolderId>,
-        after: Option<lapidary_core::PartId>,
-        limit: u16,
-        shows: Shows,
-        format: Option<&str>,
-    ) -> Result<Vec<PartRow>, DbError>;
+    ///
+    /// Every order keeps the same keyset: `after` is a `PartId`, and the sort value behind it
+    /// is read again inside the query rather than carried on the wire — see `search`.
+    async fn page(&self, grid: &GridQuery<'_>, sort: Sort) -> Result<Vec<PartRow>, DbError>;
 
     /// The same grid, filtered to a text query and ordered by relevance.
     ///
-    /// A method and not a sixth parameter on [`Self::page`]: that one has around
-    /// twenty-five call sites across three crates' tests, and widening it would be
-    /// twenty-five mechanical `None`s bought for nothing. The two share their columns,
-    /// their LATERALs and their decoder, which is where sharing actually matters.
+    /// A method of its own because relevance *is* its order, so it takes no [`Sort`]. The two
+    /// share their columns, their LATERALs and their decoder, which is where sharing actually
+    /// matters.
     ///
     /// Same keyset contract: `after` is still a `PartId`, and the rank behind it is
     /// recomputed inside the query rather than carried on the wire. A float in a cursor
     /// drifts by one ULP and silently skips or repeats a row.
-    // ponytail: eight parameters. Gather the filters into one struct when a third joins them.
-    #[allow(clippy::too_many_arguments)]
-    async fn search(
-        &self,
-        library: LibraryId,
-        folder: Option<FolderId>,
-        query: &str,
-        after: Option<lapidary_core::PartId>,
-        limit: u16,
-        shows: Shows,
-        format: Option<&str>,
-    ) -> Result<Vec<PartRow>, DbError>;
+    async fn search(&self, grid: &GridQuery<'_>, query: &str) -> Result<Vec<PartRow>, DbError>;
 }
 
 /// Mirrors `lapidary_storage::StoredBlob`. Not imported: both crates are L1, and
@@ -2477,15 +2535,18 @@ fn model_directory(storage_path: &str) -> Option<String> {
 
 #[async_trait::async_trait]
 impl PartRepository for PgParts {
-    async fn page(
-        &self,
-        library: LibraryId,
-        folder: Option<FolderId>,
-        after: Option<PartId>,
-        limit: u16,
-        shows: Shows,
-        format: Option<&str>,
-    ) -> Result<Vec<PartRow>, DbError> {
+    async fn page(&self, grid: &GridQuery<'_>, sort: Sort) -> Result<Vec<PartRow>, DbError> {
+        if sort != Sort::Newest {
+            return self.sorted(grid, sort).await;
+        }
+        let GridQuery {
+            library,
+            folder,
+            after,
+            limit,
+            shows,
+            format,
+        } = *grid;
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
         //
@@ -2583,16 +2644,15 @@ impl PartRepository for PgParts {
         rows.into_iter().map(to_part_row).collect()
     }
 
-    async fn search(
-        &self,
-        library: LibraryId,
-        folder: Option<FolderId>,
-        query: &str,
-        after: Option<PartId>,
-        limit: u16,
-        shows: Shows,
-        format: Option<&str>,
-    ) -> Result<Vec<PartRow>, DbError> {
+    async fn search(&self, grid: &GridQuery<'_>, query: &str) -> Result<Vec<PartRow>, DbError> {
+        let GridQuery {
+            library,
+            folder,
+            after,
+            limit,
+            shows,
+            format,
+        } = *grid;
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
         //
@@ -2713,6 +2773,78 @@ impl PartRepository for PgParts {
         // interchangeable.
         .bind(like_pattern(query))
         .bind(format)
+        .fetch_all(&self.0)
+        .await?;
+
+        rows.into_iter().map(to_part_row).collect()
+    }
+}
+
+impl PgParts {
+    /// [`PartRepository::page`] in an order other than newest.
+    ///
+    /// `search`'s shape with a column where the rank was: `keyed` reads each candidate's sort
+    /// value once, and `anchor` and `top` compare against that one copy. Nothing does
+    /// arithmetic on a float here — `greatest` picks one of three stored values — so the
+    /// comparison is exact.
+    ///
+    /// **A missing figure is `-infinity`, not NULL.** A NULL inside a row comparison makes the
+    /// whole comparison NULL, so with `NULLS LAST` the page after the first part without a
+    /// volume would come back empty. `-infinity` sorts below every real figure and ties the
+    /// missing ones on id.
+    ///
+    /// The honest hole is `search`'s: a part removed or re-ingested while it is somebody's
+    /// anchor ends their paging early rather than repeating rows.
+    ///
+    /// **No index serves this, and none was added.** Measured on 20,000 parts in one library:
+    /// 63 ms a page, against 0.5 ms newest first, and an index on
+    /// `revision (volume DESC NULLS LAST)` changed neither the plan nor the time. The value
+    /// lives on the *latest* revision, which the LATERAL finds part by part, so no index on
+    /// `revision` can hand parts back in order.
+    // ponytail: sorts the whole library on every page. Copy the latest revision's figures onto
+    // `part`, one index per key, when a library outgrows about 100k parts.
+    async fn sorted(&self, grid: &GridQuery<'_>, sort: Sort) -> Result<Vec<PartRow>, DbError> {
+        let rows: Vec<GridRow> = sqlx::query_as(concat!(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $7 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
+             keyed AS ( \
+               SELECT p.id, \
+                      coalesce(CASE $9::text \
+                                 WHEN 'volume' THEN r.volume \
+                                 WHEN 'surface_area' THEN r.surface_area \
+                                 WHEN 'longest_side' THEN greatest(r.bbox_x, r.bbox_y, r.bbox_z) \
+                                 WHEN 'triangles' THEN r.triangle_count::double precision \
+                               END, '-infinity') AS value \
+                 FROM part p \
+                 JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id \
+                               ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $8 AND f.revision_id = r.id)) ), \
+             anchor AS (SELECT value, id FROM keyed WHERE id = $2), \
+             top AS ( \
+               SELECT id, value FROM keyed \
+                WHERE $2::uuid IS NULL OR (value, id) < (SELECT value, id FROM anchor) \
+                ORDER BY value DESC, id DESC LIMIT $3) \
+             SELECT ",
+            grid_columns!(),
+            " FROM top JOIN part p ON p.id = top.id ",
+            grid_laterals!(),
+            " ORDER BY top.value DESC, top.id DESC",
+        ))
+        .bind(grid.library.as_uuid())
+        .bind(grid.after.map(|a| a.as_uuid()))
+        .bind(i64::from(grid.limit))
+        .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(DerivativeKind::TessellationL0.as_str())
+        .bind(grid.shows == Shows::Removed)
+        .bind(grid.folder.map(|f| f.as_uuid()))
+        .bind(grid.format)
+        .bind(sort.as_str())
         .fetch_all(&self.0)
         .await?;
 

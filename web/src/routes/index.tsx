@@ -28,15 +28,19 @@ import {
   DENSITIES,
   LAYOUTS,
   PAGE_SIZES,
+  SORTS,
   densityFor,
   layoutFor,
   pageSizeFor,
   setDensity,
   setLayout,
   setPageSize,
+  setSort,
+  sortFor,
   type Density,
   type Layout,
   type PageSize,
+  type Sort,
 } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
@@ -335,6 +339,10 @@ export function Index({
   const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(library))
   const [density, setDensityState] = useState<Density>(() => densityFor(library))
   const [layout, setLayoutState] = useState<Layout>(() => layoutFor(library))
+  const [sort, setSortState] = useState<Sort>(() => sortFor(library))
+  // A search is in relevance order, so the choice sits out while one runs rather than splitting
+  // the cache on a parameter the route ignores. It comes back when the search is cleared.
+  const order: Sort = q === undefined ? sort : 'newest'
   // Owned here rather than inside `DropTarget`, because two controls open the same picker
   // now: the drop strip's link, and the toolbar's Upload button.
   const picker = useRef<HTMLInputElement>(null)
@@ -351,9 +359,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, order],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -638,6 +646,12 @@ export function Index({
             setLayoutState(next)
             setLayout(library, next)
           }}
+          sort={sort}
+          onSort={(next) => {
+            setSortState(next)
+            setSort(library, next)
+          }}
+          searching={q !== undefined}
           onUpload={() => picker.current?.click()}
           uploadBusy={upload.isPending}
           search={
@@ -886,6 +900,9 @@ function Toolbar({
   onDensity,
   layout,
   onLayout,
+  sort,
+  onSort,
+  searching,
   onUpload,
   uploadBusy,
   search,
@@ -907,6 +924,10 @@ function Toolbar({
   onDensity: (density: Density) => void
   layout: Layout
   onLayout: (layout: Layout) => void
+  sort: Sort
+  onSort: (sort: Sort) => void
+  /** A search is running, and a search is in relevance order whatever `sort` says. */
+  searching: boolean
   onUpload: () => void
   uploadBusy: boolean
   /** The search field, built by the route that owns its query. */
@@ -959,6 +980,27 @@ function Toolbar({
               </button>
             ))}
           </div>
+          <label className="flex items-center justify-between gap-3 text-xs text-[var(--color-muted)]">
+            {strings.grid.sort}
+            <select
+              value={sort}
+              disabled={searching}
+              aria-describedby={searching ? 'sort-while-searching' : undefined}
+              onChange={(event) => onSort(event.target.value as Sort)}
+              className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 disabled:opacity-60"
+            >
+              {SORTS.map((option) => (
+                <option key={option} value={option}>
+                  {strings.grid.sortOption[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {searching && (
+            <p id="sort-while-searching" className="text-xs text-[var(--color-muted)]">
+              {strings.grid.sortWhileSearching}
+            </p>
+          )}
           <label className="flex items-center justify-between gap-3 text-xs text-[var(--color-muted)]">
             {strings.grid.density}
             <select
