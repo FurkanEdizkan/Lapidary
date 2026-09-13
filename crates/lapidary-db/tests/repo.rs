@@ -1,7 +1,7 @@
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, RevisionId};
 use lapidary_db::{
-    DbError, DerivativeBytes, IngestRequest, PartRepository, PgBlobs, PgFolders, PgIngest, PgParts,
-    Purged, Shows, StoredBlobRow, TessellationRow,
+    DbError, DerivativeBytes, FacetValue, IngestRequest, PartRepository, PgBlobs, PgFolders,
+    PgIngest, PgParts, Purged, Shows, StoredBlobRow, TessellationRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -347,7 +347,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     }
 
     let page = PgParts(pool.clone())
-        .page(library(), None, None, 2, Shows::Live)
+        .page(library(), None, None, 2, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 2, "limit is honoured");
@@ -367,7 +367,14 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     );
 
     let next = PgParts(pool.clone())
-        .page(library(), None, Some(page[1].summary.id), 2, Shows::Live)
+        .page(
+            library(),
+            None,
+            Some(page[1].summary.id),
+            2,
+            Shows::Live,
+            None,
+        )
         .await
         .expect("second page");
     assert_eq!(
@@ -404,7 +411,7 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
         .expect("soft delete");
 
     let page = PgParts(pool)
-        .page(library(), None, None, 50, Shows::Live)
+        .page(library(), None, None, 50, Shows::Live, None)
         .await
         .expect("page");
     assert!(
@@ -459,7 +466,7 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
     .expect("insert the newer revision's own derivative");
 
     let page = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "still one part");
@@ -555,7 +562,7 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
     .expect("insert a same-revision derivative of a different kind");
 
     let page = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(
@@ -602,7 +609,7 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
         .expect("corrupt the column directly");
 
     let err = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect_err("a negative triangle count must be reported, not reinterpreted");
     match err {
@@ -1023,7 +1030,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
         .expect("records");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "a part with no preview is still a part");
@@ -1112,7 +1119,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .expect("records the AsIs source");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 2);
@@ -1204,7 +1211,7 @@ async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool)
 
     let parts = PgParts(pool.clone());
     let page = parts
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "three file rows are still one part");
@@ -1301,7 +1308,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
 
     let parts = PgParts(pool.clone());
     let page = parts
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     let card = page
@@ -1424,7 +1431,7 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
     );
 
     let page = parts
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     let card_of = |part| {
@@ -1497,7 +1504,7 @@ async fn a_negative_size_in_the_column_is_reported_not_reinterpreted(pool: sqlx:
         .expect("corrupt the column directly");
 
     let err = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect_err("a negative size must be reported, not reinterpreted");
     match err {
@@ -1542,7 +1549,7 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
     .expect("removes the source file row");
 
     let page = PgParts(pool.clone())
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "the part is still in the grid");
@@ -1618,7 +1625,7 @@ async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(poo
     );
 
     let page = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(
@@ -2065,7 +2072,7 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
     );
 
     let page = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(page.len(), 1, "still one part");
@@ -2198,7 +2205,7 @@ async fn an_empty_inline_derivative_is_refused_rather_than_written(pool: sqlx::P
     }
 
     let page = PgParts(pool)
-        .page(library(), None, None, 10, Shows::Live)
+        .page(library(), None, None, 10, Shows::Live, None)
         .await
         .expect("page");
     assert_eq!(
@@ -2966,7 +2973,7 @@ async fn a_part_number_fragment_returns_the_part_at_position_one(pool: sqlx::PgP
     let identified = seed_named(&pool, 0xd2, "Coupler, flexible", Some("A1234-56-B")).await;
 
     let found = PgParts(pool)
-        .search(library(), None, "1234", None, 50, Shows::Live)
+        .search(library(), None, "1234", None, 50, Shows::Live, None)
         .await
         .expect("searches");
 
@@ -2991,7 +2998,7 @@ async fn a_fragment_of_an_identifier_inside_a_name_finds_the_part(pool: sqlx::Pg
     seed_named(&pool, 0xd4, "spur-gear-m2-20t-lp-5140-00", None).await;
 
     let found = PgParts(pool)
-        .search(library(), None, "3310", None, 50, Shows::Live)
+        .search(library(), None, "3310", None, 50, Shows::Live, None)
         .await
         .expect("searches");
 
@@ -3027,7 +3034,7 @@ async fn rows_with_no_part_number_still_rank_and_still_page(pool: sqlx::PgPool) 
     let mut cursor = None;
     for _ in 0..3 {
         let page = parts
-            .search(library(), None, "bracket", cursor, 1, Shows::Live)
+            .search(library(), None, "bracket", cursor, 1, Shows::Live, None)
             .await
             .expect("searches");
         let Some(row) = page.first() else { break };
@@ -3052,7 +3059,7 @@ async fn a_wildcard_is_searched_for_rather_than_interpreted(pool: sqlx::PgPool) 
     let parts = PgParts(pool);
 
     let found = parts
-        .search(library(), None, "%", None, 50, Shows::Live)
+        .search(library(), None, "%", None, 50, Shows::Live, None)
         .await
         .expect("searches");
     assert_eq!(
@@ -3063,7 +3070,7 @@ async fn a_wildcard_is_searched_for_rather_than_interpreted(pool: sqlx::PgPool) 
 
     assert!(
         parts
-            .search(library(), None, "_", None, 50, Shows::Live)
+            .search(library(), None, "_", None, 50, Shows::Live, None)
             .await
             .expect("searches")
             .is_empty(),
@@ -3079,7 +3086,15 @@ async fn a_two_word_query_finds_a_name_holding_both_words_apart(pool: sqlx::PgPo
     seed_named(&pool, 0xdb, "Idler pulley", None).await;
 
     let found = PgParts(pool)
-        .search(library(), None, "bracket mount", None, 50, Shows::Live)
+        .search(
+            library(),
+            None,
+            "bracket mount",
+            None,
+            50,
+            Shows::Live,
+            None,
+        )
         .await
         .expect("searches");
 
@@ -3100,7 +3115,7 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
 
     assert!(
         parts
-            .search(library(), None, "vee-block", None, 50, Shows::Live)
+            .search(library(), None, "vee-block", None, 50, Shows::Live, None)
             .await
             .expect("searches")
             .is_empty(),
@@ -3108,7 +3123,7 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
     );
     assert_eq!(
         parts
-            .search(library(), None, "vee-block", None, 50, Shows::Removed)
+            .search(library(), None, "vee-block", None, 50, Shows::Removed, None)
             .await
             .expect("searches")
             .len(),
@@ -3170,7 +3185,7 @@ async fn a_fragment_of_a_filename_finds_the_part_it_names(pool: sqlx::PgPool) {
     .await;
 
     let found = PgParts(pool)
-        .search(library(), None, "nema-17", None, 50, Shows::Live)
+        .search(library(), None, "nema-17", None, 50, Shows::Live, None)
         .await
         .expect("searches");
 
@@ -3192,7 +3207,15 @@ async fn a_directory_fragment_finds_what_is_filed_under_it(pool: sqlx::PgPool) {
     seed_pathed(&pool, 0xe4, "Vee block", "fixtures/aluminium/vee-block.stl").await;
 
     let found = PgParts(pool)
-        .search(library(), None, "brackets/steel", None, 50, Shows::Live)
+        .search(
+            library(),
+            None,
+            "brackets/steel",
+            None,
+            50,
+            Shows::Live,
+            None,
+        )
         .await
         .expect("searches");
 
@@ -3219,7 +3242,7 @@ async fn a_name_that_matches_outranks_a_path_that_matches(pool: sqlx::PgPool) {
     let by_name = seed_pathed(&pool, 0xe6, "nema-17 mount plate", "plates/mount.stl").await;
 
     let found = PgParts(pool)
-        .search(library(), None, "nema-17", None, 50, Shows::Live)
+        .search(library(), None, "nema-17", None, 50, Shows::Live, None)
         .await
         .expect("searches");
 
@@ -3228,4 +3251,94 @@ async fn a_name_that_matches_outranks_a_path_that_matches(pool: sqlx::PgPool) {
         vec![by_name, by_path],
         "name scores 2, path scores 1"
     );
+}
+
+/// A part whose source file is `format`, the way ingest records one.
+async fn seed_with_format(ingest: &PgIngest, name: &str, blob: u8, format: &str) -> PartId {
+    ingest
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name,
+            source_path: name,
+            blob: &blob_row(blob),
+            measurements: &watertight(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            kernel_version: "mesh stl-1+cpu-1",
+            format,
+            tessellations: &[],
+            thumbnail_webp: None,
+        })
+        .await
+        .expect("records")
+}
+
+fn pairs(facet: &[FacetValue]) -> Vec<(&str, Option<u64>)> {
+    facet
+        .iter()
+        .map(|value| (value.value.as_str(), value.count))
+        .collect()
+}
+
+/// The facet has to agree with the grid beside it: a count that includes parts the grid
+/// does not show is a number a person clicks and then cannot find.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    seed_with_format(&ingest, "bracket-lp-1042-03.stl", 0xa1, "stl").await;
+    seed_with_format(&ingest, "bracket-mount-lp-1043-01.stl", 0xa2, "stl").await;
+    let plate = seed_with_format(
+        &ingest,
+        "fixture-plate-assembly-lp-9000-00.step",
+        0xa3,
+        "step",
+    )
+    .await;
+    let parts = PgParts(pool.clone());
+
+    let facet = parts
+        .format_facet(library(), None, None, Shows::Live)
+        .await
+        .expect("facet");
+    assert_eq!(pairs(&facet), [("step", Some(1)), ("stl", Some(2))]);
+    let searched = parts
+        .format_facet(library(), None, Some("bracket"), Shows::Live)
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&searched),
+        [("stl", Some(2))],
+        "counts follow the query, as the grid does"
+    );
+
+    let page = parts
+        .page(library(), None, None, 50, Shows::Live, Some("step"))
+        .await
+        .expect("page");
+    assert_eq!(
+        page.iter().map(|row| row.summary.id).collect::<Vec<_>>(),
+        [plate]
+    );
+    let found = parts
+        .search(library(), None, "lp", None, 50, Shows::Live, Some("stl"))
+        .await
+        .expect("search");
+    assert_eq!(found.len(), 2, "a search narrows the same way");
+
+    parts.soft_delete(plate).await.expect("removes");
+    let live = parts
+        .format_facet(library(), None, None, Shows::Live)
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&live),
+        [("stl", Some(2))],
+        "a removed part leaves the count"
+    );
+    let removed = parts
+        .format_facet(library(), None, None, Shows::Removed)
+        .await
+        .expect("facet");
+    assert_eq!(pairs(&removed), [("step", Some(1))]);
 }

@@ -13,6 +13,7 @@ import {
   fetchLibrarySettings,
   fetchLibraryStorage,
   fetchPartDetail,
+  fetchFacets,
   fetchParts,
   renderLibraryThumbnails,
   renderPartThumbnail,
@@ -78,11 +79,12 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
     const library = search.library
+    const format = search.format
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -107,6 +109,8 @@ export const Route = createFileRoute('/')({
       // library, which is what every screen meant before there could be a second one — so
       // an old bookmark keeps working and a new one is shareable.
       ...(typeof library === 'string' && library.length > 0 ? { library } : {}),
+      // A format as ingest records it: the extension, lowercased. Absent is every format.
+      ...(typeof format === 'string' && format.length > 0 ? { format: format.toLowerCase() } : {}),
     }
   },
 })
@@ -120,7 +124,7 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library } = Route.useSearch()
+  const { batch, folderId, q, library, format } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
@@ -142,6 +146,12 @@ function RouteComponent() {
       onSelectFolder={(folder) =>
         void navigate({
           search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
+        })
+      }
+      format={format}
+      onSelectFormat={(value) =>
+        void navigate({
+          search: (previous) => ({ ...previous, format: value ?? undefined }),
         })
       }
       onSearch={(query) =>
@@ -246,6 +256,8 @@ export function Index({
   onSelectFolder,
   onSearch,
   onSelectLibrary,
+  format,
+  onSelectFormat,
 }: {
   batch?: string
   folderId?: string
@@ -257,6 +269,9 @@ export function Index({
   /** Writes the query to the URL. Given `''` it removes it. */
   onSearch?: (query: string) => void
   onSelectLibrary?: (library: LibraryId) => void
+  /** The format the grid is narrowed to, as the URL carries it. Absent is every format. */
+  format?: string
+  onSelectFormat?: (format: string | null) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -336,9 +351,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -516,6 +531,8 @@ export function Index({
     // measurement contradicted by the cards directly above it. One row either way, so it
     // is not worth gating.
     void queryClient.invalidateQueries({ queryKey: ['storage', library] })
+    // And the counts beside the grid, which a scan changes as surely as it changes the grid.
+    void queryClient.invalidateQueries({ queryKey: ['facets', library] })
   }, [settled, pagesLoaded, batchFinished, queryClient])
 
   const note = scanNow.isError
@@ -559,11 +576,20 @@ export function Index({
         shared: a card writes its identity into the drag payload and a category row
         reads it back on drop, so neither holds state for the other.
       */}
-      <FolderTree
-        library={library}
-        selected={folderId ?? null}
-        onSelect={(folder) => onSelectFolder?.(folder)}
-      />
+      <div className="w-56 shrink-0">
+        <FormatFacet
+          library={library}
+          folderId={folderId}
+          q={q}
+          selected={format}
+          onSelect={(value) => onSelectFormat?.(value)}
+        />
+        <FolderTree
+          library={library}
+          selected={folderId ?? null}
+          onSelect={(folder) => onSelectFolder?.(folder)}
+        />
+      </div>
       <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
         <Toolbar
           library={library}
@@ -2229,3 +2255,75 @@ function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean
     </p>
   )
 }
+
+/**
+ * The formats among the parts the grid shows for the same category and query, as buttons that
+ * narrow the grid to one.
+ *
+ * The counts ignore the chosen format, so every other format stays choosable. Past the server's
+ * exact-count threshold a value arrives with no count, and is shown without one rather than with
+ * a guess. A chosen format the current query no longer matches stays on the list at zero, so the
+ * choice can still be undone from where it was made.
+ */
+function FormatFacet({
+  library,
+  folderId,
+  q,
+  selected,
+  onSelect,
+}: {
+  library: LibraryId
+  folderId?: string
+  q?: string
+  selected?: string
+  onSelect: (format: string | null) => void
+}) {
+  const facets = useQuery({
+    queryKey: ['facets', library, folderId ?? null, q ?? null],
+    queryFn: () => fetchFacets(library, folderId, q),
+  })
+  if (facets.isError) {
+    return (
+      <p role="alert" className="mb-6 text-xs text-[var(--color-muted)]">
+        {strings.facets.failed}
+      </p>
+    )
+  }
+  const formats = facets.data?.formats ?? []
+  const shown =
+    selected === undefined || formats.some(({ value }) => value === selected)
+      ? formats
+      : [...formats, { value: selected, count: 0 }]
+  if (facets.data === undefined || shown.length === 0) return null
+  return (
+    <section aria-labelledby="format-facet" className="mb-6">
+      <h2
+        id="format-facet"
+        className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase"
+      >
+        {strings.facets.format}
+      </h2>
+      <ul role="list" className="space-y-0.5">
+        {shown.map(({ value, count }) => (
+          <li key={value}>
+            <button
+              type="button"
+              aria-pressed={selected === value}
+              aria-label={strings.facets.option(value, count)}
+              onClick={() => onSelect(selected === value ? null : value)}
+              className="ease-mechanical flex min-h-6 w-full items-center justify-between gap-2 rounded-sm px-2 text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)] aria-pressed:bg-[var(--color-raised)] aria-pressed:text-[var(--color-bright)]"
+            >
+              <span>{strings.facets.name(value)}</span>
+              {count === null ? null : (
+                <span className="tabular text-xs text-[var(--color-muted)]">
+                  {strings.facets.count(count)}
+                </span>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+

@@ -1135,3 +1135,99 @@ async fn a_part_number_for_no_part_or_past_the_limit_is_refused(pool: sqlx::PgPo
         StatusCode::BAD_REQUEST
     );
 }
+
+/// A part whose source file is `format`.
+async fn seed_format(pool: &sqlx::PgPool, seed: u8, name: &str, format: &str) {
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name,
+            source_path: name,
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([seed; 32]),
+                size_bytes: 2_048,
+                stored_bytes: 2_048,
+                zstd_level: 0,
+            },
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format,
+            tessellations: &[],
+        })
+        .await
+        .expect("records");
+}
+
+async fn get_uri(pool: sqlx::PgPool, uri: &str) -> (StatusCode, serde_json::Value) {
+    let response = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    )
+    .oneshot(
+        Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("router responds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_facets_route_counts_formats_and_the_grid_filters_by_one(pool: sqlx::PgPool) {
+    seed_format(&pool, 0xc1, "bracket-lp-1042-03.stl", "stl").await;
+    seed_format(
+        &pool,
+        0xc2,
+        "fixture-plate-assembly-lp-9000-00.step",
+        "step",
+    )
+    .await;
+
+    let (status, facets) = get_uri(
+        pool.clone(),
+        &format!("/api/libraries/{SEEDED_LIBRARY}/facets"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        facets,
+        serde_json::json!({ "formats": [
+            { "value": "step", "count": 1 },
+            { "value": "stl", "count": 1 },
+        ] })
+    );
+    let (_, searched) = get_uri(
+        pool.clone(),
+        &format!("/api/libraries/{SEEDED_LIBRARY}/facets?q=bracket"),
+    )
+    .await;
+    assert_eq!(
+        searched["formats"],
+        serde_json::json!([{ "value": "stl", "count": 1 }]),
+        "the counts follow the query the grid is showing"
+    );
+
+    let (status, page) = get_page_with(pool, "format=STEP").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["parts"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        page["parts"][0]["name"],
+        "fixture-plate-assembly-lp-9000-00.step"
+    );
+}

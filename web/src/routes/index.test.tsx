@@ -66,6 +66,8 @@ function renderIndex(
     library?: string;
     onSelectFolder?: (folder: string | null) => void;
     onSearch?: (query: string) => void;
+    format?: string;
+    onSelectFormat?: (format: string | null) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -80,6 +82,8 @@ function renderIndex(
         library={props.library ?? DEFAULT_LIBRARY_ID}
         onSelectFolder={onSelectFolder}
         onSearch={props.onSearch}
+        format={props.format}
+        onSelectFormat={props.onSelectFormat}
       />
     ),
   });
@@ -158,6 +162,7 @@ function stubFetch(routes: {
   partSources?: () => Promise<StubResponse>;
   libraries?: () => Promise<StubResponse>;
   libraryCreate?: () => Promise<StubResponse>;
+  facets?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
@@ -206,6 +211,9 @@ function stubFetch(routes: {
     // `endsWith` alone stops matching the moment the grid filters by a category, and the
     // request then falls through to the bare-library rule — a settings body where a page
     // of parts was expected.
+    // A facet read carries the grid's query and category too, so it is told apart by its
+    // own path rather than by any parameter.
+    if (url.includes("/facets")) return (routes.facets ?? pending)();
     if (url.endsWith("/parts") || url.includes("/parts?"))
       return (routes.parts ?? pending)();
     if (url.endsWith("/scan")) return (routes.scan ?? pending)();
@@ -3395,3 +3403,45 @@ test("Escape in search hands focus back to the grid", async () => {
 
   expect(document.activeElement).toBe(document.getElementById("parts"));
 });
+
+test("the format facet lists what the library holds with counts, and choosing one filters", async () => {
+  stubFetch({
+    parts: ok(page([])),
+    facets: ok({
+      formats: [
+        { value: "step", count: 3 },
+        { value: "stl", count: 1204 },
+      ],
+    }),
+  });
+  const onSelectFormat = vi.fn();
+  renderIndex({ onSelectFormat });
+
+  const step = await screen.findByRole("button", { name: strings.facets.option("step", 3) });
+  expect(step.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getByRole("button", { name: strings.facets.option("stl", 1204) })).toBeTruthy();
+  fireEvent.click(step);
+  expect(onSelectFormat).toHaveBeenCalledWith("step");
+});
+
+test("a chosen format rides on the grid request, not on its own counts, and choosing it again clears it", async () => {
+  const fetchMock = stubFetch({
+    parts: ok(page([])),
+    facets: ok({ formats: [{ value: "step", count: 3 }] }),
+  });
+  const onSelectFormat = vi.fn();
+  renderIndex({ format: "step", onSelectFormat });
+
+  const step = await screen.findByRole("button", { name: strings.facets.option("step", 3) });
+  expect(step.getAttribute("aria-pressed")).toBe("true");
+  const urls = () => fetchMock.mock.calls.map(([url]) => String(url));
+  await waitFor(() =>
+    expect(urls().some((url) => url.includes("/parts?") && url.includes("format=step"))).toBe(true),
+  );
+  // Counts that obeyed their own selection would show every other format as zero, and a
+  // person could then never choose a second one.
+  expect(urls().some((url) => url.includes("/facets") && url.includes("format="))).toBe(false);
+  fireEvent.click(step);
+  expect(onSelectFormat).toHaveBeenCalledWith(null);
+});
+

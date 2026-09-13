@@ -261,6 +261,7 @@ pub trait PartRepository: Send + Sync {
         after: Option<lapidary_core::PartId>,
         limit: u16,
         shows: Shows,
+        format: Option<&str>,
     ) -> Result<Vec<PartRow>, DbError>;
 
     /// The same grid, filtered to a text query and ordered by relevance.
@@ -273,6 +274,8 @@ pub trait PartRepository: Send + Sync {
     /// Same keyset contract: `after` is still a `PartId`, and the rank behind it is
     /// recomputed inside the query rather than carried on the wire. A float in a cursor
     /// drifts by one ULP and silently skips or repeats a row.
+    // ponytail: eight parameters. Gather the filters into one struct when a third joins them.
+    #[allow(clippy::too_many_arguments)]
     async fn search(
         &self,
         library: LibraryId,
@@ -281,6 +284,7 @@ pub trait PartRepository: Send + Sync {
         after: Option<lapidary_core::PartId>,
         limit: u16,
         shows: Shows,
+        format: Option<&str>,
     ) -> Result<Vec<PartRow>, DbError>;
 }
 
@@ -1325,7 +1329,110 @@ macro_rules! grid_laterals {
 
 pub struct PgParts(pub PgPool);
 
+/// One value of a facet, and how many matching parts carry it. `count` is `None` past
+/// [`EXACT_FACET_ROWS`], where `docs/DATA.md` §3.4 shows which values occur without counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValue {
+    pub value: String,
+    pub count: Option<u64>,
+}
+
+/// Matching parts up to which a facet's counts are exact.
+pub const EXACT_FACET_ROWS: i64 = 10_000;
+
+/// Grouped `(value, count)` rows as a facet: counts kept when every matching part together
+/// is within `exact_up_to`, withheld past it.
+fn facet_values(rows: Vec<(String, i64)>, exact_up_to: i64) -> Vec<FacetValue> {
+    let exact = rows.iter().map(|(_, count)| count).sum::<i64>() <= exact_up_to;
+    rows.into_iter()
+        .map(|(value, count)| FacetValue {
+            value,
+            count: exact.then(|| u64::try_from(count).unwrap_or(0)),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod facet_tests {
+    use super::*;
+
+    #[test]
+    fn past_the_threshold_the_values_stay_and_the_counts_go() {
+        let rows = || vec![("step".to_owned(), 3), ("stl".to_owned(), 8)];
+        assert_eq!(
+            facet_values(rows(), 11),
+            [
+                FacetValue {
+                    value: "step".to_owned(),
+                    count: Some(3)
+                },
+                FacetValue {
+                    value: "stl".to_owned(),
+                    count: Some(8)
+                },
+            ]
+        );
+        assert_eq!(
+            facet_values(rows(), 10),
+            [
+                FacetValue {
+                    value: "step".to_owned(),
+                    count: None
+                },
+                FacetValue {
+                    value: "stl".to_owned(),
+                    count: None
+                },
+            ],
+            "eleven matching parts is past a threshold of ten"
+        );
+    }
+}
+
 impl PgParts {
+    /// The source formats among the parts the grid would show for the same library,
+    /// category, query and state, per [`facet_values`].
+    pub async fn format_facet(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: Option<&str>,
+        shows: Shows,
+    ) -> Result<Vec<FacetValue>, DbError> {
+        // The grid's own predicates, so a count never includes a part the grid would not show:
+        // the library, the state, the category subtree, and `search`'s match when there is a
+        // query. The format is the latest revision's source file's, as the card's is.
+        //
+        // ponytail: every match is counted even past the threshold, where the counts are only
+        // withheld. A rollup table refreshed on ingest (`docs/DATA.md` §3.4) is the upgrade,
+        // when a large library measures slow.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $3 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             SELECT s.format, count(*) FROM part p \
+             JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
+                           ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
+                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
+             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
+               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
+             GROUP BY s.format ORDER BY s.format",
+        )
+        .bind(library.as_uuid())
+        .bind(shows == Shows::Removed)
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(query)
+        .bind(query.map(like_pattern))
+        .fetch_all(&self.0)
+        .await?;
+        Ok(facet_values(rows, EXACT_FACET_ROWS))
+    }
+
     /// Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Written after
     /// the part commits and on its own, so a refusal here leaves a part already searchable.
     pub async fn set_metadata(
@@ -2377,6 +2484,7 @@ impl PartRepository for PgParts {
         after: Option<PartId>,
         limit: u16,
         shows: Shows,
+        format: Option<&str>,
     ) -> Result<Vec<PartRow>, DbError> {
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -2439,6 +2547,9 @@ impl PartRepository for PgParts {
             " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                AND ($2::uuid IS NULL OR p.id < $2) \
                AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
+                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
@@ -2457,6 +2568,7 @@ impl PartRepository for PgParts {
         // to the other, and the removed list cannot quietly fall behind the grid.
         .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
+        .bind(format)
         .fetch_all(&self.0)
         .await?;
 
@@ -2479,6 +2591,7 @@ impl PartRepository for PgParts {
         after: Option<PartId>,
         limit: u16,
         shows: Shows,
+        format: Option<&str>,
     ) -> Result<Vec<PartRow>, DbError> {
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
@@ -2569,6 +2682,9 @@ impl PartRepository for PgParts {
                  FROM part p \
                 WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                   AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($10::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $10 AND f.revision_id = (SELECT id FROM revision \
+                       WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.source_path ILIKE $9 \
@@ -2596,6 +2712,7 @@ impl PartRepository for PgParts {
         // And the escaped one, wrapped. Two bindings of one input, and they are not
         // interchangeable.
         .bind(like_pattern(query))
+        .bind(format)
         .fetch_all(&self.0)
         .await?;
 
