@@ -33,6 +33,9 @@ import type {
   UploadFile,
   UploadManifest,
   UploadPlan,
+  FailurePage,
+  JobId,
+  RetryAccepted,
 } from './types'
 import { strings } from './strings'
 
@@ -234,6 +237,44 @@ export async function fetchBatchStatus(
     throw new Error(`batch status returned ${response.status}`)
   }
   return (await response.json()) as BatchStatus
+}
+
+/**
+ * `GET …/jobs/{batch}/failed?after=` — the failures past the hundred `BatchStatus` carries, a
+ * page at a time. `after` is the last job already on screen.
+ */
+export async function fetchFailures(
+  library: LibraryId,
+  batch: BatchId,
+  after: JobId,
+): Promise<FailurePage> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/failed?after=${encodeURIComponent(after)}`,
+  )
+  if (!response.ok) {
+    throw new Error(`failure list returned ${response.status}`)
+  }
+  return (await response.json()) as FailurePage
+}
+
+/**
+ * `POST …/jobs/{batch}/retry` — the batch's failed files back in the queue, or only `job`.
+ * The batch reopens on the server, so reading its status again is how the page finds out.
+ */
+export async function retryFailed(
+  library: LibraryId,
+  batch: BatchId,
+  job?: JobId,
+): Promise<RetryAccepted> {
+  const suffix = job === undefined ? '' : `?job=${encodeURIComponent(job)}`
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/retry${suffix}`,
+    { method: 'POST' },
+  )
+  if (!response.ok) {
+    throw new Error(`retry returned ${response.status}`)
+  }
+  return (await response.json()) as RetryAccepted
 }
 
 /**

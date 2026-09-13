@@ -294,3 +294,79 @@ async fn the_worker_role_serves_no_event_stream(pool: sqlx::PgPool) {
         .expect("router responds");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+async fn send(pool: sqlx::PgPool, method: &str, uri: &str) -> (StatusCode, serde_json::Value) {
+    let response = router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    )
+    .oneshot(
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("router responds");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body reads");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_failure_list_pages_and_retry_puts_one_file_or_all_back(pool: sqlx::PgPool) {
+    let paths: Vec<String> = (0..101)
+        .map(|n| format!("bracket-lp-{n:04}-00.stl"))
+        .collect();
+    let (batch, _) = PgJobs(pool.clone())
+        .enqueue_scan(seeded(), &paths)
+        .await
+        .expect("enqueues");
+    sqlx::query(
+        "UPDATE job SET state = 'failed', \
+                        last_error = 'Could not read this STL - the file ends mid-facet.' \
+         WHERE batch_id = $1",
+    )
+    .bind(batch.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("fails all 101");
+    let base = format!("/api/libraries/{}/jobs/{batch}", seeded());
+
+    let (status, first) = send(pool.clone(), "GET", &format!("{base}/failed")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first["failed"].as_array().expect("an array").len(), 100);
+    let next = first["next"].as_str().expect("a full page names the next");
+    let (_, second) = send(pool.clone(), "GET", &format!("{base}/failed?after={next}")).await;
+    assert_eq!(second["failed"][0]["path"], "bracket-lp-0100-00.stl");
+    assert_eq!(second["next"], serde_json::Value::Null);
+
+    let elsewhere = format!("/api/libraries/{}/jobs/{batch}/retry", BatchId::new());
+    let (status, nothing) = send(pool.clone(), "POST", &elsewhere).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        nothing,
+        serde_json::json!({ "retried": 0 }),
+        "another library retries nothing"
+    );
+
+    let one = first["failed"][0]["job"]
+        .as_str()
+        .expect("each failure names its job");
+    let (status, retried) = send(pool.clone(), "POST", &format!("{base}/retry?job={one}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(retried, serde_json::json!({ "retried": 1 }));
+    let (_, all) = send(pool.clone(), "POST", &format!("{base}/retry")).await;
+    assert_eq!(all, serde_json::json!({ "retried": 100 }));
+}

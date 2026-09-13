@@ -6,6 +6,8 @@ import {
   batchEventsUrl,
   downloadUrl,
   fetchBatchStatus,
+  fetchFailures,
+  retryFailed,
   fetchHealth,
   createLibrary,
   fetchInstanceStorage,
@@ -55,6 +57,8 @@ import {
 import type {
   BatchId,
   BatchStatus,
+  JobFailure,
+  JobId,
   FolderId,
   InstanceStorageView,
   LibraryId,
@@ -669,7 +673,13 @@ export function Index({
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
         )}
         {activeBatch === undefined ? null : (
-          <ScanProgress status={scan.data} isError={scan.isError} kind={kind} />
+          <ScanProgress
+            status={scan.data}
+            isError={scan.isError}
+            kind={kind}
+            library={library}
+            batch={activeBatch}
+          />
         )}
         {parts.isPending ? (
           <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
@@ -1157,11 +1167,32 @@ function ScanProgress({
   status,
   isError,
   kind,
+  library,
+  batch,
 }: {
   status?: BatchStatus
   isError: boolean
   kind: BatchKind
+  library: LibraryId
+  batch: BatchId
 }) {
+  const queryClient = useQueryClient()
+  // Failures past the hundred the status carries, fetched only when somebody asks for them.
+  const [more, setMore] = useState<JobFailure[]>([])
+  const showMore = useMutation({
+    mutationFn: (after: JobId) => fetchFailures(library, batch, after),
+    onSuccess: (page) => setMore((held) => [...held, ...page.failed]),
+  })
+  // The server reopens the batch, so reading its status again restarts the poll, which stops
+  // only on a finished batch. The pages fetched past the sample are dropped rather than
+  // patched: the retried rows are no longer failures, and the status re-lists what still is.
+  const retry = useMutation({
+    mutationFn: (job: JobId | undefined) => retryFailed(library, batch, job),
+    onSuccess: () => {
+      setMore([])
+      void queryClient.invalidateQueries({ queryKey: ['batch', library, batch] })
+    },
+  })
   // Picked once, out here: a `kind === 'render' ? … : …` inside JSX puts the discriminator
   // itself in a child expression, where `no-bare-strings.test.ts` reads it — correctly —
   // as a bare literal reaching the screen.
@@ -1189,27 +1220,75 @@ function ScanProgress({
     return null
   }
   // The server caps the list at 100 while `failedTotal` is the real number, so a batch
-  // with more failures than that says so rather than trailing off at the hundredth.
-  const hidden = status.failedTotal - status.failed.length
+  // with more failures than that says so rather than trailing off at the hundredth — and the
+  // count is a button, so the rest is a press away.
+  const listed = [...status.failed, ...more]
+  const hidden = status.failedTotal - listed.length
+  const last = listed[listed.length - 1]
+  // A migration retries itself (see `PgJobs::retry`), so its line offers nothing to press.
+  const retryable = kind !== 'migrate'
+  const button =
+    'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-60'
   return (
     <div className="mb-4 max-w-prose text-[var(--color-muted)]">
-      <p className="flex flex-wrap gap-2">
+      <p className="flex flex-wrap items-center gap-2">
         <span>{progressText(status, kind)}</span>
         {status.failedTotal === 0 ? null : <span>{copy.failed(status.failedTotal)}</span>}
+        {retryable && status.failedTotal > 1 ? (
+          <button
+            type="button"
+            className={button}
+            disabled={retry.isPending}
+            onClick={() => retry.mutate(undefined)}
+          >
+            {strings.failure.retryAll(status.failedTotal)}
+          </button>
+        ) : null}
       </p>
-      {status.failed.length === 0 ? null : (
+      {retry.isError ? (
+        <p role="alert" className="mt-2 text-sm">
+          {strings.failure.retryFailed}
+        </p>
+      ) : null}
+      {listed.length === 0 ? null : (
         <ul role="list" className="mt-2 space-y-1 text-sm">
-          {status.failed.map((failure) => (
-            // The path is not unique — two jobs can name the same file across retries,
-            // and a `scan_directory` failure has no path at all — so the key is the pair
-            // that identifies the row on screen.
-            <li key={`${failure.path}\u0000${failure.reason}`}>
-              {strings.failure.line(failure.path, failure.reason)}
+          {listed.map((failure) => (
+            // The job, which is the one thing unique to a row: two jobs can name the same
+            // file, and a `scan_directory` failure has no path at all.
+            <li key={failure.job} className="flex flex-wrap items-baseline gap-2">
+              <span>{strings.failure.line(failure.path, failure.reason)}</span>
+              {retryable ? (
+                <button
+                  type="button"
+                  className={button}
+                  aria-label={strings.failure.retryOne(failure.path)}
+                  disabled={retry.isPending}
+                  onClick={() => retry.mutate(failure.job)}
+                >
+                  {strings.failure.retry}
+                </button>
+              ) : null}
             </li>
           ))}
-          {hidden <= 0 ? null : <li>{strings.failure.more(hidden)}</li>}
+          {hidden <= 0 || last === undefined ? null : (
+            <li>
+              <button
+                type="button"
+                className={button}
+                disabled={showMore.isPending}
+                onClick={() => showMore.mutate(last.job)}
+              >
+                {strings.failure.more(hidden)}
+              </button>
+            </li>
+          )}
         </ul>
       )}
+      {showMore.isError ? (
+        <p role="alert" className="mt-2 text-sm">
+          {strings.failure.moreFailed}
+        </p>
+      ) : null}
     </div>
   )
 }
