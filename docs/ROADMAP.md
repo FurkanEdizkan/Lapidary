@@ -290,6 +290,45 @@ move, both on SwiftShader, and both are most likely the decoder's 26 kB: a sessi
   are not yet. `write_glb` does not know which rung it writes, so doing it means passing the
   `Lod` from `cluster()` down, and L2 must stay lossless.
 
+**Addendum, the same day: the viewer warmed on hover.** The two points above that missed a target,
+a session's first open over 400 ms and first opens with a tail over 120 ms, were the viewer starting
+up: its chunk loaded on the first open, every open made a new WebGL renderer, and shaders compiled
+on first draw. Hovering a card now also fetches the chunk and compiles the view's shaders
+(`warmViewer` → `Viewer.prepare`), and every open reuses one renderer.
+
+| Twelve parts, three rounds each | Before | After |
+|---|---|---|
+| First open in a session | 691 / 834 ms | 385 / 336 ms |
+| Other parts' first opens, median (max) | 95 (186) / 55 (262) ms | 26 (27) / 25 (26) ms |
+| Parts opened before, median (max) | 85 (105) / 52 (76) ms | 19 (20) / 18 (20) ms |
+| Shaders linked during an open | not counted | none, on every open |
+| The assembly, opened in a fresh session, median of three | 568 ms | 378 ms |
+
+How to read it:
+- **Timings** are SwiftShader / GPU, `pointerdown` to the first frame, with the pointer resting on
+  the card for 250 ms before it presses. The assembly row is SwiftShader only.
+- **Both targets are met** at that dwell, on both renderers: a session's first open under 400 ms,
+  and every first open under 120 ms.
+- **Shaders linked** counts WebGL `linkProgram` calls between `pointerdown` and the first frame. It
+  caught the first attempt, whose first open still linked one: three compiles a separate program
+  for points with no position attribute, and the view's marks gained one where the warm-up's did
+  not. Both now start from the same empty buffer.
+- **Reopens got faster as well**, because a reopen no longer creates a WebGL context.
+
+How it was measured: `web/scripts/open-timing.mjs` (`DATA.md` §2.5) against
+`docker compose -p lapidaryopen`, with `api` and `worker` from `528c186`, and `web` first as on
+`main` and then rebuilt from this branch; nothing else changed between the columns. The ingest
+folder held the two STEP fixtures and four fixture meshes beside the six seeded examples, and every
+L1 was built before timing. Chrome 152.0.7977.82, headless at 1440 × 900 with a throwaway profile per
+run, on the machine above.
+
+**What it does not change.**
+- **A press with no hover first is still cold.** With no dwell, a session's first open took 546 ms
+  on SwiftShader and linked two shaders, because the warm-up had not finished. A touch screen, or a
+  part page reached from a link, starts that way.
+- **L2 did not move** beyond noise: 15–37 ms before and 11–38 ms after, over three fresh sessions
+  each on the assembly.
+
 ---
 
 ## Phase 4 — Versioning, agent, round-trip

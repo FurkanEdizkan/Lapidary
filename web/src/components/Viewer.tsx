@@ -48,6 +48,66 @@ const CLICK_SLOP_PX = 4
 /** The accent, `--color-accent`, for the marks a pick leaves. */
 const MARK = 0x2cb4f5
 
+/** What a view draws with. Everything here holds GPU state; the lights do not, so they are not here. */
+type Kit = { renderer: WebGLRenderer; material: MeshStandardMaterial; markMaterial: PointsMaterial }
+
+function kit(): Kit {
+  const renderer = new WebGLRenderer({ antialias: true, alpha: true })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  return {
+    renderer,
+    material: new MeshStandardMaterial({ color: new Color(0xb8bcc4), roughness: 0.75, flatShading: true }),
+    markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
+  }
+}
+
+/**
+ * No marks, as an empty position buffer rather than no buffer at all. three compiles a different
+ * program for points with no position attribute, and a view's marks gain one as soon as anything
+ * is marked, so both states start from this one.
+ */
+function noMarks(): BufferGeometry {
+  return new BufferGeometry().setAttribute('position', new Float32BufferAttribute([], 3))
+}
+
+/** The lights every view is drawn under. */
+function lights(): Object3D[] {
+  const sun = new DirectionalLight(0xffffff, 1.8)
+  sun.position.set(...LIGHT_DIR)
+  return [new AmbientLight(0xffffff, 0.45), sun]
+}
+
+/**
+ * One kit for the session. A renderer made per open compiled the part's shaders again on every
+ * open. Its materials are never disposed either, because disposing a material frees the program
+ * compiled for it. A second view open at the same time, which nothing does today, gets its own.
+ */
+let session: Kit | null = null
+let sessionInUse = false
+let prepared: Promise<void> | null = null
+
+/**
+ * Compile the view's shaders before any part is opened; the grid calls this on hover. three keys a
+ * program on the material, the lights and the geometry's attributes, so this scene matches a real
+ * view in all three: the session's own materials, the same two lights, a position-only triangle
+ * like a rung's, and the view's empty marks. Anything else warms a program no view uses, which a
+ * timing run shows as a shader linked during the first open (`web/scripts/open-timing.mjs`).
+ */
+export function prepare(): Promise<void> {
+  prepared ??= (async () => {
+    session ??= kit()
+    const triangle = new BufferGeometry().setAttribute(
+      'position',
+      new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3),
+    )
+    const scene = new Scene()
+    scene.add(...lights(), new Mesh(triangle, session.material), new Points(noMarks(), session.markMaterial))
+    await session.renderer.compileAsync(scene, new OrthographicCamera())
+    triangle.dispose()
+  })()
+  return prepared
+}
+
 /**
  * The part in 3D. L0 first, because ingest built it and it paints at once; then L1, asked for
  * through `POST /api/parts/{id}/rungs/l1` the first time anyone opens the part, and swapped in
@@ -254,18 +314,16 @@ export default function Viewer({ part, poster }: { part: PartDetail; poster: Rea
 }
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
-  const renderer = new WebGLRenderer({ antialias: true, alpha: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  const own = sessionInUse
+  const { renderer, material, markMaterial } = own ? kit() : (session ??= kit())
+  sessionInUse = true
   renderer.setSize(node.clientWidth, node.clientHeight, false)
   renderer.domElement.style.width = '100%'
   renderer.domElement.style.height = '100%'
   node.appendChild(renderer.domElement)
 
   const scene = new Scene()
-  scene.add(new AmbientLight(0xffffff, 0.45))
-  const sun = new DirectionalLight(0xffffff, 1.8)
-  sun.position.set(...LIGHT_DIR)
-  scene.add(sun)
+  scene.add(...lights())
   const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
   let halfHeight = 1
@@ -281,15 +339,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   }
   fit()
   const controls = new OrbitControls(camera, renderer.domElement)
-  const material = new MeshStandardMaterial({
-    color: new Color(0xb8bcc4),
-    roughness: 0.75,
-    flatShading: true,
-  })
 
   const raycaster = new Raycaster()
-  const markMaterial = new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false })
-  const markers = new Points(new BufferGeometry(), markMaterial)
+  const markers = new Points(noMarks(), markMaterial)
   // Drawn over the part, so a mark on a face turned away still shows where it was put.
   markers.renderOrder = 1
   scene.add(markers)
@@ -370,10 +422,14 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       controls.dispose()
       if (model !== null) disposeModel(model)
       markers.geometry.dispose()
-      markMaterial.dispose()
-      material.dispose()
-      renderer.dispose()
       renderer.domElement.remove()
+      if (own) {
+        markMaterial.dispose()
+        material.dispose()
+        renderer.dispose()
+      } else {
+        sessionInUse = false
+      }
     },
   }
 }

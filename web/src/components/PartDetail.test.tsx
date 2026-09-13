@@ -1,10 +1,10 @@
 import { render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
-import { Detail } from './PartDetail'
+import { Detail, warmViewer } from './PartDetail'
 import type { PartDetail } from '../lib/types'
 
-const { mounts } = vi.hoisted(() => ({ mounts: [] as string[] }))
+const { mounts, prepare } = vi.hoisted(() => ({ mounts: [] as string[], prepare: vi.fn(async () => {}) }))
 
 // jsdom draws no WebGL, so the view is a stand-in that records each time it is mounted.
 vi.mock('../lib/viewer-math', async (original) => ({
@@ -20,6 +20,7 @@ vi.mock('./Viewer', async () => {
       }, [])
       return null
     },
+    prepare,
   }
 })
 
@@ -76,4 +77,10 @@ test('the 3D view starts over for another part, and keeps its place for a finer 
   rerender(page(PIN))
   await waitFor(() => expect(mounts).toEqual([BRACKET.id, PIN.id]))
   vi.unstubAllGlobals()
+})
+
+/** A hovered card warms the view: its chunk is fetched and its shaders compiled before the open. */
+test('warming the viewer prepares it', async () => {
+  await warmViewer()
+  expect(prepare).toHaveBeenCalledTimes(1)
 })
