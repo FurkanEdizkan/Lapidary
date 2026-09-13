@@ -27,7 +27,7 @@ fn main() -> Result<()> {
         ),
         None => {
             bail!(
-                "Usage: cargo xtask <verify [fast|task|slice]|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
+                "Usage: cargo xtask <verify [fast|task|slice|occt]|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
             )
         }
     }

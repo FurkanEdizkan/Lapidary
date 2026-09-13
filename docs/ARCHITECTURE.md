@@ -94,7 +94,7 @@ crates/
 bin/
 ├── lapidary-server/          container entrypoint: api + optionally in-process worker
 └── lapidary/                 desktop binary: agent | worker | up
-sidecar/occt-bridge/          C++ OCCT → {tessellation.glb, structure.json, entities.json}
+sidecar/occt-bridge/          C++ OCCT → {mesh.stl, structure.json, entities.json, measurements.json}
 web/                          React SPA
 deploy/                       Containerfile, compose, quadlet, install.sh, install.ps1
 ```
@@ -128,20 +128,32 @@ into the process's router only when running as the worker.
 ## The kernel simplification
 
 Container-first removes the WASM kernel variant entirely. OCCT always runs native in the
-worker container. Keep the `Kernel` trait for test doubles, but ship **one**
-implementation. This deletes the highest-risk item in the original plan.
+worker container, as a separate process — `occt-bridge` — so a crash inside OCCT fails one job
+rather than the worker. Keep the `Kernel` trait for test doubles and the mesh kernel, and ship
+**one** CAD implementation, `OcctKernel` (`crates/lapidary-cad/src/occt.rs`). This deletes the
+highest-risk item in the original plan.
 
 ```rust
 trait Kernel {
-    fn version(&self) -> KernelVersion;   // pinned across the fleet — see below
-    async fn process(&self, src: &Path, params: &KernelParams) -> Result<KernelOutput>;
+    fn version(&self, params: &KernelParams) -> KernelVersion;  // pinned across the fleet — see below
+    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError>;
 }
-// KernelOutput = { tessellation_l0/l1/l2.glb, structure.json, entities.json }
+// KernelOutput = { measurements, provenance (per figure), thumbnail_webp,
+//                  tessellations (L0/L1/L2 GLB), entities, structure, unproduced }
 ```
+
+Bytes, not a path: ingest has already hashed them, and a kernel that re-opened a path could read
+something different from what was recorded. `OcctKernel` writes them into a scratch directory
+and runs `occt-bridge convert`, which writes `mesh.stl`, `structure.json`, `entities.json` and
+`measurements.json` back (`sidecar/occt-bridge/README.md`). The mesh goes through the mesh
+kernel's own clustering, rasterizer and GLB writer; the B-rep's volume, surface area and
+bounding box replace the mesh's and are marked analytic. A refusal (exit 2), a crash and a
+timeout are three different errors, because only the first is a verdict on the file.
 
 **Pin the kernel version across the whole worker fleet.** Different OCCT builds produce
 different tessellations from identical input. `derivative.kernel_version` records it and
-geometric diff depends on determinism. The coordinator must reject leases from workers
+geometric diff depends on determinism. `OcctKernel` names the OCCT build, the bridge and the
+linear deflection in that version. The coordinator must reject leases from workers
 whose kernel hash does not match the pool's pinned build, or two revisions of an
 unchanged part will show a phantom volume delta depending on which machine processed it.
 

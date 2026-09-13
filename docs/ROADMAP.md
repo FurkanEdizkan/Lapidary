@@ -19,6 +19,30 @@ Container-first removed the OCCT bundling gate. This is no longer a go/no-go ris
 **Exit:** `podman compose up` on a clean machine serves a page, and `occt-bridge` converts
 a 200-part STEP assembly to glTF + tree + entities in under 30 s.
 
+**Measured 2026-09-13, both clauses pass.** Phase 0 was cut in two — 0a without OCCT, 0b with
+it — and the halves passed eleven days apart.
+
+| Clause | Measured | Verdict |
+|---|---|---|
+| `podman compose up` on a clean machine serves a page | Phase 0a, 8 of 8 exit criteria from a clean clone — `superpowers/plans/2026-09-01-phase-0a-verification.md` | pass |
+| `occt-bridge` converts a 200-part STEP assembly to glTF + tree + entities in under 30 s | **111 ms**: `fixtures/step/fixture-plate-assembly-lp-9000-00.step` (190 KB, 200 placed parts, 8 prototypes) to an L0 GLB rung of 53.7 KB, the assembly tree, 75 entities and a thumbnail — 28,576 triangles | pass |
+
+How it was measured: `cargo xtask verify occt`, which builds the `occt-test` stage of
+`deploy/Containerfile` — OCCT 8.0.1 built from source, `occt-bridge`, and a release build of
+`OcctKernel` — and runs `crates/lapidary-cad/tests/occt_bridge.rs` there. The timing runs from
+the input bytes to the finished `KernelOutput`: the bridge process, its B-rep read, meshing and
+JSON, then the mesh pipeline's clustering and GLB writer and the thumbnail. Kernel version
+`occt-8.0.1-bridge-1+deflection-0.1+glb-1+cpu-1`, on the 12-core development machine.
+
+**What the number does not say.** The fixture is generated, so it is licence-clean and
+reproducible, and its parts are boxes, cylinders and booleans of them. A real assembly's
+freeform and trimmed surfaces take OCCT far longer to read, heal and mesh, so 111 ms is where
+the kernel starts on the simplest honest input, not what a user's file will take. The criterion
+passes as written; the first corpus of real STEP files is the measurement worth taking next.
+Same run, same stage: the 22 mm cylinder reads with its volume exact to 1e-9 and one
+cylindrical face of radius 11; the same cylinder written in inches reads back in millimetres;
+IGES reads with no volume claimed; half a STEP file is refused rather than crashing the kernel.
+
 **Verify here, not later:** `pgvector` installs against `postgres:18`; the Turkish
 snowball `tsvector` config is present.
 
