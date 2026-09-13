@@ -176,9 +176,11 @@ function stubFetch(routes: {
   retry?: () => Promise<StubResponse>;
   failures?: () => Promise<StubResponse>;
   partRemove?: (url?: string) => Promise<StubResponse>;
+  blob?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
+    if (url.startsWith("/api/blob/")) return (routes.blob ?? pending)();
     if (init?.method === "DELETE" && url.startsWith("/api/parts/"))
       return (routes.partRemove ?? pending)(url);
     // Above the batch rule further down, which every job route contains.
@@ -3776,4 +3778,35 @@ test("the material facet lists what files declare, and a chosen material narrows
   );
   fireEvent.click(steel);
   expect(onSelectMaterial).toHaveBeenCalledWith(null);
+});
+
+/** DATA.md §2.4: hovering a card warms its L0 rung, once, so opening the part paints from cache. */
+test("hovering a card warms its L0 rung once", async () => {
+  const l0 = "7".repeat(64);
+  const card = { ...MOTOR_MOUNT, tessellationL0: l0 };
+  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([card])), blob: ok({}) });
+  renderIndex();
+  const article = await screen.findByRole("article", { name: card.name });
+
+  fireEvent.mouseEnter(article);
+  fireEvent.mouseEnter(article);
+
+  const blobCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/blob/"));
+  await waitFor(() => expect(blobCalls()).toHaveLength(1));
+  expect(String(blobCalls()[0]?.[0])).toBe(`/api/blob/${l0}`);
+});
+
+/** Where the browser cannot draw 3D, the rendered preview stays and says why. */
+test("without WebGL the quick look keeps the rendered preview and says why", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partDetail: ok({ ...detailFor(HEX_NUT), tessellationL0: "8".repeat(64) }),
+  });
+  renderIndex();
+
+  const panel = await openPanel(HEX_NUT.name);
+
+  expect(within(panel).getByText(strings.viewer.noWebGL)).toBeTruthy();
 });

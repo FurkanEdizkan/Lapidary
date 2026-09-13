@@ -36,6 +36,7 @@ import type {
   FailurePage,
   JobId,
   RetryAccepted,
+  RungReady,
 } from './types'
 import { strings } from './strings'
 
@@ -919,6 +920,26 @@ export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
     throw new Error(`part detail returned ${response.status}`)
   }
   return (await response.json()) as PartDetail
+}
+
+/**
+ * `POST /api/parts/{id}/rungs/{level}` — ask for a finer tessellation. The server answers with the
+ * rung's hash when it already exists, and otherwise queues it and answers with the batch to watch.
+ */
+export async function requestRung(
+  part: PartId,
+  level: 'l1' | 'l2',
+): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/rungs/${level}`, {
+    method: 'POST',
+  })
+  if (response.status === 200) {
+    return { kind: 'ready', hash: ((await response.json()) as RungReady).hash }
+  }
+  if (response.status === 202) {
+    return { kind: 'queued', queued: (await response.json()) as ScanAccepted }
+  }
+  throw new Error(`rung request returned ${response.status}`)
 }
 
 /**
