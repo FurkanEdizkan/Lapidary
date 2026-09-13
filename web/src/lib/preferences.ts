@@ -28,8 +28,23 @@ export type PageSize = (typeof PAGE_SIZES)[number]
 export const DENSITIES = ['comfortable', 'compact'] as const
 export type Density = (typeof DENSITIES)[number]
 
+/**
+ * How a card is drawn — the three `Lapidary Library v2.dc.html` offers.
+ *
+ * `detail` is the render in a well with a footer under it, and it stays the default because
+ * it is the one that keeps every figure and its approximate label outside the picture.
+ * `gallery` gives the render the whole card and lays the text over its foot; `list` is a
+ * row per part for somebody reading names and numbers rather than looking at shapes.
+ *
+ * A third *key* beside `pageSize` and `density`, which the density comment's "two, not
+ * three" is not about — that is two density values, and it still is.
+ */
+export const LAYOUTS = ['detail', 'gallery', 'list'] as const
+export type Layout = (typeof LAYOUTS)[number]
+
 export const DEFAULT_PAGE_SIZE: PageSize = 50
 export const DEFAULT_DENSITY: Density = 'comfortable'
+export const DEFAULT_LAYOUT: Layout = 'detail'
 
 /**
  * Namespaced and versioned by shape, not by release: `lapidary.grid.v1` says what these keys
@@ -38,7 +53,7 @@ export const DEFAULT_DENSITY: Density = 'comfortable'
  */
 const KEY = 'lapidary.grid.v1'
 
-type Stored = { pageSize?: number; density?: string }
+type Stored = { pageSize?: number; density?: string; layout?: string }
 
 function read(library: string): Stored {
   try {
@@ -79,10 +94,19 @@ export function densityFor(library: string): Density {
   return DENSITIES.find((density) => density === stored) ?? DEFAULT_DENSITY
 }
 
+export function layoutFor(library: string): Layout {
+  const stored = read(library).layout
+  return LAYOUTS.find((layout) => layout === stored) ?? DEFAULT_LAYOUT
+}
+
 export function setPageSize(library: string, pageSize: PageSize): void {
   write(library, { ...read(library), pageSize })
 }
 
 export function setDensity(library: string, density: Density): void {
   write(library, { ...read(library), density })
+}
+
+export function setLayout(library: string, layout: Layout): void {
+  write(library, { ...read(library), layout })
 }

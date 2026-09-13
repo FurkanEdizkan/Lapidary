@@ -1,6 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
   batchEventsUrl,
@@ -25,12 +25,16 @@ import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail } from '../components/PartDetail'
 import {
   DENSITIES,
+  LAYOUTS,
   PAGE_SIZES,
   densityFor,
+  layoutFor,
   pageSizeFor,
   setDensity,
+  setLayout,
   setPageSize,
   type Density,
+  type Layout,
   type PageSize,
 } from '../lib/preferences'
 import { strings } from '../lib/strings'
@@ -302,6 +306,10 @@ export function Index({
    */
   const [pageSize, setPageSizeState] = useState<PageSize>(() => pageSizeFor(library))
   const [density, setDensityState] = useState<Density>(() => densityFor(library))
+  const [layout, setLayoutState] = useState<Layout>(() => layoutFor(library))
+  // Owned here rather than inside `DropTarget`, because two controls open the same picker
+  // now: the drop strip's link, and the toolbar's Upload button.
+  const picker = useRef<HTMLInputElement>(null)
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
     queryFn: () => fetchInstanceStorage(measure),
@@ -544,7 +552,7 @@ export function Index({
         onSelect={(folder) => onSelectFolder?.(folder)}
       />
       <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
-        <ActionBar
+        <Toolbar
           library={library}
           // Three sources, most authoritative first, and `undefined` when none of them has
           // an answer. The server's echo is the truth once it lands; `variables` is what this
@@ -575,33 +583,35 @@ export function Index({
           onSweep={() => sweep.mutate()}
           sweepBusy={sweep.isPending}
           note={note}
-        />
-        {/*
-          Between the action bar and the drop target, and not inside the action bar. That row
-          is a row of *actions* — a checkbox and two buttons — and putting a persistent text
-          filter among them makes it read as "type here, then press Scan".
-        */}
-        <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
-        <GridSettings
+          onSelectLibrary={onSelectLibrary}
           pageSize={pageSize}
-          density={density}
           onPageSize={(size) => {
             setPageSizeState(size)
             setPageSize(library, size)
           }}
+          density={density}
           onDensity={(next) => {
             setDensityState(next)
             setDensity(library, next)
           }}
+          layout={layout}
+          onLayout={(next) => {
+            setLayoutState(next)
+            setLayout(library, next)
+          }}
+          onUpload={() => picker.current?.click()}
+          uploadBusy={upload.isPending}
+          search={
+            <SearchBox
+              q={q ?? ''}
+              categoryName={selectedFolderName}
+              filtered={folderId !== undefined}
+              onSearch={onSearch}
+              onWiden={() => onSelectFolder?.(null)}
+            />
+          }
         />
-        <SearchBox
-          q={q ?? ''}
-          categoryName={selectedFolderName}
-          filtered={folderId !== undefined}
-          onSearch={onSearch}
-          onWiden={() => onSelectFolder?.(null)}
-        />
-        <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} />
+        <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} picker={picker} />
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
         )}
@@ -652,6 +662,7 @@ export function Index({
               busyPart={renderPart.isPending ? renderPart.variables : undefined}
               hostRoot={instance.data?.hostStorageRoot ?? null}
               density={density}
+              layout={layout}
             />
             <MorePages
               hasMore={parts.hasNextPage}
@@ -699,13 +710,16 @@ function DropTarget({
   onFiles,
   busy,
   progress,
+  picker,
 }: {
   onFiles: (picked: PickedFile[]) => void
   busy: boolean
   progress: UploadProgress | undefined
+  /** The hidden folder input, shared with the toolbar's Upload button. */
+  picker: RefObject<HTMLInputElement | null>
 }) {
   const [depth, setDepth] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
+  const input = picker
   const over = depth > 0
 
   return (
@@ -721,7 +735,7 @@ function DropTarget({
         setDepth(0)
         void filesFromDrop(event.dataTransfer.items).then(onFiles)
       }}
-      className={`ease-mechanical mb-6 rounded border border-dashed p-6 text-center text-sm duration-[var(--duration-fast)] ${
+      className={`ease-mechanical mb-4 rounded-[var(--radius-ctl)] border border-dashed px-4 py-2.5 text-center text-xs duration-[var(--duration-fast)] ${
         over
           ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
           : // The dashed rectangle *is* the affordance — there is no label, no icon and no
@@ -794,17 +808,28 @@ function progressLine(progress: UploadProgress): string {
 }
 
 /**
- * What this page can do to a library: scan the server's ingest folder into it, change
- * whether ingest renders previews, and render the previews it does not have.
+ * Everything above the grid, in one row.
  *
- * Every action enqueues rather than does — the walk and the rendering both happen in the
- * worker — so no button here waits on a filesystem or on geometry. The toggle is the one
- * control that has a state of its own to be wrong about, which is why it takes
- * `boolean | undefined` and not a default. `note` carries whatever the last action has to
- * say: a sweep that found nothing missing is a success and says so, which is the one
- * place this reading is easy to get backwards.
+ * `v2` puts navigation, search, view options and upload in a single bar. This used to be four
+ * stacked rows — the action bar, the library switcher, the grid settings and the search field
+ * — which put 387px of chrome between the page's top and its first render. The controls are
+ * the same controls; what changed is that the ones you set once and leave (card size, page
+ * size, which library, whether previews render) went into two menus, and the ones you touch
+ * every visit (search, upload, switching to the removed list) stayed on the bar.
+ *
+ * **Two bars, not one, and that is a deliberate difference from the design.** The brand sits
+ * in the root route's header and this row sits under it. Hoisting search into the root would
+ * move its debounce and its `q` navigation out of the route that owns that search param, and
+ * `index.test.tsx` drives this route's own `SearchBox` through a synthetic root — so the
+ * refactor would rewrite a large share of that file to save one 38px row.
+ *
+ * Menus are native popovers (`styles.css` has why). Every control inside one stays in the
+ * document while the menu is closed, which is what keeps a test that finds the auto-thumbnail
+ * checkbox by role meaningful — and also what would let such a test pass if the menu could
+ * never be opened at all, so `index.test.tsx` asserts the trigger is wired to its menu, and
+ * the keyboard pass in the browser is the check that it opens.
  */
-function ActionBar({
+function Toolbar({
   autoThumbnail,
   onAutoThumbnail,
   settingsBusy,
@@ -815,6 +840,16 @@ function ActionBar({
   sweepBusy,
   note,
   library,
+  onSelectLibrary,
+  pageSize,
+  onPageSize,
+  density,
+  onDensity,
+  layout,
+  onLayout,
+  onUpload,
+  uploadBusy,
+  search,
 }: {
   autoThumbnail: boolean | undefined
   onAutoThumbnail: (on: boolean) => void
@@ -825,77 +860,201 @@ function ActionBar({
   onSweep: () => void
   sweepBusy: boolean
   note: string | null
-  /** Carried only so the Removed link can hand it on; nothing here reads it otherwise. */
   library: LibraryId
+  onSelectLibrary?: (library: LibraryId) => void
+  pageSize: PageSize
+  onPageSize: (size: PageSize) => void
+  density: Density
+  onDensity: (density: Density) => void
+  layout: Layout
+  onLayout: (layout: Layout) => void
+  onUpload: () => void
+  uploadBusy: boolean
+  /** The search field, built by the route that owns its query. */
+  search: ReactNode
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-[var(--color-border)] pb-4">
-      <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         {/*
-          `undefined` is "not known yet", and the checkbox says so in the way a checkbox
-          says it: mixed, and not clickable until there is a state to click away from.
-          Painting a confident "on" for the tick before the read lands is the same lie in a
-          shorter window, and a box that flips under the cursor is worse than one that
-          waits. It stays mixed if the read fails outright — `settingsNote` says why and
-          says to reload — because there is nothing honest to put there.
-
-          `indeterminate` is a DOM property with no attribute, so it is set through the ref
-          rather than rendered. Block body: a React 19 ref callback that returns a value is
-          read as a cleanup function.
+          Grid is where you are, so it is marked and not linked: a link to `/` from `/` would
+          drop the category and the search you are in the middle of. Removed is a place, not
+          an action, and the only route back to a part somebody removed — so it stays a link,
+          carrying the library, as it was.
         */}
-        <input
-          type="checkbox"
-          checked={autoThumbnail ?? false}
-          ref={(el) => {
-            if (el !== null) {
-              el.indeterminate = autoThumbnail === undefined
-            }
-          }}
-          disabled={settingsBusy || autoThumbnail === undefined}
-          onChange={(event) => onAutoThumbnail(event.target.checked)}
-          className="accent-[var(--color-accent)]"
-        />
-        {strings.library.autoThumbnail}
-      </label>
-      <button
-        type="button"
-        onClick={onScan}
-        disabled={scanBusy}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {strings.scan.start}
-      </button>
-      <button
-        type="button"
-        onClick={onSweep}
-        disabled={sweepBusy}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {strings.render.sweep}
-      </button>
+        <nav
+          aria-label={strings.toolbar.views}
+          className="flex flex-none items-center gap-0.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-raised)] p-[3px]"
+        >
+          <span
+            aria-current="page"
+            className="flex min-h-6 items-center rounded-[5px] bg-[var(--color-surface)] px-3 text-xs font-semibold text-[var(--color-bright)]"
+          >
+            {strings.toolbar.grid}
+          </span>
+          <Link
+            to="/removed"
+            search={library === DEFAULT_LIBRARY_ID ? undefined : { library }}
+            className="ease-mechanical flex min-h-6 items-center rounded-[5px] px-3 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+          >
+            {strings.removal.removedTitle}
+          </Link>
+        </nav>
+        {search}
+        <Menu id="view-menu" label={strings.toolbar.view}>
+          <p className="text-xs font-medium text-[var(--color-muted)]">{strings.toolbar.layout}</p>
+          <div role="group" aria-label={strings.toolbar.layout} className="flex gap-1.5">
+            {LAYOUTS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={layout === option}
+                onClick={() => onLayout(option)}
+                className={
+                  layout === option
+                    ? 'min-h-6 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-accent)] bg-[var(--color-surface)] px-2 text-xs text-[var(--color-bright)]'
+                    : 'ease-mechanical min-h-6 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
+                }
+              >
+                {LAYOUT_LABEL[option]}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center justify-between gap-3 text-xs text-[var(--color-muted)]">
+            {strings.grid.density}
+            <select
+              value={density}
+              onChange={(event) => onDensity(event.target.value as Density)}
+              className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
+            >
+              {DENSITIES.map((option) => (
+                <option key={option} value={option}>
+                  {DENSITY_LABEL[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center justify-between gap-3 text-xs text-[var(--color-muted)]">
+            {strings.grid.pageSize}
+            <select
+              value={pageSize}
+              onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
+              className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
+            >
+              {PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {strings.grid.pageSizeOption(size)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </Menu>
+        <Menu id="library-menu" label={strings.toolbar.library}>
+          <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
+        <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
+          {/*
+            `undefined` is "not known yet", and the checkbox says so in the way a checkbox
+            says it: mixed, and not clickable until there is a state to click away from.
+            Painting a confident "on" for the tick before the read lands is the same lie in a
+            shorter window, and a box that flips under the cursor is worse than one that
+            waits. It stays mixed if the read fails outright — `settingsNote` says why and
+            says to reload — because there is nothing honest to put there.
+
+            `indeterminate` is a DOM property with no attribute, so it is set through the ref
+            rather than rendered. Block body: a React 19 ref callback that returns a value is
+            read as a cleanup function.
+          */}
+          <input
+            type="checkbox"
+            checked={autoThumbnail ?? false}
+            ref={(el) => {
+              if (el !== null) {
+                el.indeterminate = autoThumbnail === undefined
+              }
+            }}
+            disabled={settingsBusy || autoThumbnail === undefined}
+            onChange={(event) => onAutoThumbnail(event.target.checked)}
+            className="accent-[var(--color-accent)]"
+          />
+          {strings.library.autoThumbnail}
+        </label>
+          <button
+            type="button"
+            onClick={onScan}
+            disabled={scanBusy}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.scan.start}
+          </button>
+          <button
+            type="button"
+            onClick={onSweep}
+            disabled={sweepBusy}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.render.sweep}
+          </button>
+        </Menu>
+        <button
+          type="button"
+          onClick={onUpload}
+          disabled={uploadBusy}
+          className="ease-mechanical flex min-h-6 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {strings.toolbar.upload}
+        </button>
+      </div>
       {/*
-        A link and not a button: the removed list is a place, not an action, and it is the
-        only route back to a part somebody removed. Its absence would make removing a
-        one-way door — every other read path filters `deleted_at`, so nothing else in this
-        app can name a removed part again.
+        Outside the menus, always. A note that says the scan failed or that previews could not
+        be queued answers a control that may live in a closed menu, and a message inside a
+        closed menu is a message nobody reads.
       */}
-      <Link
-        to="/removed"
-        // The library travels with the link. Without it the removed list answered about the
-        // seeded library whatever you were looking at, which is a wrong answer rather than a
-        // missing one.
-        search={library === DEFAULT_LIBRARY_ID ? undefined : { library }}
-        // `min-h-6` and not padding alone: WCAG 2.2 SC 2.5.8 measures the target, and a
-        // 20px text link in a row of 26px buttons was the smallest thing on the page.
-        className="ease-mechanical flex min-h-6 items-center text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-      >
-        {strings.removal.removedTitle}
-      </Link>
-      {settingsNote === null ? null : (
-        <span className="text-sm text-[var(--color-muted)]">{settingsNote}</span>
+      {settingsNote === null && note === null ? null : (
+        <p className="mb-3 flex flex-wrap gap-x-4 text-sm text-[var(--color-muted)]">
+          {settingsNote === null ? null : <span>{settingsNote}</span>}
+          {note === null ? null : <span>{note}</span>}
+        </p>
       )}
-      {note === null ? null : <span className="text-sm text-[var(--color-muted)]">{note}</span>}
-    </div>
+    </>
+  )
+}
+
+/** A button and the popover it opens. See `styles.css` for why it is native. */
+function Menu({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  // Each menu names its own anchor, so two menus on one page never position against the
+  // same button.
+  const anchor = { '--anchor': `--${id}` } as CSSProperties
+  return (
+    <>
+      <button
+        type="button"
+        popoverTarget={id}
+        style={anchor}
+        className="menu-anchor ease-mechanical flex min-h-6 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {label}
+        <span aria-hidden="true" className="text-[9px] opacity-75">
+          ▾
+        </span>
+      </button>
+      <div
+        id={id}
+        popover="auto"
+        role="group"
+        aria-label={label}
+        style={anchor}
+        /*
+          `open:flex`, never `flex`. A `display` utility on the popover itself outranks the
+          browser's own `[popover]:not(:popover-open) { display: none }` — author styles beat
+          user-agent ones — so a plain `flex` here painted both menus permanently open over
+          the grid while every test stayed green: jsdom applies none of these classes, so the
+          suite could not see it. The first browser check did.
+        */
+        className="menu panel-in w-64 flex-col gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-[var(--color-text)] shadow-[0_14px_34px_rgba(0,0,0,0.5)] open:flex"
+      >
+        {children}
+      </div>
+    </>
   )
 }
 
@@ -1147,54 +1306,15 @@ const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
  * reads it — correctly — as a label reaching the screen. Same trap `ShowInFolder` and
  * `InstanceStorage` both carry a comment about.
  */
+const LAYOUT_LABEL: Record<Layout, string> = {
+  detail: strings.layouts.detail,
+  gallery: strings.layouts.gallery,
+  list: strings.layouts.list,
+}
+
 const DENSITY_LABEL: Record<Density, string> = {
   comfortable: strings.grid.comfortable,
   compact: strings.grid.compact,
-}
-
-function GridSettings({
-  pageSize,
-  density,
-  onPageSize,
-  onDensity,
-}: {
-  pageSize: PageSize
-  density: Density
-  onPageSize: (size: PageSize) => void
-  onDensity: (density: Density) => void
-}) {
-  return (
-    <div className="mb-3 flex flex-wrap items-center gap-4 text-xs text-[var(--color-muted)]">
-      <label className="flex items-center gap-2">
-        {strings.grid.pageSize}
-        <select
-          value={pageSize}
-          onChange={(event) => onPageSize(Number(event.target.value) as PageSize)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-        >
-          {PAGE_SIZES.map((size) => (
-            <option key={size} value={size}>
-              {strings.grid.pageSizeOption(size)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center gap-2">
-        {strings.grid.density}
-        <select
-          value={density}
-          onChange={(event) => onDensity(event.target.value as Density)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-        >
-          {DENSITIES.map((option) => (
-            <option key={option} value={option}>
-              {DENSITY_LABEL[option]}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
-  )
 }
 
 /**
@@ -1249,7 +1369,7 @@ function SearchBox({
 
   const waiting = typed.trim().length === 1
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-2">
+    <div className="flex min-w-64 flex-1 flex-wrap items-center gap-2">
       {/*
         The field sits *below* the ground rather than on it — `--color-raised` against the
         page, which is how `v2` draws every input. A control you type into reads as a well;
@@ -1558,6 +1678,7 @@ function Grid({
   busyPart,
   hostRoot,
   density,
+  layout,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
@@ -1565,6 +1686,7 @@ function Grid({
   /** Passed down rather than fetched per card: it is one fact about the deployment. */
   hostRoot: string | null
   density: Density
+  layout: Layout
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -1573,10 +1695,14 @@ function Grid({
   //
   // Whole class strings rather than interpolation: Tailwind scans source for literals, and
   // a class built at runtime is a class that was never generated.
+  // A list is one column whatever the density: density sizes a card, and a row has no card
+  // to size.
   const columns =
-    density === 'compact'
-      ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
-      : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
+    layout === 'list'
+      ? 'grid-cols-1 gap-1.5'
+      : density === 'compact'
+        ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
+        : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
   //
   // **A compact card is TALLER, not shorter**, and guessing the other way was the first
   // thing this got wrong. A narrower column wraps more of the name and more of the "9.7 kB
@@ -1585,10 +1711,24 @@ function Grid({
   // (median 27.6rem), compact 478–516px (median 31.1rem). The same mistake the 26rem figure
   // below already records making once — a guess, in the wrong direction, about a height
   // that has to be measured.
+  //
+  // Gallery and list, measured in Chrome over the seeded library: a comfortable gallery card
+  // rendered 12.89rem tall and a compact one 8.47rem, at a 1157px viewport — square, because a
+  // gallery card is its well and nothing else, so these two track column width and are the
+  // figures most likely to drift at other widths, which the leading `auto` absorbs after first
+  // render. A list row is 4rem at either density, exactly: its height is the 46px well plus
+  // padding and nothing about it scales. The first draft of these was guessed at 11rem and
+  // 8rem, and was marked as a guess until this replaced it.
   const intrinsic =
-    density === 'compact'
-      ? '[contain-intrinsic-size:auto_31rem]'
-      : '[contain-intrinsic-size:auto_26rem]'
+    layout === 'list'
+      ? '[contain-intrinsic-size:auto_4rem]'
+      : layout === 'gallery'
+        ? density === 'compact'
+          ? '[contain-intrinsic-size:auto_8.5rem]'
+          : '[contain-intrinsic-size:auto_13rem]'
+        : density === 'compact'
+          ? '[contain-intrinsic-size:auto_31rem]'
+          : '[contain-intrinsic-size:auto_26rem]'
   return (
     <ul role="list" className={`grid list-none ${columns}`}>
       {parts.map((part) => (
@@ -1611,7 +1751,7 @@ function Grid({
         // real size once it has rendered one, so this figure only has to be close for the
         // first paint rather than exact forever.
         <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
-          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} />
+          <Card part={part} onRender={onRender} busy={part.id === busyPart} hostRoot={hostRoot} layout={layout} />
         </li>
       ))}
     </ul>
@@ -1625,16 +1765,71 @@ function Grid({
  */
 const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
 
+/**
+ * A card's own box, its render's well, and its text, in each layout.
+ *
+ * Whole class strings, never assembled: Tailwind generates what it finds in source text, and
+ * a class built at runtime is a class that was never generated.
+ *
+ * **Every layout keeps `Measurements` visible**, and that is the constraint the gallery is
+ * built around rather than an afterthought. `v2`'s gallery overlay shows a name and three
+ * dimensions and nothing else; this one carries the approximate label as well, because
+ * `CLAUDE.md` makes that label unconditional and an overlay is exactly where it would drop out.
+ */
+const CARD_SHAPE: Record<Layout, string> = {
+  detail:
+    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]',
+  gallery:
+    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]',
+  // No lift on a row. Forty rows each rising under a passing pointer is a list that shimmers;
+  // the edge brightening is enough to say which one is addressed.
+  list: 'ease-mechanical group relative flex cursor-pointer items-center gap-3 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-2 duration-[var(--duration-fast)] hover:border-[var(--color-edge)]',
+}
+
+const WELL: Record<Layout, string> = {
+  detail:
+    'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]',
+  gallery:
+    'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]',
+  list: 'relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] bg-[var(--color-raised)] p-1',
+}
+
+/**
+ * The name, per layout. The gallery clamps it to one line, and that is the fix for the first
+ * gallery this shipped: a two-line name above the figures made the overlay two-thirds of a
+ * square card, which put the name over the middle of the render — the critique's P0, "a tile
+ * that hides the part", back again — and set white text over light grey facets. Every test
+ * and a measured `checkVisibility` on the approximate label passed it, because none of them
+ * asks whether the *part* can be seen. A screenshot at two widths did. The full name stays in
+ * the link's text for every reader and in its `title` for a pointer.
+ */
+const NAME: Record<Layout, string> = {
+  detail: 'text-sm leading-snug font-semibold',
+  gallery: 'truncate text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
+  list: 'text-sm leading-snug font-semibold',
+}
+
+const FOOTER: Record<Layout, string> = {
+  detail: 'flex flex-1 flex-col gap-1 p-3',
+  // `v2`'s own gradient: clear at the top so the render reads through, near-opaque at the foot
+  // where the smallest text sits.
+  gallery:
+    'absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-[linear-gradient(180deg,rgba(18,18,20,0)_0%,rgba(18,18,20,0.88)_48%,rgba(18,18,20,0.97)_100%)] px-3 pt-6 pb-2.5',
+  list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
+}
+
 function Card({
   part,
   onRender,
   busy,
   hostRoot,
+  layout,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
   busy: boolean
   hostRoot: string | null
+  layout: Layout
 }) {
   const nameId = `part-name-${part.id}`
   const [moving, setMoving] = useState(false)
@@ -1647,6 +1842,10 @@ function Card({
   // from a `409` — the same status the route uses for a name collision, which the UI
   // would otherwise present as one.
   const movable = directory !== null
+  // Only where the gallery clamps the name to one line; elsewhere the whole name is on the
+  // card and a tooltip repeating it is noise. Decided here rather than in the attribute,
+  // because a literal inside a user-visible attribute reads to the bare-strings gate as copy.
+  const clampedName = layout === 'gallery' ? part.name : undefined
   return (
     <article
       aria-labelledby={nameId}
@@ -1688,7 +1887,7 @@ function Card({
         one being addressed. A wall of forty tiles all drawn at 3:1 is a grid of boxes
         rather than a page of parts.
       */
-      className="ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]"
+      className={CARD_SHAPE[layout]}
     >
       {/*
         The well the render sits in, one step *down* from the card and inset from it.
@@ -1699,11 +1898,15 @@ function Card({
         side, in the one unit that keeps it proportional as the density control changes the
         column width.
       */}
-      <div className="relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]">
+      <div className={WELL[layout]}>
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,
           // and "the worker has not rasterized this yet" is not one.
-          <span className="text-xs text-[var(--color-muted)]">{strings.parts.noThumbnail}</span>
+          // A 46px list well cannot hold the sentence, and the row's name already says which
+          // part this is — so there it is read, not drawn.
+          <span className={layout === 'list' ? 'sr-only' : 'text-xs text-[var(--color-muted)]'}>
+            {strings.parts.noThumbnail}
+          </span>
         ) : (
           <img
             src={part.thumbnail}
@@ -1717,7 +1920,7 @@ function Card({
         The footer, and the only thing besides the render that survives at rest. A tile a
         person is scanning has to answer "which part is this" without being hovered.
       */}
-      <div className="flex flex-1 flex-col gap-1 p-3">
+      <div className={FOOTER[layout]}>
         {/*
           The name is the link, not the whole card — the keyboard path, the middle-click
           path, and what a screen reader announces. It is the card's only tab stop, which is
@@ -1732,24 +1935,27 @@ function Card({
           whether a function is available, not which surface offers it. Do not move a
           control out of `parts.$partId.tsx` without checking this again.
         */}
-        <h2 id={nameId} className="text-sm leading-snug font-semibold">
-          <Link
-            to="/parts/$partId"
-            params={{ partId: part.id }}
-            className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
-          >
-            {part.name}
-          </Link>
-        </h2>
-        {part.partNumber === null ? null : (
-          <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
-        )}
+        <div className="flex min-w-0 flex-col gap-1">
+          <h2 id={nameId} className={NAME[layout]}>
+            <Link
+              to="/parts/$partId"
+              params={{ partId: part.id }}
+              title={clampedName}
+              className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
+            >
+              {part.name}
+            </Link>
+          </h2>
+          {part.partNumber === null ? null : (
+            <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
+          )}
+        </div>
         {/*
           `CLAUDE.md` says a mesh-derived measurement is labelled approximate *always*. It
           used to sit in the hover panel, where "always" quietly meant "never" — the row was
           clipped off the top of the tile at every desktop width. Always means here.
         */}
-        <Measurements part={part} />
+        <Measurements part={part} tight={layout === 'gallery'} />
         {/*
           Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
           This card is `overflow-hidden hover:-translate-y-px`, Tailwind emits that lift as
@@ -1915,7 +2121,7 @@ function QuickLook({
  * The line still renders for a part with no count but the flag set, because the flag
  * means *any* figure on this part is mesh-derived — not that this count is.
  */
-function Measurements({ part }: { part: PartCard }) {
+function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   // Narrowed with typeof rather than compared to null: the binding says `number | null`,
   // but the response is cast rather than validated, so a field that disappears upstream
   // arrives here as undefined and would reach .toLocaleString() as one.
@@ -1924,7 +2130,15 @@ function Measurements({ part }: { part: PartCard }) {
     return null
   }
   return (
-    <p className="tabular mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]">
+    <p
+      // Without the top padding over a gallery render: the overlay is the lower third of the
+      // card, and eight pixels of it spent on air is eight pixels more of the part hidden.
+      className={
+        tight
+          ? 'tabular mt-auto flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]'
+          : 'tabular mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]'
+      }
+    >
       {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
       <span
         title={strings.parts.approximateDetail}
