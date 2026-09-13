@@ -1366,6 +1366,18 @@ export const strings = {
     millimetres: (value: number) => `${fixed(value)} mm`,
     degrees: (value: number) => `${fixed(value)}°`,
   },
+  /**
+   * The section plane, beside the measuring tools. A cut changes what is drawn and what a click can
+   * meet, never a reading taken from what is left, and it is open: it shows the part's inside
+   * surfaces rather than a filled face.
+   */
+  section: {
+    label: 'Section',
+    off: 'Off',
+    axes: { x: 'X', y: 'Y', z: 'Z' },
+    position: 'Where the cut is',
+    flip: 'Flip',
+  },
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means
