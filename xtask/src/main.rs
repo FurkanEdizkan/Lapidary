@@ -508,7 +508,8 @@ fn check_deploy() -> Result<()> {
             "deploy check OK — deploy/compose.yaml and deploy/Containerfile agree on which \
              services link the CAD kernel (static check: configuration only, not built images), \
              every service that runs lapidary-server sets LAPIDARY_ROLE, every kernel-linked \
-             service sets it to worker and something does, and lapidary-api never names \
+             service sets it to worker and something does, each builds its own Containerfile target \
+             and only the worker target carries OCCT, and lapidary-api never names \
              SourceStore, names SourceReader only in crates/lapidary-api/src/download.rs, and \
              names SourceRelocator only in crates/lapidary-api/src/moves.rs \
              ({} source file(s) checked)",

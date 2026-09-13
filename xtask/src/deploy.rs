@@ -56,6 +56,16 @@ const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
 /// key is present.
 const WORKER_ROLE: &str = "worker";
 
+/// The two build targets `deploy/Containerfile` ends in, and the stage OCCT is built in.
+///
+/// The `api` target must never carry OCCT, through any stage it builds on; the `worker` target
+/// must. Named here rather than inferred from the file, because a Containerfile whose services
+/// forget to pick a target builds its *last* stage for every one of them — the worker's, OCCT
+/// and all — and nothing about that build fails.
+const API_TARGET: &str = "api";
+const WORKER_TARGET: &str = "worker";
+const OCCT_STAGE: &str = "occt";
+
 /// The exact expansion `deploy/Containerfile`'s `cargo build` line must contain so the
 /// `SERVER_FEATURES` arg actually reaches the build. Kept as one constant so the check and
 /// its own doc comment can't drift apart.
@@ -103,6 +113,26 @@ pub enum Violation {
     /// No service anywhere in `deploy/compose.yaml` sets `LAPIDARY_ROLE: worker`, so the
     /// deployment has nothing that mounts the ingest routes.
     NoWorkerService,
+    /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` without a
+    /// `target:`, so the runtime builds the file's last stage — the `worker` target, OCCT
+    /// included — whatever the service is.
+    MissingBuildTarget { service: String },
+    /// A `deploy/compose.yaml` service builds a target other than the one its place in
+    /// `KERNEL_LINKED_SERVICES` calls for: `worker` for a kernel-linked service, `api` for
+    /// every other `lapidary-server` service.
+    WrongBuildTarget {
+        service: String,
+        target: String,
+        expected: &'static str,
+    },
+    /// The `api` target of `deploy/Containerfile`, or a stage it builds on, copies from the
+    /// `occt` stage or is that stage. OCCT is the CAD kernel, and the open path never links it.
+    ApiTargetCarriesOcct { stage: String },
+    /// The `worker` target of `deploy/Containerfile`, and every stage it builds on, copies
+    /// nothing from the `occt` stage, so the kernel-linked image ships without its kernel.
+    WorkerTargetMissingOcct,
+    /// Parse-stale: `deploy/Containerfile` has no stage named `target`.
+    ContainerfileMissingTarget { target: &'static str },
     /// `deploy/Containerfile`'s `cargo build` line does not contain the
     /// `${SERVER_FEATURES:+...}` expansion.
     BuildLineMissingArgExpansion,
@@ -194,6 +224,50 @@ impl std::fmt::Display for Violation {
                  its walk and no part could ever enter a library, because nothing walks \
                  the mount. Give the ingest service `LAPIDARY_ROLE: worker` under \
                  its environment: block in deploy/compose.yaml."
+            ),
+            Violation::MissingBuildTarget { service } => write!(
+                f,
+                "deploy/compose.yaml service '{service}' builds {LAPIDARY_SERVER_DOCKERFILE} \
+                 without a `target:`, so Docker and Podman build the file's last stage — the \
+                 `{WORKER_TARGET}` target, which carries OCCT — whatever {service} is. Add \
+                 `target: {API_TARGET}` (or `target: {WORKER_TARGET}` for a kernel-linked \
+                 service) under {service}'s build: block in deploy/compose.yaml."
+            ),
+            Violation::WrongBuildTarget {
+                service,
+                target,
+                expected,
+            } => write!(
+                f,
+                "deploy/compose.yaml service '{service}' builds the `{target}` target of \
+                 {LAPIDARY_SERVER_DOCKERFILE}, but should build `{expected}`: kernel-linked \
+                 services (KERNEL_LINKED_SERVICES in xtask/src/deploy.rs) build \
+                 `{WORKER_TARGET}`, which carries OCCT, and every other lapidary-server service \
+                 builds `{API_TARGET}`, which must not. Set `target: {expected}` under \
+                 {service}'s build: block in deploy/compose.yaml."
+            ),
+            Violation::ApiTargetCarriesOcct { stage } => write!(
+                f,
+                "deploy/Containerfile's `{API_TARGET}` target carries OCCT: stage '{stage}', \
+                 which that target is or builds on, copies from the `{OCCT_STAGE}` stage or is \
+                 that stage. The api image serves the open path, which must never link the CAD \
+                 kernel. Move every COPY --from={OCCT_STAGE} into the `{WORKER_TARGET}` stage, \
+                 below the shared stage both targets start from."
+            ),
+            Violation::WorkerTargetMissingOcct => write!(
+                f,
+                "deploy/Containerfile's `{WORKER_TARGET}` target copies nothing from the \
+                 `{OCCT_STAGE}` stage, through itself or any stage it builds on, so the image \
+                 that runs ingest would ship without OCCT and occt-bridge. Add the COPY \
+                 --from={OCCT_STAGE} lines to the `{WORKER_TARGET}` stage."
+            ),
+            Violation::ContainerfileMissingTarget { target } => write!(
+                f,
+                "deploy/Containerfile has no stage named `{target}` this parser recognizes \
+                 (`FROM <image or stage> AS {target}`). If the stages were renamed, rename \
+                 API_TARGET and WORKER_TARGET in xtask/src/deploy.rs and the `target:` keys in \
+                 deploy/compose.yaml together — this check's parsing may be stale, not \
+                 necessarily the config."
             ),
             Violation::ComposeUnreadableBuildSpec { service } => write!(
                 f,
@@ -303,6 +377,9 @@ struct ServiceBlock {
     /// then implicit and this parser cannot resolve it, which is a parse-stale condition
     /// rather than a pass.
     build_short_form: bool,
+    /// `build: target:`, read only inside the `build:` block: a long-form volume mount has a
+    /// `target:` key too, and it names a path in the container, not a stage.
+    target: Option<String>,
 }
 
 /// Strip one layer of matching YAML quotes from a scalar, plus surrounding whitespace.
@@ -341,6 +418,7 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
 
     let mut services: Vec<ServiceBlock> = Vec::new();
     let mut current: Option<ServiceBlock> = None;
+    let mut in_build = false;
 
     for line in &lines[start + 1..] {
         // A non-blank, unindented line ends the services: block (e.g. a top-level
@@ -378,13 +456,27 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                     dockerfile: None,
                     role: None,
                     build_short_form: false,
+                    target: None,
                 });
+                in_build = false;
                 continue;
             }
         }
 
         if let Some(block) = current.as_mut() {
             let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            // A service's own keys sit at four spaces; `build:` opens a block that the next
+            // four-space key closes.
+            if indent == 4 && !trimmed.starts_with('#') && !trimmed.is_empty() {
+                in_build = trimmed.starts_with("build:");
+            }
+            if in_build
+                && indent == 6
+                && let Some(value) = trimmed.strip_prefix("target:")
+            {
+                block.target = Some(scalar(value));
+            }
             if !trimmed.starts_with('#') {
                 // Mapping form (`SERVER_FEATURES: mock-kernel`, the form deploy/compose.yaml
                 // actually uses) and list form (`- SERVER_FEATURES=mock-kernel`, equally
@@ -492,6 +584,26 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
         // Rule 6: the role's VALUE, not its presence. `LAPIDARY_ROLE: worker` -> `api` on
         // the kernel-linked service used to report OK, giving a container that links the
         // CAD kernel, serves the grid, and mounts /scan nowhere.
+        if runs_lapidary_server {
+            let expected = if is_kernel_linked {
+                WORKER_TARGET
+            } else {
+                API_TARGET
+            };
+            match service.target.as_deref() {
+                None => violations.push(Violation::MissingBuildTarget {
+                    service: service.name.clone(),
+                }),
+                Some(target) if target != expected => {
+                    violations.push(Violation::WrongBuildTarget {
+                        service: service.name.clone(),
+                        target: target.to_owned(),
+                        expected,
+                    })
+                }
+                Some(_) => {}
+            }
+        }
         if is_kernel_linked
             && let Some(role) = service.role.as_deref()
             && role != WORKER_ROLE
@@ -756,11 +868,104 @@ fn is_module(path: &str, module: &str) -> bool {
     std::path::Path::new(path).ends_with(module)
 }
 
+/// Rules for the two build targets: the `api` target never carries OCCT, the `worker` target
+/// does, and both exist.
+///
+/// A target carries whatever any stage it is built from carries, so each target is followed
+/// down its `FROM` chain — `FROM runtime AS api` reaches `runtime`, and whatever `runtime` came
+/// from — until the base is an image rather than a stage. Keywords are matched
+/// case-insensitively, as the builder matches them.
+pub fn check_targets(containerfile: &str) -> Vec<Violation> {
+    struct Stage {
+        name: Option<String>,
+        base: String,
+        copies_from_occt: bool,
+    }
+    let mut stages: Vec<Stage> = Vec::new();
+    for line in logical_lines(containerfile) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        let Some(instruction) = words.first() else {
+            continue;
+        };
+        if instruction.eq_ignore_ascii_case("FROM") {
+            // `FROM [--platform=…] <image or stage> [AS <name>]`
+            let rest: Vec<&str> = words[1..]
+                .iter()
+                .copied()
+                .filter(|word| !word.starts_with("--"))
+                .collect();
+            let name = match rest.as_slice() {
+                [_, keyword, name, ..] if keyword.eq_ignore_ascii_case("AS") => {
+                    Some(name.to_ascii_lowercase())
+                }
+                _ => None,
+            };
+            stages.push(Stage {
+                name,
+                base: rest
+                    .first()
+                    .map(|w| w.to_ascii_lowercase())
+                    .unwrap_or_default(),
+                copies_from_occt: false,
+            });
+        } else if let Some(stage) = stages.last_mut() {
+            // `COPY --from=occt …`, or a `RUN --mount=type=bind,from=occt,…`.
+            let copy_flag = format!("--from={OCCT_STAGE}");
+            let mount_part = format!("from={OCCT_STAGE}");
+            stage.copies_from_occt |= words.iter().any(|word| {
+                let word = word.to_ascii_lowercase();
+                word == copy_flag || word.split(',').any(|part| part == mount_part)
+            });
+        }
+    }
+
+    let find = |name: &str| stages.iter().find(|s| s.name.as_deref() == Some(name));
+    let chain = |target: &str| {
+        let mut chain: Vec<&Stage> = Vec::new();
+        let mut next = find(target);
+        while let Some(stage) = next {
+            // A stage built from itself is the builder's error to report, not a loop to hang in.
+            if chain.iter().any(|seen| std::ptr::eq(*seen, stage)) {
+                break;
+            }
+            chain.push(stage);
+            next = find(&stage.base);
+        }
+        chain
+    };
+    let carries_occt =
+        |stage: &Stage| stage.copies_from_occt || stage.name.as_deref() == Some(OCCT_STAGE);
+
+    let mut violations = Vec::new();
+    for target in [API_TARGET, WORKER_TARGET] {
+        if find(target).is_none() {
+            violations.push(Violation::ContainerfileMissingTarget { target });
+        }
+    }
+    for stage in chain(API_TARGET) {
+        if carries_occt(stage) {
+            violations.push(Violation::ApiTargetCarriesOcct {
+                stage: stage.name.clone().unwrap_or_default(),
+            });
+        }
+    }
+    let worker = chain(WORKER_TARGET);
+    if !worker.is_empty() && !worker.iter().any(|stage| carries_occt(stage)) {
+        violations.push(Violation::WorkerTargetMissingOcct);
+    }
+    violations
+}
+
 /// Run every rule over both files and collect the violations, in the order `main.rs`
 /// should report them.
 pub fn check(compose_contents: &str, containerfile_contents: &str) -> Vec<Violation> {
     let mut violations = check_compose(compose_contents);
     violations.extend(check_containerfile(containerfile_contents));
+    violations.extend(check_targets(containerfile_contents));
     violations
 }
 
@@ -785,6 +990,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
+      target: api
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
       LAPIDARY_BIND: 0.0.0.0:8080
@@ -796,6 +1002,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
+      target: worker
       args:
         # Only the worker links the CAD kernel — the open path (api) never invokes it.
         SERVER_FEATURES: mock-kernel
@@ -823,10 +1030,16 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
 
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt
+RUN cmake --build build && cmake --install build
+FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime
 COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
 EXPOSE 8080 8081
 ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
+FROM runtime AS api
+FROM runtime AS worker
+COPY --from=occt /opt/occt/lib/ /opt/occt/lib/
+COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
 ";
 
     #[test]
@@ -895,7 +1108,7 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         // ever walked the services the parser found, so a KERNEL_LINKED_SERVICES entry that
         // never parsed at all raised nothing. This pins the reverse check.
         let bad = CORRECT_COMPOSE.replacen(
-            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
+            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      target: worker\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
             "",
             1,
         );
@@ -1109,8 +1322,8 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         let bad = CORRECT_CONTAINERFILE
             .replacen("ARG SERVER_FEATURES=\n", "", 1)
             .replacen(
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f\n",
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f\nARG SERVER_FEATURES=\n",
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt\n",
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt\nARG SERVER_FEATURES=\n",
                 1,
             );
         let violations = check_containerfile(&bad);
@@ -1464,5 +1677,123 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             msg.contains("parts.rs"),
             "names the file that broke it: {msg}"
         );
+    }
+    #[test]
+    fn a_lapidary_server_service_with_no_build_target_fails_and_names_it() {
+        // No `target:` builds the file's last stage, which is the worker's — OCCT and all —
+        // and nothing about that build fails.
+        let bad = CORRECT_COMPOSE.replacen("      target: api\n", "", 1);
+        let violations = check_compose(&bad);
+        assert_eq!(
+            violations,
+            vec![Violation::MissingBuildTarget {
+                service: "api".to_owned()
+            }]
+        );
+        assert!(violations[0].to_string().contains("target: api"));
+    }
+
+    #[test]
+    fn the_api_building_the_worker_target_fails() {
+        let bad = CORRECT_COMPOSE.replacen("      target: api\n", "      target: worker\n", 1);
+        assert_eq!(
+            check_compose(&bad),
+            vec![Violation::WrongBuildTarget {
+                service: "api".to_owned(),
+                target: "worker".to_owned(),
+                expected: API_TARGET,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_worker_building_the_api_target_fails() {
+        let bad = CORRECT_COMPOSE.replacen("      target: worker\n", "      target: api\n", 1);
+        assert_eq!(
+            check_compose(&bad),
+            vec![Violation::WrongBuildTarget {
+                service: "worker".to_owned(),
+                target: "api".to_owned(),
+                expected: WORKER_TARGET,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_api_target_copying_from_occt_fails_and_names_the_stage() {
+        let bad = CORRECT_CONTAINERFILE.replacen(
+            "FROM runtime AS api\n",
+            "FROM runtime AS api\nCOPY --from=occt /opt/occt/lib/ /opt/occt/lib/\n",
+            1,
+        );
+        assert_eq!(
+            check_targets(&bad),
+            vec![Violation::ApiTargetCarriesOcct {
+                stage: "api".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_stage_the_api_target_builds_on_carrying_occt_fails_and_names_that_stage() {
+        // The runtime stage is shared, so OCCT copied there reaches the api image without the
+        // api stage mentioning it — the shape a tidy-up that "deduplicates" the two targets
+        // would take.
+        let bad = CORRECT_CONTAINERFILE.replacen(
+            "EXPOSE 8080 8081\n",
+            "COPY --from=occt /opt/occt/lib/ /opt/occt/lib/\nEXPOSE 8080 8081\n",
+            1,
+        );
+        assert_eq!(
+            check_targets(&bad),
+            vec![Violation::ApiTargetCarriesOcct {
+                stage: "runtime".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn an_api_target_built_straight_from_the_occt_stage_fails() {
+        let bad = CORRECT_CONTAINERFILE.replacen("FROM runtime AS api\n", "FROM occt AS api\n", 1);
+        assert_eq!(
+            check_targets(&bad),
+            vec![Violation::ApiTargetCarriesOcct {
+                stage: "occt".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_worker_target_that_copies_nothing_from_occt_fails() {
+        let bad = CORRECT_CONTAINERFILE
+            .replacen("COPY --from=occt /opt/occt/lib/ /opt/occt/lib/\n", "", 1)
+            .replacen(
+                "COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge\n",
+                "",
+                1,
+            );
+        assert_eq!(
+            check_targets(&bad),
+            vec![Violation::WorkerTargetMissingOcct]
+        );
+    }
+
+    #[test]
+    fn a_containerfile_with_no_api_stage_is_reported_as_unreadable() {
+        let bad = CORRECT_CONTAINERFILE.replacen("FROM runtime AS api\n", "", 1);
+        assert_eq!(
+            check_targets(&bad),
+            vec![Violation::ContainerfileMissingTarget { target: API_TARGET }]
+        );
+    }
+
+    #[test]
+    fn lowercase_from_and_as_still_name_the_targets() {
+        // Instructions and the `AS` keyword are case-insensitive to the builder, so they must
+        // be to this check — or a lowercase file reads as having no targets at all.
+        let lower = CORRECT_CONTAINERFILE
+            .replacen("FROM runtime AS api\n", "from runtime as api\n", 1)
+            .replacen("FROM runtime AS worker\n", "from runtime as worker\n", 1);
+        assert_eq!(check_targets(&lower), vec![]);
     }
 }
