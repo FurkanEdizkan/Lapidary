@@ -72,6 +72,8 @@ function renderIndex(
     onSelectFormat?: (format: string | null) => void;
     part?: string;
     onOpenPart?: (part: string | null) => void;
+    material?: string;
+    onSelectMaterial?: (material: string | null) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -90,6 +92,8 @@ function renderIndex(
         onSelectFormat={props.onSelectFormat}
         part={props.part}
         onOpenPart={props.onOpenPart}
+        material={props.material}
+        onSelectMaterial={props.onSelectMaterial}
       />
     ),
   });
@@ -3597,7 +3601,7 @@ test("the format facet lists what the library holds with counts, and choosing on
   expect(onSelectFormat).toHaveBeenCalledWith("step");
 });
 
-test("a chosen format rides on the grid request, not on its own counts, and choosing it again clears it", async () => {
+test("a chosen format rides on the grid and facets requests, and choosing it again clears it", async () => {
   const fetchMock = stubFetch({
     parts: ok(page([])),
     facets: ok({ formats: [{ value: "step", count: 3 }] }),
@@ -3611,9 +3615,10 @@ test("a chosen format rides on the grid request, not on its own counts, and choo
   await waitFor(() =>
     expect(urls().some((url) => url.includes("/parts?") && url.includes("format=step"))).toBe(true),
   );
-  // Counts that obeyed their own selection would show every other format as zero, and a
-  // person could then never choose a second one.
-  expect(urls().some((url) => url.includes("/facets") && url.includes("format="))).toBe(false);
+  // The choice rides on the facets request too, so the material list can narrow by it. Keeping the
+  // format list from obeying its own choice is the server's rule, held by
+  // `the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it`.
+  expect(urls().some((url) => url.includes("/facets") && url.includes("format=step"))).toBe(true);
   fireEvent.click(step);
   expect(onSelectFormat).toHaveBeenCalledWith(null);
 });
@@ -3743,4 +3748,32 @@ test("on a wide screen the part opens in a pane beside the grid, and Escape retu
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+/** Materials are a second list beside formats, named as the file names them. */
+test("the material facet lists what files declare, and a chosen material narrows the grid", async () => {
+  const fetchMock = stubFetch({
+    parts: ok(page([])),
+    facets: ok({
+      formats: [{ value: "step", count: 3 }],
+      materials: [{ value: "Stainless steel 1.4301", count: 2 }],
+    }),
+  });
+  const onSelectMaterial = vi.fn();
+  renderIndex({ material: "Stainless steel 1.4301", onSelectMaterial });
+
+  const steel = await screen.findByRole("button", {
+    name: strings.facets.materialOption("Stainless steel 1.4301", 2),
+  });
+  expect(steel.getAttribute("aria-pressed")).toBe("true");
+  const urls = () => fetchMock.mock.calls.map(([url]) => String(url));
+  await waitFor(() =>
+    expect(
+      urls().some(
+        (url) => url.includes("/parts?") && url.includes("material=Stainless+steel+1.4301"),
+      ),
+    ).toBe(true),
+  );
+  fireEvent.click(steel);
+  expect(onSelectMaterial).toHaveBeenCalledWith(null);
 });

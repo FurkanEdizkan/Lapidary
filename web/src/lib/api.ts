@@ -81,6 +81,7 @@ export async function fetchParts(
   limit?: number,
   format?: string,
   sort?: Sort,
+  material?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -104,6 +105,7 @@ export async function fetchParts(
   // Omitted for newest, the way an absent category is the whole library: newest is the grid
   // with no order asked for, so every URL the grid sent before sorting existed keeps its shape.
   if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
+  if (typeof material === 'string' && material.length > 0) query.set('material', material)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
@@ -121,10 +123,16 @@ export async function fetchFacets(
   library: LibraryId,
   folderId?: FolderId | null,
   q?: string,
+  format?: string,
+  material?: string,
 ): Promise<Facets> {
   const query = new URLSearchParams()
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
   if (typeof q === 'string' && q.length > 0) query.set('q', q)
+  // Both choices, so each list can be narrowed by the other's. The server keeps each list from
+  // obeying its own, which would show every other value as zero.
+  if (typeof format === 'string' && format.length > 0) query.set('format', format)
+  if (typeof material === 'string' && material.length > 0) query.set('material', material)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
   if (!response.ok) {

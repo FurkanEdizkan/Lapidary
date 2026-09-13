@@ -1206,11 +1206,11 @@ async fn the_facets_route_counts_formats_and_the_grid_filters_by_one(pool: sqlx:
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        facets,
-        serde_json::json!({ "formats": [
+        facets["formats"],
+        serde_json::json!([
             { "value": "step", "count": 1 },
             { "value": "stl", "count": 1 },
-        ] })
+        ])
     );
     let (_, searched) = get_uri(
         pool.clone(),
@@ -1312,4 +1312,38 @@ async fn the_grid_sorts_by_volume_and_a_search_keeps_relevance(pool: sqlx::PgPoo
         searched, relevance,
         "a search is in relevance order whatever sort says"
     );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_facets_route_counts_materials_and_the_grid_filters_by_one(pool: sqlx::PgPool) {
+    seed_format(&pool, 0xd1, "cylinder-d22-lp-9010-00.step", "step").await;
+    seed_format(&pool, 0xd2, "bracket-lp-1042-03.stl", "stl").await;
+    sqlx::query(
+        "UPDATE part SET materials = ARRAY['Stainless steel 1.4301'] \
+         WHERE name = 'cylinder-d22-lp-9010-00.step'",
+    )
+    .execute(&pool)
+    .await
+    .expect("gives the cylinder its material");
+    let base = format!("/api/libraries/{SEEDED_LIBRARY}");
+
+    let (status, facets) = get_uri(pool.clone(), &format!("{base}/facets")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        facets["materials"],
+        serde_json::json!([{ "value": "Stainless steel 1.4301", "count": 1 }])
+    );
+    let chosen = "material=Stainless%20steel%201.4301";
+    let (_, narrowed) = get_uri(pool.clone(), &format!("{base}/facets?{chosen}")).await;
+    assert_eq!(
+        narrowed["formats"],
+        serde_json::json!([{ "value": "step", "count": 1 }]),
+        "formats narrowed by the chosen material"
+    );
+    assert_eq!(
+        narrowed["materials"], facets["materials"],
+        "and materials never by their own choice"
+    );
+    let (_, grid) = get_uri(pool.clone(), &format!("{base}/parts?{chosen}")).await;
+    assert_eq!(card_names(&grid), ["cylinder-d22-lp-9010-00.step"]);
 }

@@ -782,7 +782,13 @@ export const strings = {
       count === null
         ? value.toUpperCase()
         : `${value.toUpperCase()}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
-    failed: 'Could not load the formats in this library. Reload to try again.',
+    material: 'Material',
+    /** A material's whole name, as the file names it, with its count. */
+    materialOption: (value: string, count: number | null) =>
+      count === null
+        ? value
+        : `${value}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
+    failed: 'Could not load the formats and materials in this library. Reload to try again.',
   },
   folders: {
     title: 'Categories',

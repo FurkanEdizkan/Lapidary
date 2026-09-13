@@ -2628,6 +2628,15 @@ async fn a_step_files_header_is_stored_on_its_part_and_in_its_manifest(pool: PgP
     .expect("the part");
     assert_eq!(metadata["cad"]["originating_system"], "SOLIDWORKS 2025");
     assert_eq!(metadata["cad"]["materials"][0], "AISI 1045 steel");
+    let materials: Vec<String> = sqlx::query_scalar("SELECT materials FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("the materials column");
+    assert_eq!(
+        materials,
+        ["AISI 1045 steel"],
+        "written to the typed column the facet reads, not only into the JSON"
+    );
 
     let model_dir = blob_root.path().join(
         Path::new(&storage_path)
