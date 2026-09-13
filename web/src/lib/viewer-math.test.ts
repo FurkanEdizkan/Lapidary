@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { VIEW_DIR, frameBox, hasWebGL } from './viewer-math'
+import { VIEW_DIR, frameBox, hasWebGL, visibleRanges } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -25,4 +25,14 @@ test('a degenerate box still frames something', () => {
 
 test('jsdom cannot draw, so the viewer is never loaded there', () => {
   expect(hasWebGL()).toBe(false)
+})
+
+test('hidden parts are left out of the ranges drawn, and the visible ones between merge', () => {
+  expect(visibleRanges([2, 3, 4], new Set())).toEqual([{ start: 0, count: 27 }])
+  expect(visibleRanges([2, 3, 4], new Set([1]))).toEqual([
+    { start: 0, count: 6 },
+    { start: 15, count: 12 },
+  ])
+  expect(visibleRanges([2, 0, 4], new Set([0]))).toEqual([{ start: 6, count: 12 }])
+  expect(visibleRanges([2, 3, 4], new Set([0, 1, 2]))).toEqual([])
 })

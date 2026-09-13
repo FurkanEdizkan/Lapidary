@@ -10,6 +10,10 @@ use crate::CadError;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mesh {
     pub triangles: Vec<[[f32; 3]; 3]>,
+    /// How many triangles each part has, in order: the first `parts[0]` triangles are the first
+    /// part's, and so on. Empty for a mesh file, which is one part. The CAD bridge fills it from an
+    /// assembly's tree, so the viewer can hide one part.
+    pub parts: Vec<u32>,
 }
 
 const HEADER: usize = 80;
@@ -236,7 +240,10 @@ pub(crate) fn finish(format: &str, triangles: Vec<[[f32; 3]; 3]>) -> Result<Mesh
             detail: "the file parsed but contains no triangles".to_owned(),
         });
     }
-    Ok(Mesh { triangles })
+    Ok(Mesh {
+        triangles,
+        parts: Vec::new(),
+    })
 }
 
 #[cfg(test)]

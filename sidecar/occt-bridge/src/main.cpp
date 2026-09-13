@@ -10,6 +10,8 @@
 //   mesh.stl           every placed part triangulated in world coordinates, as binary STL, so
 //                      the worker's existing mesh pipeline — clustering, thumbnail, GLB — reads
 //                      it instead of this program growing a second one
+//   parts.json         how many of mesh.stl's triangles each placed part has, in the order
+//                      structure.json lists its leaves, so a viewer can hide one part
 //   structure.json     the assembly tree: names, prototypes, 4x4 transforms relative to parent
 //   entities.json      analytic faces and circular edges, once per prototype, in its own
 //                      coordinates; structure.json places them
@@ -99,7 +101,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 4;
+constexpr int BRIDGE_VERSION = 5;
 
 const double PI = std::acos(-1.0);
 
@@ -433,31 +435,63 @@ void putF32(std::string& out, double value) {
   putU32(out, bits);
 }
 
-std::uint32_t writeMesh(const std::string& path, const TopoDS_Shape& whole, bool& ok) {
+// One face's triangles, placed by the location the face carries.
+void meshFace(std::string& body, const TopoDS_Face& face, std::uint32_t& count) {
+  TopLoc_Location location;
+  const occ::handle<Poly_Triangulation>& triangulation = BRep_Tool::Triangulation(face, location);
+  if (triangulation.IsNull()) return;
+  const gp_Trsf placement = location.Transformation();
+  const bool reversed = face.Orientation() == TopAbs_REVERSED;
+  for (int t = 1; t <= triangulation->NbTriangles(); ++t) {
+    int n1 = 0, n2 = 0, n3 = 0;
+    triangulation->Triangle(t).Get(n1, n2, n3);
+    if (reversed) std::swap(n2, n3);
+    for (int i = 0; i < 3; ++i) putF32(body, 0.0);  // normal: readers recompute it
+    for (const int node : {n1, n2, n3}) {
+      const gp_Pnt p = triangulation->Node(node).Transformed(placement);
+      putF32(body, p.X());
+      putF32(body, p.Y());
+      putF32(body, p.Z());
+    }
+    body += std::string(2, '\0');
+    ++count;
+  }
+}
+
+// Every placed part's triangles, walked in `writeNode`'s order: roots, then components, depth
+// first. So `parts[n]` counts the triangles of structure.json's n-th leaf, and they are the next
+// `parts[n]` triangles of mesh.stl. The faces were meshed once, on the whole shape; a leaf only
+// places its prototype's faces where the tree puts them.
+void meshNode(std::string& body, const TDF_Label& label, const gp_Trsf& parent,
+              std::vector<std::uint32_t>& parts, std::uint32_t& count) {
+  TDF_Label shape = label;
+  gp_Trsf placement = parent;
+  if (XCAFDoc_ShapeTool::IsReference(label)) {
+    XCAFDoc_ShapeTool::GetReferredShape(label, shape);
+    placement = parent * XCAFDoc_ShapeTool::GetLocation(label).Transformation();
+  }
+  if (XCAFDoc_ShapeTool::IsAssembly(shape)) {
+    NCollection_Sequence<TDF_Label> components;
+    XCAFDoc_ShapeTool::GetComponents(shape, components);
+    for (int i = 1; i <= components.Length(); ++i) {
+      meshNode(body, components.Value(i), placement, parts, count);
+    }
+    return;
+  }
+  const std::uint32_t before = count;
+  const TopoDS_Shape placed =
+      XCAFDoc_ShapeTool::GetShape(shape).Moved(TopLoc_Location(placement));
+  for (TopExp_Explorer explorer(placed, TopAbs_FACE); explorer.More(); explorer.Next()) {
+    meshFace(body, TopoDS::Face(explorer.Current()), count);
+  }
+  parts.push_back(count - before);
+}
+
+std::uint32_t writeMesh(const std::string& path, const NCollection_Sequence<TDF_Label>& roots,
+                        std::vector<std::uint32_t>& parts, bool& ok) {
   std::string body;
   std::uint32_t count = 0;
-  for (TopExp_Explorer explorer(whole, TopAbs_FACE); explorer.More(); explorer.Next()) {
-    const TopoDS_Face& face = TopoDS::Face(explorer.Current());
-    TopLoc_Location location;
-    const occ::handle<Poly_Triangulation>& triangulation = BRep_Tool::Triangulation(face, location);
-    if (triangulation.IsNull()) continue;
-    const gp_Trsf placement = location.Transformation();
-    const bool reversed = face.Orientation() == TopAbs_REVERSED;
-    for (int t = 1; t <= triangulation->NbTriangles(); ++t) {
-      int n1 = 0, n2 = 0, n3 = 0;
-      triangulation->Triangle(t).Get(n1, n2, n3);
-      if (reversed) std::swap(n2, n3);
-      for (int i = 0; i < 3; ++i) putF32(body, 0.0);  // normal: readers recompute it
-      for (const int node : {n1, n2, n3}) {
-        const gp_Pnt p = triangulation->Node(node).Transformed(placement);
-        putF32(body, p.X());
-        putF32(body, p.Y());
-        putF32(body, p.Z());
-      }
-      body += std::string(2, '\0');
-      ++count;
-    }
-  }
+  for (int i = 1; i <= roots.Length(); ++i) meshNode(body, roots.Value(i), gp_Trsf(), parts, count);
   std::string file(80, ' ');
   const char header[] = "occt-bridge mesh.stl";
   std::memcpy(&file[0], header, sizeof header - 1);
@@ -550,9 +584,18 @@ int convert(const std::string& in, const std::string& format, const std::string&
 
   const BRepMesh_IncrementalMesh mesher(whole, deflection, false, 0.5, true);
   bool meshWritten = false;
-  const std::uint32_t triangles = writeMesh(outDir + "/mesh.stl", whole, meshWritten);
+  std::vector<std::uint32_t> partTriangles;
+  const std::uint32_t triangles =
+      writeMesh(outDir + "/mesh.stl", roots, partTriangles, meshWritten);
+  std::string partsJson = "[";
+  for (std::size_t i = 0; i < partTriangles.size(); ++i) {
+    if (i > 0) partsJson += ",";
+    partsJson += std::to_string(partTriangles[i]);
+  }
+  partsJson += "]\n";
 
-  if (!meshWritten || !writeFile(outDir + "/structure.json", structure) ||
+  if (!meshWritten || !writeFile(outDir + "/parts.json", partsJson) ||
+      !writeFile(outDir + "/structure.json", structure) ||
       !writeFile(outDir + "/entities.json", entities) ||
       !writeFile(outDir + "/measurements.json", measurements) ||
       !writeFile(outDir + "/header.json", "{" + header + ",\"materials\":" + materials + "}\n")) {

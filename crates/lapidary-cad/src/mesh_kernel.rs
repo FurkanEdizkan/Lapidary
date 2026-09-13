@@ -63,46 +63,53 @@ impl Kernel for MeshKernel {
         // the wrong way round. `ROADMAP.md`'s exit criterion says so in as many words, and a
         // real corpus produced exactly one such file in 1,095.
         let mesh = parse(bytes, &params.format)?;
-        let mut tessellations = Vec::new();
-        let mut thumbnail_webp = None;
-        let mut unproduced = Vec::new();
-        for want in &params.produce {
-            let made = match want {
-                DerivativeKind::Thumbnail => render_thumbnail(&mesh).map(|webp| {
-                    thumbnail_webp = Some(webp);
-                }),
-                DerivativeKind::TessellationL0 => cluster(&mesh, Lod::L0).map(|rung| {
-                    tessellations.push(rung);
-                }),
-                DerivativeKind::TessellationL1 => cluster(&mesh, Lod::L1).map(|rung| {
-                    tessellations.push(rung);
-                }),
-                DerivativeKind::TessellationL2 => cluster(&mesh, Lod::L2).map(|rung| {
-                    tessellations.push(rung);
-                }),
-                // A mesh has no assembly and no analytic surfaces: nothing to make, and
-                // nothing that went wrong.
-                DerivativeKind::Structure | DerivativeKind::Entities => Ok(()),
-            };
-            if let Err(reason) = made {
-                unproduced.push(Unproduced {
-                    kind: *want,
-                    reason: reason.to_string(),
-                });
-            }
+        Ok(produce(&mesh, params))
+    }
+}
+
+/// Measure a parsed mesh and make what `params.produce` asks for from it. Shared with
+/// `OcctKernel`, which reads the bridge's mesh together with the parts it names rather than as
+/// a plain STL.
+pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
+    let mut tessellations = Vec::new();
+    let mut thumbnail_webp = None;
+    let mut unproduced = Vec::new();
+    for want in &params.produce {
+        let made = match want {
+            DerivativeKind::Thumbnail => render_thumbnail(mesh).map(|webp| {
+                thumbnail_webp = Some(webp);
+            }),
+            DerivativeKind::TessellationL0 => cluster(mesh, Lod::L0).map(|rung| {
+                tessellations.push(rung);
+            }),
+            DerivativeKind::TessellationL1 => cluster(mesh, Lod::L1).map(|rung| {
+                tessellations.push(rung);
+            }),
+            DerivativeKind::TessellationL2 => cluster(mesh, Lod::L2).map(|rung| {
+                tessellations.push(rung);
+            }),
+            // A mesh has no assembly and no analytic surfaces: nothing to make, and
+            // nothing that went wrong.
+            DerivativeKind::Structure | DerivativeKind::Entities => Ok(()),
+        };
+        if let Err(reason) = made {
+            unproduced.push(Unproduced {
+                kind: *want,
+                reason: reason.to_string(),
+            });
         }
-        Ok(KernelOutput {
-            measurements: measure(&mesh),
-            thumbnail_webp,
-            tessellations,
-            unproduced,
-            // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
-            // no analytic surfaces to recover, so this is the truthful answer, not a stub.
-            entities: Vec::new(),
-            provenance: crate::MeasurementProvenance::TESSELLATED,
-            structure: None,
-            metadata: None,
-        })
+    }
+    KernelOutput {
+        measurements: measure(mesh),
+        thumbnail_webp,
+        tessellations,
+        unproduced,
+        // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
+        // no analytic surfaces to recover, so this is the truthful answer, not a stub.
+        entities: Vec::new(),
+        provenance: crate::MeasurementProvenance::TESSELLATED,
+        structure: None,
+        metadata: None,
     }
 }
 

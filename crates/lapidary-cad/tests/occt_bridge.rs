@@ -255,3 +255,44 @@ async fn the_phase_0_exit_converts_a_200_part_assembly_to_gltf_tree_and_entities
     );
     assert!(elapsed < Duration::from_secs(30), "took {elapsed:?}");
 }
+
+/// The assembly's full-detail rung says which triangles are whose: one count per placed part, in
+/// the tree's depth-first order, together every triangle of the rung. The viewer hides and
+/// isolates parts by these runs, so a walk that skipped or reordered a part would hide the wrong
+/// one.
+#[tokio::test]
+#[ignore = "needs occt-bridge and OCCT: run cargo xtask verify occt"]
+async fn the_assembly_rung_counts_every_placed_parts_triangles() {
+    let out = kernel()
+        .process(
+            &fixture("fixture-plate-assembly-lp-9000-00.step"),
+            &params("step", &[DerivativeKind::TessellationL2]),
+        )
+        .await
+        .expect("converts");
+    let structure = out.structure.as_ref().expect("an assembly has a tree");
+    let rung = out.tessellations.first().expect("the L2 rung");
+    let json_len = u32::from_le_bytes(rung.glb[12..16].try_into().expect("four bytes")) as usize;
+    let document: serde_json::Value =
+        serde_json::from_slice(&rung.glb[20..20 + json_len]).expect("the JSON chunk parses");
+    let parts: Vec<u32> = serde_json::from_value(document["meshes"][0]["extras"]["parts"].clone())
+        .expect("the rung counts triangles per part");
+    assert_eq!(
+        parts.len(),
+        structure.parts as usize,
+        "one count per placed part"
+    );
+    assert_eq!(
+        parts.iter().sum::<u32>(),
+        rung.triangle_count,
+        "and together they are the whole rung"
+    );
+    assert!(
+        parts.iter().all(|&count| count > 0),
+        "every placed part has triangles"
+    );
+    assert_eq!(
+        out.measurements.triangle_count, 28_576,
+        "walking the tree meshes exactly what the whole shape did"
+    );
+}

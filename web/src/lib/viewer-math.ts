@@ -53,3 +53,27 @@ export function hasWebGL(): boolean {
   }
   return webgl
 }
+
+/** A run of the index buffer to draw, in indices. */
+export type Range = { start: number; count: number }
+
+/**
+ * What to draw when some of an assembly's parts are hidden. `parts` is how many triangles each
+ * placed part has, in the tree's depth-first order (`glb.rs` writes it as `extras.parts`), and each
+ * part's triangles are one run of the index buffer. Neighbouring visible parts merge into one
+ * range, so a view with nothing hidden draws one.
+ */
+export function visibleRanges(parts: readonly number[], hidden: ReadonlySet<number>): Range[] {
+  const ranges: Range[] = []
+  let at = 0
+  parts.forEach((triangles, part) => {
+    const count = triangles * 3
+    if (count > 0 && !hidden.has(part)) {
+      const last = ranges.at(-1)
+      if (last !== undefined && last.start + last.count === at) last.count += count
+      else ranges.push({ start: at, count })
+    }
+    at += count
+  })
+  return ranges
+}

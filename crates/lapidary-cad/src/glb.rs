@@ -18,7 +18,10 @@
 //! stage, which already runs `cc` for `blake3`'s C. The runtime image gains nothing.
 //!
 //! What is written: one buffer holding the compressed bytes, a fallback buffer holding none,
-//! two bufferViews, two accessors, one mesh with one primitive, one node, one scene. The
+//! two bufferViews, two accessors, one mesh with one primitive, one node, one scene. A mesh read
+//! from an assembly also carries `extras.parts`: how many triangles each placed part has, in the
+//! tree's depth-first order, each part's triangles one contiguous run of the index buffer. That is
+//! what the viewer hides and isolates parts by. The
 //! extension is required, so a loader without it refuses the file rather than reading the empty
 //! fallback. No materials and no normals: the viewer shades each face flat, as `raster.rs` does,
 //! and a normal buffer would carry what the consumer derives anyway.
@@ -29,7 +32,7 @@ use crate::kernel::CadError;
 /// Bumped whenever a change alters output bytes, and carried in `kernel_version` beside the
 /// parser and the rasterizer. A regenerated rung must be distinguishable from a stale one —
 /// the same rule `raster.rs`'s `RASTER_VERSION` exists for.
-pub const GLB_VERSION: &str = "glb-2";
+pub const GLB_VERSION: &str = "glb-3";
 
 const MAGIC: u32 = 0x4654_6C67; // "glTF"
 const CONTAINER_VERSION: u32 = 2;
@@ -62,7 +65,26 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
         detail: format!("could not compress the {what} of the glTF rung: {source}"),
     };
 
-    let mut indices = meshopt::optimize_vertex_cache(&indexed.indices, indexed.positions.len());
+    // Cache order within each part and never across two, so a part's triangles stay one run the
+    // viewer can leave out. Fetch order below renumbers vertices and moves no triangle.
+    let whole = [indexed.triangle_count()];
+    let runs: &[u32] = if indexed.parts.is_empty() {
+        &whole
+    } else {
+        &indexed.parts
+    };
+    let mut indices = Vec::with_capacity(indexed.indices.len());
+    let mut start = 0;
+    for &triangles in runs {
+        let end = start + triangles as usize * 3;
+        if end > start {
+            indices.extend(meshopt::optimize_vertex_cache(
+                &indexed.indices[start..end],
+                indexed.positions.len(),
+            ));
+        }
+        start = end;
+    }
     let positions = meshopt::optimize_vertex_fetch(&mut indices, &indexed.positions);
     let vertices = meshopt::encode_vertex_buffer(&positions)
         .map_err(|source| uncompressible("positions", source))?;
@@ -77,6 +99,13 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
     let indices_len = indices.len() * 4;
     let (min, max) = position_bounds(&positions);
 
+    let mut mesh = serde_json::json!({
+        "primitives": [ { "attributes": { "POSITION": 0 }, "indices": 1 } ]
+    });
+    if !indexed.parts.is_empty() {
+        mesh["extras"] = serde_json::json!({ "parts": indexed.parts });
+    }
+
     let document = serde_json::json!({
         "asset": { "version": "2.0", "generator": format!("lapidary-cad {GLB_VERSION}") },
         "extensionsUsed": [MESHOPT],
@@ -84,7 +113,7 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
         "scene": 0,
         "scenes": [ { "nodes": [0] } ],
         "nodes": [ { "mesh": 0 } ],
-        "meshes": [ { "primitives": [ { "attributes": { "POSITION": 0 }, "indices": 1 } ] } ],
+        "meshes": [mesh],
         "accessors": [
             {
                 "bufferView": 0,
@@ -219,6 +248,7 @@ mod tests {
             positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
             indices: vec![0, 1, 2],
             grid: None,
+            parts: vec![],
         }
     }
 
@@ -272,6 +302,7 @@ mod tests {
             positions,
             indices,
             grid: None,
+            parts: vec![],
         }
     }
 
@@ -333,10 +364,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decoding_gives_back_every_triangle_bit_for_bit() {
-        let mesh = a_grid();
-        let parsed = read_glb(&write_glb(&mesh).expect("writes"));
+    /// The positions and triangles the two compressed views decode to.
+    fn decode(parsed: &Parsed) -> (Vec<[f32; 3]>, Vec<u32>) {
         let view = |i: usize| {
             let ext = &parsed.json["bufferViews"][i]["extensions"][MESHOPT];
             let start = ext["byteOffset"].as_u64().expect("offset") as usize;
@@ -348,13 +377,63 @@ mod tests {
         };
         let (vertices, vertex_count) = view(0);
         let (indices, index_count) = view(1);
-        let positions: Vec<[f32; 3]> =
-            meshopt::decode_vertex_buffer(vertices, vertex_count).expect("positions decode");
-        let decoded: Vec<u32> =
-            meshopt::decode_index_buffer(indices, index_count).expect("triangles decode");
+        (
+            meshopt::decode_vertex_buffer(vertices, vertex_count).expect("positions decode"),
+            meshopt::decode_index_buffer(indices, index_count).expect("triangles decode"),
+        )
+    }
+
+    #[test]
+    fn decoding_gives_back_every_triangle_bit_for_bit() {
+        let mesh = a_grid();
+        let (positions, decoded) = decode(&read_glb(&write_glb(&mesh).expect("writes")));
         assert_eq!(
             triangles(&positions, &decoded),
             triangles(&mesh.positions, &mesh.indices)
+        );
+    }
+
+    /// Two parts, one beside the other: after cache ordering the first part's count of triangles
+    /// decodes to the first part's triangles and no others, and `extras.parts` says so.
+    #[test]
+    fn each_part_decodes_to_its_own_run_of_triangles() {
+        let mut two = a_grid();
+        let per_part = two.triangle_count();
+        let offset = two.positions.len() as u32;
+        let beside: Vec<[f32; 3]> = two
+            .positions
+            .iter()
+            .map(|p| [p[0] + 100.0, p[1], p[2]])
+            .collect();
+        let indices: Vec<u32> = two.indices.iter().map(|i| i + offset).collect();
+        two.positions.extend(beside);
+        two.indices.extend(indices);
+        two.parts = vec![per_part, per_part];
+
+        let parsed = read_glb(&write_glb(&two).expect("writes"));
+        assert_eq!(
+            parsed.json["meshes"][0]["extras"]["parts"],
+            serde_json::json!([per_part, per_part])
+        );
+        let (positions, decoded) = decode(&parsed);
+        let split = per_part as usize * 3;
+        assert!(
+            decoded[..split]
+                .iter()
+                .all(|&i| positions[i as usize][0] < 50.0),
+            "the first run holds only the first part"
+        );
+        assert!(
+            decoded[split..]
+                .iter()
+                .all(|&i| positions[i as usize][0] > 50.0),
+            "and the second only the second"
+        );
+        assert!(
+            read_glb(&write_glb(&a_grid()).expect("writes")).json["meshes"][0]
+                .get("extras")
+                .is_none(),
+            "a mesh of one part says nothing about parts"
         );
     }
 
@@ -364,6 +443,7 @@ mod tests {
             positions: vec![],
             indices: vec![],
             grid: None,
+            parts: vec![],
         };
         write_glb(&empty).expect_err("a rung with no triangles is not a glTF file");
     }

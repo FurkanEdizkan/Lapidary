@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Suspense, lazy, useRef, useState, type ReactNode } from 'react'
+import { Suspense, lazy, useCallback, useRef, useState, type ReactNode } from 'react'
 import {
   addPartSource,
   blobUrl,
@@ -439,7 +439,15 @@ const FRAME =
  * drawn. The thumbnail is the first thing on screen either way, which is what the quick look's
  * flight moves (`flipFrom` finds the image).
  */
-function Preview({ part }: { part: PartDetailData }) {
+function Preview({
+  part,
+  hidden,
+  onParts,
+}: {
+  part: PartDetailData
+  hidden?: ReadonlySet<number>
+  onParts?: (parts: number | null) => void
+}) {
   const poster =
     part.thumbnail === null ? null : (
       <img
@@ -469,7 +477,7 @@ function Preview({ part }: { part: PartDetailData }) {
         its measuring tool and its picks, which would then be measured against the new part's
         entities. A new rung of the same part keeps the key, so it swaps in without a jump.
       */}
-      <Viewer key={part.id} part={part} poster={poster} />
+      <Viewer key={part.id} part={part} poster={poster} hidden={hidden} onParts={onParts} />
     </Suspense>
   )
 }
@@ -501,10 +509,21 @@ export function Detail({
    */
   titled?: boolean
 }) {
+  // Which parts are out of the view, and how many the view drew. Both belong to one part, so a
+  // choice made on one assembly never carries to the next one shown in the same place.
+  const [hiddenFor, setHiddenFor] = useState({ part: part.id, hidden: NONE })
+  const hidden = hiddenFor.part === part.id ? hiddenFor.hidden : NONE
+  const setHidden = (next: ReadonlySet<number>) => setHiddenFor({ part: part.id, hidden: next })
+  const [drawnFor, setDrawnFor] = useState<{ part: PartId; parts: number | null }>({
+    part: part.id,
+    parts: null,
+  })
+  const drawn = drawnFor.part === part.id ? drawnFor.parts : null
+  const onParts = useCallback((parts: number | null) => setDrawnFor({ part: part.id, parts }), [part.id])
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
-        <Preview part={part} />
+        <Preview part={part} hidden={hidden} onParts={onParts} />
         <div>
           {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
           {part.partNumber === null ? null : (
@@ -611,7 +630,9 @@ export function Detail({
         </Row>
       </Section>
 
-      {part.structure === null ? null : <Assembly hash={part.structure} />}
+      {part.structure === null ? null : (
+        <Assembly hash={part.structure} hidden={hidden} onHide={setHidden} drawn={drawn} />
+      )}
 
       <Section title={strings.detail.file}>
         <Row label={strings.detail.format}>
@@ -697,7 +718,50 @@ export function Detail({
  * collapsed. The top level starts open, since it is the assembly itself; everything under it
  * starts closed. A single part with nothing under it is not a tree worth a section.
  */
-function Assembly({ hash }: { hash: BlobHash }) {
+const NONE: ReadonlySet<number> = new Set()
+
+const CONTROL =
+  'rounded-sm px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)]'
+
+/** What the tree may do to the view: which parts are out of it, how many there are, and the setter. */
+type Visibility = {
+  hidden: ReadonlySet<number>
+  parts: number
+  onHide: (hidden: ReadonlySet<number>) => void
+}
+
+/** How many placed parts are under a node, counting itself when it is one. */
+function leaves(node: AssemblyNode): number {
+  return node.children.length === 0 ? 1 : node.children.reduce((sum, child) => sum + leaves(child), 0)
+}
+
+/** Each node's first placed part, in the depth-first order the view counts triangles in. */
+function firstLeaves(nodes: readonly AssemblyNode[], from = 0): number[] {
+  let at = from
+  return nodes.map((node) => {
+    const first = at
+    at += leaves(node)
+    return first
+  })
+}
+
+/**
+ * The assembly tree, and where the view drew the same parts, a way to hide them. `drawn` is how
+ * many placed parts the view's rung counts; the buttons appear only when that is this tree's
+ * count. A mesh, a rung from before parts were counted, or a browser that draws no 3D has nothing
+ * to hide a part in.
+ */
+function Assembly({
+  hash,
+  hidden,
+  onHide,
+  drawn,
+}: {
+  hash: BlobHash
+  hidden: ReadonlySet<number>
+  onHide: (hidden: ReadonlySet<number>) => void
+  drawn: number | null
+}) {
   const tree = useQuery({ queryKey: ['structure', hash], queryFn: () => fetchStructure(hash) })
   const heading = (
     <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
@@ -717,34 +781,116 @@ function Assembly({ hash }: { hash: BlobHash }) {
   if (tree.data === undefined) return null
   const { roots, parts, prototypes } = tree.data
   if (roots.length === 1 && roots[0]?.children.length === 0) return null
+  const visibility = drawn === parts ? { hidden, parts, onHide } : null
+  const firsts = firstLeaves(roots)
   // ponytail: every node is in the DOM, open or not. Render a branch's children only once it
   // is opened if a 10,000-part assembly makes this page slow.
   return (
     <section className="mb-6">
       {heading}
-      <p className="mb-2 text-xs text-[var(--color-muted)]">
+      <p className="mb-2 flex items-center gap-2 text-xs text-[var(--color-muted)]">
         {strings.detail.assemblyCounts(parts, prototypes)}
+        {visibility === null || hidden.size === 0 ? null : (
+          <button type="button" onClick={() => onHide(NONE)} className={CONTROL}>
+            {strings.detail.showAll}
+          </button>
+        )}
       </p>
       <ul role="list" className="text-sm">
         {roots.map((node, index) => (
-          <AssemblyBranch key={index} node={node} open />
+          <AssemblyBranch
+            key={index}
+            node={node}
+            first={firsts[index] ?? 0}
+            visibility={visibility}
+            open
+          />
         ))}
       </ul>
     </section>
   )
 }
 
-function AssemblyBranch({ node, open = false }: { node: AssemblyNode; open?: boolean }) {
+function AssemblyBranch({
+  node,
+  first,
+  visibility,
+  open = false,
+}: {
+  node: AssemblyNode
+  first: number
+  visibility: Visibility | null
+  open?: boolean
+}) {
+  const count = leaves(node)
+  const mine = (part: number) => part >= first && part < first + count
+  const allHidden =
+    visibility !== null &&
+    Array.from({ length: count }, (_, offset) => first + offset).every((part) =>
+      visibility.hidden.has(part),
+    )
+  const controls =
+    visibility === null ? null : (
+      <span className="ml-2 inline-flex gap-1">
+        <button
+          type="button"
+          aria-label={allHidden ? strings.detail.showPart(node.name) : strings.detail.hidePart(node.name)}
+          onClick={(event) => {
+            // Inside a `summary` a click would also open or close the branch.
+            event.preventDefault()
+            const next = new Set(visibility.hidden)
+            for (let part = first; part < first + count; part++) {
+              if (allHidden) next.delete(part)
+              else next.add(part)
+            }
+            visibility.onHide(next)
+          }}
+          className={CONTROL}
+        >
+          {allHidden ? strings.detail.show : strings.detail.hide}
+        </button>
+        <button
+          type="button"
+          aria-label={strings.detail.isolatePart(node.name)}
+          onClick={(event) => {
+            event.preventDefault()
+            const others = Array.from({ length: visibility.parts }, (_, part) => part).filter(
+              (part) => !mine(part),
+            )
+            visibility.onHide(new Set(others))
+          }}
+          className={CONTROL}
+        >
+          {strings.detail.isolate}
+        </button>
+      </span>
+    )
+  // A part out of the view is named in the muted colour, so the tree shows what is hidden.
+  const muted = allHidden ? ' text-[var(--color-muted)]' : ''
   if (node.children.length === 0) {
-    return <li className="py-0.5 pl-4">{node.name}</li>
+    return (
+      <li className={`py-0.5 pl-4${muted}`}>
+        {node.name}
+        {controls}
+      </li>
+    )
   }
+  const firsts = firstLeaves(node.children, first)
   return (
     <li>
       <details open={open}>
-        <summary className="cursor-pointer py-0.5">{node.name}</summary>
+        <summary className={`cursor-pointer py-0.5${muted}`}>
+          {node.name}
+          {controls}
+        </summary>
         <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
           {node.children.map((child, index) => (
-            <AssemblyBranch key={index} node={child} />
+            <AssemblyBranch
+              key={index}
+              node={child}
+              first={firsts[index] ?? first}
+              visibility={visibility}
+            />
           ))}
         </ul>
       </details>

@@ -187,7 +187,8 @@ tessellated approximation. Part open to first paint under 120 ms warm.
 **Measured 2026-09-13, both clauses pass. The phase is not finished:** the rungs moved to
 `EXT_meshopt_compression` after this measurement, and the addendum below measures that against
 these numbers. Opening the quick look prefetches its neighbours' L0, not their L1 (`routes/index.tsx` says
-why), and the assembly tree does not isolate or hide parts yet.
+why). The assembly tree hides and isolates parts since bridge 5 and glb-3; the last addendum
+below checks it.
 
 | Clause | Measured | Verdict |
 |---|---|---|
@@ -328,6 +329,33 @@ run, on the machine above.
   part page reached from a link, starts that way.
 - **L2 did not move** beyond noise: 15–37 ms before and 11–38 ms after, over three fresh sessions
   each on the assembly.
+
+**Addendum, the same day: isolate and hide, checked.** The bridge now meshes an assembly by
+walking its tree and writes how many triangles each placed part has (`parts.json`, bridge 5). The
+rung carries those counts as `extras.parts`, with each part one run of the index buffer (glb-3),
+and the viewer leaves a hidden part's run out of what it draws and what a pick can meet. Checked in
+Chrome against the 200-part fixture by reading how many triangles each frame drew:
+
+| On the L1 rung: 9,476 triangles, 200 counts for 200 placed parts | Drawn | From `extras.parts` |
+|---|---|---|
+| Everything shown | 9,476 | 9,476 |
+| Hide the first bracket station | 8,908 | 8,908 |
+| Show only the V-block rail | 144 | 144 |
+| Show all parts | 9,476 | 9,476 |
+
+With every part but one stop pin hidden, the pin, 112 pixels of a 350-pixel view, was picked with
+the Diameter tool and read **10.000 mm**, exact. Walking the tree meshes the fixture to the same
+28,576 triangles at L2 as meshing the whole shape did, and `occt_bridge` checks that the counts
+are one per placed part and add up to the rung.
+
+How it was measured: `docker compose -p lapidaryopen` with `api`, `worker` and `web` from
+`0c66256`, a fresh ingest of the two STEP fixtures and one STL, and Chrome headless over the
+DevTools protocol on SwiftShader, reading `info.render.triangles` from the page's renderer.
+
+**What it does not change.**
+- **Rungs stored before glb-3 carry no counts,** so their tree offers no buttons until a worker
+  restart rebuilds them, which the stale-rung sweep does.
+- **A mesh file is one part,** and has nothing to hide.
 
 ---
 
