@@ -184,6 +184,61 @@ says the same of the kernel.
 **Exit:** measure a known cylinder from STEP and get the exact nominal diameter, not a
 tessellated approximation. Part open to first paint under 120 ms warm.
 
+**Measured 2026-09-13, both clauses pass. The phase is not finished:** the rungs are still
+uncompressed glTF, and `EXT_meshopt_compression` stays only if it beats the numbers below.
+Opening the quick look prefetches its neighbours' L0, not their L1 (`routes/index.tsx` says
+why), and the assembly tree does not isolate or hide parts yet.
+
+| Clause | Measured | Verdict |
+|---|---|---|
+| Measure a known cylinder from STEP and get the exact nominal diameter | In Chrome, with real pointer events, Diameter on the side of `cylinder-d22-lp-9010-00.step` reads **22.000 mm**, titled as read from an analytic CAD entity, with no ≈. From its cap, Wall thickness reads 30.000 mm, exact; through its side, 21.874 mm ≈. On the 200-part assembly, diameters of 30.000 and 10.000 mm and walls of 30.000 and 6.000 mm read exact up to three levels down the tree. On an STL, a diameter takes three points and reads ≈ | pass |
+| Part open to first paint under 120 ms warm | Hover a grid card, click it, and time `pointerdown` to the viewer's first frame with the part in it, over the library's ten parts, three rounds each. Parts opened before: **86.6 ms** median (p90 90.7, max 94.9) on SwiftShader, **54.5 ms** median (p90 65.3, max 70.7) on the GPU. A part's first open, its L0 prefetched by the hover: 100.5 ms median (max 141) on SwiftShader, 56.2 ms median on the GPU | pass, at the median |
+
+How it was measured: `docker compose -p lapidaryviewer`, with its own env file, storage, ingest
+directory and database volume, built `api` and `worker` from `c50df2c` and `web` from `d89af5a`;
+nothing in Rust changed between the two. The ingest folder held `fixtures/step` under `cad/`
+beside the seeded example STLs, and every part's L1 was built before timing. Kernel
+`occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1`, worker concurrency 2. Chrome 152.0.7977.82,
+headless, driven over the DevTools protocol at 1440 × 900, where the quick look is a pane beside
+the grid, with a throwaway profile per run. WebGL ran twice: on SwiftShader (ANGLE on Vulkan, on
+the CPU) and on the machine's GeForce RTX 3060 Ti (ANGLE on OpenGL 4.5). The 12-core development
+machine: Ryzen 5 5600X, 15 GB RAM. The time is `pointerdown` to the
+`lapidary:viewer-first-frame` mark, which `Viewer.tsx` sets on its first frame with a part in it.
+
+**Why the exact values can be trusted.** A pick snaps when all three corners of the triangle it
+hit lie on an entity's surface within 1e-3 mm, and the triangle faces the way the surface does.
+Corners, not the clicked point: the mesher puts nodes on the B-rep, and a triangle's middle sags
+inside a curved surface by up to the deflection. A script ran `measure.ts`'s own
+`placeEntities` and `snap` over every triangle of both fixtures' L2 rungs. **All 128 of the
+cylinder's and all 28,576 of the assembly's** landed on a placed entity. That exercises the
+transforms three levels down, not just a part at the origin.
+
+**Found by the exit.** Two fixes were needed before these numbers meant anything:
+- **The first-frame mark** fired on the resize observer's first frame, before any part was in
+  the scene. It now waits for the part (`d5e1edf`), and nothing timed before that commit counts.
+- **The viewer was not keyed by part.** The quick look reused it when moving to a part whose
+  detail was cached, and so did the part page when its URL changed. The camera stayed framed for
+  the last part, and a measuring tool kept its picks for the next one (`65442a9`).
+
+**What the numbers do not say.**
+- **Cold is over DATA.md's 400 ms.** The first open in a session loads the 641 kB (161 kB gzip)
+  viewer chunk and starts WebGL. It took 511 ms on SwiftShader and 826 ms on the GPU.
+- **First opens have a tail above 120 ms.** After the chunk, the GPU's first two opens took 363
+  and 158 ms, compiling shaders, and two of SwiftShader's first opens took 125 and 141 ms.
+- **A URL typed straight into the browser** boots a whole document: 369 ms median to first frame
+  with a warm HTTP cache.
+- **The parts are small.** A warm open read its rung from the HTTP cache and its detail from a
+  local API in under 4 ms, so these figures are the viewer's own cost. How long a million
+  triangles take to arrive is what the meshopt step measures.
+- **The frame was not presented.** Headless Chrome has no display, so the mark is when a frame
+  was drawn, not when it reached a screen.
+
+**Where measurement stops being exact, on purpose.** Point to point and edge length are always
+≈: an edge is the straight line between the two triangle corners nearest the clicks. An angle is
+exact only between two planes, and a wall only between two parallel planes. Cones, spheres and
+tori are read but not snapped to. Surfaces match untrimmed, so a pick cannot say which of two
+coplanar faces it hit; the value is the same from either.
+
 ---
 
 ## Phase 4 — Versioning, agent, round-trip
