@@ -17,7 +17,7 @@
 //! finish a job nobody is waiting for.
 
 use crate::kernel::{
-    AssemblyTree, CadError, Entity, Kernel, KernelOutput, KernelParams, KernelVersion,
+    AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams, KernelVersion,
     MeasurementProvenance,
 };
 use crate::{GLB_VERSION, MeshKernel, RASTER_VERSION};
@@ -184,6 +184,7 @@ impl Kernel for OcctKernel {
         let entities: BridgeEntities = read_json(&out_dir, "entities.json").await?;
         out.entities = entities.into_entities();
         out.structure = Some(read_json::<AssemblyTree>(&out_dir, "structure.json").await?);
+        out.metadata = Some(read_json::<CadMetadata>(&out_dir, "header.json").await?);
         Ok(out)
     }
 }
@@ -428,6 +429,7 @@ case "$1" in
         echo '{"units":"mm","solids":1,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
         echo '{"units":"mm","prototypes":[{"prototype":"0:1:1:1","faces":[{"face":1,"type":"cylinder","radius":11,"origin":[0,0,0],"axis":[0,0,1]},{"face":2,"type":"plane","origin":[0,0,30],"normal":[0,0,1]}],"circles":[{"edge":1,"radius":11,"center":[0,0,30],"normal":[0,0,1]}]}]}' > "$out/entities.json"
         echo '{"units":"mm","roots":[{"name":"cylinder-d22-lp-9010-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"parts":1,"prototypes":1}' > "$out/structure.json"
+        echo '{"file_name":"cylinder-d22-lp-9010-00.step","time_stamp":"2026-09-13T09:00:00","authors":["J. Okafor"],"organizations":["Lapidary fixtures"],"originating_system":"SOLIDWORKS 2025","preprocessor":"Open CASCADE 8.0.1","descriptions":[],"schemas":["AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"],"materials":["AISI 1045 steel"]}' > "$out/header.json"
         ;;
     esac
     ;;
@@ -500,6 +502,15 @@ esac
             out.entities
         );
         assert_eq!(out.structure.as_ref().map(|s| s.parts), Some(1));
+        let metadata = out
+            .metadata
+            .as_ref()
+            .expect("what the file says about itself");
+        assert_eq!(
+            metadata.originating_system.as_deref(),
+            Some("SOLIDWORKS 2025")
+        );
+        assert_eq!(metadata.materials, ["AISI 1045 steel"]);
         assert!(
             out.thumbnail_webp.is_some(),
             "the mesh pipeline drew the thumbnail"

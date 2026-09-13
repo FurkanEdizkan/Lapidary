@@ -69,6 +69,20 @@ async fn a_22_mm_cylinder_reads_as_an_exact_cylinder() {
         );
     }
     assert_eq!(out.provenance, MeasurementProvenance::ANALYTIC);
+    // What the file says about itself, as the fixture generator's OCCT writer put it.
+    let metadata = out.metadata.as_ref().expect("a STEP file has a header");
+    assert!(
+        metadata
+            .schemas
+            .iter()
+            .any(|schema| schema.starts_with("AP242")),
+        "the schema the file declares: {:?}",
+        metadata.schemas
+    );
+    assert_eq!(
+        metadata.originating_system.as_deref(),
+        Some("Open CASCADE 8.0")
+    );
     let radii = cylinder_radii(&out.entities);
     assert!(
         radii.iter().any(|r| (r - 11.0).abs() <= 1e-9),
@@ -126,6 +140,13 @@ async fn iges_reads_and_claims_no_volume_it_does_not_have() {
     assert_eq!(
         out.measurements.volume_mm3, None,
         "trimmed faces that were never sewn into a solid have no volume to report"
+    );
+    assert_eq!(
+        out.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.originating_system.as_deref()),
+        Some("Open CASCADE 8.0"),
+        "the IGES global section is read as the STEP header is"
     );
     for (got, want) in out.measurements.bbox_mm.iter().zip([60.0, 40.0, 60.0]) {
         assert!(

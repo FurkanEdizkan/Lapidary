@@ -14,10 +14,13 @@
 //   entities.json      analytic faces and circular edges, once per prototype, in its own
 //                      coordinates; structure.json places them
 //   measurements.json  volume, surface area and bounding box from the B-rep, in millimetres
+//   header.json        what the file says about itself: its STEP header or IGES global
+//                      section, and the materials it names
 //
 // A file OCCT cannot read exits 2 with {"kind":"refused","detail":...} on stderr. Anything
 // else non-zero, or a signal, is a crash, and the worker treats it as one.
 
+#include <APIHeaderSection_MakeHeader.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -36,6 +39,8 @@
 #include <IFSelect_ReturnStatus.hxx>
 #include <IGESCAFControl_Reader.hxx>
 #include <IGESCAFControl_Writer.hxx>
+#include <IGESData_GlobalSection.hxx>
+#include <IGESData_IGESModel.hxx>
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
 #include <Message_PrinterOStream.hxx>
@@ -46,8 +51,10 @@
 #include <STEPCAFControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
+#include <StepData_StepModel.hxx>
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_ExtendedString.hxx>
+#include <TCollection_HAsciiString.hxx>
 #include <TDF_Label.hxx>
 #include <TDF_Tool.hxx>
 #include <TDataStd_Name.hxx>
@@ -62,6 +69,7 @@
 #include <UnitsMethods_LengthUnit.hxx>
 #include <XCAFApp_Application.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_MaterialTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Circ.hxx>
@@ -87,7 +95,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 1;
+constexpr int BRIDGE_VERSION = 2;
 
 const double PI = std::acos(-1.0);
 
@@ -167,16 +175,64 @@ occ::handle<TDocStd_Document> newDocument() {
   return doc;
 }
 
+// A header field as JSON: the text the file wrote, trimmed, or null when it wrote nothing.
+std::string headerText(const occ::handle<TCollection_HAsciiString>& text) {
+  if (text.IsNull()) return "null";
+  const std::string value = text->ToCString();
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return "null";
+  return jsonString(value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1));
+}
+
+// A repeated header field as a JSON array, leaving out the entries the file left empty.
+template <typename At>
+std::string headerList(int count, At at) {
+  std::string out = "[";
+  for (int i = 1; i <= count; ++i) {
+    const std::string value = headerText(at(i));
+    if (value == "null") continue;
+    if (out.size() > 1) out += ",";
+    out += value;
+  }
+  return out + "]";
+}
+
+std::string headerFields(const std::string& fileName, const std::string& timeStamp,
+                         const std::string& authors, const std::string& organizations,
+                         const std::string& originatingSystem, const std::string& preprocessor,
+                         const std::string& descriptions, const std::string& schemas) {
+  return "\"file_name\":" + fileName + ",\"time_stamp\":" + timeStamp +
+         ",\"authors\":" + authors + ",\"organizations\":" + organizations +
+         ",\"originating_system\":" + originatingSystem + ",\"preprocessor\":" + preprocessor +
+         ",\"descriptions\":" + descriptions + ",\"schemas\":" + schemas;
+}
+
+// `header` is left as it was when the file has no header to read.
 bool readDocument(const std::string& path, const std::string& format,
-                  const occ::handle<TDocStd_Document>& doc, std::string& why) {
+                  const occ::handle<TDocStd_Document>& doc, std::string& header, std::string& why) {
   if (format == "step") {
     STEPCAFControl_Reader reader;
     reader.SetNameMode(true);
     reader.SetColorMode(false);
     reader.SetLayerMode(false);
+    reader.SetMatMode(true);
     if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
       why = "OCCT could not parse this file as STEP";
       return false;
+    }
+    const occ::handle<StepData_StepModel> model = reader.Reader().StepModel();
+    if (!model.IsNull()) {
+      const APIHeaderSection_MakeHeader made(model);
+      if (made.IsDone()) {
+        header = headerFields(
+            headerText(made.Name()), headerText(made.TimeStamp()),
+            headerList(made.NbAuthor(), [&](int i) { return made.AuthorValue(i); }),
+            headerList(made.NbOrganization(), [&](int i) { return made.OrganizationValue(i); }),
+            headerText(made.OriginatingSystem()), headerText(made.PreprocessorVersion()),
+            headerList(made.NbDescription(), [&](int i) { return made.DescriptionValue(i); }),
+            headerList(made.NbSchemaIdentifiers(),
+                       [&](int i) { return made.SchemaIdentifiersValue(i); }));
+      }
     }
     if (!reader.Transfer(doc)) {
       why = "the file parsed as STEP, but no shape could be transferred out of it";
@@ -189,6 +245,14 @@ bool readDocument(const std::string& path, const std::string& format,
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
     why = "OCCT could not parse this file as IGES";
     return false;
+  }
+  const occ::handle<IGESData_IGESModel> model = reader.IGESModel();
+  if (!model.IsNull()) {
+    const IGESData_GlobalSection& global = model->GlobalSection();
+    header = headerFields(headerText(global.FileName()), headerText(global.Date()),
+                          headerList(1, [&](int) { return global.AuthorName(); }),
+                          headerList(1, [&](int) { return global.CompanyName(); }),
+                          headerText(global.SystemId()), "null", "[]", "[]");
   }
   if (!reader.Transfer(doc)) {
     why = "the file parsed as IGES, but no shape could be transferred out of it";
@@ -370,8 +434,30 @@ int convert(const std::string& in, const std::string& format, const std::string&
     return refuse("occt-bridge reads step and iges, not " + format);
   }
   const occ::handle<TDocStd_Document> doc = newDocument();
+  std::string header = headerFields("null", "null", "[]", "[]", "null", "null", "[]", "[]");
   std::string why;
-  if (!readDocument(in, format, doc, why)) return refuse(why);
+  if (!readDocument(in, format, doc, header, why)) return refuse(why);
+
+  // The materials the file defines, by name. STEP carries them when the exporter wrote any;
+  // IGES has none to carry.
+  const occ::handle<XCAFDoc_MaterialTool> materialTool =
+      XCAFDoc_DocumentTool::MaterialTool(doc->Main());
+  NCollection_Sequence<TDF_Label> materialLabels;
+  materialTool->GetMaterialLabels(materialLabels);
+  std::string materials = "[";
+  for (int i = 1; i <= materialLabels.Length(); ++i) {
+    occ::handle<TCollection_HAsciiString> name, description, densityName, densityType;
+    double density = 0.0;
+    if (!XCAFDoc_MaterialTool::GetMaterial(materialLabels.Value(i), name, description, density,
+                                           densityName, densityType)) {
+      continue;
+    }
+    const std::string value = headerText(name);
+    if (value == "null") continue;
+    if (materials.size() > 1) materials += ",";
+    materials += value;
+  }
+  materials += "]";
 
   const occ::handle<XCAFDoc_ShapeTool> tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   NCollection_Sequence<TDF_Label> roots;
@@ -425,7 +511,8 @@ int convert(const std::string& in, const std::string& format, const std::string&
 
   if (!meshWritten || !writeFile(outDir + "/structure.json", structure) ||
       !writeFile(outDir + "/entities.json", entities) ||
-      !writeFile(outDir + "/measurements.json", measurements)) {
+      !writeFile(outDir + "/measurements.json", measurements) ||
+      !writeFile(outDir + "/header.json", "{" + header + ",\"materials\":" + materials + "}\n")) {
     std::fprintf(stderr, "occt-bridge: could not write into %s\n", outDir.c_str());
     return 1;
   }
@@ -596,8 +683,9 @@ int selftest(const char* dir) {
     return 1;
   }
   const occ::handle<TDocStd_Document> read = newDocument();
+  std::string header;
   std::string why;
-  if (!readDocument(path, "step", read, why)) {
+  if (!readDocument(path, "step", read, header, why)) {
     std::fprintf(stderr, "selftest: %s\n", why.c_str());
     return 1;
   }
