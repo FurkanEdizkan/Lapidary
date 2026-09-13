@@ -1237,6 +1237,14 @@ export const strings = {
     close: 'Close',
   },
 
+  /** The 3D view in the quick look and on the part's page. */
+  viewer: {
+    label: (name: string) => `3D view of ${name}`,
+    /** Under the rendered preview where the browser cannot draw 3D, so its absence is explained. */
+    noWebGL: 'This browser cannot draw the 3D view here, so this is the rendered preview.',
+    refining: 'Loading more detail…',
+    failed: 'The 3D view could not load. The rendered preview is shown instead.',
+  },
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means

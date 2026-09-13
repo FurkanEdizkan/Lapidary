@@ -136,6 +136,10 @@ export function Dialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        // `max-h-full` and `overflow-y-auto`: a box taller than the window — the quick look with its
+        // 3D view, on a laptop screen — scrolls inside it, rather than centring its title and Close
+        // out above the top edge where nothing can reach them.
+        //
         // Focusable only programmatically: it holds focus while every control inside is
         // disabled, which is the window in which focus would otherwise be nowhere.
         tabIndex={-1}
@@ -145,7 +149,7 @@ export function Dialog({
             current.focus()
           }
         }}
-        className="panel-in w-full max-w-md rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+        className="panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id={titleId} className="text-sm font-medium">

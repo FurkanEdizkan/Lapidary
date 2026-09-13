@@ -5,6 +5,7 @@ import {
   DEFAULT_LIBRARY_ID,
   batchEventsUrl,
   downloadUrl,
+  blobUrl,
   fetchBatchStatus,
   fetchFailures,
   movePart,
@@ -48,6 +49,7 @@ import {
 } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { eachAtMost } from '../lib/bulk'
+import { createPrefetch } from '../lib/prefetch'
 import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import {
@@ -429,6 +431,25 @@ export function Index({
   // Found among the pages already loaded rather than fetched on its own: a part further down
   // than the grid has reached opens once its page arrives.
   const looking = openPart === undefined ? undefined : loaded.find((card) => card.id === openPart)
+
+  /**
+   * Prefetch on intent (`DATA.md` §2.4): a hovered card warms its L0 rung, and an opened part warms
+   * its neighbours' — the parts a person looks at next. L0 and not L1 for the neighbours, because a
+   * card carries only its L0 hash and fetching two more details to learn the L1s would cost more
+   * than the prefetch saves. Everything in flight is dropped when the grid changes under it.
+   */
+  const [prefetch] = useState(() => createPrefetch(2))
+  const warm = (card: PartCard | undefined) => {
+    if (card !== undefined && card.tessellationL0 !== null) prefetch.request(blobUrl(card.tessellationL0))
+  }
+  const lookingIndex = looking === undefined ? -1 : loaded.indexOf(looking)
+  useEffect(() => {
+    if (lookingIndex === -1) return
+    warm(loaded[lookingIndex - 1])
+    warm(loaded[lookingIndex + 1])
+    // Keyed on where the look is, not on `loaded`'s identity, which changes on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookingIndex])
   const setOpenPart = (id: PartId | null) => {
     if (onOpenPart === undefined) setOwnPart(id ?? undefined)
     else onOpenPart(id)
@@ -458,6 +479,7 @@ export function Index({
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
   const scope = [library, folderId ?? '', format ?? '', material ?? '', q ?? ''].join('\u0000')
   const [selectionScope, setSelectionScope] = useState(scope)
+  useEffect(() => () => prefetch.cancel(), [scope, prefetch])
   if (scope !== selectionScope) {
     setSelectionScope(scope)
     setSelected(new Set())
@@ -939,6 +961,7 @@ export function Index({
               selected={selected}
               onToggle={toggle}
               onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
+              onHover={warm}
               onOpen={(card, from) => {
                 setOpenFrom(from)
                 setOpenPart(card.id)
@@ -2140,6 +2163,7 @@ function Grid({
   onToggle,
   onSelectAll,
   onOpen,
+  onHover,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
@@ -2155,6 +2179,8 @@ function Grid({
   onSelectAll: () => void
   /** A card asks to be looked at, from where its render sits. */
   onOpen: (part: PartCard, from: DOMRect) => void
+  /** The pointer is over a card: the moment to warm its rung. */
+  onHover: (part: PartCard) => void
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -2240,6 +2266,7 @@ function Grid({
             selected={selected.has(part.id)}
             onToggle={onToggle}
             onOpen={onOpen}
+            onHover={onHover}
           />
         </li>
       ))}
@@ -2484,6 +2511,7 @@ function Card({
   selected,
   onToggle,
   onOpen,
+  onHover,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
@@ -2494,6 +2522,7 @@ function Card({
   selected: boolean
   onToggle: (part: PartId, range: boolean) => void
   onOpen: (part: PartCard, from: DOMRect) => void
+  onHover: (part: PartCard) => void
 }) {
   const nameId = `part-name-${part.id}`
   const directory = part.directory
@@ -2509,6 +2538,7 @@ function Card({
   return (
     <article
       aria-labelledby={nameId}
+      onMouseEnter={() => onHover(part)}
       /*
         The whole card opens the panel. It stays a handler rather than an anchor because the
         name inside it is itself a link, and an anchor inside an anchor is invalid HTML that

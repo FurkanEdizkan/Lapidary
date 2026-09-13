@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState, type ReactNode } from 'react'
+import { Suspense, lazy, useRef, useState, type ReactNode } from 'react'
 import {
   addPartSource,
   blobUrl,
@@ -11,6 +11,7 @@ import {
   uploadPartImage,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { hasWebGL } from '../lib/viewer-math'
 import type {
   Approximate,
   AssemblyNode,
@@ -323,6 +324,47 @@ const SOURCE_FIELDS = [
  * requires a mesh-derived number to be labelled wherever it appears. A dialog with its own
  * `<dl>` would be one refactor away from dropping that.
  */
+/** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
+const Viewer = lazy(() => import('./Viewer'))
+
+const FRAME =
+  'relative h-40 w-40 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'
+
+/**
+ * The part's picture. The 3D view where the browser can draw one and the part has a rung to draw;
+ * the rendered thumbnail otherwise, and as the poster the view replaces once its first frame is
+ * drawn. The thumbnail is the first thing on screen either way, which is what the quick look's
+ * flight moves (`flipFrom` finds the image).
+ */
+function Preview({ part }: { part: PartDetailData }) {
+  const poster =
+    part.thumbnail === null ? null : (
+      <img
+        src={part.thumbnail}
+        alt={strings.parts.thumbnailAlt(part.name)}
+        className="h-full w-full object-contain"
+      />
+    )
+  if (part.tessellationL0 === null) {
+    return poster === null ? null : <div className={FRAME}>{poster}</div>
+  }
+  if (!hasWebGL()) {
+    return (
+      <figure>
+        {poster === null ? null : <div className={FRAME}>{poster}</div>}
+        <figcaption className="mt-1 max-w-40 text-xs text-[var(--color-muted)]">
+          {strings.viewer.noWebGL}
+        </figcaption>
+      </figure>
+    )
+  }
+  return (
+    <Suspense fallback={<div className={FRAME}>{poster}</div>}>
+      <Viewer part={part} poster={poster} />
+    </Suspense>
+  )
+}
+
 export function Detail({
   part,
   actions,
@@ -353,13 +395,7 @@ export function Detail({
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
-        {part.thumbnail === null ? null : (
-          <img
-            src={part.thumbnail}
-            alt={strings.parts.thumbnailAlt(part.name)}
-            className="h-40 w-40 rounded border border-[var(--color-border)] bg-[var(--color-surface)] object-contain"
-          />
-        )}
+        <Preview part={part} />
         <div>
           {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
           {part.partNumber === null ? null : (
