@@ -58,6 +58,11 @@ function opensSentence(clause: string): string {
   return clause.charAt(0).toUpperCase() + clause.slice(1)
 }
 
+/** A measured length or angle, to the thousandth the Phase 3 exit reads it at: `22.000`, never `22`. */
+function fixed(value: number): string {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+}
+
 export const strings = {
   appName: 'Lapidary',
   /**
@@ -1244,6 +1249,35 @@ export const strings = {
     noWebGL: 'This browser cannot draw the 3D view here, so this is the rendered preview.',
     refining: 'Loading more detail…',
     failed: 'The 3D view could not load. The rendered preview is shown instead.',
+  },
+  /**
+   * The measuring tools under the 3D view. A value is exact only where it was read from an
+   * analytic CAD entity — a cylinder's radius, a plane's equation — and every other one carries
+   * `detail.approximate` through `Figure`, the same mark the part's own figures carry.
+   */
+  measure: {
+    label: 'Measure',
+    tools: {
+      distance: 'Point to point',
+      edge: 'Edge length',
+      diameter: 'Diameter',
+      angle: 'Angle',
+      wall: 'Wall thickness',
+    },
+    prompts: {
+      distance: 'Click two points on the part.',
+      edge: 'Click the corner at each end of the edge.',
+      diameter: 'Click a round face, or three points around a round edge.',
+      angle: 'Click two faces.',
+      wall: 'Click a wall. Its thickness is measured straight through it.',
+    },
+    /** Picks wait for the finest mesh, so no value is read off a coarser one than the part has. */
+    loading: 'Loading the full-detail mesh to measure on…',
+    unavailable:
+      'The full-detail mesh could not be built, so this part cannot be measured here. Reopen the part to try again.',
+    noWall: 'Nothing is opposite that point, so there is no wall to measure. The mesh may be open there.',
+    millimetres: (value: number) => `${fixed(value)} mm`,
+    degrees: (value: number) => `${fixed(value)}°`,
   },
   quickLook: {
     /**
