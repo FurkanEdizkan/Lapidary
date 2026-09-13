@@ -120,6 +120,7 @@ pub fn router(state: AppState, role: Role) -> Router {
                     get(derive::list_libraries).post(derive::create_library),
                 )
                 .route("/api/libraries/{id}/parts", get(parts::page))
+                .route("/api/libraries/{id}/facets", get(parts::facets))
                 // What that page of cards costs, summed. `Role::Api` with the grid it totals
                 // — see `parts.rs`.
                 .route("/api/libraries/{id}/storage", get(parts::storage))

@@ -730,6 +730,19 @@ export const strings = {
    * each other, which is why the delete copy below says what stays as plainly as it says
    * what goes.
    */
+  /** The filters beside the grid. `docs/DATA.md` §3.4. */
+  facets: {
+    format: 'Format',
+    /** A format as ingest records it, the extension, as a person reads it. */
+    name: (value: string) => value.toUpperCase(),
+    count: (count: number) => count.toLocaleString('en-US'),
+    /** A button's whole name, so a screen reader hears the count with the format. */
+    option: (value: string, count: number | null) =>
+      count === null
+        ? value.toUpperCase()
+        : `${value.toUpperCase()}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
+    failed: 'Could not load the formats in this library. Reload to try again.',
+  },
   folders: {
     title: 'Categories',
     /**

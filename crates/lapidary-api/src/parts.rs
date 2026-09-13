@@ -233,6 +233,10 @@ pub struct PageQuery {
     /// cleared the box on would be answering a read with an error page.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     q: Option<String>,
+    /// One source format, as ingest records it: the extension, lowercased. Absent is every
+    /// format.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    format: Option<String>,
 }
 
 /// Treats an empty query-string value the same as an absent key. `#[serde(default)]`
@@ -267,6 +271,7 @@ pub async fn page(
         limit,
         state,
         q,
+        format,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
@@ -292,16 +297,27 @@ pub async fn page(
     // typed in, and searching for them would answer an empty grid to somebody who thinks
     // they cleared it.
     let query = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let format = format
+        .map(|format| format.trim().to_ascii_lowercase())
+        .filter(|format| !format.is_empty());
     let repository = PgParts(app.db);
     let result = match query {
         Some(q) => {
             repository
-                .search(library, folder_id, q, after, limit, shows)
+                .search(
+                    library,
+                    folder_id,
+                    q,
+                    after,
+                    limit,
+                    shows,
+                    format.as_deref(),
+                )
                 .await
         }
         None => {
             repository
-                .page(library, folder_id, after, limit, shows)
+                .page(library, folder_id, after, limit, shows, format.as_deref())
                 .await
         }
     };
@@ -319,6 +335,73 @@ pub async fn page(
             Json(PartsPage { parts, next }).into_response()
         }
         Err(err) => internal_error(&err, "grid page query failed"),
+    }
+}
+
+/// One source format, and how many of the grid's parts carry it. `count` is `null` past the
+/// exact-count threshold, where only the values that occur are shown.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FacetValue {
+    pub value: String,
+    #[ts(type = "number | null")]
+    pub count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Facets {
+    pub formats: Vec<FacetValue>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacetQuery {
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    folder_id: Option<FolderId>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    q: Option<String>,
+}
+
+/// `GET /api/libraries/{id}/facets` — the formats among the parts `page` would show for the
+/// same category, query and state. The grid's own `format` is not a parameter: counts that
+/// obeyed it would show every other format as zero, and nobody could choose a second one.
+pub async fn facets(
+    State(app): State<AppState>,
+    Path(library): Path<LibraryId>,
+    query: Result<Query<FacetQuery>, QueryRejection>,
+) -> Response {
+    let FacetQuery {
+        folder_id,
+        state,
+        q,
+    } = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => return bad_query(&rejection),
+    };
+    let shows = if state.as_deref() == Some("removed") {
+        Shows::Removed
+    } else {
+        Shows::Live
+    };
+    let q = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    match PgParts(app.db)
+        .format_facet(library, folder_id, q, shows)
+        .await
+    {
+        Ok(values) => Json(Facets {
+            formats: values
+                .into_iter()
+                .map(|value| FacetValue {
+                    value: value.value,
+                    count: value.count,
+                })
+                .collect(),
+        })
+        .into_response(),
+        Err(err) => internal_error(&err, "facet query failed"),
     }
 }
 

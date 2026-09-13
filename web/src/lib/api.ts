@@ -4,6 +4,7 @@ import type {
   BatchStatus,
   BlobHash,
   ChunkAccepted,
+  Facets,
   FetchImageRequest,
   NewSource,
   PartSource,
@@ -74,6 +75,7 @@ export async function fetchParts(
   folderId?: FolderId | null,
   q?: string,
   limit?: number,
+  format?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -93,12 +95,34 @@ export async function fetchParts(
   // default is — a second copy of a number, in a different language, that goes wrong
   // silently the day somebody changes one of them. The grid has a page size; it says so.
   if (typeof limit === 'number') query.set('limit', String(limit))
+  if (typeof format === 'string' && format.length > 0) query.set('format', format)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
     throw new Error(`parts returned ${response.status}`)
   }
   return (await response.json()) as PartsPage
+}
+
+/**
+ * `GET /api/libraries/{id}/facets` — the formats among the parts the grid shows for the same
+ * category and query, with counts. The grid's chosen format is deliberately not sent: counts
+ * that obeyed it would show every other format as zero.
+ */
+export async function fetchFacets(
+  library: LibraryId,
+  folderId?: FolderId | null,
+  q?: string,
+): Promise<Facets> {
+  const query = new URLSearchParams()
+  if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
+  if (typeof q === 'string' && q.length > 0) query.set('q', q)
+  const suffix = query.size === 0 ? '' : `?${query}`
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
+  if (!response.ok) {
+    throw new Error(`facets returned ${response.status}`)
+  }
+  return (await response.json()) as Facets
 }
 
 /**
