@@ -69,7 +69,12 @@ export function Dialog({
     // A fallback, never a preference: `autoFocus` has already run by now and put focus on
     // the safe control. This only fires when nothing inside took it.
     if (node !== null && !node.contains(document.activeElement)) {
-      node.focus()
+      // The first control, not the box. Focusing the box drew the focus ring around the whole
+      // panel — a ring that says everything is selected and points at nothing a key can
+      // operate. The close button is first in every box, so this lands on the way out; a
+      // field that asked for focus with `autoFocus` already has it and is left alone. The
+      // box stays the fallback for the rare moment focus falls out of it.
+      ;(node.querySelector<HTMLElement>(FOCUSABLE) ?? node).focus()
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
