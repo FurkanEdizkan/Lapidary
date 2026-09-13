@@ -3,11 +3,15 @@
 | Doc | Contains | Read before |
 |---|---|---|
 | [`../CLAUDE.md`](../CLAUDE.md) | Non-negotiable product and technical rules, style | Always loaded |
+| [`../README.md`](../README.md) | What Lapidary is, its status, and how to run the stack — including why the api and worker ports are split | Running it for the first time |
+| [`../PRODUCT.md`](../PRODUCT.md) | Who the product is for, what it promises, and the WCAG 2.2 AA commitment | Any user-facing decision, and before trading accessibility for anything |
+| [`../DESIGN.md`](../DESIGN.md) | The visual system: palette with measured contrast, type, radii, components, named rules. The live tokens are `web/src/styles.css`; this is why they are what they are | Any change to how the web app looks |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Checkout setup, the commit-message rules, the verification bar, what a PR needs. Not yet open to outside contributions | Your first commit |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate graph and layering, deployment topology, full tech stack, kernel trait, supply chain policy, licensing | Any structural work, new crate, dependency, or deployment change |
 | [`DATA.md`](DATA.md) | Blob CAS, compression and tiering, deletion semantics, fast-open path, metadata extraction, schema, search, source links, upload/download, versioning, watcher | Anything touching storage, the database, ingest, search, or the round-trip |
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
-| [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, `lapidary-index` search, or `lapidary-cad` LOD |
+| [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, search, or `lapidary-cad` LOD. Search lives in `lapidary-db` and migrations `0016`/`0020` today; `lapidary-index` is a placeholder crate that Phase 2's metadata extractor fills |
 | [`superpowers/specs/`](superpowers/specs) | Per-slice design specs: the decisions, data flow, schema and testing plan for one slice | Working on a slice — the spec for it is the closest thing to a contract for what it does |
 | [`superpowers/plans/`](superpowers/plans) | The execution plans those specs were built from, and historical handoffs | Tracing why something was built the way it was; not a description of the current system |
 

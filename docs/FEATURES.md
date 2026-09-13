@@ -14,7 +14,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Resumable chunked upload, server-verified hash | 1 |
 | Non-blocking ingest with live SSE progress; UI stays interactive | 1 |
 | Crash-resumable job queue (rows in Postgres, not memory) | 1 |
-| Per-file stage names: hashing, parsing, tessellating, rendering | 1 |
+| Per-file upload stages; server work reported per batch, failures per file | 1 |
 <!--
   **Half of this row is delivered and half of it is not**, recorded here on 2026-09-08
   after a Phase 1 audit rather than left for a reader to discover by looking for a stage
@@ -36,10 +36,18 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   SSE stream carrying per-file rows rather than one aggregate, and a UI that can show a
   list that long without becoming the page. That is a slice, not a fix.
 
-  **Open question, deliberately not decided here:** build it, or amend this row to the
-  aggregate-plus-failures shape that shipped — the way the "per library" row above was
-  amended, with the reason recorded. Worth noting for whoever decides: the failure list is
-  the part an operator acts on, and it is per file already.
+  **Decided 2026-09-13: the row is amended rather than the slice built**, and the row's
+  wording above now says what ships. The reason is which half an operator acts on. Nobody
+  watches a 1,700-file scan to learn that one file is tessellating — they watch to know it
+  is moving, which the batch count says, and to find out what broke, which the failure list
+  says per file with a path and a reason. A live per-file stage is the half that reads well
+  in a demonstration and the half nobody acts on.
+
+  Left as written above: what building it would cost, so nobody has to re-derive it. Add to
+  that a caution the audit turned up — `job` has `state` with four *lifecycle* values
+  (`pending`, `running`, `done`, `failed`) under a CHECK constraint, and a stage is not one
+  of those. It is a second axis inside `running`, so it wants its own column and its own
+  CHECK rather than four more values in that one.
 -->
 | Mesh formats: STL, 3MF, OBJ | 1 |
 | Folder tree per library, mirrored on disk — one directory per part | 1 |

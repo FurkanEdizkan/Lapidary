@@ -29,7 +29,20 @@ snowball `tsvector` config is present.
 - Blob CAS: BLAKE3, 2-level sharding, `ref_count`, zstd -3 on source
 - Postgres job queue: `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY`, crash-resumable
 - Upload: client-side WASM BLAKE3 → probe → chunked resumable transfer
-- Mesh ingest (STL/3MF/OBJ) → thumbnail (per-library, on by default) + L0; L1/L2 on demand
+- Mesh ingest (STL/3MF/OBJ) → thumbnail (per-library, on by default) + L0
+<!--
+  This line read "+ L0; L1/L2 on demand" until 2026-09-13, and the "on demand" half was
+  never Phase 1's. Slice 4 moved it: ingest stores L0 only, and the route that would
+  enqueue L1/L2 is assigned to **Phase 3's viewer** — see
+  `superpowers/plans/2026-09-05-phase-1-slice-4-HANDOFF.md:255` ("the three trigger routes
+  only render thumbnails, which is all any consumer needs today") and
+  `superpowers/specs/2026-09-04-phase-1-slice-4-derivatives-design.md:46`. The amendment
+  was recorded in `2026-09-05-phase-1-remaining-slices.md:103` and never reached this file,
+  so a Phase 1 audit read it as an unbuilt row and nearly built it.
+
+  The kernel produces all three rungs today (`lapidary-cad`); nothing asks it for the top
+  two, which is why they are not written. Phase 3's prefetch line below is the consumer.
+-->
 - Virtualized grid, keyset pagination, inline `bytea` thumbnails
 - SSE progress; UI never blocks
 - Download `variant=original` with hash displayed

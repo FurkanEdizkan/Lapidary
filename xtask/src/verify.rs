@@ -5,9 +5,10 @@
 //! "ten gates, the bar, every task", and slice 5 was six implementation commits, six
 //! reviews and five fix rounds — each round paying all ten.
 //!
-//! Measured on 2026-09-06, warm, on a 12-core machine: the ten gates are **39.7 s**, of
-//! which `cargo test` is 27.1 s and the four text checks are 0.56 s *combined*. The bar
-//! was never slow. It was paid too often, and the part that is nearly free was welded to
+//! Measured on 2026-09-06, warm, on a 12-core machine: the ten gates of that day were
+//! **39.7 s**, of which `cargo test` was 27.1 s and the four text checks 0.56 s *combined*.
+//! There are fourteen now — [`steps`] is the list, and this paragraph is a measurement
+//! rather than a count to keep in step with it. The bar was never slow. It was paid too often, and the part that is nearly free was welded to
 //! the part that is not.
 //!
 //! So the tiers split on cost, not on importance:

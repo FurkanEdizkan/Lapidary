@@ -1,7 +1,7 @@
 <!-- Superseded in part on 2026-09-08 by `Lapidary Library v2.dc.html`, the design project
      at claude.ai/design/p/e221a512. The frontmatter below is updated to what the code now
-     carries; the prose sections after "Overview" still argue the v1 system and are marked
-     where they no longer match.
+     carries, and on 2026-09-13 the Colors, Typography and Shapes prose was rewritten to
+     match it rather than left marked as stale.
 
      v2 is a refinement rather than a replacement — the same dark neutral register, lifted
      off black, with the blue-grey cast taken out of the greys and a colder accent. What
@@ -175,41 +175,64 @@ Blue. Nothing uses that licence yet.
 - Two type voices only — a heavy display horizon and a quiet body
 - One saturated colour, reserved for live interaction
 - Flat by tonal layering; no shadow except beneath an overlay
-- Image tiles borderless and edge-to-edge; chrome tiles hairlined
+- Renders inset on a well, with transparent backgrounds; tiles bordered, lifting to Edge under the pointer
 - Motion is mechanical: transform and opacity, 120/180/280 ms, always reduced-motion aware
 
 ## Colors
 
-<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
-     live system; the frontmatter above matches it. -->
-
-Six values, named for the machine shop the product serves. The greys are a single stepped
-ramp from unlit ground to hairline; there is no second hue anywhere in the system.
+Named for the machine shop the product serves. The greys are a single stepped ramp from
+unlit ground to hairline; the accent is the only hue, and the four semantics are the only
+other saturated values in the system.
 
 ### Primary
 
-- **Layout Blue** (`#6ea8fe`): the machinist's marking dye, and the only saturated colour in
-  the product. It marks what is *live right now* — a valid drop target under a dragged part,
-  a focused control, a selected filter. It is never used for emphasis, never for a heading,
-  never for a brand flourish, and never on a resting surface.
+- **Layout Blue** (`#2cb4f5`): the machinist's marking dye. It marks what is *live right
+  now* — a valid drop target under a dragged part, a focused control, a selected filter,
+  the brand mark. It is never used for emphasis, never for a heading, and never on a
+  resting surface.
 
-### Neutral
+### Neutral — three grounds
 
-- **Anodised Black** (`#0b0c0e`): the page ground, and the inside of an image tile before its
-  render loads. The unlit bench.
-- **Machined Slate** (`#131519`): every raised surface — tiles, dialogs, inputs, the standing
-  button. One step up from the ground, never two.
-- **Scribe Line** (`#24272d`): hairline *dividers* — a rule between two things. A scribed
-  mark, not a drawn box.
-- **Edge** (`#606368`): the boundary of anything you can operate — an input, a select, the
-  drop target, a button. Measured 3.24:1 on the ground and 3.03:1 on a surface, because WCAG
-  2.2 SC 1.4.11 asks 3:1 of a control's visual boundary and PRODUCT.md commits to AA. The
-  scribe line is 1.22:1 and was carrying both jobs; a divider may whisper, a control that is
-  identified by nothing but its outline may not.
-- **Chalk** (`#e6e8ec`): primary text. Reserved for the thing the user is reading right now —
-  a part name, a dialog title, a value they asked for.
-- **Graphite** (`#9aa1ac`): secondary text, which is most text. Labels, metadata, helper
-  copy, resting controls.
+- **Anodised Black** (`#121214`): the page ground. The unlit bench.
+- **Bench Grey** (`#17171b`): the well a thing sits *in* — the inside of an image tile, an
+  input, a select, a segmented control. One step down in reading, one step up in structure.
+- **Machined Slate** (`#1a1a1d`): every raised surface — cards, dialogs, the top bar, the
+  standing button. One step up from the ground, never two.
+
+A third ground arrived with v2 and earns its place: a card *on* the rail has to read as
+raised, and two identical values cannot say that.
+
+### Neutral — three texts, and why not four
+
+- **Quicklime** (`#f0f0f2`): headings, and the one value a row exists to show.
+- **Chalk** (`#e6e6e9`): primary text — what the user is reading right now.
+- **Ash** (`#c8c8ce`): body copy that is not a label — notes, blurbs, secondary sentences.
+- **Graphite** (`#8a8a92`): labels, metadata, resting controls. Most text.
+
+`v2` draws a fourth at `#6a6a72` for small mono captions. It is not here. Measured against
+the grounds it sits on it is 3.24:1 on a card and 3.49:1 on the page, under the 4.5:1 SC
+1.4.3 asks of body text — and at 9–10.5px no large-text exemption applies. Lifting it to
+pass lands on `#82828a`, eight values off Graphite, a distinction nobody can see. So the
+tier collapses. The three that remain measure 15.3:1, 13.9:1 and 5.1:1 on a card.
+
+### Lines
+
+- **Scribe Line** (`#26262b`): hairline *dividers*, and the resting border of a card. A
+  scribed mark, not a drawn box.
+- **Edge** (`#65656d`): the boundary of anything you can operate — an input, a select, the
+  drop target, a button, a card under the pointer. Measured 3.24:1 on the ground and 3.01:1
+  on a card, because SC 1.4.11 asks 3:1 of a control's visual boundary and PRODUCT.md
+  commits to AA. The scribe line is 1.15:1 and cannot carry that job.
+
+  This token moved with the palette. At v1's `#606368` it measured 3.10:1 and 2.88:1
+  against the lifted surfaces — a token whose entire purpose is 3:1, quietly no longer
+  meeting it. `web/src/contrast.test.ts` is what now notices.
+
+### Semantics
+
+Four, each earned by a state the interface has, each clearing 4.5:1 on a card so any of
+them may carry text: **Brass** (`#e8b06a`) a caution, **Patina** (`#4f9e94`) a settled
+good, **Verdigris** (`#8fd7d0`) an informational note, **Oxide** (`#e88a8a`) a failure.
 
 ### Named Rules
 
@@ -227,28 +250,27 @@ line between them.
 
 ## Typography
 
-<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
-     live system; the frontmatter above matches it. -->
+**Body Font:** Archivo (with `-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif`)
+**Figure Font:** JetBrains Mono (with `ui-monospace, SFMono-Regular, Menlo, monospace`)
 
-**Display / Body Font:** Inter (with `-apple-system, BlinkMacSystemFont, Segoe UI, Roboto,
-sans-serif`)
-**Label/Mono Font:** `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`
-
-**Character:** One family doing two jobs at opposite ends of its weight axis — a heavy,
-tight-tracked display voice for the horizon and a plain 400 for everything else, with nothing
-in between competing. Mono is not decoration: it marks machine identity, and a value set in
-mono is a value the user can select, copy and paste somewhere that will accept it.
+**Character:** Two faces with one job each. Archivo carries every word; JetBrains Mono
+carries every number and every identifier. The split is not decoration — a column of
+proportional digits is ragged, and a value set in mono is a value the user can select,
+copy and paste somewhere that will accept it. `.tabular` applies both the face and
+`tabular-nums`, so a count that changes as pages load does not shift the words beside it.
 
 ### Hierarchy
 
-- **Display** (900, `clamp(1.75rem, 3vw, 2rem)`, 1.05, −0.02em): library name, empty-state
-  headline, the one line per screen that establishes where you are. At most one per viewport.
-- **Headline** (700, 1.25rem, 1.2, −0.01em): a part's own name on its detail page.
-- **Title** (600, 0.875rem, 1.3): tile captions, dialog titles, the name of a thing in a list.
+- **Display** (700, 0.75rem, 1, 0.16em, uppercase): the wordmark in the top bar, and only
+  that. Uppercased in CSS, never in the string — the application is called "Lapidary", and
+  a screen reader should say that rather than spell it.
+- **Headline** (500, 1.25rem): a part's own name on its detail page.
+- **Scope** (600, 15px, 1): the line above the grid naming what is on screen.
+- **Title** (600, 0.875rem, 1.3): card names, dialog titles, the name of a thing in a list.
 - **Body** (400, 0.875rem, 1.5): prose, helper text, refusals. Capped at 70ch.
-- **Label** (500, 0.75rem, 1.2, 0.08em, uppercase): section headings and metadata keys. The
-  uppercase tracking is what lets a 12px label read as structure rather than as small text.
-- **Mono** (400, 0.75rem, 1.4): part numbers, BLAKE3 hashes, storage paths, kernel versions.
+- **Label** (500, 0.75rem, 1.2, 0.08em, uppercase): section headings and metadata keys.
+- **Figure** (JetBrains Mono 400, 10.5–12px): part numbers, triangle counts, byte sizes,
+  BLAKE3 hashes, storage paths, kernel versions.
 
 ### Named Rules
 
@@ -256,13 +278,14 @@ mono is a value the user can select, copy and paste somewhere that will accept i
 hash, a part number — is set in mono and is selectable. Mono is a promise that the string is
 exact and complete, never elided with an ellipsis in the middle.
 
-**The Self-Hosted Font Rule.** Lapidary ships into air-gapped deployments. Inter is
-self-hosted from the bundle as a variable font, subset to Latin + Latin Extended-A so Turkish
-renders without a second file. A `fonts.googleapis.com` link is a defect that only shows up
-on the one network that matters most.
+**The Self-Hosted Font Rule.** Lapidary ships into air-gapped deployments. Archivo and
+JetBrains Mono are self-hosted from `web/public/fonts/` as variable fonts, two subsets each
+(`latin`, `latin-ext`), so Turkish renders without a mid-word fallback. The `v2` design file
+links `fonts.googleapis.com`; that link is a defect that only shows up on the one network
+that matters most, and it was not carried.
 
-**The One Horizon Rule.** Exactly one Display line per viewport. A second one is not a
-hierarchy, it is a competition.
+**The One Horizon Rule.** Exactly one Display line per viewport, and it is the wordmark. A
+second one is not a hierarchy, it is a competition.
 
 ## Layout
 
@@ -308,22 +331,27 @@ overlay throws by being in front of the page rather than in it.
 
 ## Shapes
 
-<!-- v2, 2026-09-08: the values in this section are v1's. `web/src/styles.css` is the
-     live system; the frontmatter above matches it. -->
+Three radii and a pill. **4px** for chips and chrome that must feel machined. **7px** for
+things you operate — buttons, inputs, selects, list rows, small thumbnails. **10px** for
+cards, which hold the only organic content on screen. **Full** for filter chips, where the
+shape carries "this is a choice among a set" without needing a border.
 
-Three radii and no others. **4px** for chrome that must feel machined — buttons, inputs,
-selects, hairlined panels. **10px** for image tiles, which are the softest thing on screen
-because they hold the only organic content. **Full** for filter chips and segmented controls,
-where the pill shape carries "this is a choice among a set" without needing a border.
-
-Borders are hairlines at 1px in Scribe Line, and they belong to *chrome only*. An image tile
-has no border at all: the render meets the ground directly and the gutter separates it. A box
-drawn around a picture is a second frame competing with the first.
+Borders are 1px. A card rests on a Scribe Line border and lifts to Edge under the pointer;
+dividers keep the Scribe Line always; anything you can operate is bounded by Edge.
 
 ### Named Rules
 
-**The Frameless Picture Rule.** Never put a border on a tile whose content is an image. The
-image is the edge.
+**The Inset Picture Rule.** A render sits *inset* in its tile — 86% of the well, on Bench
+Grey, with a transparent background of its own — so a wall of parts reads as objects on
+shelves rather than as a mosaic. This replaced v1's Frameless Picture Rule, which put the
+render edge to edge and argued that the image was the tile's edge. That held until the
+render stopped reaching the edge; a tile with air around its picture has no edge of its own
+left, and a hairline is what gives it one.
+
+Thumbnails are written with alpha rather than a baked-in background for the same reason:
+v1's rasterizer painted `#0a0a0c` behind every part with a comment saying it matched the
+app's surface, and when the palette moved every thumbnail in the database went on carrying
+a square that no longer matched the card under it.
 
 **The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
 Edge, not Scribe Line. A divider gets the hairline. The test is not how it looks at rest, it
@@ -355,10 +383,13 @@ is whether the outline is the only thing saying the control is there.
 - **Background:** Machined Slate; the image well inside is Anodised Black so a render with a
   transparent margin sinks into the ground rather than floating on a lighter square
 - **Shadow Strategy:** none — see Elevation & Depth
-- **Border:** none on image tiles; 1px Scribe Line on chrome panels
-- **Internal Padding:** 12px below the image well; the image itself is edge-to-edge
-- **Behaviour:** at rest a tile shows its render and its name. Metadata and per-part actions
-  appear on hover and on keyboard focus — never on hover alone, or the keyboard loses them.
+- **Border:** 1px Scribe Line at rest, Edge under the pointer; 1px Scribe Line on chrome panels
+- **Internal Padding:** the render is inset 7% on every side of its well; 12px in the footer below it
+- **Behaviour:** at rest a tile shows its render, its name, its figures and the approximate
+  label — all of it, because a mesh-derived figure is labelled *always*, and "always" had
+  quietly meant "on hover" while the label lived in a reveal panel. A click opens the
+  quick-look; the name is a link to the part's page, and that page carries every per-part
+  action so no function exists only behind a pointer.
 
 ### Inputs / Fields
 
@@ -430,8 +461,8 @@ check they opened what they meant to.
 - **Do** ship one Display line per viewport and let it be genuinely heavy (900, −0.02em).
 - **Do** label every mesh-derived measurement as approximate wherever it appears, including
   inside dialogs and tooltips. `CLAUDE.md` makes this a product rule, not a style preference.
-- **Do** self-host Inter, subset to Latin + Latin Extended-A, so Turkish and an air-gapped
-  install both work.
+- **Do** self-host Archivo and JetBrains Mono, `latin` + `latin-ext`, so Turkish and an
+  air-gapped install both work.
 - **Do** route every user-facing string through `web/src/lib/strings.ts`.
 
 ### Don't:
