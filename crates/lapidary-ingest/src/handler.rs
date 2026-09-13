@@ -632,7 +632,7 @@ impl WorkerHandler {
         if let Some(cad) = &output.metadata {
             let described = serde_json::json!({ "cad": cad });
             match PgParts(self.db.clone())
-                .set_metadata(part, &described)
+                .set_metadata(part, &described, &cad.materials)
                 .await
             {
                 Ok(()) => metadata = described,

@@ -237,6 +237,9 @@ pub struct PageQuery {
     /// format.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     format: Option<String>,
+    /// One material, exactly as the file names it. Absent is every material.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    material: Option<String>,
     /// `volume`, `surface_area`, `longest_side` or `triangles`, largest first. Absent — or
     /// anything else, for the reason `state` gives — is newest first. A search ignores it:
     /// relevance is a search's order.
@@ -277,6 +280,7 @@ pub async fn page(
         state,
         q,
         format,
+        material,
         sort,
     } = match query {
         Ok(Query(query)) => query,
@@ -306,6 +310,10 @@ pub async fn page(
     let format = format
         .map(|format| format.trim().to_ascii_lowercase())
         .filter(|format| !format.is_empty());
+    // Trimmed and nothing else: a material is named as its file names it, capitals included.
+    let material = material
+        .map(|material| material.trim().to_owned())
+        .filter(|material| !material.is_empty());
     let grid = GridQuery {
         library,
         folder: folder_id,
@@ -313,6 +321,7 @@ pub async fn page(
         limit,
         shows,
         format: format.as_deref(),
+        material: material.as_deref(),
     };
     let sort = sort
         .as_deref()
@@ -354,6 +363,8 @@ pub struct FacetValue {
 #[ts(export)]
 pub struct Facets {
     pub formats: Vec<FacetValue>,
+    /// The materials the parts' files declare. Empty for a library of meshes, which declare none.
+    pub materials: Vec<FacetValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,11 +376,17 @@ pub struct FacetQuery {
     state: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
     q: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    format: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    material: Option<String>,
 }
 
-/// `GET /api/libraries/{id}/facets` — the formats among the parts `page` would show for the
-/// same category, query and state. The grid's own `format` is not a parameter: counts that
-/// obeyed it would show every other format as zero, and nobody could choose a second one.
+/// `GET /api/libraries/{id}/facets` — the formats and materials among the parts `page` would
+/// show for the same category, query and state. Each list is narrowed by the other's choice and
+/// never by its own: counts that obeyed their own choice would show every other value as zero
+/// and nobody could choose a second one, while counts that ignored the other choice would offer
+/// parts the grid is not showing.
 pub async fn facets(
     State(app): State<AppState>,
     Path(library): Path<LibraryId>,
@@ -379,6 +396,8 @@ pub async fn facets(
         folder_id,
         state,
         q,
+        format,
+        material,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
@@ -389,18 +408,36 @@ pub async fn facets(
         Shows::Live
     };
     let q = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
-    match PgParts(app.db)
-        .format_facet(library, folder_id, q, shows)
+    let format = format
+        .map(|format| format.trim().to_ascii_lowercase())
+        .filter(|format| !format.is_empty());
+    let material = material
+        .map(|material| material.trim().to_owned())
+        .filter(|material| !material.is_empty());
+    let parts = PgParts(app.db);
+    let values = |values: Vec<lapidary_db::FacetValue>| {
+        values
+            .into_iter()
+            .map(|value| FacetValue {
+                value: value.value,
+                count: value.count,
+            })
+            .collect()
+    };
+    let formats = match parts
+        .format_facet(library, folder_id, q, shows, material.as_deref())
         .await
     {
-        Ok(values) => Json(Facets {
-            formats: values
-                .into_iter()
-                .map(|value| FacetValue {
-                    value: value.value,
-                    count: value.count,
-                })
-                .collect(),
+        Ok(formats) => formats,
+        Err(err) => return internal_error(&err, "facet query failed"),
+    };
+    match parts
+        .material_facet(library, folder_id, q, shows, format.as_deref())
+        .await
+    {
+        Ok(materials) => Json(Facets {
+            formats: values(formats),
+            materials: values(materials),
         })
         .into_response(),
         Err(err) => internal_error(&err, "facet query failed"),

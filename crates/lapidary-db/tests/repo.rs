@@ -3293,12 +3293,12 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
     let parts = PgParts(pool.clone());
 
     let facet = parts
-        .format_facet(library(), None, None, Shows::Live)
+        .format_facet(library(), None, None, Shows::Live, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [("step", Some(1)), ("stl", Some(2))]);
     let searched = parts
-        .format_facet(library(), None, Some("bracket"), Shows::Live)
+        .format_facet(library(), None, Some("bracket"), Shows::Live, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3335,7 +3335,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
 
     parts.soft_delete(plate).await.expect("removes");
     let live = parts
-        .format_facet(library(), None, None, Shows::Live)
+        .format_facet(library(), None, None, Shows::Live, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3344,7 +3344,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
         "a removed part leaves the count"
     );
     let removed = parts
-        .format_facet(library(), None, None, Shows::Removed)
+        .format_facet(library(), None, None, Shows::Removed, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&removed), [("step", Some(1))]);
@@ -3519,4 +3519,90 @@ async fn every_sort_key_orders_by_its_own_column(pool: sqlx::PgPool) {
         assert_eq!(names(&page), expected, "{sort:?}");
         assert_eq!(Sort::parse(sort.as_str()), Some(sort));
     }
+}
+
+/// The material facet counts what the grid shows: narrowed by the chosen format and never by
+/// its own choice, while the format facet is narrowed by the chosen material. The filter reaches
+/// the page, every sort and a search alike.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(
+    pool: sqlx::PgPool,
+) {
+    let ingest = PgIngest(pool.clone());
+    let cylinder = seed_with_format(&ingest, "cylinder-d22-lp-9010-00.step", 0xe1, "step").await;
+    let plate = seed_with_format(
+        &ingest,
+        "fixture-plate-assembly-lp-9000-00.step",
+        0xe2,
+        "step",
+    )
+    .await;
+    seed_with_format(&ingest, "bracket-lp-1042-03.stl", 0xe3, "stl").await;
+    let parts = PgParts(pool.clone());
+    let steel = "Stainless steel 1.4301";
+    let aluminium = "EN AW-6082 T6";
+    for (part, declared) in [(cylinder, vec![steel]), (plate, vec![steel, aluminium])] {
+        let materials: Vec<String> = declared.into_iter().map(str::to_owned).collect();
+        parts
+            .set_metadata(
+                part,
+                &serde_json::json!({ "cad": { "materials": materials } }),
+                &materials,
+            )
+            .await
+            .expect("records the materials");
+    }
+
+    let facet = parts
+        .material_facet(library(), None, None, Shows::Live, None)
+        .await
+        .expect("facet");
+    assert_eq!(pairs(&facet), [(aluminium, Some(1)), (steel, Some(2))]);
+    let chosen_stl = parts
+        .material_facet(library(), None, None, Shows::Live, Some("stl"))
+        .await
+        .expect("facet");
+    assert!(
+        chosen_stl.is_empty(),
+        "narrowed by the chosen format: an STL declares no material"
+    );
+    let formats = parts
+        .format_facet(library(), None, None, Shows::Live, Some(steel))
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&formats),
+        [("step", Some(2))],
+        "and formats are narrowed by the chosen material"
+    );
+
+    let narrowed = GridQuery {
+        material: Some(steel),
+        ..GridQuery::new(library(), 50)
+    };
+    let mut page: Vec<_> = parts
+        .page(&narrowed, Sort::Newest)
+        .await
+        .expect("page")
+        .iter()
+        .map(|row| row.summary.id.as_uuid())
+        .collect();
+    page.sort();
+    let mut expected = vec![cylinder.as_uuid(), plate.as_uuid()];
+    expected.sort();
+    assert_eq!(page, expected);
+    assert_eq!(
+        parts
+            .page(&narrowed, Sort::Volume)
+            .await
+            .expect("sorted")
+            .len(),
+        2,
+        "every sort narrows the same way"
+    );
+    assert_eq!(
+        parts.search(&narrowed, "lp").await.expect("search").len(),
+        2,
+        "and so does a search"
+    );
 }
