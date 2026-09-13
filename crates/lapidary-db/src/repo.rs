@@ -1537,6 +1537,24 @@ impl PgParts {
         Ok(result.rows_affected() > 0)
     }
 
+    /// The number a person gave this part, or `None` to clear it. Only a live part: a deleted
+    /// one reports `false`, so an edit nobody could see is a 404 rather than a silent write.
+    pub async fn set_part_number(
+        &self,
+        part: PartId,
+        number: Option<&str>,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET part_number = $2, updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(part.as_uuid())
+        .bind(number)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Undo of [`PgParts::soft_delete`], and explicit for the same reason delete is: we do
     /// not un-delete implicitly either. A scan that found the file again will not do this
     /// — a person has to ask.
