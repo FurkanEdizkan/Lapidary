@@ -148,6 +148,13 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | three.js viewer, glTF + meshopt, LOD streaming | 3 |
 | Prefetch L0 and warm the viewer on hover, L1 on inspector open | 3 |
 | Assembly tree navigation, isolate and hide | 3 |
+<!--
+  **Isolate and hide since glb-3.** Recorded 2026-09-13. The tree offers Hide/Show and Isolate per
+  node, and Show all parts, when the view drew a rung that counts triangles per placed part
+  (`extras.parts`). A branch acts on all of its placed parts. A hidden part is neither drawn nor
+  picked, so one part among 200 can be measured with the rest hidden. `ROADMAP.md` records the
+  check.
+-->
 | Point-to-point, edge length, diameter, angle | 3 |
 | Snap to analytic B-rep entities; exact nominal values | 3 |
 | Mesh-derived values visibly labelled "approximate" | 3 |
