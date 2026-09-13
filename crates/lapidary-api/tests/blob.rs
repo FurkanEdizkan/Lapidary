@@ -463,3 +463,45 @@ async fn an_assembly_tree_is_named_by_its_part_and_served_as_json(pool: sqlx::Pg
     assert_eq!(body, TREE, "the tree comes back exactly as stored");
     assert_eq!(header(&headers, "content-type"), Some("application/json"));
 }
+
+/// A rung the database points at and the store has lost is rebuilt from its source, and the
+/// answer says so. Asking twice builds it once.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_missing_rung_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPool) {
+    let elsewhere = tempfile::tempdir().expect("temp dir");
+    let served = tempfile::tempdir().expect("temp dir");
+    let hash = seed_reachable_rung(&pool, elsewhere.path()).await;
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: served.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
+    };
+
+    for _ in 0..2 {
+        let (status, _, body) = get(router(state.clone(), Role::Api), &hash.to_hex()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("being rebuilt")),
+            "{json}"
+        );
+    }
+
+    let revision: sqlx::types::Uuid = sqlx::query_scalar("SELECT id FROM revision")
+        .fetch_one(&pool)
+        .await
+        .expect("one revision");
+    let payloads: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
+            .fetch_all(&pool)
+            .await
+            .expect("derive jobs");
+    assert_eq!(
+        payloads,
+        vec![serde_json::json!({ "revision": revision.to_string(), "produce": "tessellation_l0" })],
+        "one rebuild of the lost L0"
+    );
+}

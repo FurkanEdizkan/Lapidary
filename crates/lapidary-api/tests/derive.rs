@@ -618,6 +618,25 @@ async fn a_rung_not_built_yet_is_queued_and_one_that_exists_answers_with_its_has
         serde_json::to_value(lapidary_core::DerivativeKind::TessellationL1).expect("serializes")
     );
 
+    // Asking again while that build is still queued watches the same job rather than queuing a
+    // second build of the same rung.
+    let batch = json["batchId"].clone();
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/rungs/l1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(json["batchId"], batch, "the batch already building it");
+    let derives: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'derive'")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(derives, 1, "no second build of a rung already queued");
+
     let revision = lapidary_db::PgParts(pool.clone())
         .latest_revision(part)
         .await

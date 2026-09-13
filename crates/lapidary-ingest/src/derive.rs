@@ -29,14 +29,53 @@
 //! `upsert_derivative`'s two shape guards is `Permanent` too — `classify_db` decides
 //! that, per variant, so a new call site cannot get it wrong by picking the mapper.
 
-use crate::handler::{WorkerHandler, classify_cad, classify_db, reap};
+use crate::handler::{CAD_FORMATS, WorkerHandler, classify_cad, classify_db, reap};
+use crate::scan::MESH_EXTENSIONS;
 use lapidary_cad::KernelParams;
 use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
-use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgParts, StoredBlobRow};
+use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgJobs, PgParts, StoredBlobRow};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
 
 impl WorkerHandler {
+    /// Queue a rebuild of every rung an older kernel wrote. A worker runs this as it starts.
+    ///
+    /// The version is asked per format exactly as [`derive_one`](Self::derive_one) asks it, so
+    /// a rung is stale when rebuilding it here would record a different version. A CAD format on
+    /// a worker without a CAD kernel is skipped, since this worker could not rebuild it. Never
+    /// fails: a database that will not answer at startup costs a rebuild delayed to the next
+    /// start, not a worker that never came up.
+    pub async fn enqueue_stale_rungs(&self) {
+        let jobs = PgJobs(self.db.clone());
+        for format in MESH_EXTENSIONS.iter().chain(&CAD_FORMATS) {
+            let Ok(kernel) = self.kernel_for(format) else {
+                continue;
+            };
+            let params = KernelParams {
+                linear_deflection_mm: None,
+                format: (*format).to_owned(),
+                produce: vec![DerivativeKind::TessellationL0],
+            };
+            let version = kernel.version(&params);
+            let kernel_version = format!("{} {}", version.implementation, version.version);
+            match jobs.enqueue_stale_rungs(format, &kernel_version).await {
+                Ok(0) => {}
+                Ok(queued) => tracing::info!(
+                    format = %format,
+                    queued,
+                    kernel_version = %kernel_version,
+                    "queued rebuilds of rungs an older kernel wrote"
+                ),
+                Err(error) => tracing::warn!(
+                    format = %format,
+                    %error,
+                    "could not check for rungs an older kernel wrote; the next worker start \
+                     tries again"
+                ),
+            }
+        }
+    }
+
     /// Produce `want` for `revision` and upsert it, replacing whatever was there.
     ///
     /// Returns `Outcome::Rendered` — not `Ingested`. A derive job creates no part and no

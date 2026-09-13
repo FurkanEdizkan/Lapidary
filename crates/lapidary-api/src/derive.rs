@@ -315,9 +315,8 @@ pub struct RungReady {
 /// L0 is built at ingest and the finer rungs only when something asks for them (`DATA.md` §2.1);
 /// this is how the viewer asks. A rung that already exists answers `200` with its hash, so asking
 /// again after it has landed never queues a second build. The answer otherwise is the scan's
-/// `202`, so the existing batch poll says when the rung is ready.
-// ponytail: two asks while the first build is still queued queue twice, and the second only
-// rewrites the same row. Check for a pending job first if duplicate builds show up in batches.
+/// `202`, so the existing batch poll says when the rung is ready; asking while a build is still
+/// queued answers with that build's batch rather than queuing another.
 pub async fn part_rung(
     State(state): State<AppState>,
     Path((part, level)): Path<(PartId, String)>,
@@ -340,17 +339,22 @@ pub async fn part_rung(
     };
     match parts.derivative_hash(revision, kind).await {
         Ok(Some(hash)) => Json(RungReady { hash }).into_response(),
-        Ok(None) => {
-            accept(
-                state.db,
-                library,
-                &[JobPayload::Derive {
-                    revision,
-                    produce: kind,
-                }],
-            )
+        Ok(None) => match PgJobs(state.db)
+            .enqueue_derive_if_absent(library, revision, kind)
             .await
-        }
+        {
+            // `queued: 1` whichever call queued it: one job is building this rung, and its
+            // batch is the one to poll.
+            Ok((batch_id, _)) => (
+                StatusCode::ACCEPTED,
+                Json(ScanAccepted {
+                    batch_id,
+                    queued: 1,
+                }),
+            )
+                .into_response(),
+            Err(err) => internal_error(&err, "enqueue failed"),
+        },
         Err(err) => internal_error(&err, "rung lookup failed"),
     }
 }

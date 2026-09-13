@@ -2076,6 +2076,41 @@ impl PgParts {
         detail_hash("derivative.blake3", hex)
     }
 
+    /// The rungs stored as `hash`, on parts not deleted: what the blob route rebuilds when those
+    /// bytes have gone from the store. Tessellations only, the kinds a `derive` job builds from
+    /// a source; a tree, entities or an image are not rebuilt this way.
+    pub async fn rungs_for_blob(
+        &self,
+        hash: &BlobHash,
+    ) -> Result<Vec<(LibraryId, RevisionId, DerivativeKind)>, DbError> {
+        let rungs = [
+            DerivativeKind::TessellationL0,
+            DerivativeKind::TessellationL1,
+            DerivativeKind::TessellationL2,
+        ];
+        let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+            "SELECT p.library_id, d.revision_id, d.kind FROM derivative d \
+             JOIN revision r ON r.id = d.revision_id \
+             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+             WHERE d.blake3 = $1 AND d.kind = ANY($2)",
+        )
+        .bind(hash.to_hex())
+        .bind(rungs.map(DerivativeKind::as_str).to_vec())
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(library, revision, kind)| {
+                let kind = rungs.into_iter().find(|rung| rung.as_str() == kind)?;
+                Some((
+                    LibraryId::from_uuid(library),
+                    RevisionId::from_uuid(revision),
+                    kind,
+                ))
+            })
+            .collect())
+    }
+
     pub async fn latest_revision(&self, part: PartId) -> Result<Option<RevisionId>, DbError> {
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM revision WHERE part_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",

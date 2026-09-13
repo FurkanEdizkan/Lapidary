@@ -3,7 +3,10 @@
 
 use crate::DbError;
 use jiff::Timestamp;
-use lapidary_core::{BatchId, BatchStatus, JobFailure, JobId, JobPayload, LibraryId, Outcome};
+use lapidary_core::{
+    BatchId, BatchStatus, DerivativeKind, JobFailure, JobId, JobPayload, LibraryId, Outcome,
+    RevisionId,
+};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
 use std::time::Duration;
@@ -297,6 +300,108 @@ impl PgJobs {
         .fetch_optional(&self.0)
         .await?;
         Ok(batch.map(BatchId::from_uuid))
+    }
+
+    /// Queue a build of `revision`'s `produce`, unless one is already pending or running.
+    ///
+    /// Returns the batch holding the build and whether this call queued it. A build already on
+    /// its way is not a refusal: the caller watches that batch, which is the answer it got the
+    /// first time. Best-effort in `enqueue_migration_if_absent`'s way -- two callers racing can
+    /// each see nothing and each insert -- and the second build only rewrites the same row.
+    pub async fn enqueue_derive_if_absent(
+        &self,
+        library: LibraryId,
+        revision: RevisionId,
+        produce: DerivativeKind,
+    ) -> Result<(BatchId, bool), DbError> {
+        let payload = JobPayload::Derive { revision, produce };
+        let (batch, queued): (Uuid, bool) = sqlx::query_as(
+            "WITH existing AS ( \
+                 SELECT batch_id FROM job \
+                  WHERE kind = $2 AND library_id = $1 AND payload = $3 \
+                    AND state IN ('pending', 'running') \
+                  LIMIT 1), \
+             queued AS ( \
+                 INSERT INTO job (id, batch_id, library_id, kind, payload) \
+                 SELECT uuidv7(), uuidv7(), $1, $2, $3 \
+                  WHERE NOT EXISTS (SELECT 1 FROM existing) \
+                 RETURNING batch_id) \
+             SELECT batch_id, true FROM queued UNION ALL SELECT batch_id, false FROM existing",
+        )
+        .bind(library.as_uuid())
+        .bind(payload.kind())
+        .bind(payload.to_json())
+        .fetch_one(&self.0)
+        .await?;
+
+        if queued {
+            sqlx::query("SELECT pg_notify($1, '')")
+                .bind(JOB_CHANNEL)
+                .execute(&self.0)
+                .await?;
+        }
+        Ok((BatchId::from_uuid(batch), queued))
+    }
+
+    /// Queue a rebuild of every tessellation of a `format` source that a different kernel
+    /// version wrote, and return how many were queued.
+    ///
+    /// A worker calls this as it starts, with the version its own kernel reports for `format`.
+    /// `PgParts::derivative_hash` and the grid serve a kind's row whatever wrote it, so a rung
+    /// from before a pipeline change is served forever unless something rewrites it. One batch
+    /// per library; a rung whose rebuild is already queued is left to that job; deleted parts
+    /// are skipped, as `PgParts::revisions_missing` skips them. The source format is the
+    /// revision's newest source file's, the file `PgParts::revision_source` hands a derive.
+    // ponytail: a large library queues its whole ladder at once and worker concurrency bounds
+    // the work. Trickle it if the rebuild starves ingest.
+    pub async fn enqueue_stale_rungs(
+        &self,
+        format: &str,
+        kernel_version: &str,
+    ) -> Result<u64, DbError> {
+        let rungs: Vec<&str> = [
+            DerivativeKind::TessellationL0,
+            DerivativeKind::TessellationL1,
+            DerivativeKind::TessellationL2,
+        ]
+        .map(DerivativeKind::as_str)
+        .to_vec();
+        let queued = sqlx::query(
+            "WITH stale AS ( \
+                 SELECT p.library_id, \
+                        jsonb_build_object('revision', d.revision_id, 'produce', d.kind) AS payload \
+                   FROM derivative d \
+                   JOIN revision r ON r.id = d.revision_id \
+                   JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+                   JOIN LATERAL (SELECT format FROM file \
+                                  WHERE revision_id = r.id AND role = 'source' \
+                                  ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
+                  WHERE d.kind = ANY($3) AND s.format = $1 AND d.kernel_version <> $2), \
+             batches AS ( \
+                 SELECT library_id, uuidv7() AS batch_id \
+                   FROM (SELECT DISTINCT library_id FROM stale) l) \
+             INSERT INTO job (id, batch_id, library_id, kind, payload) \
+             SELECT uuidv7(), b.batch_id, s.library_id, 'derive', s.payload \
+               FROM stale s JOIN batches b USING (library_id) \
+              WHERE NOT EXISTS (SELECT 1 FROM job j \
+                                 WHERE j.kind = 'derive' AND j.library_id = s.library_id \
+                                   AND j.payload = s.payload \
+                                   AND j.state IN ('pending', 'running'))",
+        )
+        .bind(format)
+        .bind(kernel_version)
+        .bind(&rungs)
+        .execute(&self.0)
+        .await?
+        .rows_affected();
+
+        if queued > 0 {
+            sqlx::query("SELECT pg_notify($1, '')")
+                .bind(JOB_CHANNEL)
+                .execute(&self.0)
+                .await?;
+        }
+        Ok(queued)
     }
 
     /// Claim one job, or reclaim one whose lease expired.

@@ -1,5 +1,5 @@
 use lapidary_core::{BatchId, DerivativeKind, JobId, JobPayload, LibraryId, Outcome, RevisionId};
-use lapidary_db::{JobRow, PgJobs};
+use lapidary_db::{IngestRequest, JobRow, PgIngest, PgJobs, StoredBlobRow, TessellationRow};
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -1415,4 +1415,161 @@ async fn a_failed_migration_is_not_retried_from_the_failure_list(pool: PgPool) {
         .await
         .expect("leaving a migration out is not an error");
     assert_eq!(retried, 0);
+}
+
+/// A rung asked for twice while its build is pending or running is built once, and the second
+/// ask is handed the batch already building it. Another rung of the same revision is its own job.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_rung_already_queued_hands_back_its_batch_and_queues_nothing(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let revision = RevisionId::new();
+    let (batch, queued) = jobs
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .await
+        .expect("enqueues");
+    assert!(queued);
+
+    let again = jobs
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .await
+        .expect("a pending build is not an error");
+    assert_eq!(again, (batch, false), "pending");
+
+    jobs.dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("the build is claimable");
+    let again = jobs
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .await
+        .expect("a running build is not an error");
+    assert_eq!(again, (batch, false), "running");
+
+    let (other, queued) = jobs
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL2)
+        .await
+        .expect("enqueues");
+    assert!(
+        queued && other != batch,
+        "a different rung is a different build"
+    );
+
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'derive'")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(total, 2);
+}
+
+/// Records a part from one `format` source whose L0 and thumbnail were written by
+/// `kernel_version`, and returns its revision.
+async fn part_written_by(
+    pool: &PgPool,
+    seed: u8,
+    name: &str,
+    format: &str,
+    kernel_version: &str,
+) -> RevisionId {
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: seeded(),
+            name,
+            source_path: name,
+            blob: &StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+                size_bytes: 204_800,
+                stored_bytes: 91_204,
+                zstd_level: 3,
+            },
+            measurements: &lapidary_core::MeshMeasurements {
+                bbox_mm: [61.0, 42.0, 18.5],
+                triangle_count: 48_112,
+                surface_area_mm2: 9_804.25,
+                volume_mm3: Some(21_478.5),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: Some(b"the-thumbnail"),
+            kernel_version,
+            format,
+            tessellations: &[TessellationRow {
+                kind: "tessellation_l0",
+                blob: StoredBlobRow {
+                    hash: lapidary_core::BlobHash::from_bytes([seed.wrapping_add(1); 32]),
+                    size_bytes: 11_264,
+                    stored_bytes: 11_264,
+                    zstd_level: 0,
+                },
+                grid: Some(32),
+            }],
+        })
+        .await
+        .expect("records");
+    let revision: Uuid = sqlx::query_scalar("SELECT id FROM revision WHERE part_id = $1")
+        .bind(part.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("one revision");
+    RevisionId::from_uuid(revision)
+}
+
+/// The sweep queues exactly the rungs a different version wrote from the named format -- not
+/// the thumbnail beside them, not a current rung, not another format's -- and queues nothing
+/// the second time while those builds are still pending.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) {
+    let stale = part_written_by(
+        &pool,
+        0x10,
+        "bracket-lp-1042-03.stl",
+        "stl",
+        "mesh stl-1+glb-1+cpu-1",
+    )
+    .await;
+    part_written_by(
+        &pool,
+        0x20,
+        "spur-gear-m2-20t-lp-5140-00.stl",
+        "stl",
+        "mesh stl-1+glb-2+cpu-1",
+    )
+    .await;
+    part_written_by(
+        &pool,
+        0x30,
+        "idler-bracket-lp-2210-01.obj",
+        "obj",
+        "mesh obj-1+glb-1+cpu-1",
+    )
+    .await;
+
+    let jobs = PgJobs(pool.clone());
+    let queued = jobs
+        .enqueue_stale_rungs("stl", "mesh stl-1+glb-2+cpu-1")
+        .await
+        .expect("sweeps");
+    assert_eq!(queued, 1);
+    let payloads: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
+            .fetch_all(&pool)
+            .await
+            .expect("derive jobs");
+    assert_eq!(
+        payloads,
+        vec![
+            JobPayload::Derive {
+                revision: stale,
+                produce: DerivativeKind::TessellationL0,
+            }
+            .to_json()
+        ]
+    );
+
+    let again = jobs
+        .enqueue_stale_rungs("stl", "mesh stl-1+glb-2+cpu-1")
+        .await
+        .expect("sweeps");
+    assert_eq!(again, 0, "the rebuild is already queued");
 }
