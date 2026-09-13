@@ -360,7 +360,13 @@ function Preview({ part }: { part: PartDetailData }) {
   }
   return (
     <Suspense fallback={<div className={FRAME}>{poster}</div>}>
-      <Viewer part={part} poster={poster} />
+      {/*
+        Keyed by part: the quick look and the part page both hand the same Preview a different
+        part without unmounting it, and a view kept across parts keeps the last part's framing,
+        its measuring tool and its picks, which would then be measured against the new part's
+        entities. A new rung of the same part keeps the key, so it swaps in without a jump.
+      */}
+      <Viewer key={part.id} part={part} poster={poster} />
     </Suspense>
   )
 }
