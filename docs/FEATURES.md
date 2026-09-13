@@ -160,6 +160,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Mesh-derived values visibly labelled "approximate" | 3 |
 | Wall thickness | 3 |
 | Section plane | 5 |
+<!--
+  **Early, recorded 2026-09-14.** A cut along X, Y or Z across the part's box, moved with a slider
+  and flipped. Picks and wall-thickness rays count only what the cut left drawn. The cut is open:
+  behind it only surfaces facing the viewer are drawn, so a solid reads as its outline and the walls
+  of its holes, not as a filled face. `ROADMAP.md` Phase 5 records the check.
+-->
 | PMI / GD&T display from AP242 | 5 |
 <!--
   **Listed since bridge 6.** Recorded 2026-09-13. Dimensions with their bounds, geometric

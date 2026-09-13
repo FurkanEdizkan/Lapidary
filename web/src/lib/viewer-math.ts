@@ -77,3 +77,35 @@ export function visibleRanges(parts: readonly number[], hidden: ReadonlySet<numb
   })
   return ranges
 }
+
+/** The axes a section can cut across. */
+export const AXES = ['x', 'y', 'z'] as const
+export type Axis = (typeof AXES)[number]
+
+/** A cut across the part: along which axis, where across the part's box from 0 to 1, and which side stays. */
+export type Section = { axis: Axis; at: number; flip: boolean }
+
+/** A plane as three's `Plane` holds one: a point `p` lies on it where `normal · p + constant` is 0. */
+export type PlaneLike = { normal: Vec3; constant: number }
+
+/**
+ * The plane a section cuts along, across a box. three leaves out whatever is on a plane's negative
+ * side, so the normal points at what stays: down the axis unless flipped, keeping what is below the
+ * cut, and up it when flipped.
+ */
+export function sectionPlane(axis: Axis, at: number, flip: boolean, min: Vec3, max: Vec3): PlaneLike {
+  const index = axis === 'x' ? 0 : axis === 'y' ? 1 : 2
+  const position = min[index] + (max[index] - min[index]) * at
+  const sign = flip ? 1 : -1
+  const normal: Vec3 = [index === 0 ? sign : 0, index === 1 ? sign : 0, index === 2 ? sign : 0]
+  return { normal, constant: -sign * position }
+}
+
+/**
+ * Whether a point is on the side of a section's plane that is drawn, give or take a micrometre so a
+ * face lying in the plane still counts. three's raycaster ignores clipping, so a pick asks this.
+ */
+export function kept(plane: PlaneLike, point: Vec3): boolean {
+  const [x, y, z] = plane.normal
+  return x * point[0] + y * point[1] + z * point[2] + plane.constant >= -1e-3
+}

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { VIEW_DIR, frameBox, hasWebGL, visibleRanges } from './viewer-math'
+import { AXES, VIEW_DIR, frameBox, hasWebGL, kept, sectionPlane, visibleRanges } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -35,4 +35,24 @@ test('hidden parts are left out of the ranges drawn, and the visible ones betwee
   ])
   expect(visibleRanges([2, 0, 4], new Set([0]))).toEqual([{ start: 6, count: 12 }])
   expect(visibleRanges([2, 3, 4], new Set([0, 1, 2]))).toEqual([])
+})
+
+test('a section keeps what is below the cut on its axis, and flipped keeps what is above', () => {
+  // The flange's box, 30 mm tall: a cut halfway sits at 15 mm.
+  const min = [-40, -40, 0] as const
+  const max = [40, 40, 30] as const
+  const below = sectionPlane('z', 0.5, false, min, max)
+  expect(kept(below, [0, 0, 14])).toBe(true)
+  expect(kept(below, [0, 0, 16])).toBe(false)
+  const above = sectionPlane('z', 0.5, true, min, max)
+  expect(kept(above, [0, 0, 14])).toBe(false)
+  expect(kept(above, [0, 0, 16])).toBe(true)
+  // A point on the cut itself is kept from either side, so a face lying in the plane still counts.
+  expect(kept(below, [0, 0, 15])).toBe(true)
+  expect(kept(above, [0, 0, 15])).toBe(true)
+  // Each axis cuts across its own extent.
+  expect(kept(sectionPlane('x', 0.25, false, min, max), [-21, 0, 0])).toBe(true)
+  expect(kept(sectionPlane('x', 0.25, false, min, max), [-19, 0, 0])).toBe(false)
+  expect(kept(sectionPlane('y', 1, false, min, max), [0, 40, 0])).toBe(true)
+  expect(AXES).toEqual(['x', 'y', 'z'])
 })

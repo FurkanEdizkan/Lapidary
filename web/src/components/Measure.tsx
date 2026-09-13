@@ -1,7 +1,11 @@
 import { TOOLS, type Tool } from '../lib/measure'
 import { strings } from '../lib/strings'
 import type { Approximate } from '../lib/types'
+import { AXES, type Section } from '../lib/viewer-math'
 import { Figure } from './Figure'
+
+const CONTROL =
+  'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]'
 
 /**
  * The measuring tools under the 3D view, and the line saying what to click or what was measured.
@@ -32,7 +36,7 @@ export function MeasureBar({
             type="button"
             aria-pressed={tool === option}
             onClick={() => onTool(tool === option ? null : option)}
-            className="ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
+            className={CONTROL}
           >
             {strings.measure.tools[option]}
           </button>
@@ -52,6 +56,58 @@ export function MeasureBar({
             </>
           )}
         </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The section plane's controls, under the measuring tools: an axis to cut across, where along it,
+ * and which side stays. Every change hands back the whole cut, or `null` for none.
+ */
+export function SectionBar({
+  section,
+  onSection,
+}: {
+  section: Section | null
+  onSection: (section: Section | null) => void
+}) {
+  return (
+    <div role="toolbar" aria-label={strings.section.label} className="mt-2 flex flex-wrap items-center gap-1">
+      <button type="button" aria-pressed={section === null} onClick={() => onSection(null)} className={CONTROL}>
+        {strings.section.off}
+      </button>
+      {AXES.map((axis) => (
+        <button
+          key={axis}
+          type="button"
+          aria-pressed={section?.axis === axis}
+          onClick={() => onSection({ axis, at: section?.at ?? 0.5, flip: section?.flip ?? false })}
+          className={CONTROL}
+        >
+          {strings.section.axes[axis]}
+        </button>
+      ))}
+      {section === null ? null : (
+        <>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            value={Math.round(section.at * 1000)}
+            aria-label={strings.section.position}
+            onChange={(event) => onSection({ ...section, at: Number(event.target.value) / 1000 })}
+            className="mx-1 min-w-24 flex-1 accent-[var(--color-accent)]"
+          />
+          <button
+            type="button"
+            aria-pressed={section.flip}
+            onClick={() => onSection({ ...section, flip: !section.flip })}
+            className={CONTROL}
+          >
+            {strings.section.flip}
+          </button>
+        </>
       )}
     </div>
   )

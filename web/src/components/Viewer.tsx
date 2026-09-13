@@ -12,6 +12,7 @@ import {
   Mesh,
   MeshStandardMaterial,
   OrthographicCamera,
+  Plane,
   Points,
   PointsMaterial,
   Raycaster,
@@ -29,8 +30,17 @@ import { blobUrl, fetchBatchStatus, fetchEntities, fetchStructure, requestRung }
 import { PICKS, measure, nearestCorner, placeEntities, type Pick, type Tool } from '../lib/measure'
 import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
-import { LIGHT_DIR, frameBox, visibleRanges, type Vec3 } from '../lib/viewer-math'
-import { MeasureBar } from './Measure'
+import {
+  LIGHT_DIR,
+  frameBox,
+  kept,
+  sectionPlane,
+  visibleRanges,
+  type PlaneLike,
+  type Section,
+  type Vec3,
+} from '../lib/viewer-math'
+import { MeasureBar, SectionBar } from './Measure'
 
 type View = {
   show: (model: Object3D) => void
@@ -41,6 +51,8 @@ type View = {
   mark: (points: readonly Vec3[]) => void
   /** Leave these parts out, by their depth-first place in the tree; kept for every rung shown after. */
   hide: (hidden: ReadonlySet<number>) => void
+  /** Cut the part along a plane across its box, or stop cutting; kept for every rung shown after. */
+  section: (section: Section | null) => void
   dispose: () => void
 }
 
@@ -67,6 +79,9 @@ type Kit = { renderer: WebGLRenderer; material: MeshStandardMaterial; markMateri
 function kit(): Kit {
   const renderer = new WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  // On for every view, so a section needs nothing of its own. With no plane on a material it changes
+  // no program, so `prepare` still compiles what a view draws.
+  renderer.localClippingEnabled = true
   return {
     renderer,
     material: new MeshStandardMaterial({ color: new Color(0xb8bcc4), roughness: 0.75, flatShading: true }),
@@ -138,6 +153,10 @@ export function prepare(): Promise<void> {
  * triangle's corners lie on (`measure.ts`), and only L2's corners lie on the B-rep. Once anyone
  * picks a tool, L2 stays, so the marks never sit on a coarser surface than the one they were put on.
  *
+ * A section cuts the part along a plane across its box. It changes what is drawn and what a pick
+ * can meet, and nothing else: a reading comes from the geometry its picks landed on, which a cut
+ * never moves. The cut is open, so it shows the part's inside surfaces rather than a filled face.
+ *
  * An assembly's parts can be hidden. `hidden` names them by their depth-first place in the tree,
  * and `onParts` says how many placed parts the rung drawn counts, so the tree offers to hide parts
  * only when the view can.
@@ -168,6 +187,7 @@ export default function Viewer({
   const [fine, setFine] = useState(false)
   const [fineFailed, setFineFailed] = useState(false)
   const [parts, setParts] = useState<number | null>(null)
+  const [section, setSection] = useState<Section | null>(null)
   const queryClient = useQueryClient()
   const hash = (fine ? part.tessellationL2 : null) ?? part.tessellationL1 ?? part.tessellationL0
 
@@ -198,6 +218,9 @@ export default function Viewer({
   useEffect(() => {
     view.current?.hide(hidden)
   }, [hidden])
+  useEffect(() => {
+    view.current?.section(section)
+  }, [section])
   useEffect(() => {
     onParts?.(parts)
   }, [parts, onParts])
@@ -344,7 +367,12 @@ export default function Viewer({
           </p>
         ) : null}
       </div>
-      {failed ? null : <MeasureBar tool={tool} onTool={choose} reading={reading} note={note} />}
+      {failed ? null : (
+        <>
+          <MeasureBar tool={tool} onTool={choose} reading={reading} note={note} />
+          <SectionBar section={section} onSection={setSection} />
+        </>
+      )}
     </div>
   )
 }
@@ -385,6 +413,24 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   let first = true
   let model: Object3D | null = null
   let hiddenParts = NONE
+  // The part's box, from the first rung, which a section cuts across; the cut, and its plane.
+  let bounds: { min: Vec3; max: Vec3 } | null = null
+  let cut: Section | null = null
+  let cutPlane: PlaneLike | null = null
+  const clip = new Plane()
+  const applyCut = () => {
+    const wasCut = (material.clippingPlanes?.length ?? 0) > 0
+    cutPlane = cut === null || bounds === null ? null : sectionPlane(cut.axis, cut.at, cut.flip, bounds.min, bounds.max)
+    if (cutPlane !== null) {
+      clip.normal.set(...cutPlane.normal)
+      clip.constant = cutPlane.constant
+    }
+    material.clippingPlanes = cutPlane === null ? null : [clip]
+    // three compiles a program per count of planes; moving the one plane is only a uniform.
+    if (wasCut !== (cutPlane !== null)) material.needsUpdate = true
+  }
+  // three's raycaster meets what a section has cut away, so a hit counts only on the side still drawn.
+  const drawn = (hit: Intersection) => cutPlane === null || kept(cutPlane, tuple(hit.point))
   // A hidden part is a gap in the index ranges drawn. three draws, and a raycast meets, only a
   // mesh's groups when its material is an array, so a hidden part is neither seen nor picked.
   const applyHidden = () => {
@@ -437,7 +483,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       // under someone who has already turned the part.
       if (framing) {
         const box = new Box3().setFromObject(next)
-        const frame = frameBox(box.min.toArray() as Vec3, box.max.toArray() as Vec3)
+        bounds = { min: box.min.toArray() as Vec3, max: box.max.toArray() as Vec3 }
+        applyCut()
+        const frame = frameBox(bounds.min, bounds.max)
         camera.position.set(...frame.position)
         camera.near = frame.near
         camera.far = frame.far
@@ -453,7 +501,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       const box = renderer.domElement.getBoundingClientRect()
       const ndc = new Vector2(((x - box.left) / box.width) * 2 - 1, 1 - ((y - box.top) / box.height) * 2)
       raycaster.setFromCamera(ndc, camera)
-      return picked(raycaster.intersectObject(model, true)[0])
+      return picked(raycaster.intersectObject(model, true).find(drawn))
     },
     through(from) {
       if (model === null) return null
@@ -463,7 +511,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       material.side = BackSide
       const hits = raycaster.intersectObject(model, true)
       material.side = FrontSide
-      return picked(hits.find((hit) => hit.distance > 1e-3))
+      return picked(hits.find((hit) => hit.distance > 1e-3 && drawn(hit)))
     },
     mark(points) {
       // A new geometry rather than a new attribute on the old one, whose bounding sphere would stay
@@ -477,11 +525,19 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       applyHidden()
       if (model !== null) render()
     },
+    section(next) {
+      cut = next
+      applyCut()
+      if (model !== null) render()
+    },
     dispose() {
       resize.disconnect()
       controls.dispose()
       if (model !== null) disposeModel(model)
       markers.geometry.dispose()
+      // The session's material outlives this view, and the next view starts uncut.
+      cut = null
+      applyCut()
       renderer.domElement.remove()
       if (own) {
         markMaterial.dispose()
