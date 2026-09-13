@@ -296,3 +296,91 @@ async fn the_assembly_rung_counts_every_placed_parts_triangles() {
         "walking the tree meshes exactly what the whole shape did"
     );
 }
+
+/// The PMI fixture's annotations come back as they were written, each on the face it was put on:
+/// the diameter with its bounds, flatness on the top face, and perpendicularity to datum A, which
+/// is the only way OCCT reads a datum at all. A file with no PMI reports none.
+#[tokio::test]
+#[ignore = "needs occt-bridge and OCCT: run cargo xtask verify occt"]
+async fn an_ap242_files_dimensions_tolerances_and_datums_are_read_onto_their_faces() {
+    let kernel = kernel();
+    let asked = params("step", &[DerivativeKind::TessellationL0]);
+    let out = kernel
+        .process(&fixture("cylinder-d22-pmi-lp-9012-00.step"), &asked)
+        .await
+        .expect("converts");
+    let pmi = out.pmi.as_ref().expect("the file specifies PMI");
+    // What measurement reads on the face an annotation names: the kind of surface, and for a
+    // plane the height it sits at.
+    let surface = |named: &lapidary_core::PmiFace| {
+        out.entities.iter().find_map(|entity| match entity {
+            Entity::Cylinder {
+                prototype, face, ..
+            } if named.face == Some(*face) && *prototype == named.prototype => {
+                Some(("cylinder", 0.0))
+            }
+            Entity::Plane {
+                prototype,
+                face,
+                origin,
+                ..
+            } if named.face == Some(*face) && *prototype == named.prototype => {
+                Some(("plane", origin[2]))
+            }
+            _ => None,
+        })
+    };
+
+    let [diameter] = pmi.dimensions.as_slice() else {
+        panic!("one dimension, got {:?}", pmi.dimensions)
+    };
+    assert_eq!(
+        (
+            diameter.kind.as_str(),
+            diameter.value,
+            diameter.upper,
+            diameter.lower
+        ),
+        ("diameter", 22.0, Some(0.05), Some(0.0))
+    );
+    assert_eq!(surface(&diameter.faces[0]), Some(("cylinder", 0.0)));
+
+    let tolerances: Vec<(&str, f64, &[String])> = pmi
+        .tolerances
+        .iter()
+        .map(|t| (t.kind.as_str(), t.value, t.datums.as_slice()))
+        .collect();
+    assert_eq!(
+        tolerances,
+        [
+            ("flatness", 0.02, &[][..]),
+            ("perpendicularity", 0.05, &["A".to_owned()][..])
+        ]
+    );
+    assert_eq!(
+        surface(&pmi.tolerances[0].faces[0]),
+        Some(("plane", 30.0)),
+        "flatness is on the top face"
+    );
+    assert_eq!(
+        surface(&pmi.tolerances[1].faces[0]),
+        Some(("cylinder", 0.0)),
+        "and perpendicularity on the cylinder"
+    );
+
+    let [datum] = pmi.datums.as_slice() else {
+        panic!("one datum, got {:?}", pmi.datums)
+    };
+    assert_eq!(datum.name, "A");
+    assert_eq!(
+        surface(&datum.faces[0]),
+        Some(("plane", 0.0)),
+        "datum A is the base"
+    );
+
+    let plain = kernel
+        .process(&fixture("cylinder-d22-lp-9010-00.step"), &asked)
+        .await
+        .expect("converts");
+    assert_eq!(plain.pmi, None, "a file with no PMI reports none");
+}

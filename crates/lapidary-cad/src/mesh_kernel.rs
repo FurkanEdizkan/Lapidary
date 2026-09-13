@@ -90,7 +90,7 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
             }),
             // A mesh has no assembly and no analytic surfaces: nothing to make, and
             // nothing that went wrong.
-            DerivativeKind::Structure | DerivativeKind::Entities => Ok(()),
+            DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => Ok(()),
         };
         if let Err(reason) = made {
             unproduced.push(Unproduced {
@@ -110,6 +110,7 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
         provenance: crate::MeasurementProvenance::TESSELLATED,
         structure: None,
         metadata: None,
+        pmi: None,
     }
 }
 

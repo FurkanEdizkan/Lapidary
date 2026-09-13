@@ -88,6 +88,11 @@ tessellationL1: BlobHash | null, tessellationL2: BlobHash | null,
  */
 entities: BlobHash | null, 
 /**
+ * The dimensions, tolerances and datums the file specifies, as JSON at `GET /api/blob/{blake3}`.
+ * `None` for a mesh, and for a CAD file whose exporter wrote only geometry.
+ */
+pmi: BlobHash | null, 
+/**
  * The model's own directory in the store, relative to the storage root.
  *
  * Relative and never an absolute host path: the api runs in a container and its view

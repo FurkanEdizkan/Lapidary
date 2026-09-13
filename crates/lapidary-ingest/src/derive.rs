@@ -145,7 +145,7 @@ impl WorkerHandler {
         match want {
             // ponytail: written at ingest only; nothing enqueues these. Derive them here when
             // eviction starts removing them.
-            DerivativeKind::Structure | DerivativeKind::Entities => {
+            DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => {
                 return Err(HandlerError::Permanent {
                     message: format!(
                         "The {kind} of revision {revision} is written when its file is \

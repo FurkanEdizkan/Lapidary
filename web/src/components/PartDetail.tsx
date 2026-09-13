@@ -4,8 +4,10 @@ import {
   addPartSource,
   blobUrl,
   downloadUrl,
+  fetchEntities,
   fetchPartImages,
   fetchPartSources,
+  fetchPmi,
   fetchStructure,
   setImageFraming,
   setPartTags,
@@ -20,6 +22,7 @@ import type {
   PartDetail as PartDetailData,
   PartId,
   PartImage,
+  PmiFace,
 } from '../lib/types'
 
 /**
@@ -634,6 +637,8 @@ export function Detail({
         <Assembly hash={part.structure} hidden={hidden} onHide={setHidden} drawn={drawn} />
       )}
 
+      <Specified part={part} />
+
       <Section title={strings.detail.file}>
         <Row label={strings.detail.format}>
           {part.sourceFormat === null ? strings.detail.unknown : part.sourceFormat}
@@ -718,6 +723,82 @@ export function Detail({
  * collapsed. The top level starts open, since it is the assembly itself; everything under it
  * starts closed. A single part with nothing under it is not a tree worth a section.
  */
+/**
+ * What the file specifies about the part's sizes and form: its dimensions, geometric tolerances and
+ * datums. Said as specified, never through `Figure`: a designer's value is neither a measurement
+ * nor approximate, and the ≈ mark would claim it was one or the other. Each annotation says which
+ * face it is on by the entity measurement reads there, when the part has entities.
+ */
+function Specified({ part }: { part: PartDetailData }) {
+  const pmi = useQuery({
+    queryKey: ['pmi', part.pmi],
+    queryFn: () => fetchPmi(part.pmi as BlobHash),
+    enabled: part.pmi !== null,
+  })
+  const entities = useQuery({
+    queryKey: ['entities', part.entities],
+    queryFn: () => fetchEntities(part.entities as BlobHash),
+    enabled: part.pmi !== null && part.entities !== null,
+  })
+  if (part.pmi === null) return null
+  const heading = (
+    <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+      {strings.pmi.title}
+    </h3>
+  )
+  if (pmi.isError) {
+    return (
+      <section className="mb-6">
+        {heading}
+        <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.pmi.failed}
+        </p>
+      </section>
+    )
+  }
+  if (pmi.data === undefined) return null
+  const where = (faces: readonly PmiFace[]) =>
+    faces
+      .map((face) => {
+        const entity = (entities.data ?? []).find(
+          (candidate) =>
+            'face' in candidate && candidate.prototype === face.prototype && candidate.face === face.face,
+        )
+        return strings.pmi.face(face.face === null ? null : (entity?.type ?? ''))
+      })
+      .join(', ')
+  const rows = [
+    ...pmi.data.dimensions.map((d) => ({
+      what: strings.pmi.dimension(d.type, d.value, d.upper, d.lower),
+      on: where(d.faces),
+    })),
+    ...pmi.data.tolerances.map((t) => ({
+      what: strings.pmi.tolerance(t.type, t.value, t.datums),
+      on: where(t.faces),
+    })),
+    ...pmi.data.datums.map((d) => ({ what: strings.pmi.datum(d.name), on: where(d.faces) })),
+  ]
+  return (
+    <section className="mb-6">
+      {heading}
+      <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.pmi.note}</p>
+      <ul role="list" className="space-y-0.5 text-sm">
+        {rows.map((row, index) => (
+          <li key={index}>
+            {row.what}
+            {row.on === '' ? null : (
+              <span className="text-[var(--color-muted)]">
+                {' · '}
+                {row.on}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 const NONE: ReadonlySet<number> = new Set()
 
 const CONTROL =

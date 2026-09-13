@@ -27,6 +27,7 @@ Writes five files into `<dir>` and prints a one-line JSON summary on stdout
 | `parts.json` | How many of `mesh.stl`'s triangles each placed part has, in the order `structure.json` lists its leaves: the first count is the first leaf's triangles, and so on. The GLB writer keeps each part's triangles together and says so in `extras.parts`, which is how the viewer hides one part. |
 | `structure.json` | The assembly tree: names, a prototype id per node, and each node's 4×4 transform relative to its parent. `parts` counts the leaves. |
 | `entities.json` | Analytic faces (plane, cylinder, cone, sphere, torus) and circular edges, **once per prototype**, in that prototype's own coordinates. `structure.json` places them. Two hundred instances of eight parts would otherwise repeat the same geometry two hundred times. |
+| `pmi.json` | The dimensions, geometric tolerances and datums an AP242 file carries as semantic PMI, each naming the prototype and 1-based face it applies to, numbered as `entities.json` numbers faces. Datums come back only through a tolerance that refers to them, because that is how OCCT reads one. What is drawn in 3D beside them is not read. |
 | `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. Faces that arrive without a solid are sewn first, and only shells that close are measured, so `volume_mm3` is `null` exactly when nothing in the file closes. |
 | `header.json` | What the file says about itself: the STEP header (file name, time stamp, authors, organizations, originating system, preprocessor, descriptions, schemas) or the IGES global section, and the names of the materials XCAF reads. Empty fields are `null` or `[]`; nothing is inferred. |
 
@@ -53,6 +54,7 @@ geometry.
 | `fixture-plate-assembly-lp-9000-00.step` | The Phase 0 exit fixture: a welding fixture of **200 placed parts** from 8 prototypes through three levels of assembly — plate, 4 levelling feet, 12 bracket stations of 12 parts each, a rail of 6 V-blocks and a rack of 45 stop pins. AP242. |
 | `cylinder-d22-lp-9010-00.step` | A 22.000 mm cylinder, 30 mm long — the one Phase 3's exit measures — carrying the material "Stainless steel 1.4301", so a fixture exercises what `header.json` reads. |
 | `cylinder-d22-inch-units-lp-9011-00.step` | The same cylinder, written in inches, to prove units are read from the file. |
+| `cylinder-d22-pmi-lp-9012-00.step` | The same cylinder with the PMI a drawing would give it, as AP242 semantic data: a diameter of 22 mm +0.05/0 on the cylindrical face, datum A on the base, flatness 0.02 mm on the top face and perpendicularity 0.05 mm of the cylindrical face to A. OCCT wrote it and OCCT reads it, so it proves the path, not other CAD systems' files. |
 | `angle-bracket-60x60x40-lp-9004-00.igs` | One part as IGES. |
 
 ## How it is built

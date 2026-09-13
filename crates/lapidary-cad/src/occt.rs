@@ -3,7 +3,7 @@
 //! A process and not a linked library, so an OCCT crash takes down one job instead of the
 //! worker (`sidecar/occt-bridge/README.md`). What crosses the boundary is files: the input
 //! bytes go into a scratch directory, and `occt-bridge convert` writes four files back —
-//! `mesh.stl`, `parts.json`, `measurements.json`, `entities.json` and `structure.json`.
+//! `mesh.stl`, `parts.json`, `pmi.json`, `measurements.json`, `entities.json` and `structure.json`.
 //!
 //! The mesh goes through [`MeshKernel`] unchanged, so a STEP part's LOD rungs and thumbnail
 //! come from the same clustering, rasterizer and GLB writer as an STL's. What the B-rep knows
@@ -198,6 +198,10 @@ impl Kernel for OcctKernel {
         out.entities = entities.into_entities();
         out.structure = Some(read_json::<AssemblyTree>(&out_dir, "structure.json").await?);
         out.metadata = Some(read_json::<CadMetadata>(&out_dir, "header.json").await?);
+        // Kept only when the file specified something: ingest stores no PMI derivative for a
+        // file that has none, rather than an empty one a page would render as a heading.
+        let pmi: lapidary_core::Pmi = read_json(&out_dir, "pmi.json").await?;
+        out.pmi = (!pmi.is_empty()).then_some(pmi);
         Ok(out)
     }
 }
@@ -440,6 +444,7 @@ case "$1" in
       *)
         cp "BRACKET" "$out/mesh.stl"
         echo '[20]' > "$out/parts.json"
+        echo '{"dimensions":[],"tolerances":[],"datums":[]}' > "$out/pmi.json"
         echo '{"units":"mm","solids":1,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
         echo '{"units":"mm","prototypes":[{"prototype":"0:1:1:1","faces":[{"face":1,"type":"cylinder","radius":11,"origin":[0,0,0],"axis":[0,0,1]},{"face":2,"type":"plane","origin":[0,0,30],"normal":[0,0,1]}],"circles":[{"edge":1,"radius":11,"center":[0,0,30],"normal":[0,0,1]}]}]}' > "$out/entities.json"
         echo '{"units":"mm","roots":[{"name":"cylinder-d22-lp-9010-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"parts":1,"prototypes":1}' > "$out/structure.json"

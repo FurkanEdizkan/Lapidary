@@ -1211,6 +1211,67 @@ export const strings = {
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,
   },
+  /**
+   * What a CAD file specifies about the part's sizes and form. These are a designer's values, so
+   * they are said as specified rather than as measured, and carry no ≈.
+   */
+  pmi: {
+    title: 'Dimensions and tolerances',
+    note: 'As the file specifies them: the designer’s values, not measurements.',
+    failed: 'Could not load the dimensions and tolerances. Reload the page to try again.',
+    /** A size and its bounds, e.g. `⌀22 mm +0.05 / 0`. */
+    dimension: (kind: string, value: number, upper: number | null, lower: number | null) => {
+      const symbol: Record<string, string> = {
+        diameter: '⌀',
+        radius: 'R',
+        spherical_diameter: 'S⌀',
+        spherical_radius: 'SR',
+        angle: '∠',
+      }
+      const unit = kind === 'angle' ? '°' : ' mm'
+      const size = `${symbol[kind] ?? ''}${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}${unit}`
+      if (upper === null || lower === null) return size
+      const bound = (deviation: number) =>
+        deviation === 0 ? '0' : `${deviation > 0 ? '+' : '−'}${Math.abs(deviation).toLocaleString('en-US', { maximumFractionDigits: 4 })}`
+      return `${size} ${bound(upper)} / ${bound(lower)}`
+    },
+    /** A geometric tolerance by its ISO 1101 symbol and name, its zone, and the datums it is measured from. */
+    tolerance: (kind: string, value: number, datums: readonly string[]) => {
+      const named: Record<string, [string, string]> = {
+        flatness: ['⏥', 'Flatness'],
+        straightness: ['⏤', 'Straightness'],
+        circularity: ['○', 'Circularity'],
+        cylindricity: ['⌭', 'Cylindricity'],
+        profile_of_line: ['⌒', 'Profile of a line'],
+        profile_of_surface: ['⌓', 'Profile of a surface'],
+        parallelism: ['∥', 'Parallelism'],
+        perpendicularity: ['⟂', 'Perpendicularity'],
+        angularity: ['∠', 'Angularity'],
+        position: ['⌖', 'Position'],
+        concentricity: ['◎', 'Concentricity'],
+        coaxiality: ['◎', 'Coaxiality'],
+        symmetry: ['⌯', 'Symmetry'],
+        circular_runout: ['↗', 'Circular run-out'],
+        total_runout: ['⌰', 'Total run-out'],
+      }
+      const [symbol, name] = named[kind] ?? ['', 'Tolerance']
+      const zone = `${value.toLocaleString('en-US', { maximumFractionDigits: 4 })} mm`
+      const from = datums.length === 0 ? '' : ` to ${datums.join(', ')}`
+      return `${symbol} ${name} ${zone}${from}`.trim()
+    },
+    datum: (name: string) => `Datum ${name}`,
+    /** Where an annotation applies: the kind of face measurement reads there, or the whole part. */
+    face: (surface: string | null) =>
+      surface === null
+        ? 'the whole part'
+        : ({
+            plane: 'a planar face',
+            cylinder: 'a cylindrical face',
+            cone: 'a conical face',
+            sphere: 'a spherical face',
+            torus: 'a toroidal face',
+          }[surface] ?? 'a face'),
+  },
   tags: {
     /** What people call a part beyond its name: a project, a use, a shelf. */
     title: 'Tags',
