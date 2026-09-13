@@ -109,6 +109,11 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
       >
         {filling ? strings.images.fitWhole : strings.images.fitFill}
       </button>
+      {reframe.isError ? (
+        <p role="alert" className="w-24 text-center text-[10px] leading-snug text-[var(--color-muted)]">
+          {strings.images.reframeFailed}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -387,7 +392,22 @@ export function Detail({
 
       <Sources part={part.id} recordable={recordable} />
 
-      <Section title={strings.detail.geometry}>
+      <Section
+        title={strings.detail.geometry}
+        note={
+          // The key explains the mark, so it is there exactly when a mark is.
+          [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2].some(
+            (figure) => figure?.approximate === true,
+          ) ? (
+            <>
+              <span aria-hidden="true" className="mr-1">
+                {strings.detail.approximate}
+              </span>
+              <span>{strings.detail.approximateKey}</span>
+            </>
+          ) : undefined
+        }
+      >
         <Row label={strings.detail.triangles}>
           {part.triangleCount === null
             ? strings.detail.unknown
@@ -517,7 +537,12 @@ function Figure<T>({
     >
       {render(figure.value)}
       {figure.approximate ? (
-        <span className="ml-1 text-[var(--color-muted)]">{strings.detail.approximate}</span>
+        <>
+          <span aria-hidden="true" className="ml-1 text-[var(--color-muted)]">
+            {strings.detail.approximate}
+          </span>
+          <span className="sr-only">{strings.detail.approximateSpoken}</span>
+        </>
       ) : null}
     </span>
   )
@@ -536,12 +561,23 @@ function Figure<T>({
  * confirming it would teach people to click through the dialog that purge actually needs.
  */
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({
+  title,
+  note,
+  children,
+}: {
+  title: string
+  note?: ReactNode
+  children: ReactNode
+}) {
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
         {title}
       </h3>
+      {note === undefined ? null : (
+        <p className="mb-2 text-xs text-[var(--color-muted)]">{note}</p>
+      )}
       <dl className="grid grid-cols-[minmax(8rem,max-content)_1fr] gap-x-6 gap-y-1 text-sm">
         {children}
       </dl>

@@ -232,6 +232,23 @@ export const strings = {
     /** Nothing in the drop was worth sending, which is a success and reads as one. */
     nothingToDo: 'Every file in that folder is already in this library.',
     /**
+     * An upload's batch, once its files are committed. Its own copy and not the scan's: an
+     * upload has no walk job, so `scan.walking` said "Reading the folder…" for as long as the
+     * files were adding, and `scan.finished` called files nobody scanned a scan.
+     */
+    batchRunning: (done: number, total: number) =>
+      `Adding — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
+    batchFinished: (ingested: number, skipped: number) =>
+      skipped === 0
+        ? `Upload complete — ${ingested.toLocaleString('en-US')} added.`
+        : `Upload complete — ${ingested.toLocaleString('en-US')} added, ${skipped.toLocaleString('en-US')} already here.`,
+    /**
+     * The upload batch this page started cannot be read back. Never a mistyped id — it came
+     * from the commit's `202` — so the advice is to reload, as `render.unknown`'s is.
+     */
+    batchUnknown:
+      'Could not read how the upload is going. The files are queued and continue on the server; reload to pick it up again.',
+    /**
      * The transfer failed part-way. Deliberately says the upload can be repeated rather
      * than that it can be *resumed*: the client resumes automatically from whatever the
      * server holds, so what the user has to do is the same gesture again, and explaining
@@ -266,6 +283,19 @@ export const strings = {
     approximateTitle:
       'Derived from tessellated geometry rather than read from an analytic CAD entity.',
     exactTitle: 'Read from an analytic CAD entity.',
+    /**
+     * What a screen reader hears at each ≈, which is hidden from it. `CLAUDE.md` asks for the
+     * word; the symbol is its compact form for the eye. The leading space keeps it from
+     * running into the figure it follows.
+     */
+    approximateSpoken: ' approximate',
+    /**
+     * One line under the Geometry heading whenever a figure there is mesh-derived, so the ≈
+     * each carries is explained in words rather than left as a symbol to learn. A key and
+     * not a badge over the section: the marks stay per figure, for the reason `approximate`
+     * gives.
+     */
+    approximateKey: 'Approximate — measured from the mesh, not read from CAD geometry.',
     geometry: 'Geometry',
     file: 'File',
     size: 'Size',
@@ -709,7 +739,7 @@ export const strings = {
     loading: 'Loading categories…',
     failed:
       'Could not load the categories in this library. Check that the api service is running, then reload.',
-    empty: 'No categories yet — they appear when you scan a folder.',
+    empty: 'No categories yet. Scanning or uploading a folder makes them, or add one with New category.',
     moveTo: 'Move to…',
     /** The accessible name, since the visible label is identical on every card. */
     moveToFor: (name: string) => `Move ${name} to another category`,
@@ -1071,6 +1101,12 @@ export const strings = {
      */
     fitFill: 'Fill the frame',
     fitWhole: 'Show the whole picture',
+    /**
+     * A re-frame the server refused. The picture only changes once the server accepts, so
+     * without this line a failure is a control that silently does nothing. Short, because
+     * it sits under a tile a quarter of the width of this sentence.
+     */
+    reframeFailed: 'Could not change the framing. Try again.',
     /** What clicking the picture does, for a screen reader that cannot see the crop. */
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,

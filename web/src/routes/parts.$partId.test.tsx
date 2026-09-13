@@ -128,6 +128,41 @@ test('a tessellated figure is labelled and an analytic one is not', async () => 
   expect(within(area).getByText(strings.detail.approximate)).toBeDefined()
 })
 
+test('a tessellated figure says approximate in words, on screen and to a screen reader', async () => {
+  // `CLAUDE.md`: mesh-derived measurements are labelled "approximate", always. A bare ≈
+  // with a tooltip is a symbol to learn on screen and, to a screen reader, a title
+  // attribute it may never announce.
+  stub({
+    ...PART,
+    volumeMm3: { value: 21478.5, approximate: false },
+    surfaceAreaMm2: { value: 9804.25, approximate: true },
+  })
+  renderPage()
+
+  expect(await screen.findByText(strings.detail.approximateKey)).toBeDefined()
+  const area = await row(strings.detail.surfaceArea)
+  expect(within(area).getByText(strings.detail.approximateSpoken.trim())).toBeDefined()
+  expect(within(area).getByText(strings.detail.approximate).getAttribute('aria-hidden')).toBe(
+    'true',
+  )
+  const volume = await row(strings.detail.volume)
+  expect(within(volume).queryByText(strings.detail.approximateSpoken.trim())).toBeNull()
+})
+
+test('a part whose figures are all analytic shows no approximate key', async () => {
+  // The key explains a mark. With no mark on the page it would be a claim about nothing.
+  stub({
+    ...PART,
+    bboxMm: null,
+    volumeMm3: { value: 21478.5, approximate: false },
+    surfaceAreaMm2: { value: 9804.25, approximate: false },
+  })
+  renderPage()
+
+  await row(strings.detail.surfaceArea)
+  expect(screen.queryByText(strings.detail.approximateKey)).toBeNull()
+})
+
 test('an open mesh says why it has no volume rather than showing a blank', async () => {
   // "Measurement must not lie" includes declining to measure. A blank here reads as zero,
   // and zero is a number this part does not have.
@@ -396,6 +431,43 @@ test('clicking a picture sets its focal point', async () => {
 
   await waitFor(() => expect(patched).not.toBeNull())
   expect(patched).toEqual({ fit: 'cover', focusX: 0.6, focusY: 0.5 })
+})
+
+/**
+ * A refused re-frame says so. The picture only changes once the server accepts, so a
+ * failure with no message is a control that silently does nothing — which is how a live
+ * stack's failed requests looked from the page.
+ */
+test('a re-frame the server refuses says so and leaves the picture as it was', async () => {
+  const image = {
+    id: '01931b6e-0000-7000-8000-0000000000aa',
+    src: 'data:image/webp;base64,UklGRg==',
+    origin: 'uploaded' as const,
+    sourceUrl: null,
+    fit: 'cover' as const,
+    focusX: 0.5,
+    focusY: 0.5,
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'PATCH') return { ok: false, status: 503, json: async () => ({}) }
+      if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
+      if (url.endsWith('/sources')) return { ok: true, status: 200, json: async () => [] }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  const control = await screen.findByRole('button', {
+    name: strings.images.focusLabel(strings.images.alt(PART.name, 0)),
+  })
+  fireEvent.keyDown(control, { key: 'ArrowRight' })
+
+  const said = await screen.findByText(strings.images.reframeFailed)
+  expect(said.getAttribute('role')).toBe('alert')
+  const picture = screen.getByAltText(strings.images.alt(PART.name, 0))
+  expect(picture.style.objectPosition).toBe('50% 50%')
 })
 
 /**
