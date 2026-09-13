@@ -23,6 +23,7 @@ import {
   type Object3D,
 } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { blobUrl, fetchBatchStatus, fetchEntities, fetchStructure, requestRung } from '../lib/api'
 import { PICKS, measure, nearestCorner, placeEntities, type Pick, type Tool } from '../lib/measure'
@@ -88,7 +89,9 @@ export default function Viewer({ part, poster }: { part: PartDetail; poster: Rea
     if (view.current === null) view.current = createView(node, () => setPainted(true))
     const current = view.current
     let stale = false
+    // Rungs are written with `EXT_meshopt_compression` (`glb.rs`); the decoder is in this chunk only.
     new GLTFLoader()
+      .setMeshoptDecoder(MeshoptDecoder)
       .loadAsync(blobUrl(hash))
       .then((gltf) => {
         if (stale) return

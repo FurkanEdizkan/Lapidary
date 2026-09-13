@@ -184,9 +184,9 @@ says the same of the kernel.
 **Exit:** measure a known cylinder from STEP and get the exact nominal diameter, not a
 tessellated approximation. Part open to first paint under 120 ms warm.
 
-**Measured 2026-09-13, both clauses pass. The phase is not finished:** the rungs are still
-uncompressed glTF, and `EXT_meshopt_compression` stays only if it beats the numbers below.
-Opening the quick look prefetches its neighbours' L0, not their L1 (`routes/index.tsx` says
+**Measured 2026-09-13, both clauses pass. The phase is not finished:** the rungs moved to
+`EXT_meshopt_compression` after this measurement, and the addendum below measures that against
+these numbers. Opening the quick look prefetches its neighbours' L0, not their L1 (`routes/index.tsx` says
 why), and the assembly tree does not isolate or hide parts yet.
 
 | Clause | Measured | Verdict |
@@ -238,6 +238,54 @@ transforms three levels down, not just a part at the origin.
 exact only between two planes, and a wall only between two parallel planes. Cones, spheres and
 tori are read but not snapped to. Surfaces match untrimmed, so a pick cannot say which of two
 coplanar faces it hit; the value is the same from either.
+
+**Addendum, the same day: meshopt, measured and kept.** `a591bf1` writes every rung with
+`EXT_meshopt_compression`, losslessly. It does not use `KHR_mesh_quantization`, whose 16-bit grid
+would move the assembly's corners 0.005 mm off the surfaces measurement snaps to. The kernel now
+reads `…+glb-2+cpu-1`. The fixtures are too small for a codec to show anything, so one large real
+mesh was added: `Gauss Vertical Arc.stl` from the owner's library, 432,344 triangles. It was timed
+at glb-1 first; then the same stack was reset at `a591bf1`, re-ingested and timed again.
+
+| | glb-1 | glb-2 |
+|---|---|---|
+| Gauss rungs, L0 / L1 / L2 | 81 kB / 339 kB / 7.78 MB | 26 kB / 101 kB / 2.19 MB |
+| Assembly rungs, L0 / L1 / L2 | 54 kB / 174 kB / 518 kB | 15 kB / 45 kB / 125 kB |
+| Gauss L2, cold, 100 Mbit | 867 / 863 ms | **268 / 261 ms** |
+| Gauss L2, cold, unthrottled | 58 / 50 ms | 39 / 31 ms |
+| Gauss L2, warm | 47 / 44 ms | 32 / 27 ms |
+| Gauss open → first frame, cold, 100 Mbit | 619 / 405 ms | 380 / 379 ms |
+| Gauss open → first frame, cold, unthrottled | 434 / 510 ms | 386 / 405 ms |
+| Gauss open → first frame, warm | 88 / 46 ms | 93 / 45 ms |
+| Ten parts reopened, warm (the clause above) | 86.6 / 54.5 ms | 84.1 / 45.6 ms |
+| First open in a session | 511 / 826 ms | 587 / 820 ms |
+
+How to read the table:
+- **Timings** are SwiftShader / GPU medians: of three runs, of five for warm Gauss opens, and of
+  twenty reopens for the ten parts.
+- **L2** is the time from pressing a measuring tool to the moment the measuring line stops saying
+  it is loading the full-detail mesh: fetched, decoded, parsed and drawn once.
+- **100 Mbit** is Chrome's own network emulation, 12.5 MB/s with 2 ms of latency.
+
+**What changed besides time.**
+- **Sizes.** Every rung over 10 kB shrank to 0.24–0.36 of its glb-1 size, and the smaller ones to
+  0.39–0.62. The 28-triangle bracket grew 7 %, from 1,096 to 1,168 bytes, to the codec's headers.
+- **The viewer chunk** grew by the decoder, 641 → 668 kB (161 → 169 kB gzip). That is the likeliest
+  cause of SwiftShader's slower first open in a session; the GPU's did not move.
+- **Snapping still holds.** This time the rungs were decoded by meshoptimizer's JavaScript decoder
+  rather than the Rust encoder's own: all 128 and all 28,576 L2 triangles land on an entity, and
+  Chrome reads the cylinder at 22.000 mm, exact.
+
+**Kept**, because the large mesh's L2 arrives three times sooner over a network. Two warm costs did
+move, both on SwiftShader, and both are most likely the decoder's 26 kB: a session's first open,
+511 → 587 ms, and the warm Gauss open, 88 → 93 ms.
+
+**What it does not change.**
+- **Old rungs stay.** Rungs already stored as glb-1 still load: the decoder only runs when a file
+  asks for it. Nothing rewrites them either, because `PgParts::derivative_hash` takes a kind's
+  newest row whatever kernel wrote it, so a library ingested before `a591bf1` keeps its larger rungs.
+- **L0 and L1 could shrink further.** Nobody measures on them, so they could be quantized; they
+  are not yet. `write_glb` does not know which rung it writes, so doing it means passing the
+  `Lod` from `cluster()` down, and L2 must stay lossless.
 
 ---
 
