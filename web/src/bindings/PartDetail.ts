@@ -70,6 +70,11 @@ sourceFormat: string | null, sourceBytes: number | null, storedBytes: number | n
  */
 tessellationL0: BlobHash | null, tessellationL0Bytes: number | null, 
 /**
+ * The assembly tree a CAD kernel read, as JSON at `GET /api/blob/{blake3}`. `None` for a
+ * mesh, which has no assembly.
+ */
+structure: BlobHash | null, 
+/**
  * The model's own directory in the store, relative to the storage root.
  *
  * Relative and never an absolute host path: the api runs in a container and its view

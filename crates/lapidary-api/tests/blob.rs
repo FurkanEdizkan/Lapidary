@@ -386,3 +386,80 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
          tiered out has to know it"
     );
 }
+
+/// A two-part assembly's tree, as ingest stores it: JSON, not a GLB.
+const TREE: &[u8] = br#"{"roots":[{"name":"fixture-plate-assembly-lp-9000-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"children":[]}],"parts":1,"prototypes":1}"#;
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_assembly_tree_is_named_by_its_part_and_served_as_json(pool: sqlx::PgPool) {
+    // The page reads the tree the way it reads every derivative: the detail route names the
+    // hash, and the blob route serves the bytes. Served as `model/gltf-binary`, as every
+    // non-WebP derivative was, a browser would be told a JSON document is a 3D model.
+    let root = tempfile::tempdir().expect("temp dir");
+    let stored = DerivativeStore::open(root.path())
+        .put(TREE)
+        .expect("stores the tree");
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name: "fixture-plate-assembly-lp-9000-00",
+            source_path: "fixture-plate-assembly-lp-9000-00.step",
+            blob: &StoredBlobRow {
+                hash: source_hash(),
+                size_bytes: 204_800,
+                stored_bytes: 204_800,
+                zstd_level: 0,
+            },
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::ANALYTIC,
+            thumbnail_webp: None,
+            kernel_version: "occt occt-8.0.1-bridge-1+deflection-0.1+glb-1+cpu-1",
+            format: "step",
+            tessellations: &[TessellationRow {
+                kind: "structure",
+                blob: StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                },
+                grid: None,
+            }],
+        })
+        .await
+        .expect("records");
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    );
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/parts/{part}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let detail: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(detail.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("the detail is JSON");
+    assert_eq!(detail["structure"], stored.hash.to_hex());
+
+    let (status, headers, body) = get(app, &stored.hash.to_hex()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, TREE, "the tree comes back exactly as stored");
+    assert_eq!(header(&headers, "content-type"), Some("application/json"));
+}

@@ -1,4 +1,5 @@
 import type {
+  AssemblyTree,
   BatchId,
   BatchStatus,
   BlobHash,
@@ -854,6 +855,19 @@ export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
  */
 export function blobUrl(hash: BlobHash): string {
   return `/api/blob/${encodeURIComponent(hash)}`
+}
+
+/**
+ * The assembly tree a CAD kernel read, from `GET /api/blob/{blake3}`: the JSON ingest stored
+ * beside the part's rungs. A fetch rather than a URL, unlike the download links, because the
+ * page draws the tree instead of handing the bytes to the browser.
+ */
+export async function fetchStructure(hash: BlobHash): Promise<AssemblyTree> {
+  const response = await fetch(blobUrl(hash))
+  if (!response.ok) {
+    throw new Error(`assembly tree returned ${response.status}`)
+  }
+  return (await response.json()) as AssemblyTree
 }
 
 /**

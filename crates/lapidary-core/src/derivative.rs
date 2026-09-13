@@ -1,4 +1,4 @@
-//! The four things a kernel call can produce, and the strings `derivative.kind` holds.
+//! The things a kernel call can produce, and the strings `derivative.kind` holds.
 
 /// Also the discriminator a `derive` job carries, which is why it lives here rather than
 /// in `lapidary-cad`: the job queue names it and the database stores it.
@@ -10,15 +10,21 @@ pub enum DerivativeKind {
     TessellationL0,
     TessellationL1,
     TessellationL2,
+    /// The assembly tree a CAD kernel read, as JSON. A mesh has none.
+    Structure,
+    /// The analytic faces and circular edges a CAD kernel read, as JSON. A mesh has none.
+    Entities,
 }
 
 impl DerivativeKind {
     /// Every kind, ascending — for a caller that genuinely wants all four.
-    pub const ALL: [DerivativeKind; 4] = [
+    pub const ALL: [DerivativeKind; 6] = [
         DerivativeKind::Thumbnail,
         DerivativeKind::TessellationL0,
         DerivativeKind::TessellationL1,
         DerivativeKind::TessellationL2,
+        DerivativeKind::Structure,
+        DerivativeKind::Entities,
     ];
 
     /// Exactly the strings already in `derivative.kind`. Changing one orphans every row
@@ -29,6 +35,8 @@ impl DerivativeKind {
             DerivativeKind::TessellationL0 => "tessellation_l0",
             DerivativeKind::TessellationL1 => "tessellation_l1",
             DerivativeKind::TessellationL2 => "tessellation_l2",
+            DerivativeKind::Structure => "structure",
+            DerivativeKind::Entities => "entities",
         }
     }
 }
@@ -39,11 +47,13 @@ mod tests {
 
     #[test]
     fn the_kind_strings_match_what_the_database_holds() {
-        // These four strings are in `derivative.kind` on every row ever written.
+        // These strings are in `derivative.kind` on every row ever written.
         assert_eq!(DerivativeKind::Thumbnail.as_str(), "thumbnail");
         assert_eq!(DerivativeKind::TessellationL0.as_str(), "tessellation_l0");
         assert_eq!(DerivativeKind::TessellationL1.as_str(), "tessellation_l1");
         assert_eq!(DerivativeKind::TessellationL2.as_str(), "tessellation_l2");
+        assert_eq!(DerivativeKind::Structure.as_str(), "structure");
+        assert_eq!(DerivativeKind::Entities.as_str(), "entities");
     }
 
     #[test]
@@ -68,6 +78,8 @@ mod tests {
                 DerivativeKind::TessellationL0,
                 DerivativeKind::TessellationL1,
                 DerivativeKind::TessellationL2,
+                DerivativeKind::Structure,
+                DerivativeKind::Entities,
             ]
         );
     }

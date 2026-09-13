@@ -9,7 +9,7 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { PartPage } from './parts.$partId'
 import { strings } from '../lib/strings'
-import type { PartDetail } from '../lib/types'
+import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
 
 /**
  * The part page, which is where `CLAUDE.md`'s measurement rules actually reach a screen.
@@ -44,6 +44,7 @@ const PART: PartDetail = {
   compressed: true,
   tessellationL0: '3333333333333333333333333333333333333333333333333333333333333333',
   tessellationL0Bytes: 7500,
+  structure: null,
   directory: 'libraries/default/Brackets/nema-17-motor-mount',
   storagePath: 'libraries/default/Brackets/nema-17-motor-mount/nema-17-motor-mount.stl',
   createdAt: '2026-09-06T10:00:00Z',
@@ -637,3 +638,72 @@ test('a gallery that could not be loaded does not read as a part with no picture
 
   await screen.findByText(strings.images.galleryFailed)
 })
+
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as AssemblyNode['transform']
+
+/** A leaf: one placed part. */
+const leaf = (name: string, prototype: string): AssemblyNode => ({
+  name,
+  prototype,
+  transform: IDENTITY,
+  children: [],
+})
+
+test('an assembly shows its tree, each branch a disclosure the keyboard can open', async () => {
+  const structure = '4444444444444444444444444444444444444444444444444444444444444444'
+  const tree: AssemblyTree = {
+    roots: [
+      {
+        name: 'fixture-plate-assembly-lp-9000-00',
+        prototype: '0:1:1:1',
+        transform: IDENTITY,
+        children: [
+          leaf('base-plate-lp-9001-00', '0:1:1:2'),
+          {
+            name: 'rail-lp-9002-00',
+            prototype: '0:1:1:3',
+            transform: IDENTITY,
+            children: [leaf('m6-screw-lp-9005-00', '0:1:1:4')],
+          },
+        ],
+      },
+    ],
+    parts: 2,
+    prototypes: 2,
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url === `/api/blob/${structure}`) return { ok: true, status: 200, json: async () => tree }
+      if (url.endsWith('/images') || url.endsWith('/sources')) {
+        return { ok: true, status: 200, json: async () => [] }
+      }
+      return { ok: true, status: 200, json: async () => ({ ...PART, structure }) }
+    }),
+  )
+  renderPage()
+
+  const heading = await screen.findByRole('heading', { name: strings.detail.assembly })
+  const section = heading.closest('section') as HTMLElement
+  expect(within(section).getByText(strings.detail.assemblyCounts(2, 2))).toBeTruthy()
+
+  // A branch is a native disclosure: its summary takes focus, and Enter or Space opens it.
+  const rail = within(section).getByText('rail-lp-9002-00')
+  expect(rail.tagName).toBe('SUMMARY')
+  expect(within(section).getByText('m6-screw-lp-9005-00').closest('details')).toBe(
+    rail.closest('details'),
+  )
+  const root = within(section).getByText('fixture-plate-assembly-lp-9000-00').closest('details')
+  expect(root?.open).toBe(true)
+  expect(rail.closest('details')?.open).toBe(false)
+})
+
+test('a mesh has no assembly section and never asks for one', async () => {
+  stub(PART)
+  renderPage()
+  await screen.findByRole('heading', { name: strings.detail.geometry })
+  expect(screen.queryByRole('heading', { name: strings.detail.assembly })).toBeNull()
+  const asked = vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/api/blob/'))
+  expect(asked).toBe(false)
+})
+

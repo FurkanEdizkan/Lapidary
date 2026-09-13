@@ -464,11 +464,45 @@ impl WorkerHandler {
         // 5. The rungs go to disk before either branch's transaction, for the same reason
         // the source blob does: a filesystem write cannot be rolled back by Postgres, so
         // the bytes must be there before a row is allowed to point at them.
-        let mut rungs = Vec::with_capacity(output.tessellations.len());
+        //
+        // The assembly tree and the analytic entities a CAD kernel read go the same way, as
+        // JSON beside the rungs. A mesh has neither, and a CAD part with no analytic surface
+        // has no entities row rather than an empty one.
+        let unserializable = |e: serde_json::Error| HandlerError::Permanent {
+            message: format!(
+                "Could not store what the CAD kernel read from {source_path} — {e}. This is a \
+                 bug in Lapidary; please report it with the file."
+            ),
+        };
+        let structure = output
+            .structure
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(unserializable)?;
+        let entities = (!output.entities.is_empty())
+            .then(|| serde_json::to_vec(&output.entities))
+            .transpose()
+            .map_err(unserializable)?;
+        let hashed = output
+            .tessellations
+            .iter()
+            .map(|rung| (rung.lod.as_kind(), rung.glb.as_slice(), rung.grid))
+            .chain(
+                structure
+                    .as_deref()
+                    .map(|json| (DerivativeKind::Structure.as_str(), json, None)),
+            )
+            .chain(
+                entities
+                    .as_deref()
+                    .map(|json| (DerivativeKind::Entities.as_str(), json, None)),
+            );
+        let mut rungs = Vec::with_capacity(output.tessellations.len() + 2);
         let mut reapable = Vec::new();
-        for rung in &output.tessellations {
+        for (kind, bytes, grid) in hashed {
             let stored = derivatives
-                .put(&rung.glb)
+                .put(bytes)
                 .map_err(|e| HandlerError::Transient {
                     message: e.to_string(),
                 })?;
@@ -481,14 +515,14 @@ impl WorkerHandler {
                 reapable.push(stored.hash);
             }
             rungs.push(TessellationRow {
-                kind: rung.lod.as_kind(),
+                kind,
                 blob: StoredBlobRow {
                     hash: stored.hash,
                     size_bytes: stored.size_bytes,
                     stored_bytes: stored.stored_bytes,
                     zstd_level: stored.zstd_level,
                 },
-                grid: rung.grid,
+                grid,
             });
         }
 

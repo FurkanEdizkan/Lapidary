@@ -95,6 +95,7 @@ impl Kernel for MockKernel {
                 DerivativeKind::TessellationL0 => tessellations.push(canned_rung(Lod::L0)),
                 DerivativeKind::TessellationL1 => tessellations.push(canned_rung(Lod::L1)),
                 DerivativeKind::TessellationL2 => tessellations.push(canned_rung(Lod::L2)),
+                DerivativeKind::Structure | DerivativeKind::Entities => {}
             }
         }
         Ok(KernelOutput {

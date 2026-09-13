@@ -132,7 +132,34 @@ fn content_type(bytes: &[u8]) -> &'static str {
     // writes and the only image format this application stores.
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         "image/webp"
-    } else {
+    } else if bytes.starts_with(b"glTF") {
         "model/gltf-binary"
+    } else if matches!(bytes.first(), Some(b'{' | b'[')) {
+        // The assembly tree and the entities ingest writes, which it writes with no
+        // leading whitespace.
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_type;
+
+    #[test]
+    fn each_stored_kind_is_named_for_what_it_is() {
+        assert_eq!(content_type(b"RIFF\x10\0\0\0WEBPVP8 "), "image/webp");
+        assert_eq!(
+            content_type(b"glTF\x02\0\0\0\x10\0\0\0"),
+            "model/gltf-binary"
+        );
+        assert_eq!(content_type(br#"{"roots":[]}"#), "application/json");
+        assert_eq!(content_type(br#"[{"type":"plane"}]"#), "application/json");
+        assert_eq!(
+            content_type(b"pretend-this-is-a-glb"),
+            "application/octet-stream",
+            "bytes nothing recognises are not claimed to be a model"
+        );
     }
 }

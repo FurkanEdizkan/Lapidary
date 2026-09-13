@@ -9,6 +9,8 @@
  * staleness gate exists to prevent.
  */
 export type { Approximate } from '../bindings/Approximate'
+export type { AssemblyNode } from '../bindings/AssemblyNode'
+export type { AssemblyTree } from '../bindings/AssemblyTree'
 export type { BatchId } from '../bindings/BatchId'
 export type { BatchStatus } from '../bindings/BatchStatus'
 export type { BlobHash } from '../bindings/BlobHash'

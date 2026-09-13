@@ -97,6 +97,9 @@ pub struct PartDetail {
     pub tessellation_l0: Option<BlobHash>,
     #[ts(type = "number | null")]
     pub tessellation_l0_bytes: Option<u64>,
+    /// The assembly tree a CAD kernel read, as JSON at `GET /api/blob/{blake3}`. `None` for a
+    /// mesh, which has no assembly.
+    pub structure: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root.
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
@@ -174,6 +177,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         compressed: row.compressed,
         tessellation_l0: row.tessellation_l0,
         tessellation_l0_bytes: row.tessellation_l0_bytes,
+        structure: row.structure,
         directory: row.directory,
         storage_path: row.storage_path,
         created_at: row.created_at,

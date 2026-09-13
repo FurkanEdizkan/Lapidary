@@ -1,5 +1,5 @@
 use crate::cluster::Tessellation;
-pub use lapidary_core::MeasurementProvenance;
+pub use lapidary_core::{AssemblyNode, AssemblyTree, MeasurementProvenance};
 use lapidary_core::{DerivativeKind, MeshMeasurements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -44,7 +44,8 @@ pub struct KernelParams {
 /// Each entity is in its prototype's own coordinates, once per prototype rather than once per
 /// placed instance: `KernelOutput::structure` holds the transforms that place it. `face` and
 /// `edge` are 1-based indices into the prototype's faces and edges in OCCT's map order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Entity {
     Plane {
         prototype: String,
@@ -88,27 +89,6 @@ pub enum Entity {
         center: [f64; 3],
         normal: [f64; 3],
     },
-}
-
-/// An assembly's tree as the CAD file describes it. `None` on [`KernelOutput::structure`]
-/// for a mesh, which has no tree to describe.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct AssemblyTree {
-    pub roots: Vec<AssemblyNode>,
-    /// Leaves: placed parts, counting every instance.
-    pub parts: u32,
-    /// Distinct part definitions the leaves are instances of.
-    pub prototypes: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct AssemblyNode {
-    pub name: String,
-    pub prototype: String,
-    /// Row-major 4×4, relative to the parent node.
-    pub transform: [f64; 16],
-    #[serde(default)]
-    pub children: Vec<AssemblyNode>,
 }
 
 /// Everything one kernel call produces for one file.

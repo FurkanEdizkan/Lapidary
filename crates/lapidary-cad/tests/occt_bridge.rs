@@ -172,6 +172,22 @@ async fn the_phase_0_exit_converts_a_200_part_assembly_to_gltf_tree_and_entities
     let structure = out.structure.as_ref().expect("an assembly has a tree");
     assert_eq!(structure.parts, 200, "every placed part");
     assert_eq!(structure.prototypes, 8);
+    // Ingest stores the tree by serializing this value, and the page reads it back as the same
+    // type. What `FakeCad` cannot show is that a real bridge tree survives the trip.
+    let stored = serde_json::to_vec(structure).expect("the tree serializes");
+    let read_back: lapidary_cad::AssemblyTree =
+        serde_json::from_slice(&stored).expect("and reads back");
+    assert_eq!(
+        &read_back, structure,
+        "the stored tree is the tree the bridge read"
+    );
+    let entities = serde_json::to_value(&out.entities).expect("the entities serialize");
+    assert!(
+        entities
+            .as_array()
+            .is_some_and(|all| all.iter().all(|entity| entity["type"].is_string())),
+        "every stored entity names its kind"
+    );
     let glb_bytes: usize = out.tessellations.iter().map(|rung| rung.glb.len()).sum();
     assert!(glb_bytes > 0, "glTF: the L0 rung");
     assert!(!out.entities.is_empty(), "entities");
