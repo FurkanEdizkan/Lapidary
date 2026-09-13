@@ -53,7 +53,7 @@ export function useFolders(library: LibraryId) {
 }
 
 /** The three `409` reasons that cannot be fixed by acknowledging — see `refusalMessage`. */
-type TerminalRefusal = Exclude<MoveRefusalReason, 'duplicateName'>
+export type TerminalRefusal = Exclude<MoveRefusalReason, 'duplicateName'>
 
 /**
  * Which string names a terminal refusal. `duplicateName` never reaches here — it is the
@@ -61,7 +61,7 @@ type TerminalRefusal = Exclude<MoveRefusalReason, 'duplicateName'>
  * over what is left without needing a fallback case that could paper over a fifth reason
  * arriving later unnoticed.
  */
-function refusalMessage(reason: TerminalRefusal): string {
+export function refusalMessage(reason: TerminalRefusal): string {
   switch (reason) {
     case 'migrationPending':
       // Same wording the card's own "not movable yet" state uses — the two places a user
@@ -695,6 +695,54 @@ export function MovePartDialog({
         somewhere, and a chooser that acts on Enter before a category is picked moves it
         somewhere nobody chose.
       */}
+      <div className="mt-4 flex justify-end">
+        <DialogButton onClick={onClose} autoFocus>
+          {strings.folders.cancel}
+        </DialogButton>
+      </div>
+    </Dialog>
+  )
+}
+
+/**
+ * `MovePartDialog`'s category list for a selection of parts. It picks a target and hands it
+ * back; the grid's bulk loop does the moving, so the one-part dialog's duplicate-name
+ * confirmation does not come with it — see `Index`'s `moveSelected`.
+ */
+export function PickCategoryDialog({
+  title,
+  library,
+  onPick,
+  onClose,
+}: {
+  title: string
+  library: LibraryId
+  onPick: (folder: FolderId | null) => void
+  onClose: () => void
+}) {
+  const folders = useFolders(library)
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <ul role="list" className="mt-3 max-h-72 space-y-1 overflow-y-auto">
+        <li>
+          <MoveRow name={strings.folders.root} depth={0} busy={false} onMove={() => onPick(null)} />
+        </li>
+        {folders.isPending ? (
+          <li className="text-sm text-[var(--color-muted)]">{strings.folders.loading}</li>
+        ) : folders.isError ? (
+          <li className="text-sm text-[var(--color-muted)]">{strings.folders.failed}</li>
+        ) : folders.data.length === 0 ? (
+          <li className="text-sm text-[var(--color-muted)]">{strings.folders.empty}</li>
+        ) : (
+          <MoveLevel
+            folders={folders.data}
+            parentId={null}
+            depth={1}
+            busy={false}
+            onMove={(folder) => onPick(folder.id)}
+          />
+        )}
+      </ul>
       <div className="mt-4 flex justify-end">
         <DialogButton onClick={onClose} autoFocus>
           {strings.folders.cancel}

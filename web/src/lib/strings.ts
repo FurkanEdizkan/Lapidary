@@ -93,6 +93,37 @@ export const strings = {
     layout: 'Layout',
     upload: 'Upload a folder',
   },
+  /**
+   * Bulk selection on the grid. Off until the toolbar's Select is pressed, so a card keeps its
+   * one tab stop the rest of the time.
+   */
+  selection: {
+    toggle: 'Select',
+    bar: 'Selected parts',
+    /** Each checkbox names its part: forty checkboxes all called "Select" say nothing. */
+    selectPart: (name: string) => `Select ${name}`,
+    count: (count: number) =>
+      count === 1 ? '1 part selected' : `${count.toLocaleString('en-US')} parts selected`,
+    clear: 'Clear selection',
+    /**
+     * "selected parts" rather than a bare "parts": `no-bare-strings.test.ts` treats every fixed
+     * piece of a template here as prose, and a lone "parts" would match the grid's own
+     * `['parts', library]` cache keys.
+     */
+    moveTitle: (count: number) =>
+      count === 1
+        ? 'Move the selected part'
+        : `Move the ${count.toLocaleString('en-US')} selected parts`,
+    working: (done: number, total: number) =>
+      `${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} done…`,
+    /**
+     * After a bulk action, the parts it did not change and why, one line each. The rest were
+     * changed; the ones listed stay selected, so trying again is one press.
+     */
+    failedHeading: (count: number) =>
+      count === 1 ? '1 part was not changed:' : `${count.toLocaleString('en-US')} parts were not changed:`,
+    failure: (name: string, reason: string) => `${name} — ${reason}`,
+  },
   layouts: {
     detail: 'Detail',
     gallery: 'Gallery',
