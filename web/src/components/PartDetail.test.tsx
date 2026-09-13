@@ -3,9 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
 import { Detail, warmViewer } from './PartDetail'
 import { strings } from '../lib/strings'
-import type { PartDetail } from '../lib/types'
+import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
 
-const { mounts, prepare } = vi.hoisted(() => ({ mounts: [] as string[], prepare: vi.fn(async () => {}) }))
+const { mounts, prepare, drawn } = vi.hoisted(() => ({
+  mounts: [] as string[],
+  prepare: vi.fn(async () => {}),
+  // What the stand-in view reports drawing, and the parts it was last told to hide.
+  drawn: { parts: 3 as number | null, hidden: [] as number[] },
+}))
 
 // jsdom draws no WebGL, so the view is a stand-in that records each time it is mounted.
 vi.mock('../lib/viewer-math', async (original) => ({
@@ -15,10 +20,22 @@ vi.mock('../lib/viewer-math', async (original) => ({
 vi.mock('./Viewer', async () => {
   const { useEffect } = await import('react')
   return {
-    default: function Viewer({ part }: { part: PartDetail }) {
+    default: function Viewer({
+      part,
+      hidden,
+      onParts,
+    }: {
+      part: PartDetail
+      hidden?: ReadonlySet<number>
+      onParts?: (parts: number | null) => void
+    }) {
       useEffect(() => {
         mounts.push(part.id)
       }, [])
+      useEffect(() => {
+        onParts?.(drawn.parts)
+      }, [onParts])
+      drawn.hidden = [...(hidden ?? [])].sort((a, b) => a - b)
       return null
     },
     prepare,
@@ -121,5 +138,74 @@ test('tags are added and removed where the part is recordable, and only listed e
   expect(screen.getByText('welding jig')).toBeTruthy()
   expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
   expect(screen.queryByLabelText(strings.tags.field)).toBeNull()
+  vi.unstubAllGlobals()
+})
+
+const IDENTITY: AssemblyNode['transform'] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+const leaf = (name: string): AssemblyNode => ({ name, prototype: '0:1:1:2', transform: IDENTITY, children: [] })
+/** A plate beside a station of two parts: three placed parts, the station's the second and third. */
+const FIXTURE: AssemblyTree = {
+  roots: [
+    {
+      name: 'fixture-plate-assembly-lp-9000-00',
+      prototype: '0:1:1:1',
+      transform: IDENTITY,
+      children: [
+        leaf('base-plate-lp-9001-00'),
+        {
+          name: 'bracket-station-lp-9002-00',
+          prototype: '0:1:1:3',
+          transform: IDENTITY,
+          children: [leaf('angle-bracket-lp-9004-00'), leaf('stop-pin-d10x20-lp-9007-00')],
+        },
+      ],
+    },
+  ],
+  parts: 3,
+  prototypes: 3,
+}
+
+function renderAssembly() {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => (url.startsWith('/api/blob/') ? FIXTURE : []),
+    })),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...BRACKET, structure: '6666666666666666666666666666666666666666666666666666666666666666' }} />
+    </QueryClientProvider>,
+  )
+}
+
+/** A branch hides and shows all of its parts, Isolate hides every other, and Show all undoes either. */
+test('the assembly tree hides, shows and isolates parts in the view', async () => {
+  drawn.parts = 3
+  renderAssembly()
+  const station = 'bracket-station-lp-9002-00'
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.detail.hidePart(station) }))
+  await waitFor(() => expect(drawn.hidden).toEqual([1, 2]))
+  fireEvent.click(screen.getByRole('button', { name: strings.detail.showPart(station) }))
+  await waitFor(() => expect(drawn.hidden).toEqual([]))
+
+  fireEvent.click(screen.getByRole('button', { name: strings.detail.isolatePart('stop-pin-d10x20-lp-9007-00') }))
+  await waitFor(() => expect(drawn.hidden).toEqual([0, 1]))
+  fireEvent.click(screen.getByRole('button', { name: strings.detail.showAll }))
+  await waitFor(() => expect(drawn.hidden).toEqual([]))
+  vi.unstubAllGlobals()
+})
+
+/** A view that drew no parts to hide, such as an older rung, leaves the tree without the buttons. */
+test('the tree offers no hiding when the view did not draw its parts', async () => {
+  drawn.parts = null
+  renderAssembly()
+  expect(await screen.findByText('bracket-station-lp-9002-00')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: strings.detail.hidePart('bracket-station-lp-9002-00') })).toBeNull()
+  drawn.parts = 3
   vi.unstubAllGlobals()
 })

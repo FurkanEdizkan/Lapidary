@@ -124,6 +124,7 @@ mod tests {
             [3, 4, 7],
         ];
         Mesh {
+            parts: Vec::new(),
             triangles: faces.iter().map(|f| [v[f[0]], v[f[1]], v[f[2]]]).collect(),
         }
     }
@@ -224,6 +225,7 @@ mod tests {
         // each facet in a real STL independently stores its own vertex coordinates —
         // so two triangles sharing a physical corner almost never see the same bits.
         let mesh = Mesh {
+            parts: Vec::new(),
             triangles: faces
                 .iter()
                 .enumerate()

@@ -319,7 +319,10 @@ mod tests {
                 triangles.push([p00, p11, p01]);
             }
         }
-        crate::Mesh { triangles }
+        crate::Mesh {
+            triangles,
+            parts: Vec::new(),
+        }
     }
 
     #[test]
@@ -418,6 +421,7 @@ mod tests {
         // All vertices coincident: no bounding box to fit, nothing to show. A blank
         // card that looks like a successful ingest is worse than a reported failure.
         let mesh = crate::Mesh {
+            parts: Vec::new(),
             triangles: vec![[[1.0, 1.0, 1.0]; 3]],
         };
         let err = render_thumbnail(&mesh).expect_err("must not render");

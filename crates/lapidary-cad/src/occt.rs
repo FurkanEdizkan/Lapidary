@@ -3,7 +3,7 @@
 //! A process and not a linked library, so an OCCT crash takes down one job instead of the
 //! worker (`sidecar/occt-bridge/README.md`). What crosses the boundary is files: the input
 //! bytes go into a scratch directory, and `occt-bridge convert` writes four files back —
-//! `mesh.stl`, `measurements.json`, `entities.json` and `structure.json`.
+//! `mesh.stl`, `parts.json`, `measurements.json`, `entities.json` and `structure.json`.
 //!
 //! The mesh goes through [`MeshKernel`] unchanged, so a STEP part's LOD rungs and thumbnail
 //! come from the same clustering, rasterizer and GLB writer as an STL's. What the B-rep knows
@@ -20,7 +20,7 @@ use crate::kernel::{
     AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams, KernelVersion,
     MeasurementProvenance,
 };
-use crate::{GLB_VERSION, MeshKernel, RASTER_VERSION};
+use crate::{GLB_VERSION, RASTER_VERSION};
 use lapidary_core::Provenance;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -152,19 +152,32 @@ impl Kernel for OcctKernel {
             });
         }
 
-        let mesh = tokio::fs::read(out_dir.join("mesh.stl"))
+        let stl = tokio::fs::read(out_dir.join("mesh.stl"))
             .await
             .map_err(|e| unreadable("mesh.stl", e))?;
-        let mut out = MeshKernel
-            .process(
-                &mesh,
-                &KernelParams {
-                    linear_deflection_mm: params.linear_deflection_mm,
-                    format: "stl".to_owned(),
-                    produce: params.produce.clone(),
-                },
-            )
-            .await?;
+        let mut mesh = crate::parse_stl(&stl)?;
+        // Which triangles are whose. The viewer hides and isolates parts by these runs, so counts
+        // that do not add up to the mesh are refused rather than trusted to be close.
+        let parts: Vec<u32> = read_json(&out_dir, "parts.json").await?;
+        let counted: u64 = parts.iter().map(|&count| u64::from(count)).sum();
+        if counted != mesh.triangles.len() as u64 {
+            return Err(unreadable(
+                "parts.json",
+                format!(
+                    "it counts {counted} triangles and mesh.stl holds {}",
+                    mesh.triangles.len()
+                ),
+            ));
+        }
+        mesh.parts = parts;
+        let mut out = crate::mesh_kernel::produce(
+            &mesh,
+            &KernelParams {
+                linear_deflection_mm: params.linear_deflection_mm,
+                format: "stl".to_owned(),
+                produce: params.produce.clone(),
+            },
+        );
 
         let measured: BridgeMeasurements = read_json(&out_dir, "measurements.json").await?;
         out.measurements.surface_area_mm2 = measured.surface_area_mm2;
@@ -426,6 +439,7 @@ case "$1" in
       TOUCH) touch "$arg" ;;
       *)
         cp "BRACKET" "$out/mesh.stl"
+        echo '[20]' > "$out/parts.json"
         echo '{"units":"mm","solids":1,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
         echo '{"units":"mm","prototypes":[{"prototype":"0:1:1:1","faces":[{"face":1,"type":"cylinder","radius":11,"origin":[0,0,0],"axis":[0,0,1]},{"face":2,"type":"plane","origin":[0,0,30],"normal":[0,0,1]}],"circles":[{"edge":1,"radius":11,"center":[0,0,30],"normal":[0,0,1]}]}]}' > "$out/entities.json"
         echo '{"units":"mm","roots":[{"name":"cylinder-d22-lp-9010-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"parts":1,"prototypes":1}' > "$out/structure.json"

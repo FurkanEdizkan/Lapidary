@@ -91,6 +91,9 @@ pub(crate) struct Indexed {
     /// derivative was made. `None` for `L2`, which has no cell count — writing `0` there
     /// would put a lie into `params_json`.
     pub grid: Option<u32>,
+    /// How many of `indices`' triangles each part has, in order, after clustering dropped the
+    /// collapsed ones. Empty when the mesh names no parts.
+    pub parts: Vec<u32>,
 }
 
 impl Indexed {
@@ -179,15 +182,27 @@ fn index_at(
     min: [f32; 3],
     size: [f64; 3],
     cells: Option<u32>,
-) -> (Vec<[f32; 3]>, Vec<u32>) {
+) -> (Vec<[f32; 3]>, Vec<u32>, Vec<u32>) {
+    // Which part each triangle belongs to, read off the counts in order. Triangles keep their
+    // order below, so each part's survivors stay one contiguous run of the index buffer.
+    let mut owners = mesh
+        .parts
+        .iter()
+        .enumerate()
+        .flat_map(|(part, &count)| std::iter::repeat_n(part, count as usize));
+    let mut parts = vec![0u32; mesh.parts.len()];
     let mut surviving: Vec<([Cell; 3], [[f32; 3]; 3])> = Vec::new();
     for triangle in &mesh.triangles {
+        let owner = owners.next();
         let corners = [
             cell_of(triangle[0], min, size, cells),
             cell_of(triangle[1], min, size, cells),
             cell_of(triangle[2], min, size, cells),
         ];
         if corners[0] != corners[1] && corners[1] != corners[2] && corners[0] != corners[2] {
+            if let Some(part) = owner {
+                parts[part] += 1;
+            }
             surviving.push((corners, *triangle));
         }
     }
@@ -207,7 +222,7 @@ fn index_at(
         }
     }
 
-    (positions, indices)
+    (positions, indices, parts)
 }
 
 /// Index a mesh for one rung, coarsening the grid if the result overshoots the rung's
@@ -224,11 +239,12 @@ pub(crate) fn index_mesh(mesh: &Mesh, lod: Lod) -> Indexed {
     let mut cells = lod.cells();
 
     loop {
-        let (positions, indices) = index_at(mesh, min, cell_size(min, max, cells), cells);
+        let (positions, indices, parts) = index_at(mesh, min, cell_size(min, max, cells), cells);
         let indexed = Indexed {
             positions,
             indices,
             grid: cells,
+            parts,
         };
 
         let over_budget = lod
@@ -286,6 +302,7 @@ mod tests {
             [3, 4, 0],
         ];
         Mesh {
+            parts: Vec::new(),
             triangles: faces.iter().map(|f| [c[f[0]], c[f[1]], c[f[2]]]).collect(),
         }
     }
@@ -318,7 +335,10 @@ mod tests {
                 triangles.push([b, c, d]);
             }
         }
-        Mesh { triangles }
+        Mesh {
+            triangles,
+            parts: Vec::new(),
+        }
     }
 
     #[test]
@@ -399,6 +419,7 @@ mod tests {
         // in a cell the large one never touches. That is a real shape — a small detached
         // boss or rib on a part, entirely inside one L0 cell.
         let mesh = Mesh {
+            parts: Vec::new(),
             triangles: vec![
                 [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]],
                 // Far from all three corners above, and smaller than one cell.
@@ -419,15 +440,48 @@ mod tests {
         );
     }
 
+    /// An assembly's triangle counts follow clustering: a part whose only triangle collapses
+    /// counts none, and L2, which drops nothing, keeps every count.
+    #[test]
+    fn surviving_triangles_are_counted_per_part() {
+        let mesh = Mesh {
+            triangles: vec![
+                [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]],
+                [[0.0, 0.0, 5.0], [100.0, 0.0, 5.0], [0.0, 100.0, 5.0]],
+                [[50.0, 50.0, 0.0], [50.01, 50.0, 0.0], [50.0, 50.01, 0.0]],
+            ],
+            parts: vec![2, 1],
+        };
+        assert_eq!(
+            index_mesh(&mesh, Lod::L0).parts,
+            [2, 0],
+            "the tiny part collapses at L0"
+        );
+        assert_eq!(index_mesh(&mesh, Lod::L2).parts, [2, 1], "and L2 keeps it");
+        assert!(
+            index_mesh(
+                &Mesh {
+                    parts: Vec::new(),
+                    ..mesh
+                },
+                Lod::L2
+            )
+            .parts
+            .is_empty(),
+            "a mesh that names no parts gets no counts"
+        );
+    }
+
     #[test]
     fn a_triangle_whose_corners_share_a_cell_is_dropped() {
         // Three vertices well inside one coarse cell: the triangle has collapsed, and must
         // not reach a viewer where a zero-area face yields a NaN normal.
         let tiny = Mesh {
+            parts: Vec::new(),
             triangles: vec![[[0.0, 0.0, 0.0], [0.001, 0.0, 0.0], [0.0, 0.001, 0.0]]],
         };
         let (min, max) = bounds(&tiny);
-        let (_, indices) = index_at(&tiny, min, cell_size(min, max, Some(1)), Some(1));
+        let (_, indices, _) = index_at(&tiny, min, cell_size(min, max, Some(1)), Some(1));
         assert!(indices.is_empty());
     }
 
@@ -455,6 +509,7 @@ mod tests {
         // Every vertex at z = 0: the z extent is zero, and an unguarded cell size would be
         // 0.0, making every z cell index garbage.
         let flat = Mesh {
+            parts: Vec::new(),
             triangles: vec![[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]]],
         };
         let indexed = index_mesh(&flat, Lod::L0);

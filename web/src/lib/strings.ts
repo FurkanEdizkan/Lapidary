@@ -388,6 +388,15 @@ export const strings = {
     assemblyCounts: (parts: number, prototypes: number) =>
       `${parts.toLocaleString('en-US')} ${parts === 1 ? 'part' : 'parts'}, ${prototypes.toLocaleString('en-US')} distinct`,
     assemblyFailed: 'Could not load the assembly tree. Reload the page to try again.',
+    /** A part, or a branch of parts, taken out of the 3D view and put back. */
+    hide: 'Hide',
+    show: 'Show',
+    isolate: 'Isolate',
+    showAll: 'Show all parts',
+    /** The buttons' whole names, so a screen reader hears which part each acts on. */
+    hidePart: (name: string) => `Hide ${name}`,
+    showPart: (name: string) => `Show ${name}`,
+    isolatePart: (name: string) => `Show only ${name}`,
   },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:

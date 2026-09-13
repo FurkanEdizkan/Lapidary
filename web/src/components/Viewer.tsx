@@ -29,7 +29,7 @@ import { blobUrl, fetchBatchStatus, fetchEntities, fetchStructure, requestRung }
 import { PICKS, measure, nearestCorner, placeEntities, type Pick, type Tool } from '../lib/measure'
 import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
-import { LIGHT_DIR, frameBox, type Vec3 } from '../lib/viewer-math'
+import { LIGHT_DIR, frameBox, visibleRanges, type Vec3 } from '../lib/viewer-math'
 import { MeasureBar } from './Measure'
 
 type View = {
@@ -39,7 +39,20 @@ type View = {
   /** Where a ray from a pick, straight into the part, leaves it again: the far side of a wall. */
   through: (from: Pick) => Pick | null
   mark: (points: readonly Vec3[]) => void
+  /** Leave these parts out, by their depth-first place in the tree; kept for every rung shown after. */
+  hide: (hidden: ReadonlySet<number>) => void
   dispose: () => void
+}
+
+const NONE: ReadonlySet<number> = new Set()
+
+/** How many placed parts a rung counts triangles for (`extras.parts`), or `null` when it counts none. */
+function partsOf(model: Object3D): number | null {
+  let count: number | null = null
+  model.traverse((object) => {
+    if (object instanceof Mesh && Array.isArray(object.userData.parts)) count = object.userData.parts.length
+  })
+  return count
 }
 
 /** A press that moved less than this, in CSS pixels, is a click and picks; further, it turned the part. */
@@ -125,9 +138,23 @@ export function prepare(): Promise<void> {
  * triangle's corners lie on (`measure.ts`), and only L2's corners lie on the B-rep. Once anyone
  * picks a tool, L2 stays, so the marks never sit on a coarser surface than the one they were put on.
  *
+ * An assembly's parts can be hidden. `hidden` names them by their depth-first place in the tree,
+ * and `onParts` says how many placed parts the rung drawn counts, so the tree offers to hide parts
+ * only when the view can.
+ *
  * The default export, for `lazy()`: three.js is in this chunk and nowhere else.
  */
-export default function Viewer({ part, poster }: { part: PartDetail; poster: ReactNode }) {
+export default function Viewer({
+  part,
+  poster,
+  hidden = NONE,
+  onParts,
+}: {
+  part: PartDetail
+  poster: ReactNode
+  hidden?: ReadonlySet<number>
+  onParts?: (parts: number | null) => void
+}) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<View | null>(null)
   const pressed = useRef<{ x: number; y: number } | null>(null)
@@ -140,6 +167,7 @@ export default function Viewer({ part, poster }: { part: PartDetail; poster: Rea
   const [noWall, setNoWall] = useState(false)
   const [fine, setFine] = useState(false)
   const [fineFailed, setFineFailed] = useState(false)
+  const [parts, setParts] = useState<number | null>(null)
   const queryClient = useQueryClient()
   const hash = (fine ? part.tessellationL2 : null) ?? part.tessellationL1 ?? part.tessellationL0
 
@@ -157,6 +185,7 @@ export default function Viewer({ part, poster }: { part: PartDetail; poster: Rea
         if (stale) return
         current.show(gltf.scene)
         setShown(hash)
+        setParts(partsOf(gltf.scene))
       })
       .catch(() => {
         if (!stale) setFailed(true)
@@ -165,6 +194,13 @@ export default function Viewer({ part, poster }: { part: PartDetail; poster: Rea
       stale = true
     }
   }, [hash])
+
+  useEffect(() => {
+    view.current?.hide(hidden)
+  }, [hidden])
+  useEffect(() => {
+    onParts?.(parts)
+  }, [parts, onParts])
 
   useEffect(
     () => () => {
@@ -348,6 +384,24 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
 
   let first = true
   let model: Object3D | null = null
+  let hiddenParts = NONE
+  // A hidden part is a gap in the index ranges drawn. three draws, and a raycast meets, only a
+  // mesh's groups when its material is an array, so a hidden part is neither seen nor picked.
+  const applyHidden = () => {
+    model?.traverse((object) => {
+      if (!(object instanceof Mesh)) return
+      const parts: unknown = object.userData.parts
+      object.geometry.clearGroups()
+      if (hiddenParts.size === 0 || !Array.isArray(parts)) {
+        object.material = material
+        return
+      }
+      for (const { start, count } of visibleRanges(parts as number[], hiddenParts)) {
+        object.geometry.addGroup(start, count, 0)
+      }
+      object.material = [material]
+    })
+  }
   const render = () => {
     renderer.render(scene, camera)
     // The first frame with the part in it, not the resize observer's first call on an empty scene:
@@ -378,6 +432,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       }
       model = next
       scene.add(next)
+      applyHidden()
       // Framed once, on the first rung: a finer rung arriving must not move the camera out from
       // under someone who has already turned the part.
       if (framing) {
@@ -415,6 +470,11 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       // the old marks' and cull the new ones.
       markers.geometry.dispose()
       markers.geometry = new BufferGeometry().setAttribute('position', new Float32BufferAttribute(points.flat(), 3))
+      if (model !== null) render()
+    },
+    hide(next) {
+      hiddenParts = next
+      applyHidden()
       if (model !== null) render()
     },
     dispose() {

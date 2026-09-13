@@ -24,6 +24,7 @@ Writes five files into `<dir>` and prints a one-line JSON summary on stdout
 | File | What it holds |
 |---|---|
 | `mesh.stl` | Every placed part triangulated in world coordinates, as binary STL. The worker's existing mesh pipeline — clustering into LOD rungs, the thumbnail, the GLB writer — reads it, so this program does not grow a second one. |
+| `parts.json` | How many of `mesh.stl`'s triangles each placed part has, in the order `structure.json` lists its leaves: the first count is the first leaf's triangles, and so on. The GLB writer keeps each part's triangles together and says so in `extras.parts`, which is how the viewer hides one part. |
 | `structure.json` | The assembly tree: names, a prototype id per node, and each node's 4×4 transform relative to its parent. `parts` counts the leaves. |
 | `entities.json` | Analytic faces (plane, cylinder, cone, sphere, torus) and circular edges, **once per prototype**, in that prototype's own coordinates. `structure.json` places them. Two hundred instances of eight parts would otherwise repeat the same geometry two hundred times. |
 | `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. Faces that arrive without a solid are sewn first, and only shells that close are measured, so `volume_mm3` is `null` exactly when nothing in the file closes. |
