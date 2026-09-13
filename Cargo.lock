@@ -1332,6 +1332,7 @@ dependencies = [
  "quick-xml",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "zip",

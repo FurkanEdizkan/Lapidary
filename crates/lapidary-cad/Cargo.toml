@@ -10,6 +10,9 @@ publish = false
 [features]
 default = []
 mock-kernel = []
+# OcctKernel: drives the occt-bridge sidecar as a subprocess. Off by default, so a build that
+# does not run the CAD kernel links neither the process machinery nor the scratch directories.
+occt-kernel = ["dep:tempfile", "dep:tokio"]
 
 [dependencies]
 lapidary-core.workspace = true
@@ -24,6 +27,9 @@ serde_json.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
 zip.workspace = true
+# Both already workspace dependencies, so nothing new enters Cargo.lock or the licence audit.
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["fs", "process", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

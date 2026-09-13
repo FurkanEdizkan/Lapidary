@@ -96,6 +96,8 @@ impl Kernel for MeshKernel {
             // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
             // no analytic surfaces to recover, so this is the truthful answer, not a stub.
             entities: Vec::new(),
+            provenance: crate::MeasurementProvenance::TESSELLATED,
+            structure: None,
         })
     }
 }
