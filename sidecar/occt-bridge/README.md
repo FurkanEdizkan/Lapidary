@@ -4,10 +4,51 @@ The C++ sidecar wrapping Open CASCADE (OCCT): STEP and IGES reading, tessellatio
 B-rep entities for measurement, and format conversion. A separate process rather than a
 linked library, so an OCCT crash takes down one job instead of the worker.
 
-**Status: Phase 0b spike.** Two commands exist — `version` and `selftest` — to prove that
-OCCT builds from source in the worker image, links, and runs. `convert` and
-`generate-fixtures` follow; the plan is `~/.claude/plans` item 2 and the shape is
+**Status: Phase 0b, step 2.2.** Four commands — `version`, `selftest`, `convert` and
+`generate-fixtures`. `OcctKernel`, the Rust side that runs `convert` and turns its output into
+derivatives, is next; the plan is item 2 of `~/.claude/plans`, and the shape is
 `docs/ARCHITECTURE.md`'s kernel section.
+
+## `convert`
+
+```
+occt-bridge convert --in <file> --format step|iges --out <dir> [--deflection <mm>]
+```
+
+Writes four files into `<dir>` and prints a one-line JSON summary on stdout
+(`{"parts":200,"prototypes":8,"solids":200,"triangles":28576}`):
+
+| File | What it holds |
+|---|---|
+| `mesh.stl` | Every placed part triangulated in world coordinates, as binary STL. The worker's existing mesh pipeline — clustering into LOD rungs, the thumbnail, the GLB writer — reads it, so this program does not grow a second one. |
+| `structure.json` | The assembly tree: names, a prototype id per node, and each node's 4×4 transform relative to its parent. `parts` counts the leaves. |
+| `entities.json` | Analytic faces (plane, cylinder, cone, sphere, torus) and circular edges, **once per prototype**, in that prototype's own coordinates. `structure.json` places them. Two hundred instances of eight parts would otherwise repeat the same geometry two hundred times. |
+| `measurements.json` | Volume, surface area and bounding box from the B-rep — not the mesh — in millimetres. `volume_mm3` is `null` when nothing in the file is a solid. |
+
+**Units come from the file.** The document is set to millimetres before transfer, and the
+readers scale into it, so a part written in inches arrives converted.
+
+**stdout is the answer.** OCCT's default messenger prints transfer statistics to stdout, in
+colour; the bridge removes that printer before doing anything else.
+
+**Refusals and crashes are different exits.** A file OCCT cannot read, or an exception OCCT
+raises while reading it, exits 2 with `{"kind":"refused","detail":...}` on stderr — another
+attempt reads the same bytes and fails the same way. Any other non-zero exit, or a signal, is a
+crash.
+
+## Fixtures
+
+`generate-fixtures <dir>` writes the files in `fixtures/step/`. They are generated rather than
+downloaded, so they are licence-clean by construction, and the generator is the record of what
+is in them. Regenerating changes their bytes — STEP headers carry a timestamp — but not their
+geometry.
+
+| File | What it is |
+|---|---|
+| `fixture-plate-assembly-lp-9000-00.step` | The Phase 0 exit fixture: a welding fixture of **200 placed parts** from 8 prototypes through three levels of assembly — plate, 4 levelling feet, 12 bracket stations of 12 parts each, a rail of 6 V-blocks and a rack of 45 stop pins. AP242. |
+| `cylinder-d22-lp-9010-00.step` | A 22.000 mm cylinder, 30 mm long — the one Phase 3's exit measures. |
+| `cylinder-d22-inch-units-lp-9011-00.step` | The same cylinder, written in inches, to prove units are read from the file. |
+| `angle-bracket-60x60x40-lp-9004-00.igs` | One part as IGES. |
 
 ## How it is built
 
@@ -72,9 +113,29 @@ Two things the first build taught, both recorded where they bite:
   set `LD_LIBRARY_PATH=/opt/occt/lib`; `ldconfig` is not an option for a worker that runs as
   `lapidary`.
 
+### `convert`, measured
+
+Inside the `occt` stage image, deflection 0.1 mm, process start included:
+
+| Fixture | Parts | Solids | Triangles | Time | Checked |
+|---|---|---|---|---|---|
+| `fixture-plate-assembly-lp-9000-00.step` (190 KB) | 200 | 200 | 28,576 | **91 ms** | 8 prototypes; bounding box 315 × 315 × 120 mm |
+| `cylinder-d22-lp-9010-00.step` | 1 | 1 | 128 | 21 ms | volume πr²h, box 22 × 22 × 30, one cylinder face of radius 11 |
+| `cylinder-d22-inch-units-lp-9011-00.step` | 1 | 1 | 128 | 20 ms | the same volume to ~1e-12, radius 11.0000000000068 — read back in mm |
+| `angle-bracket-60x60x40-lp-9004-00.igs` | 1 | **0** | 28 | 20 ms | box 60 × 40 × 60; no volume, see below |
+
+That 91 ms is the bridge alone, not the Phase 0 exit: the exit converts to glTF, tree and
+entities, and the glTF half is written by the worker from `mesh.stl` (step 2.4 measures it
+end to end).
+
+**IGES arrives as faces, not solids.** OCCT's IGES writer stores trimmed surfaces by default,
+and most CAD tools' IGES files are the same shape, so `volume_mm3` is `null` rather than a
+number integrated over surfaces that do not close. Sewing faces into solids
+(`BRepBuilderAPI_Sewing`) is the follow-up that gives IGES a volume; it is not done yet.
+
 ## Kernel version
 
-`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>`. Different OCCT
+`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>` — `occt 8.0.1 bridge 1` today. Different OCCT
 builds tessellate identical input differently, so this string is what the worker fleet pins
 (`ARCHITECTURE.md`); bump `BRIDGE_VERSION` in `src/main.cpp` whenever the bridge changes what
 it writes.

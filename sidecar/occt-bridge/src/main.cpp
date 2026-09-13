@@ -1,36 +1,581 @@
-// occt-bridge — see ../README.md. Only `version` and `selftest` exist yet: this is the Phase 0b
-// spike that proves OCCT builds, links and runs in the worker image. `convert` and
-// `generate-fixtures` follow once it does.
+// occt-bridge — see ../README.md.
+//
+//   occt-bridge version
+//   occt-bridge selftest <scratch-dir>
+//   occt-bridge convert --in <file> --format step|iges --out <dir> [--deflection <mm>]
+//   occt-bridge generate-fixtures <dir>
+//
+// `convert` writes four files into <dir> and prints a one-line JSON summary on stdout:
+//
+//   mesh.stl           every placed part triangulated in world coordinates, as binary STL, so
+//                      the worker's existing mesh pipeline — clustering, thumbnail, GLB — reads
+//                      it instead of this program growing a second one
+//   structure.json     the assembly tree: names, prototypes, 4x4 transforms relative to parent
+//   entities.json      analytic faces and circular edges, once per prototype, in its own
+//                      coordinates; structure.json places them
+//   measurements.json  volume, surface area and bounding box from the B-rep, in millimetres
+//
+// A file OCCT cannot read exits 2 with {"kind":"refused","detail":...} on stderr. Anything
+// else non-zero, or a signal, is a crash, and the worker treats it as one.
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
+#include <DESTEP_Parameters.hxx>
 #include <GProp_GProps.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <IGESCAFControl_Reader.hxx>
+#include <IGESCAFControl_Writer.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <NCollection_Sequence.hxx>
+#include <Poly_Triangulation.hxx>
 #include <STEPCAFControl_Reader.hxx>
 #include <STEPCAFControl_Writer.hxx>
+#include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
+#include <TCollection_AsciiString.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <TDF_Label.hxx>
+#include <TDF_Tool.hxx>
+#include <TDataStd_Name.hxx>
 #include <TDocStd_Document.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Shape.hxx>
+#include <UnitsMethods_LengthUnit.hxx>
 #include <XCAFApp_Application.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 0;
+constexpr int BRIDGE_VERSION = 1;
 
 const double PI = std::acos(-1.0);
+
+// ---- output helpers --------------------------------------------------------------------
+
+std::string jsonString(const std::string& text) {
+  std::string out = "\"";
+  for (const unsigned char c : text) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) {
+          char escaped[8];
+          std::snprintf(escaped, sizeof escaped, "\\u%04x", c);
+          out += escaped;
+        } else {
+          out += static_cast<char>(c);
+        }
+    }
+  }
+  return out + "\"";
+}
+
+// Seventeen significant digits round-trip a double exactly; a non-finite value is not JSON.
+std::string number(double value) {
+  if (!std::isfinite(value)) return "null";
+  char buffer[32];
+  std::snprintf(buffer, sizeof buffer, "%.17g", value);
+  return buffer;
+}
+
+std::string xyz(const gp_XYZ& v) {
+  return "[" + number(v.X()) + "," + number(v.Y()) + "," + number(v.Z()) + "]";
+}
+
+// Row-major 4x4, the last row always 0 0 0 1.
+std::string matrix(const gp_Trsf& t) {
+  std::string out = "[";
+  for (int row = 1; row <= 3; ++row) {
+    for (int col = 1; col <= 4; ++col) {
+      out += number(t.Value(row, col)) + ",";
+    }
+  }
+  return out + "0,0,0,1]";
+}
+
+bool writeFile(const std::string& path, const std::string& contents) {
+  FILE* file = std::fopen(path.c_str(), "wb");
+  if (file == nullptr) return false;
+  const bool ok = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+  return std::fclose(file) == 0 && ok;
+}
+
+int refuse(const std::string& detail) {
+  std::fprintf(stderr, "{\"kind\":\"refused\",\"detail\":%s}\n", jsonString(detail).c_str());
+  return 2;
+}
+
+// OCCT's default messenger prints transfer statistics to stdout, in colour. stdout is this
+// program's answer to the worker, so nothing else may write to it.
+void silenceOcct() {
+  Message::DefaultMessenger()->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+}
+
+// ---- reading ---------------------------------------------------------------------------
+
+occ::handle<TDocStd_Document> newDocument() {
+  occ::handle<TDocStd_Document> doc;
+  XCAFApp_Application::GetApplication()->NewDocument("MDTV-XCAF", doc);
+  // Millimetres, whatever the file was written in: the readers scale into the document's
+  // unit, so a part drawn in inches arrives converted rather than 25.4 times too small.
+  XCAFDoc_DocumentTool::SetLengthUnit(doc, 1.0, UnitsMethods_LengthUnit_Millimeter);
+  return doc;
+}
+
+bool readDocument(const std::string& path, const std::string& format,
+                  const occ::handle<TDocStd_Document>& doc, std::string& why) {
+  if (format == "step") {
+    STEPCAFControl_Reader reader;
+    reader.SetNameMode(true);
+    reader.SetColorMode(false);
+    reader.SetLayerMode(false);
+    if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
+      why = "OCCT could not parse this file as STEP";
+      return false;
+    }
+    if (!reader.Transfer(doc)) {
+      why = "the file parsed as STEP, but no shape could be transferred out of it";
+      return false;
+    }
+    return true;
+  }
+  IGESCAFControl_Reader reader;
+  reader.SetNameMode(true);
+  if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
+    why = "OCCT could not parse this file as IGES";
+    return false;
+  }
+  if (!reader.Transfer(doc)) {
+    why = "the file parsed as IGES, but no shape could be transferred out of it";
+    return false;
+  }
+  return true;
+}
+
+std::string nameOf(const TDF_Label& label) {
+  occ::handle<TDataStd_Name> name;
+  if (label.FindAttribute(TDataStd_Name::GetID(), name)) {
+    return TCollection_AsciiString(name->Get()).ToCString();
+  }
+  return "";
+}
+
+std::string entryOf(const TDF_Label& label) {
+  TCollection_AsciiString entry;
+  TDF_Tool::Entry(label, entry);
+  return entry.ToCString();
+}
+
+// ---- structure.json --------------------------------------------------------------------
+
+void writeNode(std::string& out, const TDF_Label& label, std::map<std::string, TDF_Label>& prototypes,
+               int& parts) {
+  TDF_Label shape = label;
+  gp_Trsf local;
+  if (XCAFDoc_ShapeTool::IsReference(label)) {
+    XCAFDoc_ShapeTool::GetReferredShape(label, shape);
+    local = XCAFDoc_ShapeTool::GetLocation(label).Transformation();
+  }
+  std::string name = nameOf(label);
+  if (name.empty()) name = nameOf(shape);
+  out += "{\"name\":" + jsonString(name) + ",\"prototype\":" + jsonString(entryOf(shape)) +
+         ",\"transform\":" + matrix(local);
+  if (XCAFDoc_ShapeTool::IsAssembly(shape)) {
+    NCollection_Sequence<TDF_Label> components;
+    XCAFDoc_ShapeTool::GetComponents(shape, components);
+    out += ",\"children\":[";
+    for (int i = 1; i <= components.Length(); ++i) {
+      if (i > 1) out += ",";
+      writeNode(out, components.Value(i), prototypes, parts);
+    }
+    out += "]";
+  } else {
+    prototypes.emplace(entryOf(shape), shape);
+    ++parts;
+  }
+  out += "}";
+}
+
+// ---- entities.json ---------------------------------------------------------------------
+
+using ShapeMap = NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>;
+
+std::string surfaceEntity(int index, const TopoDS_Face& face) {
+  const BRepAdaptor_Surface surface(face);
+  const std::string head = "{\"face\":" + std::to_string(index) + ",\"type\":";
+  switch (surface.GetType()) {
+    case GeomAbs_Plane: {
+      const gp_Pln plane = surface.Plane();
+      return head + "\"plane\",\"origin\":" + xyz(plane.Location().XYZ()) +
+             ",\"normal\":" + xyz(plane.Axis().Direction().XYZ()) + "}";
+    }
+    case GeomAbs_Cylinder: {
+      const gp_Cylinder cylinder = surface.Cylinder();
+      return head + "\"cylinder\",\"radius\":" + number(cylinder.Radius()) +
+             ",\"origin\":" + xyz(cylinder.Location().XYZ()) +
+             ",\"axis\":" + xyz(cylinder.Axis().Direction().XYZ()) + "}";
+    }
+    case GeomAbs_Cone: {
+      const gp_Cone cone = surface.Cone();
+      return head + "\"cone\",\"ref_radius\":" + number(cone.RefRadius()) +
+             ",\"semi_angle_rad\":" + number(cone.SemiAngle()) +
+             ",\"origin\":" + xyz(cone.Location().XYZ()) +
+             ",\"axis\":" + xyz(cone.Axis().Direction().XYZ()) + "}";
+    }
+    case GeomAbs_Sphere: {
+      const gp_Sphere sphere = surface.Sphere();
+      return head + "\"sphere\",\"radius\":" + number(sphere.Radius()) +
+             ",\"center\":" + xyz(sphere.Location().XYZ()) + "}";
+    }
+    case GeomAbs_Torus: {
+      const gp_Torus torus = surface.Torus();
+      return head + "\"torus\",\"major_radius\":" + number(torus.MajorRadius()) +
+             ",\"minor_radius\":" + number(torus.MinorRadius()) +
+             ",\"origin\":" + xyz(torus.Axis().Location().XYZ()) +
+             ",\"axis\":" + xyz(torus.Axis().Direction().XYZ()) + "}";
+    }
+    default:
+      return "";
+  }
+}
+
+void writeEntities(std::string& out, const std::string& prototype, const TopoDS_Shape& shape) {
+  ShapeMap faces;
+  ShapeMap edges;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  out += "{\"prototype\":" + jsonString(prototype) + ",\"faces\":[";
+  bool first = true;
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    const std::string entity = surfaceEntity(i, TopoDS::Face(faces.FindKey(i)));
+    if (entity.empty()) continue;
+    if (!first) out += ",";
+    out += entity;
+    first = false;
+  }
+  out += "],\"circles\":[";
+  first = true;
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge edge = TopoDS::Edge(edges.FindKey(i));
+    // A degenerated edge — the pole of a sphere, the apex of a cone — has no 3D curve at all.
+    if (BRep_Tool::Degenerated(edge)) continue;
+    const BRepAdaptor_Curve curve(edge);
+    if (curve.GetType() != GeomAbs_Circle) continue;
+    const gp_Circ circle = curve.Circle();
+    if (!first) out += ",";
+    out += "{\"edge\":" + std::to_string(i) + ",\"radius\":" + number(circle.Radius()) +
+           ",\"center\":" + xyz(circle.Location().XYZ()) +
+           ",\"normal\":" + xyz(circle.Axis().Direction().XYZ()) + "}";
+    first = false;
+  }
+  out += "]}";
+}
+
+// ---- mesh.stl --------------------------------------------------------------------------
+
+void putU32(std::string& out, std::uint32_t value) {
+  for (int i = 0; i < 4; ++i) out += static_cast<char>((value >> (8 * i)) & 0xff);
+}
+
+void putF32(std::string& out, double value) {
+  const float f = static_cast<float>(value);
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &f, sizeof bits);
+  putU32(out, bits);
+}
+
+std::uint32_t writeMesh(const std::string& path, const TopoDS_Shape& whole, bool& ok) {
+  std::string body;
+  std::uint32_t count = 0;
+  for (TopExp_Explorer explorer(whole, TopAbs_FACE); explorer.More(); explorer.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation>& triangulation = BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) continue;
+    const gp_Trsf placement = location.Transformation();
+    const bool reversed = face.Orientation() == TopAbs_REVERSED;
+    for (int t = 1; t <= triangulation->NbTriangles(); ++t) {
+      int n1 = 0, n2 = 0, n3 = 0;
+      triangulation->Triangle(t).Get(n1, n2, n3);
+      if (reversed) std::swap(n2, n3);
+      for (int i = 0; i < 3; ++i) putF32(body, 0.0);  // normal: readers recompute it
+      for (const int node : {n1, n2, n3}) {
+        const gp_Pnt p = triangulation->Node(node).Transformed(placement);
+        putF32(body, p.X());
+        putF32(body, p.Y());
+        putF32(body, p.Z());
+      }
+      body += std::string(2, '\0');
+      ++count;
+    }
+  }
+  std::string file(80, ' ');
+  const char header[] = "occt-bridge mesh.stl";
+  std::memcpy(&file[0], header, sizeof header - 1);
+  putU32(file, count);
+  ok = writeFile(path, file + body);
+  return count;
+}
+
+// ---- convert ---------------------------------------------------------------------------
+
+int convert(const std::string& in, const std::string& format, const std::string& outDir,
+            double deflection) {
+  if (format != "step" && format != "iges") {
+    return refuse("occt-bridge reads step and iges, not " + format);
+  }
+  const occ::handle<TDocStd_Document> doc = newDocument();
+  std::string why;
+  if (!readDocument(in, format, doc, why)) return refuse(why);
+
+  const occ::handle<XCAFDoc_ShapeTool> tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  NCollection_Sequence<TDF_Label> roots;
+  tool->GetFreeShapes(roots);
+  if (roots.Length() == 0) return refuse("the file holds no shapes");
+
+  std::map<std::string, TDF_Label> prototypes;
+  int parts = 0;
+  std::string structure = "{\"units\":\"mm\",\"roots\":[";
+  for (int i = 1; i <= roots.Length(); ++i) {
+    if (i > 1) structure += ",";
+    writeNode(structure, roots.Value(i), prototypes, parts);
+  }
+  structure += "],\"parts\":" + std::to_string(parts) +
+               ",\"prototypes\":" + std::to_string(prototypes.size()) + "}\n";
+
+  std::string entities = "{\"units\":\"mm\",\"prototypes\":[";
+  bool first = true;
+  for (const auto& [entry, label] : prototypes) {
+    if (!first) entities += ",";
+    writeEntities(entities, entry, XCAFDoc_ShapeTool::GetShape(label));
+    first = false;
+  }
+  entities += "]}\n";
+
+  const TopoDS_Shape whole = tool->GetOneShape();
+  int solids = 0;
+  for (TopExp_Explorer explorer(whole, TopAbs_SOLID); explorer.More(); explorer.Next()) ++solids;
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(whole, volume);
+  GProp_GProps area;
+  BRepGProp::SurfaceProperties(whole, area);
+  // From the B-rep, not the mesh: `useTriangulation` off, so the box is the geometry's.
+  Bnd_Box box;
+  BRepBndLib::AddOptimal(whole, box, false, false);
+  std::string measurements = "{\"units\":\"mm\",\"solids\":" + std::to_string(solids) +
+                             ",\"volume_mm3\":" + (solids > 0 ? number(volume.Mass()) : "null") +
+                             ",\"surface_area_mm2\":" + number(area.Mass());
+  if (box.IsVoid()) {
+    measurements += ",\"bbox_min\":null,\"bbox_max\":null,\"bbox_mm\":null}\n";
+  } else {
+    const gp_XYZ lo = box.CornerMin().XYZ();
+    const gp_XYZ hi = box.CornerMax().XYZ();
+    measurements += ",\"bbox_min\":" + xyz(lo) + ",\"bbox_max\":" + xyz(hi) +
+                    ",\"bbox_mm\":" + xyz(hi - lo) + "}\n";
+  }
+
+  const BRepMesh_IncrementalMesh mesher(whole, deflection, false, 0.5, true);
+  bool meshWritten = false;
+  const std::uint32_t triangles = writeMesh(outDir + "/mesh.stl", whole, meshWritten);
+
+  if (!meshWritten || !writeFile(outDir + "/structure.json", structure) ||
+      !writeFile(outDir + "/entities.json", entities) ||
+      !writeFile(outDir + "/measurements.json", measurements)) {
+    std::fprintf(stderr, "occt-bridge: could not write into %s\n", outDir.c_str());
+    return 1;
+  }
+  std::printf("{\"parts\":%d,\"prototypes\":%zu,\"solids\":%d,\"triangles\":%u}\n", parts,
+              prototypes.size(), solids, triangles);
+  return 0;
+}
+
+// ---- generate-fixtures -----------------------------------------------------------------
+
+gp_Trsf at(double x, double y, double z) {
+  gp_Trsf t;
+  t.SetTranslation(gp_Vec(x, y, z));
+  return t;
+}
+
+TopoDS_Shape box(double dx, double dy, double dz) { return BRepPrimAPI_MakeBox(dx, dy, dz).Shape(); }
+
+TopoDS_Shape cylinder(double radius, double height) {
+  return BRepPrimAPI_MakeCylinder(radius, height).Shape();
+}
+
+TopoDS_Shape placed(const TopoDS_Shape& shape, const gp_Trsf& t) {
+  return BRepBuilderAPI_Transform(shape, t, true).Shape();
+}
+
+TopoDS_Shape fused(const TopoDS_Shape& a, const TopoDS_Shape& b) { return BRepAlgoAPI_Fuse(a, b).Shape(); }
+
+TopoDS_Shape cut(const TopoDS_Shape& a, const TopoDS_Shape& b) { return BRepAlgoAPI_Cut(a, b).Shape(); }
+
+bool writeStep(const occ::handle<TDocStd_Document>& doc, const std::string& path,
+               UnitsMethods_LengthUnit unit) {
+  DESTEP_Parameters params;
+  params.WriteSchema = DESTEP_Parameters::WriteMode_StepSchema_AP242DIS;
+  params.WriteUnit = unit;
+  STEPCAFControl_Writer writer;
+  return writer.Transfer(doc, params) && writer.Write(path.c_str()) == IFSelect_RetDone;
+}
+
+// A welding and inspection fixture: a plate on four levelling feet, twelve bracket stations,
+// a rail of V-blocks and a rack of stop pins. Ten prototypes would do; the point is 200 placed
+// parts through three levels of assembly, which is the Phase 0 exit test's shape.
+int generateFixtures(const std::string& dir) {
+  const occ::handle<TDocStd_Document> doc = newDocument();
+  const occ::handle<XCAFDoc_ShapeTool> tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  const auto prototype = [&](const TopoDS_Shape& shape, const char* name) {
+    const TDF_Label label = tool->AddShape(shape, false);
+    TDataStd_Name::Set(label, name);
+    return label;
+  };
+  const auto assembly = [&](const char* name) {
+    const TDF_Label label = tool->NewShape();
+    TDataStd_Name::Set(label, name);
+    return label;
+  };
+  int placedParts = 0;
+  const auto place = [&](const TDF_Label& into, const TDF_Label& what, double x, double y, double z,
+                         bool leaf = true) {
+    tool->AddComponent(into, what, TopLoc_Location(at(x, y, z)));
+    if (leaf) ++placedParts;
+  };
+
+  BRep_Builder builder;
+  TopoDS_Compound holes;
+  builder.MakeCompound(holes);
+  for (const auto& [x, y] : {std::pair{15.0, 15.0}, {285.0, 15.0}, {15.0, 185.0}, {285.0, 185.0}}) {
+    builder.Add(holes, placed(cylinder(5.0, 20.0), at(x, y, 0.0)));
+  }
+  const TDF_Label plate = prototype(cut(box(300.0, 200.0, 20.0), holes), "fixture-plate-300x200x20-lp-9001-00");
+  const TDF_Label foot = prototype(fused(cylinder(15.0, 8.0), placed(cylinder(5.0, 32.0), at(0, 0, 8.0))),
+                                   "leveling-foot-m10x40-lp-9008-00");
+  const TDF_Label bracket = prototype(fused(box(60.0, 40.0, 8.0), box(8.0, 40.0, 60.0)),
+                                      "angle-bracket-60x60x40-lp-9004-00");
+  const TDF_Label screw = prototype(fused(cylinder(3.0, 25.0), placed(cylinder(5.0, 6.0), at(0, 0, 25.0))),
+                                    "socket-cap-screw-m6x25-lp-9003-00");
+  const TDF_Label dowel = prototype(cylinder(4.0, 30.0), "locating-dowel-d8x30-lp-9002-00");
+  const TDF_Label clamp = prototype(box(40.0, 30.0, 12.0), "toggle-clamp-base-40x30x12-lp-9005-00");
+  gp_Trsf tilt;
+  tilt.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), PI / 4.0);
+  const TopoDS_Shape groove = placed(placed(placed(box(30.0, 60.0, 30.0), at(-15.0, -10.0, -15.0)), tilt), at(25.0, 0.0, 30.0));
+  const TDF_Label vblock = prototype(cut(box(50.0, 40.0, 30.0), groove), "v-block-50x40x30-lp-9006-00");
+  const TDF_Label pin = prototype(cylinder(5.0, 20.0), "stop-pin-d10x20-lp-9007-00");
+
+  const TDF_Label station = assembly("bracket-station-lp-9100-00");
+  place(station, bracket, 0, 0, 0);
+  for (const auto& [x, y] : {std::pair{10.0, 8.0}, {10.0, 20.0}, {10.0, 32.0}, {30.0, 8.0},
+                             {30.0, 32.0}, {50.0, 8.0}, {50.0, 20.0}, {50.0, 32.0}}) {
+    place(station, screw, x, y, -17.0);
+  }
+  place(station, dowel, 20.0, 20.0, -22.0);
+  place(station, dowel, 40.0, 20.0, -22.0);
+  place(station, clamp, 14.0, 5.0, 14.0);
+  const int perStation = placedParts;
+  placedParts = 0;
+
+  const TDF_Label rail = assembly("v-block-rail-lp-9200-00");
+  for (int i = 0; i < 6; ++i) place(rail, vblock, i * 52.0, 0, 0);
+  const TDF_Label rack = assembly("stop-pin-rack-lp-9300-00");
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < 15; ++col) place(rack, pin, col * 20.0, row * 20.0, 0);
+  }
+  // The rail and the rack count their parts where the top assembly places them, below — as the
+  // stations do — so the placements inside them are not counted twice.
+  placedParts = 0;
+
+  const TDF_Label top = assembly("fixture-plate-assembly-lp-9000-00");
+  place(top, plate, 0, 0, 0);
+  for (const auto& [x, y] : {std::pair{15.0, 15.0}, {285.0, 15.0}, {15.0, 185.0}, {285.0, 185.0}}) {
+    place(top, foot, x, y, -40.0);
+  }
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < 4; ++col) {
+      place(top, station, 10.0 + col * 72.0, 10.0 + row * 62.0, 20.0, false);
+      placedParts += perStation;
+    }
+  }
+  place(top, rail, 0, 215.0, 0, false);
+  placedParts += 6;
+  place(top, rack, 0, 270.0, 0, false);
+  placedParts += 45;
+  tool->UpdateAssemblies();
+  if (placedParts != 200) {
+    std::fprintf(stderr, "generate-fixtures: built %d placed parts, not 200\n", placedParts);
+    return 1;
+  }
+
+  const occ::handle<TDocStd_Document> single = newDocument();
+  const occ::handle<XCAFDoc_ShapeTool> singleTool = XCAFDoc_DocumentTool::ShapeTool(single->Main());
+  TDataStd_Name::Set(singleTool->AddShape(cylinder(11.0, 30.0), false), "cylinder-d22-lp-9010-00");
+
+  const occ::handle<TDocStd_Document> iges = newDocument();
+  const occ::handle<XCAFDoc_ShapeTool> igesTool = XCAFDoc_DocumentTool::ShapeTool(iges->Main());
+  TDataStd_Name::Set(igesTool->AddShape(fused(box(60.0, 40.0, 8.0), box(8.0, 40.0, 60.0)), false),
+                     "angle-bracket-60x60x40-lp-9004-00");
+  IGESCAFControl_Writer igesWriter;
+
+  const bool ok =
+      writeStep(doc, dir + "/fixture-plate-assembly-lp-9000-00.step", UnitsMethods_LengthUnit_Millimeter) &&
+      writeStep(single, dir + "/cylinder-d22-lp-9010-00.step", UnitsMethods_LengthUnit_Millimeter) &&
+      writeStep(single, dir + "/cylinder-d22-inch-units-lp-9011-00.step", UnitsMethods_LengthUnit_Inch) &&
+      igesWriter.Transfer(iges) && igesWriter.Write((dir + "/angle-bracket-60x60x40-lp-9004-00.igs").c_str());
+  if (!ok) {
+    std::fprintf(stderr, "generate-fixtures: could not write into %s\n", dir.c_str());
+    return 1;
+  }
+  std::printf("{\"placed_parts\":%d}\n", placedParts);
+  return 0;
+}
+
+// ---- selftest and version --------------------------------------------------------------
 
 int version() {
   std::printf("occt %s bridge %d\n", OCC_VERSION_COMPLETE, BRIDGE_VERSION);
@@ -43,32 +588,19 @@ int version() {
 int selftest(const char* dir) {
   const double radius = 11.0;
   const double height = 30.0;
-  occ::handle<XCAFApp_Application> app = XCAFApp_Application::GetApplication();
-
-  occ::handle<TDocStd_Document> written;
-  app->NewDocument("MDTV-XCAF", written);
-  const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(radius, height).Shape();
-  XCAFDoc_DocumentTool::ShapeTool(written->Main())->AddShape(cylinder);
-
+  const occ::handle<TDocStd_Document> written = newDocument();
+  XCAFDoc_DocumentTool::ShapeTool(written->Main())->AddShape(cylinder(radius, height));
   const std::string path = std::string(dir) + "/occt-bridge-selftest-cylinder-d22.step";
-  STEPCAFControl_Writer writer;
-  if (!writer.Transfer(written) || writer.Write(path.c_str()) != IFSelect_RetDone) {
+  if (!writeStep(written, path, UnitsMethods_LengthUnit_Millimeter)) {
     std::fprintf(stderr, "selftest: could not write %s\n", path.c_str());
     return 1;
   }
-
-  STEPCAFControl_Reader reader;
-  if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
-    std::fprintf(stderr, "selftest: could not read back %s\n", path.c_str());
+  const occ::handle<TDocStd_Document> read = newDocument();
+  std::string why;
+  if (!readDocument(path, "step", read, why)) {
+    std::fprintf(stderr, "selftest: %s\n", why.c_str());
     return 1;
   }
-  occ::handle<TDocStd_Document> read;
-  app->NewDocument("MDTV-XCAF", read);
-  if (!reader.Transfer(read)) {
-    std::fprintf(stderr, "selftest: the STEP read but did not transfer into a document\n");
-    return 1;
-  }
-
   NCollection_Sequence<TDF_Label> roots;
   XCAFDoc_DocumentTool::ShapeTool(read->Main())->GetFreeShapes(roots);
   if (roots.Length() != 1) {
@@ -76,12 +608,10 @@ int selftest(const char* dir) {
     return 1;
   }
   const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(roots.Value(1));
-
   GProp_GProps props;
   BRepGProp::VolumeProperties(shape, props);
   const double expected = PI * radius * radius * height;
   const BRepMesh_IncrementalMesh mesh(shape, 0.05);
-
   const bool volumeHolds = std::fabs(props.Mass() - expected) <= 1e-6 * expected;
   std::printf("selftest: roots=%d volume=%.6f expected=%.6f meshed=%s\n", roots.Length(),
               props.Mass(), expected, mesh.IsDone() ? "yes" : "no");
@@ -89,18 +619,42 @@ int selftest(const char* dir) {
 }
 
 int usage() {
-  std::fprintf(stderr, "usage: occt-bridge version | occt-bridge selftest <scratch-dir>\n");
+  std::fprintf(stderr, "usage: occt-bridge version\n"
+                       "       occt-bridge selftest <scratch-dir>\n"
+                       "       occt-bridge convert --in <file> --format step|iges --out <dir> [--deflection <mm>]\n"
+                       "       occt-bridge generate-fixtures <dir>\n");
   return 64;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc >= 2 && std::strcmp(argv[1], "version") == 0) {
-    return version();
-  }
-  if (argc >= 3 && std::strcmp(argv[1], "selftest") == 0) {
-    return selftest(argv[2]);
+  silenceOcct();
+  const std::string command = argc >= 2 ? argv[1] : "";
+  try {
+    if (command == "version") return version();
+    if (command == "selftest" && argc >= 3) return selftest(argv[2]);
+    if (command == "generate-fixtures" && argc >= 3) return generateFixtures(argv[2]);
+    if (command == "convert") {
+      std::string in, format, out;
+      double deflection = 0.1;
+      for (int i = 2; i + 1 < argc; i += 2) {
+        const std::string flag = argv[i];
+        if (flag == "--in") in = argv[i + 1];
+        else if (flag == "--format") format = argv[i + 1];
+        else if (flag == "--out") out = argv[i + 1];
+        else if (flag == "--deflection") deflection = std::atof(argv[i + 1]);
+        else return usage();
+      }
+      if (in.empty() || format.empty() || out.empty() || !(deflection > 0.0)) return usage();
+      return convert(in, format, out, deflection);
+    }
+  } catch (const Standard_Failure& failure) {
+    // OCCT raises on geometry it cannot handle. For `convert` that is a refusal of this file,
+    // not a crash of the bridge: another attempt reads the same bytes and raises again.
+    if (command == "convert") return refuse(std::string("OCCT raised ") + failure.what());
+    std::fprintf(stderr, "occt-bridge: OCCT raised %s\n", failure.what());
+    return 1;
   }
   return usage();
 }
