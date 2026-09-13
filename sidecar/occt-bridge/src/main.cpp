@@ -95,7 +95,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 2;
+constexpr int BRIDGE_VERSION = 3;
 
 const double PI = std::acos(-1.0);
 
@@ -285,8 +285,11 @@ void writeNode(std::string& out, const TDF_Label& label, std::map<std::string, T
     XCAFDoc_ShapeTool::GetReferredShape(label, shape);
     local = XCAFDoc_ShapeTool::GetLocation(label).Transformation();
   }
+  // The instance's own name when the file gives it one. OCCT names an unnamed instance after
+  // the label it refers to (`=>[0:1:1:9]`), which is an address rather than a name, so that
+  // falls through to the prototype's name exactly as an empty one does.
   std::string name = nameOf(label);
-  if (name.empty()) name = nameOf(shape);
+  if (name.empty() || name.rfind("=>", 0) == 0) name = nameOf(shape);
   out += "{\"name\":" + jsonString(name) + ",\"prototype\":" + jsonString(entryOf(shape)) +
          ",\"transform\":" + matrix(local);
   if (XCAFDoc_ShapeTool::IsAssembly(shape)) {

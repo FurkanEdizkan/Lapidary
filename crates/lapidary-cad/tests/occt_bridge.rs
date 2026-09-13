@@ -193,6 +193,21 @@ async fn the_phase_0_exit_converts_a_200_part_assembly_to_gltf_tree_and_entities
     let structure = out.structure.as_ref().expect("an assembly has a tree");
     assert_eq!(structure.parts, 200, "every placed part");
     assert_eq!(structure.prototypes, 8);
+    // Every node is named for a part. OCCT names an instance the file left unnamed after the
+    // label it points at (`=>[0:1:1:9]`), and a tree of those is navigable only in the sense
+    // that it opens: the live stack showed one on every placed part until the bridge fell back
+    // to the prototype's name.
+    fn unnamed(node: &lapidary_cad::AssemblyNode) -> Option<&str> {
+        if node.name.is_empty() || node.name.starts_with("=>") {
+            return Some(&node.name);
+        }
+        node.children.iter().find_map(unnamed)
+    }
+    assert_eq!(
+        structure.roots.iter().find_map(unnamed),
+        None,
+        "every node is named for a part, not an OCCT label"
+    );
     // Ingest stores the tree by serializing this value, and the page reads it back as the same
     // type. What `FakeCad` cannot show is that a real bridge tree survives the trip.
     let stored = serde_json::to_vec(structure).expect("the tree serializes");
