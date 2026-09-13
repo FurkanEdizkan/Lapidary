@@ -793,7 +793,13 @@ export const strings = {
       count === null
         ? value
         : `${value}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
-    failed: 'Could not load the formats and materials in this library. Reload to try again.',
+    tag: 'Tag',
+    /** A tag's whole name, as a person wrote it, with its count. */
+    tagOption: (value: string, count: number | null) =>
+      count === null
+        ? value
+        : `${value}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
+    failed: 'Could not load the formats, materials and tags in this library. Reload to try again.',
   },
   folders: {
     title: 'Categories',
@@ -1195,6 +1201,17 @@ export const strings = {
     /** What clicking the picture does, for a screen reader that cannot see the crop. */
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,
+  },
+  tags: {
+    /** What people call a part beyond its name: a project, a use, a shelf. */
+    title: 'Tags',
+    field: 'New tag',
+    add: 'Add tag',
+    saving: 'Saving…',
+    /** The remove button's whole name, so a screen reader hears which tag goes. */
+    remove: (tag: string) => `Remove tag ${tag}`,
+    /** A refusal that arrived without a sentence of its own. */
+    refusedWithoutReason: 'Could not save these tags. Reload the part and try again.',
   },
   sources: {
     /**

@@ -262,6 +262,8 @@ pub struct GridQuery<'a> {
     pub format: Option<&'a str>,
     /// One material, exactly as the file names it.
     pub material: Option<&'a str>,
+    /// One tag, exactly as a person wrote it.
+    pub tag: Option<&'a str>,
 }
 
 impl GridQuery<'_> {
@@ -275,6 +277,7 @@ impl GridQuery<'_> {
             shows: Shows::Live,
             format: None,
             material: None,
+            tag: None,
         }
     }
 }
@@ -1270,6 +1273,8 @@ pub struct PartDetailRow {
     pub revision: RevisionId,
     pub name: String,
     pub part_number: Option<String>,
+    /// The tags a person gave the part, in the order they gave them.
+    pub tags: Vec<String>,
     /// The part's identity within its library since slice 6a, and the path a scanned or
     /// dropped folder reported for it.
     pub source_path: String,
@@ -1327,6 +1332,7 @@ struct DetailColumns {
     revision_id: Uuid,
     name: String,
     part_number: Option<String>,
+    tags: Vec<String>,
     source_path: String,
     rev_label: String,
     thumb_bytes: Option<Vec<u8>>,
@@ -1460,7 +1466,8 @@ mod facet_tests {
 
 impl PgParts {
     /// The source formats among the parts the grid would show for the same library,
-    /// category, query and state, per [`facet_values`].
+    /// category, query and state, per [`facet_values`]: narrowed by the grid's chosen material
+    /// and tag, and never by its own chosen format.
     pub async fn format_facet(
         &self,
         library: LibraryId,
@@ -1468,6 +1475,7 @@ impl PgParts {
         query: Option<&str>,
         shows: Shows,
         material: Option<&str>,
+        tag: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         // The grid's own predicates, so a count never includes a part the grid would not show:
         // the library, the state, the category subtree, and `search`'s match when there is a
@@ -1492,6 +1500,7 @@ impl PgParts {
                AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
                     OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
+               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
              GROUP BY s.format ORDER BY s.format",
         )
         .bind(library.as_uuid())
@@ -1500,13 +1509,14 @@ impl PgParts {
         .bind(query)
         .bind(query.map(like_pattern))
         .bind(material)
+        .bind(tag)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
     }
 
     /// The materials among the same parts, per [`facet_values`]: narrowed by the grid's chosen
-    /// format, and never by its own chosen material. Counts that obeyed their own choice would
+    /// format and tag, and never by its own chosen material. Counts that obeyed their own choice would
     /// show every other material as zero; counts that ignored the format would offer parts the
     /// grid is not showing. `format_facet` keeps the same rule the other way round.
     ///
@@ -1518,6 +1528,7 @@ impl PgParts {
         query: Option<&str>,
         shows: Shows,
         format: Option<&str>,
+        tag: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
@@ -1534,6 +1545,7 @@ impl PgParts {
                AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
                     AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
              GROUP BY m.material ORDER BY m.material",
         )
         .bind(library.as_uuid())
@@ -1542,6 +1554,48 @@ impl PgParts {
         .bind(query)
         .bind(query.map(like_pattern))
         .bind(format)
+        .bind(tag)
+        .fetch_all(&self.0)
+        .await?;
+        Ok(facet_values(rows, EXACT_FACET_ROWS))
+    }
+
+    /// The tags among the same parts, per [`facet_values`]: narrowed by the grid's chosen format
+    /// and material, and never by its own chosen tag, for the reason `material_facet` gives.
+    pub async fn tag_facet(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: Option<&str>,
+        shows: Shows,
+        format: Option<&str>,
+        material: Option<&str>,
+    ) -> Result<Vec<FacetValue>, DbError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $3 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             SELECT t.tag, count(DISTINCT p.id) FROM part p \
+             CROSS JOIN LATERAL unnest(p.tags) AS t(tag) \
+             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
+               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
+               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
+             GROUP BY t.tag ORDER BY t.tag",
+        )
+        .bind(library.as_uuid())
+        .bind(shows == Shows::Removed)
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(query)
+        .bind(query.map(like_pattern))
+        .bind(format)
+        .bind(material)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1586,7 +1640,7 @@ impl PgParts {
     pub async fn detail(&self, part: PartId) -> Result<Option<PartDetailRow>, DbError> {
         let row: Option<DetailColumns> = sqlx::query_as(
             "SELECT p.id AS part_id, p.library_id, r.id AS revision_id, p.name, \
-                    p.part_number, p.source_path, r.rev_label, \
+                    p.part_number, p.tags, p.source_path, r.rev_label, \
                     d.thumb_bytes, d.kernel_version, \
                     r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
@@ -1641,6 +1695,7 @@ impl PgParts {
             revision: RevisionId::from_uuid(c.revision_id),
             name: c.name,
             part_number: c.part_number,
+            tags: c.tags,
             source_path: c.source_path,
             rev_label: c.rev_label,
             thumbnail_webp: c.thumb_bytes,
@@ -1789,6 +1844,19 @@ impl PgParts {
         )
         .bind(part.as_uuid())
         .bind(number)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// The tags a person gave this part, replacing the ones it had; an empty list clears them.
+    /// Only a live part, for [`PgParts::set_part_number`]'s reason.
+    pub async fn set_tags(&self, part: PartId, tags: &[String]) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET tags = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(part.as_uuid())
+        .bind(tags)
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -2674,6 +2742,7 @@ impl PartRepository for PgParts {
             shows,
             format,
             material,
+            tag,
         } = *grid;
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -2740,6 +2809,7 @@ impl PartRepository for PgParts {
                     AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
+               AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
@@ -2760,6 +2830,7 @@ impl PartRepository for PgParts {
         .bind(folder.map(|f| f.as_uuid()))
         .bind(format)
         .bind(material)
+        .bind(tag)
         .fetch_all(&self.0)
         .await?;
 
@@ -2783,6 +2854,7 @@ impl PartRepository for PgParts {
             shows,
             format,
             material,
+            tag,
         } = *grid;
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
@@ -2877,6 +2949,7 @@ impl PartRepository for PgParts {
                        AND f.format = $10 AND f.revision_id = (SELECT id FROM revision \
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                   AND ($11::text IS NULL OR p.materials @> ARRAY[$11::text]) \
+                  AND ($12::text IS NULL OR p.tags @> ARRAY[$12::text]) \
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.source_path ILIKE $9 \
@@ -2906,6 +2979,7 @@ impl PartRepository for PgParts {
         .bind(like_pattern(query))
         .bind(format)
         .bind(material)
+        .bind(tag)
         .fetch_all(&self.0)
         .await?;
 
@@ -2958,7 +3032,8 @@ impl PgParts {
                   AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                   AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
                        AND f.format = $8 AND f.revision_id = r.id)) \
-                  AND ($10::text IS NULL OR p.materials @> ARRAY[$10::text]) ), \
+                  AND ($10::text IS NULL OR p.materials @> ARRAY[$10::text]) \
+                  AND ($11::text IS NULL OR p.tags @> ARRAY[$11::text]) ), \
              anchor AS (SELECT value, id FROM keyed WHERE id = $2), \
              top AS ( \
                SELECT id, value FROM keyed \
@@ -2980,6 +3055,7 @@ impl PgParts {
         .bind(grid.format)
         .bind(sort.as_str())
         .bind(grid.material)
+        .bind(grid.tag)
         .fetch_all(&self.0)
         .await?;
 

@@ -118,9 +118,21 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 
   The names half is delivered and does the work the row is really about: multi-word AND
   over names, either order, neither adjacent, plus the trigram half for fragments.
+
+  **Tags and materials since `0022`.** Recorded 2026-09-13. `part.materials` (`0021`) and
+  `part.tags` (`0022`) exist now, and `search` indexes both at weight C, below the part number
+  (A) and the name (B), through `lapidary_words`: an IMMUTABLE wrapper, because a generated
+  column takes no STABLE function and `array_to_string` is one. A word of either finds the part.
 -->
 | Trigram search for part numbers and filenames | 1 |
 | Faceted filters: format, material, library, tags, lifecycle | 2 |
+<!--
+  **Tags since `0022`.** Recorded 2026-09-13. Format, material and tag are facets beside the grid,
+  each counted over what the grid shows and narrowed by the others' choices, never its own. Tags
+  are given on the part's own page, the whole list in one write (`PUT /api/parts/{id}/tags`), and
+  listed in the quick look. Library is the switcher above the grid rather than a facet. Lifecycle
+  is not here yet: it filters by revision states, which are Phase 8's and controlled libraries'.
+-->
 | Sort by any promoted geometric column | 2 |
 | Quick look beside the grid at 1280px and up, a dialog below it; the open part rides in the URL | 2 |
 | Saved filters / smart collections | 5 |

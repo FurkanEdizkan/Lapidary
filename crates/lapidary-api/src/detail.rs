@@ -58,6 +58,8 @@ pub struct PartDetail {
     pub rev_label: String,
     pub name: String,
     pub part_number: Option<String>,
+    /// The tags a person gave the part, in their order. Empty when nobody has.
+    pub tags: Vec<String>,
     /// The part's identity within its library since slice 6a: the path a scan found it
     /// at, or the path the browser reported when it was dropped. Two parts named
     /// `bracket` in two folders are told apart by this and by nothing else, which is
@@ -157,6 +159,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         rev_label: row.rev_label,
         name: row.name,
         part_number: row.part_number,
+        tags: row.tags,
         source_path: row.source_path,
         thumbnail: row
             .thumbnail_webp

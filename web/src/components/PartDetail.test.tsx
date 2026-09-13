@@ -1,7 +1,8 @@
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
 import { Detail, warmViewer } from './PartDetail'
+import { strings } from '../lib/strings'
 import type { PartDetail } from '../lib/types'
 
 const { mounts, prepare } = vi.hoisted(() => ({ mounts: [] as string[], prepare: vi.fn(async () => {}) }))
@@ -31,6 +32,7 @@ const BRACKET: PartDetail = {
   revLabel: '1',
   name: 'angle-bracket-60x60x40-lp-9004-00',
   partNumber: null,
+  tags: [],
   sourcePath: 'cad/angle-bracket-60x60x40-lp-9004-00.igs',
   thumbnail: null,
   triangleCount: 44,
@@ -83,4 +85,41 @@ test('the 3D view starts over for another part, and keeps its place for a finer 
 test('warming the viewer prepares it', async () => {
   await warmViewer()
   expect(prepare).toHaveBeenCalledTimes(1)
+})
+
+/** On the part page tags are added and removed as the whole list; anywhere else they are only listed. */
+test('tags are added and removed where the part is recordable, and only listed elsewhere', async () => {
+  const puts: unknown[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'PUT') {
+        puts.push(JSON.parse(init.body ?? 'null'))
+        return { ok: true, status: 204, json: async () => null }
+      }
+      return { ok: true, status: 200, json: async () => [] }
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const tagged = { ...BRACKET, tags: ['welding jig'] }
+  const page = (recordable: boolean) => (
+    <QueryClientProvider client={client}>
+      <Detail part={tagged} recordable={recordable} />
+    </QueryClientProvider>
+  )
+  const { rerender } = render(page(true))
+
+  fireEvent.change(screen.getByLabelText(strings.tags.field), { target: { value: 'spare' } })
+  fireEvent.click(screen.getByRole('button', { name: strings.tags.add }))
+  await waitFor(() => expect(puts).toEqual([{ tags: ['welding jig', 'spare'] }]))
+  await waitFor(() => expect(screen.getByRole('button', { name: strings.tags.add })).toBeTruthy())
+
+  fireEvent.click(screen.getByRole('button', { name: strings.tags.remove('welding jig') }))
+  await waitFor(() => expect(puts).toEqual([{ tags: ['welding jig', 'spare'] }, { tags: [] }]))
+
+  rerender(page(false))
+  expect(screen.getByText('welding jig')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
+  expect(screen.queryByLabelText(strings.tags.field)).toBeNull()
+  vi.unstubAllGlobals()
 })

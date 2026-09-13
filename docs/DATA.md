@@ -412,6 +412,8 @@ part(
   created_at timestamptz, created_by uuid,
   deleted_at timestamptz,               -- soft delete
   metadata_json jsonb DEFAULT '{}',
+  materials text[] NOT NULL DEFAULT '{}',   -- what the file declares; GIN, `materials @> array[$n]`
+  tags text[] NOT NULL DEFAULT '{}',        -- what a person gave it; GIN, `tags @> array[$n]`
   search tsvector GENERATED ALWAYS AS (...) STORED   -- STORED IS MANDATORY (PG18)
 );
 
