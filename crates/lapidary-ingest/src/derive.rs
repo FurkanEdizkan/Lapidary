@@ -104,6 +104,17 @@ impl WorkerHandler {
         // was asked for exactly one thing, and a rung filed under a level nobody asked for
         // is a cache entry that can never be hit.
         match want {
+            // ponytail: written at ingest only; nothing enqueues these. Derive them here when
+            // eviction starts removing them.
+            DerivativeKind::Structure | DerivativeKind::Entities => {
+                return Err(HandlerError::Permanent {
+                    message: format!(
+                        "The {kind} of revision {revision} is written when its file is \
+                         ingested and is not derived on its own. Re-ingest the file to \
+                         write it again."
+                    ),
+                });
+            }
             DerivativeKind::Thumbnail => {
                 let Some(webp) = output.thumbnail_webp else {
                     return Err(missing(kind, revision));

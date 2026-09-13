@@ -1,6 +1,7 @@
 //! Domain types shared by every Lapidary crate. Depends on no other Lapidary crate.
 
 mod approximate;
+mod assembly;
 mod derivative;
 mod error;
 mod ids;
@@ -11,6 +12,7 @@ mod part;
 pub mod slug;
 
 pub use approximate::Approximate;
+pub use assembly::{AssemblyNode, AssemblyTree};
 pub use derivative::DerivativeKind;
 pub use error::CoreError;
 pub use ids::{

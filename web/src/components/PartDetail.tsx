@@ -4,13 +4,21 @@ import {
   addPartSource,
   blobUrl,
   downloadUrl,
+  fetchStructure,
   fetchPartImages,
   fetchPartSources,
   setImageFraming,
   uploadPartImage,
 } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Approximate, PartDetail as PartDetailData, PartId, PartImage } from '../lib/types'
+import type {
+  Approximate,
+  AssemblyNode,
+  BlobHash,
+  PartDetail as PartDetailData,
+  PartId,
+  PartImage,
+} from '../lib/types'
 
 /**
  * One picture in the gallery, framed the way its row says — and adjustable in place.
@@ -456,6 +464,8 @@ export function Detail({
         </Row>
       </Section>
 
+      {part.structure === null ? null : <Assembly hash={part.structure} />}
+
       <Section title={strings.detail.file}>
         <Row label={strings.detail.format}>
           {part.sourceFormat === null ? strings.detail.unknown : part.sourceFormat}
@@ -560,6 +570,69 @@ function Figure<T>({
  * and `strings.removal.removeHint` says so next to the button before it is pressed —
  * confirming it would teach people to click through the dialog that purge actually needs.
  */
+
+/**
+ * The assembly tree a CAD kernel read, for a STEP or IGES part.
+ *
+ * Nested native disclosures rather than a hand-rolled ARIA tree: a `<summary>` takes focus and
+ * opens on Enter or Space with no script, and assistive technology announces it expanded or
+ * collapsed. The top level starts open, since it is the assembly itself; everything under it
+ * starts closed. A single part with nothing under it is not a tree worth a section.
+ */
+function Assembly({ hash }: { hash: BlobHash }) {
+  const tree = useQuery({ queryKey: ['structure', hash], queryFn: () => fetchStructure(hash) })
+  const heading = (
+    <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+      {strings.detail.assembly}
+    </h3>
+  )
+  if (tree.isError) {
+    return (
+      <section className="mb-6">
+        {heading}
+        <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.detail.assemblyFailed}
+        </p>
+      </section>
+    )
+  }
+  if (tree.data === undefined) return null
+  const { roots, parts, prototypes } = tree.data
+  if (roots.length === 1 && roots[0]?.children.length === 0) return null
+  // ponytail: every node is in the DOM, open or not. Render a branch's children only once it
+  // is opened if a 10,000-part assembly makes this page slow.
+  return (
+    <section className="mb-6">
+      {heading}
+      <p className="mb-2 text-xs text-[var(--color-muted)]">
+        {strings.detail.assemblyCounts(parts, prototypes)}
+      </p>
+      <ul role="list" className="text-sm">
+        {roots.map((node, index) => (
+          <AssemblyBranch key={index} node={node} open />
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function AssemblyBranch({ node, open = false }: { node: AssemblyNode; open?: boolean }) {
+  if (node.children.length === 0) {
+    return <li className="py-0.5 pl-4">{node.name}</li>
+  }
+  return (
+    <li>
+      <details open={open}>
+        <summary className="cursor-pointer py-0.5">{node.name}</summary>
+        <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
+          {node.children.map((child, index) => (
+            <AssemblyBranch key={index} node={child} />
+          ))}
+        </ul>
+      </details>
+    </li>
+  )
+}
 
 function Section({
   title,

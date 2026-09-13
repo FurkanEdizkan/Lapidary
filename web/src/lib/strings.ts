@@ -347,6 +347,11 @@ export const strings = {
     noPreview3d: 'Not generated yet',
     /** A figure the database has no value for. Distinct from a refusal to measure. */
     unknown: 'Unknown',
+    assembly: 'Assembly',
+    /** Leaves counted with every instance, beside the distinct part definitions they place. */
+    assemblyCounts: (parts: number, prototypes: number) =>
+      `${parts.toLocaleString('en-US')} ${parts === 1 ? 'part' : 'parts'}, ${prototypes.toLocaleString('en-US')} distinct`,
+    assemblyFailed: 'Could not load the assembly tree. Reload the page to try again.',
   },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:

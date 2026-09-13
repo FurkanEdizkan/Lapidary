@@ -299,7 +299,8 @@ pub struct StoredBlobRow {
 /// `blob` row of its own before `derivative_blake3_references_blob` will accept the
 /// derivative that points at it, and that row needs the sizes.
 pub struct TessellationRow<'a> {
-    /// `derivative.kind` — `tessellation_l0`, `_l1` or `_l2`.
+    /// `derivative.kind`: a tessellation rung, or the `structure` or `entities` JSON a CAD
+    /// kernel read, which are stored the same way.
     pub kind: &'a str,
     pub blob: StoredBlobRow,
     /// Cells per axis, or `None` for the finest grid. Persisted as `params_json` so that
@@ -1226,6 +1227,8 @@ pub struct PartDetailRow {
     pub compressed: Option<bool>,
     pub tessellation_l0: Option<BlobHash>,
     pub tessellation_l0_bytes: Option<u64>,
+    /// The assembly tree a CAD kernel read, for a STEP or IGES part.
+    pub structure: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root — the same
     /// value and the same nullability as [`PartRow::directory`], derived the same way.
     ///
@@ -1275,6 +1278,7 @@ struct DetailColumns {
     storage_path: Option<String>,
     l0_blake3: Option<String>,
     l0_stored_bytes: Option<i64>,
+    structure_blake3: Option<String>,
     created_us: i64,
     updated_us: i64,
 }
@@ -1350,6 +1354,7 @@ impl PgParts {
                     s.stored_bytes AS source_stored_bytes, \
                     s.zstd_level AS source_zstd_level, s.storage_path, \
                     l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
+                    st.blake3 AS structure_blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
@@ -1359,6 +1364,8 @@ impl PgParts {
                                 JOIN blob b ON b.blake3 = dv.blake3 \
                                 WHERE dv.revision_id = r.id AND dv.kind = $3 \
                                 ORDER BY dv.created_at DESC, dv.id DESC LIMIT 1) l0 ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $4 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) st ON true \
              LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -1371,6 +1378,7 @@ impl PgParts {
         // entirely correct.
         .bind(DerivativeKind::Thumbnail.as_str())
         .bind(DerivativeKind::TessellationL0.as_str())
+        .bind(DerivativeKind::Structure.as_str())
         .fetch_optional(&self.0)
         .await?;
 
@@ -1425,6 +1433,7 @@ impl PgParts {
             // Derived here rather than on the client, for the reason `PartRow::directory`
             // gives: the client cannot know when the store has not been migrated yet, and a
             // path assembled from slugs would be confidently wrong exactly where it matters.
+            structure: detail_hash("derivative.blake3", c.structure_blake3)?,
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
             created_at: detail_stamp("part.created_at", c.created_us)?,

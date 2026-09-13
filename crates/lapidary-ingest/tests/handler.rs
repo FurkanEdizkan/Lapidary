@@ -1,7 +1,8 @@
 //! The handler, exercised the way the worker exercises it.
 
 use lapidary_cad::{
-    CadError, Kernel, KernelOutput, KernelParams, KernelVersion, MeasurementProvenance, MeshKernel,
+    AssemblyNode, AssemblyTree, CadError, Entity, Kernel, KernelOutput, KernelParams,
+    KernelVersion, MeasurementProvenance, MeshKernel,
 };
 use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
@@ -2435,7 +2436,31 @@ impl Kernel for FakeCad {
         };
         let mut output = MeshKernel.process(bytes, &as_mesh).await?;
         output.provenance = MeasurementProvenance::ANALYTIC;
+        output.structure = Some(fake_tree());
+        output.entities = vec![Entity::Cylinder {
+            prototype: "0:1:1:1".to_owned(),
+            face: 1,
+            radius: 11.0,
+            origin: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+        }];
         Ok(output)
+    }
+}
+
+/// The one-part tree `FakeCad` reports, as the bridge writes one for a single solid.
+fn fake_tree() -> AssemblyTree {
+    AssemblyTree {
+        roots: vec![AssemblyNode {
+            name: "fixture-plate-lp-9000-00".to_owned(),
+            prototype: "0:1:1:1".to_owned(),
+            transform: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            children: Vec::new(),
+        }],
+        parts: 1,
+        prototypes: 1,
     }
 }
 
@@ -2509,4 +2534,60 @@ async fn a_step_file_on_a_worker_without_a_cad_kernel_fails_and_says_why(pool: P
         .await
         .expect("count");
     assert_eq!(parts, 0, "and adds no part");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_step_files_tree_and_entities_are_stored_beside_its_rungs(pool: PgPool) {
+    // The kernel reads both on every conversion. Dropped after measuring, as they were, the
+    // detail page has no tree to show and Phase 3 has no faces to snap a measurement to.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+    handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("the STEP file ingests");
+    handler
+        .handle(&job_for(BRACKET))
+        .await
+        .expect("the STL ingests");
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.name, d.kind, d.blake3 FROM derivative d \
+         JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
+         WHERE d.kind IN ('structure', 'entities') ORDER BY d.kind",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("rows");
+    let kinds: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|(name, kind, _)| (name.as_str(), kind.as_str()))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("fixture-plate-lp-9000-00", "entities"),
+            ("fixture-plate-lp-9000-00", "structure"),
+        ],
+        "the STEP part has both, and the mesh neither"
+    );
+
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    let read = |hex: &str| {
+        store
+            .get(&BlobHash::parse_hex(hex).expect("a hash"))
+            .expect("the bytes are in the store")
+    };
+    let tree: AssemblyTree = serde_json::from_slice(&read(&rows[1].2)).expect("the tree parses");
+    assert_eq!(tree, fake_tree());
+    let entities: serde_json::Value =
+        serde_json::from_slice(&read(&rows[0].2)).expect("the entities parse");
+    assert_eq!(entities[0]["type"], "cylinder");
+    assert_eq!(entities[0]["radius"], 11.0);
 }

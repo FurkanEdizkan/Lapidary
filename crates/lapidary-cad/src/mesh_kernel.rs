@@ -80,6 +80,9 @@ impl Kernel for MeshKernel {
                 DerivativeKind::TessellationL2 => cluster(&mesh, Lod::L2).map(|rung| {
                     tessellations.push(rung);
                 }),
+                // A mesh has no assembly and no analytic surfaces: nothing to make, and
+                // nothing that went wrong.
+                DerivativeKind::Structure | DerivativeKind::Entities => Ok(()),
             };
             if let Err(reason) = made {
                 unproduced.push(Unproduced {
