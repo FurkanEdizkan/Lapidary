@@ -84,6 +84,10 @@ reqwest = { version = "0.12.24", default-features = false, features = [
   "http2",
 ] }
 image = { version = "0.25.10", default-features = false, features = ["webp", "png", "jpeg"] }
+# `EXT_meshopt_compression` for the glTF rungs (`DATA.md` §2.2). MIT OR Apache-2.0. Its build
+# script compiles meshoptimizer's bundled C++ with `cc`, which `blake3` already runs for its C.
+# Its `bindgen` feature stays off, so the bindings are the shipped ones and no libclang is needed.
+meshopt = "0.6.2"
 jiff = { version = "0.2.35", features = ["serde"] }
 # Only lapidary-db, and only to name log::LevelFilter for sqlx's ConnectOptions — sqlx
 # takes that type and re-exports nothing equivalent. Already in the tree via sqlx; this

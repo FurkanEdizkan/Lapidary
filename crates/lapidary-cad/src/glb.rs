@@ -1,15 +1,27 @@
-//! glTF 2.0 binary output, uncompressed.
+//! glTF 2.0 binary output, compressed with `EXT_meshopt_compression`.
 //!
-//! `DATA.md` §2.2 chose meshopt as the codec and that stands — but its decoder is Phase 3's
-//! viewer, and the Rust binding wraps C, which would put a C toolchain into the worker
-//! image against the offline-build constraint `docs/prototype-notes.md` calls worth
-//! preserving. Derivatives are designed to be evicted and regenerated (`DATA.md` §1.5), so
-//! Phase 3 re-encodes and the cost is one pass over disposable data.
+//! `DATA.md` §2.2 chose meshopt: it decodes an order of magnitude faster than Draco, and decode
+//! is what a person waits on. Positions are encoded in `ATTRIBUTES` mode and indices in
+//! `TRIANGLES` mode. Nothing about what is drawn changes.
 //!
-//! What is written: one buffer, two bufferViews, two accessors, one mesh with one
-//! primitive, one node, one scene. No materials and no normals — the viewer computes
-//! normals from winding, exactly as `raster.rs` already does, and a normal buffer would
-//! double the file for data the consumer regenerates anyway.
+//! **Lossless, on purpose.** `KHR_mesh_quantization` would shrink positions further by rounding
+//! them to a 16-bit grid over the bounding box — on the 315 mm fixture assembly, a step of
+//! 0.005 mm. Measurement snaps to an analytic entity only when a triangle's corners lie within
+//! 0.001 mm of its surface (`web/src/lib/measure.ts`), so a quantized L2 would stop measuring
+//! exactly. The vertex codec round-trips float32 bit for bit, which the tests below check.
+//!
+//! Before encoding, triangles are put in vertex-cache order and vertices in the order they are
+//! first used, which is what the two codecs compress best. The mesh is the same set of
+//! triangles, each wound the same way.
+//!
+//! The `meshopt` crate's build script compiles meshoptimizer's C++ with `cc` in the build
+//! stage, which already runs `cc` for `blake3`'s C. The runtime image gains nothing.
+//!
+//! What is written: one buffer holding the compressed bytes, a fallback buffer holding none,
+//! two bufferViews, two accessors, one mesh with one primitive, one node, one scene. The
+//! extension is required, so a loader without it refuses the file rather than reading the empty
+//! fallback. No materials and no normals: the viewer shades each face flat, as `raster.rs` does,
+//! and a normal buffer would carry what the consumer derives anyway.
 
 use crate::cluster::Indexed;
 use crate::kernel::CadError;
@@ -17,7 +29,7 @@ use crate::kernel::CadError;
 /// Bumped whenever a change alters output bytes, and carried in `kernel_version` beside the
 /// parser and the rasterizer. A regenerated rung must be distinguishable from a stale one —
 /// the same rule `raster.rs`'s `RASTER_VERSION` exists for.
-pub const GLB_VERSION: &str = "glb-1";
+pub const GLB_VERSION: &str = "glb-2";
 
 const MAGIC: u32 = 0x4654_6C67; // "glTF"
 const CONTAINER_VERSION: u32 = 2;
@@ -32,9 +44,10 @@ const UNSIGNED_INT: u32 = 5125;
 const ARRAY_BUFFER: u32 = 34962;
 const ELEMENT_ARRAY_BUFFER: u32 = 34963;
 
-/// Round up to the next 4-byte boundary. Both chunks and both bufferViews need it: the
-/// container requires it of chunks, and an accessor whose byteOffset is not a multiple of
-/// its component size is invalid even where a lenient loader accepts it.
+const MESHOPT: &str = "EXT_meshopt_compression";
+
+/// Round up to the next 4-byte boundary. The container requires it of chunks, and the
+/// uncompressed layout keeps the index view where an accessor may start.
 fn pad_to_four(n: usize) -> usize {
     n.div_ceil(4) * 4
 }
@@ -45,15 +58,29 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
             detail: "the mesh has no triangles left after clustering".to_owned(),
         });
     }
+    let uncompressible = |what: &str, source: meshopt::Error| CadError::Unrenderable {
+        detail: format!("could not compress the {what} of the glTF rung: {source}"),
+    };
 
-    let positions_len = indexed.positions.len() * 12;
+    let mut indices = meshopt::optimize_vertex_cache(&indexed.indices, indexed.positions.len());
+    let positions = meshopt::optimize_vertex_fetch(&mut indices, &indexed.positions);
+    let vertices = meshopt::encode_vertex_buffer(&positions)
+        .map_err(|source| uncompressible("positions", source))?;
+    let triangles = meshopt::encode_index_buffer(&indices, positions.len())
+        .map_err(|source| uncompressible("triangles", source))?;
+
+    let triangles_offset = pad_to_four(vertices.len());
+    let bin_len = pad_to_four(triangles_offset + triangles.len());
+    // What the two views decode to, laid out as an uncompressed file would lay them out.
+    let positions_len = positions.len() * 12;
     let indices_offset = pad_to_four(positions_len);
-    let indices_len = indexed.indices.len() * 4;
-    let buffer_len = indices_offset + indices_len;
-    let (min, max) = position_bounds(indexed);
+    let indices_len = indices.len() * 4;
+    let (min, max) = position_bounds(&positions);
 
     let document = serde_json::json!({
         "asset": { "version": "2.0", "generator": format!("lapidary-cad {GLB_VERSION}") },
+        "extensionsUsed": [MESHOPT],
+        "extensionsRequired": [MESHOPT],
         "scene": 0,
         "scenes": [ { "nodes": [0] } ],
         "nodes": [ { "mesh": 0 } ],
@@ -62,7 +89,7 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
             {
                 "bufferView": 0,
                 "componentType": FLOAT,
-                "count": indexed.positions.len(),
+                "count": positions.len(),
                 "type": "VEC3",
                 // Required by the specification on POSITION, and not decoration: a viewer
                 // frames the part from these, so absent or stale bounds put the camera in
@@ -73,17 +100,33 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
             {
                 "bufferView": 1,
                 "componentType": UNSIGNED_INT,
-                "count": indexed.indices.len(),
+                "count": indices.len(),
                 "type": "SCALAR"
             }
         ],
         "bufferViews": [
-            { "buffer": 0, "byteOffset": 0, "byteLength": positions_len,
-              "target": ARRAY_BUFFER },
-            { "buffer": 0, "byteOffset": indices_offset, "byteLength": indices_len,
-              "target": ELEMENT_ARRAY_BUFFER }
+            {
+                "buffer": 1, "byteOffset": 0, "byteLength": positions_len, "byteStride": 12,
+                "target": ARRAY_BUFFER,
+                "extensions": { MESHOPT: {
+                    "buffer": 0, "byteOffset": 0, "byteLength": vertices.len(),
+                    "byteStride": 12, "count": positions.len(), "mode": "ATTRIBUTES"
+                } }
+            },
+            {
+                "buffer": 1, "byteOffset": indices_offset, "byteLength": indices_len,
+                "target": ELEMENT_ARRAY_BUFFER,
+                "extensions": { MESHOPT: {
+                    "buffer": 0, "byteOffset": triangles_offset, "byteLength": triangles.len(),
+                    "byteStride": 4, "count": indices.len(), "mode": "TRIANGLES"
+                } }
+            }
         ],
-        "buffers": [ { "byteLength": buffer_len } ]
+        "buffers": [
+            { "byteLength": bin_len },
+            { "byteLength": indices_offset + indices_len,
+              "extensions": { MESHOPT: { "fallback": true } } }
+        ]
     });
 
     let mut json_chunk =
@@ -94,17 +137,11 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
     // loader that reads the JSON chunk as a string chokes on a trailing NUL.
     json_chunk.resize(pad_to_four(json_chunk.len()), b' ');
 
-    let mut bin_chunk = Vec::with_capacity(buffer_len);
-    for position in &indexed.positions {
-        for axis in position {
-            bin_chunk.extend_from_slice(&axis.to_le_bytes());
-        }
-    }
-    bin_chunk.resize(indices_offset, 0);
-    for index in &indexed.indices {
-        bin_chunk.extend_from_slice(&index.to_le_bytes());
-    }
-    bin_chunk.resize(pad_to_four(bin_chunk.len()), 0);
+    let mut bin_chunk = Vec::with_capacity(bin_len);
+    bin_chunk.extend_from_slice(&vertices);
+    bin_chunk.resize(triangles_offset, 0);
+    bin_chunk.extend_from_slice(&triangles);
+    bin_chunk.resize(bin_len, 0);
 
     let total = 12 + 8 + json_chunk.len() + 8 + bin_chunk.len();
     let mut out = Vec::with_capacity(total);
@@ -120,10 +157,10 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
     Ok(out)
 }
 
-fn position_bounds(indexed: &Indexed) -> ([f32; 3], [f32; 3]) {
+fn position_bounds(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for position in &indexed.positions {
+    for position in positions {
         for axis in 0..3 {
             min[axis] = min[axis].min(position[axis]);
             max[axis] = max[axis].max(position[axis]);
@@ -218,35 +255,107 @@ mod tests {
         assert_eq!(parsed.json["accessors"][1]["componentType"], UNSIGNED_INT);
     }
 
+    /// A mesh big enough for the codecs to reorder, with coordinates no decimal rounds cleanly.
+    fn a_grid() -> Indexed {
+        let side = 12u32;
+        let positions = (0..side * side)
+            .map(|at| {
+                let (x, y) = ((at % side) as f32, (at / side) as f32);
+                [x * 0.1 + 1e-4, y * 0.37 - 5.0, (x * y) * 0.013]
+            })
+            .collect();
+        let indices = (0..side - 1)
+            .flat_map(|y| (0..side - 1).map(move |x| y * side + x))
+            .flat_map(|at| [at, at + 1, at + side, at + 1, at + side + 1, at + side])
+            .collect();
+        Indexed {
+            positions,
+            indices,
+            grid: None,
+        }
+    }
+
+    /// Each triangle as its corners' bit patterns, turned to start at its lowest corner so the
+    /// winding is kept, then sorted: equal exactly when two meshes hold the same triangles.
+    fn triangles(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[[u32; 3]; 3]> {
+        let mut out: Vec<[[u32; 3]; 3]> = indices
+            .chunks_exact(3)
+            .map(|t| {
+                let corner = |i: usize| positions[t[i] as usize].map(f32::to_bits);
+                let turned = [corner(0), corner(1), corner(2)];
+                let first = (0..3).min_by_key(|&i| turned[i]).expect("three corners");
+                [
+                    turned[first],
+                    turned[(first + 1) % 3],
+                    turned[(first + 2) % 3],
+                ]
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     #[test]
-    fn the_buffer_views_do_not_overlap_and_fit_the_buffer() {
-        let parsed = read_glb(&write_glb(&a_triangle()).expect("writes"));
+    fn the_compressed_views_do_not_overlap_and_fit_the_stored_buffer() {
+        let parsed = read_glb(&write_glb(&a_grid()).expect("writes"));
+        let range = |v: &serde_json::Value| {
+            let ext = &v["extensions"][MESHOPT];
+            assert_eq!(
+                ext["buffer"], 0,
+                "compressed bytes live in the GLB's own buffer"
+            );
+            let start = ext["byteOffset"].as_u64().expect("offset");
+            (start, start + ext["byteLength"].as_u64().expect("length"))
+        };
         let views = parsed.json["bufferViews"]
             .as_array()
             .expect("two buffer views");
-        let end = |v: &serde_json::Value| {
-            v["byteOffset"].as_u64().unwrap_or(0) + v["byteLength"].as_u64().unwrap_or(0)
-        };
-        assert!(end(&views[0]) <= views[1]["byteOffset"].as_u64().expect("offset"));
+        let (vertices, triangles) = (range(&views[0]), range(&views[1]));
+        assert!(vertices.1 <= triangles.0, "the views overlap");
         assert!(
-            end(&views[1])
-                <= parsed.json["buffers"][0]["byteLength"]
-                    .as_u64()
-                    .expect("buffer length")
+            triangles.1 <= parsed.bin.len() as u64,
+            "a view runs past the BIN chunk"
         );
     }
 
     #[test]
-    fn a_round_trip_through_the_independent_reader_recovers_the_vertices() {
+    fn the_extension_is_required_so_no_loader_reads_the_empty_fallback() {
         let parsed = read_glb(&write_glb(&a_triangle()).expect("writes"));
-        let offset = parsed.json["bufferViews"][0]["byteOffset"]
-            .as_u64()
-            .expect("offset") as usize;
-        let recovered: Vec<f32> = parsed.bin[offset..offset + 36]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().expect("four bytes")))
-            .collect();
-        assert_eq!(recovered, vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0]);
+        assert_eq!(
+            parsed.json["extensionsRequired"],
+            serde_json::json!([MESHOPT])
+        );
+        let fallback = &parsed.json["buffers"][1];
+        assert_eq!(fallback["extensions"][MESHOPT]["fallback"], true);
+        assert!(
+            fallback.get("uri").is_none(),
+            "the fallback buffer holds no bytes"
+        );
+    }
+
+    #[test]
+    fn decoding_gives_back_every_triangle_bit_for_bit() {
+        let mesh = a_grid();
+        let parsed = read_glb(&write_glb(&mesh).expect("writes"));
+        let view = |i: usize| {
+            let ext = &parsed.json["bufferViews"][i]["extensions"][MESHOPT];
+            let start = ext["byteOffset"].as_u64().expect("offset") as usize;
+            let end = start + ext["byteLength"].as_u64().expect("length") as usize;
+            (
+                &parsed.bin[start..end],
+                ext["count"].as_u64().expect("count") as usize,
+            )
+        };
+        let (vertices, vertex_count) = view(0);
+        let (indices, index_count) = view(1);
+        let positions: Vec<[f32; 3]> =
+            meshopt::decode_vertex_buffer(vertices, vertex_count).expect("positions decode");
+        let decoded: Vec<u32> =
+            meshopt::decode_index_buffer(indices, index_count).expect("triangles decode");
+        assert_eq!(
+            triangles(&positions, &decoded),
+            triangles(&mesh.positions, &mesh.indices)
+        );
     }
 
     #[test]

@@ -1036,7 +1036,7 @@ async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPoo
     // prevent -- and it would still pass every row-count assertion above.
     assert_eq!(
         versions,
-        vec!["mesh obj-1+glb-1+cpu-1", "mesh stl-1+glb-1+cpu-1"]
+        vec!["mesh obj-1+glb-2+cpu-1", "mesh stl-1+glb-2+cpu-1"]
     );
 }
 
@@ -1153,7 +1153,7 @@ async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
     .await
     .expect("row");
     assert_eq!(format, "3mf");
-    assert_eq!(version, "mesh 3mf-1+glb-1+cpu-1");
+    assert_eq!(version, "mesh 3mf-1+glb-2+cpu-1");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
