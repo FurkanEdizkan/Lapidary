@@ -13,11 +13,11 @@ find_package(OpenCASCADE REQUIRED CONFIG)
 add_executable(occt-bridge src/main.cpp)
 target_include_directories(occt-bridge PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 # Named toolkit by toolkit rather than by module, so the link line is the list of what the
-# bridge actually calls: STEP and IGES through XCAF, primitives and meshing, and mass
-# properties.
+# bridge actually calls: STEP and IGES through XCAF, primitives and booleans for the fixture
+# generator, meshing, and mass properties and bounding boxes.
 target_link_libraries(occt-bridge PRIVATE
   TKDESTEP TKDEIGES TKDE TKXSBase
   TKXCAF TKCAF TKLCAF TKCDF
-  TKMesh TKPrim TKTopAlgo TKGeomAlgo TKGeomBase
+  TKBO TKMesh TKPrim TKTopAlgo TKGeomAlgo TKGeomBase
   TKBRep TKG3d TKG2d TKMath TKernel
 )
