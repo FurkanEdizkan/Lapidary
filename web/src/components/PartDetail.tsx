@@ -314,6 +314,7 @@ export function Detail({
   part,
   actions,
   recordable = false,
+  titled = false,
 }: {
   part: PartDetailData
   actions?: ReactNode
@@ -327,6 +328,14 @@ export function Detail({
    * is the distinction, not "does it change the part".
    */
   recordable?: boolean
+  /**
+   * Whether something around this article already names the part. The quick-look's
+   * `Dialog` does — its title is the element `aria-labelledby` points at — and this
+   * article's own `h2` repeated the same name as a sibling heading inside the same dialog,
+   * so a screen reader's heading list read the part twice. On the part's own page nothing
+   * else names it, and the `h2` stays.
+   */
+  titled?: boolean
 }) {
   return (
     <article className="mt-4">
@@ -339,7 +348,7 @@ export function Detail({
           />
         )}
         <div>
-          <h2 className="text-xl font-medium">{part.name}</h2>
+          {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
           {part.partNumber === null ? null : (
             <p className="mt-1 text-sm text-[var(--color-muted)]">{part.partNumber}</p>
           )}

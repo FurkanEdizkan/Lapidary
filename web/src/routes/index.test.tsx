@@ -3113,3 +3113,22 @@ test("the first tab stop skips the category tree", async () => {
   expect(target).not.toBeNull();
   expect(target?.getAttribute("tabindex")).toBe("-1");
 });
+
+/**
+ * The quick-look names its part once. `Dialog` renders the name as the title
+ * `aria-labelledby` points at, and `Detail` used to render the same name again as a sibling
+ * `h2` — so a screen reader's heading list inside the dialog read the part twice. The
+ * part's own page keeps that `h2`, because nothing else there names it.
+ */
+test("the quick-look names its part in one heading, not two", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    partDetail: ok(detailFor(MOTOR_MOUNT)),
+  });
+  renderIndex();
+
+  const panel = await openPanel(MOTOR_MOUNT.name);
+
+  expect(within(panel).getAllByRole("heading", { name: MOTOR_MOUNT.name })).toHaveLength(1);
+});
