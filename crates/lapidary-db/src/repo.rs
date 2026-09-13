@@ -1294,6 +1294,11 @@ pub struct PartDetailRow {
     pub tessellation_l0_bytes: Option<u64>,
     /// The assembly tree a CAD kernel read, for a STEP or IGES part.
     pub structure: Option<BlobHash>,
+    /// The finer rungs, built on demand, and `None` until something has asked for them.
+    pub tessellation_l1: Option<BlobHash>,
+    pub tessellation_l2: Option<BlobHash>,
+    /// The analytic faces and edges a CAD kernel read, as JSON. `None` for a mesh.
+    pub entities: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root — the same
     /// value and the same nullability as [`PartRow::directory`], derived the same way.
     ///
@@ -1344,6 +1349,9 @@ struct DetailColumns {
     l0_blake3: Option<String>,
     l0_stored_bytes: Option<i64>,
     structure_blake3: Option<String>,
+    l1_blake3: Option<String>,
+    l2_blake3: Option<String>,
+    entities_blake3: Option<String>,
     created_us: i64,
     updated_us: i64,
 }
@@ -1588,6 +1596,7 @@ impl PgParts {
                     s.zstd_level AS source_zstd_level, s.storage_path, \
                     l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
                     st.blake3 AS structure_blake3, \
+                    l1.blake3 AS l1_blake3, l2.blake3 AS l2_blake3, ent.blake3 AS entities_blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
@@ -1599,6 +1608,12 @@ impl PgParts {
                                 ORDER BY dv.created_at DESC, dv.id DESC LIMIT 1) l0 ON true \
              LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $4 \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) st ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) l1 ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $6 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) l2 ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $7 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) ent ON true \
              LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
                                 FROM file f JOIN blob b ON b.blake3 = f.blake3 \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -1612,6 +1627,9 @@ impl PgParts {
         .bind(DerivativeKind::Thumbnail.as_str())
         .bind(DerivativeKind::TessellationL0.as_str())
         .bind(DerivativeKind::Structure.as_str())
+        .bind(DerivativeKind::TessellationL1.as_str())
+        .bind(DerivativeKind::TessellationL2.as_str())
+        .bind(DerivativeKind::Entities.as_str())
         .fetch_optional(&self.0)
         .await?;
 
@@ -1667,6 +1685,9 @@ impl PgParts {
             // gives: the client cannot know when the store has not been migrated yet, and a
             // path assembled from slugs would be confidently wrong exactly where it matters.
             structure: detail_hash("derivative.blake3", c.structure_blake3)?,
+            tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
+            tessellation_l2: detail_hash("derivative.blake3", c.l2_blake3)?,
+            entities: detail_hash("derivative.blake3", c.entities_blake3)?,
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
             created_at: detail_stamp("part.created_at", c.created_us)?,
@@ -2037,6 +2058,24 @@ impl PgParts {
     /// bug waiting for a second revision to exist: an enqueue route that names one
     /// revision while the grid shows another renders a picture nobody is looking at, and
     /// reports success doing it.
+    /// The hash of `revision`'s newest derivative of `kind`, or `None` when it has none yet.
+    /// Hash-addressed kinds only: a thumbnail lives inline in its row and has no hash to give.
+    pub async fn derivative_hash(
+        &self,
+        revision: RevisionId,
+        kind: DerivativeKind,
+    ) -> Result<Option<BlobHash>, DbError> {
+        let hex: Option<String> = sqlx::query_scalar(
+            "SELECT blake3 FROM derivative WHERE revision_id = $1 AND kind = $2 \
+               AND blake3 IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(revision.as_uuid())
+        .bind(kind.as_str())
+        .fetch_optional(&self.0)
+        .await?;
+        detail_hash("derivative.blake3", hex)
+    }
+
     pub async fn latest_revision(&self, part: PartId) -> Result<Option<RevisionId>, DbError> {
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM revision WHERE part_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",

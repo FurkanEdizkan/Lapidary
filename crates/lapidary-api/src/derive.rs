@@ -22,7 +22,9 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{DerivativeKind, JobPayload, LibraryId, LibraryMode, PartId, ScanAccepted};
+use lapidary_core::{
+    BlobHash, DerivativeKind, JobPayload, LibraryId, LibraryMode, PartId, ScanAccepted,
+};
 use lapidary_db::{DbError, PgJobs, PgParts, PgPool};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -300,6 +302,72 @@ pub async fn library_thumbnails(
 /// One batch, `202`, and the id to poll it with. Shared by every enqueue route in this
 /// crate — the two thumbnail routes here and `scan.rs` — so they cannot drift into
 /// answering differently.
+/// What a rung request answers when the rung already exists: its hash, ready for
+/// `GET /api/blob/{blake3}`.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct RungReady {
+    pub hash: BlobHash,
+}
+
+/// `POST /api/parts/{id}/rungs/{level}` — ask for a part's L1 or L2 tessellation.
+///
+/// L0 is built at ingest and the finer rungs only when something asks for them (`DATA.md` §2.1);
+/// this is how the viewer asks. A rung that already exists answers `200` with its hash, so asking
+/// again after it has landed never queues a second build. The answer otherwise is the scan's
+/// `202`, so the existing batch poll says when the rung is ready.
+// ponytail: two asks while the first build is still queued queue twice, and the second only
+// rewrites the same row. Check for a pending job first if duplicate builds show up in batches.
+pub async fn part_rung(
+    State(state): State<AppState>,
+    Path((part, level)): Path<(PartId, String)>,
+) -> Response {
+    let kind = match level.as_str() {
+        "l1" => DerivativeKind::TessellationL1,
+        "l2" => DerivativeKind::TessellationL2,
+        _ => return unknown_rung(&level),
+    };
+    let parts = PgParts(state.db.clone());
+    let library = match parts.library_of(part).await {
+        Ok(Some(library)) => library,
+        Ok(None) => return no_such_part(),
+        Err(err) => return internal_error(&err, "part lookup failed"),
+    };
+    let revision = match parts.latest_revision(part).await {
+        Ok(Some(revision)) => revision,
+        Ok(None) => return no_such_part(),
+        Err(err) => return internal_error(&err, "revision lookup failed"),
+    };
+    match parts.derivative_hash(revision, kind).await {
+        Ok(Some(hash)) => Json(RungReady { hash }).into_response(),
+        Ok(None) => {
+            accept(
+                state.db,
+                library,
+                &[JobPayload::Derive {
+                    revision,
+                    produce: kind,
+                }],
+            )
+            .await
+        }
+        Err(err) => internal_error(&err, "rung lookup failed"),
+    }
+}
+
+fn unknown_rung(level: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "message": format!(
+                "`{level}` is not a rung this route builds. Ask for `l1` or `l2`; `l0` is built \
+                 when the file is ingested."
+            )
+        })),
+    )
+        .into_response()
+}
+
 pub(crate) async fn accept(db: PgPool, library: LibraryId, jobs: &[JobPayload]) -> Response {
     match PgJobs(db).enqueue(library, jobs).await {
         Ok((batch_id, queued)) => (

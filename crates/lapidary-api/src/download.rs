@@ -54,15 +54,23 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, RevisionId};
+use lapidary_core::{BlobHash, DerivativeKind, RevisionId};
 use lapidary_db::{DbError, PgBlobs, PgParts};
-use lapidary_storage::{SourceReader, StorageError};
+use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
 use serde::Deserialize;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// The only `variant` this slice serves. Named in every message that rejects another
 /// one, so a caller is told what to send rather than what not to.
 const ORIGINAL: &str = "original";
+
+/// The tessellations this route also serves, by the name a URL asks for them with. Lapidary built
+/// these, so their filenames say so: `<part>.lapidary.l1.glb`.
+const RUNGS: [(&str, DerivativeKind); 3] = [
+    ("l0", DerivativeKind::TessellationL0),
+    ("l1", DerivativeKind::TessellationL1),
+    ("l2", DerivativeKind::TessellationL2),
+];
 
 /// A cap on the synthesized filename, in bytes rather than characters and below the 255
 /// every filesystem this runs on allows. `NAME_MAX` counts bytes: a Turkish `ğ` is two of
@@ -118,7 +126,14 @@ pub async fn original(
     // query-string value the same way, for the same reason.
     match variant.as_deref().filter(|variant| !variant.is_empty()) {
         Some(ORIGINAL) => {}
-        Some(other) => return unknown_variant(other),
+        Some(other) => {
+            return match RUNGS.iter().find(|(name, _)| *name == other) {
+                Some((level, kind)) => {
+                    rung(db, &blob_root, &source.part_name, revision, *kind, level).await
+                }
+                None => unknown_variant(other),
+            };
+        }
         None => return missing_variant(),
     }
 
@@ -351,6 +366,65 @@ fn percent_encode(name: &str) -> String {
 /// No such revision, or its part is soft-deleted. One body for both, and honestly so: a
 /// deleted part is gone from every view the grid offers, and a URL held from before the
 /// delete must stop serving bytes rather than outlive it (spec §2.1).
+/// One tessellation, streamed from the derivative store under a name that says Lapidary built it.
+/// Never the source file under another name: `variant=original` is the only way to those bytes.
+async fn rung(
+    db: lapidary_db::PgPool,
+    blob_root: &std::path::Path,
+    part_name: &str,
+    revision: RevisionId,
+    kind: DerivativeKind,
+    level: &str,
+) -> Response {
+    let hash = match PgParts(db.clone()).derivative_hash(revision, kind).await {
+        Ok(Some(hash)) => hash,
+        Ok(None) => return no_such_rung(level),
+        Err(err) => return internal_error(&err),
+    };
+    let bytes = match DerivativeStore::open(blob_root).get(&hash) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!(error = %err, hash = %hash.to_hex(), "a recorded rung is not readable");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "message": format!(
+                        "The {level} tessellation is recorded but its bytes could not be read. \
+                         Ask for it again with POST /api/parts/{{id}}/rungs/{level} to rebuild it."
+                    )
+                })),
+            )
+                .into_response();
+        }
+    };
+    PgBlobs(db).touch_blob(&hash).await;
+    let filename = download_filename(part_name, &format!("lapidary.{level}.glb"));
+    (
+        [
+            (header::CONTENT_TYPE, "model/gltf-binary".to_owned()),
+            (header::CACHE_CONTROL, "no-cache".to_owned()),
+            (header::ETAG, format!("\"{}\"", hash.to_hex())),
+            (header::CONTENT_DISPOSITION, content_disposition(&filename)),
+            (header::CONTENT_LENGTH, bytes.len().to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+fn no_such_rung(level: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "message": format!(
+                "This revision has no {level} tessellation yet. Ask for it with \
+                 POST /api/parts/{{id}}/rungs/{level}, then download it once that batch finishes."
+            )
+        })),
+    )
+        .into_response()
+}
+
 fn no_such_revision() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -388,8 +462,9 @@ fn unknown_variant(got: &str) -> Response {
         Json(serde_json::json!({
             "message": format!(
                 "`{got}` is not a download variant. This server serves \
-                 `variant={ORIGINAL}` — the ingested bytes, unconverted. A converted \
-                 download is produced as a derivative by the worker, not by this route."
+                 `variant={ORIGINAL}` — the ingested bytes, unconverted — and `l0`, `l1` or \
+                 `l2`, the tessellations Lapidary built, named `*.lapidary.*`. Any other \
+                 converted download is produced as a derivative by the worker, not by this route."
             )
         })),
     )

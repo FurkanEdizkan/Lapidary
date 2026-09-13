@@ -100,6 +100,12 @@ pub struct PartDetail {
     /// The assembly tree a CAD kernel read, as JSON at `GET /api/blob/{blake3}`. `None` for a
     /// mesh, which has no assembly.
     pub structure: Option<BlobHash>,
+    /// The finer rungs, `None` until `POST /api/parts/{id}/rungs/{level}` has had them built.
+    pub tessellation_l1: Option<BlobHash>,
+    pub tessellation_l2: Option<BlobHash>,
+    /// The analytic faces and edges a CAD kernel read, which measurement snaps to. `None` for a
+    /// mesh, which has none.
+    pub entities: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root.
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
@@ -178,6 +184,9 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         tessellation_l0: row.tessellation_l0,
         tessellation_l0_bytes: row.tessellation_l0_bytes,
         structure: row.structure,
+        tessellation_l1: row.tessellation_l1,
+        tessellation_l2: row.tessellation_l2,
+        entities: row.entities,
         directory: row.directory,
         storage_path: row.storage_path,
         created_at: row.created_at,

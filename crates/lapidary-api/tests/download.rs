@@ -1025,3 +1025,63 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
         "nothing was served, so nothing was read"
     );
 }
+
+/// A tessellation downloads under a name that says Lapidary built it, with its exact bytes, and a
+/// rung that does not exist yet is a 404 naming the route that builds it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_tessellation_downloads_under_a_lapidary_name_and_an_absent_one_says_how_to_ask(
+    pool: sqlx::PgPool,
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let root = root.path();
+    let seeded = seed(&pool, root, "Bracket, LP-1042-03", "stl", &ascii_stl()).await;
+    let glb = b"glTF\x02\x00\x00\x00 an L1 rung".to_vec();
+    let stored = lapidary_storage::DerivativeStore::open(root)
+        .put(&glb)
+        .expect("stores the rung");
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            seeded.revision,
+            lapidary_core::DerivativeKind::TessellationL1,
+            lapidary_db::DerivativeBytes::Hashed {
+                blob: &StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                },
+                grid: Some(96),
+            },
+            "mesh stl-1+glb-1+cpu-1",
+        )
+        .await
+        .expect("the rung lands");
+    let app = || {
+        router(
+            AppState {
+                db: pool.clone(),
+                blob_root: root.to_path_buf(),
+                upload_dir: PathBuf::from("/nonexistent-upload-dir"),
+                host_storage_root: None,
+            },
+            Role::Api,
+        )
+    };
+
+    let (status, headers, body) = get(app(), &download_uri(seeded.revision, "?variant=l1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, glb, "the rung's own bytes");
+    assert_eq!(header(&headers, "content-type"), Some("model/gltf-binary"));
+    assert!(
+        header(&headers, "content-disposition")
+            .is_some_and(|value| value.contains("Bracket, LP-1042-03.lapidary.l1.glb")),
+        "named as something Lapidary built: {headers:?}"
+    );
+
+    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=l2")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        message(&body).contains("rungs/l2"),
+        "the 404 names the route that builds the rung"
+    );
+}
