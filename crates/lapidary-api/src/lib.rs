@@ -206,6 +206,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route("/api/parts/{id}/restore", post(lifecycle::restore))
                 .route("/api/parts/{id}/purge", post(lifecycle::purge))
                 .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
+                // The finer tessellations, built when the viewer first asks. See `derive.rs`.
+                .route("/api/parts/{id}/rungs/{level}", post(derive::part_rung))
                 // The category tree and the two ways it changes. `Role::Api` for the reason
                 // everything else a browser calls is: nothing proxies a browser to the worker.
                 // None of these four reaches a file — see `folders.rs`, including why a

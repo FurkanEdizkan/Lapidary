@@ -293,3 +293,54 @@ async fn a_part_whose_bytes_are_content_addressed_names_no_directory(pool: sqlx:
     assert_eq!(json["storagePath"], serde_json::Value::Null);
     assert_eq!(json["directory"], serde_json::Value::Null);
 }
+
+/// The finer rungs and the entities appear on the part once they exist, and read `null` until
+/// then — which is how the viewer knows whether to ask for a rung.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_page_names_its_finer_rungs_and_entities_once_they_exist(pool: sqlx::PgPool) {
+    let part = seed(&pool, true, Some(21_478.5), Some("analytic")).await;
+    let (_, before) = get(pool.clone(), &part.to_string()).await;
+    assert_eq!(before["tessellationL1"], serde_json::Value::Null);
+    assert_eq!(before["entities"], serde_json::Value::Null);
+
+    let revision = lapidary_db::PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("the revision");
+    let ingest = PgIngest(pool.clone());
+    for (seed, kind) in [
+        (0x61, lapidary_core::DerivativeKind::TessellationL1),
+        (0x62, lapidary_core::DerivativeKind::Entities),
+    ] {
+        ingest
+            .upsert_derivative(
+                revision,
+                kind,
+                lapidary_db::DerivativeBytes::Hashed {
+                    blob: &StoredBlobRow {
+                        hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+                        size_bytes: 4_096,
+                        stored_bytes: 4_096,
+                        zstd_level: 0,
+                    },
+                    grid: None,
+                },
+                "occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1",
+            )
+            .await
+            .expect("the derivative lands");
+    }
+
+    let (status, after) = get(pool, &part.to_string()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        after["tessellationL1"],
+        lapidary_core::BlobHash::from_bytes([0x61; 32]).to_hex()
+    );
+    assert_eq!(after["tessellationL2"], serde_json::Value::Null);
+    assert_eq!(
+        after["entities"],
+        lapidary_core::BlobHash::from_bytes([0x62; 32]).to_hex()
+    );
+}

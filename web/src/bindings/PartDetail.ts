@@ -75,6 +75,15 @@ tessellationL0: BlobHash | null, tessellationL0Bytes: number | null,
  */
 structure: BlobHash | null, 
 /**
+ * The finer rungs, `None` until `POST /api/parts/{id}/rungs/{level}` has had them built.
+ */
+tessellationL1: BlobHash | null, tessellationL2: BlobHash | null, 
+/**
+ * The analytic faces and edges a CAD kernel read, which measurement snaps to. `None` for a
+ * mesh, which has none.
+ */
+entities: BlobHash | null, 
+/**
  * The model's own directory in the store, relative to the storage root.
  *
  * Relative and never an absolute host path: the api runs in a container and its view

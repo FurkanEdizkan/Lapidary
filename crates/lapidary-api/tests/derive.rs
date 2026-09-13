@@ -589,3 +589,98 @@ async fn the_worker_role_serves_none_of_these_routes(pool: sqlx::PgPool) {
         .expect("counts jobs");
     assert_eq!(queued, 0);
 }
+
+/// A rung not built yet is queued as a derive job for that level; once it exists, asking again
+/// answers with its hash and queues nothing. L0 and anything else is refused by name.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_rung_not_built_yet_is_queued_and_one_that_exists_answers_with_its_hash(
+    pool: sqlx::PgPool,
+) {
+    let part = seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03", None).await;
+
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/rungs/l1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(json["queued"], 1);
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
+            .fetch_one(&pool)
+            .await
+            .expect("one derive job");
+    assert_eq!(
+        payload["produce"],
+        serde_json::to_value(lapidary_core::DerivativeKind::TessellationL1).expect("serializes")
+    );
+
+    let revision = lapidary_db::PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("a revision");
+    let rung = StoredBlobRow {
+        hash: BlobHash::from_bytes([0x5a; 32]),
+        size_bytes: 11_264,
+        stored_bytes: 11_264,
+        zstd_level: 0,
+    };
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            revision,
+            lapidary_core::DerivativeKind::TessellationL1,
+            lapidary_db::DerivativeBytes::Hashed {
+                blob: &rung,
+                grid: Some(96),
+            },
+            "mesh stl-1+glb-1+cpu-1",
+        )
+        .await
+        .expect("the rung lands");
+
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/rungs/l1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["hash"], rung.hash.to_hex());
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(jobs, 1, "a rung that exists queues nothing");
+
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/rungs/l0"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("`l1` or `l2`")),
+        "{json}"
+    );
+
+    let (status, _) = send(
+        pool,
+        Role::Api,
+        "POST",
+        format!("/api/parts/{}/rungs/l2", PartId::new()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
