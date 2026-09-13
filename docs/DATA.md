@@ -533,8 +533,9 @@ there are no users yet.
 - **The API keeps only what the grid's URL carries,** trimmed. It refuses any other key, and refuses
   a category from another library.
 - **Removing one removes the name and nothing else.**
-- **A saved category does not follow a deletion.** Reopening a filter whose category was deleted
-  shows what the grid shows for that category id.
+- **A saved category does not follow a deletion.** A filter whose category was deleted still opens
+  to that category's id: an empty grid saying nothing is filed there yet, though the category is
+  gone from the tree.
 
 ---
 

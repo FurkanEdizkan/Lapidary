@@ -468,6 +468,27 @@ What it does not do:
 - **The first cut in a session compiles a program** for the clipped material. How long that takes
   was not measured.
 
+**Early, 2026-09-14: saved filters.** The grid's filters (search, category, format, material and
+tag) save under a name per library (`saved_filter`, `0023`). They are listed in the grid's rail
+above the facets, and the one the grid is showing is marked.
+
+Checked in Chrome on a natively run stack built from `6e59072`, over the six example parts with two
+of them tagged `stock`:
+1. Filtered to `stl` and `stock`, the grid showed two cards. Saved as "Stock STL", the filter was
+   listed and marked.
+2. With the filters cleared, all six cards showed, and the filter was listed and not marked.
+3. Reopened from the list, the URL read `?format=stl&tag=stock`, the same two cards showed, and it
+   was marked again.
+4. It was still listed after a reload.
+5. Once removed, it was gone from the list and from the API.
+
+What it does not do:
+- **No users.** A library's saved filters are everyone's who opens it.
+- **A saved category does not follow its deletion.** A filter saved on a category that is then
+  deleted still opens to it: an empty grid saying nothing is filed in that category yet, though
+  the category is gone from the tree.
+- **No rename or reordering.** To change one, remove it and save again.
+
 **Exit:** paste a Printables URL, get title, licence and cached image; export a 40-part
 assembly as a bundle another user can import with full lineage intact.
 
