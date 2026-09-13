@@ -136,8 +136,9 @@ number was taken for it.
 number like `A1234-56-B` by the fragment `1234` returns it at position one.
 
 **Measured 2026-09-13, both clauses pass. The phase is not finished:** the facets are format,
-material and tag (`0022`) — lifecycle waits for revision states, which are Phase 8's. Stage 4
-reads an AP242 file's PMI since bridge 6, as a list on the part; Phase 5 records how it was checked. The failed files are listed inline under the progress line rather than in a drawer:
+material and tag (`0022`) — lifecycle waits for revision states, which are Phase 8's. An AP242
+file's PMI is read since bridge 6 and stored as its own `pmi` derivative, not in stage 4's
+`metadata_json`; Phase 5 records how it was checked. The failed files are listed inline under the progress line rather than in a drawer:
 every failure, a page past the first hundred at a press, with a Retry per file and for the batch. Sorting by a measured figure shipped without an
 index, for the reason `DATA.md` §3.2 records.
 

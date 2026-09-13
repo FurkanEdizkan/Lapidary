@@ -308,6 +308,9 @@ impl PgJobs {
     /// its way is not a refusal: the caller watches that batch, which is the answer it got the
     /// first time. Best-effort in `enqueue_migration_if_absent`'s way -- two callers racing can
     /// each see nothing and each insert -- and the second build only rewrites the same row.
+    // ponytail: the NOT EXISTS scans pending and running jobs with no index of its own, and it runs
+    // on the first open of every part that lacks the rung. Add a partial index on
+    // (library_id, kind) where state in ('pending', 'running') when the job table makes it slow.
     pub async fn enqueue_derive_if_absent(
         &self,
         library: LibraryId,
