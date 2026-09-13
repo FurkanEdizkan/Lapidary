@@ -13,6 +13,7 @@ mod images;
 mod jobs;
 mod lifecycle;
 mod moves;
+mod part_number;
 mod parts;
 mod scan;
 mod sources;
@@ -212,6 +213,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // check-deploy`'s `RELOCATE_MODULE`.
                 .route("/api/parts/{id}", axum::routing::patch(moves::move_part))
                 .route("/api/parts/{id}/moves", get(moves::history))
+                // The number a person gives a part. Its own resource rather than a field on the
+                // move `PATCH` above, where a `null` folder already means "to the top level".
+                .route(
+                    "/api/parts/{id}/part-number",
+                    axum::routing::put(part_number::set),
+                )
                 // A part's gallery. The upload body is the file itself, capped at the same
                 // 10 MB `images::MAX_INPUT_BYTES` refuses past — set here as well because a
                 // limit checked after the body is buffered is a limit that has already cost

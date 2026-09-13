@@ -135,6 +135,32 @@ number was taken for it.
 **Exit:** ingest a mixed folder of STEP and STL with no manual steps; searching a part
 number like `A1234-56-B` by the fragment `1234` returns it at position one.
 
+**Measured 2026-09-13, both clauses pass. The phase is not finished:** faceted filters and
+the failed-file drawer are still open, and stage 4 does not read PMI or GD&T yet.
+
+| Clause | Measured | Verdict |
+|---|---|---|
+| Ingest a mixed folder of STEP and STL with no manual steps | One scan of a folder holding `cad/` (three STEP files and one IGES, from `fixtures/step`) and `mesh/` (three STLs): **7 of 7 ingested, 0 failed, in 0.62 s** from the scan request to a finished batch. Each CAD part has its L0 rung, thumbnail, assembly tree, entities and header. The 200-part assembly's tree reads back with 200 parts and 8 prototypes, served as `application/json`. The 22 mm cylinder's volume (11,403.98 mm³), area and box are stored as exact | pass |
+| Searching `A1234-56-B` by the fragment `1234` returns it at position one | Through the API: `PUT /api/parts/{id}/part-number` gave the cylinder the number `A1234-56-B`, and `GET /api/libraries/{id}/parts?q=1234` returned it first in 2.6 ms, ahead of `bracket-1234-mount.stl`, a part only named for the digits | pass |
+
+How it was measured: `docker compose -p lapidaryphase2` built the `api` and `worker` targets of
+`deploy/Containerfile` from commit `11d5f07`, with its own env file, storage and ingest
+directories and database volume. `curl` drove the scan, the batch status, the detail and blob
+routes and the search, and `psql` read the stored headers and derivative kinds. Worker
+concurrency 2, kernel `occt-8.0.1-bridge-2+deflection-0.1+glb-1+cpu-1`, on the 12-core
+development machine.
+
+**Where the part number came from.** Nothing reads a part number out of a file. Ingest writes
+none, because one made up from a filename is one nobody gave the part, and the fixtures' STEP
+headers carry only OCCT's defaults. The number in the second clause was set by a request, which
+is the only way one enters a library. The ranking is held in general by
+`a_part_number_fragment_returns_the_part_at_position_one` in `crates/lapidary-db/tests/repo.rs`,
+and through the router by `a_part_number_set_through_the_api_is_found_first_by_its_fragment`.
+
+**What the numbers do not say.** The CAD files are small generated fixtures, so 0.62 s is the
+pipeline's own overhead on honest input, not what a real assembly takes. The Phase 0 entry above
+says the same of the kernel.
+
 ---
 
 ## Phase 3 — Viewer and measurement

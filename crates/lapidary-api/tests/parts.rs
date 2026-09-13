@@ -1044,3 +1044,94 @@ async fn a_query_composes_with_paging(pool: sqlx::PgPool) {
         "and it is a different part"
     );
 }
+
+/// `PUT /api/parts/{id}/part-number` with `body`, answering its status.
+async fn put_part_number(pool: sqlx::PgPool, part: &str, body: serde_json::Value) -> StatusCode {
+    router(
+        AppState {
+            db: pool,
+            blob_root: blob_root(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    )
+    .oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/parts/{part}/part-number"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request builds"),
+    )
+    .await
+    .expect("router responds")
+    .status()
+}
+
+/// **Phase 2's exit criterion, through the API rather than only the repository.** The part
+/// number is set by request, because ingest never invents one, and the fragment `1234` then
+/// finds that part first, ahead of a part merely named for the same digits.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_number_set_through_the_api_is_found_first_by_its_fragment(pool: sqlx::PgPool) {
+    seed_part(
+        &pool,
+        library(),
+        0xf1,
+        "bracket-1234-mount",
+        b"webp-bracket",
+    )
+    .await;
+    seed_part(&pool, library(), 0xf2, "coupler-flexible", b"webp-coupler").await;
+    let (_, coupler) = get_page_with(pool.clone(), "q=coupler").await;
+    let id = coupler["parts"][0]["id"]
+        .as_str()
+        .expect("the coupler's id")
+        .to_owned();
+
+    let set = serde_json::json!({ "partNumber": "  A1234-56-B " });
+    assert_eq!(
+        put_part_number(pool.clone(), &id, set).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, found) = get_page_with(pool.clone(), "q=1234").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        found["parts"][0]["name"], "coupler-flexible",
+        "the identified part, not the one named for the digits"
+    );
+    assert_eq!(
+        found["parts"][0]["partNumber"], "A1234-56-B",
+        "stored trimmed"
+    );
+
+    let clear = serde_json::json!({ "partNumber": "" });
+    assert_eq!(
+        put_part_number(pool.clone(), &id, clear).await,
+        StatusCode::NO_CONTENT
+    );
+    let (_, cleared) = get_page_with(pool, "q=coupler").await;
+    assert_eq!(
+        cleared["parts"][0]["partNumber"],
+        serde_json::Value::Null,
+        "an empty number clears it rather than storing a blank"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_number_for_no_part_or_past_the_limit_is_refused(pool: sqlx::PgPool) {
+    seed_part(&pool, library(), 0xf3, "coupler-flexible", b"webp-coupler").await;
+    let (_, page) = get_page_with(pool.clone(), "").await;
+    let id = page["parts"][0]["id"].as_str().expect("an id").to_owned();
+
+    let number = serde_json::json!({ "partNumber": "A1234-56-B" });
+    assert_eq!(
+        put_part_number(pool.clone(), "01931b6e-0000-7000-8000-0000000000ff", number).await,
+        StatusCode::NOT_FOUND
+    );
+    let too_long = serde_json::json!({ "partNumber": "A".repeat(101) });
+    assert_eq!(
+        put_part_number(pool, &id, too_long).await,
+        StatusCode::BAD_REQUEST
+    );
+}
