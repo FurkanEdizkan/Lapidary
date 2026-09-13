@@ -785,6 +785,21 @@ export const strings = {
    * each other, which is why the delete copy below says what stays as plainly as it says
    * what goes.
    */
+  /**
+   * Saved filters, in the rail above the facets: the grid's filters kept under a name for a library,
+   * and shared by everyone who opens it. Removing one takes the name off the list and touches no part.
+   */
+  savedFilters: {
+    title: 'Saved filters',
+    saveThis: 'Save this filter',
+    name: 'Name for this filter',
+    save: 'Save',
+    cancel: 'Cancel',
+    remove: (name: string) => `Remove the saved filter ${name}`,
+    failed: 'Could not load the saved filters. Check that the api service is running, then reload.',
+    refusedWithoutReason:
+      'The filter was not saved, and the server gave no reason. Try again, and check the server logs if it keeps failing.',
+  },
   /** The filters beside the grid. `docs/DATA.md` §3.4. */
   facets: {
     format: 'Format',

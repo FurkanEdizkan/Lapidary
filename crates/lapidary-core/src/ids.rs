@@ -80,6 +80,10 @@ uuid_newtype!(
      the gallery is reorderable and a client holding \"the second image\" would be holding \
      something that changes under it."
 );
+uuid_newtype!(
+    SavedFilterId,
+    "Identifies one saved filter: a name for a set of the grid's filters in one library."
+);
 
 /// A BLAKE3 content hash. Content addressing is not authorization — holding one of
 /// these never implies the right to read the blob it names.

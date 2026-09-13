@@ -136,6 +136,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Sort by any promoted geometric column | 2 |
 | Quick look beside the grid at 1280px and up, a dialog below it; the open part rides in the URL | 2 |
 | Saved filters / smart collections | 5 |
+<!--
+  **Early, recorded 2026-09-14.** Named per library in the grid's rail, above the facets: the search,
+  category, format, material and tag, put back in one step and marked while the grid shows them.
+  Shared by everyone who opens the library, because there are no users yet. `ROADMAP.md` Phase 5
+  records the check.
+-->
 | User-defined custom fields, max 8 indexed | 5 |
 | Turkish text search config per library | 5 |
 | Near-duplicate clustering with merge-or-link-as-variant | 6 |

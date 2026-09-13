@@ -20,6 +20,7 @@ import type {
   LibrarySummary,
   MovePart,
   NewFolder,
+  NewSavedFilter,
   NewLibrary,
   NewSource,
   PartDetail,
@@ -33,6 +34,8 @@ import type {
   RetryAccepted,
   RevisionId,
   RungReady,
+  SavedFilter,
+  SavedFilterId,
   ScanAccepted,
   SetFraming,
   SetTags,
@@ -389,6 +392,55 @@ export async function fetchFolders(library: LibraryId): Promise<FolderNode[]> {
     throw new Error(`folders returned ${response.status}`)
   }
   return (await response.json()) as FolderNode[]
+}
+
+/** `GET /api/libraries/{id}/filters`: the library's saved filters, by name. */
+export async function fetchSavedFilters(library: LibraryId): Promise<SavedFilter[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/filters`)
+  if (!response.ok) {
+    throw new Error(`saved filters returned ${response.status}`)
+  }
+  return (await response.json()) as SavedFilter[]
+}
+
+/**
+ * `POST /api/libraries/{id}/filters`: keep the grid's filters under a name. A refusal (a name
+ * already taken, too long, or nothing to keep) comes back with the server's own sentence, to show
+ * as it is.
+ */
+export async function saveFilter(
+  library: LibraryId,
+  filter: NewSavedFilter,
+): Promise<{ kind: 'saved'; filter: SavedFilter } | { kind: 'refused'; message: string }> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/filters`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(filter),
+  })
+  if (response.ok) return { kind: 'saved', filter: (await response.json()) as SavedFilter }
+  if (response.status === 400 || response.status === 404 || response.status === 409) {
+    const answer: unknown = await response.json().catch(() => null)
+    const message =
+      answer !== null && typeof answer === 'object'
+        ? (answer as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.savedFilters.refusedWithoutReason,
+    }
+  }
+  throw new Error(`saving a filter returned ${response.status}`)
+}
+
+/** `DELETE /api/libraries/{library}/filters/{filter}`. One already gone counts as removed. */
+export async function removeSavedFilter(library: LibraryId, filter: SavedFilterId): Promise<void> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`removing a saved filter returned ${response.status}`)
+  }
 }
 
 /**

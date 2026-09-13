@@ -41,6 +41,7 @@ vi.mock("../lib/upload", async (importOriginal) => ({
 }));
 import type {
   BatchStatus,
+  FilterSearch,
   FolderNode,
   LibraryStorage,
   PartCard,
@@ -76,6 +77,7 @@ function renderIndex(
     onSelectMaterial?: (material: string | null) => void;
     tag?: string;
     onSelectTag?: (tag: string | null) => void;
+    onApplyFilter?: (search: FilterSearch) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -98,6 +100,7 @@ function renderIndex(
         onSelectMaterial={props.onSelectMaterial}
         tag={props.tag}
         onSelectTag={props.onSelectTag}
+        onApplyFilter={props.onApplyFilter}
       />
     ),
   });
@@ -181,8 +184,10 @@ function stubFetch(routes: {
   failures?: () => Promise<StubResponse>;
   partRemove?: (url?: string) => Promise<StubResponse>;
   blob?: () => Promise<StubResponse>;
+  /** The library's saved filters: listed by GET, saved by POST, removed by DELETE. */
+  filters?: (url: string, init?: { method?: string; body?: string }) => Promise<StubResponse>;
 }) {
-  const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
+  const fetchMock = vi.fn((url: string, init?: { method?: string; body?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
     if (url.startsWith("/api/blob/")) return (routes.blob ?? pending)();
     if (init?.method === "DELETE" && url.startsWith("/api/parts/"))
@@ -224,6 +229,10 @@ function stubFetch(routes: {
       return (routes.partDetail ?? pending)(url);
     if (url.startsWith("/api/folders/"))
       return (routes.folderDelete ?? pending)();
+    // Every method on it, above the settings rule below, which would claim the list as a library.
+    // Unstubbed it is an empty list, which is what almost every test here means.
+    if (url.includes("/filters"))
+      return routes.filters ? routes.filters(url, init) : empty();
     // The one route distinguished by method rather than path: `PATCH /api/libraries/{id}`
     // is a prefix of every other library route.
     if (init?.method === "PATCH") return (routes.settings ?? pending)();
@@ -535,6 +544,58 @@ test("the grid warms the viewer when the browser is idle, once", async () => {
   expect(await screen.findByText(strings.emptyLibrary.title)).toBeDefined();
   expect(idle.mock.calls.length).toBe(asked);
   vi.unstubAllGlobals();
+});
+
+/**
+ * Saved filters, in the rail above the facets: the grid's filters saved under a name, listed, put
+ * back in one step, marked while they are what the grid shows, and removed.
+ */
+test("the grid's filters are saved under a name, put back from the list, and removed", async () => {
+  let saved: unknown[] = [];
+  const posted: unknown[] = [];
+  stubFetch({
+    parts: ok(page([])),
+    filters: async (_url, init) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(init.body ?? "null") as { name: string; search: FilterSearch };
+        posted.push(body);
+        const filter = { id: "01a0a1b2-0000-7000-8000-000000000001", ...body };
+        saved = [filter];
+        return { ok: true, status: 201, json: async () => filter };
+      }
+      if (init?.method === "DELETE") {
+        saved = [];
+        return { ok: true, status: 204, json: async () => null };
+      }
+      return { ok: true, status: 200, json: async () => saved };
+    },
+  });
+  const onApplyFilter = vi.fn();
+  renderIndex({ format: "stl", tag: "stock", onApplyFilter });
+
+  fireEvent.click(await screen.findByRole("button", { name: strings.savedFilters.saveThis }));
+  fireEvent.change(screen.getByLabelText(strings.savedFilters.name), {
+    target: { value: "Stock STL" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: strings.savedFilters.save }));
+
+  const filter = await screen.findByRole("button", { name: "Stock STL" });
+  expect(posted).toEqual([{ name: "Stock STL", search: { format: "stl", tag: "stock" } }]);
+  // The grid shows exactly these filters, so the list marks the one that keeps them.
+  expect(filter.getAttribute("aria-current")).toBe("true");
+  fireEvent.click(filter);
+  expect(onApplyFilter).toHaveBeenCalledWith({ format: "stl", tag: "stock" });
+
+  fireEvent.click(screen.getByRole("button", { name: strings.savedFilters.remove("Stock STL") }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Stock STL" })).toBeNull());
+});
+
+test("with no filter set and none saved, the rail offers nothing to save", async () => {
+  stubFetch({ parts: ok(page([])) });
+  renderIndex();
+  expect(await screen.findByText(strings.emptyLibrary.title)).toBeDefined();
+  expect(screen.queryByRole("button", { name: strings.savedFilters.saveThis })).toBeNull();
+  expect(screen.queryByRole("heading", { name: strings.savedFilters.title })).toBeNull();
 });
 
 test("renders the empty-library copy from strings.ts", async () => {
