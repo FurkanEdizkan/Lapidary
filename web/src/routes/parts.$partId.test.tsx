@@ -8,6 +8,13 @@ import {
 } from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { PartPage } from './parts.$partId'
+import { warmViewer } from '../components/PartDetail'
+
+// The page warms the view as it opens; the real warm-up needs WebGL, which jsdom has none of.
+vi.mock('../components/PartDetail', async (original) => ({
+  ...(await original<typeof import('../components/PartDetail')>()),
+  warmViewer: vi.fn(async () => {}),
+}))
 import { strings } from '../lib/strings'
 import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
 
@@ -712,3 +719,9 @@ test('a mesh has no assembly section and never asks for one', async () => {
   expect(asked).toBe(false)
 })
 
+/** A link straight to a part has no hover to warm on, so the page starts the viewer alongside its fetch. */
+test('the part page warms the viewer as it opens', async () => {
+  stub(PART)
+  renderPage()
+  await waitFor(() => expect(vi.mocked(warmViewer)).toHaveBeenCalled())
+})

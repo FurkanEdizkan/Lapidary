@@ -352,6 +352,10 @@ Hover a grid card → prefetch `L0`. Open the inspector → prefetch `L1` for th
 previous parts in sort order. Bound the pool at 2 concurrent and cancel on navigate, or
 fast scrolling saturates the queue with parts already passed.
 
+The same hover warms the viewer: its chunk loads and its shaders compile. Where there may be no
+hover it warms without one — the grid once the browser is idle, for a tap or a press before the
+pointer rested, and a part's own page as it opens, for a link.
+
 ### 2.5 Targets — treat as regression tests
 
 | Operation | Warm | Cold |
@@ -367,8 +371,11 @@ stack, with nothing but Node and `google-chrome`: `node web/scripts/open-timing.
 swiftshader` opens every card in the grid three rounds over, and `--part <name>` times one part's
 open and its L2 from a fresh session each run. `--gl gpu` draws on the machine's GPU instead,
 `--throttle` emulates 100 Mbit, and `--dwell` is how long the pointer rests on a card before it
-presses, which is the time the hover has to prefetch. It needs a stack and a browser, so it is not
-a verify gate; `ROADMAP.md` records what it measured and how.
+presses, which is the time the hover has to prefetch. `--direct` opens each part's own page from a
+link instead, a fresh session each time, and times navigation start to the first frame. It needs a
+stack and a browser, so it is not a verify gate; `ROADMAP.md` records what it measured and how. A
+stack need not be compose: `lapidary-server` run natively as `api` and `worker`, with the built web
+served by `npx vite preview`, whose `/api` proxy is the dev server's, times the same pages.
 
 ---
 
