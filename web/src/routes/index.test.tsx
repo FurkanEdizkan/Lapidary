@@ -3342,3 +3342,56 @@ test("choosing a layout marks it and remembers it for the library", async () => 
   expect(list.getAttribute("aria-pressed")).toBe("true");
   expect(layoutFor(DEFAULT_LIBRARY_ID)).toBe("list");
 });
+
+/**
+ * `/` to search — the shortcut every tool a power user already uses has. A library of
+ * 1,700 parts is a list you search, not one you Tab through.
+ */
+test("/ anywhere on the grid moves focus to search", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])) });
+  renderIndex();
+  const box = await screen.findByRole("searchbox", { name: strings.search.label });
+  expect(box.getAttribute("aria-keyshortcuts")).toBe("/");
+
+  // `fireEvent` answers false when a handler called `preventDefault`, which is how the
+  // page keeps the slash out of the field it just focused.
+  const handled = !fireEvent.keyDown(document.body, { key: "/" });
+
+  expect(handled).toBe(true);
+  expect(document.activeElement).toBe(box);
+});
+
+test("/ typed into a field is a slash, not a jump to search", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])) });
+  renderIndex();
+  const box = await screen.findByRole("searchbox", { name: strings.search.label });
+  box.focus();
+
+  // Swallowing it would make a file path like `brackets/steel` impossible to type.
+  expect(fireEvent.keyDown(box, { key: "/" })).toBe(true);
+});
+
+test("/ does nothing while a dialog is open", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])), folders: ok([]) });
+  renderIndex();
+  const box = await screen.findByRole("searchbox", { name: strings.search.label });
+  fireEvent.click(await screen.findByRole("button", { name: strings.folders.newCategory }));
+  const dialog = await screen.findByRole("dialog");
+
+  fireEvent.keyDown(document.body, { key: "/" });
+
+  expect(document.activeElement).not.toBe(box);
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+test("Escape in search hands focus back to the grid", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([])) });
+  renderIndex();
+  const box = await screen.findByRole("searchbox", { name: strings.search.label });
+  fireEvent.keyDown(document.body, { key: "/" });
+  expect(document.activeElement).toBe(box);
+
+  fireEvent.keyDown(box, { key: "Escape" });
+
+  expect(document.activeElement).toBe(document.getElementById("parts"));
+});

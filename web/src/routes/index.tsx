@@ -1339,6 +1339,16 @@ const DENSITY_LABEL: Record<Density, string> = {
 }
 
 /**
+ * The key that moves focus into search from anywhere on the grid, shown inside the field and
+ * declared as its `aria-keyshortcuts`. `/` because the tools this audience already lives in
+ * spend it on search, so it is a key people try before they read anything.
+ *
+ * A constant here and not a `strings.ts` entry: it is a key, not copy — nothing translates it,
+ * and `KeyboardEvent.key` reports `/` on a Turkish layout too, where it sits on Shift+7.
+ */
+const SEARCH_SHORTCUT = '/'
+
+/**
  * The search box, and the chip that says what it is searching.
  *
  * A `<input type="search">`, so the clear affordance, Escape-to-clear and the right mobile
@@ -1388,6 +1398,29 @@ function SearchBox({
     return () => clearTimeout(timer)
   }, [typed, q, onSearch])
 
+  // `/` from anywhere on the grid. Not while a person is typing into a field — a slash is
+  // half of every file path — and not under a modal dialog, whose own keys own the page.
+  const field = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== SEARCH_SHORTCUT || event.defaultPrevented) return
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.closest('input, textarea, select') !== null)
+      ) {
+        return
+      }
+      if (document.querySelector('[aria-modal="true"]') !== null) return
+      event.preventDefault()
+      field.current?.focus()
+      field.current?.select()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   const waiting = typed.trim().length === 1
   return (
     <div className="flex min-w-64 flex-1 flex-wrap items-center gap-2">
@@ -1404,13 +1437,34 @@ function SearchBox({
           ⌕
         </span>
         <input
+          ref={field}
           type="search"
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape') return
+            // Back to the grid, keeping the query. Chrome's own Escape clears a search field,
+            // which would throw away what was typed on the way out.
+            event.preventDefault()
+            document.getElementById('parts')?.focus()
+          }}
           aria-label={strings.search.label}
+          aria-keyshortcuts={SEARCH_SHORTCUT}
           placeholder={strings.search.placeholder}
-          className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-3 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
+          className="peer w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-9 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
         />
+        {/*
+          The key, shown where it is used. Only while the field is empty and unfocused: once
+          you are in it the hint has done its job, and over typed text it would be noise.
+        */}
+        {typed === '' ? (
+          <kbd
+            aria-hidden="true"
+            className="ease-mechanical pointer-events-none absolute right-2.5 rounded border border-[var(--color-edge)] px-1.5 font-mono text-[11px] leading-4 text-[var(--color-muted)] duration-[var(--duration-fast)] peer-focus:opacity-0"
+          >
+            {SEARCH_SHORTCUT}
+          </kbd>
+        ) : null}
       </div>
       {/*
         The disclosure, not a control that narrows. The sidebar has already narrowed the
