@@ -539,7 +539,10 @@ before incorporating** — some of it depends on day-one entity structure.
 
 - **Trademark.** "Lapidary" is a common English word — check TÜRKPATENT and EUIPO in the
   relevant software classes before registering a domain.
-- **`pgvector` and Turkish `tsvector`** against `postgres:18` — verify in Phase 0.
+- **`pgvector` and Turkish `tsvector`** against `postgres:18`. Turkish is settled: checked on
+  2026-09-14, `postgres:18`'s `pg_ts_config` lists `turkish`. pgvector is not: the official image
+  offers no `vector` extension, `deploy/db/Containerfile` installs `postgresql-${PG_MAJOR}-pgvector`
+  and `deploy/db/init/10-extensions.sql` creates it, and no test or gate checks either yet.
 - **zstd dictionary gain** — measure on a real STEP corpus before committing to
   per-library dictionaries.
 - **MoR Turkey payout support** — confirm directly, do not rely on this document.
