@@ -1,6 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
   batchEventsUrl,
@@ -92,12 +92,13 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; part?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
     const library = search.library
     const format = search.format
+    const part = search.part
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -124,6 +125,8 @@ export const Route = createFileRoute('/')({
       ...(typeof library === 'string' && library.length > 0 ? { library } : {}),
       // A format as ingest records it: the extension, lowercased. Absent is every format.
       ...(typeof format === 'string' && format.length > 0 ? { format: format.toLowerCase() } : {}),
+      // The part the quick look is open on. A UUID, so a string whenever it is anything.
+      ...(typeof part === 'string' && part.length > 0 ? { part } : {}),
     }
   },
 })
@@ -137,7 +140,7 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library, format } = Route.useSearch()
+  const { batch, folderId, q, library, format, part } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
@@ -158,13 +161,23 @@ function RouteComponent() {
       }
       onSelectFolder={(folder) =>
         void navigate({
-          search: (previous) => ({ ...previous, folderId: folder ?? undefined }),
+          search: (previous) => ({ ...previous, folderId: folder ?? undefined, part: undefined }),
         })
       }
       format={format}
       onSelectFormat={(value) =>
         void navigate({
-          search: (previous) => ({ ...previous, format: value ?? undefined }),
+          search: (previous) => ({ ...previous, format: value ?? undefined, part: undefined }),
+        })
+      }
+      part={part}
+      onOpenPart={(id) =>
+        void navigate({
+          search: (previous) => ({ ...previous, part: id ?? undefined }),
+          // One history entry however many parts are looked at, so Back leaves the grid rather
+          // than stepping through every card clicked on the way — and Back from the full page
+          // still lands on the pane it was opened from.
+          replace: true,
         })
       }
       onSearch={(query) =>
@@ -271,6 +284,8 @@ export function Index({
   onSelectLibrary,
   format,
   onSelectFormat,
+  part,
+  onOpenPart,
 }: {
   batch?: string
   folderId?: string
@@ -285,6 +300,10 @@ export function Index({
   /** The format the grid is narrowed to, as the URL carries it. Absent is every format. */
   format?: string
   onSelectFormat?: (format: string | null) => void
+  /** The part the quick look is open on, as the URL carries it. */
+  part?: string
+  /** Writes the open part to the URL; `null` closes it. */
+  onOpenPart?: (part: PartId | null) => void
 }) {
   const queryClient = useQueryClient()
 
@@ -378,6 +397,37 @@ export function Index({
   // the extent line and the empty state) and they must agree about how many parts there
   // are.
   const loaded = parts.data?.pages.flatMap((page) => page.parts) ?? []
+
+  /**
+   * The part being looked at. The URL holds it where there is a router, so a reload and Back
+   * keep it; `index.test.tsx` renders `Index` bare, and there it is this component's own.
+   *
+   * Where the card sat when it was clicked never goes in the URL. A pane reopened by a reload
+   * simply appears, and only a click flies — a rectangle from another page load would be a
+   * flight from somewhere the card no longer is.
+   */
+  const [ownPart, setOwnPart] = useState<string | undefined>(undefined)
+  const openPart = onOpenPart === undefined ? ownPart : part
+  const [openFrom, setOpenFrom] = useState<DOMRect>(DEFAULT_ORIGIN)
+  const [moving, setMoving] = useState<PartCard | null>(null)
+  const wide = useWide()
+  // Found among the pages already loaded rather than fetched on its own: a part further down
+  // than the grid has reached opens once its page arrives.
+  const looking = openPart === undefined ? undefined : loaded.find((card) => card.id === openPart)
+  const setOpenPart = (id: PartId | null) => {
+    if (onOpenPart === undefined) setOwnPart(id ?? undefined)
+    else onOpenPart(id)
+  }
+  const closeLook = () => {
+    const id = openPart
+    setOpenPart(null)
+    // The pane traps nothing, so nothing gives focus back for it: return it to the card's name,
+    // the keyboard's way in. The dialog restores focus itself, and doing it here as well would
+    // fight its own blur handler.
+    if (wide && id !== undefined) {
+      document.getElementById(`part-name-${id}`)?.querySelector('a')?.focus()
+    }
+  }
 
   /**
    * Bulk selection. Ids rather than cards, so a refetch that replaces the card objects keeps
@@ -648,6 +698,20 @@ export function Index({
         ? strings.render.nothingMissing
         : null
 
+  const look =
+    looking === undefined ? null : (
+      <QuickLook
+        part={looking}
+        from={openFrom}
+        hostRoot={instance.data?.hostStorageRoot ?? null}
+        busy={renderPart.isPending && renderPart.variables === looking.id}
+        onRender={(id) => renderPart.mutate(id)}
+        onMove={looking.directory === null ? null : () => setMoving(looking)}
+        onClose={closeLook}
+        pane={wide}
+      />
+    )
+
   return (
     <section className="flex items-start gap-6">
       {/*
@@ -819,6 +883,14 @@ export function Index({
                   : strings.parts.showingAll(loaded.length)}
               </p>
             </div>
+            {wide ? null : look}
+            {moving === null ? null : (
+              <MovePartDialog
+                part={{ id: moving.id, name: moving.name }}
+                library={moving.library}
+                onClose={() => setMoving(null)}
+              />
+            )}
             {selecting ? (
               <SelectionBar
                 count={selected.size}
@@ -850,6 +922,10 @@ export function Index({
               selected={selected}
               onToggle={toggle}
               onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
+              onOpen={(card, from) => {
+                setOpenFrom(from)
+                setOpenPart(card.id)
+              }}
             />
             <MorePages
               hasMore={parts.hasNextPage}
@@ -874,6 +950,11 @@ export function Index({
               : strings.health.ok(health.data.database.major)}
         </p>
       </div>
+      {/*
+        The pane is the page's third column on a wide screen: not modal, so the grid beside it
+        stays clickable and the next card swaps what it shows.
+      */}
+      {wide ? look : null}
     </section>
   )
 }
@@ -2041,6 +2122,7 @@ function Grid({
   selected,
   onToggle,
   onSelectAll,
+  onOpen,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
@@ -2054,6 +2136,8 @@ function Grid({
   /** `range` is a shift-click: everything from the last part toggled to this one. */
   onToggle: (part: PartId, range: boolean) => void
   onSelectAll: () => void
+  /** A card asks to be looked at, from where its render sits. */
+  onOpen: (part: PartCard, from: DOMRect) => void
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -2138,6 +2222,7 @@ function Grid({
             selecting={selecting}
             selected={selected.has(part.id)}
             onToggle={onToggle}
+            onOpen={onOpen}
           />
         </li>
       ))}
@@ -2151,6 +2236,92 @@ function Grid({
  * out of a point.
  */
 const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
+
+/** Where the quick look sits beside the grid rather than over it: 1280px and up. */
+const PANE_QUERY = '(min-width: 80rem)'
+
+/**
+ * Whether the screen is wide enough for the pane. `false` where `matchMedia` does not exist —
+ * jsdom, which is where every test that expects the dialog runs.
+ */
+function useWide(): boolean {
+  const [wide, setWide] = useState(
+    () => typeof window.matchMedia === 'function' && window.matchMedia(PANE_QUERY).matches,
+  )
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(PANE_QUERY)
+    const onChange = () => setWide(query.matches)
+    query.addEventListener?.('change', onChange)
+    return () => query.removeEventListener?.('change', onChange)
+  }, [])
+  return wide
+}
+
+/**
+ * The quick look beside the grid.
+ *
+ * Not modal, so it traps nothing: the grid stays reachable and the next card swaps what this
+ * shows. Opening moves focus to Close, the pane's first control, rather than to its heading:
+ * the application's one focus ring is unlayered and cannot be taken off a heading, and a ring
+ * round text points at nothing a key can operate — `Dialog` moved off its box for the same
+ * reason. The pane is labelled by the part's name, so arriving inside it still announces the
+ * part. Escape closes it, but not out from under a dialog opened on top of it, whose own
+ * Escape comes first.
+ */
+function QuickLookPane({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  const titleId = useId()
+  const closeButton = useRef<HTMLButtonElement>(null)
+  const close = useRef(onClose)
+  useEffect(() => {
+    close.current = onClose
+  })
+  useEffect(() => {
+    closeButton.current?.focus()
+  }, [title])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (document.querySelector('[aria-modal="true"]') !== null) return
+      close.current()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
+  return (
+    <aside
+      aria-labelledby={titleId}
+      className="panel-in sticky top-4 max-h-[calc(100vh-2rem)] w-[26rem] shrink-0 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <h2 id={titleId} className="text-sm font-medium">
+          {title}
+        </h2>
+        <button
+          ref={closeButton}
+          type="button"
+          onClick={onClose}
+          aria-label={strings.dialog.close}
+          className="ease-mechanical -m-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none"
+               stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+        </button>
+      </div>
+      {children}
+    </aside>
+  )
+}
 
 /** How many parts a bulk action changes at once. See `eachAtMost`. */
 const BULK_CONCURRENCY = 4
@@ -2295,6 +2466,7 @@ function Card({
   selecting,
   selected,
   onToggle,
+  onOpen,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
@@ -2304,12 +2476,9 @@ function Card({
   selecting: boolean
   selected: boolean
   onToggle: (part: PartId, range: boolean) => void
+  onOpen: (part: PartCard, from: DOMRect) => void
 }) {
   const nameId = `part-name-${part.id}`
-  const [moving, setMoving] = useState(false)
-  // The rect the panel's render should fly from, or `null` when the panel is closed. A rect
-  // rather than a boolean because "open" and "opened from here" are the same event.
-  const [looking, setLooking] = useState<DOMRect | null>(null)
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -2344,7 +2513,7 @@ function Card({
         // tile may have been scrolled, re-laid-out by a density change, or replaced by the
         // next page. Where the render *was* when it was clicked is the only honest origin.
         const render = event.currentTarget.querySelector('img')
-        setLooking(render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
+        onOpen(part, render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
       }}
       draggable={movable}
       onDragStart={(event) =>
@@ -2449,33 +2618,6 @@ function Card({
           clipped off the top of the tile at every desktop width. Always means here.
         */}
         <Measurements part={part} tight={layout === 'gallery'} />
-        {/*
-          Written here and rendered at `<body>`: `Dialog` portals itself, and it has to.
-          This card is `overflow-hidden hover:-translate-y-px`, Tailwind emits that lift as
-          the `translate` property, and an element with a `translate` other than `none` is a
-          containing block for fixed-position descendants — so a dialog rendered in the
-          card's own subtree resolved its `fixed inset-0` against the card and was clipped
-          to it for as long as the pointer stayed over the card. Nothing here may hoist that
-          markup back out of the portal.
-        */}
-        {looking === null ? null : (
-          <QuickLook
-            part={part}
-            from={looking}
-            hostRoot={hostRoot}
-            busy={busy}
-            onRender={onRender}
-            onMove={movable ? () => setMoving(true) : null}
-            onClose={() => setLooking(null)}
-          />
-        )}
-        {moving ? (
-          <MovePartDialog
-            part={{ id: part.id, name: part.name }}
-            library={part.library}
-            onClose={() => setMoving(false)}
-          />
-        ) : null}
       </div>
     </article>
   )
@@ -2507,6 +2649,7 @@ function QuickLook({
   onRender,
   onMove,
   onClose,
+  pane,
 }: {
   part: PartCard
   /** Where this part's render sat on the grid when it was clicked. */
@@ -2517,6 +2660,8 @@ function QuickLook({
   /** `null` for a model still in the shared store, which has no directory to rename. */
   onMove: (() => void) | null
   onClose: () => void
+  /** Beside the grid on a wide screen; over it, in a dialog, otherwise. */
+  pane: boolean
 }) {
   const detail = useQuery({
     queryKey: ['part', part.id],
@@ -2535,8 +2680,9 @@ function QuickLook({
     const image = panel.current?.querySelector('img')
     if (image != null) flipFrom(image, from)
   }, [detail.data, from])
+  const Frame = pane ? QuickLookPane : Dialog
   return (
-    <Dialog title={part.name} onClose={onClose}>
+    <Frame title={part.name} onClose={onClose}>
       <div ref={panel}>
       {detail.isPending ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
@@ -2594,7 +2740,7 @@ function QuickLook({
           {strings.quickLook.fullPage}
         </Link>
       </div>
-    </Dialog>
+    </Frame>
   )
 }
 

@@ -70,6 +70,8 @@ function renderIndex(
     onSearch?: (query: string) => void;
     format?: string;
     onSelectFormat?: (format: string | null) => void;
+    part?: string;
+    onOpenPart?: (part: string | null) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -86,6 +88,8 @@ function renderIndex(
         onSearch={props.onSearch}
         format={props.format}
         onSelectFormat={props.onSelectFormat}
+        part={props.part}
+        onOpenPart={props.onOpenPart}
       />
     ),
   });
@@ -3677,4 +3681,66 @@ test("the selection clears when the library changes", async () => {
   switchTo(SECOND_LIBRARY_ROW.id);
 
   expect(await screen.findByText(strings.selection.count(0))).toBeTruthy();
+});
+
+/** The open part is a search param, so a reload and a shared link keep the pane. */
+test("the open part rides in the URL", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { part?: string };
+
+  expect(validate({ part: HEX_NUT.id })).toEqual({ part: HEX_NUT.id });
+  expect(validate({ part: "" })).toEqual({});
+});
+
+/** A reload lands here: the part is in the URL, its card arrives, and the look opens on it. */
+test("a part in the URL opens once its card loads, and closing takes it out", async () => {
+  const onOpenPart = vi.fn();
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partDetail: ok(detailFor(HEX_NUT)),
+  });
+  renderIndex({ part: HEX_NUT.id, onOpenPart });
+
+  const dialog = await screen.findByRole("dialog", { name: HEX_NUT.name });
+  fireEvent.click(within(dialog).getByRole("button", { name: strings.dialog.close }));
+
+  expect(onOpenPart).toHaveBeenCalledWith(null);
+});
+
+/**
+ * At 1280px and up the look is a pane beside the grid rather than a dialog over it: the grid
+ * stays usable, focus goes to the pane's Close, and Escape hands it back to the card's name.
+ */
+test("on a wide screen the part opens in a pane beside the grid, and Escape returns to its card", async () => {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+  );
+  try {
+    stubFetch({
+      healthz: ok(HEALTHY),
+      parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+      partDetail: ok(detailFor(HEX_NUT)),
+    });
+    renderIndex();
+    fireEvent.click(await screen.findByRole("article", { name: HEX_NUT.name }));
+
+    const pane = await screen.findByRole("complementary", { name: HEX_NUT.name });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(pane).getByRole("button", { name: strings.dialog.close })),
+    );
+    expect(screen.getByRole("article", { name: MOTOR_MOUNT.name })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("complementary", { name: HEX_NUT.name })).toBeNull(),
+    );
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: HEX_NUT.name }));
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
