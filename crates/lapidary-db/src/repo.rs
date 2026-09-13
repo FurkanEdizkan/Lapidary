@@ -446,9 +446,14 @@ impl PgBlobs {
     /// [`PgParts::source_for_download`] orders, so every attempt walks the same copies in
     /// the same order.
     ///
-    /// Content addressing is not authorization, and this is no exception: it names paths
-    /// for the worker to read bytes it was already told the hash of, and nothing it returns
-    /// is served to anyone.
+    /// **This is a place where knowing a hash does stand in for the bytes**, and it only
+    /// holds because nobody owns a library yet. The upload commit queues this read for any
+    /// hash some library holds, so a client that names one gets those bytes filed into its
+    /// library without ever sending them. Phase 1 has no principal — every library is the
+    /// one operator's, as `upload.rs`'s `library_exists` also says — so that crosses no
+    /// boundary today. When libraries get owners, `CLAUDE.md`'s rule applies here in full:
+    /// the probe's "already held" answer and this lookup must both be scoped to libraries
+    /// the caller may read.
     pub async fn source_copies(
         &self,
         hash: &BlobHash,
