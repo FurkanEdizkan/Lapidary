@@ -140,7 +140,7 @@ number integrated over surfaces that do not close. Sewing faces into solids
 
 ## Kernel version
 
-`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>` — `occt 8.0.1 bridge 1` today. Different OCCT
+`occt-bridge version` prints `occt <OCCT version> bridge <BRIDGE_VERSION>` — `occt 8.0.1 bridge 3` today. Different OCCT
 builds tessellate identical input differently, so this string is what the worker fleet pins
 (`ARCHITECTURE.md`); bump `BRIDGE_VERSION` in `src/main.cpp` whenever the bridge changes what
 it writes.
