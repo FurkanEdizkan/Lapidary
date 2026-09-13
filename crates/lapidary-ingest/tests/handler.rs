@@ -2690,3 +2690,48 @@ async fn a_header_the_database_refuses_still_leaves_the_part_ingested(pool: PgPo
         .expect("the part is there");
     assert_eq!(metadata, serde_json::json!({}), "and carries no header");
 }
+
+/// A rung an older pipeline wrote is queued when the worker starts and rebuilt at the version
+/// this worker's kernel reports, and nothing current is queued beside it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    let (_, current) = l0_row(&pool).await;
+
+    handler.enqueue_stale_rungs().await;
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    assert!(
+        jobs.dequeue("worker-a", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a rung the current kernel wrote is not stale"
+    );
+
+    sqlx::query(
+        "UPDATE derivative SET kernel_version = 'mesh stl-1+glb-1+cpu-1' \
+         WHERE kind = 'tessellation_l0'",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages the rung");
+    handler.enqueue_stale_rungs().await;
+    let job = jobs
+        .dequeue("worker-a", std::time::Duration::from_secs(60))
+        .await
+        .expect("dequeues")
+        .expect("the old rung is queued");
+    assert_eq!(
+        handler.handle(&job).await.expect("rebuilds"),
+        Outcome::Rendered
+    );
+    assert_eq!(
+        l0_row(&pool).await.1,
+        current,
+        "written at the current version"
+    );
+}

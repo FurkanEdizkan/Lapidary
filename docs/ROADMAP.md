@@ -280,9 +280,12 @@ move, both on SwiftShader, and both are most likely the decoder's 26 kB: a sessi
 511 → 587 ms, and the warm Gauss open, 88 → 93 ms.
 
 **What it does not change.**
-- **Old rungs stay.** Rungs already stored as glb-1 still load: the decoder only runs when a file
-  asks for it. Nothing rewrites them either, because `PgParts::derivative_hash` takes a kind's
-  newest row whatever kernel wrote it, so a library ingested before `a591bf1` keeps its larger rungs.
+- **Old rungs stay until a worker restarts.** Rungs already stored as glb-1 still load: the decoder
+  only runs when a file asks for it. `PgParts::derivative_hash` takes a kind's newest row whatever
+  kernel wrote it, so when this was measured nothing rewrote them. A worker now queues a rebuild of
+  every rung whose `kernel_version` differs from its own kernel's as it starts
+  (`WorkerHandler::enqueue_stale_rungs`), so a library ingested before `a591bf1` gets the smaller
+  rungs after its next worker restart.
 - **L0 and L1 could shrink further.** Nobody measures on them, so they could be quantized; they
   are not yet. `write_glb` does not know which rung it writes, so doing it means passing the
   `Lod` from `cluster()` down, and L2 must stay lossless.
