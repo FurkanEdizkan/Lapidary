@@ -341,6 +341,120 @@ async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool:
     );
 }
 
+/// Where the api stages an upload's bytes: at their hash in `blobs/`. A scan never writes
+/// there — its file's only copy is the one in the model directory.
+fn staged_copy_of(blob_root: &Path, hash: &BlobHash) -> PathBuf {
+    let hex = hash.to_hex();
+    blob_root
+        .join("blobs")
+        .join(&hex[0..2])
+        .join(&hex[2..4])
+        .join(&hex)
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_upload_of_bytes_a_scan_already_filed_reads_them_from_that_part_directory(pool: PgPool) {
+    // Re-uploading a file the library already has, at another path. The probe calls the
+    // bytes known, so the browser sends none and the commit stages nothing — and since
+    // the store became a folder tree a scanned file's only copy is the one in its model
+    // directory. A live stack failed this job three times and gave up, with a message
+    // blaming cache eviction, on the most ordinary re-upload there is.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), "a/LP-1042-03.stl", BRACKET_FIXTURE);
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: ingest_dir.path().to_path_buf(),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+    let scanned = handler
+        .handle(&job_for("a/LP-1042-03.stl"))
+        .await
+        .expect("scans");
+    assert_eq!(scanned, Outcome::Ingested);
+    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
+    assert!(
+        !staged_copy_of(blob_root.path(), &hash).exists(),
+        "the premise: a scan files its bytes by path only, so there is no hash-addressed copy to read"
+    );
+
+    let outcome = handler
+        .handle(&blob_job(hash, "b/LP-1042-03.stl"))
+        .await
+        .expect("ingests from the copy the scan filed");
+    assert_eq!(outcome, Outcome::Ingested);
+
+    let filed: Vec<(String, String)> = sqlx::query_as(
+        "SELECT p.source_path, f.storage_path FROM part p \
+         JOIN revision r ON r.part_id = p.id \
+         JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
+         WHERE p.library_id = $1 ORDER BY p.source_path",
+    )
+    .bind(seeded().as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("query");
+    assert_eq!(filed.len(), 2, "two paths are two parts: {filed:?}");
+    assert_eq!(filed[1].0, "b/LP-1042-03.stl");
+    assert_eq!(
+        std::fs::read(blob_root.path().join(&filed[1].1)).expect("the upload has its own file"),
+        BRACKET_FIXTURE,
+        "the second directory holds the same bytes, not a reference to the first"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_upload_whose_only_filed_copy_was_edited_fails_permanently_and_indexes_nothing(
+    pool: PgPool,
+) {
+    // The filed copy sits in a folder the owner opens in a file manager, so its name is
+    // not proof of its contents. Indexing edited bytes under the hash the job names would
+    // record a part whose file is not the file its hash says — the one thing content
+    // addressing exists to rule out. Permanent: another attempt reads the same file.
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), "a/LP-1042-03.stl", BRACKET_FIXTURE);
+    let handler = WorkerHandler {
+        db: pool.clone(),
+        ingest_dir: ingest_dir.path().to_path_buf(),
+        blob_root: blob_root.path().to_path_buf(),
+    };
+    handler
+        .handle(&job_for("a/LP-1042-03.stl"))
+        .await
+        .expect("scans");
+    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
+    let storage_path: String =
+        sqlx::query_scalar("SELECT storage_path FROM file WHERE blake3 = $1 AND role = 'source'")
+            .bind(hash.to_hex())
+            .fetch_one(&pool)
+            .await
+            .expect("the scan filed it");
+    std::fs::write(
+        blob_root.path().join(&storage_path),
+        b"solid LP-1042-03\nendsolid LP-1042-03\n",
+    )
+    .expect("the owner edits the file in place");
+
+    let err = handler
+        .handle(&blob_job(hash, "b/LP-1042-03.stl"))
+        .await
+        .expect_err("no stored copy still matches the hash");
+    match &err {
+        HandlerError::Permanent { message } => assert!(
+            message.contains("b/LP-1042-03.stl"),
+            "must name the file it could not add, got: {message}"
+        ),
+        other => panic!("expected a permanent failure, got: {other:?}"),
+    }
+    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE library_id = $1")
+        .bind(seeded().as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    assert_eq!(parts, 1, "nothing was indexed from the edited bytes");
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
     // The path never reaches a filesystem on this arm -- it becomes `part.source_path`,

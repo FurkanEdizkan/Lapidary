@@ -114,7 +114,20 @@ pub async fn run<H: JobHandler>(
                     let outcome = next_state(result, job.attempts, job.max_attempts);
                     let recorded = match outcome {
                         Next::Complete(outcome) => jobs.complete(job.id, outcome).await,
-                        Next::Fail { reason } => jobs.fail(job.id, &reason).await,
+                        Next::Fail { reason } => {
+                            // Said where the failure becomes final. Whoever is watching the
+                            // batch reads the reason there; an operator who was not has only
+                            // this, and a file that never appears with nothing in the log is a
+                            // question nobody can answer.
+                            tracing::warn!(
+                                job = %job.id,
+                                kind = %job.kind,
+                                library = %job.library_id,
+                                %reason,
+                                "job failed and will not be retried"
+                            );
+                            jobs.fail(job.id, &reason).await
+                        }
                         Next::Retry { reason, backoff } => {
                             jobs.reschedule(job.id, &reason, backoff).await
                         }

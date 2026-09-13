@@ -114,7 +114,9 @@ use lapidary_db::{
     TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
-use lapidary_storage::{Compression, DerivativeStore, SourceReader, SourceStore, WorkerRole};
+use lapidary_storage::{
+    Compression, DerivativeStore, SourceReader, SourceStore, StorageError, WorkerRole,
+};
 use std::path::{Path as FsPath, PathBuf};
 
 pub struct WorkerHandler {
@@ -211,18 +213,22 @@ impl WorkerHandler {
     /// One blob already in the store, start to finish: the upload route's half of the
     /// pipeline.
     ///
-    /// The api wrote these bytes and verified them against the hash the client claimed
-    /// (`SourceWriter::put_file`), and inserted the `blob` row that keeps them from being
-    /// an invisible orphan while this job waits. So steps 1 and 2 are a read back out of
-    /// the store rather than off the mount, and nothing here re-decides the hash: it is
-    /// the row's primary key and the name of the file the bytes were read from.
+    /// Usually the api wrote these bytes and verified them against the hash the client
+    /// claimed (`SourceWriter::put_file`), and inserted the `blob` row that keeps them from
+    /// being an invisible orphan while this job waits. Not always: when the probe found the
+    /// bytes already held, the browser sends none and the commit stages nothing, and a
+    /// scanned file's only copy is the one filed in its model directory. So steps 1 and 2
+    /// are a read back out of the store — the staged copy, else a filed one — and the bytes
+    /// are hashed again before anything is indexed, because a filed copy lives in a folder
+    /// the owner edits and its path is no proof of what it holds.
     ///
     /// `SourceReader` rather than `SourceStore`, though this crate may construct either:
     /// this arm never writes a source blob and never reaps one — the bytes were not its
-    /// to write — and the read-only handle is the one that says so. Its `zstd_level`
-    /// comes from the `blob` row for the reason its own doc gives, which matters more
-    /// here than anywhere: the api chose that level, in another process, possibly on
-    /// another build.
+    /// to write — and the read-only handle is the one that says so. The staged copy's
+    /// `zstd_level` comes from the `blob` row for the reason its own doc gives, which
+    /// matters more here than anywhere: the api chose that level, in another process,
+    /// possibly on another build. A filed copy's comes from its own `file` row, which
+    /// migration `0013` made the authority for files in the folder tree.
     ///
     /// See the slice 6a design, §4.1 and §4.2.
     pub(crate) async fn ingest_blob(
@@ -256,11 +262,74 @@ impl WorkerHandler {
                 ),
             })?;
 
-        let bytes = SourceReader::open(&self.blob_root)
-            .get(&hash, Some(stored.zstd_level))
-            .map_err(|e| HandlerError::Transient {
-                message: format!("Could not read the uploaded bytes for {source_path}: {e}"),
-            })?;
+        // The staged copy first, at the level the api recorded on the row. On `NotFound`
+        // alone, the copies already filed in part directories, newest first — where a
+        // re-upload's bytes are when the probe called them known. Any other failure is the
+        // store misbehaving rather than the bytes being absent, and worth another attempt.
+        let reader = SourceReader::open(&self.blob_root);
+        let unchanged = |bytes: Vec<u8>| {
+            (BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes()) == hash).then_some(bytes)
+        };
+        let staged = match reader.get(&hash, Some(stored.zstd_level)) {
+            Ok(bytes) => unchanged(bytes),
+            Err(StorageError::NotFound { .. }) => None,
+            Err(e) => {
+                return Err(HandlerError::Transient {
+                    message: format!("Could not read the uploaded bytes for {source_path}: {e}"),
+                });
+            }
+        };
+        let bytes = match staged {
+            Some(bytes) => bytes,
+            None => {
+                let copies = PgBlobs(self.db.clone())
+                    .source_copies(&hash)
+                    .await
+                    .map_err(classify_db)?;
+                let mut found = None;
+                let mut unreadable = None;
+                for (rel, level) in &copies {
+                    match reader.get_at(rel, *level) {
+                        // A copy that no longer hashes to these bytes was edited where it is
+                        // filed, and one that is gone was moved or deleted there. Both are
+                        // passed over rather than retried: another attempt reads the same
+                        // file.
+                        Ok(bytes) => {
+                            found = unchanged(bytes);
+                            if found.is_some() {
+                                break;
+                            }
+                        }
+                        Err(StorageError::Io { source, .. })
+                            if source.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => unreadable = Some(e),
+                    }
+                }
+                match (found, unreadable) {
+                    (Some(bytes), _) => bytes,
+                    // A copy is there and could not be read for some reason other than its
+                    // absence. When genuinely unsure, this module chooses `Transient`.
+                    (None, Some(e)) => {
+                        return Err(HandlerError::Transient {
+                            message: format!(
+                                "Could not read a stored copy of the bytes for {source_path}: {e}"
+                            ),
+                        });
+                    }
+                    (None, None) => {
+                        return Err(HandlerError::Permanent {
+                            message: format!(
+                                "Could not add {source_path}: this server already holds a file \
+                                 with the same contents, but no stored copy of it is still \
+                                 readable and unchanged. Each copy is kept in its part's folder \
+                                 inside the storage folder; if one was edited or deleted there, \
+                                 put the original file back and upload again."
+                            ),
+                        });
+                    }
+                }
+            }
+        };
 
         self.index(library, source_path, bytes, hash).await
     }
