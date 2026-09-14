@@ -76,6 +76,22 @@ function notKept(unkept: number): string {
 }
 
 /**
+ * A figure's change between two revisions: signed, and with its share of where it started
+ * when that was not zero. No change says so in words, because "+0 cm³" reads as a
+ * measurement of something.
+ */
+function change(value: number, unit: string, percent: number | null): string {
+  if (value === 0) return 'No change'
+  const sign = value > 0 ? '+' : '−'
+  const amount = Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })
+  const share =
+    percent === null
+      ? ''
+      : ` (${sign}${Math.abs(percent).toLocaleString('en-US', { maximumFractionDigits: 1 })}%)`
+  return `${sign}${amount}${unit === '' ? '' : ` ${unit}`}${share}`
+}
+
+/**
  * The counted phrases above read mid-sentence as well as at the head of one — "no models"
  * has to stay lowercase where a sentence has already started — so the one place that opens
  * a sentence with one raises its first letter itself.
@@ -429,6 +445,20 @@ export const strings = {
     historyDate: (iso: string) =>
       new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
     historyFailed: "Could not load this part's history. Reload the page to try again.",
+    /** Changes between revisions, in each figure's own unit. */
+    volumeChange: (mm3: number, percent: number | null) => change(mm3 / 1000, 'cm³', percent),
+    areaChange: (mm2: number, percent: number | null) => change(mm2 / 100, 'cm²', percent),
+    lengthChange: (mm: number, percent: number | null) => change(mm, 'mm', percent),
+    countChange: (count: number, percent: number | null) => change(count, '', percent),
+    compare: 'Compare',
+    compareFrom: 'From',
+    compareTo: 'To',
+    compareFigure: 'Figure',
+    compareChange: 'Change',
+    boundingBoxAxis: (axis: 0 | 1 | 2) => `Bounding box ${'XYZ'[axis]}`,
+    /** A figure one of the two revisions did not record: no change can be read off it. */
+    notInBoth: 'Not measured in both',
+    compareFailed: 'Could not compare these revisions. Reload the page to try again.',
   },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:

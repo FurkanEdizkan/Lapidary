@@ -33,6 +33,7 @@ import type {
   Pmi,
   PurgeResult,
   RetryAccepted,
+  RevisionDiff,
   RevisionId,
   RungReady,
   SavedFilter,
@@ -1022,6 +1023,23 @@ export async function fetchRevisions(part: PartId): Promise<PartRevision[]> {
     throw new Error(`revision history returned ${response.status}`)
   }
   return (await response.json()) as PartRevision[]
+}
+
+/**
+ * `GET /api/parts/{id}/diff?from=&to=` — any two revisions of one part, figure by figure. The
+ * server keeps the ≈ rule: each change is approximate when either figure is.
+ */
+export async function fetchDiff(
+  part: PartId,
+  from: RevisionId,
+  to: RevisionId,
+): Promise<RevisionDiff> {
+  const query = new URLSearchParams({ from, to })
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/diff?${query}`)
+  if (!response.ok) {
+    throw new Error(`revision diff returned ${response.status}`)
+  }
+  return (await response.json()) as RevisionDiff
 }
 
 /**

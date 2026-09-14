@@ -292,6 +292,12 @@ test('the history appears once a part has a second revision, and says where each
     sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
     sourceFormat: 'stl',
     sourceBytes: 20124,
+    deltaFromParent: {
+      volumeMm3: { from: 35840, to: 39424, change: 3584, percent: 10, approximate: true },
+      surfaceAreaMm2: null,
+      bboxMm: null,
+      triangleCount: null,
+    },
   } satisfies PartRevision
   const first = {
     ...second,
@@ -301,6 +307,7 @@ test('the history appears once a part has a second revision, and says where each
     origin: 'ingest',
     createdAt: '2026-09-13T10:00:00Z',
     volumeMm3: { value: 35840, approximate: true },
+    deltaFromParent: null,
   } satisfies PartRevision
   let history: PartRevision[] = [first]
   vi.stubGlobal(
@@ -308,7 +315,12 @@ test('the history appears once a part has a second revision, and says where each
     vi.fn(async (url: string) => ({
       ok: true,
       status: 200,
-      json: async () => (url.endsWith('/revisions') ? history : []),
+      json: async () =>
+        url.endsWith('/revisions')
+          ? history
+          : url.includes('/diff?')
+            ? second.deltaFromParent
+            : [],
     })),
   )
   const settledPage = async () => {
@@ -332,13 +344,30 @@ test('the history appears once a part has a second revision, and says where each
   history = [second, first]
   await settledPage()
   expect(await screen.findByText(strings.detail.history)).toBeTruthy()
+  // Within the history's own list: the compare control names every revision too, as options.
+  const section = screen.getByText(strings.detail.history).closest('section') as HTMLElement
   const item = (label: string) =>
-    screen.getByText(strings.detail.historyRevision(label)).closest('li')
+    [...section.querySelectorAll('li')].find((li) =>
+      li.textContent?.startsWith(strings.detail.historyRevision(label)),
+    )
   expect(item('2')?.textContent).toContain(strings.detail.origin.agent)
   expect(item('2')?.textContent).toContain(strings.detail.approximate)
   expect(item('1')?.textContent).toContain(strings.detail.origin.ingest)
   expect(item('2')?.querySelector('a')?.getAttribute('href')).toBe(
     `/api/revisions/${second.id}/download?variant=original`,
   )
+  // Revision 2 says what changed from its parent, marked as the mesh figure it is.
+  expect(item('2')?.textContent).toContain(strings.detail.volumeChange(3584, 10))
+  expect(strings.detail.volumeChange(3584, 10)).toBe('+3.58 cm³ (+10%)')
+
+  // The comparison opens on the newest against the one before it, and a figure one of them
+  // did not record says so rather than showing a zero.
+  const table = await screen.findByRole('table')
+  expect(fetch).toHaveBeenCalledWith(
+    `/api/parts/${BRACKET.id}/diff?from=${first.id}&to=${second.id}`,
+  )
+  expect(table.textContent).toContain(strings.detail.volumeChange(3584, 10))
+  expect(table.textContent).toContain(strings.detail.approximate)
+  expect(table.textContent).toContain(strings.detail.notInBoth)
   vi.unstubAllGlobals()
 })

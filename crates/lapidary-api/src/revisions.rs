@@ -10,13 +10,18 @@ use crate::AppState;
 use crate::derive::{internal_error, no_such_part};
 use crate::detail::{pair, wrap};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
-use lapidary_core::{Approximate, BlobHash, PartId, Provenance, RevisionId, RevisionOrigin};
+use lapidary_core::{
+    Approximate, BlobHash, PartId, Provenance, RevisionDiff, RevisionId, RevisionOrigin,
+};
 use lapidary_db::{DbError, PgParts, PgRevisions, RevisionRow};
+use lapidary_vcs::diff::{RevisionFigures, diff};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -41,27 +46,105 @@ pub struct PartRevision {
     pub source_format: Option<String>,
     #[ts(type = "number | null")]
     pub source_bytes: Option<u64>,
+    /// What changed from the revision this one was recorded on top of. `None` for a part's
+    /// first revision.
+    pub delta_from_parent: Option<RevisionDiff>,
 }
 
 /// A part that is not there — never existed, or deleted — answers the `404` its page does:
 /// a deleted part's history is not served beside a page that says it is gone.
 pub async fn list(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
+    match history(&state, part).await {
+        Ok(revisions) => Json(revisions).into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// `?from=&to=`, each a revision id.
+#[derive(Debug, Deserialize)]
+pub struct CompareQuery {
+    from: RevisionId,
+    to: RevisionId,
+}
+
+/// `GET /api/parts/{id}/diff?from=&to=` — any two revisions of one part, `to` against `from`.
+///
+/// Both must be this part's own. A revision id is not a key to another part's figures:
+/// content addressing is not authorization (`CLAUDE.md`), and an id is less than that.
+pub async fn compare(
+    State(state): State<AppState>,
+    Path(part): Path<PartId>,
+    query: Result<Query<CompareQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "message": "Say which two revisions to compare: `?from=` and `?to=`, each the id \
+                            of a revision of this part."
+            })),
+        )
+            .into_response();
+    };
+    let revisions = match history(&state, part).await {
+        Ok(revisions) => revisions,
+        Err(response) => return *response,
+    };
+    let find = |id: RevisionId| revisions.iter().find(|revision| revision.id == id);
+    let (Some(from), Some(to)) = (find(query.from), find(query.to)) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "message": "One of those is not a revision of this part, so there is nothing to \
+                            compare. Pick both from this part's history."
+            })),
+        )
+            .into_response();
+    };
+    Json(diff(&figures(from), &figures(to))).into_response()
+}
+
+/// The part's revisions, newest first, each with its change from its parent — or the
+/// response that says why there are none to give.
+async fn history(state: &AppState, part: PartId) -> Result<Vec<PartRevision>, Box<Response>> {
     match PgParts(state.db.clone()).library_of(part).await {
         Ok(Some(_)) => {}
-        Ok(None) => return no_such_part(),
-        Err(err) => return internal_error(&err, "revision history part lookup failed"),
+        Ok(None) => return Err(Box::new(no_such_part())),
+        Err(err) => {
+            return Err(Box::new(internal_error(
+                &err,
+                "revision history part lookup failed",
+            )));
+        }
     }
-    let rows = match PgRevisions(state.db).history(part).await {
-        Ok(rows) => rows,
-        Err(err) => return internal_error(&err, "revision history query failed"),
-    };
-    match rows
+    let rows = PgRevisions(state.db.clone())
+        .history(part)
+        .await
+        .map_err(|err| Box::new(internal_error(&err, "revision history query failed")))?;
+    let mut revisions = rows
         .into_iter()
         .map(to_revision)
         .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(revisions) => Json(revisions).into_response(),
-        Err(err) => internal_error(&err, "revision history row refused"),
+        .map_err(|err| Box::new(internal_error(&err, "revision history row refused")))?;
+
+    let recorded: Vec<(RevisionId, RevisionFigures)> = revisions
+        .iter()
+        .map(|revision| (revision.id, figures(revision)))
+        .collect();
+    for revision in &mut revisions {
+        let parent = recorded.iter().find(|(id, _)| Some(*id) == revision.parent);
+        revision.delta_from_parent = parent.map(|(_, from)| diff(from, &figures(revision)));
+    }
+    Ok(revisions)
+}
+
+/// What a diff reads, off the wire shape that already carries each figure's provenance.
+fn figures(revision: &PartRevision) -> RevisionFigures {
+    RevisionFigures {
+        volume_mm3: revision.volume_mm3,
+        surface_area_mm2: revision.surface_area_mm2,
+        bbox_mm: revision.bbox_mm,
+        triangle_count: revision.triangle_count,
     }
 }
 
@@ -119,5 +202,7 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
                 })
             })
             .transpose()?,
+        // Filled in once the whole history is read: a parent is another row.
+        delta_from_parent: None,
     })
 }

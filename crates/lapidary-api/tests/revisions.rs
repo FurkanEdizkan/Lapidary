@@ -218,3 +218,65 @@ async fn switching_a_library_that_does_not_exist_is_a_404(pool: sqlx::PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
 }
+
+/// Each revision says what changed from its parent, and the change keeps the mesh mark.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn each_revision_says_what_changed_from_its_parent(pool: sqlx::PgPool) {
+    let part = two_revisions(&pool).await;
+    let (status, json) = send(
+        pool,
+        request("GET", &format!("/api/parts/{part}/revisions")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    let delta = &json[0]["deltaFromParent"];
+    assert_eq!(delta["volumeMm3"]["change"], 21_478.0);
+    assert_eq!(delta["volumeMm3"]["approximate"], true);
+    let percent = delta["volumeMm3"]["percent"]
+        .as_f64()
+        .expect("a percentage of a non-zero base");
+    assert!((percent - 10.0).abs() < 0.01, "about a tenth: {percent}");
+    assert_eq!(delta["bboxMm"][0]["change"], 15.0);
+    assert!(
+        json[1]["deltaFromParent"].is_null(),
+        "a first revision has nothing to change from"
+    );
+}
+
+/// Any two revisions of one part compare, either way round. A revision that is not this part's
+/// is refused rather than compared, and a request missing one says what to send.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn any_two_revisions_of_a_part_compare_and_no_others_do(pool: sqlx::PgPool) {
+    let part = two_revisions(&pool).await;
+    let (_, history) = send(
+        pool.clone(),
+        request("GET", &format!("/api/parts/{part}/revisions")),
+    )
+    .await;
+    let newer = history[0]["id"].as_str().expect("an id").to_owned();
+    let older = history[1]["id"].as_str().expect("an id").to_owned();
+    let compare = |from: &str, to: &str| {
+        request(
+            "GET",
+            &format!("/api/parts/{part}/diff?from={from}&to={to}"),
+        )
+    };
+
+    let (status, forward) = send(pool.clone(), compare(&older, &newer)).await;
+    assert_eq!(status, StatusCode::OK, "{forward}");
+    assert_eq!(forward["volumeMm3"]["change"], 21_478.0);
+    let (_, backward) = send(pool.clone(), compare(&newer, &older)).await;
+    assert_eq!(backward["volumeMm3"]["change"], -21_478.0);
+
+    let stranger = lapidary_core::RevisionId::new().to_string();
+    let (status, json) = send(pool.clone(), compare(&older, &stranger)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+    let (status, json) = send(
+        pool,
+        request("GET", &format!("/api/parts/{part}/diff?from={older}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+}
