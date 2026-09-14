@@ -416,6 +416,76 @@ every link comes before the first frame, so it reads 2 before and after.
 **Exit:** open a STEP from Lapidary in FreeCAD, change it, save, and a new revision
 appears automatically with a correct volume delta — on Linux, macOS and Windows.
 
+### Slice 1 — revisions, geometric diff, check-out locks, the Linux agent (2026-09-14)
+
+Spec: `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md` (`e4d7f49`).
+Merged locally, not pushed.
+
+**Why first.** A file whose bytes changed at a path a library already indexed was reported
+"already here" and kept nowhere, in every library. That is the gap this slice closes.
+
+- **Revisions** (`fa3300f`, `627c9ae`; merge `21bea70`).
+  - In a controlled library, a changed file becomes the next revision. The part row is locked
+    first. The previous file moves to `<model>/revisions/<its label>/`, the new bytes go on top,
+    and `metadata.json` lists every revision.
+  - A revert is a revision.
+  - A hobby library answers `unkept` and writes nothing. The batch line says how to switch, and
+    `POST /api/libraries/{id}/controlled` switches one way.
+  - A History section on the part page.
+- **Geometric diff** (`c1e23a9`; merge `6dbc49b`).
+  - Figures: volume, surface area, bbox per axis and triangle count.
+  - Each change is approximate when either figure is, and absent (never zero) when either
+    revision did not record the figure.
+  - History rows carry the change from their parent, and `GET /api/parts/{id}/diff` compares
+    any two revisions.
+- **Check-out locks** (`fed1ac9`, `efffd84`; merge `5135257`).
+  - One active lock per part, held by free text, with no auth.
+  - The revision transaction refuses a change that does not carry the lock, naming the holder,
+    or naming who released it and when.
+  - The part page shows the holder and can release the lock behind a dialog.
+- **The Linux agent** (`a944037`; merge `ed5f016`).
+  - `lapidary checkout`, `checkin` and `agent`.
+  - Polls every 500 ms, waits for a 2 s settle, and hashes with BLAKE3 before believing anything.
+
+**Exit check.** Native stack: a debug build with the mock kernel, database `lapidary_p4`, the six
+example STLs, and headless Chrome.
+
+| Step | Result |
+|---|---|
+| 1. Scan into a controlled library | 6 ingested, 0 failed |
+| 2. `lapidary checkout` of the flange as `mira@workshop-pc`, agent running | the file and `.lapidary-checkout.json` in `flange-dn40-lp-3310-02_1/`, watched |
+| 3. Scaled ×1.1 along X, saved as a temporary file renamed over | revision 2, 2.7 s after the save: origin `agent`, parent revision 1, volume 243.10 → 267.41 cm³ (+10.0%, ≈). `revisions/1/` and revision 1's original download are byte-identical to the example file. `metadata.json` lists 1 `ingest`, 2 `agent`. The page shows History and Compare with every mesh figure marked ≈ |
+| 4. `touch` | no revision, no agent output |
+| 5. `flange.tmp` and `flange.bak` beside it | nothing |
+| 6. A second checkout as `jonas@laptop` | refused, naming mira and when she took it |
+| 7. Forced release, then another save | refused, naming `jonas@laptop` and the time; still 2 revisions |
+| 8. `lapidary checkin` | after the release: prints the server's answer and marks the folder checked in, files kept. A fresh vee-block checkout checked in: lock cleared |
+| 9. Hobby library, flange changed, re-scanned | 5 skipped, 1 unkept, 0 failed |
+
+**Not met, and not in this slice.**
+- The phase exit is not met: the check ran on STL, on Linux, with the mock kernel. No STEP in
+  FreeCAD, and no macOS or Windows.
+- Slice 2 holds:
+  - the overlay diff;
+  - `lapidary://` and launching a tool;
+  - the macOS and Windows watchers;
+  - the `Target` trait;
+  - storage tiering;
+  - face and edge deltas, which need STEP entities and OCCT;
+  - mass and centre of mass.
+
+**Recorded rather than fixed.**
+- A new part's first revision says `ingest` whatever route it arrived by.
+- Two different jobs racing different bytes onto one *new* path is unchanged from before.
+- Known test weaknesses, found by mutation checks:
+  - Only the settle test guards against the watcher hashing a change immediately; the rename
+    and still-writing tests make no assertion on the change poll itself.
+  - The database revision tests and every lock test were written alongside their code, and
+    were mutation-checked instead of being seen failing first.
+- The purge coverage test caught `part_lock`'s `ON DELETE CASCADE` before merge. Purge now
+  deletes the rows by name.
+- The old deleted-part test counted a rung the skip path leaked. It now counts one.
+
 ---
 
 ## Phase 5 — Source links, bundles, collections

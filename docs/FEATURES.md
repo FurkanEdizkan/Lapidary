@@ -191,6 +191,23 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Geometric diff: Δ volume, bbox, mass, counts | 4 |
 | Visual overlay diff (grey ghost vs solid) | 4 |
 | Pessimistic check-out / check-in locks | 4 |
+<!--
+  Phase 4 slice 1 (2026-09-14; ROADMAP.md, Phase 4) delivered part of this section.
+
+  - Revisions: in `controlled` libraries only. A hobby library says a changed file was not
+    kept.
+  - `origin`: `ingest`, `upload` or `agent`, and a parent on every revision after the first.
+  - History strip: thumbnails and the volume delta against each revision's parent.
+  - Geometric diff, part of it:
+    - delivered: volume, surface area, bbox per axis and triangle count, each ≈ when either
+      figure is mesh-derived;
+    - not yet: mass and centre of mass (nothing stores a density), and face and edge counts
+      (STEP entities, checked with OCCT).
+  - Locks: one per part, free-text holder, no auth; a forced release is recorded.
+  - Not yet: the visual overlay diff.
+-->
+
+
 | Lifecycle states + approvals (`controlled` libraries only) | 8 |
 | Per-face Hausdorff heatmap, async | 8 |
 | Merge, branches, textual diff | **[—]** |
@@ -205,6 +222,16 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Streaming ZIP bundle + `manifest.json` | 5 |
 | `lapidary://` URI scheme + agent launch | 4 |
 | Native watcher → automatic new revision on external save | 4 |
+<!--
+  Phase 4 slice 1: Linux only.
+  - Commands: `lapidary checkout`, `checkin` and `agent`.
+  - The agent polls the checked-out file every 500 ms, waits for a 2 s settle, and hashes
+    before believing. A touch that changes no bytes, and files beside it, are not saves.
+  - Only the file handed out comes back: a tool that saves another name or format is not picked
+    up.
+  - Not yet: macOS and Windows watchers, the `lapidary://` scheme, and launching a tool.
+-->
+
 | Time-limited supplier share links | 9 |
 | Rhino `.rhp` / Blender addon | **[—]** until a customer asks by name |
 | Direct-to-printer sending | **[—]** we hand off, never print |
