@@ -568,6 +568,57 @@ assembly as a bundle another user can import with full lineage intact.
 
 ---
 
+## Open points, 2026-09-15
+
+These were swept from this file's records, FEATURES and DATA, and checked against the code at
+`4aaef44`.
+- **Exits.** Phases 0–3 are met. Phase 4's and Phase 5's are not.
+- **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
+
+**Three goals, run in this order.** Each goal is one long `/goal` session with its own file under
+`docs/superpowers/plans/`, and keeps its record below as it merges.
+
+| Order | Goal file | Holds |
+|---|---|---|
+| 1 | `2026-09-15-phase-4-slice-2-goal.md` | overlay diff; `lapidary://` and launching a tool; render cache and quarantined directories in the storage view; slice 1's debts; bundles if time remains |
+| 2 | `2026-09-15-correctness-debt-goal.md` | batched access tracking (DATA §1.4); phantom bytes in the purge and sweep reports; two jobs racing onto one new path; re-parenting a category; tests never seen failing; the untimed drop path, tree fan-out and link open |
+| 3 | `2026-09-15-local-product-goal.md` | custom fields; Turkish search; saved-filter rename, reorder and deleted categories; a capped section cut; watched-folder ingest through the agent; bundles if slice 2 did not reach them |
+
+**Decided by the owner, 2026-09-15.**
+- **Tiering.** Source tiering is retired, and library files stay raw (DATA §1.2, §1.3).
+- **OCCT and FreeCAD wait.** Checks stay on mesh parts with the mock kernel.
+- **macOS and Windows watchers** wait for a machine to run them on.
+
+**Blocked, and what unblocks each.**
+
+| Unblocked by | Items |
+|---|---|
+| Building the OCCT image (root disk, Docker shared with another project) | Timing Phase 0 and Phase 2 on real STEP files and assemblies; face and edge deltas; snapping to cones, spheres and tori; PMI drawn in 3D; datums no tolerance refers to; PMI for parts ingested before bridge 6; a section cut through an assembly with hidden parts; explode view (3MF components are flattened, so only an OCCT assembly has parts to explode); B-rep format negotiation behind `Target`; a 40-part STEP assembly as a bundle |
+| FreeCAD installed, plus OCCT | Phase 4's exit (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
+| A macOS or Windows machine | The FSEvents and `ReadDirectoryChangesW` watchers, the Windows overflow rescan, and the rest of Phase 4's exit |
+| Pulling a pgvector image | Checking pgvector against `postgres:18`, before Phase 6 (see Open items) |
+| Phase 8 | The lifecycle facet, per-user saved filters, auth on locks, `lapidary worker` |
+
+**Open questions for the owner.**
+- **Phase 5's exit cannot be met as written.**
+  - Its first clause, a Printables URL giving title, licence and a cached image, needs OpenGraph
+    fetching.
+  - FEATURES §6 rules OpenGraph out by owner decision.
+  - Recommended: change the exit to a source URL kept with a title and licence entered by hand, and an
+    image fetched from a pasted image URL, which already works.
+- **Mass and centre of mass** need a density.
+  - Recommended: a density per material, entered by hand, with ≈ on every figure derived from it.
+- **`lapidary up`** writes compose files and pulls images.
+  - Recommended: it stays a stub until the managed-local or Tauri work.
+- **A grid visitor who never opens a part** still pays for the viewer chunk and a WebGL context (Phase
+  3 record).
+- **113 local commits are unpushed.** `origin/main` was last pushed on 2026-09-08. When to release is
+  the owner's call.
+- **Old housekeeping** from before the folder tree, not rechecked: the `lapidary_lapidary-blobs`
+  volume, and a `storage/` directory left at `chmod 777`.
+
+---
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups
@@ -695,7 +746,8 @@ before incorporating** — some of it depends on day-one entity structure.
   2026-09-14, `postgres:18`'s `pg_ts_config` lists `turkish`. pgvector is not: the official image
   offers no `vector` extension, `deploy/db/Containerfile` installs `postgresql-${PG_MAJOR}-pgvector`
   and `deploy/db/init/10-extensions.sql` creates it, and no test or gate checks either yet.
-- **zstd dictionary gain** — measure on a real STEP corpus before committing to
-  per-library dictionaries.
+- **zstd dictionary gain** — moot while library files stay raw: tiering and dictionaries were
+  retired on 2026-09-15 (DATA §1.2, §1.3). Measure on a real STEP corpus only if a raw-plus-compressed
+  store is ever proposed.
 - **MoR Turkey payout support** — confirm directly, do not rely on this document.
 - **WebKitGTK variance** — test the Tauri shell on at least two Linux distros.

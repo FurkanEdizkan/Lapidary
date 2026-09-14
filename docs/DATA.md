@@ -170,6 +170,10 @@ Expect 20–40% better ratio than dictionary-less zstd on small-to-medium STEP. 
 losing or mutating one makes blobs unreadable. Always write with `--content-size` so the
 decompressor allocates once.
 
+**Not for a file in a library folder.** Since slice 7 (`0009`, `0013`), a source file is written raw
+into its model directory, so the owner can open it. The zstd rows above now describe only the legacy
+`blobs/` copies. Dictionaries are retired together with the tiering job below (2026-09-15).
+
 ### 1.3 Tiering job
 
 ```
@@ -184,6 +188,13 @@ Nightly, only when idle > 10 min:
 
 Idempotent, resumable, abortable, rate-limited to one core. **The rename is the commit
 point** — a read arriving mid-recompression gets the old blob. Never blocks a read.
+
+**Retired for source files, by owner decision, 2026-09-15.**
+- **Why.** The job recompresses a source in place. A source file now lives raw in its model directory
+  so that a file manager, a slicer and a re-scan all see the real file, and compressing it would break
+  that.
+- **What that leaves.** Nothing is tiered today. Space comes from freeing render cache (§1.5) instead.
+- **When to revisit.** Only with a store that also keeps a raw copy the owner opens.
 
 ### 1.4 Access tracking
 
