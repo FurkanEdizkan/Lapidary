@@ -1071,7 +1071,8 @@ function History({ part }: { part: PartId }) {
           </li>
         ))}
       </ol>
-      <Compare part={part} revisions={all} />
+      {/* Keyed: its picks are revision ids of this part, and another part's would be refused. */}
+      <Compare key={part} part={part} revisions={all} />
     </section>
   )
 }

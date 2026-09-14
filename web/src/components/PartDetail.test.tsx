@@ -424,3 +424,68 @@ test('a checked-out part names its holder, and its page can release the lock aft
   )
   vi.unstubAllGlobals()
 })
+
+/**
+ * The comparison belongs to the part on screen. Coming back to a part whose history is already
+ * cached keeps the History section mounted, so a comparison that remembered the last part's
+ * revisions would ask this part about somebody else's, and be refused.
+ */
+test('the comparison follows the part on screen instead of keeping the last part’s revisions', async () => {
+  const revision = (id: string, revLabel: string, parent: string | null): PartRevision => ({
+    id,
+    parent,
+    revLabel,
+    origin: parent === null ? 'ingest' : 'agent',
+    createdAt: '2026-09-14T09:30:00Z',
+    thumbnail: null,
+    triangleCount: 44,
+    bboxMm: null,
+    volumeMm3: null,
+    surfaceAreaMm2: null,
+    sourceHash: null,
+    sourceFormat: 'stl',
+    sourceBytes: 20124,
+    deltaFromParent: null,
+  })
+  const [b1, b2] = ['01931b6e-0000-7000-8000-0000000000b1', '01931b6e-0000-7000-8000-0000000000b2']
+  const [c1, c2] = ['01931b6e-0000-7000-8000-0000000000c1', '01931b6e-0000-7000-8000-0000000000c2']
+  const histories: Record<string, PartRevision[]> = {
+    [BRACKET.id]: [revision(b2, '2', b1), revision(b1, '1', null)],
+    [PIN.id]: [revision(c2, '2', c1), revision(c1, '1', null)],
+  }
+  const noChange = { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null }
+  const fetchMock = vi.fn(async (url: string) => {
+    const part = Object.keys(histories).find((id) => url.startsWith(`/api/parts/${id}/`))
+    const body =
+      part !== undefined && url.endsWith('/revisions')
+        ? histories[part]
+        : url.includes('/diff?')
+          ? noChange
+          : []
+    return { ok: true, status: 200, json: async () => body }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const diffs = () =>
+    fetchMock.mock.calls.map(([url]) => url).filter((url) => url.includes('/diff?'))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const page = (part: PartDetail) => (
+    <QueryClientProvider client={client}>
+      <Detail part={part} />
+    </QueryClientProvider>
+  )
+
+  const { rerender } = render(page(PIN))
+  await waitFor(() => expect(diffs().at(-1)).toBe(`/api/parts/${PIN.id}/diff?from=${c1}&to=${c2}`))
+  rerender(page(BRACKET))
+  await waitFor(() =>
+    expect(diffs().at(-1)).toBe(`/api/parts/${BRACKET.id}/diff?from=${b1}&to=${b2}`),
+  )
+
+  // Back to the pin, whose history is cached: the section stays mounted this time.
+  rerender(page(PIN))
+  await waitFor(() => expect(diffs().at(-1)).toBe(`/api/parts/${PIN.id}/diff?from=${c1}&to=${c2}`))
+  expect(diffs(), 'never the bracket’s revisions asked of the pin').not.toContain(
+    `/api/parts/${PIN.id}/diff?from=${b1}&to=${b2}`,
+  )
+  vi.unstubAllGlobals()
+})
