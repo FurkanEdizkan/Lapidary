@@ -3,6 +3,7 @@
 
 mod folders;
 mod jobs;
+mod locks;
 mod migrate;
 mod repo;
 mod revisions;
@@ -10,6 +11,7 @@ mod saved_filters;
 
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
+pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
     DerivativeBytes, DownloadSource, EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes,
@@ -215,6 +217,28 @@ pub enum DbError {
         "A revision's origin column holds `{value}`, which is none of `ingest`, `upload` or `agent`. Lapidary will not guess where those bytes came from. Check what else has write access to this database."
     )]
     UnknownOrigin { value: String },
+
+    /// A changed file for a part somebody has checked out, from a job that does not carry
+    /// their lock (slice 1 spec §5). Refused inside the revision's transaction.
+    #[error(
+        "This part is checked out by {holder} since {since}, so a change that did not come through that check-out was not kept. Ask {holder} to check it in, or release the lock on the part's page if they cannot, then retry."
+    )]
+    PartCheckedOut { holder: String, since: String },
+
+    /// Bytes saved under a check-out that has since been checked in or released.
+    #[error(
+        "This change was saved under a check-out that {released_by} released at {released_at}, so it was not kept. Check the part out again, then save once more."
+    )]
+    LockReleased {
+        released_by: String,
+        released_at: String,
+    },
+
+    /// Bytes carrying a lock this part never had.
+    #[error(
+        "This change carried a check-out this part never had, so it was not kept. Check the part out, then save again."
+    )]
+    UnknownLock,
 }
 
 impl DbError {
@@ -265,6 +289,9 @@ impl DbError {
             | DbError::RevisionFilesFailed { .. }
             | DbError::RevisionConflict { .. }
             | DbError::UnknownOrigin { .. }
+            | DbError::PartCheckedOut { .. }
+            | DbError::LockReleased { .. }
+            | DbError::UnknownLock
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),

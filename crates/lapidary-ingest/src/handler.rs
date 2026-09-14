@@ -170,7 +170,11 @@ impl JobHandler for WorkerHandler {
             JobPayload::IngestBlob {
                 blake3,
                 source_path,
-            } => self.ingest_blob(job.library_id, blake3, &source_path).await,
+                lock,
+            } => {
+                self.ingest_blob(job.library_id, blake3, &source_path, lock)
+                    .await
+            }
             // The batch comes from the row for `scan_directory`'s reason, and the library
             // for the same one: a migration re-enqueues itself until the library drains,
             // and it has to land in the batch whoever started it is already polling.
@@ -245,8 +249,15 @@ impl WorkerHandler {
 
         // 2. BLAKE3 -- hash first, always. Everything below branches on this.
         let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-        self.index(library, source_path, bytes, hash, RevisionOrigin::Ingest)
-            .await
+        self.index(
+            library,
+            source_path,
+            bytes,
+            hash,
+            RevisionOrigin::Ingest,
+            None,
+        )
+        .await
     }
 
     /// One blob already in the store, start to finish: the upload route's half of the
@@ -275,6 +286,7 @@ impl WorkerHandler {
         library: LibraryId,
         hash: BlobHash,
         source_path: &str,
+        lock: Option<lapidary_core::LockId>,
     ) -> Result<Outcome, HandlerError> {
         // Not a filesystem join here — the path never touches one — but it becomes
         // `part.source_path`, and from there both a `Content-Disposition` filename on the
@@ -370,7 +382,12 @@ impl WorkerHandler {
             }
         };
 
-        self.index(library, source_path, bytes, hash, RevisionOrigin::Upload)
+        // Bytes that carry a check-out came back from the agent; the rest from a browser.
+        let origin = match lock {
+            Some(_) => RevisionOrigin::Agent,
+            None => RevisionOrigin::Upload,
+        };
+        self.index(library, source_path, bytes, hash, origin, lock)
             .await
     }
 
@@ -389,6 +406,7 @@ impl WorkerHandler {
         bytes: Vec<u8>,
         hash: BlobHash,
         origin: RevisionOrigin,
+        lock: Option<lapidary_core::LockId>,
     ) -> Result<Outcome, HandlerError> {
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
@@ -597,6 +615,7 @@ impl WorkerHandler {
                         part: existing.part,
                         parent: existing.revision,
                         origin,
+                        lock,
                         blob: &blob,
                         measurements: &output.measurements,
                         provenance: output.provenance,
@@ -620,8 +639,14 @@ impl WorkerHandler {
                     put_back(&relocator, &source, current, aside);
                 }
                 reap(&derivatives, &reapable);
-                return Err(HandlerError::Transient {
-                    message: error.to_string(),
+                // Except a check-out's refusal: these bytes, under this lock or none, are refused
+                // the same way on every attempt until somebody acts on what the message says.
+                let message = error.to_string();
+                return Err(match error {
+                    DbError::PartCheckedOut { .. }
+                    | DbError::LockReleased { .. }
+                    | DbError::UnknownLock => HandlerError::Permanent { message },
+                    _ => HandlerError::Transient { message },
                 });
             }
 

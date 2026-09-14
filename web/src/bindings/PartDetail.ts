@@ -3,6 +3,7 @@ import type { Approximate } from "./Approximate";
 import type { BlobHash } from "./BlobHash";
 import type { LibraryId } from "./LibraryId";
 import type { PartId } from "./PartId";
+import type { PartLock } from "./PartLock";
 import type { RevisionId } from "./RevisionId";
 
 /**
@@ -106,4 +107,8 @@ directory: string | null,
 /**
  * The directory above with the model's filename back on. `None` alongside `directory`.
  */
-storagePath: string | null, createdAt: string, updatedAt: string, };
+storagePath: string | null, createdAt: string, updatedAt: string, 
+/**
+ * The part's active check-out, when somebody holds one (Phase 4 slice 1).
+ */
+lock: PartLock | null, };

@@ -29,6 +29,7 @@
 
 use crate::AppState;
 use crate::derive::internal_error;
+use crate::locks::PartLock;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -37,7 +38,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{Approximate, BlobHash, LibraryId, PartId, Provenance, RevisionId};
-use lapidary_db::{PartDetailRow, PgParts};
+use lapidary_db::{PartDetailRow, PgLocks, PgParts};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -124,6 +125,8 @@ pub struct PartDetail {
     pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// The part's active check-out, when somebody holds one (Phase 4 slice 1).
+    pub lock: Option<PartLock>,
 }
 
 /// `GET /api/parts/{id}` — one part, in full.
@@ -133,8 +136,13 @@ pub struct PartDetail {
 /// same reason: distinguishing them would confirm that a part exists to someone who
 /// cannot see it.
 pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
-    match PgParts(state.db).detail(part).await {
-        Ok(Some(row)) => Json(to_detail(row)).into_response(),
+    match PgParts(state.db.clone()).detail(part).await {
+        // The lock is its own read rather than a column on the detail query: it is a row of
+        // its own table, and that query is already at its column ceiling.
+        Ok(Some(row)) => match PgLocks(state.db).active(part).await {
+            Ok(lock) => Json(to_detail(row, lock.map(PartLock::from))).into_response(),
+            Err(err) => internal_error(&err, "part lock lookup failed"),
+        },
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -154,7 +162,7 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
 /// A value with no provenance is dropped rather than guessed at, for the reason
 /// `detail_provenance` refuses an unknown word: there is no safe default, because one
 /// default hedges and the other lies.
-fn to_detail(row: PartDetailRow) -> PartDetail {
+fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
     PartDetail {
         id: row.id,
         library: row.library,
@@ -198,6 +206,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         storage_path: row.storage_path,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        lock,
     }
 }
 

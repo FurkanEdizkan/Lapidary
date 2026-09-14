@@ -246,6 +246,7 @@ fn blob_job(hash: BlobHash, source_path: &str) -> JobRow {
     let payload = JobPayload::IngestBlob {
         blake3: hash,
         source_path: source_path.to_owned(),
+        lock: None,
     };
     JobRow {
         id: JobId::new(),

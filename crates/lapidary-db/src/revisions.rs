@@ -7,8 +7,8 @@ use crate::repo::{
 };
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::{
-    BlobHash, DerivativeKind, LibraryId, LibraryMode, MeasurementProvenance, MeshMeasurements,
-    PartId, RevisionId, RevisionOrigin,
+    BlobHash, DerivativeKind, LibraryId, LibraryMode, LockId, MeasurementProvenance,
+    MeshMeasurements, PartId, RevisionId, RevisionOrigin,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -34,6 +34,8 @@ pub struct RevisionRequest<'a> {
     /// The revision the job measured against. Refused if it is no longer current.
     pub parent: RevisionId,
     pub origin: RevisionOrigin,
+    /// The check-out the bytes were saved under. `None` for a scan or a browser upload.
+    pub lock: Option<LockId>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
@@ -192,6 +194,44 @@ impl PgRevisions {
         if current != req.parent.as_uuid() {
             tx.rollback().await?;
             return Err(DbError::RevisionConflict { part: req.part });
+        }
+
+        // A check-out is enforced only while one is held (spec §5), and read under the part's
+        // row lock, so a release cannot slip between this check and the commit.
+        let active: Option<(Uuid, String, i64)> = sqlx::query_as(
+            "SELECT id, holder, (extract(epoch FROM taken_at) * 1000000)::bigint \
+             FROM part_lock WHERE part_id = $1 AND released_at IS NULL",
+        )
+        .bind(req.part.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await?;
+        match (active, req.lock) {
+            (Some((active, _, _)), Some(carried)) if active == carried.as_uuid() => {}
+            (Some((_, holder, taken_us)), _) => {
+                let since = detail_stamp("part_lock.taken_at", taken_us)?.to_string();
+                tx.rollback().await?;
+                return Err(DbError::PartCheckedOut { holder, since });
+            }
+            (None, Some(carried)) => {
+                let released: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+                    "SELECT released_by, (extract(epoch FROM released_at) * 1000000)::bigint \
+                     FROM part_lock WHERE id = $1 AND part_id = $2",
+                )
+                .bind(carried.as_uuid())
+                .bind(req.part.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+                tx.rollback().await?;
+                return Err(match released {
+                    Some((Some(released_by), Some(released_us))) => DbError::LockReleased {
+                        released_by,
+                        released_at: detail_stamp("part_lock.released_at", released_us)?
+                            .to_string(),
+                    },
+                    _ => DbError::UnknownLock,
+                });
+            }
+            (None, None) => {}
         }
         let Some((directory, name)) = path.rsplit_once('/') else {
             tx.rollback().await?;

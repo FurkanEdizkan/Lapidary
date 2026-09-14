@@ -21,8 +21,8 @@ pub use diff::{Delta, RevisionDiff};
 pub use entity::Entity;
 pub use error::CoreError;
 pub use ids::{
-    BatchId, BlobHash, FolderId, JobId, LibraryId, PartId, PartImageId, PartSourceId, RevisionId,
-    SavedFilterId,
+    BatchId, BlobHash, FolderId, JobId, LibraryId, LockId, PartId, PartImageId, PartSourceId,
+    RevisionId, SavedFilterId,
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance};
