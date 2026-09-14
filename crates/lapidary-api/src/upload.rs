@@ -86,6 +86,11 @@ pub struct UploadFile {
     /// the same thing in the database.
     pub path: String,
     pub blake3: BlobHash,
+    /// The check-out these bytes were saved under: the agent's, never the browser's. A changed
+    /// file for a checked-out part is kept only when it carries that part's lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lock: Option<lapidary_core::LockId>,
 }
 
 /// What the client is offering, whole. The probe and the commit take the same list — they
@@ -387,6 +392,7 @@ pub async fn commit(
         jobs.push(JobPayload::IngestBlob {
             blake3: file.blake3,
             source_path: file.path.clone(),
+            lock: file.lock,
         });
     }
     accept(state.db, library, &jobs).await

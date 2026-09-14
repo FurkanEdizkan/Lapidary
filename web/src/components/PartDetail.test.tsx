@@ -59,6 +59,7 @@ const BRACKET: PartDetail = {
   volumeMm3: { value: 35840, approximate: false },
   surfaceAreaMm2: { value: 11392, approximate: false },
   kernelVersion: 'occt occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1',
+  lock: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'iges',
   sourceBytes: 18204,
@@ -369,5 +370,57 @@ test('the history appears once a part has a second revision, and says where each
   expect(table.textContent).toContain(strings.detail.volumeChange(3584, 10))
   expect(table.textContent).toContain(strings.detail.approximate)
   expect(table.textContent).toContain(strings.detail.notInBoth)
+  vi.unstubAllGlobals()
+})
+
+/** Who holds a check-out shows everywhere; releasing it is the part page's, behind a dialog. */
+test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {
+  const posts: { url: string; body: unknown }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'POST') {
+        posts.push({ url, body: JSON.parse(init.body ?? 'null') })
+        return { ok: true, status: 204, json: async () => null }
+      }
+      return { ok: true, status: 200, json: async () => [] }
+    }),
+  )
+  const checkedOut: PartDetail = {
+    ...BRACKET,
+    lock: {
+      id: '01931b6e-0000-7000-8000-00000000eeee',
+      holder: 'mira@workshop-pc',
+      takenAt: '2026-09-14T08:00:00Z',
+    },
+  }
+  const page = (recordable: boolean) => (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={checkedOut} recordable={recordable} />
+    </QueryClientProvider>
+  )
+
+  const quickLook = render(page(false))
+  expect(
+    screen.getByText(strings.detail.checkedOutBy('mira@workshop-pc', '2026-09-14T08:00:00Z')),
+  ).toBeTruthy()
+  expect(screen.queryByRole('button', { name: strings.detail.releaseLock })).toBeNull()
+  quickLook.unmount()
+
+  render(page(true))
+  fireEvent.click(screen.getByRole('button', { name: strings.detail.releaseLock }))
+  expect(screen.getByRole('dialog').textContent).toContain(
+    strings.detail.releaseLockBody('mira@workshop-pc'),
+  )
+  expect(posts, 'nothing is released before the confirmation').toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: strings.detail.releaseLockConfirm }))
+  await waitFor(() =>
+    expect(posts).toEqual([
+      {
+        url: `/api/parts/${BRACKET.id}/lock/release`,
+        body: { by: strings.detail.releasedBy },
+      },
+    ]),
+  )
   vi.unstubAllGlobals()
 })

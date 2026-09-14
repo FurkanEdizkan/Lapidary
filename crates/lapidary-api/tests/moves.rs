@@ -287,6 +287,7 @@ async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPo
                 part,
                 parent: first,
                 origin: RevisionOrigin::Ingest,
+                lock: None,
                 blob: &row(SECOND),
                 measurements: &measurements(),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,

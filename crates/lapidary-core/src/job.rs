@@ -1,7 +1,7 @@
 //! The queue's wire shapes. `BatchStatus` is aggregated from job rows on every read and
 //! never stored, so it cannot disagree with the rows it summarises.
 
-use crate::{BatchId, BlobHash, CoreError, DerivativeKind, LibraryId, RevisionId};
+use crate::{BatchId, BlobHash, CoreError, DerivativeKind, LibraryId, LockId, RevisionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -89,6 +89,9 @@ pub enum JobPayload {
     IngestBlob {
         blake3: BlobHash,
         source_path: String,
+        /// The check-out these bytes were saved under, when the agent sent them (Phase 4
+        /// slice 1). `None` for a browser upload, and for every row queued before locks.
+        lock: Option<LockId>,
     },
     /// Move every source blob in this library out of the content-addressed store and into
     /// its model's own directory, writing a `metadata.json` beside it.
@@ -111,6 +114,9 @@ pub enum JobPayload {
 struct IngestBlobPayload {
     blake3: BlobHash,
     path: String,
+    /// Absent from every row written before check-outs, which still parse.
+    #[serde(default)]
+    lock: Option<LockId>,
 }
 
 /// The `derive` payload's shape, deserialised as a whole rather than field by field so a
@@ -153,8 +159,14 @@ impl JobPayload {
             JobPayload::IngestBlob {
                 blake3,
                 source_path,
+                lock,
             } => {
-                serde_json::json!({ "blake3": blake3, "path": source_path })
+                let mut payload = serde_json::json!({ "blake3": blake3, "path": source_path });
+                // Only when there is one, so a row without a lock is exactly what it always was.
+                if let Some(lock) = lock {
+                    payload["lock"] = serde_json::json!(lock);
+                }
+                payload
             }
         }
     }
@@ -193,6 +205,7 @@ impl JobPayload {
                 .map(|p| JobPayload::IngestBlob {
                     blake3: p.blake3,
                     source_path: p.path,
+                    lock: p.lock,
                 })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
@@ -406,13 +419,41 @@ mod tests {
     // `JobState` are skipped for the same reason: their variants are single words,
     // so `JobState`'s existing literal-match test above is already sufficient.
 
+    /// The agent's save carries its check-out, and a row queued before check-outs existed —
+    /// no `lock` key at all — still parses, as a save under none.
+    #[test]
+    fn an_ingest_blob_payload_carries_its_lock_and_an_older_row_still_parses() {
+        let lock = LockId::new();
+        let payload = JobPayload::IngestBlob {
+            blake3: BlobHash::from_bytes([0x5d; 32]),
+            source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
+            lock: Some(lock),
+        };
+        assert_eq!(
+            JobPayload::from_row("ingest_blob", &payload.to_json()).expect("parses"),
+            payload
+        );
+
+        let older =
+            serde_json::json!({ "blake3": "5d".repeat(32), "path": "flange-dn40-lp-3310-02.stl" });
+        match JobPayload::from_row("ingest_blob", &older).expect("an older row parses") {
+            JobPayload::IngestBlob { lock, .. } => assert_eq!(lock, None),
+            other => panic!("an ingest_blob row is an IngestBlob: {other:?}"),
+        }
+    }
+
     #[test]
     fn an_ingest_blob_payload_round_trips_through_its_row() {
         let payload = JobPayload::IngestBlob {
             blake3: BlobHash::from_bytes([0x5c; 32]),
             source_path: "brackets/steel/LP-1042-03.stl".to_owned(),
+            lock: None,
         };
         let json = payload.to_json();
+        assert!(
+            json.get("lock").is_none(),
+            "a row without a check-out is written exactly as it always was"
+        );
         assert_eq!(payload.kind(), "ingest_blob");
         // The hash goes over as hex, like everywhere else a `BlobHash` is written, and
         // the path key is spelled the way `ingest_file` spells it.

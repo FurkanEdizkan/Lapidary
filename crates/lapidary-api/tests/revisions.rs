@@ -100,6 +100,7 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
                 part,
                 parent: first,
                 origin: RevisionOrigin::Agent,
+                lock: None,
                 blob: &blob_row(0x42),
                 measurements: &flange(236_258.0, 165.0),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,

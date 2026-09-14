@@ -459,6 +459,18 @@ export const strings = {
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
+    /** Who has the part checked out, and since when (Phase 4 slice 1). */
+    checkedOut: 'Checked out',
+    checkedOutBy: (holder: string, since: string) =>
+      `${holder}, since ${new Date(since).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    releaseLock: 'Release…',
+    releaseLockTitle: 'Release this check-out?',
+    releaseLockBody: (holder: string) =>
+      `${holder} will not be able to save their changes back: their next save is refused, and the refusal says the lock was released here. Release it only if they cannot check it in themselves.`,
+    releaseLockConfirm: 'Release',
+    releaseLockFailed: 'The check-out was not released. Reload the page, then try again.',
+    /** Recorded as who released a lock. The page has no signed-in person to name yet. */
+    releasedBy: 'the part page',
   },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:

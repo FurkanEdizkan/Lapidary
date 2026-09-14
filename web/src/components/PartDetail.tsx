@@ -11,11 +11,13 @@ import {
   fetchPmi,
   fetchRevisions,
   fetchStructure,
+  releaseLock,
   setImageFraming,
   setPartTags,
   uploadPartImage,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { Dialog } from './Dialog'
 import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
 import type {
@@ -25,6 +27,7 @@ import type {
   PartDetail as PartDetailData,
   PartId,
   PartImage,
+  PartLock,
   PartRevision,
   PmiFace,
   RevisionId,
@@ -715,6 +718,11 @@ export function Detail({
           <code className="text-xs">{part.sourcePath}</code>
         </Row>
         <Row label={strings.detail.revision}>{part.revLabel}</Row>
+        {part.lock === null ? null : (
+          <Row label={strings.detail.checkedOut}>
+            <LockLine part={part.id} lock={part.lock} recordable={recordable} />
+          </Row>
+        )}
         <Row label={strings.detail.kernel}>
           {part.kernelVersion === null ? strings.detail.unknown : part.kernelVersion}
         </Row>
@@ -1065,6 +1073,72 @@ function History({ part }: { part: PartId }) {
       </ol>
       <Compare part={part} revisions={all} />
     </section>
+  )
+}
+
+/**
+ * Who holds the part's check-out, and since when. Releasing it is offered only where the page
+ * is recordable, and behind a dialog, because the holder's next save will be refused.
+ */
+function LockLine({
+  part,
+  lock,
+  recordable,
+}: {
+  part: PartId
+  lock: PartLock
+  recordable: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [asking, setAsking] = useState(false)
+  const release = useMutation({
+    mutationFn: () => releaseLock(part),
+    onSuccess: () => {
+      setAsking(false)
+      void queryClient.invalidateQueries({ queryKey: ['part', part] })
+    },
+  })
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <span>{strings.detail.checkedOutBy(lock.holder, lock.takenAt)}</span>
+      {!recordable ? null : (
+        <button
+          type="button"
+          onClick={() => setAsking(true)}
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-0.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.detail.releaseLock}
+        </button>
+      )}
+      {!asking ? null : (
+        <Dialog title={strings.detail.releaseLockTitle} onClose={() => setAsking(false)}>
+          <p className="mt-3 text-sm">{strings.detail.releaseLockBody(lock.holder)}</p>
+          {release.isError ? (
+            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+              {strings.detail.releaseLockFailed}
+            </p>
+          ) : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setAsking(false)}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.folders.cancel}
+            </button>
+            <button
+              type="button"
+              disabled={release.isPending}
+              onClick={() => release.mutate()}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            >
+              {strings.detail.releaseLockConfirm}
+            </button>
+          </div>
+        </Dialog>
+      )}
+    </span>
   )
 }
 

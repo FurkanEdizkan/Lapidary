@@ -2084,6 +2084,9 @@ impl PgParts {
             // an id nothing else in the database knows, which is the shape of orphan the
             // no-`ON DELETE CASCADE` rule exists to make impossible.
             "DELETE FROM part_move WHERE part_id = $1",
+            // Check-outs (Phase 4 slice 1), active or long released. A lock is about a part,
+            // and a purged part is nothing anybody can check out or save back to.
+            "DELETE FROM part_lock WHERE part_id = $1",
             "DELETE FROM part WHERE id = $1",
         ] {
             sqlx::query(statement)

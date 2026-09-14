@@ -58,6 +58,11 @@ uuid_newtype!(
 );
 uuid_newtype!(PartId, "Identifies a part across all of its revisions.");
 uuid_newtype!(RevisionId, "Identifies one immutable revision of a part.");
+uuid_newtype!(
+    LockId,
+    "Identifies one check-out of a part. An identifier, not a secret: there is no auth yet \
+     (Phase 4 slice 1 spec §5)."
+);
 uuid_newtype!(JobId, "Identifies one unit of queued work.");
 uuid_newtype!(
     BatchId,

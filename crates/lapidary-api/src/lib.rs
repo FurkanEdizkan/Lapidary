@@ -13,6 +13,7 @@ mod health;
 mod images;
 mod jobs;
 mod lifecycle;
+mod locks;
 mod moves;
 mod part_number;
 mod parts;
@@ -250,6 +251,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route("/api/parts/{id}/revisions", get(revisions::list))
                 // Any two revisions of one part, figure by figure. See `revisions::compare`.
                 .route("/api/parts/{id}/diff", get(revisions::compare))
+                // A check-out: take the lock, hand it back, or release somebody else's. See
+                // `locks.rs`, including why none of the three asks who the caller is.
+                .route("/api/parts/{id}/checkout", post(locks::checkout))
+                .route("/api/parts/{id}/checkin", post(locks::checkin))
+                .route("/api/parts/{id}/lock/release", post(locks::release))
                 // The number a person gives a part. Its own resource rather than a field on the
                 // move `PATCH` above, where a `null` folder already means "to the top level".
                 .route(

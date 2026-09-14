@@ -32,6 +32,7 @@ import type {
   PartsPage,
   Pmi,
   PurgeResult,
+  ReleaseLock,
   RetryAccepted,
   RevisionDiff,
   RevisionId,
@@ -1040,6 +1041,21 @@ export async function fetchDiff(
     throw new Error(`revision diff returned ${response.status}`)
   }
   return (await response.json()) as RevisionDiff
+}
+
+/**
+ * `POST /api/parts/{id}/lock/release` — free a part somebody else has checked out, recorded as
+ * forced. A `409` means nothing was checked out any more, which is the state this asked for.
+ */
+export async function releaseLock(part: PartId): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/lock/release`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: strings.detail.releasedBy } satisfies ReleaseLock),
+  })
+  if (!response.ok && response.status !== 409) {
+    throw new Error(`lock release returned ${response.status}`)
+  }
 }
 
 /**

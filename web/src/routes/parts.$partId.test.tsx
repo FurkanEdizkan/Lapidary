@@ -46,6 +46,7 @@ const PART: PartDetail = {
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
   kernelVersion: 'mesh stl-1+cpu-1',
+  lock: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'stl',
   sourceBytes: 204800,
