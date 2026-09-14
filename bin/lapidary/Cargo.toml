@@ -9,7 +9,17 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+blake3.workspace = true
 clap.workspace = true
+lapidary-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# `time` for the agent's poll interval; the workspace entry carries only what the servers use.
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
