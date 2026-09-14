@@ -92,9 +92,10 @@ the transaction as a closure:
    source `storage_path` *under that lock*.
 2. Refuse a stale parent, before any file is touched.
 3. Insert the revision, its source file row and its derivatives. Rewrite the previous file row's
-   `storage_path` to `revisions/<label>/<name>`.
-4. Run the closure with the current path and the new label. It:
-   - creates `revisions/<label>`;
+   `storage_path` to `revisions/<the previous revision's label>/<name>`, so `revisions/1/`
+   holds revision 1.
+4. Run the closure with the current path and that set-aside path. It:
+   - creates the set-aside directory;
    - refuses an existing target;
    - renames the current file into it;
    - `put_at`s the new bytes at the current path;
@@ -174,7 +175,9 @@ the open path's rule.
     §6.2's flat layout);
   - writes `.lapidary-checkout.json` beside it, holding the server, library, part, base
     revision, lock, file name, hash and holder.
-- `lapidary checkin <folder>` releases the lock and leaves every file in place.
+- `lapidary checkin <folder>` releases the lock and leaves every file in place. It renames
+  `.lapidary-checkout.json` to `.lapidary-checked-in.json`, so the agent stops watching and the
+  record stays. A lock somebody already released is reported, and the folder is still marked.
 - `lapidary agent` watches every checkout.
 
 **Polling, not OS events.**
