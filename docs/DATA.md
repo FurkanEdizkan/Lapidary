@@ -217,6 +217,16 @@ recovers far more than compression would. **UI wording is a product rule:** it m
 render cache, show what it reclaims, and state that source files are untouched. A user
 who reads "reclaim 40 GB" and fears for their models has lost trust in the thing we sell.
 
+**Built in Phase 4 slice 2** (`docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §4).
+- **What is evictable.** "Free cache space" removes L1 and L2 rung rows whose blob was last read more
+  than 90 days ago. A blob never read since tracking began counts from when it was written.
+- **What it never touches.** L0, thumbnails, structure, entities, PMI and source files. Structure,
+  entities and PMI cannot be rebuilt, and L0 keeps the open path drawing.
+- **Where the bytes go.** The rows go, `ref_count` is recomputed the way purge recomputes it, and a
+  blob nothing else references enters the 30-day quarantine. The bytes leave with the hourly sweep.
+- **What it reports.** Bytes entering quarantine, never "freed", because nothing is gone on the day.
+- **What happens next.** A part opened afterwards draws L0 and asks for L1 again.
+
 **Thumbnails are the exception to "no blobs in Postgres."** Store WebP under 64 KB as
 `bytea` on the derivative row so they arrive in the same query as the grid page instead
 of costing 100 filesystem round trips per scroll. This is worth more to perceived speed
@@ -641,6 +651,19 @@ contents are already compressed, so deflating again burns CPU for nothing. Inclu
 `manifest.json` with part numbers, revisions, hashes and source licences, which makes the
 bundle verifiable rather than a folder of mystery files.
 
+**As designed in Phase 4 slice 2** (`docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md`
+§6–7).
+- **Not `async-zip`.** The writer is hand-rolled: STORE entries with data descriptors, and the central
+  directory at the end.
+  - `zip` needs a seekable writer and `async-zip` is not in the tree.
+  - A bundle stops short of 4 GiB, since there is no ZIP64 yet.
+- **Paths follow each part's `source_path`,** with earlier revisions under `revisions/<label>/`.
+- **Import:**
+  - It validates the whole archive (§5.4) before queuing anything.
+  - It then replays each part's revisions through ingest, oldest first.
+  - Labels, parents, origins and hashes survive. `created_at` becomes the import time.
+  - A hobby library receives the newest revision only.
+
 ### 5.4 Archive security
 
 - **3MF is a ZIP → zip-bomb vector.** Cap decompressed size, entry count and compression
@@ -723,3 +746,21 @@ The design is `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-desig
   - one active lock per part, held by free text, with no auth;
   - enforced only while held;
   - a forced release is recorded.
+
+### 6.5 The overlay and `lapidary://` (Phase 4 slice 2)
+
+The design is `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §2–3.
+
+**Overlay.**
+- The earlier revision is drawn as a grey, translucent ghost: its L1, else its L0.
+- It sits in the same scene frame as the current solid. Rungs are never recentred, so a ghost's offset
+  is the file's own.
+- It is never picked.
+- An earlier revision with no mesh says so instead of drawing nothing.
+
+**`lapidary://open?part=<uuid>`** is the only shape accepted.
+- `lapidary register` writes an XDG handler that carries the server and workspace, so a link can never
+  name either.
+- `lapidary open` reuses this machine's checkout of the part, or checks it out, then runs
+  `xdg-open` on the file.
+- A lock somebody else holds is refused. Linux only.

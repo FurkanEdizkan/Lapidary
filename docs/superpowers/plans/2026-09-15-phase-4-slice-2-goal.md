@@ -174,8 +174,8 @@ throwaway `HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` directories under `targe
 - It already reports source, derivative and quarantined blob bytes.
 
 **What it adds.**
-- Quarantined model directories in that response. DATA §1.6 says only an instance-wide view can
-  report them.
+- Nothing for quarantined model directories: the quarantined figure already includes
+  `quarantined_file` (spec §4).
 - How much render cache could be freed.
 - A panel that shows every figure.
 - A "free cache space" action, behind `Dialog`.
