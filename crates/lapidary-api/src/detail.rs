@@ -204,11 +204,11 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
 /// A figure and its provenance, or nothing. Both halves or neither: a number whose
 /// provenance was never recorded is a number nobody can say is exact, and the UI has no
 /// third rendering for it.
-fn pair(value: Option<f64>, source: Option<Provenance>) -> Option<Approximate<f64>> {
+pub(crate) fn pair(value: Option<f64>, source: Option<Provenance>) -> Option<Approximate<f64>> {
     Some(wrap(value?, source?))
 }
 
-fn wrap<T>(value: T, source: Provenance) -> Approximate<T> {
+pub(crate) fn wrap<T>(value: T, source: Provenance) -> Approximate<T> {
     match source {
         Provenance::Analytic => Approximate::analytic(value),
         Provenance::Tessellated => Approximate::tessellated(value),

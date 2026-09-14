@@ -83,16 +83,37 @@ fn remove_model_file(store: &SourceStore, path: &str) -> Result<(), String> {
         .remove_at(&format!("{model_dir}/metadata.json"))
         .map_err(|error| error.to_string())?;
 
-    match store.remove_dir_if_empty(model_dir) {
-        Ok(()) => Ok(()),
+    // An older revision's file is two levels further down, at `revisions/<label>/<name>`
+    // (Phase 4 slice 1 spec §3). Its label directory, `revisions`, and the model directory
+    // above are tried in turn, each only if empty and each only if the one below went, so
+    // whichever order the sweep reaches a model's files in, the last one takes them all.
+    if !remove_dir_if_empty(store, model_dir)? {
+        return Ok(());
+    }
+    if let Some((revisions, label)) = model_dir.rsplit_once('/')
+        && !label.is_empty()
+        && label.bytes().all(|byte| byte.is_ascii_digit())
+        && let Some((model, "revisions")) = revisions.rsplit_once('/')
+        && remove_dir_if_empty(store, revisions)?
+    {
+        remove_dir_if_empty(store, model)?;
+    }
+    Ok(())
+}
+
+/// One directory, removed only if empty. `false` means it stays because it holds something —
+/// see [`remove_model_file`] for why that is not a failure.
+fn remove_dir_if_empty(store: &SourceStore, directory: &str) -> Result<bool, String> {
+    match store.remove_dir_if_empty(directory) {
+        Ok(()) => Ok(true),
         Err(lapidary_storage::StorageError::Io { source, .. })
             if source.kind() == std::io::ErrorKind::DirectoryNotEmpty =>
         {
             tracing::info!(
-                directory = model_dir,
-                "the model file is gone; its directory still holds something that is not ours, so it stays"
+                directory,
+                "the model file is gone; its directory still holds something, so it stays"
             );
-            Ok(())
+            Ok(false)
         }
         Err(error) => Err(error.to_string()),
     }

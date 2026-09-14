@@ -54,9 +54,9 @@ pub struct LibrarySettings {
 pub struct LibrarySummary {
     pub id: LibraryId,
     pub name: String,
-    /// `hobby` or `controlled`. **Nothing reads it yet** — governance is Phase 8 — and it is
-    /// on the wire because a switcher that shows which libraries are controlled is the point
-    /// at which the column stops being decorative. Until then it is a label.
+    /// `hobby` or `controlled`. A controlled library keeps a changed file as a new revision
+    /// (Phase 4 slice 1); a hobby library says the change was not kept. States and approvals
+    /// are still Phase 8.
     pub mode: LibraryMode,
     #[ts(type = "number")]
     pub part_count: i64,
@@ -214,6 +214,22 @@ pub async fn set_library(
         Ok(true) => Json(settings).into_response(),
         Ok(false) => no_such_library(),
         Err(err) => internal_error(&err, "library setting update failed"),
+    }
+}
+
+/// `POST /api/libraries/{id}/controlled` — keep every change from now on.
+///
+/// One-way, and a route of its own rather than a `mode` field on `PATCH`: nothing switches a
+/// library back (slice 1 spec §1), and a field taking both values would be a control offering
+/// the one this build refuses. Idempotent: a controlled library switched again is `204` too.
+pub async fn make_controlled(
+    State(state): State<AppState>,
+    Path(library): Path<LibraryId>,
+) -> Response {
+    match PgParts(state.db).make_controlled(library).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_such_library(),
+        Err(err) => internal_error(&err, "library mode update failed"),
     }
 }
 

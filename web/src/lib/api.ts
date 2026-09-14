@@ -26,6 +26,7 @@ import type {
   PartDetail,
   PartId,
   PartImage,
+  PartRevision,
   PartImageId,
   PartSource,
   PartsPage,
@@ -1009,6 +1010,31 @@ export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
     throw new Error(`part detail returned ${response.status}`)
   }
   return (await response.json()) as PartDetail
+}
+
+/**
+ * `GET /api/parts/{id}/revisions` — every revision of a part, newest first. Rows and inline
+ * thumbnails, so the open path; a deleted part 404s here as its page does.
+ */
+export async function fetchRevisions(part: PartId): Promise<PartRevision[]> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/revisions`)
+  if (!response.ok) {
+    throw new Error(`revision history returned ${response.status}`)
+  }
+  return (await response.json()) as PartRevision[]
+}
+
+/**
+ * `POST /api/libraries/{id}/controlled` — keep every change as a revision from now on.
+ * One-way, and idempotent: nothing switches a library back.
+ */
+export async function makeControlled(library: LibraryId): Promise<void> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/controlled`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error(`library switch returned ${response.status}`)
+  }
 }
 
 /**

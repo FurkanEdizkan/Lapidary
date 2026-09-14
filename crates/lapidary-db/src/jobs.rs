@@ -478,6 +478,8 @@ impl PgJobs {
             Outcome::Rendered => "rendered",
             Outcome::Scanned => "scanned",
             Outcome::Migrated => "migrated",
+            Outcome::Revised => "revised",
+            Outcome::Unkept => "unkept",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
@@ -609,6 +611,8 @@ impl PgJobs {
             i64,
             i64,
             i64,
+            i64,
+            i64,
             Option<i64>,
             Option<i64>,
         )> = sqlx::query_as(
@@ -618,6 +622,8 @@ impl PgJobs {
                     count(*) FILTER (WHERE outcome = 'ingested'), \
                     count(*) FILTER (WHERE outcome = 'skipped'), \
                     count(*) FILTER (WHERE outcome = 'rendered'), \
+                    count(*) FILTER (WHERE outcome = 'revised'), \
+                    count(*) FILTER (WHERE outcome = 'unkept'), \
                     count(*) FILTER (WHERE outcome = 'scanned'), \
                     count(*) FILTER (WHERE outcome = 'migrated'), \
                     count(*) FILTER (WHERE kind = 'migrate_storage'), \
@@ -642,6 +648,8 @@ impl PgJobs {
             ingested,
             skipped,
             rendered,
+            revised,
+            unkept,
             scanned,
             migrated,
             migrating,
@@ -667,6 +675,8 @@ impl PgJobs {
             ingested: ingested as u32,
             skipped: skipped as u32,
             rendered: rendered as u32,
+            revised: revised as u32,
+            unkept: unkept as u32,
             scanned: scanned as u32,
             migrated: migrated as u32,
             migrating: migrating as u32,

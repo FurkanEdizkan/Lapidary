@@ -50,6 +50,32 @@ function countedSubcategories(count: number): string {
 }
 
 /**
+ * What a finished batch did with its files: added, then revised, then already here, each
+ * only when it happened. One builder for the scan's line and the upload's, which differ only
+ * in the words before the dash.
+ */
+function settled(ingested: number, revised: number, skipped: number): string {
+  const clauses = [`${ingested.toLocaleString('en-US')} added`]
+  if (revised > 0) clauses.push(`${revised.toLocaleString('en-US')} revised`)
+  if (skipped > 0) clauses.push(`${skipped.toLocaleString('en-US')} already here`)
+  return clauses.join(', ')
+}
+
+/**
+ * Files whose bytes changed in a hobby library (Phase 4 slice 1). A notice, not a failure —
+ * nothing broke, and the new bytes are still where they came from — so it says what happened
+ * and the two ways to keep such a change, and nothing about trying again.
+ */
+function notKept(unkept: number): string {
+  if (unkept === 0) return ''
+  const files =
+    unkept === 1
+      ? '1 file changed but was'
+      : `${unkept.toLocaleString('en-US')} files changed but were`
+  return ` ${files} not kept: this library keeps no revisions. Switch it to keep every change, or give a file a new name to add it as a new part.`
+}
+
+/**
  * The counted phrases above read mid-sentence as well as at the head of one — "no models"
  * has to stay lowercase where a sentence has already started — so the one place that opens
  * a sentence with one raises its first letter itself.
@@ -274,10 +300,8 @@ export const strings = {
      */
     batchRunning: (done: number, total: number) =>
       `Adding — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
-    batchFinished: (ingested: number, skipped: number) =>
-      skipped === 0
-        ? `Upload complete — ${ingested.toLocaleString('en-US')} added.`
-        : `Upload complete — ${ingested.toLocaleString('en-US')} added, ${skipped.toLocaleString('en-US')} already here.`,
+    batchFinished: (ingested: number, skipped: number, revised = 0, unkept = 0) =>
+      `Upload complete — ${settled(ingested, revised, skipped)}.${notKept(unkept)}`,
     /**
      * The upload batch this page started cannot be read back. Never a mistyped id — it came
      * from the commit's `202` — so the advice is to reload, as `render.unknown`'s is.
@@ -397,6 +421,14 @@ export const strings = {
     hidePart: (name: string) => `Hide ${name}`,
     showPart: (name: string) => `Show ${name}`,
     isolatePart: (name: string) => `Show only ${name}`,
+    /** A part's revisions, shown once it has more than one (Phase 4 slice 1). */
+    history: 'History',
+    historyRevision: (label: string) => `Revision ${label}`,
+    /** Where a revision's bytes came from, in the words a person would use for it. */
+    origin: { ingest: 'Scanned', upload: 'Uploaded', agent: 'Saved from a checkout' },
+    historyDate: (iso: string) =>
+      new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+    historyFailed: "Could not load this part's history. Reload the page to try again.",
   },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:
@@ -475,10 +507,8 @@ export const strings = {
      */
     running: (done: number, total: number) =>
       `Scanning — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
-    finished: (ingested: number, skipped: number) =>
-      skipped === 0
-        ? `Scan complete — ${ingested.toLocaleString('en-US')} added.`
-        : `Scan complete — ${ingested.toLocaleString('en-US')} added, ${skipped.toLocaleString('en-US')} already here.`,
+    finished: (ingested: number, skipped: number, revised = 0, unkept = 0) =>
+      `Scan complete — ${settled(ingested, revised, skipped)}.${notKept(unkept)}`,
     /**
      * A file that will never appear. The count is what belongs on screen; the reason per
      * file is the failed-file drawer, which arrives in Phase 2.
@@ -1059,12 +1089,20 @@ export const strings = {
     createConfirm: 'Create',
     modeLabel: 'Governance',
     /**
-     * Chosen once, at creation, because later means asking about a library somebody has
-     * already filled. Nothing reads it yet — revisions, states and approvals are Phase 8 —
-     * and the copy says so rather than implying a switch that does something today.
+     * Chosen at creation, and switchable one way afterwards: a hobby library can start keeping
+     * every change, and nothing switches one back, because a controlled library switched back
+     * would hold revisions no screen shows. States and approvals are still Phase 8.
      */
     hobby: 'Hobby — no revisions or approvals',
-    controlled: 'Controlled — revisions and approvals, when they arrive in a later phase',
+    controlled: 'Controlled — every change kept as a revision',
+    /** The one-way switch, named for what it does rather than for the mode it sets. */
+    makeControlled: 'Keep every change…',
+    makeControlledTitle: 'Keep every change in this library?',
+    makeControlledBody: (name: string) =>
+      `From now on, when a file in ${name} changes, the change is kept as a new revision and the previous file is kept beside it. This cannot be switched back.`,
+    makeControlledConfirm: 'Keep every change',
+    makeControlledFailed:
+      'The library was not switched. Check that the api service is running, then try again.',
     createFailed:
       'The library could not be created. Check that the api service is running, then try again.',
     refusedWithoutReason:

@@ -30,6 +30,41 @@ impl LibraryMode {
     }
 }
 
+/// Where a revision's bytes came from. `revision.origin` holds [`RevisionOrigin::as_str`].
+///
+/// Only the revisions Phase 4 writes are told apart. A part's *first* revision is written by
+/// `insert_part_chain`, which says `ingest` whichever route the bytes arrived by — recorded
+/// in the slice 1 spec (§2) rather than fixed there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum RevisionOrigin {
+    /// A file a scan found on the ingest mount.
+    Ingest,
+    /// Bytes a browser uploaded.
+    Upload,
+    /// Bytes the agent uploaded while holding the part's check-out lock.
+    Agent,
+}
+
+impl RevisionOrigin {
+    /// The column's spelling, for `LibraryMode::as_str`'s reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ingest => "ingest",
+            Self::Upload => "upload",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// The column read back. `None` is a word this build never writes.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Ingest, Self::Upload, Self::Agent]
+            .into_iter()
+            .find(|origin| origin.as_str() == value)
+    }
+}
+
 /// The grid row, in the shape the spec calls for: identity, part number, thumbnail
 /// reference, approximate flag, storage figures, timestamps. Still narrow — the open
 /// path reads metadata and derivatives only, and never a source file. The storage

@@ -8,6 +8,7 @@ import {
   fetchPartImages,
   fetchPartSources,
   fetchPmi,
+  fetchRevisions,
   fetchStructure,
   setImageFraming,
   setPartTags,
@@ -714,6 +715,8 @@ export function Detail({
           {part.kernelVersion === null ? strings.detail.unknown : part.kernelVersion}
         </Row>
       </Section>
+
+      <History part={part.id} />
     </article>
   )
 }
@@ -992,6 +995,65 @@ function AssemblyBranch({
         </ul>
       </details>
     </li>
+  )
+}
+
+/**
+ * Every revision of the part, newest first (Phase 4 slice 1). Drawn once there is more than
+ * one: a history of one revision is the Identity row above it, said twice.
+ *
+ * Rows and inline thumbnails only, so the open path. Each volume goes through `Figure`, so a
+ * mesh-derived figure keeps its ≈ here as everywhere, and each revision's original is a plain
+ * download link, byte-identical to what that revision ingested.
+ */
+function History({ part }: { part: PartId }) {
+  const revisions = useQuery({
+    queryKey: ['revisions', part],
+    queryFn: () => fetchRevisions(part),
+  })
+  if (revisions.isError) {
+    return (
+      <p role="alert" className="mb-6 text-sm text-[var(--color-muted)]">
+        {strings.detail.historyFailed}
+      </p>
+    )
+  }
+  const all = revisions.data ?? []
+  if (all.length < 2) return null
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+        {strings.detail.history}
+      </h3>
+      <ol role="list" className="flex flex-col gap-2 text-sm">
+        {all.map((revision) => (
+          <li key={revision.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {revision.thumbnail === null ? null : (
+              <img
+                src={revision.thumbnail}
+                alt=""
+                className="size-10 rounded-[var(--radius-ctl)] object-cover"
+              />
+            )}
+            <span className="font-medium">{strings.detail.historyRevision(revision.revLabel)}</span>
+            <span className="text-[var(--color-muted)]">
+              {strings.detail.origin[revision.origin]} ·{' '}
+              {strings.detail.historyDate(revision.createdAt)}
+            </span>
+            {revision.volumeMm3 === null ? null : (
+              <Figure figure={revision.volumeMm3} render={strings.detail.volumeValue} />
+            )}
+            <a
+              href={downloadUrl(revision.id)}
+              download
+              className="underline underline-offset-2"
+            >
+              {strings.download.original}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </section>
   )
 }
 
