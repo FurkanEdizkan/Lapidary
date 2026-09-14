@@ -3,6 +3,7 @@
 mod approximate;
 mod assembly;
 mod derivative;
+mod diff;
 mod entity;
 mod error;
 mod ids;
@@ -16,6 +17,7 @@ pub mod slug;
 pub use approximate::Approximate;
 pub use assembly::{AssemblyNode, AssemblyTree};
 pub use derivative::DerivativeKind;
+pub use diff::{Delta, RevisionDiff};
 pub use entity::Entity;
 pub use error::CoreError;
 pub use ids::{

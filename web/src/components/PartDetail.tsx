@@ -4,6 +4,7 @@ import {
   addPartSource,
   blobUrl,
   downloadUrl,
+  fetchDiff,
   fetchEntities,
   fetchPartImages,
   fetchPartSources,
@@ -20,10 +21,13 @@ import { hasWebGL } from '../lib/viewer-math'
 import type {
   AssemblyNode,
   BlobHash,
+  Delta,
   PartDetail as PartDetailData,
   PartId,
   PartImage,
+  PartRevision,
   PmiFace,
+  RevisionId,
 } from '../lib/types'
 
 /**
@@ -1043,6 +1047,12 @@ function History({ part }: { part: PartId }) {
             {revision.volumeMm3 === null ? null : (
               <Figure figure={revision.volumeMm3} render={strings.detail.volumeValue} />
             )}
+            {revision.deltaFromParent?.volumeMm3 ? (
+              <Change
+                delta={revision.deltaFromParent.volumeMm3}
+                render={strings.detail.volumeChange}
+              />
+            ) : null}
             <a
               href={downloadUrl(revision.id)}
               download
@@ -1053,7 +1063,125 @@ function History({ part }: { part: PartId }) {
           </li>
         ))}
       </ol>
+      <Compare part={part} revisions={all} />
     </section>
+  )
+}
+
+/** A change between two revisions, through `Figure`, so a difference of mesh figures keeps its ≈. */
+function Change({
+  delta,
+  render,
+}: {
+  delta: Delta
+  render: (change: number, percent: number | null) => string
+}) {
+  return (
+    <Figure
+      figure={{ value: delta.change, approximate: delta.approximate }}
+      render={(value) => render(value, delta.percent)}
+    />
+  )
+}
+
+/**
+ * Any two revisions, figure by figure. Opens on the newest against the one before it, the change
+ * a person most likely came for, and asks the server, which keeps the ≈ rule in one place
+ * instead of a second copy of the arithmetic here.
+ */
+function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] }) {
+  const [from, setFrom] = useState<RevisionId | undefined>(revisions[1]?.id)
+  const [to, setTo] = useState<RevisionId | undefined>(revisions[0]?.id)
+  const compared = useQuery({
+    queryKey: ['diff', part, from, to],
+    queryFn: () => fetchDiff(part, from as RevisionId, to as RevisionId),
+    enabled: from !== undefined && to !== undefined,
+  })
+  const pick = (
+    label: string,
+    value: RevisionId | undefined,
+    onChange: (id: RevisionId) => void,
+  ) => (
+    <label className="flex items-center gap-2">
+      {label}
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as RevisionId)}
+        className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
+      >
+        {revisions.map((revision) => (
+          <option key={revision.id} value={revision.id}>
+            {strings.detail.historyRevision(revision.revLabel)}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+  const diff = compared.data
+  const rows =
+    diff === undefined
+      ? []
+      : [
+          { label: strings.detail.volume, delta: diff.volumeMm3, render: strings.detail.volumeChange },
+          {
+            label: strings.detail.surfaceArea,
+            delta: diff.surfaceAreaMm2,
+            render: strings.detail.areaChange,
+          },
+          ...([0, 1, 2] as const).map((axis) => ({
+            label: strings.detail.boundingBoxAxis(axis),
+            delta: diff.bboxMm?.[axis] ?? null,
+            render: strings.detail.lengthChange,
+          })),
+          {
+            label: strings.detail.triangles,
+            delta: diff.triangleCount,
+            render: strings.detail.countChange,
+          },
+        ]
+  return (
+    <div className="mt-3 text-sm">
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
+        {strings.detail.compare}
+        {pick(strings.detail.compareFrom, from, setFrom)}
+        {pick(strings.detail.compareTo, to, setTo)}
+      </div>
+      {compared.isError ? (
+        <p role="alert" className="text-[var(--color-muted)]">
+          {strings.detail.compareFailed}
+        </p>
+      ) : null}
+      {diff === undefined ? null : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col" className="pr-6 text-left font-normal text-[var(--color-muted)]">
+                {strings.detail.compareFigure}
+              </th>
+              <th scope="col" className="text-left font-normal text-[var(--color-muted)]">
+                {strings.detail.compareChange}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.label}>
+                <th scope="row" className="pr-6 text-left font-normal text-[var(--color-muted)]">
+                  {row.label}
+                </th>
+                <td>
+                  {row.delta ? (
+                    <Change delta={row.delta} render={row.render} />
+                  ) : (
+                    strings.detail.notInBoth
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   )
 }
 

@@ -1,8 +1,10 @@
 //! Versioning: immutable content-addressed snapshots, a lineage DAG, and pessimistic
 //! locks — Perforce-shaped, not Git-shaped. No merges, no branches.
 //!
-//! Empty. Implementation lands in **Phase 4** (`ROADMAP.md`), the phase the roadmap
-//! calls the differentiator. See `docs/DATA.md` §4.
+//! Phase 4 slice 1 brings the geometric diff ([`diff`]); recording revisions lives with the
+//! rest of the SQL in `lapidary-db` (`PgRevisions`). See `docs/DATA.md` §6.
+
+pub mod diff;
 
 use thiserror::Error;
 

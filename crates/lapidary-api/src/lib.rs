@@ -248,6 +248,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // Every revision of a part, newest first: rows and inline thumbnails, so the
                 // open path. See `revisions.rs`.
                 .route("/api/parts/{id}/revisions", get(revisions::list))
+                // Any two revisions of one part, figure by figure. See `revisions::compare`.
+                .route("/api/parts/{id}/diff", get(revisions::compare))
                 // The number a person gives a part. Its own resource rather than a field on the
                 // move `PATCH` above, where a `null` folder already means "to the top level".
                 .route(

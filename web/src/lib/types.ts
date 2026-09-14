@@ -9,6 +9,7 @@
  * staleness gate exists to prevent.
  */
 export type { Approximate } from '../bindings/Approximate'
+export type { Delta } from '../bindings/Delta'
 export type { FacetValue } from '../bindings/FacetValue'
 export type { Facets } from '../bindings/Facets'
 export type { AssemblyNode } from '../bindings/AssemblyNode'
@@ -52,6 +53,7 @@ export type { PurgeResult } from '../bindings/PurgeResult'
 export type { PartSummary } from '../bindings/PartSummary'
 export type { RevisionId } from '../bindings/RevisionId'
 export type { RevisionOrigin } from '../bindings/RevisionOrigin'
+export type { RevisionDiff } from '../bindings/RevisionDiff'
 export type { ScanAccepted } from '../bindings/ScanAccepted'
 export type { ChunkAccepted } from '../bindings/ChunkAccepted'
 export type { UploadFile } from '../bindings/UploadFile'
