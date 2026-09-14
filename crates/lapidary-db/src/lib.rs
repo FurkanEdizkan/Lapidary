@@ -5,6 +5,7 @@ mod folders;
 mod jobs;
 mod migrate;
 mod repo;
+mod revisions;
 mod saved_filters;
 
 pub use folders::{FolderRow, PgFolders};
@@ -17,6 +18,7 @@ pub use repo::{
     PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows, Sort, StorageTotals,
     StoredBlobRow, TessellationRow,
 };
+pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{PgSavedFilters, SavedFilterRow};
 pub use sqlx::PgPool;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -24,7 +26,7 @@ pub use sqlx::PgPool;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
-use lapidary_core::{FolderId, LibraryId, RevisionId};
+use lapidary_core::{FolderId, LibraryId, PartId, RevisionId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -191,6 +193,28 @@ pub enum DbError {
         "Could not move this model's directory, so nothing was moved and the database is unchanged: {detail}"
     )]
     RenameFailed { detail: String },
+
+    /// The revision a job measured against stopped being the part's current one before the
+    /// next could be recorded: another revision landed first. Retried, and the retry decides
+    /// again from whatever is current then (slice 1 spec §2).
+    #[error(
+        "Part {part} gained another revision while this change was being measured, so it was not recorded against one that is no longer current. It will be retried against the newest revision."
+    )]
+    RevisionConflict { part: PartId },
+
+    /// The filesystem half of a revision failed — setting the previous file aside, or
+    /// writing the new one on top — so the transaction was rolled back and no revision was
+    /// recorded. Carries the storage layer's text, for [`DbError::RenameFailed`]'s reason.
+    #[error(
+        "Could not set the previous file aside for the new revision, so no revision was recorded: {detail}"
+    )]
+    RevisionFilesFailed { detail: String },
+
+    /// `revision.origin` holds a word this build never writes.
+    #[error(
+        "A revision's origin column holds `{value}`, which is none of `ingest`, `upload` or `agent`. Lapidary will not guess where those bytes came from. Check what else has write access to this database."
+    )]
+    UnknownOrigin { value: String },
 }
 
 impl DbError {
@@ -238,6 +262,9 @@ impl DbError {
             // operator-facing and carries no connection string — the same audit the
             // variants above pass.
             | DbError::RenameFailed { .. }
+            | DbError::RevisionFilesFailed { .. }
+            | DbError::RevisionConflict { .. }
+            | DbError::UnknownOrigin { .. }
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),

@@ -10,8 +10,8 @@ import type { LibraryMode } from "./LibraryMode";
  */
 export type LibrarySummary = { id: LibraryId, name: string, 
 /**
- * `hobby` or `controlled`. **Nothing reads it yet** — governance is Phase 8 — and it is
- * on the wire because a switcher that shows which libraries are controlled is the point
- * at which the column stops being decorative. Until then it is a label.
+ * `hobby` or `controlled`. A controlled library keeps a changed file as a new revision
+ * (Phase 4 slice 1); a hobby library says the change was not kept. States and approvals
+ * are still Phase 8.
  */
 mode: LibraryMode, partCount: number, };

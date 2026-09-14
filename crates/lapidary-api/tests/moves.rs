@@ -9,8 +9,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
-use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId};
-use lapidary_db::{IngestRequest, PgFolders, PgIngest, StoredBlobRow};
+use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId, RevisionOrigin};
+use lapidary_db::{
+    IngestRequest, PgFolders, PgIngest, PgRevisions, RevisionRequest, StoredBlobRow,
+};
 use tower::ServiceExt;
 
 /// Seeded by `crates/lapidary-db/migrations/0002_parts.sql`, and its slug — what
@@ -223,6 +225,121 @@ async fn a_move_changes_where_a_model_is_and_never_what_it_is(pool: sqlx::PgPool
             .exists(),
         "the manifest travels with the directory, and needs no rewrite: it carries no path"
     );
+}
+
+/// Phase 4 slice 1: a model's older revisions live in `revisions/<label>/` inside its own
+/// directory, so the rename carries them and the prefix rewrite finds their rows. Both
+/// originals must still download, byte for byte, from where the move put them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPool) {
+    const FIRST: &[u8] = b"solid rock\nendsolid rock\n";
+    const SECOND: &[u8] = b"solid rock, 10 mm taller\nendsolid rock\n";
+    const STORED: &str = "libraries/default/Terrain/rock/rock.stl";
+    // Real digests: the download route hashes what it streams and refuses a mismatch.
+    let row = |bytes: &[u8]| StoredBlobRow {
+        hash: BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()),
+        size_bytes: bytes.len() as u64,
+        stored_bytes: bytes.len() as u64,
+        zstd_level: 0,
+    };
+    let store = tempfile::tempdir().expect("temp store");
+    let folders = PgFolders(pool.clone());
+    let terrain = folders
+        .get_or_create(library(), None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+    let bases = folders
+        .get_or_create(library(), None, "Bases", "Bases")
+        .await
+        .expect("Bases");
+
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "rock",
+            source_path: "Terrain/rock.stl",
+            folder: Some(terrain),
+            storage_path: Some(STORED),
+            blob: &row(FIRST),
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("revision 1");
+    std::fs::create_dir_all(store.path().join("libraries/default/Terrain/rock"))
+        .expect("model directory");
+    std::fs::write(store.path().join(STORED), FIRST).expect("revision 1 on disk");
+
+    let revisions = PgRevisions(pool.clone());
+    let first = revisions
+        .current(library(), "Terrain/rock.stl")
+        .await
+        .expect("reads")
+        .expect("the part")
+        .revision;
+    let second = revisions
+        .record_revision(
+            RevisionRequest {
+                part,
+                parent: first,
+                origin: RevisionOrigin::Ingest,
+                blob: &row(SECOND),
+                measurements: &measurements(),
+                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+                thumbnail_webp: None,
+                kernel_version: "mesh stl-1+cpu-1",
+                format: "stl",
+                tessellations: &[],
+            },
+            // The filesystem half as the worker does it: the current file set aside, the new
+            // bytes written where it was.
+            |current, set_aside| {
+                let aside = store.path().join(set_aside);
+                std::fs::create_dir_all(aside.parent().expect("a directory"))
+                    .map_err(|e| e.to_string())?;
+                std::fs::rename(store.path().join(current), &aside).map_err(|e| e.to_string())?;
+                std::fs::write(store.path().join(current), SECOND).map_err(|e| e.to_string())
+            },
+        )
+        .await
+        .expect("revision 2");
+
+    let (status, json) = move_request(&pool, store.path(), part, Some(bases), false).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(
+        store
+            .path()
+            .join("libraries/default/Bases/rock/revisions/1/rock.stl")
+            .exists(),
+        "revision 1's file moved with its model"
+    );
+
+    for (revision, bytes) in [(first, FIRST), (second, SECOND)] {
+        let response = app(pool.clone(), store.path())
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/revisions/{revision}/download?variant=original"
+                    ))
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "revision {revision} downloads after the move"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body reads");
+        assert_eq!(&body[..], bytes, "revision {revision}'s own bytes");
+    }
 }
 
 /// Rename first, inside the transaction: a failure must move nothing and change nothing.

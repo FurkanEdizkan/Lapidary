@@ -7,12 +7,20 @@
 //!
 //! 1. read bytes
 //! 2. BLAKE3 — hash first, always
-//! 3. `blobs.library_holds(library, source_path, hash)`? yes -> `Skipped`, no further work at
-//!    all: not a parse, not a raster, not a query beyond this one
+//! 3. `blobs.library_holds(library, source_path, hash)` — does the part's *current* revision
+//!    hold these bytes? yes -> `Skipped`, no further work at all: not a parse, not a raster,
+//!    not a query beyond this one
+//!    3b. `revisions.current(library, source_path)` — a part already here, with other bytes:
+//!    deleted -> `Skipped`, hobby library -> `Unkept`, controlled -> on to 5a. Nothing is
+//!    written before either refusal
 //!    3a. `parts.auto_thumbnail(library)` — what this library wants produced;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
 //! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
 //! 5. the LOD rungs go to the derivative store
+//!    5a. a controlled part's next revision: `revisions.record_revision(...)` locks the part,
+//!    sets its current file aside under `revisions/<label>/` and writes these bytes where it
+//!    was, then `metadata.json` is rewritten from the rows -> `Revised`. Steps 6 to 10 are
+//!    a new part's, not a revision's
 //! 6. `blobs.exists(hash)` — whether a `blob` row for these bytes is already there. Read
 //!    here rather than beside the insert it decides, so that nothing fallible sits
 //!    between the source write and the transaction
@@ -107,15 +115,17 @@ use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::{disambiguate, slugify};
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, Outcome, source_format,
+    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome,
+    RevisionOrigin, source_format,
 };
 use lapidary_db::{
-    DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, StoredBlobRow,
-    TessellationRow,
+    DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, PgRevisions,
+    RevisionRequest, StoredBlobRow, TessellationRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
 use lapidary_storage::{
-    Compression, DerivativeStore, SourceReader, SourceStore, StorageError, WorkerRole,
+    Compression, DerivativeStore, SourceReader, SourceRelocator, SourceStore, StorageError,
+    WorkerRole,
 };
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -235,7 +245,8 @@ impl WorkerHandler {
 
         // 2. BLAKE3 -- hash first, always. Everything below branches on this.
         let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-        self.index(library, source_path, bytes, hash).await
+        self.index(library, source_path, bytes, hash, RevisionOrigin::Ingest)
+            .await
     }
 
     /// One blob already in the store, start to finish: the upload route's half of the
@@ -359,7 +370,8 @@ impl WorkerHandler {
             }
         };
 
-        self.index(library, source_path, bytes, hash).await
+        self.index(library, source_path, bytes, hash, RevisionOrigin::Upload)
+            .await
     }
 
     /// Steps 3 through 6: short-circuit, kernel, rungs, and the one transaction.
@@ -376,6 +388,7 @@ impl WorkerHandler {
         source_path: &str,
         bytes: Vec<u8>,
         hash: BlobHash,
+        origin: RevisionOrigin,
     ) -> Result<Outcome, HandlerError> {
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
@@ -386,16 +399,44 @@ impl WorkerHandler {
         let ingest = PgIngest(self.db.clone());
         let name = part_name(source_path);
 
-        // 3. The same file, seen again -- same library, same name, same bytes --
-        // short-circuits parse, raster and every write entirely. Scoped to the library on
-        // purpose: a hash this library has never seen is a part it does not have,
-        // whatever some other library holds. See `scan.rs`'s module doc.
+        // 3. The same file, seen again -- same library, same path, the bytes its current
+        // revision holds -- short-circuits parse, raster and every write entirely. Scoped to
+        // the library on purpose: a hash this library has never seen is a part it does not
+        // have, whatever some other library holds. See `scan.rs`'s module doc.
         if blobs
             .library_holds(library, source_path, &hash)
             .await
             .map_err(classify_db)?
         {
             return Ok(Outcome::Skipped);
+        }
+
+        // 3b. A part already at this path, with other bytes (Phase 4 slice 1 spec §1). Only a
+        // live part in a controlled library goes on, to become its next revision at step 5a;
+        // everything this decides against, it decides before the kernel, so it writes nothing.
+        let existing = PgRevisions(self.db.clone())
+            .current(library, source_path)
+            .await
+            .map_err(classify_db)?;
+        if let Some(existing) = &existing {
+            // A deleted part stays deleted: restore is a button, not a side effect of a scan.
+            if existing.deleted {
+                return Ok(Outcome::Skipped);
+            }
+            // A hobby library keeps no revisions. Counted, not failed: nothing broke, the new
+            // bytes are still where they came from, and a retry could not change the answer.
+            if existing.mode != LibraryMode::Controlled {
+                return Ok(Outcome::Unkept);
+            }
+            if existing.storage_path.is_none() {
+                return Err(HandlerError::Transient {
+                    message: format!(
+                        "{source_path} changed, and its part's file is still in the old storage \
+                         layout, so there is no folder to keep the previous file in yet. The \
+                         storage migration moves it on its own; this change is retried after."
+                    ),
+                });
+            }
         }
 
         // 3a. What this library wants made. Read *after* the short-circuit, so a re-scan
@@ -534,6 +575,86 @@ impl WorkerHandler {
                 },
                 grid,
             });
+        }
+
+        // 5a. The next revision of the part at step 3b (spec §3.1). It has its folder and its
+        // directory already, and its transaction writes the blob row itself, so steps 6 to 9
+        // are not its. The files move inside that transaction, after the part row is locked:
+        // `set_aside` sets the current file aside and writes these bytes where it was.
+        if let Some(existing) = existing {
+            let blob = StoredBlobRow {
+                hash,
+                size_bytes: bytes.len() as u64,
+                // `Compression::AsIs`, for step 8's reason: this is the file the owner opens.
+                stored_bytes: bytes.len() as u64,
+                zstd_level: 0,
+            };
+            let relocator = SourceRelocator::open(&self.blob_root);
+            let mut moved: Option<(String, String)> = None;
+            let recorded = PgRevisions(self.db.clone())
+                .record_revision(
+                    RevisionRequest {
+                        part: existing.part,
+                        parent: existing.revision,
+                        origin,
+                        blob: &blob,
+                        measurements: &output.measurements,
+                        provenance: output.provenance,
+                        thumbnail_webp: output.thumbnail_webp.as_deref(),
+                        kernel_version: &kernel_version,
+                        format: &params.format,
+                        tessellations: &rungs,
+                    },
+                    |current, aside| {
+                        set_aside(&relocator, &source, &self.blob_root, current, aside, &bytes)?;
+                        moved = Some((current.to_owned(), aside.to_owned()));
+                        Ok(())
+                    },
+                )
+                .await;
+            if let Err(error) = recorded {
+                // Never `classify_write`: a unique violation here is a lost race for a label,
+                // not "already here", and every failure on this path is worth another attempt
+                // — the retry re-reads what is current and decides again.
+                if let Some((current, aside)) = &moved {
+                    put_back(&relocator, &source, current, aside);
+                }
+                reap(&derivatives, &reapable);
+                return Err(HandlerError::Transient {
+                    message: error.to_string(),
+                });
+            }
+
+            // `metadata.json` from the rows, every revision listed. Warn-only, for step 10's
+            // reason: the revision is committed, and failing the job would say it was not.
+            if let Some((current, _)) = &moved
+                && let Some((model_dir, _)) = current.rsplit_once('/')
+            {
+                let written = match PgRevisions(self.db.clone()).manifest(existing.part).await {
+                    Ok(Some(manifest)) => serde_json::to_vec_pretty(&manifest)
+                        .map_err(|e| e.to_string())
+                        .and_then(|json| {
+                            source
+                                .put_at(
+                                    &format!("{model_dir}/metadata.json"),
+                                    &json,
+                                    Compression::AsIs,
+                                )
+                                .map(|_| ())
+                                .map_err(|e| e.to_string())
+                        }),
+                    Ok(None) => Err("the part could not be found again".to_owned()),
+                    Err(error) => Err(error.to_string()),
+                };
+                if let Err(error) = written {
+                    tracing::warn!(
+                        source_path,
+                        error,
+                        "could not rewrite metadata.json after a revision; it lists the revisions before this one until it is rewritten"
+                    );
+                }
+            }
+            return Ok(Outcome::Revised);
         }
 
         // 6. Is there already a `blob` row for these bytes? Asked here, before anything is
@@ -822,6 +943,66 @@ impl WorkerHandler {
             model_dir = disambiguate(&model_dir, hash);
         }
         Ok((parent, format!("{base}/{model_dir}")))
+    }
+}
+
+/// The filesystem half of a revision (spec §3.1), run inside its transaction: the current
+/// file set aside at `aside`, then the new bytes written at `current`. A failed write puts the
+/// previous file back, so a refusal leaves the model directory holding what it held.
+fn set_aside(
+    relocator: &SourceRelocator,
+    source: &SourceStore,
+    blob_root: &FsPath,
+    current: &str,
+    aside: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let (aside_dir, _) = aside
+        .rsplit_once('/')
+        .ok_or_else(|| format!("`{aside}` names no directory"))?;
+    // `std::fs::rename` replaces an existing file without a word, and a file already there is
+    // bytes this revision would destroy — whoever put them there.
+    if blob_root.join(aside).exists() {
+        return Err(format!(
+            "`{aside}` already holds a file, and setting the current file aside there would \
+             replace it. Move that file out of the storage folder, then retry."
+        ));
+    }
+    relocator
+        .create_dir(aside_dir)
+        .map_err(|error| error.to_string())?;
+    relocator
+        .rename(current, aside)
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = source.put_at(current, bytes, Compression::AsIs) {
+        put_back(relocator, source, current, aside);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// Undo [`set_aside`]: the new file removed, the previous one renamed back.
+///
+/// `error`, not `warn`, and both paths named: if this fails, the disk is ahead of the
+/// database — the previous revision's row names `current`, and its bytes are at `aside`.
+/// Nothing is deleted either way; this is the line an operator needs to put them back.
+fn put_back(relocator: &SourceRelocator, source: &SourceStore, current: &str, aside: &str) {
+    if let Err(error) = source.remove_at(current) {
+        tracing::error!(
+            current,
+            aside,
+            %error,
+            "a revision failed and its new file could not be removed; the previous revision's bytes are at `aside`, and its row names `current`"
+        );
+        return;
+    }
+    if let Err(error) = relocator.rename(aside, current) {
+        tracing::error!(
+            current,
+            aside,
+            %error,
+            "a revision failed and the previous file could not be put back; its bytes are at `aside`, and its row names `current`"
+        );
     }
 }
 

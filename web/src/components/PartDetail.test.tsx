@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
 import { Detail, warmViewer, warmViewerWhenIdle } from './PartDetail'
 import { strings } from '../lib/strings'
-import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
+import type { AssemblyNode, AssemblyTree, PartDetail, PartRevision } from '../lib/types'
 
 const { mounts, prepare, drawn } = vi.hoisted(() => ({
   mounts: [] as string[],
@@ -273,5 +273,72 @@ test('a part lists the dimensions and tolerances its file specifies, labelled as
   expect(item(strings.pmi.tolerance('perpendicularity', 0.05, ['A']))).toContain(strings.pmi.face('cylinder'))
   expect(item(strings.pmi.datum('A'))).toContain(strings.pmi.face('plane'))
   expect(screen.queryByText(/≈/)).toBeNull()
+  vi.unstubAllGlobals()
+})
+
+/** One revision is the Identity row, said once; two are a history, each with its origin, its ≈ and its original. */
+test('the history appears once a part has a second revision, and says where each came from', async () => {
+  const second = {
+    id: '01931b6e-0000-7000-8000-00000000dddd',
+    parent: BRACKET.revision,
+    revLabel: '2',
+    origin: 'agent',
+    createdAt: '2026-09-14T09:30:00Z',
+    thumbnail: null,
+    triangleCount: 44,
+    bboxMm: { value: [66, 40, 60], approximate: true },
+    volumeMm3: { value: 39424, approximate: true },
+    surfaceAreaMm2: null,
+    sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
+    sourceFormat: 'stl',
+    sourceBytes: 20124,
+  } satisfies PartRevision
+  const first = {
+    ...second,
+    id: BRACKET.revision,
+    parent: null,
+    revLabel: '1',
+    origin: 'ingest',
+    createdAt: '2026-09-13T10:00:00Z',
+    volumeMm3: { value: 35840, approximate: true },
+  } satisfies PartRevision
+  let history: PartRevision[] = [first]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => (url.endsWith('/revisions') ? history : []),
+    })),
+  )
+  const settledPage = async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Detail part={BRACKET} />
+      </QueryClientProvider>,
+    )
+    // Settled, not merely asked: an absent section before the answer arrives proves nothing.
+    await waitFor(() =>
+      expect(client.getQueryState(['revisions', BRACKET.id])?.status).toBe('success'),
+    )
+    return view
+  }
+
+  const one = await settledPage()
+  expect(screen.queryByText(strings.detail.history)).toBeNull()
+  one.unmount()
+
+  history = [second, first]
+  await settledPage()
+  expect(await screen.findByText(strings.detail.history)).toBeTruthy()
+  const item = (label: string) =>
+    screen.getByText(strings.detail.historyRevision(label)).closest('li')
+  expect(item('2')?.textContent).toContain(strings.detail.origin.agent)
+  expect(item('2')?.textContent).toContain(strings.detail.approximate)
+  expect(item('1')?.textContent).toContain(strings.detail.origin.ingest)
+  expect(item('2')?.querySelector('a')?.getAttribute('href')).toBe(
+    `/api/revisions/${second.id}/download?variant=original`,
+  )
   vi.unstubAllGlobals()
 })

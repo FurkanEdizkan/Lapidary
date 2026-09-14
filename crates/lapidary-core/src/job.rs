@@ -33,6 +33,12 @@ pub enum JobState {
 /// indexes nothing new — it moves bytes a part already had from the content-addressed
 /// store into that part's own directory. Reporting it as `Ingested` would put files a
 /// user already had into the "added" column of a batch they are watching.
+///
+/// `Revised` and `Unkept` are the two answers to a file whose bytes changed at a path the
+/// library already indexes (Phase 4 slice 1). A controlled library keeps the change as a
+/// new revision; a hobby library keeps no revisions and says so. `Unkept` is a notice, not a
+/// failure: nothing broke, the new bytes are still where they came from, and a retry could
+/// not change the answer — so it is counted here rather than listed as a failed job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -42,6 +48,8 @@ pub enum Outcome {
     Rendered,
     Scanned,
     Migrated,
+    Revised,
+    Unkept,
 }
 
 /// What a job carries, without its kind.
@@ -226,6 +234,11 @@ pub struct BatchStatus {
     pub ingested: u32,
     pub skipped: u32,
     pub rendered: u32,
+    /// Files whose changed bytes a controlled library kept as a new revision.
+    pub revised: u32,
+    /// Files whose bytes changed in a hobby library, which keeps no revisions, so the change
+    /// was not stored. Counted rather than failed — see [`Outcome`].
+    pub unkept: u32,
     /// How many `scan_directory` jobs in this batch have finished their walk — in
     /// practice 0 or 1, since a scan enqueues one and its children join the same batch.
     ///
@@ -307,6 +320,8 @@ mod tests {
             ingested: 5,
             skipped: 0,
             rendered: 0,
+            revised: 0,
+            unkept: 0,
             // The walk that found the six files, one of which failed. Counted in `total`
             // as the job it is, and subtracted out wherever the number is called `files`.
             scanned: 1,

@@ -1940,8 +1940,9 @@ async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: P
 ///
 /// - unchanged bytes take the hash short-circuit, which works only because
 ///   `PgBlobs::library_holds` deliberately does not filter `deleted_at`;
-/// - changed bytes get past it and violate `part_source_path_unique_per_library`, which
-///   `classify_write` maps to `Skipped`.
+/// - changed bytes get past it, and `PgRevisions::current` finds the part deleted and settles
+///   as `Skipped` before the kernel runs. Until Phase 4 slice 1 they reached
+///   `part_source_path_unique_per_library` instead, which `classify_write` maps to `Skipped`.
 ///
 /// Neither behaviour is new in slice 7 — both fall out of what slice 6a built — and that
 /// is exactly why they are pinned here. Nothing else fails if either one silently stops
@@ -1983,8 +1984,8 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
         "the hash short-circuit must not clear deleted_at"
     );
 
-    // Branch two: the file changed on disk, so the hash no longer matches and the insert
-    // is actually attempted. `spacer` rather than a truncation of the bracket, so this is
+    // Branch two: the file changed on disk, so the hash no longer matches and the part at
+    // this path is looked up. `spacer` rather than a truncation of the bracket, so this is
     // a real mesh the pipeline gets all the way through — a file that fails to parse would
     // reach `Skipped` for the wrong reason entirely.
     stage(
@@ -1998,11 +1999,11 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
             .await
             .expect("the re-scan succeeds"),
         Outcome::Skipped,
-        "changed bytes must hit the path-unique constraint and settle as Skipped"
+        "changed bytes at a deleted part's path must settle as Skipped"
     );
     assert!(
         still_deleted(&pool, part).await,
-        "the constraint path must not clear deleted_at either"
+        "the changed-bytes path must not clear deleted_at either"
     );
 
     assert_eq!(
@@ -2011,11 +2012,11 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
         "and neither branch may insert a second part at the same path"
     );
 
-    // Branch two is the one that can leak. It gets past the short-circuit, writes the
-    // changed file's blob and its rung, and only then loses to the constraint — so the
-    // `Skipped` it settles as has bytes behind it that nothing will ever reference. The
-    // failure reap already collects them, and this is what says so: the store holds the
-    // original part's source and rung, and nothing else.
+    // Branch two is the one that could leak, and did: it reached the constraint only after
+    // writing the changed file's rung, and a `Skipped` is not reaped, so `blobs/` held two
+    // files — this count said 2 and called that "no orphan". It now settles before the
+    // kernel runs. The source lives in the model directory, so `blobs/` holds derivatives
+    // only: the original part's one rung, and nothing else.
     let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
         .fetch_one(&pool)
         .await
@@ -2026,7 +2027,7 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
     );
     assert_eq!(
         all_files(&blob_root.path().join("blobs")).len(),
-        2,
+        1,
         "a re-scan of a changed file at a deleted path must not orphan its bytes on disk"
     );
 }
@@ -2760,5 +2761,229 @@ async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: Pg
         l0_row(&pool).await.1,
         current,
         "written at the current version"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 4 slice 1: a file whose bytes changed at a path the library already indexes.
+// ---------------------------------------------------------------------------------------
+
+const SPACER_FIXTURE: &[u8] = include_bytes!("../../../fixtures/spacer-lp-2001-00.stl");
+
+/// Governance is opt-in: the seeded library is hobby until somebody switches it.
+async fn make_controlled(pool: &PgPool, library: LibraryId) {
+    sqlx::query("UPDATE library SET mode = 'controlled' WHERE id = $1")
+        .bind(library.as_uuid())
+        .execute(pool)
+        .await
+        .expect("switches the library to controlled");
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()).to_hex()
+}
+
+/// Every revision of every part, oldest first: its label, its parent's label, its origin,
+/// and its source file's hash and storage path.
+async fn revision_rows(pool: &PgPool) -> Vec<(String, Option<String>, String, String, String)> {
+    sqlx::query_as(
+        "SELECT r.rev_label, parent.rev_label, r.origin, f.blake3, f.storage_path \
+         FROM revision r \
+         LEFT JOIN revision parent ON parent.id = r.parent_revision_id \
+         JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
+         ORDER BY r.created_at, r.id",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("revision rows")
+}
+
+/// The whole round trip the slice exists for, as a scan sees it: the owner edits a file in
+/// place, re-scans, and gets a second revision rather than "already here".
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_changed_file_in_a_controlled_library_becomes_revision_two_beside_the_first(
+    pool: PgPool,
+) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("revises"),
+        Outcome::Revised,
+        "changed bytes in a controlled library are a revision, not a skip"
+    );
+
+    let rows = revision_rows(&pool).await;
+    assert_eq!(rows.len(), 2, "two revisions of the one part: {rows:?}");
+    assert_eq!(part_count(&pool).await, 1, "and still one part");
+    let (top_dir, _) = rows[1].4.rsplit_once('/').expect("a model directory");
+    assert_eq!(
+        rows[0],
+        (
+            "1".to_owned(),
+            None,
+            "ingest".to_owned(),
+            hex_of(BRACKET_FIXTURE),
+            format!("{top_dir}/revisions/1/{BRACKET}"),
+        ),
+        "revision 1 keeps its bytes, set aside under revisions/1"
+    );
+    assert_eq!(
+        rows[1],
+        (
+            "2".to_owned(),
+            Some("1".to_owned()),
+            "ingest".to_owned(),
+            hex_of(SPACER_FIXTURE),
+            format!("{top_dir}/{BRACKET}"),
+        ),
+        "revision 2 is on top, at the path the owner already knew"
+    );
+
+    for (_, _, _, hash, path) in &rows {
+        let bytes = std::fs::read(blob_root.path().join(path))
+            .unwrap_or_else(|e| panic!("{path} is not on disk: {e}"));
+        assert_eq!(&hex_of(&bytes), hash, "{path} holds its row's bytes");
+    }
+
+    let manifest = manifest_in(&blob_root.path().join(top_dir));
+    let labels: Vec<&str> = manifest
+        .revisions
+        .iter()
+        .map(|revision| revision.rev_label.as_str())
+        .collect();
+    assert_eq!(labels, ["1", "2"], "metadata.json lists both, oldest first");
+    assert_eq!(
+        manifest.revisions[1].files[0].blake3.to_hex(),
+        hex_of(SPACER_FIXTURE)
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_same_bytes_again_in_a_controlled_library_are_skipped_not_revised(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("re-scans"),
+        Outcome::Skipped,
+        "identical bytes are not a revision"
+    );
+    assert_eq!(revision_rows(&pool).await.len(), 1);
+}
+
+/// A revert is history, not a skip: bytes an older revision held, arriving on top of a
+/// newer one, are the third revision.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn going_back_to_an_older_revisions_bytes_is_a_new_revision(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+
+    for (bytes, expected) in [
+        (BRACKET_FIXTURE, Outcome::Ingested),
+        (SPACER_FIXTURE, Outcome::Revised),
+        (BRACKET_FIXTURE, Outcome::Revised),
+    ] {
+        stage(ingest_dir.path(), BRACKET, bytes);
+        assert_eq!(
+            handler.handle(&job_for(BRACKET)).await.expect("settles"),
+            expected
+        );
+    }
+
+    let rows = revision_rows(&pool).await;
+    let labels: Vec<(&str, Option<&str>)> = rows
+        .iter()
+        .map(|(label, parent, ..)| (label.as_str(), parent.as_deref()))
+        .collect();
+    assert_eq!(labels, [("1", None), ("2", Some("1")), ("3", Some("2"))]);
+    assert_eq!(rows[2].3, hex_of(BRACKET_FIXTURE));
+    for (_, _, _, hash, path) in &rows {
+        let bytes = std::fs::read(blob_root.path().join(path))
+            .unwrap_or_else(|e| panic!("{path} is not on disk: {e}"));
+        assert_eq!(&hex_of(&bytes), hash, "{path} holds its row's bytes");
+    }
+}
+
+/// A hobby library keeps no revisions, and still does not — but it no longer calls the
+/// change "already here". Nothing is written: no row, no rung, no file.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_changed_file_in_a_hobby_library_is_unkept_and_writes_nothing(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    let files_before = all_files(blob_root.path());
+    let blobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("blob count");
+
+    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("settles"),
+        Outcome::Unkept
+    );
+
+    let rows = revision_rows(&pool).await;
+    assert_eq!(rows.len(), 1, "no second revision in a hobby library");
+    assert_eq!(rows[0].3, hex_of(BRACKET_FIXTURE));
+    assert_eq!(all_files(blob_root.path()), files_before, "no file written");
+    let blobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("blob count");
+    assert_eq!(blobs_after, blobs_before, "no blob row written");
+}
+
+/// Purge collects every revision's file, and the sweep leaves no directory behind whichever
+/// order it reaches them in: not `revisions/1`, not `revisions`, not the model directory.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn purging_a_revised_part_leaves_no_file_or_directory_behind(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
+    handler.handle(&job_for(BRACKET)).await.expect("revises");
+    let rows = revision_rows(&pool).await;
+    let (model_dir, _) = rows[1].4.rsplit_once('/').expect("a model directory");
+    let model_dir = blob_root.path().join(model_dir);
+    assert!(model_dir.join("revisions").exists(), "the precondition");
+
+    let part = sqlx::query_scalar::<_, Uuid>("SELECT id FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("the one part");
+    let parts = PgParts(pool.clone());
+    let part = lapidary_core::PartId::from_uuid(part);
+    assert!(parts.soft_delete(part).await.expect("soft delete"));
+    parts.purge(part).await.expect("purge");
+    lapidary_ingest::reap::sweep(&pool, blob_root.path(), std::time::Duration::ZERO)
+        .await
+        .expect("sweep");
+
+    assert!(
+        !model_dir.exists(),
+        "the model directory must go with its last file; left behind: {:?}",
+        all_files(&model_dir)
     );
 }

@@ -16,6 +16,7 @@ mod lifecycle;
 mod moves;
 mod part_number;
 mod parts;
+mod revisions;
 mod scan;
 mod sources;
 mod tags;
@@ -167,6 +168,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // route the api serves. It enqueues a `scan_directory` job and walks
                 // nothing — see `scan.rs`.
                 .route("/api/libraries/{id}/scan", post(scan::scan))
+                // The one-way switch a changed file in a hobby library points to. See
+                // `derive::make_controlled`.
+                .route(
+                    "/api/libraries/{id}/controlled",
+                    post(derive::make_controlled),
+                )
                 // Upload, in three. `Role::Api` for the same reason the scan trigger above
                 // is — nothing proxies a browser to the worker — and additionally because
                 // this is the process that mounts the blob volume read-write. See
@@ -238,6 +245,9 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // check-deploy`'s `RELOCATE_MODULE`.
                 .route("/api/parts/{id}", axum::routing::patch(moves::move_part))
                 .route("/api/parts/{id}/moves", get(moves::history))
+                // Every revision of a part, newest first: rows and inline thumbnails, so the
+                // open path. See `revisions.rs`.
+                .route("/api/parts/{id}/revisions", get(revisions::list))
                 // The number a person gives a part. Its own resource rather than a field on the
                 // move `PATCH` above, where a `null` folder already means "to the top level".
                 .route(

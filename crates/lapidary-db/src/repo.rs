@@ -825,6 +825,12 @@ impl PgBlobs {
     /// Deliberately does *not* filter `part.deleted_at`. A part the user deleted stays
     /// deleted — re-scanning the directory it came from must not resurrect it, and
     /// delete is the one action in this product that is always explicit.
+    ///
+    /// **The part's current revision, not any of them** (Phase 4 slice 1). Bytes an older
+    /// revision held, arriving on top of a newer one, are a revert — history, not a re-scan —
+    /// and both callers must see them as a change: ingest, to record the revision, and the
+    /// upload probe, so the client sends the file at all. "Current" is ordered as the grid's
+    /// LATERAL orders it.
     pub async fn library_holds(
         &self,
         library: LibraryId,
@@ -832,11 +838,11 @@ impl PgBlobs {
         hash: &BlobHash,
     ) -> Result<bool, DbError> {
         let found: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM file f \
-             JOIN revision r ON r.id = f.revision_id \
-             JOIN part p ON p.id = r.part_id \
+            "SELECT 1 FROM part p \
+             JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
+                           ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+             JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
              WHERE p.library_id = $1 AND p.source_path = $2 AND f.blake3 = $3 \
-             AND f.role = 'source' \
              LIMIT 1",
         )
         .bind(library.as_uuid())
@@ -1068,21 +1074,6 @@ async fn insert_part_chain(
     req: &IngestRequest<'_>,
 ) -> Result<PartId, DbError> {
     let part = PartId::new();
-    let revision = Uuid::now_v7();
-    let m = req.measurements;
-    let p = req.provenance;
-    // Converted — and, deliberately, checked — before the first INSERT below: a
-    // triangle count that does not fit `revision.triangle_count`'s 32-bit column (a
-    // mesh kernel bug, or corrupt input) must fail before any row is written, not
-    // silently wrap to a negative count that a later read (see PgParts::page) would
-    // then have to reject anyway. `as i32` here previously wrapped 3_000_000_000 to
-    // -1_294_967_296 and stored it without complaint.
-    let triangle_count =
-        i32::try_from(m.triangle_count).map_err(|_| DbError::TriangleCountTooLarge {
-            column: "revision.triangle_count",
-            value: m.triangle_count,
-        })?;
-
     sqlx::query(
         "INSERT INTO part (id, library_id, name, source_path, folder_id) \
          VALUES ($1, $2, $3, $4, $5)",
@@ -1095,14 +1086,79 @@ async fn insert_part_chain(
     .execute(&mut **tx)
     .await?;
 
+    insert_revision_chain(
+        tx,
+        &RevisionWrite {
+            part,
+            revision: Uuid::now_v7(),
+            rev_label: "1",
+            parent: None,
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            storage_path: req.storage_path,
+            blob: req.blob,
+            measurements: req.measurements,
+            provenance: req.provenance,
+            thumbnail_webp: req.thumbnail_webp,
+            kernel_version: req.kernel_version,
+            format: req.format,
+            tessellations: req.tessellations,
+        },
+    )
+    .await?;
+    Ok(part)
+}
+
+/// One revision's rows, whichever write it belongs to: a new part's first revision
+/// ([`insert_part_chain`]) or a later one (`PgRevisions::record_revision`). One writer, so a
+/// revision's file row, its reference counts and its derivatives cannot drift between them.
+pub(crate) struct RevisionWrite<'a> {
+    pub part: PartId,
+    pub revision: Uuid,
+    pub rev_label: &'a str,
+    pub parent: Option<Uuid>,
+    pub origin: lapidary_core::RevisionOrigin,
+    pub storage_path: Option<&'a str>,
+    pub blob: &'a StoredBlobRow,
+    pub measurements: &'a MeshMeasurements,
+    pub provenance: MeasurementProvenance,
+    pub thumbnail_webp: Option<&'a [u8]>,
+    pub kernel_version: &'a str,
+    pub format: &'a str,
+    pub tessellations: &'a [TessellationRow<'a>],
+}
+
+pub(crate) async fn insert_revision_chain(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    req: &RevisionWrite<'_>,
+) -> Result<(), DbError> {
+    let part = req.part;
+    let revision = req.revision;
+    let m = req.measurements;
+    let p = req.provenance;
+    // Converted — and, deliberately, checked — before this function's first INSERT (a new
+    // part's own row is in the same transaction and goes with it): a
+    // triangle count that does not fit `revision.triangle_count`'s 32-bit column (a
+    // mesh kernel bug, or corrupt input) must fail before any row is written, not
+    // silently wrap to a negative count that a later read (see PgParts::page) would
+    // then have to reject anyway. `as i32` here previously wrapped 3_000_000_000 to
+    // -1_294_967_296 and stored it without complaint.
+    let triangle_count =
+        i32::try_from(m.triangle_count).map_err(|_| DbError::TriangleCountTooLarge {
+            column: "revision.triangle_count",
+            value: m.triangle_count,
+        })?;
+
     sqlx::query(
-        "INSERT INTO revision (id, part_id, rev_label, origin, volume, volume_source, \
-         surface_area, surface_area_source, bbox_x, bbox_y, bbox_z, bbox_source, \
-         triangle_count, is_watertight, units) \
-         VALUES ($1, $2, '1', 'ingest', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'mm')",
+        "INSERT INTO revision (id, part_id, rev_label, parent_revision_id, origin, volume, \
+         volume_source, surface_area, surface_area_source, bbox_x, bbox_y, bbox_z, \
+         bbox_source, triangle_count, is_watertight, units) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'mm')",
     )
     .bind(revision)
     .bind(part.as_uuid())
+    .bind(req.rev_label)
+    .bind(req.parent)
+    .bind(req.origin.as_str())
     .bind(m.volume_mm3)
     // No volume means no provenance for one — writing 'tessellated' beside a NULL would
     // claim we measured something we refused to measure.
@@ -1223,20 +1279,23 @@ async fn insert_part_chain(
         .await?;
     }
 
-    Ok(part)
+    Ok(())
 }
 
 /// A hex column as a `BlobHash`. Refused rather than dropped: a `blake3` column that is
 /// not a digest is a corrupt row, and reporting it as "this part has none" would hide the
 /// corruption behind a state that looks entirely ordinary.
-fn detail_hash(column: &'static str, hex: Option<String>) -> Result<Option<BlobHash>, DbError> {
+pub(crate) fn detail_hash(
+    column: &'static str,
+    hex: Option<String>,
+) -> Result<Option<BlobHash>, DbError> {
     hex.map(|hex| {
         BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash { column, value: hex })
     })
     .transpose()
 }
 
-fn detail_stamp(column: &'static str, us: i64) -> Result<jiff::Timestamp, DbError> {
+pub(crate) fn detail_stamp(column: &'static str, us: i64) -> Result<jiff::Timestamp, DbError> {
     jiff::Timestamp::from_microsecond(us)
         .map_err(|_| DbError::TimestampOutOfRange { column, value: us })
 }
@@ -1805,6 +1864,20 @@ impl PgParts {
     /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
     /// perfectly successful statement that changes nothing, and a route reporting 200 for
     /// it would tell a person their setting was saved when no such library exists.
+    /// Switch a library to `controlled`: from here on, a changed file becomes a revision
+    /// (Phase 4 slice 1 spec §1). One-way — nothing in this crate writes `hobby` back, since a
+    /// controlled library switched back would hold revisions no screen shows. Idempotent.
+    ///
+    /// Returns whether a row matched, for [`PgParts::set_auto_thumbnail`]'s reason.
+    pub async fn make_controlled(&self, library: LibraryId) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE library SET mode = $2 WHERE id = $1")
+            .bind(library.as_uuid())
+            .bind(lapidary_core::LibraryMode::Controlled.as_str())
+            .execute(&self.0)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn set_auto_thumbnail(&self, library: LibraryId, on: bool) -> Result<bool, DbError> {
         let result = sqlx::query("UPDATE library SET auto_thumbnail = $2 WHERE id = $1")
             .bind(library.as_uuid())

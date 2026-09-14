@@ -11,6 +11,15 @@ import type { LibraryId } from "./LibraryId";
  */
 export type BatchStatus = { batchId: BatchId, libraryId: LibraryId, total: number, pending: number, running: number, ingested: number, skipped: number, rendered: number, 
 /**
+ * Files whose changed bytes a controlled library kept as a new revision.
+ */
+revised: number, 
+/**
+ * Files whose bytes changed in a hobby library, which keeps no revisions, so the change
+ * was not stored. Counted rather than failed — see [`Outcome`].
+ */
+unkept: number, 
+/**
  * How many `scan_directory` jobs in this batch have finished their walk — in
  * practice 0 or 1, since a scan enqueues one and its children join the same batch.
  *

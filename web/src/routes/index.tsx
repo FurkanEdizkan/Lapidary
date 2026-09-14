@@ -25,6 +25,7 @@ import {
   saveFilter,
   renderLibraryThumbnails,
   renderPartThumbnail,
+  makeControlled,
   setAutoThumbnail,
   startScan,
 } from '../lib/api'
@@ -307,9 +308,14 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     return strings.migrate.finished(status.failedTotal)
   }
   if (kind === 'upload') {
-    return strings.upload.batchFinished(status.ingested, status.skipped)
+    return strings.upload.batchFinished(
+      status.ingested,
+      status.skipped,
+      status.revised,
+      status.unkept,
+    )
   }
-  return strings.scan.finished(status.ingested, status.skipped)
+  return strings.scan.finished(status.ingested, status.skipped, status.revised, status.unkept)
 }
 
 export function Index({
@@ -1632,7 +1638,19 @@ function LibrarySwitcher({
     },
   })
 
+  // The one-way switch a changed file in a hobby library points to. Offered only on a hobby
+  // library, behind a dialog, because it cannot be undone.
+  const [switching, setSwitching] = useState(false)
+  const keepChanges = useMutation({
+    mutationFn: () => makeControlled(library),
+    onSuccess: () => {
+      setSwitching(false)
+      void queryClient.invalidateQueries({ queryKey: ['libraries'] })
+    },
+  })
+
   const all = libraries.data ?? []
+  const current = all.find((one) => one.id === library)
   return (
     <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
       {all.length < 2 ? null : (
@@ -1658,6 +1676,43 @@ function LibrarySwitcher({
       >
         {strings.libraries.create}
       </button>
+      {current?.mode !== 'hobby' ? null : (
+        <button
+          type="button"
+          onClick={() => setSwitching(true)}
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+        >
+          {strings.libraries.makeControlled}
+        </button>
+      )}
+      {!switching || current === undefined ? null : (
+        <Dialog title={strings.libraries.makeControlledTitle} onClose={() => setSwitching(false)}>
+          <p className="mt-3 text-sm">{strings.libraries.makeControlledBody(current.name)}</p>
+          {keepChanges.isError ? (
+            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+              {strings.libraries.makeControlledFailed}
+            </p>
+          ) : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setSwitching(false)}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.folders.cancel}
+            </button>
+            <button
+              type="button"
+              disabled={keepChanges.isPending}
+              onClick={() => keepChanges.mutate()}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            >
+              {strings.libraries.makeControlledConfirm}
+            </button>
+          </div>
+        </Dialog>
+      )}
       {libraries.isError ? <span role="alert">{strings.libraries.failed}</span> : null}
       {!creating ? null : (
         <NewLibraryDialog
@@ -1678,9 +1733,8 @@ function LibrarySwitcher({
  * A name and a governance mode, chosen once.
  *
  * The mode is at creation because later means asking about a library somebody has already
- * filled — and the copy says nothing reads it yet, rather than implying a switch that does
- * something today. `CLAUDE.md`: governance is opt-in per library, and flipping a library to
- * `controlled` is what turns that machinery on when Phase 8 builds it.
+ * filled; a hobby library can still be switched afterwards, one way, from `LibrarySwitcher`.
+ * `CLAUDE.md`: governance is opt-in per library, and `controlled` is what keeps revisions.
  */
 function NewLibraryDialog({
   busy,

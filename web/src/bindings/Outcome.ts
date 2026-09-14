@@ -18,5 +18,11 @@
  * indexes nothing new — it moves bytes a part already had from the content-addressed
  * store into that part's own directory. Reporting it as `Ingested` would put files a
  * user already had into the "added" column of a batch they are watching.
+ *
+ * `Revised` and `Unkept` are the two answers to a file whose bytes changed at a path the
+ * library already indexes (Phase 4 slice 1). A controlled library keeps the change as a
+ * new revision; a hobby library keeps no revisions and says so. `Unkept` is a notice, not a
+ * failure: nothing broke, the new bytes are still where they came from, and a retry could
+ * not change the answer — so it is counted here rather than listed as a failed job.
  */
-export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated";
+export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated" | "revised" | "unkept";
