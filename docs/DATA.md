@@ -674,6 +674,13 @@ Watcher rules, none optional:
 **inotify does not propagate through Docker Desktop bind mounts on macOS or Windows.**
 This is why the watcher lives in the native agent binary and not in a container.
 
+**Phase 4 slice 1 polls, on Linux only.**
+- The agent watches the one checked-out file every 500 ms, with the settle and hash rules above.
+- The ignore list holds by construction, because only that file is watched.
+- It needs no new dependency. OS events arrive with macOS, Windows, or a checkout of more than a
+  handful of files.
+- Only the file handed out comes back: a tool that saves another name or format is not picked up.
+
 ### 6.3 Which tools round-trip — be honest in the UI
 
 | Tool | Round-trip | Why |
@@ -686,3 +693,22 @@ This is why the watcher lives in the native agent binary and not in a container.
 For cloud tools the honest flow is export-and-reimport, and the UI must say so.
 Overpromising here destroys trust in version history, which is the feature everything
 else hangs on.
+
+### 6.4 Revisions as built (Phase 4 slice 1)
+
+The design is `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md`. The rules:
+
+- **Controlled libraries only.**
+  - A changed file at a known path becomes a new revision (`revised`). A revert is a revision too.
+  - In a hobby library it is `unkept`: nothing is written, and the batch line says so and how to
+    switch the library to controlled. The switch is one-way.
+- **Newest on top.** `<model>/<name>` always holds the current revision. The previous file moves to
+  `<model>/revisions/<rev_label>/<name>` in the revision's own transaction, with the part row locked
+  first. `metadata.json` lists every revision, oldest first.
+- **Origin:** `ingest` (scan), `upload` (browser), `agent` (bytes carrying a lock).
+- **Diff:** volume, surface area, bbox and triangle count. A delta is approximate if either
+  operand is, and absent if either is missing.
+- **Locks:**
+  - one active lock per part, held by free text, with no auth;
+  - enforced only while held;
+  - a forced release is recorded.
