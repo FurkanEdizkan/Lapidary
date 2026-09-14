@@ -1651,6 +1651,7 @@ function LibrarySwitcher({
 
   const all = libraries.data ?? []
   const current = all.find((one) => one.id === library)
+  const offerSwitch = current?.mode === 'hobby'
   return (
     <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
       {all.length < 2 ? null : (
@@ -1676,7 +1677,7 @@ function LibrarySwitcher({
       >
         {strings.libraries.create}
       </button>
-      {current?.mode !== 'hobby' ? null : (
+      {!offerSwitch ? null : (
         <button
           type="button"
           onClick={() => setSwitching(true)}

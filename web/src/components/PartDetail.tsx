@@ -1025,7 +1025,7 @@ function History({ part }: { part: PartId }) {
       <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
         {strings.detail.history}
       </h3>
-      <ol className="flex flex-col gap-2 text-sm">
+      <ol role="list" className="flex flex-col gap-2 text-sm">
         {all.map((revision) => (
           <li key={revision.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {revision.thumbnail === null ? null : (
