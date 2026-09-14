@@ -5,8 +5,9 @@
 -- which is also why the two unused columns 0002 put on `revision` go.
 create table part_lock (
     id           uuid primary key,
-    -- Purge removes the part and everything that was about it; a lock is not user data.
-    part_id      uuid        not null references part(id) on delete cascade,
+    -- No cascade, as with every table on the part chain: `PgParts::purge` deletes these rows
+    -- by name, and a stray `DELETE FROM part` fails on this key instead of quietly succeeding.
+    part_id      uuid        not null references part(id),
     -- Free text (`$USER@$HOSTNAME` from the agent): there are no users yet, and the spec says
     -- so rather than inventing an identity nothing checks.
     holder       text        not null check (btrim(holder) <> '' and length(holder) <= 200),
