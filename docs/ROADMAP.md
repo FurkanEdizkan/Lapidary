@@ -1449,7 +1449,7 @@ with a test that a mutation turned red, or left with its reason.
   - Tests: the job writes the value and refuses another library's part; the route queues the job.
     Mutation-checked, both caught.
 - **The upload commit stores a drop's files in parallel** (`588b0ca`). Each file's hashing and
-  compression run on the blocking pool, as many at once as there are cores (at most 4 since the code
+  compression run on the blocking pool, as many at once as there are cores (one fewer since the code
   review below), and each set of bytes is stored once.
   - Test: 13 files, one a copy, store 12 blobs and queue 13 jobs. With copies stored twice it failed 2
     runs of 3, since that is a race.
@@ -1462,6 +1462,7 @@ with a test that a mutation turned red, or left with its reason.
 | Before | 9,849 ms, 9,552 ms, 9,709 ms, 9,666 ms |
 | After, as many at once as cores (`588b0ca`) | 1,525 ms, 1,516 ms |
 | At most 4 at once (`f67184c`) | 2,634 ms, 2,708 ms |
+| One fewer than the cores, 11 here (`455876b`) | 1,609 ms, 1,571 ms |
 
 - **Capital I in Turkish search: not fixed, by the owner's answer.** Asked on 2026-09-15, the owner said
   Turkish search is not needed and regular word search is fine. Spec §2.1's record stands, and nothing was
@@ -1504,11 +1505,15 @@ checked against the code first. Each fix has a test that a mutation turned red, 
       both entries answered as held. It answers per entry now.
     - Test: a held path with its own bytes, with other bytes, and its bytes under another path. Taking
       the hash match out fails it, and 6 ingest tests.
-    - The probe over the 150 files above, into an empty library, took 78 ms and 76 ms, on the build
-      before the per-entry answer. No figure was taken before the change.
-  - **A commit could take every core** (`f67184c`).
-    - It stores at most 4 files at once, so a commit leaves cores to the process serving the grid.
-    - On this 12-core machine that costs about a second over 150 files (the table above).
+    - Into an empty library, the batched probe took 78 ms and 76 ms over the 150 files above, and 74 ms
+      and 83 ms once it answered per entry. The per-file version was never timed, so there is no
+      comparison.
+  - **A commit could take every core** (`f67184c`, `455876b`).
+    - The first fix stored at most 4 files at once. On this 12-core machine that cost about a second
+      over 150 files (the table above). What it was for was never measured: how much a busy commit slows
+      the rest of what the api serves.
+    - A commit now stores one fewer file at once than there are cores, which gave most of that second
+      back. Whether the core left over helps is not measured either.
     - Under compose's one-CPU api, `available_parallelism` is 1, so a commit there stores one file at a
       time either way. Raising that limit is a deployment decision, not made here.
   - **Every value saved queued its own description** (`28e0324`). Only one is queued while it waits; a
@@ -1529,9 +1534,9 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   - **A matching hash alone attaches stored bytes to a library** (the upload commit). By the owner's
     answer, this is recorded under Phase 8: with auth, the commit must require the bytes, or a hash the
     caller can reach.
-  - **`detail()` reads custom values as text and falls back to `{}`.** Not changed:
-    - `jsonb` rendered as text is JSON by construction, so the fallback cannot be reached.
-    - sqlx's json decoding would parse the same bytes, behind a feature the workspace does not enable.
+  - **`detail()` reads custom values as text and falls back to `{}`.** Not changed: `jsonb` rendered as
+    text is JSON by construction, so the fallback cannot be reached. `PgRevisions::manifest` reads
+    `metadata_json::text` the same way, and says so.
 
 ---
 
