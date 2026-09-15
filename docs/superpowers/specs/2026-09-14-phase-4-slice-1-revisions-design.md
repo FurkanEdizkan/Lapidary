@@ -133,6 +133,9 @@ Two *different* jobs can race different bytes onto one *new* path. Both see no p
 `put_at` replaces the winner's file before its insert fails and settles as `skipped`. That is
 today's behaviour. This slice does not widen it and does not fix it.
 
+Fixed later, in `455609b`: a new part's file is written only where no file is (ROADMAP, the
+correctness goal's record).
+
 ## 4. Geometric diff
 
 Between any two revisions of one part (DATA §6.1, the subset the stored figures support):

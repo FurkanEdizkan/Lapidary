@@ -50,6 +50,11 @@ pub enum StorageError {
 
     #[error("{detail}")]
     PathRefused { detail: String },
+
+    #[error(
+        "{path} already holds a file, so these bytes were not written over it. Another writer got there first; retry, and the file is decided again against what is there."
+    )]
+    AlreadyExists { path: String },
 }
 
 /// Proof the holder is running in the worker role. Zero-sized and unconstructible except
@@ -171,7 +176,10 @@ fn open_blob_at(
 /// durable turns a power cut into a `file` row naming an empty file. One discipline, both
 /// callers — the content-addressed [`write_blob`] and the path-addressed
 /// [`SourceStore::put_at`] — so neither can drift into a weaker one.
-fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StorageError> {
+///
+/// `replace: false` is [`SourceStore::put_new_at`]: the temp file is hard-linked to its name,
+/// which fails if the name is taken, where a rename replaces what is there.
+fn write_atomic(path: &Path, payload: &[u8], replace: bool) -> Result<(), StorageError> {
     use std::io::Write;
 
     let parent = path.parent().ok_or_else(|| StorageError::PathRefused {
@@ -202,11 +210,31 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StorageError> {
             source,
         });
     }
-    if let Err(source) = std::fs::rename(&tmp_path, path) {
+    let placed = if replace {
+        std::fs::rename(&tmp_path, path)
+    } else {
+        // ponytail: a filesystem without hard links (FAT, exFAT, some network mounts) refuses the
+        // link with another error, and gets a check then a rename, which narrows the race to the
+        // gap between the two rather than closing it; `renameat2(RENAME_NOREPLACE)` closes it.
+        std::fs::hard_link(&tmp_path, path)
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists || path.exists() {
+                    Err(std::io::ErrorKind::AlreadyExists.into())
+                } else {
+                    std::fs::rename(&tmp_path, path)
+                }
+            })
+            .map(|()| {
+                let _ = std::fs::remove_file(&tmp_path);
+            })
+    };
+    if let Err(source) = placed {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(StorageError::Io {
-            path: path.display().to_string(),
-            source,
+        let path = path.display().to_string();
+        return Err(if source.kind() == std::io::ErrorKind::AlreadyExists {
+            StorageError::AlreadyExists { path }
+        } else {
+            StorageError::Io { path, source }
         });
     }
 
@@ -640,10 +668,36 @@ impl SourceStore {
         bytes: &[u8],
         compression: Compression,
     ) -> Result<StoredBlob, StorageError> {
+        self.write_at(rel, bytes, compression, true)
+    }
+
+    /// [`SourceStore::put_at`] for a new part's file: refused with
+    /// [`StorageError::AlreadyExists`] if `rel` already holds one, where `put_at` replaces it.
+    /// Two jobs can race different bytes onto one new path (Phase 4 slice 1 spec §3.3), and the
+    /// loser must not put its bytes where the winner's row is about to point.
+    ///
+    /// `put_at` stays for every write that means to replace: `metadata.json`, a revision's file
+    /// after the previous one was set aside, and the storage migration.
+    pub fn put_new_at(
+        &self,
+        rel: &str,
+        bytes: &[u8],
+        compression: Compression,
+    ) -> Result<StoredBlob, StorageError> {
+        self.write_at(rel, bytes, compression, false)
+    }
+
+    fn write_at(
+        &self,
+        rel: &str,
+        bytes: &[u8],
+        compression: Compression,
+        replace: bool,
+    ) -> Result<StoredBlob, StorageError> {
         let path = resolve(&self.root, rel)?;
         let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
         let payload = compressed(bytes, compression.compresses(), &path)?;
-        write_atomic(&path, &payload)?;
+        write_atomic(&path, &payload, replace)?;
         Ok(StoredBlob {
             hash,
             size_bytes: bytes.len() as u64,
@@ -1463,6 +1517,29 @@ mod tests {
             s.remove_dir_if_empty("../.."),
             Err(StorageError::PathRefused { .. })
         ));
+    }
+
+    #[test]
+    fn a_new_file_is_never_written_over_one_already_there() {
+        let (dir, s) = store();
+        let model = "libraries/default/Flanges/flange-dn40-lp-3310-02";
+        let rel = format!("{model}/flange-dn40-lp-3310-02.stl");
+        s.put_new_at(&rel, b"solid flange-dn40\n", Compression::AsIs)
+            .expect("a new path is written");
+
+        assert!(matches!(
+            s.put_new_at(&rel, b"solid flange-dn50\n", Compression::AsIs),
+            Err(StorageError::AlreadyExists { .. })
+        ));
+        assert_eq!(
+            std::fs::read(dir.path().join(&rel)).expect("the first file"),
+            b"solid flange-dn40\n",
+            "the first writer's bytes stay"
+        );
+        let left = std::fs::read_dir(dir.path().join(model))
+            .expect("the model directory")
+            .count();
+        assert_eq!(left, 1, "no temporary file is left beside it");
     }
 
     #[test]

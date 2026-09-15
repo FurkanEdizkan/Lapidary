@@ -26,8 +26,9 @@
 //!    between the source write and the transaction
 //! 7. `model_dir_for(...)` — the category rows this file's directories imply, and the
 //!    directory this model lands in
-//! 8. `source.put_at(storage_path, bytes, AsIs)` writes the file into that directory,
-//!    under its own name, *before* the transaction
+//! 8. `source.put_new_at(storage_path, bytes, AsIs)` writes the file into that directory,
+//!    under its own name, *before* the transaction, and never over a file already there:
+//!    other bytes there are another job's, and this job is retried to decide again
 //! 9. `ingest.record(...)`, or `ingest.link_existing(...)` when step 6 said the row is
 //!    there; on a genuine failure the file, the directory and the rungs this job wrote
 //!    are reaped and the failure is returned
@@ -39,10 +40,9 @@
 //! that it runs only when the write really failed: `classify_write` turns a unique
 //! violation into `Skipped`, which means another worker's part row now describes the file
 //! at this path, and reaping it would be silent data loss. That is why the reap is inside
-//! an `is_err()` and not on every `Err` arm. For the *source* file that is the rare path
-//! — `model_dir_for` disambiguates, so a loser that resolved its directory after the
-//! winner wrote one owns a directory of its own, and only the narrow window where both
-//! resolve before either writes puts them on one path. The **rungs** have no
+//! an `is_err()` and not on every `Err` arm. For the *source* file that is now settled by
+//! step 8: a file this job wrote is its own, and a lost race with other bytes reaps it and
+//! is retried, where it used to settle as `Skipped` beside an orphan copy. The **rungs** have no
 //! disambiguation and are the guard's live exposure: two workers meshing one file produce
 //! the same rung bytes, both see `blobs.exists` answer false for them, and a loser that
 //! reaped on its way to `Skipped` would take the derivatives the winner's committed rows
@@ -732,14 +732,50 @@ impl WorkerHandler {
         // compression here is a one-argument change (`DATA.md` §1.3's opt-out, sub-project
         // 4) rather than a format nobody can read.
         //
-        // `stored.hash` is recomputed from `bytes` inside `put_at` and is definitionally
+        // `stored.hash` is recomputed from `bytes` inside `put_new_at` and is definitionally
         // the same as `hash` above; `hash` is used below so there is exactly one hash
         // variable in scope.
-        let stored = source
-            .put_at(&storage_path, &bytes, Compression::AsIs)
-            .map_err(|e| HandlerError::Transient {
-                message: e.to_string(),
-            })?;
+        //
+        // A new part's file never replaces one already there (slice 1 spec §3.3): another job
+        // may have written other bytes at this path a moment ago, and its row is about to point
+        // at them. The same bytes already there are this file, left by an attempt that stopped
+        // before its row or by a job racing it with the same file, so they are used as written
+        // and, being possibly another's, never reaped by this attempt. `ours` says which.
+        let (stored, ours) = match source.put_new_at(&storage_path, &bytes, Compression::AsIs) {
+            Ok(stored) => (stored, true),
+            Err(lapidary_storage::StorageError::AlreadyExists { .. }) => {
+                let there =
+                    source
+                        .get_at(&storage_path, Some(0))
+                        .map_err(|e| HandlerError::Transient {
+                            message: e.to_string(),
+                        })?;
+                if BlobHash::from_bytes(*blake3::hash(&there).as_bytes()) != hash {
+                    // The rungs stay, as they do for a lost race at step 9: the job that wrote
+                    // this file may be serving the same ones.
+                    return Err(HandlerError::Transient {
+                        message: format!(
+                            "Another job wrote other bytes to {storage_path} while this file was \
+                             being read, and they were left as they are. This file is decided \
+                             again against the part that job records."
+                        ),
+                    });
+                }
+                let stored = lapidary_storage::StoredBlob {
+                    hash,
+                    size_bytes: bytes.len() as u64,
+                    stored_bytes: bytes.len() as u64,
+                    zstd_level: 0,
+                };
+                (stored, false)
+            }
+            Err(e) => {
+                reap(&derivatives, &reapable);
+                return Err(HandlerError::Transient {
+                    message: e.to_string(),
+                });
+            }
+        };
         let blob = StoredBlobRow {
             hash,
             size_bytes: stored.size_bytes,
@@ -791,10 +827,33 @@ impl WorkerHandler {
                 // survives here as a condition rather than as two code paths.
                 let settled = classify_write(db_err);
                 if settled.is_err() {
-                    reap_source(&source, &storage_path, &model_dir);
+                    if ours {
+                        reap_source(&source, &storage_path, &model_dir);
+                    }
                     reap(&derivatives, &reapable);
+                    return settled;
                 }
-                return settled;
+                // A lost race for this path. The same bytes are the winner's part, and this file
+                // is skipped. Other bytes are decided again on the next attempt, which reads the
+                // winner's part (spec §1: a revision, or unkept). This attempt's own file lies
+                // where no row points, since a new file never lands on another's, so it goes;
+                // the rungs stay, because the winner may serve the same ones.
+                if blobs
+                    .library_holds(library, source_path, &hash)
+                    .await
+                    .map_err(classify_db)?
+                {
+                    return settled;
+                }
+                if ours {
+                    reap_source(&source, &storage_path, &model_dir);
+                }
+                return Err(HandlerError::Transient {
+                    message: format!(
+                        "Another job filed other bytes at {source_path} first. This file is \
+                         decided again against the part that job recorded."
+                    ),
+                });
             }
         };
 
@@ -1303,9 +1362,9 @@ mod tests {
         assert_eq!(
             lost_race.as_ref().ok(),
             Some(&Outcome::Skipped),
-            "another worker won the race for this file; its row is committed and its bytes \
-             are the bytes on disk. This is also the one outcome that must not reap -- \
-             `ingest_one`'s failure arm reaps behind exactly this value's `is_err()`"
+            "another worker won the race for this path; its row is committed. This is also \
+             the one outcome whose rungs must not be reaped -- `index`'s failure arm reaps \
+             behind exactly this value's `is_err()`, and decides the source file by its bytes"
         );
 
         // Every other refusal is a failure, and a failure reaps what it wrote. A unique

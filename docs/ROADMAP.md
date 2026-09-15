@@ -477,7 +477,8 @@ example STLs, and headless Chrome.
 **Recorded rather than fixed.**
 - Fixed in slice 2 (`b34e8b3`): a new part's first revision now records its route, not always
   `ingest`.
-- Two different jobs racing different bytes onto one *new* path is unchanged from before.
+- Fixed in the correctness goal (`455609b`): two different jobs racing different bytes onto one *new*
+  path.
 - Known test weaknesses, found by mutation checks:
   - Fixed in slice 2 (`b34e8b3`): the rename and still-writing tests now assert the change poll too.
   - The database revision tests and every lock test were written alongside their code, and
@@ -916,6 +917,40 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 
 - **Under-counts, recorded:** a 3MF upload's staged copy under `blobs/` is real, but reads as phantom
   to the migration and becomes 0.
+
+**Two jobs, one new path** (`455609b`).
+- **The race** (slice 1 spec §3.3). Two jobs with different bytes both found no part at one path.
+  - If both resolved the same directory, the loser's `put_at` renamed its file over the winner's.
+    Its insert then failed, and it settled as `skipped`.
+  - If the winner's directory came first, the loser took a disambiguated one, and still settled as
+    `skipped`, beside an orphan copy.
+- **The fix.**
+  - `SourceStore::put_new_at` hard-links its temp file to the name, which fails if the name is
+    taken. Only a new part's file uses it. `metadata.json`, a revision's file and the migration
+    still replace.
+  - Other bytes already at the path are left alone, and the job is retried. The same bytes are this
+    file, left by an attempt that stopped before its row, so they are used as written.
+  - A lost insert with other bytes reaps the loser's own file, and the job is retried. The retry
+    reads the winner's part: `unkept` in a hobby library, a revision in a controlled one. The same
+    bytes still settle as `skipped`.
+- **Tests:**
+  - Seen failing first:
+    - other bytes already at the path were replaced, reported `Ingested`;
+    - a loser held in the kernel while the winner filed was `skipped`, in both library modes.
+  - `put_new_at` refuses an existing file and leaves no temp file. Seen failing against a stub.
+  - Mutation-checked, all caught:
+    - the hard link swapped for a rename;
+    - the same bytes refused;
+    - the loser keeping its own file;
+    - other bytes skipped.
+- **Decided without the owner:**
+  - The loser decides again by being retried, not inline, since the winner may not have committed
+    yet. A lost race costs one of the job's three attempts.
+  - A race's rungs are never reaped, since the winner may serve the same ones. A loser's own rungs
+    stay on disk with no row.
+  - A filesystem that refuses hard links (FAT, exFAT, some network mounts) gets a check then a
+    rename. That narrows the race to the gap between them and does not close it, marked
+    `ponytail:`, with `renameat2(RENAME_NOREPLACE)` as the upgrade. No test covers that fallback.
 
 ---
 
