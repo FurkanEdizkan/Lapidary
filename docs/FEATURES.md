@@ -165,7 +165,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Snap to analytic B-rep entities; exact nominal values | 3 |
 | Mesh-derived values visibly labelled "approximate" | 3 |
 | Wall thickness | 3 |
-| Section plane | 5 |
+| Section plane. Capped (`13fd3bf`): a closed mesh's cut face is filled, and an open one says why not | 5 |
 <!--
   **Early, recorded 2026-09-14.** A cut along X, Y or Z across the part's box, moved with a slider
   and flipped. Picks and wall-thickness rays count only what the cut left drawn. The cut is open:

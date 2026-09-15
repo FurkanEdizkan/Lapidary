@@ -1303,6 +1303,40 @@ needed a `test/` branch.
 - **Found by the browser check, and fixed.** Beside the mark, the filter's name was cut to "Flang…" in
   the narrow list. The mark now sits under the name, and the name shows in full.
 
+**A capped section cut** (`13fd3bf`).
+- **The cap** uses three's clipping-stencil technique, over the current rung.
+  - The renderer now asks for a stencil buffer, which three 0.186 no longer gives by default.
+  - Each mesh gets two stencil passes sharing its geometry, clipped by the section's plane: back faces
+    count up, front faces count down. Neither writes colour or depth, and a raycast passes through
+    them.
+  - A flat plane on the cut, placed by `capPlacement`, is drawn where the count is not zero, in
+    `0xc4665a`.
+  - Draw order: the stencil passes, the cap, the part, the ghost, the marks.
+- **Only closed meshes.** A part whose `isWatertight` is not `true` gets no cap. The section bar says
+  why, in words that tell "the mesh is open" from "whether it is closed was not measured".
+- **Not picked, and not on the ghost.** The cap lies outside the model that picks and wall rays are cast
+  at, and the ghost stays uncapped.
+- **Tests:**
+  - `capPlacement` puts the cap on the cut, over the whole box, whichever side is kept and whichever
+    axis.
+  - The bar's note for an open mesh, for an unmeasured one, and none for a closed one.
+  - Mutation-checked, both caught: the cap left at the box's middle, and the note suppressed.
+- **Browser check,** on SwiftShader with the native stack, cutting the flange at Z = 8 mm:
+
+| | Result |
+|---|---|
+| Cap-coloured pixels: uncut, cut, off, cut again | 0, 21,567, 0, 21,567 (of 350 × 350) |
+| The bore, at the middle of the cap's ring | 0 of 49 sampled pixels cap-coloured |
+| Shader programs linked: by the first cut, by cutting again | 4, then 0 (2 before cutting) |
+| Click to the next frame: first cut, cutting again | 41 ms, 21 ms |
+
+  - Programs were counted by wrapping WebGL's `linkProgram` from outside the page, so nothing in the
+    product exposes its renderer.
+  - The screenshots show a brick-coloured ring with the bore and all four bolt holes open.
+  - No page errors.
+- **Not checked: a part hidden in an assembly.** Its stencil passes draw the whole mesh, so a cap likely
+  shows across a hidden part's section. Cutting assemblies still needs OCCT.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
