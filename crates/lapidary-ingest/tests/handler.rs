@@ -1175,12 +1175,13 @@ async fn a_source_file_is_stored_as_itself_whatever_its_format(pool: PgPool) {
     handler.handle(&job_for(CARRIER)).await.expect("3mf");
     handler.handle(&job_for(BRACKET)).await.expect("stl");
 
-    /// One source file as the two tables record it: format, the two sizes, the recorded
-    /// compression level, and where the bytes were written.
-    type StoredSource = (String, i64, i64, Option<i16>, Option<String>);
+    /// One source file as the two tables record it: format, the file's two sizes and its
+    /// recorded compression level, where the bytes were written, and what the blob row says its
+    /// content-addressed copy holds.
+    type StoredSource = (String, i64, Option<i64>, Option<i16>, Option<String>, i64);
 
     let rows: Vec<StoredSource> = sqlx::query_as(
-        "SELECT f.format, b.size_bytes, b.stored_bytes, b.zstd_level, f.storage_path \
+        "SELECT f.format, f.size_bytes, f.stored_bytes, f.zstd_level, f.storage_path, b.stored_bytes \
          FROM blob b JOIN file f ON f.blake3 = b.blake3 ORDER BY f.format",
     )
     .fetch_all(&pool)
@@ -1188,12 +1189,17 @@ async fn a_source_file_is_stored_as_itself_whatever_its_format(pool: PgPool) {
     .expect("rows");
     assert_eq!(rows.len(), 2, "one source blob row per file");
 
-    for (format, size_bytes, stored_bytes, zstd_level, storage_path) in rows {
+    for (format, size_bytes, stored_bytes, zstd_level, storage_path, blob_copy) in rows {
         assert_eq!(
-            size_bytes, stored_bytes,
-            "a {format} is stored at its own size"
+            Some(size_bytes),
+            stored_bytes,
+            "a {format} is stored at its own size, on its file row"
         );
         assert_eq!(zstd_level, Some(0), "a {format} records no compression");
+        assert_eq!(
+            blob_copy, 0,
+            "and a filed {format} has no content-addressed copy for its blob row to count (0026)"
+        );
         let path = storage_path.expect("every ingested file records where it was written");
         let fixture: &[u8] = if format == "3mf" {
             CARRIER_FIXTURE
