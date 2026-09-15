@@ -40,7 +40,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { blobUrl, fetchBatchStatus, fetchPmi,
   fetchEntities, fetchStructure, requestRung } from '../lib/api'
-import { PICKS, measure, nearestCorner, placeEntities, type Pick, type Tool } from '../lib/measure'
+import { PICKS, measure, nearestCorner, placeEntities, withoutParts, type Pick, type Tool } from '../lib/measure'
 import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
 import {
@@ -422,10 +422,15 @@ export default function Viewer({
     return placeEntities(entities.data, structure.data ?? null)
   }, [part.entities, part.structure, entities.data, entities.isError, structure.data, structure.isError])
 
-  const labels = useMemo(
-    () => (!annotated || pmi.data === undefined || placed === null ? null : labelsFor(annotationsOf(pmi.data), placed).labels),
-    [annotated, pmi.data, placed],
-  )
+  // Labels only on the parts still drawn: placed again without the hidden ones, whose faces are nowhere.
+  const labels = useMemo(() => {
+    if (!annotated || pmi.data === undefined || placed === null) return null
+    const visible =
+      hidden.size === 0 || structure.data === undefined || entities.data === undefined
+        ? placed
+        : placeEntities(entities.data, withoutParts(structure.data, hidden))
+    return labelsFor(annotationsOf(pmi.data), visible).labels
+  }, [annotated, pmi.data, placed, hidden, structure.data, entities.data])
   // After the rung is shown, so labels asked for before the view existed are drawn once it does.
   useEffect(() => {
     view.current?.annotate(labels)
@@ -815,6 +820,8 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
     },
     explode(next) {
       explosion = next
+      // A label marks a face where the assembly drew it, which is not where a moved part is.
+      labels.visible = next === 0
       applyExplode()
       applyCut()
       if (model !== null) render()

@@ -1433,6 +1433,8 @@ export const strings = {
       wholePart
         ? 'not in the view: it applies to the whole part'
         : 'not in the view: its face is not a plane, cylinder, cone, sphere or torus',
+    /** In place of those reasons when the faces themselves could not be read, so no face is blamed. */
+    facesUnread: 'The view draws none of these: the faces of this part could not be read. Reload the page to try again.',
     /** Where an annotation applies: the kind of face measurement reads there, or the whole part. */
     face: (surface: string | null) =>
       surface === null
@@ -1592,7 +1594,7 @@ export const strings = {
     label: 'Explode',
     /** In place of the measuring line while the parts are apart. */
     measuringOff:
-      'Measuring is off while the parts are apart: a distance between moved parts is not one on the assembly. Slide back to measure.',
+      'Measuring is off, and so are PMI labels, while the parts are apart: a distance between moved parts is not one on the assembly, and a label would stay where its face was. Slide back to measure.',
   },
   quickLook: {
     /**

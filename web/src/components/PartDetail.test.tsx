@@ -329,6 +329,39 @@ test('dimensions and tolerances can be shown in the 3D view, and say which the v
   vi.unstubAllGlobals()
 })
 
+/** Faces that could not be read are said once, not blamed on each annotation as a face the view cannot place. */
+test('when the faces cannot be read, the list says so once rather than calling every annotation undrawable', async () => {
+  const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
+  const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
+  const cylinder = { prototype: '0:1:1:1', face: 1 }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) =>
+      url.endsWith(entitiesHash)
+        ? { ok: false, status: 500, json: async () => ({ message: 'The entities blob is missing from the store.' }) }
+        : {
+            ok: true,
+            status: 200,
+            json: async () =>
+              url.endsWith(pmiHash)
+                ? { dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }], tolerances: [], datums: [] }
+                : [],
+          },
+    ),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, tessellationL0: 'a0'.repeat(32) }} />
+    </QueryClientProvider>,
+  )
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.pmi.showInView }))
+  expect(await screen.findByText(strings.pmi.facesUnread)).toBeTruthy()
+  const item = screen.getByText(strings.pmi.dimension('diameter', 22, 0.05, 0)).closest('li')?.textContent ?? ''
+  expect(item).not.toContain(strings.pmi.notDrawn(false))
+  vi.unstubAllGlobals()
+})
+
 /** One revision is the Identity row, said once; two are a history, each with its origin, its ≈ and its original. */
 test('the history appears once a part has a second revision, and says where each came from', async () => {
   const second = {
