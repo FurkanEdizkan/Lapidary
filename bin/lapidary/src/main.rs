@@ -420,7 +420,7 @@ async fn checkin(folder: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------------------
 
 /// A `lapidary://` link from a part's page: this computer's checkout of the part, or a new one,
-/// opened in whatever app the desktop opens that kind of file with.
+/// opened in the app this desktop has for its format.
 async fn open(link: &str) -> Result<()> {
     let part = link::part(link).map_err(anyhow::Error::msg)?;
     let (server, workspace) = (server(), checkout::workspace()?);
@@ -469,13 +469,39 @@ async fn open(link: &str) -> Result<()> {
         }
     };
     let file = folder.join(&checkout.file_name);
-    xdg_open(&file)?;
+    let app = Path::new(&checkout.file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(Format::named)
+        .and_then(desktop::default_app);
+    open_in(app.as_deref(), &file)?;
     println!(
         "Opened {} (revision {}). `lapidary agent` sends each save back while it runs.",
         file.display(),
         checkout.rev_label
     );
     Ok(())
+}
+
+/// `file` in `app`, the desktop file `open` found for its format, else in whatever `xdg-open` picks.
+///
+/// The app by name, because `xdg-open` picks by the type it detects in the file, and a desktop's MIME
+/// database may know none: shared-mime-info 2.4 has no STEP type, so a `.step` file reads as
+/// `text/plain` and would open in a text editor, whichever app declared STEP.
+fn open_in(app: Option<&str>, file: &Path) -> Result<()> {
+    if let Some(entry) = app.and_then(desktop::entry_path)
+        && Command::new("gio")
+            .arg("launch")
+            .arg(&entry)
+            .arg(file)
+            .status()
+            .is_ok_and(|status| status.success())
+    {
+        return Ok(());
+    }
+    // No such app, or no `gio` to start it with: xdg-open may still open the file, and says what is
+    // missing when it cannot.
+    xdg_open(file)
 }
 
 /// `file` in the app this desktop opens its kind of file with.
@@ -589,7 +615,7 @@ async fn open_export(
     std::fs::set_permissions(&file, permissions)
         .with_context(|| format!("could not make {} read-only", file.display()))?;
 
-    xdg_open(&file)?;
+    open_in(desktop::default_app(export).as_deref(), &file)?;
     let (from, to) = (source.name().to_uppercase(), export.name().to_uppercase());
     let note = format!(
         "No app on this computer opens {from} files, so revision {} opened as a {to} Lapidary wrote from its mesh, read-only: nothing saved from it comes back. To edit the part itself, make a CAD app the default for {from} files (`xdg-mime default <its .desktop file> {}`) and open the link again.",

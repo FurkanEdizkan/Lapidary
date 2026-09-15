@@ -20,6 +20,41 @@ pub fn default_app(format: Format) -> Option<String> {
     })
 }
 
+/// Where the desktop file `id` names lives, looked for as the Desktop Entry Specification says:
+/// `$XDG_DATA_HOME/applications`, then each of `$XDG_DATA_DIRS`.
+///
+/// ponytail: an id whose `-` stands for a subfolder (`kde-foo.desktop` in `applications/kde/`) is not
+/// looked for there; add that when an app installs that way.
+pub fn entry_path(id: &str) -> Option<PathBuf> {
+    let home = xdg_dir("XDG_DATA_HOME", ".local/share").ok();
+    let dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
+    entry_in(id, home.as_deref(), &dirs, |path| path.is_file())
+}
+
+fn entry_in(
+    id: &str,
+    home: Option<&Path>,
+    dirs: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    // An id is a file name, never a path that could reach a desktop file outside the applications folders.
+    if id.contains('/') || !id.ends_with(".desktop") {
+        return None;
+    }
+    home.map(Path::to_path_buf)
+        .into_iter()
+        .chain(
+            dirs.split(':')
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from),
+        )
+        .map(|dir| dir.join("applications").join(id))
+        .find(|path| exists(path))
+}
+
 /// What `lapidary open` hands this desktop for a part whose file is in `source`: that file when an
 /// app here opens its format, else the export an app here does, so a STEP part on a computer with
 /// only a slicer opens as a 3MF. With no app for any of them it is still the part's own file, and
@@ -208,6 +243,33 @@ pub fn unregister() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_desktop_file_is_found_in_the_users_folder_first_then_the_systems_and_never_by_a_path() {
+        let id = "org.freecadweb.FreeCAD.desktop";
+        let user = Path::new("/home/mira/.local/share");
+        let everywhere = |path: &Path| path.ends_with(format!("applications/{id}"));
+        assert_eq!(
+            entry_in(id, Some(user), "/usr/local/share:/usr/share", everywhere),
+            Some(user.join("applications").join(id))
+        );
+        let system_only = |path: &Path| {
+            path == Path::new("/usr/share/applications/org.freecadweb.FreeCAD.desktop")
+        };
+        assert_eq!(
+            entry_in(id, Some(user), "/usr/local/share:/usr/share", system_only),
+            Some(PathBuf::from("/usr/share/applications").join(id))
+        );
+        assert_eq!(entry_in(id, Some(user), "/usr/share", |_| false), None);
+        assert_eq!(
+            entry_in("../../bin/sh", Some(user), "/usr/share", |_| true),
+            None
+        );
+        assert_eq!(
+            entry_in("freecad", Some(user), "/usr/share", |_| true),
+            None
+        );
+    }
 
     #[test]
     fn a_part_opens_as_its_own_file_where_an_app_takes_it_and_as_an_export_only_where_none_does() {
