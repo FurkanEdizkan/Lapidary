@@ -112,7 +112,6 @@
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
 use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
-use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::{disambiguate, disambiguate_with, slugify};
 use lapidary_core::{
     BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome, RevisionId,
@@ -1060,27 +1059,23 @@ impl WorkerHandler {
         // 9a. Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Its own
         // statement after the part's transaction, so a refusal leaves a part that is already
         // measured and searchable, and is logged rather than failing the file.
-        let mut metadata = serde_json::json!({});
-        if let Some(cad) = &output.metadata {
-            let described = serde_json::json!({ "cad": cad });
-            match PgParts(self.db.clone())
-                .set_metadata(part, &described, &cad.materials)
+        if let Some(cad) = &output.metadata
+            && let Err(error) = PgParts(self.db.clone())
+                .set_metadata(part, &serde_json::json!({ "cad": cad }), &cad.materials)
                 .await
-            {
-                Ok(()) => metadata = described,
-                Err(error) => tracing::warn!(
-                    source_path,
-                    %error,
-                    "could not record what the file says about itself; the part is ingested without it"
-                ),
-            }
+        {
+            tracing::warn!(
+                source_path,
+                %error,
+                "could not record what the file says about itself; the part is ingested without it"
+            );
         }
 
         // 10. `metadata.json`, beside the file it describes. This is the whole of
         // re-adoption: delete the database and each directory still says what it is.
         //
-        // After the commit, because the ids it carries are generated inside it, and
-        // warn-only for the same reason the spec (§1) makes a missing manifest an orphan
+        // After the commit, from the rows it wrote, and warn-only for the same reason the
+        // spec (§1) makes a missing manifest an orphan
         // the walk reports and skips rather than a failure: the part is already committed
         // and already in the grid, a retry would settle as `Skipped` and never reach this
         // line again, and reporting the job as failed would tell the user a file did not
@@ -1096,48 +1091,15 @@ impl WorkerHandler {
                     source_path,
                 )
                 .await;
-                let m = &output.measurements;
-                let manifest = ModelManifest {
-                    schema: ModelManifest::SCHEMA,
-                    part: ManifestPart {
-                        id: part,
-                        library,
-                        name: name.to_owned(),
-                        // Ingest reads neither off a mesh, and writes neither: a part
-                        // number invented here would be a part number the user did not
-                        // give this part.
-                        part_number: None,
-                        classification: None,
-                        source_path: source_path.to_owned(),
-                        metadata,
-                    },
-                    revisions: vec![ManifestRevision {
-                        id: revision,
-                        rev_label: "1".to_owned(),
-                        origin: "ingest".to_owned(),
-                        volume_mm3: m.volume_mm3,
-                        // No volume means no provenance for one, exactly as
-                        // `insert_part_chain` writes it: claiming a measurement beside a
-                        // NULL would say we measured something we refused to measure.
-                        volume_source: m
-                            .volume_mm3
-                            .map(|_| output.provenance.volume.as_str().to_owned()),
-                        bbox_mm: Some(m.bbox_mm),
-                        triangle_count: i32::try_from(m.triangle_count).ok(),
-                        is_watertight: Some(m.is_watertight),
-                        units: Some("mm".to_owned()),
-                        files: vec![ManifestFile {
-                            role: "source".to_owned(),
-                            format: params.format.clone(),
-                            blake3: hash,
-                            size_bytes: bytes.len() as i64,
-                            file_name: file_name.to_owned(),
-                        }],
-                    }],
-                };
-                let written = serde_json::to_vec_pretty(&manifest)
-                    .map_err(|e| e.to_string())
-                    .and_then(|json| {
+                // From the rows, while the part's row is held, as a revision and a custom value write theirs:
+                // a value committed meanwhile waits for this file rather than being written over by it.
+                let written = PgRevisions(self.db.clone())
+                    .write_manifest(part, |manifest| {
+                        let manifest = manifest.ok_or_else(|| {
+                            "the part this ingest just recorded could not be found again".to_owned()
+                        })?;
+                        let json =
+                            serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
                         source
                             .put_at(
                                 &format!("{model_dir}/metadata.json"),
@@ -1146,7 +1108,10 @@ impl WorkerHandler {
                             )
                             .map(|_| ())
                             .map_err(|e| e.to_string())
-                    });
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(std::convert::identity);
                 if let Err(error) = written {
                     tracing::warn!(
                         %error,
