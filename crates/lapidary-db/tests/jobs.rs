@@ -1620,7 +1620,7 @@ async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) 
 
     let jobs = PgJobs(pool.clone());
     let queued = jobs
-        .enqueue_stale_rungs("stl", "mesh stl-1+glb-2+cpu-1")
+        .enqueue_stale_derivatives("stl", "mesh stl-1+glb-2+cpu-1")
         .await
         .expect("sweeps");
     assert_eq!(queued, 1);
@@ -1641,8 +1641,63 @@ async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) 
     );
 
     let again = jobs
-        .enqueue_stale_rungs("stl", "mesh stl-1+glb-2+cpu-1")
+        .enqueue_stale_derivatives("stl", "mesh stl-1+glb-2+cpu-1")
         .await
         .expect("sweeps");
     assert_eq!(again, 0, "the rebuild is already queued");
+}
+
+/// A CAD source's tree an older bridge wrote is queued beside its old rung, by its `structure` row: a
+/// derive of that row reads the tree, the entities and the PMI again. Entities and PMI rows are never
+/// queued on their own, since a file may specify neither.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_stale_sweep_queues_an_old_cad_read_by_its_structure_row(pool: PgPool) {
+    const OLD: &str = "occt-8.0.1-bridge-5+deflection-0.1+glb-2+cpu-1";
+    let revision = part_written_by(
+        &pool,
+        0x40,
+        "fixture-plate-assembly-lp-9000-00.step",
+        "step",
+        OLD,
+    )
+    .await;
+    let ingest = lapidary_db::PgIngest(pool.clone());
+    for (seed, kind) in [
+        (0x42, DerivativeKind::Structure),
+        (0x43, DerivativeKind::Entities),
+    ] {
+        let blob = StoredBlobRow {
+            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+            size_bytes: 2_048,
+            stored_bytes: 2_048,
+            zstd_level: 0,
+        };
+        ingest
+            .upsert_derivative(
+                revision,
+                kind,
+                lapidary_db::DerivativeBytes::Hashed {
+                    blob: &blob,
+                    grid: None,
+                },
+                OLD,
+            )
+            .await
+            .expect("records the read");
+    }
+
+    let queued = PgJobs(pool.clone())
+        .enqueue_stale_derivatives("step", "occt-8.0.1-bridge-6+deflection-0.1+glb-2+cpu-1")
+        .await
+        .expect("sweeps");
+    assert_eq!(queued, 2);
+    let mut produced: Vec<String> = sqlx::query_scalar(
+        "SELECT payload->>'produce' FROM job WHERE kind = 'derive' AND payload->>'revision' = $1",
+    )
+    .bind(revision.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("derive jobs");
+    produced.sort();
+    assert_eq!(produced, ["structure", "tessellation_l0"]);
 }

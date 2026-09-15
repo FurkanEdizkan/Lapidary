@@ -362,8 +362,13 @@ impl PgJobs {
         Ok((BatchId::from_uuid(batch), queued))
     }
 
-    /// Queue a rebuild of every tessellation of a `format` source that a different kernel
-    /// version wrote, and return how many were queued.
+    /// Queue a rebuild of every tessellation, and of every CAD read, of a `format` source that a
+    /// different kernel version wrote, and return how many were queued.
+    ///
+    /// A CAD read is the structure, entities and PMI one bridge run reads together, and its
+    /// `structure` row stands for all three: a derive of it writes them all, `structure` last. That
+    /// is how a part ingested before the bridge read PMI gets its PMI, and why a file that specifies
+    /// none, and so has no PMI row, is not queued again once its tree is current.
     ///
     /// A worker calls this as it starts, with the version its own kernel reports for `format`.
     /// `PgParts::derivative_hash` and the grid serve a kind's row whatever wrote it, so a rung
@@ -373,7 +378,7 @@ impl PgJobs {
     /// revision's newest source file's, the file `PgParts::revision_source` hands a derive.
     // ponytail: a large library queues its whole ladder at once and worker concurrency bounds
     // the work. Trickle it if the rebuild starves ingest.
-    pub async fn enqueue_stale_rungs(
+    pub async fn enqueue_stale_derivatives(
         &self,
         format: &str,
         kernel_version: &str,
@@ -382,6 +387,7 @@ impl PgJobs {
             DerivativeKind::TessellationL0,
             DerivativeKind::TessellationL1,
             DerivativeKind::TessellationL2,
+            DerivativeKind::Structure,
         ]
         .map(DerivativeKind::as_str)
         .to_vec();
