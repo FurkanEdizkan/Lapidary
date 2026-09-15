@@ -2155,6 +2155,21 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   - The anchor reads the previous page's last part by id, filters aside. A part removed since that page no longer
     ends the paging early; one purged still does.
 
+**The if-absent enqueues' index** (`4196010`).
+- **The index:** `0036` adds `job_active_idx` on `job (library_id, kind)` where the state is pending or running.
+  The `ponytail:` on `enqueue_if_absent` is gone.
+- **Checked** with `EXPLAIN ANALYZE` over 10,001 done jobs (5,000 ingests and 5,001 rung builds) and three active
+  ones, each check prepared and planned both for its values and generically:
+  - **`enqueue_if_absent`'s `existing`,** for a pending build, an absent one, and a description that does not
+    count a running job: 0.010–0.045 ms before, and 0.011–0.057 ms after. It was never a table scan: the
+    planner already combined `job_dequeue_idx` (pending) and `job_expired_lease_idx` (running). After, it reads
+    the new index in both plans.
+  - **`enqueue_migration_if_absent`'s `state IN ('pending', 'running')`** scanned all 10,004 rows in 1.4 ms.
+    After, it is an index-only scan, 0.009 ms.
+- **Found:** the `ponytail:` said the enqueue's check had no index. It had none of its own, but two indexes
+  served it together. The gain is the migration check's, and the migration's comment says so.
+- No test: the goal asked for the `EXPLAIN` check, and every database test applies the migration.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
