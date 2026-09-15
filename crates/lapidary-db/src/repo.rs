@@ -905,13 +905,21 @@ impl PgIngest {
     /// already written the bytes and reaps them if this fails.
     pub async fn record(&self, req: IngestRequest<'_>) -> Result<PartId, DbError> {
         let mut tx = self.0.begin().await?;
+        // A blob row's `stored_bytes` is its content-addressed copy's, and a filed ingest writes
+        // none: the model file's size is on its `file` row (migration `0013`). Writing the file's
+        // size here too is what purge, the sweep and the instance figure counted twice (`0026`).
+        let stored_bytes = if req.storage_path.is_some() {
+            0
+        } else {
+            req.blob.stored_bytes as i64
+        };
         sqlx::query(
             "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
              VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blake3) DO NOTHING",
         )
         .bind(req.blob.hash.to_hex())
         .bind(req.blob.size_bytes as i64)
-        .bind(req.blob.stored_bytes as i64)
+        .bind(stored_bytes)
         .bind(req.blob.zstd_level)
         .execute(&mut *tx)
         .await?;
@@ -2174,15 +2182,28 @@ impl PgParts {
         // One row came back per hash the purge touched; the `NULL`s are the ones another
         // part still points at, which are exactly the blobs that must not be counted as
         // entering quarantine.
-        let entering: Vec<i64> = sizes.into_iter().flatten().collect();
+        // A blob with no content-addressed copy (a filed source, `0026`) enters quarantine as a
+        // row and holds no bytes of its own, so it is not a file this purge kept.
+        let entering: Vec<i64> = sizes
+            .into_iter()
+            .flatten()
+            .filter(|stored| *stored != 0)
+            .collect();
         let mut quarantined_bytes = 0u64;
         for stored in &entering {
             // `bytes_column`, never `as u64`: a negative row would otherwise reach a person
             // as 18 exabytes entering quarantine instead of saying the row is wrong.
             quarantined_bytes += bytes_column("blob.stored_bytes", *stored)?;
         }
+        // The model files, counted once, where they are: the bytes of every part filed since the
+        // folder tree.
+        for (_, _, stored) in &doomed_files {
+            if let Some(stored) = stored {
+                quarantined_bytes += bytes_column("file.stored_bytes", *stored)?;
+            }
+        }
         Ok(Purged::Done(PurgeReport {
-            quarantined: entering.len() as u32,
+            quarantined: (entering.len() + doomed_files.len()) as u32,
             quarantined_bytes,
         }))
     }

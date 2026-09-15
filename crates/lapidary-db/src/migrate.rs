@@ -441,15 +441,16 @@ impl HashClaim {
         .execute(&mut *self.tx)
         .await?;
 
-        // Level 0 and `stored_bytes = size_bytes` together, because a row saying it is
-        // uncompressed while reporting a compressed size on disk is a row that contradicts
-        // itself — and `DATA.md` §1.1's storage panel reads the second column.
+        // Level 0 and `stored_bytes = 0` together: the content-addressed copy this row describes
+        // is gone, so it holds no bytes. The file's own size is on its `file` row, and writing it
+        // here as well was the double count purge, the sweep and the instance figure made
+        // (`0026`).
         //
         // Still worth writing since migration `0013` moved the level readers follow onto
         // `file`: this column is what an un-migrated *sibling* row reads, and dropping it
         // to 0 here is what records that the old copy is gone. The reap below only runs
         // when there is no such sibling, so the two agree.
-        sqlx::query("UPDATE blob SET zstd_level = 0, stored_bytes = size_bytes WHERE blake3 = $1")
+        sqlx::query("UPDATE blob SET zstd_level = 0, stored_bytes = 0 WHERE blake3 = $1")
             .bind(&self.hex)
             .execute(&mut *self.tx)
             .await?;

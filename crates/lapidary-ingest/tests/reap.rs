@@ -597,3 +597,82 @@ async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
         .await
         .expect("quarantined paths read")
 }
+
+/// The double count the purge-removes-the-model-directory design recorded and left open (its §6):
+/// a filed source was counted once as the model file and again as a content-addressed copy that no
+/// longer exists. One filed source and one rung: purge, the instance figure and the sweep must all
+/// say the same number, and it must be the number that actually leaves the disk.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_filed_source_and_its_rung_are_counted_once_by_purge_the_instance_figure_and_the_sweep(
+    pool: PgPool,
+) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/spacers/lp-2145-01/lp-2145-01.stl";
+    let source = stage_bytes_at(blob_root.path(), 0xd1, rel);
+    let rung_bytes = vec![0x77u8; 3_292];
+    let rung = lapidary_storage::DerivativeStore::open(blob_root.path())
+        .put(&rung_bytes)
+        .expect("stores the rung");
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            library: library(),
+            name: "Hex spacer, M4x20, LP-2145-01",
+            source_path: "spacers/LP-2145-01.stl",
+            folder: None,
+            storage_path: Some(rel),
+            blob: &source,
+            measurements: &MeshMeasurements {
+                bbox_mm: [7.0, 8.1, 20.0],
+                triangle_count: 1_204,
+                surface_area_mm2: 612.5,
+                volume_mm3: Some(1_060.0),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[lapidary_db::TessellationRow {
+                kind: "tessellation_l0",
+                blob: StoredBlobRow {
+                    hash: rung.hash,
+                    size_bytes: rung.size_bytes,
+                    stored_bytes: rung.stored_bytes,
+                    zstd_level: rung.zstd_level,
+                },
+                grid: Some(32),
+            }],
+        })
+        .await
+        .expect("a filed part with a rung");
+    let on_disk = 4_096 + rung.stored_bytes;
+
+    let parts = PgParts(pool.clone());
+    assert!(parts.soft_delete(part).await.expect("soft delete"));
+    let Purged::Done(purged) = parts.purge(part).await.expect("purge") else {
+        panic!("the part was deleted, so it purges");
+    };
+    assert_eq!(
+        purged.quarantined_bytes, on_disk,
+        "purge counts each file once"
+    );
+    assert_eq!(
+        parts
+            .instance_storage()
+            .await
+            .expect("totals")
+            .quarantined_bytes,
+        on_disk,
+        "so does the instance figure"
+    );
+
+    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
+        .await
+        .expect("sweep");
+    assert_eq!(
+        report.bytes, on_disk,
+        "and the sweep reports what actually left"
+    );
+    assert!(!blob_root.path().join(rel).exists());
+}
