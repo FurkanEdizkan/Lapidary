@@ -1886,6 +1886,40 @@ checked against the code first. Each fix has a test that a mutation turned red, 
 - **Images:** this goal's four dangling `occt-test` images, 2.92 GB each, were removed. `lapidary-occt:goal4`
   (1.14 GB) is kept, since it holds the kernel copied out to `target/occt/`. Root has 18 GB free.
 
+### Goal 5: materials, mass and field filters (2026-09-15)
+
+- **Goal file:** `docs/superpowers/plans/2026-09-15-materials-and-mass-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger, updated as each stage merges.
+
+**Preflight.** The test database was up, `cargo deny check` was green on `main` (`459001b`), goal 4 was merged, and
+the copied-out OCCT bridge answered `occt 8.0.1 bridge 7` natively. Each stage's check starts the stack from that
+stage's own build.
+
+**A part's material, editable** (`a7b4399`).
+- **The route:** `PUT /api/parts/{id}/materials` takes the whole list, cleaned as tags are: trimmed, blanks and
+  repeats dropped, at most 8 materials of at most 64 characters each.
+- **`part.materials_typed`** (`0033`) is set by the route. An empty list clears it and hands the part back to its
+  file at once: the materials its file stated when last read (`metadata_json.cad.materials`). The goal said "on the
+  next ingest"; handing them back at once is decided without the owner.
+- **The guard:** `set_metadata` fills `materials` from a file only while `materials_typed` is false.
+- **Found:** only a new part recorded what its file says. A revised CAD file's header and materials were never
+  recorded, so the guard alone would never have been reached. A revision now records them too, under the same guard.
+  Decided without the owner.
+- **The part page** lists and edits materials beside tags, in hobby and controlled libraries alike, with the same
+  list editor, and says when the list is what the file states. The facet is unchanged.
+- **Tests:**
+  - an ingest test: a typed material outlasts a revision whose file states another, the revision records the file's
+    header again, and clearing the list brings the file's material back;
+  - an api test: cleaned as tags are, marked typed, counted by the facet, refused past 8, and handed back by an empty
+    list;
+  - a web test: edited as tags are, with the file's note on a list nobody typed.
+- **Mutation-checked, all 5 caught:** the guard removed, clearing handing back nothing, the revision not recording
+  its file, the limit raised, and the note never shown.
+- **Checked in Chrome** on the native stack, on `bracket-lp-1042-03.stl` in a hobby library (no page errors):
+  - before: no materials, and none in the facet;
+  - "EN AW-6082 T6" typed and added through the page: listed, marked typed, and counted once by the facet;
+  - removed again: the list and the facet were empty.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
