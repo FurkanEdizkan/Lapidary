@@ -2046,6 +2046,30 @@ stage's own build.
     were left;
   - a link from 22 to 8: the grid said the filter is not one it can use, and the rail said nothing.
 
+**Counts per choice** (`0a193c4`).
+- **The facets answer** carries `fields`: each choice field offered as a filter, with how many of the grid's parts
+  hold each option. One query counts every such field, over the parts' values where they are an object, under the
+  grid's category, search, format, material and tag.
+- **A field's own filter never narrows its counts.** A field filter narrows every other field's counts, as the
+  format, material and tag lists already do for each other, so another option can still be chosen.
+- **The grid** shows each option's count beside it as the facets do, and names the button with the count for a
+  screen reader. An option no part holds reads 0, and a count withheld past the threshold stays withheld.
+- **Tests:**
+  - db: a choice counted plainly, under a range on another field, and under a filter on itself;
+  - api: the facets' counts under the supplier's own filter;
+  - web: each option's count, none included.
+- **Mutation-checked, all 5 caught:**
+  - the own-field exemption dropped;
+  - the other field's range ignored;
+  - the api naming no filtered field;
+  - an option no part holds shown without a count;
+  - the counts not handed to the filter.
+- **Checked in Chrome** on the native stack, in a library of three parts with a hole diameter and a supplier (no
+  page errors, none logged):
+  - the whole library: Hoffmann 1, Misumi 2, Norelem 0;
+  - a link with the hole diameter from 10: Hoffmann 1, Misumi 1, Norelem 0, and two cards;
+  - Misumi clicked: Hoffmann 1, Misumi 2 and pressed, Norelem 0, and the bracket and the spacer left.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
