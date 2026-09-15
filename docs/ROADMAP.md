@@ -544,7 +544,8 @@ example STLs, and headless Chrome.
   back.
 - **The `Target` trait is not built.** Download and open both hand out `variant=original`, and
   neither negotiates a format, so the trait would have one caller. It arrives with the first target
-  that needs a format the source is not in, which needs OCCT exports.
+  that needs a format the source is not in, which needs OCCT exports. Built in goal 4 (`22ce8ad`):
+  downloads and `open` both negotiate through it, as goal 4's record says.
 - **Found by the check:** quoted `Exec` arguments broke under `xdg-open`'s own launcher.
   - The quoting followed the Desktop Entry spec, but that launcher splits on spaces and keeps the
     quotes, so `env` was handed `"LAPIDARY_SERVER=…"` literally.
@@ -833,7 +834,8 @@ What it does not do:
 **Exit:** keep a part's source URL with a title and licence typed in, and an image fetched from a pasted
 image URL; export a 40-part assembly as a bundle another user can import with full lineage intact.
 Rewritten 2026-09-15 by the owner's answer, since OpenGraph fetching is out (FEATURES §6). The first clause
-is met. The bundle is met for 40 mesh parts; an OCCT assembly is goal 4's stage 2.
+is met. The bundle is met for 40 mesh parts, and in goal 4's stage 2 for an OCCT assembly of 200 placed
+parts, exported and imported with its lineage identical; read as the exit met, without the owner.
 
 ---
 
@@ -845,8 +847,9 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
 **Goals, run in this order.** Each goal is one long `/goal` session with its own file under
-`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–3 are merged; goals 4–6 were
-planned after goal 3's code review, from the owner's answers below.
+`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–4 are merged, goal 4 without its
+stage 8, which waits for FreeCAD. Goals 4–6 were planned after goal 3's code review, from the owner's answers
+below.
 
 | Order | Goal file | Holds |
 |---|---|---|
@@ -880,8 +883,8 @@ planned after goal 3's code review, from the owner's answers below.
 
 | Unblocked by | Items |
 |---|---|
-| Building the OCCT image: **now goal 4**, by the owner's answer | Timing Phase 0 and Phase 2 on real STEP files and assemblies; face and edge deltas; snapping to cones, spheres and tori; PMI drawn in 3D; datums no tolerance refers to; PMI for parts ingested before bridge 6; a section cut through an assembly with hidden parts; explode view (3MF components are flattened, so only an OCCT assembly has parts to explode); B-rep format negotiation behind `Target`; a 40-part STEP assembly as a bundle |
-| FreeCAD installed by the owner, plus OCCT: goal 4, stage 8 | Phase 4's exit (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
+| Real-world STEP files on this machine; OCCT itself was **built in goal 4**, which did the rest of this row | Timing Phase 0 and Phase 2 on real STEP files and assemblies; datums no tolerance refers to (OCCT's reader creates only a datum a tolerance refers to) |
+| FreeCAD installed by the owner: goal 4's stage 8, **waiting** | Phase 4's exit on Linux (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
 | A macOS or Windows machine | The FSEvents and `ReadDirectoryChangesW` watchers, the Windows overflow rescan, and the rest of Phase 4's exit |
 | Pulling a pgvector image | Checking pgvector against `postgres:18`, before Phase 6 (see Open items) |
 | Phase 8 | The lifecycle facet, per-user saved filters, auth on locks, `lapidary worker` |
@@ -1813,6 +1816,50 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   - an app declaring STEP under a spelling not on that list is missed;
   - `xdg-open` reads a `.step` file as `text/plain` here, whatever the agent decides.
   - Stage 8, with FreeCAD, meets both first.
+
+**Phase 4's exit on Linux: waiting for FreeCAD** (stage 8, not run).
+- FreeCAD was not installed when stage 8 began, and still was not after stage 9: no binary on the `PATH`, and no
+  Flatpak, Snap or desktop file. By the owner's answer the goal went on to stage 9; stage 8 runs once FreeCAD is
+  installed.
+- What stage 9's check found that stage 8 will meet: this desktop's MIME database has no STEP type, so
+  `xdg-open` reads a `.step` file as `text/plain`, and `open` finds FreeCAD only under a STEP type it asks for.
+
+**Decided without the owner, across the goal.**
+- The stale sweep queues a CAD part by its `structure` row's kernel version, not by a missing `pmi` row.
+- Phase 5's "40-part assembly" is read as met by one assembly of 200 placed parts.
+- A cone reads its included angle, where the plan said its half-angle.
+- No section cap while an assembly is drawn apart.
+- Exports are written in Rust from the mesh the kernel read, with no bridge `export` command.
+- An export `lapidary open` hands out takes no lock.
+- Exports are render cache, freed with L1 and L2.
+
+**Recorded, not built.**
+- Datums no tolerance refers to: OCCT's STEP reader creates only a datum a tolerance refers to.
+- AP242 files written by other CAD tools: there are no licence-clean files here.
+- Timing Phase 0 and Phase 2 on real-world STEP files: none on this machine.
+- The macOS and Windows parts of Phase 4's exit.
+- A freeform face's PMI drawn in the view, which needs per-face triangle ranges.
+- An app that declares STEP under a MIME type `open` does not ask for.
+- A plane's or cylinder's PMI label on the face itself. It sits where the surface is defined from, which some CAD
+  tools put far from the face, and a point on the face needs the bridge to write one.
+- An older revision's export: the export route builds the newest revision's, as the rung route does.
+
+**Teardown.**
+- **Review.**
+  - The advisor reviewed stage 9 before its merge: three findings, all fixed above.
+  - A fresh reader, a subagent, then read the whole goal's code (`19f2c3f..62b69e0`): five findings, none high.
+    The last two are recorded above. The first three were fixed (`b3ed99f`):
+    - **The diameter tool read a rim, exact, from a triangle on the ball or torus beside it:** ⌀6 for a ⌀10 ball,
+      because the two tied and the circle came later. A round face now wins, and a ring reads only from a triangle
+      on no round face, such as the flat face around a hole.
+    - **PMI labels stayed where the assembly drew their faces** while its parts were apart, and on parts hidden in
+      the tree. They are off while the parts are apart, and the explode note says so; a hidden part's are not
+      drawn. The tree labels are placed from is tested without its hidden parts. Turning labels off while apart is
+      not tested, and was not seen in a browser, since no fixture assembly carries PMI.
+    - **While a part's faces were loading, or could not be read,** the list said every annotation's face was not one
+      the view draws. It now says nothing until they arrive, and says once when they could not be read.
+- **Images:** this goal's four dangling `occt-test` images, 2.92 GB each, were removed. `lapidary-occt:goal4`
+  (1.14 GB) is kept, since it holds the kernel copied out to `target/occt/`. Root has 18 GB free.
 
 ---
 
