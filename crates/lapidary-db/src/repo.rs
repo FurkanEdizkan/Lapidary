@@ -1796,6 +1796,77 @@ impl PgParts {
         Ok(facet_values(rows, EXACT_FACET_ROWS))
     }
 
+    /// How many of the same parts hold each value of the choice fields `keys`, per [`facet_values`] for
+    /// each field: narrowed by the grid's chosen format, material and tag and by its field filter, except
+    /// that the field filter never narrows the counts of `filtered`, the field it is on, for the reason
+    /// `material_facet` gives. A part with no value for a field is not counted under it.
+    // One argument per filter the grid can hold, each narrowing the same query.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn choice_facet(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: Option<&str>,
+        shows: Shows,
+        format: Option<&str>,
+        material: Option<&str>,
+        tag: Option<&str>,
+        field: Option<&str>,
+        field_range: Option<&str>,
+        filtered: Option<&str>,
+        keys: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Vec<FacetValue>>, DbError> {
+        // `jsonb_each_text` over an object only: a `custom` that is anything else holds no field values,
+        // and would fail the query rather than count nothing.
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $3 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             SELECT kv.key, kv.value, count(*) FROM part p \
+             CROSS JOIN LATERAL jsonb_each_text(CASE jsonb_typeof(p.metadata_json->'custom') \
+                  WHEN 'object' THEN p.metadata_json->'custom' END) AS kv(key, value) \
+             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
+               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
+               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
+               AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
+               AND kv.key = ANY($9::text[]) \
+               AND (kv.key = $10 \
+                    OR (($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
+                        AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath))) \
+             GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value",
+        )
+        .bind(library.as_uuid())
+        .bind(shows == Shows::Removed)
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(query)
+        .bind(query.map(like_pattern))
+        .bind(format)
+        .bind(material)
+        .bind(tag)
+        .bind(keys)
+        .bind(filtered)
+        .bind(field)
+        .bind(field_range)
+        .fetch_all(&self.0)
+        .await?;
+        let mut by_key: std::collections::BTreeMap<String, Vec<(String, i64)>> =
+            std::collections::BTreeMap::new();
+        for (key, value, count) in rows {
+            by_key.entry(key).or_default().push((value, count));
+        }
+        Ok(by_key
+            .into_iter()
+            .map(|(key, rows)| (key, facet_values(rows, EXACT_FACET_ROWS)))
+            .collect())
+    }
+
     /// Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Written after
     /// the part commits and on its own, so a refusal here leaves a part already searchable.
     ///

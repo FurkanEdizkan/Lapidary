@@ -762,6 +762,27 @@ test("a number field's two boxes write a range, and the grid asks for the one it
   expect(onSelectField).toHaveBeenLastCalledWith(null, null, undefined);
 });
 
+/** Each option of a choice field offered as a filter says how many of the grid's parts hold it, none included. */
+test("a choice field's options show how many parts hold each", async () => {
+  stubFetch({
+    parts: ok(page([])),
+    folders: ok([]),
+    facets: ok({
+      formats: [],
+      materials: [],
+      tags: [],
+      fields: [{ key: "supplier", values: [{ value: "Hoffmann", count: 1 }, { value: "Misumi", count: 2 }] }],
+    }),
+    fields: ok([{ key: "supplier", label: "Supplier", kind: "choice", options: ["Hoffmann", "Misumi", "Norelem"], indexed: true }]),
+  });
+  renderIndex();
+
+  expect(await screen.findByRole("button", { name: strings.fields.choiceOption("Misumi", 2) })).toBeDefined();
+  expect(screen.getByRole("button", { name: strings.fields.choiceOption("Hoffmann", 1) })).toBeDefined();
+  expect(screen.getByRole("button", { name: strings.fields.choiceOption("Norelem", 0) })).toBeDefined();
+  expect(strings.fields.choiceOption("Misumi", 2)).toBe("Misumi, 2 parts");
+});
+
 test("with no filter set and none saved, the rail offers nothing to save", async () => {
   stubFetch({ parts: ok(page([])) });
   renderIndex();

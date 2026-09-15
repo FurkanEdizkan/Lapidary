@@ -405,6 +405,18 @@ pub struct Facets {
     pub materials: Vec<FacetValue>,
     /// The tags people gave the parts. Empty until somebody tags one.
     pub tags: Vec<FacetValue>,
+    /// Each choice field offered as a filter, with how many of the parts hold each of its values. A field
+    /// filter never narrows its own field's counts.
+    pub fields: Vec<FieldFacet>,
+}
+
+/// One choice field's values among the grid's parts, each as a [`FacetValue`]. A value no part holds is left
+/// out.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FieldFacet {
+    pub key: String,
+    pub values: Vec<FacetValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +472,12 @@ pub async fn facets(
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
     };
+    // The field a field filter is on, whose own counts it never narrows.
+    let filtered = field
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
     let field = match crate::fields::filter_of(
         &app.db,
         library,
@@ -530,7 +548,7 @@ pub async fn facets(
         Ok(materials) => materials,
         Err(err) => return internal_error(&err, "facet query failed"),
     };
-    match parts
+    let tags = match parts
         .tag_facet(
             library,
             folder_id,
@@ -543,14 +561,57 @@ pub async fn facets(
         )
         .await
     {
-        Ok(tags) => Json(Facets {
-            formats: values(formats),
-            materials: values(materials),
-            tags: values(tags),
-        })
-        .into_response(),
-        Err(err) => internal_error(&err, "facet query failed"),
-    }
+        Ok(tags) => tags,
+        Err(err) => return internal_error(&err, "facet query failed"),
+    };
+    // The choice fields offered as filters: the only fields whose values are a list to count.
+    let keys: Vec<String> = match lapidary_db::PgCustomFields(parts.0.clone())
+        .list(library)
+        .await
+    {
+        Ok(defined) => defined
+            .into_iter()
+            .filter(|one| one.indexed && one.kind == "choice")
+            .map(|one| one.key)
+            .collect(),
+        Err(err) => return internal_error(&err, "custom field list failed"),
+    };
+    let mut counted = if keys.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        match parts
+            .choice_facet(
+                library,
+                folder_id,
+                q,
+                shows,
+                format.as_deref(),
+                material.as_deref(),
+                tag.as_deref(),
+                field.exact.as_deref(),
+                field.range.as_deref(),
+                filtered.as_deref(),
+                &keys,
+            )
+            .await
+        {
+            Ok(counted) => counted,
+            Err(err) => return internal_error(&err, "facet query failed"),
+        }
+    };
+    Json(Facets {
+        formats: values(formats),
+        materials: values(materials),
+        tags: values(tags),
+        fields: keys
+            .into_iter()
+            .map(|key| FieldFacet {
+                values: values(counted.remove(&key).unwrap_or_default()),
+                key,
+            })
+            .collect(),
+    })
+    .into_response()
 }
 
 /// `GET /api/libraries/{id}/storage` — source total, derivative total, and the ratio.
