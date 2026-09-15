@@ -2,6 +2,7 @@
 //! and never forked per distribution.
 
 mod blob;
+mod densities;
 mod derive;
 mod detail;
 mod download;
@@ -272,6 +273,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route(
                     "/api/libraries/{library}/fields/{key}",
                     axum::routing::patch(fields::update).delete(fields::remove),
+                )
+                // A density per material, per library: what mass is worked out from. See `densities.rs`.
+                .route("/api/libraries/{id}/densities", get(densities::list))
+                .route(
+                    "/api/libraries/{library}/densities/{material}",
+                    axum::routing::put(densities::set).delete(densities::remove),
                 )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this

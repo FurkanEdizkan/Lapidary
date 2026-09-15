@@ -40,6 +40,7 @@ import { Dialog } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail, warmViewer, warmViewerWhenIdle } from '../components/PartDetail'
 import { FieldFilters, FieldsMenuItem } from '../components/Fields'
+import { DensitiesMenuItem } from '../components/Densities'
 import {
   DENSITIES,
   LAYOUTS,
@@ -1500,6 +1501,7 @@ function Toolbar({
             {strings.render.sweep}
           </button>
           <FieldsMenuItem library={library} />
+          <DensitiesMenuItem library={library} />
         </Menu>
         <button
           type="button"
