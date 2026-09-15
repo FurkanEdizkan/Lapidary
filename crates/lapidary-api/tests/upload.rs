@@ -183,6 +183,63 @@ async fn a_probe_answers_need_rows_for_bytes_the_store_already_holds(pool: sqlx:
     assert_eq!(json["needBytes"], serde_json::json!([]));
 }
 
+/// A path is held only with the bytes its part's current revision has. The same path with other bytes is a
+/// change to send, and the held bytes under another path need only rows, however the manifest orders them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPool) {
+    let held = BlobHash::from_bytes(*blake3::hash(BRACKET).as_bytes());
+    lapidary_db::PgIngest(pool.clone())
+        .record(lapidary_db::IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            source_path: "brackets/LP-1042-03.stl",
+            folder: None,
+            storage_path: Some("libraries/default/lp-1042-03/LP-1042-03.stl"),
+            blob: &lapidary_db::StoredBlobRow {
+                hash: held,
+                size_bytes: BRACKET.len() as u64,
+                stored_bytes: BRACKET.len() as u64,
+                zstd_level: 0,
+            },
+            measurements: &lapidary_core::MeshMeasurements {
+                bbox_mm: [80.0, 40.0, 3.0],
+                triangle_count: 12_480,
+                surface_area_mm2: 7_136.0,
+                volume_mm3: Some(9_120.0),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("records the bracket");
+    let changed = BlobHash::from_bytes(*blake3::hash(b"the bracket, re-exported").as_bytes());
+
+    let server = server(pool);
+    let (status, json) = server
+        .probe(serde_json::json!([
+            { "path": "brackets/LP-1042-03.stl", "blake3": changed.to_hex() },
+            { "path": "copies/LP-1042-03.stl", "blake3": held.to_hex() },
+            { "path": "brackets/LP-1042-03.stl", "blake3": held.to_hex() }
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["have"], serde_json::json!(["brackets/LP-1042-03.stl"]));
+    assert_eq!(
+        json["needRows"],
+        serde_json::json!(["copies/LP-1042-03.stl"])
+    );
+    assert_eq!(
+        json["needBytes"],
+        serde_json::json!(["brackets/LP-1042-03.stl"]),
+        "the held path with other bytes is a change to send"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_chunk_at_the_wrong_offset_is_refused_and_says_where_to_resume(pool: sqlx::PgPool) {
     let server = server(pool);

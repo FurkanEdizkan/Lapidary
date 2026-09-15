@@ -865,22 +865,22 @@ impl PgBlobs {
         hash: &BlobHash,
     ) -> Result<bool, DbError> {
         let held = self
-            .library_holds_paths(library, &[(source_path, *hash)])
+            .library_holds_each(library, &[(source_path, *hash)])
             .await?;
-        Ok(!held.is_empty())
+        Ok(held.contains(&true))
     }
 
-    /// The paths among `files` that [`PgBlobs::library_holds`] with their bytes: the question for a whole
-    /// upload, in one query.
-    pub async fn library_holds_paths(
+    /// [`PgBlobs::library_holds`] for each of `files`, in one query: the question for a whole upload,
+    /// answered per entry in order, so one path named twice with different bytes gets two answers.
+    pub async fn library_holds_each(
         &self,
         library: LibraryId,
         files: &[(&str, BlobHash)],
-    ) -> Result<std::collections::HashSet<String>, DbError> {
+    ) -> Result<Vec<bool>, DbError> {
         let paths: Vec<&str> = files.iter().map(|(path, _)| *path).collect();
         let hashes: Vec<String> = files.iter().map(|(_, hash)| hash.to_hex()).collect();
-        let held: Vec<String> = sqlx::query_scalar(
-            "SELECT t.path FROM unnest($2::text[], $3::text[]) AS t(path, blake3) \
+        let held: Vec<i64> = sqlx::query_scalar(
+            "SELECT t.n FROM unnest($2::text[], $3::text[]) WITH ORDINALITY AS t(path, blake3, n) \
              JOIN part p ON p.library_id = $1 AND p.source_path = t.path \
              JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                            ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
@@ -891,7 +891,14 @@ impl PgBlobs {
         .bind(&hashes)
         .fetch_all(&self.0)
         .await?;
-        Ok(held.into_iter().collect())
+        let mut each = vec![false; files.len()];
+        for n in held {
+            // `WITH ORDINALITY` counts from 1.
+            if let Some(entry) = usize::try_from(n - 1).ok().and_then(|i| each.get_mut(i)) {
+                *entry = true;
+            }
+        }
+        Ok(each)
     }
 }
 

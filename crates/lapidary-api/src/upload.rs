@@ -161,15 +161,16 @@ pub async fn probe(
         .iter()
         .map(|file| (file.path.as_str(), file.blake3))
         .collect();
-    let held = match blobs.library_holds_paths(library, &files).await {
+    let held = match blobs.library_holds_each(library, &files).await {
         Ok(held) => held,
         Err(err) => return internal_error(&err, "upload probe failed"),
     };
     let hashes: Vec<BlobHash> = manifest
         .files
         .iter()
-        .filter(|file| !held.contains(&file.path))
-        .map(|file| file.blake3)
+        .zip(&held)
+        .filter(|(_, held)| !**held)
+        .map(|(file, _)| file.blake3)
         .collect();
     let stored = match blobs.existing(&hashes).await {
         Ok(stored) => stored,
@@ -180,8 +181,8 @@ pub async fn probe(
         need_rows: Vec::new(),
         need_bytes: Vec::new(),
     };
-    for file in manifest.files {
-        if held.contains(&file.path) {
+    for (file, held) in manifest.files.into_iter().zip(held) {
+        if held {
             plan.have.push(file.path);
         } else if stored.contains(&file.blake3) {
             plan.need_rows.push(file.path);
