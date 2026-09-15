@@ -1025,6 +1025,8 @@ needed a `test/` branch.
   request. That is `store_staged`, then `put_file`: BLAKE3, then zstd. It runs on the async runtime,
   not in `spawn_blocking`. At 9.8 s it is nearly a third of the drop, and the largest phase before
   the worker starts.
+  - **Fixed since** (goal 3's open points, `588b0ca`): the files are stored in parallel on the blocking
+    pool, and the commit took 1.5 s on the same 150 files.
 
 *The folder tree's fan-out.*
 - **How.** Categories were created through `POST /api/libraries/{id}/folders` into fresh libraries,
@@ -1210,7 +1212,7 @@ needed a `test/` branch.
 - **Not in this stage** (spec §1.5):
   - number ranges;
   - facet counts per value;
-  - `metadata.json`, which learns an edited value only when the manifest is next rewritten.
+  - `metadata.json`, which learned an edited value only on its next rewrite; fixed since (`fd3c018`).
 
 **Turkish search** (`aad407e`).
 - **Schema** (`0028`).
@@ -1336,6 +1338,8 @@ needed a `test/` branch.
   - No page errors.
 - **Not checked: a part hidden in an assembly.** Its stencil passes draw the whole mesh, so a cap likely
   shows across a hidden part's section. Cutting assemblies still needs OCCT.
+  - **Fixed since** (`8a1c239`): the passes leave a hidden part out. Seeing it in a browser still needs an
+    assembly, and so OCCT.
 
 **Watched-folder ingest through the agent** (`f737b6b`).
 - **The command:** `lapidary watch <folder> --library <id>`, on Linux.
@@ -1417,15 +1421,49 @@ each was checked against the code before anything changed.
     - Test: a removed part holding the option. With removed parts not counted, the test fails.
   - **The minor** (`d9d3147`). A field's filter box kept old text after the filter was cleared or another
     was applied. It is now keyed by the value in force.
-- **Recorded, not fixed:**
-  - **Setting a value races removing its option.** `update` counts the parts holding an option under
-    the library's row lock. `set_value` checks the definition and writes without that lock. Removing an
-    option while somebody saves that value can leave a part holding an option that is gone. The window
-    is one request wide, and closing it takes the library's lock on every value written.
-  - **A field defined again under a removed field's key adopts its values, whatever their kind.** A text
-    value under a key now defined as a choice shows as unset while the data holds it, and neither the
-    filter nor the option check counts it. Whether to refuse the key, convert the values, or adopt them
-    is the owner's call.
+- **Recorded at first, and fixed afterwards** (see the open points below): setting a value raced
+  removing its option, and a field defined again under a removed field's key adopted its values whatever
+  their kind.
+
+**The open points.** The goal stayed open on the two findings above and on the known gaps. Each is built
+with a test that a mutation turned red, or left with its reason.
+- **Setting a value no longer races removing its option** (`6113ae2`).
+  - `set_value` share-locks the field's row, reads it again, and writes only while the field is what the
+    value was checked against. `update` locks the same row before it counts the parts holding an option.
+  - A value that loses answers 409 `fieldChanged`.
+  - Tests: a write waits for a removal's lock, then finds the field changed; a removal waits for a
+    write's lock, then counts the part. Mutation-checked, all 3 caught: the share lock, the re-check and
+    the removal's lock.
+- **A field defined again takes back only the values it can show** (`6113ae2`). Values it could not show
+  refuse the key with 409 `valuesDoNotFit`, naming how many parts hold them. Nothing is converted or
+  removed.
+  - Test: text values refuse a choice and a number under their key, and come back under a choice that
+    offers them. Mutation-checked.
+- **A section's cap leaves out a hidden part** (`8a1c239`). The stencil passes share each mesh's geometry
+  but kept a single material, and three draws a mesh's groups only for an array.
+  - Test: on the scene graph, a hidden part's passes take the array its mesh draws with. Mutation-checked.
+  - Not seen in a browser: an assembly needs OCCT.
+- **A custom value reaches `metadata.json` when it is set** (`fd3c018`). Setting a value queues a
+  `describe_part` job, and the worker writes the file again from the rows. Outcome `described`, `0030`.
+  - Tests: the job writes the value and refuses another library's part; the route queues the job.
+    Mutation-checked, both caught.
+- **The upload commit stores a drop's files in parallel** (`588b0ca`). Each file's hashing and
+  compression run on the blocking pool, as many at once as there are cores, and each set of bytes is
+  stored once.
+  - Test: 13 files, one a copy, store 12 blobs and queue 13 jobs. With copies stored twice it failed 2
+    runs of 3, since that is a race.
+  - Measured on the Phase 1 stand-in, 150 STLs and 270,719,950 bytes, with the api alone on a debug build
+    over 12 cores. Two of the before runs were meant as after runs, but a failed build left the old binary
+    in place, so they timed the old code.
+
+| The commit route | Runs |
+|---|---|
+| Before | 9,849 ms, 9,552 ms, 9,709 ms, 9,666 ms |
+| After | 1,525 ms, 1,516 ms |
+
+- **Capital I in Turkish search: not fixed, by the owner's answer.** Asked on 2026-09-15, the owner said
+  Turkish search is not needed and regular word search is fine. Spec §2.1's record stands, and nothing was
+  built for it.
 
 ---
 
