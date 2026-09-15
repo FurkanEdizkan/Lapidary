@@ -1042,6 +1042,44 @@ async fn a_batch_with_no_jobs_has_no_status(pool: PgPool) {
     );
 }
 
+/// A failed upload names the path it was sent under: its payload writes `source_path` as `path`. `lapidary
+/// watch` matches what the library refused by it.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_upload_job_reports_its_source_path(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let (batch, queued) = jobs
+        .enqueue(
+            seeded(),
+            &[JobPayload::IngestBlob {
+                blake3: lapidary_core::BlobHash::from_bytes([0x5c; 32]),
+                source_path: "Flanges/flange-dn40-lp-3310-02.stl".to_owned(),
+                lock: None,
+            }],
+        )
+        .await
+        .expect("enqueues");
+    assert_eq!(queued, 1);
+    let job = jobs
+        .dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("a job");
+    jobs.fail(
+        job.id,
+        "LP-3310-02 is checked out to mira@bench-3. Check it in, then save it again.",
+    )
+    .await
+    .expect("fails");
+
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    assert_eq!(status.failed_total, 1);
+    assert_eq!(status.failed[0].path, "Flanges/flange-dn40-lp-3310-02.stl");
+}
+
 /// Before this slice, `batch_status`'s failures query selected `payload->>'path'` into a
 /// non-`Option<String>`. A `derive` payload has no `path` key, so this call used to fail
 /// with a decode error -- a 500 for the whole batch -- rather than returning a status.

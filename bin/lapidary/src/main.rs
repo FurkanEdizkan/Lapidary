@@ -181,6 +181,9 @@ struct Batch {
     revised: u32,
     #[serde(default)]
     unkept: u32,
+    /// Every failure in the batch; `failed` lists the first 100.
+    #[serde(default)]
+    failed_total: u32,
     failed: Vec<Failure>,
 }
 
