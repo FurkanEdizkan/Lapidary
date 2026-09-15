@@ -203,7 +203,13 @@ impl Kernel for OcctKernel {
         let entities: BridgeEntities = read_json(&out_dir, "entities.json").await?;
         out.entities = entities.into_entities();
         out.structure = Some(read_json::<AssemblyTree>(&out_dir, "structure.json").await?);
-        out.metadata = Some(read_json::<CadMetadata>(&out_dir, "header.json").await?);
+        let mut metadata = read_json::<CadMetadata>(&out_dir, "header.json").await?;
+        // A file that names one material twice holds it once, or the part would hold two and have no mass.
+        let mut seen = std::collections::HashSet::new();
+        metadata
+            .materials
+            .retain(|material| seen.insert(material.clone()));
+        out.metadata = Some(metadata);
         // Kept only when the file specified something: ingest stores no PMI derivative for a
         // file that has none, rather than an empty one a page would render as a heading.
         let pmi: lapidary_core::Pmi = read_json(&out_dir, "pmi.json").await?;
@@ -460,7 +466,7 @@ case "$1" in
         echo '{"units":"mm","solids":1,"faces":3,"edges":3,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
         echo '{"units":"mm","prototypes":[{"prototype":"0:1:1:1","faces":[{"face":1,"type":"cylinder","radius":11,"origin":[0,0,0],"axis":[0,0,1]},{"face":2,"type":"plane","origin":[0,0,30],"normal":[0,0,1]}],"circles":[{"edge":1,"radius":11,"center":[0,0,30],"normal":[0,0,1]}]}]}' > "$out/entities.json"
         echo '{"units":"mm","roots":[{"name":"cylinder-d22-lp-9010-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"parts":1,"prototypes":1}' > "$out/structure.json"
-        echo '{"file_name":"cylinder-d22-lp-9010-00.step","time_stamp":"2026-09-13T09:00:00","authors":["J. Okafor"],"organizations":["Lapidary fixtures"],"originating_system":"SOLIDWORKS 2025","preprocessor":"Open CASCADE 8.0.1","descriptions":[],"schemas":["AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"],"materials":["AISI 1045 steel"]}' > "$out/header.json"
+        echo '{"file_name":"cylinder-d22-lp-9010-00.step","time_stamp":"2026-09-13T09:00:00","authors":["J. Okafor"],"organizations":["Lapidary fixtures"],"originating_system":"SOLIDWORKS 2025","preprocessor":"Open CASCADE 8.0.1","descriptions":[],"schemas":["AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"],"materials":["AISI 1045 steel","AISI 1045 steel"]}' > "$out/header.json"
         ;;
     esac
     ;;

@@ -367,12 +367,13 @@ function FieldFilter({
   const id = `field-filter-${field.key}`
   const choice = field.kind === 'choice'
   const numeric = field.kind === 'number'
-  // An option no part holds is left out of the counts, and holds none. A count withheld past the server's
-  // threshold stays withheld.
+  // An option no part holds is left out of the counts, and holds none. Past the server's threshold every count
+  // is withheld, and that none with them, or the options no part holds would be the only ones with a number.
   const countOf = (option: string): number | null => {
     if (counts === undefined) return null
     const counted = counts.find(({ value }) => value === option)
-    return counted === undefined ? 0 : counted.count
+    if (counted !== undefined) return counted.count
+    return counts.some(({ count }) => count === null) ? null : 0
   }
   return (
     <section aria-labelledby={id} className="mb-6">
@@ -408,7 +409,8 @@ function FieldFilter({
           className="flex gap-1"
           onSubmit={(event) => {
             event.preventDefault()
-            const typed = [from.trim(), to.trim()] as const
+            // A comma is taken for the point, as the Densities dialog takes it.
+            const typed = [from.trim().replace(',', '.'), to.trim().replace(',', '.')] as const
             // Typed backwards, meant forwards: 22 to 8 is 8 to 22, and the boxes come back that way round.
             const backwards =
               typed.every((end) => end.length > 0 && Number.isFinite(Number(end))) && Number(typed[0]) > Number(typed[1])

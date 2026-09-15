@@ -850,7 +850,7 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
 **Goals, run in this order.** Each goal is one long `/goal` session with its own file under
-`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–4 are merged. Goals 4–6 were planned after goal 3's code review, from the owner's answers
+`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–5 are merged. Goals 4–6 were planned after goal 3's code review, from the owner's answers
 below.
 
 | Order | Goal file | Holds |
@@ -1925,8 +1925,9 @@ stage's own build.
   exactly as parts hold it and removed with its library. Its check refuses a density outside 0 to 25,000 kg/m³.
 - **The routes:** `GET /api/libraries/{id}/densities`, and `PUT` and `DELETE` on
   `/api/libraries/{library}/densities/{material}`. A density that is not a finite number above 0 and below 25,000
-  kg/m³ is refused in words, and so is a material no part could hold (blank, padded, or past 64 characters). A
-  library that does not exist is a 404.
+  kg/m³ is refused in words, and so is a material no part could hold (blank, padded, or past 64 characters).
+  Setting a density in a library that does not exist is a 404; listing one answers an empty list, as the category
+  tree does.
 - **The Densities dialog,** from the library menu: a box for each material the library's parts hold, and for each
   material that has a density though no part holds it now. Typed and shown in g/cm³, stored in kg/m³, a comma taken
   for the point.
@@ -2069,6 +2070,46 @@ stage's own build.
   - the whole library: Hoffmann 1, Misumi 2, Norelem 0;
   - a link with the hole diameter from 10: Hoffmann 1, Misumi 1, Norelem 0, and two cards;
   - Misumi clicked: Hoffmann 1, Misumi 2 and pressed, Norelem 0, and the bracket and the spacer left.
+
+**Decided without the owner, across the goal.**
+- Clearing a part's typed materials hands it back to its file's at once, where the goal said on the next ingest.
+- A revised CAD file records its header and materials, under the same guard, as a new part's always did.
+- The comparison's Mass row appears only when there is a mass to compare.
+- The kernel hands the centre of mass back beside its measurements, not inside `MeshMeasurements`.
+- A centre's change carries no percent, and any change too small for two places reads "under 0.01".
+- A range is `@?` over a jsonpath, where the goal's default was a `::numeric` cast between the bounds.
+- A number field's filter is two boxes in place of its value box.
+  - A range typed backwards is written forwards, and a comma is taken for the point.
+  - A value from an older link fills both boxes.
+  - A link holding a value beside a range, a range that runs backwards, or a bound that is not a number says the
+    grid cannot use it.
+
+**Recorded, not built.**
+- A centre of mass for revisions recorded before bridge 8 and this goal: they have none until re-ingested, and the
+  comparison says so.
+- The material and tag facets' range is not tested; only the format facet's is.
+- A part's own mass on its page. Only its change is shown, beside volume's in the history and in the comparison, so
+  a hobby library, which keeps no revisions, shows no mass anywhere.
+- Marking a part as holding no material where its file names one: the × on its only material hands it straight
+  back, and the page says nothing.
+- A STEP material named in more than 64 characters: its density box cannot save.
+
+**Teardown.**
+- **Review.** A fresh reader, a subagent, read the whole goal's code (`459001b..9a047b0`). It found nothing wrong in
+  the SQL, the binds or the arithmetic, and four medium findings, six low ones and one record that said more than
+  the code. The last three items above came from it. The rest were fixed (`9a047b0`), each mutation-checked:
+  - The Densities dialog showed the server's refusal in kg/m³ under boxes typed in g/cm³, so following it asked for
+    a density a thousand times too large. It now gives the range in g/cm³.
+  - An open part's mass kept its old value after its materials or a density changed. Its history and comparison
+    now read again.
+  - The facets rail went blank on any failure while a field filter was set, which stage 5's fix made too broad.
+    Only the field filter's own refusals quiet it now.
+  - A bound typed into the range boxes that is not a number said the field was gone. It now says the filter is not
+    one the grid can use.
+  - Past the count threshold, the options no part held were the only ones showing a number. They show none either.
+  - A file naming one material twice gave its part two, and so no mass. The bridge's list is read once per name.
+  - Refusals that did not say what to do now do, the densities record no longer claims a 404 on a list, and
+    FEATURES no longer says mass sits beside volume.
 
 ---
 
