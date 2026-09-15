@@ -3366,12 +3366,20 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
     let parts = PgParts(pool.clone());
 
     let facet = parts
-        .format_facet(library(), None, None, Shows::Live, None, None)
+        .format_facet(library(), None, None, Shows::Live, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [("step", Some(1)), ("stl", Some(2))]);
     let searched = parts
-        .format_facet(library(), None, Some("bracket"), Shows::Live, None, None)
+        .format_facet(
+            library(),
+            None,
+            Some("bracket"),
+            Shows::Live,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("facet");
     assert_eq!(
@@ -3408,7 +3416,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
 
     parts.soft_delete(plate).await.expect("removes");
     let live = parts
-        .format_facet(library(), None, None, Shows::Live, None, None)
+        .format_facet(library(), None, None, Shows::Live, None, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3417,7 +3425,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
         "a removed part leaves the count"
     );
     let removed = parts
-        .format_facet(library(), None, None, Shows::Removed, None, None)
+        .format_facet(library(), None, None, Shows::Removed, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&removed), [("step", Some(1))]);
@@ -3628,12 +3636,12 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
     }
 
     let facet = parts
-        .material_facet(library(), None, None, Shows::Live, None, None)
+        .material_facet(library(), None, None, Shows::Live, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [(aluminium, Some(1)), (steel, Some(2))]);
     let chosen_stl = parts
-        .material_facet(library(), None, None, Shows::Live, Some("stl"), None)
+        .material_facet(library(), None, None, Shows::Live, Some("stl"), None, None)
         .await
         .expect("facet");
     assert!(
@@ -3641,7 +3649,7 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
         "narrowed by the chosen format: an STL declares no material"
     );
     let formats = parts
-        .format_facet(library(), None, None, Shows::Live, Some(steel), None)
+        .format_facet(library(), None, None, Shows::Live, Some(steel), None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3718,12 +3726,12 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         .expect("records the material");
 
     let facet = parts
-        .tag_facet(library(), None, None, Shows::Live, None, None)
+        .tag_facet(library(), None, None, Shows::Live, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [(spare, Some(2)), (jig, Some(2))]);
     let chosen_stl = parts
-        .tag_facet(library(), None, None, Shows::Live, Some("stl"), None)
+        .tag_facet(library(), None, None, Shows::Live, Some("stl"), None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3732,7 +3740,7 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "narrowed by the chosen format"
     );
     let chosen_steel = parts
-        .tag_facet(library(), None, None, Shows::Live, None, Some(steel))
+        .tag_facet(library(), None, None, Shows::Live, None, Some(steel), None)
         .await
         .expect("facet");
     assert_eq!(
@@ -3741,7 +3749,7 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "and by the chosen material"
     );
     let formats = parts
-        .format_facet(library(), None, None, Shows::Live, None, Some(spare))
+        .format_facet(library(), None, None, Shows::Live, None, Some(spare), None)
         .await
         .expect("facet");
     assert_eq!(

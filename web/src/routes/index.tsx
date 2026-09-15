@@ -36,6 +36,7 @@ import { flipFrom } from '../lib/flip'
 import { Dialog } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail, warmViewer, warmViewerWhenIdle } from '../components/PartDetail'
+import { FieldFilters, FieldsMenuItem } from '../components/Fields'
 import {
   DENSITIES,
   LAYOUTS,
@@ -104,7 +105,7 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string; field?: string; fieldValue?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
@@ -113,6 +114,8 @@ export const Route = createFileRoute('/')({
     const part = search.part
     const material = search.material
     const tag = search.tag
+    const field = search.field
+    const fieldValue = search.fieldValue
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -150,6 +153,13 @@ export const Route = createFileRoute('/')({
         : typeof tag === 'number'
           ? { tag: String(tag) }
           : {}),
+      // A field offered as a filter and its value, both or neither, as the route reads them. A value
+      // can be all digits, which arrives as a number for the reason `q` gives.
+      ...(typeof field === 'string' &&
+      field.length > 0 &&
+      ((typeof fieldValue === 'string' && fieldValue.length > 0) || typeof fieldValue === 'number')
+        ? { field, fieldValue: String(fieldValue) }
+        : {}),
     }
   },
 })
@@ -163,7 +173,7 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library, format, material, tag, part } = Route.useSearch()
+  const { batch, folderId, q, library, format, material, tag, part, field, fieldValue } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
@@ -197,6 +207,18 @@ function RouteComponent() {
       onSelectTag={(value) =>
         void navigate({
           search: (previous) => ({ ...previous, tag: value ?? undefined, part: undefined }),
+        })
+      }
+      field={field}
+      fieldValue={fieldValue}
+      onSelectField={(key, value) =>
+        void navigate({
+          search: (previous) => ({
+            ...previous,
+            field: key ?? undefined,
+            fieldValue: value ?? undefined,
+            part: undefined,
+          }),
         })
       }
       format={format}
@@ -335,6 +357,9 @@ export function Index({
   onSelectMaterial,
   tag,
   onSelectTag,
+  field,
+  fieldValue,
+  onSelectField,
   part,
   onOpenPart,
   onApplyFilter,
@@ -358,6 +383,11 @@ export function Index({
   /** The tag the grid is narrowed to, as the URL carries it. Absent is every tag. */
   tag?: string
   onSelectTag?: (tag: string | null) => void
+  /** A custom field offered as a filter, and the value it must hold. */
+  field?: string
+  fieldValue?: string
+  /** Writes a field filter to the URL; `null` clears it. */
+  onSelectField?: (field: string | null, value: string | null) => void
   /** The part the quick look is open on, as the URL carries it. */
   part?: string
   /** Writes the open part to the URL; `null` closes it. */
@@ -448,9 +478,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, order],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null, order],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag, field, fieldValue),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -860,7 +890,7 @@ export function Index({
       <div className="w-56 shrink-0">
         <SavedFilters
           library={library}
-          current={filtersOf({ q, folderId, format, material, tag })}
+          current={filtersOf({ q, folderId, format, material, tag, field, fieldValue })}
           onApply={(search) => onApplyFilter?.(search)}
         />
         <Facets
@@ -870,9 +900,12 @@ export function Index({
           format={format}
           material={material}
           tag={tag}
+          field={field}
+          fieldValue={fieldValue}
           onSelectFormat={(value) => onSelectFormat?.(value)}
           onSelectMaterial={(value) => onSelectMaterial?.(value)}
           onSelectTag={(value) => onSelectTag?.(value)}
+          onSelectField={(key, value) => onSelectField?.(key, value)}
         />
         <FolderTree
           library={library}
@@ -1445,6 +1478,7 @@ function Toolbar({
           >
             {strings.render.sweep}
           </button>
+          <FieldsMenuItem library={library} />
         </Menu>
         <button
           type="button"
@@ -3203,7 +3237,7 @@ function SavedFilters({
   )
 }
 
-const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag'] as const
+const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag', 'field', 'fieldValue'] as const
 
 /** The grid's filters as a saved filter holds them: only the ones that are set. */
 function filtersOf(filters: { [key in (typeof FILTER_KEYS)[number]]?: string }): FilterSearch {
@@ -3236,9 +3270,12 @@ function Facets({
   format,
   material,
   tag,
+  field,
+  fieldValue,
   onSelectFormat,
   onSelectMaterial,
   onSelectTag,
+  onSelectField,
 }: {
   library: LibraryId
   folderId?: string
@@ -3246,13 +3283,16 @@ function Facets({
   format?: string
   material?: string
   tag?: string
+  field?: string
+  fieldValue?: string
   onSelectFormat: (format: string | null) => void
   onSelectMaterial: (material: string | null) => void
   onSelectTag: (tag: string | null) => void
+  onSelectField: (field: string | null, value: string | null) => void
 }) {
   const facets = useQuery({
-    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null, tag ?? null],
-    queryFn: () => fetchFacets(library, folderId, q, format, material, tag),
+    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null],
+    queryFn: () => fetchFacets(library, folderId, q, format, material, tag, field, fieldValue),
   })
   if (facets.isError) {
     return (
@@ -3293,6 +3333,7 @@ function Facets({
         name={(value) => value}
         option={strings.facets.tagOption}
       />
+      <FieldFilters library={library} field={field} fieldValue={fieldValue} onSelect={onSelectField} />
     </>
   )
 }

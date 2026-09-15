@@ -27,6 +27,11 @@ revLabel: string, name: string, partNumber: string | null,
  */
 tags: Array<string>, 
 /**
+ * The part's custom field values as stored, keyed by field (`docs/DATA.md` §3.5). A value
+ * whose field was since removed is still here, and the page shows it as no longer defined.
+ */
+custom: Record<string, unknown>, 
+/**
  * The part's identity within its library since slice 6a: the path a scan found it
  * at, or the path the browser reported when it was dropped. Two parts named
  * `bracket` in two folders are told apart by this and by nothing else, which is

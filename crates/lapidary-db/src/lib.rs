@@ -1,6 +1,7 @@
 //! Every SQL statement in Lapidary lives in this crate. Other crates go through the
 //! repository traits below.
 
+mod custom_fields;
 mod folders;
 mod jobs;
 mod locks;
@@ -10,6 +11,9 @@ mod revisions;
 mod saved_filters;
 mod touches;
 
+pub use custom_fields::{
+    CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields,
+};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
@@ -132,6 +136,26 @@ pub enum DbError {
         "A saved filter named `{name}` already exists in this library. Choose another name, or remove that filter first."
     )]
     SavedFilterNameTaken { name: String },
+
+    #[error(
+        "A field with the key `{key}` already exists in this library. Choose another key: a field's key is never renamed."
+    )]
+    FieldKeyTaken { key: String },
+
+    #[error(
+        "This library already has {max} fields, the most one library holds. Remove a field nobody uses, then add this one."
+    )]
+    TooManyFields { max: i64 },
+
+    #[error(
+        "This library already offers {max} fields as grid filters, the most it can. Stop offering one of them first."
+    )]
+    TooManyIndexed { max: i64 },
+
+    #[error(
+        "{parts} parts in this library hold the option `{option}`. Change their values first, then remove the option."
+    )]
+    OptionInUse { option: String, parts: i64 },
 
     /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
     /// the per-library advisory lock and runs the ancestry check — never by a caller's own
@@ -281,6 +305,10 @@ impl DbError {
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
             | DbError::SavedFilterNameTaken { .. }
+            | DbError::FieldKeyTaken { .. }
+            | DbError::TooManyFields { .. }
+            | DbError::TooManyIndexed { .. }
+            | DbError::OptionInUse { .. }
             | DbError::LibraryNameTaken { .. }
             | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }

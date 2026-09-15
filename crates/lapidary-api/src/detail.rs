@@ -61,6 +61,10 @@ pub struct PartDetail {
     pub part_number: Option<String>,
     /// The tags a person gave the part, in their order. Empty when nobody has.
     pub tags: Vec<String>,
+    /// The part's custom field values as stored, keyed by field (`docs/DATA.md` §3.5). A value
+    /// whose field was since removed is still here, and the page shows it as no longer defined.
+    #[ts(type = "Record<string, unknown>")]
+    pub custom: serde_json::Value,
     /// The part's identity within its library since slice 6a: the path a scan found it
     /// at, or the path the browser reported when it was dropped. Two parts named
     /// `bracket` in two folders are told apart by this and by nothing else, which is
@@ -188,6 +192,7 @@ fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
         name: row.name,
         part_number: row.part_number,
         tags: row.tags,
+        custom: row.custom,
         source_path: row.source_path,
         thumbnail: row
             .thumbnail_webp

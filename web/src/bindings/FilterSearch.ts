@@ -5,4 +5,8 @@ import type { FolderId } from "./FolderId";
  * The grid's filters, as its URL carries them. An absent field is no filter on it, and a field
  * the grid does not filter by is refused rather than kept.
  */
-export type FilterSearch = { q?: string, folderId?: FolderId, format?: string, material?: string, tag?: string, };
+export type FilterSearch = { q?: string, folderId?: FolderId, format?: string, material?: string, tag?: string, 
+/**
+ * One custom field this library offers as a filter, with `fieldValue` (`docs/DATA.md` §3.5).
+ */
+field?: string, fieldValue?: string, };

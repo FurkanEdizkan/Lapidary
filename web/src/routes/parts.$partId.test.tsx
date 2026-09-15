@@ -37,6 +37,7 @@ const PART: PartDetail = {
   name: 'Bearing block, 608ZZ',
   partNumber: 'LP-1042-03',
   tags: [],
+  custom: {},
   pmi: null,
   sourcePath: 'brackets/steel/LP-1042-03.stl',
   thumbnail: null,
@@ -91,7 +92,8 @@ function stub(
         return { ok: true, status: 200, json: async () => images }
       }
       // And its history, for the same reason: one revision, so no History section.
-      if (url.endsWith('/revisions') || url.endsWith('/api/libraries')) return { ok: true, status: 200, json: async () => [] }
+      // And the library's custom fields, which the page lists beside the tags.
+      if (url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields')) return { ok: true, status: 200, json: async () => [] }
       // The page reads its sources too. Same reason as the gallery above: a stub that
       // answered this with a `PartDetail` would hand `[].map` an object.
       if (url.endsWith('/sources')) {
@@ -282,7 +284,7 @@ test('a refused picture shows the reason the server gave', async () => {
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -331,7 +333,7 @@ test('pasting an address posts it to the fetch route and shows the picture', asy
         return { ok: true, status: 201, json: async () => ({ id: 'x', width: 900, height: 600 }) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => gallery }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -371,7 +373,7 @@ test('an address the server will not fetch from keeps the explanation it gave', 
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -434,7 +436,7 @@ test('clicking a picture sets its focal point', async () => {
         return { ok: true, status: 204, json: async () => ({}) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -473,7 +475,7 @@ test('a re-frame the server refuses says so and leaves the picture as it was', a
     vi.fn(async (url: string, init?: { method?: string }) => {
       if (init?.method === 'PATCH') return { ok: false, status: 503, json: async () => ({}) }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -499,7 +501,7 @@ test('a recorded source shows its licence and its price', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
-      if (url.endsWith('/images') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/images') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       if (url.endsWith('/sources')) {
         return {
@@ -547,7 +549,7 @@ test('a price typed as a decimal is sent as exact minor units', async () => {
         return { ok: true, status: 201, json: async () => ({}) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -697,7 +699,7 @@ test('an assembly shows its tree, each branch a disclosure the keyboard can open
     'fetch',
     vi.fn(async (url: string) => {
       if (url === `/api/blob/${structure}`) return { ok: true, status: 200, json: async () => tree }
-      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
+      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields')) {
         return { ok: true, status: 200, json: async () => [] }
       }
       return { ok: true, status: 200, json: async () => ({ ...PART, structure }) }
@@ -734,4 +736,44 @@ test('the part page warms the viewer as it opens', async () => {
   stub(PART)
   renderPage()
   await waitFor(() => expect(vi.mocked(warmViewer)).toHaveBeenCalled())
+})
+
+test('a field value that is not a number is refused in the server’s words, and a number is kept', async () => {
+  const refusal = '“Stock count” takes a number, and "twelve" is not one.'
+  const puts: unknown[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'PUT' && url.endsWith('/fields/stock_count')) {
+        const { value } = JSON.parse(init.body ?? '{}') as { value: unknown }
+        puts.push(value)
+        return typeof value === 'number'
+          ? { ok: true, status: 204, json: async () => ({}) }
+          : { ok: false, status: 400, json: async () => ({ reason: 'wrongType', message: refusal }) }
+      }
+      if (url.endsWith('/fields')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            { key: 'stock_count', label: 'Stock count', kind: 'number', options: [], indexed: false },
+          ],
+        }
+      }
+      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
+        return { ok: true, status: 200, json: async () => [] }
+      }
+      return { ok: true, status: 200, json: async () => PART }
+    }),
+  )
+  renderPage()
+
+  const box = await screen.findByLabelText('Stock count')
+  fireEvent.change(box, { target: { value: 'twelve' } })
+  fireEvent.keyDown(box, { key: 'Enter' })
+  expect(await screen.findByText(refusal)).toBeTruthy()
+
+  fireEvent.change(box, { target: { value: '12' } })
+  fireEvent.keyDown(box, { key: 'Enter' })
+  await waitFor(() => expect(puts).toEqual(['twelve', 12]))
 })
