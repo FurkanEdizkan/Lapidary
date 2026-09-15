@@ -43,6 +43,11 @@ removedBytes: number,
  */
 quarantinedBytes: number, 
 /**
+ * Rendered previews nobody has opened in 90 days, which "free cache space" would put into
+ * quarantine. Lapidary rebuilds each one when its part is next opened.
+ */
+renderCacheBytes: number, 
+/**
  * A real walk of the storage root, or `None` when one was not asked for.
  *
  * Behind `?onDisk=true` because it costs a `stat` per file: instant on the 156-part

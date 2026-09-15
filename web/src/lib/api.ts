@@ -13,6 +13,7 @@ import type {
   FolderNode,
   FolderPatch,
   InstanceStorageView,
+  RenderCacheFreedView,
   JobId,
   LibraryId,
   LibrarySettings,
@@ -710,6 +711,18 @@ export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStor
     throw new Error(`instance storage returned ${response.status}`)
   }
   return (await response.json()) as InstanceStorageView
+}
+
+/**
+ * `POST /api/storage/render-cache` — "free cache space" (`DATA.md` §1.5): the detailed rungs of
+ * parts nobody has opened in 90 days, into quarantine. Never a source file.
+ */
+export async function freeRenderCache(): Promise<RenderCacheFreedView> {
+  const response = await fetch('/api/storage/render-cache', { method: 'POST' })
+  if (!response.ok) {
+    throw new Error(`freeing the render cache returned ${response.status}`)
+  }
+  return (await response.json()) as RenderCacheFreedView
 }
 
 /** `GET /api/parts/{id}/images` — the gallery, in order. */

@@ -829,6 +829,21 @@ export const strings = {
     measureOnDisk: 'Measure what is actually on disk',
     measuring: 'Measuring…',
     /**
+     * The render cache (Phase 4 slice 2): previews Lapidary made and can make again. Worded by the
+     * eviction boundary above: "free cache space", never "delete", and no number called freed,
+     * because the bytes leave only when their quarantine ends.
+     */
+    renderCache: (size: number) =>
+      `${bytes(size)} of detailed 3D previews nobody has opened in 90 days. Lapidary rebuilds each one when its part is next opened.`,
+    freeCache: 'Free cache space…',
+    freeCacheTitle: 'Free cache space?',
+    freeCacheBody: (size: number) =>
+      `This removes the detailed 3D previews of parts nobody has opened in 90 days. No model file is touched, and each part still opens at once on its coarse preview while the detailed one is rebuilt. ${bytes(size)} goes into the 30-day quarantine and becomes free space when that ends.`,
+    freeCacheConfirm: 'Free cache space',
+    freeCacheFailed: 'Could not free cache space. Check that the api service is running, then try again.',
+    cacheFreed: (removed: number, size: number) =>
+      `Removed ${removed} ${removed === 1 ? 'preview' : 'previews'} from the render cache. ${bytes(size)} becomes free space when its 30-day quarantine ends.`,
+    /**
      * The two numbers side by side, and the gap named rather than left to be noticed.
      *
      * The tracked figures count what the database knows about: one row per model file, one

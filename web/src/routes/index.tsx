@@ -14,6 +14,7 @@ import {
   fetchHealth,
   createLibrary,
   fetchInstanceStorage,
+  freeRenderCache,
   fetchLibraries,
   fetchLibrarySettings,
   fetchLibraryStorage,
@@ -2199,6 +2200,15 @@ function InstanceStorage({
   measured: boolean
   onMeasure: () => void
 }) {
+  const queryClient = useQueryClient()
+  const [asking, setAsking] = useState(false)
+  const free = useMutation({
+    mutationFn: freeRenderCache,
+    onSuccess: () => {
+      setAsking(false)
+      void queryClient.invalidateQueries({ queryKey: ['instance-storage'] })
+    },
+  })
   // Same rule as the library totals: nothing at all while the first read is in flight,
   // because a total is a claim and there is no honest placeholder for one.
   if (isError) {
@@ -2208,8 +2218,15 @@ function InstanceStorage({
     return null
   }
 
-  const { sourceBytes, derivativeBytes, inlinePreviewBytes, removedBytes, quarantinedBytes, onDiskBytes } =
-    instance
+  const {
+    sourceBytes,
+    derivativeBytes,
+    inlinePreviewBytes,
+    removedBytes,
+    quarantinedBytes,
+    renderCacheBytes,
+    onDiskBytes,
+  } = instance
   // Deliberately **without** `inlinePreviewBytes`: those are in Postgres, and this figure
   // is compared against a walk of the storage folder. Including them put the tracked total
   // above the disk by exactly their size on a real library, which reads as loss.
@@ -2231,6 +2248,48 @@ function InstanceStorage({
           quarantinedBytes,
         )}
       </p>
+      {free.data !== undefined ? (
+        <p className="mt-1">{strings.storage.cacheFreed(free.data.removed, free.data.quarantinedBytes)}</p>
+      ) : renderCacheBytes > 0 ? (
+        <p className="mt-1 flex flex-wrap items-center gap-2">
+          <span>{strings.storage.renderCache(renderCacheBytes)}</span>
+          <button
+            type="button"
+            onClick={() => setAsking(true)}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.storage.freeCache}
+          </button>
+        </p>
+      ) : null}
+      {!asking ? null : (
+        <Dialog title={strings.storage.freeCacheTitle} onClose={() => setAsking(false)}>
+          <p className="mt-3 text-sm">{strings.storage.freeCacheBody(renderCacheBytes)}</p>
+          {free.isError ? (
+            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+              {strings.storage.freeCacheFailed}
+            </p>
+          ) : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => setAsking(false)}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.folders.cancel}
+            </button>
+            <button
+              type="button"
+              disabled={free.isPending}
+              onClick={() => free.mutate()}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            >
+              {strings.storage.freeCacheConfirm}
+            </button>
+          </div>
+        </Dialog>
+      )}
       {onDisk !== null ? (
         <p className="mt-1">{strings.storage.onDisk(onDisk, tracked)}</p>
       ) : measuring ? (

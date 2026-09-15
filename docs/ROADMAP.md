@@ -568,6 +568,50 @@ example STLs, and headless Chrome.
   - a real desktop session's launcher (GNOME's `gio`, KDE);
   - a browser's own prompt before it hands a link over.
 
+**Storage view and render cache** (`46945c4`).
+- **`GET /api/storage` gains `renderCacheBytes`.** It counts blobs that only L1 or L2 rungs point at,
+  once nobody has read them in 90 days.
+  - A blob never read counts from when it was written.
+  - A blob shared with L0, a file or any other row is never counted.
+- **`POST /api/storage/render-cache`** is "Free cache space…", behind a dialog on the instance
+  storage line.
+  - It removes those rows and recounts their blobs through the statement purge uses, now one shared
+    function.
+  - It answers with the rungs it removed and the bytes that entered quarantine.
+  - Nothing leaves the disk that day: the hourly sweep takes the bytes after 30 days.
+- **Wording:**
+  - "free cache space";
+  - no model file is touched;
+  - the space comes back when the quarantine ends;
+  - never "freed" or "deleted" (a test checks the result line holds neither).
+
+**Checked** live on the native stack.
+- **Setup:**
+  - a debug `mock-kernel` build;
+  - 15 parts across two libraries;
+  - every blob aged to 120 days in SQL;
+  - the spur gear's L1 built first.
+
+| Step | Result |
+|---|---|
+| `GET /api/storage` | `renderCacheBytes` 16,280: three L1 rungs |
+| Free cache space | 3 rungs removed and 16,280 bytes into quarantine. Derivative bytes 49,356 → 33,076; `renderCacheBytes` 0 |
+| What stayed | 15 L0 rows, 15 thumbnails, 15 source files |
+| The spur gear opened again (`POST …/rungs/l1`) | Queued and rebuilt with the same hash. Its blob left quarantine, so quarantined bytes went 16,280 → 9,784 |
+
+- **Tests:**
+  - The figure and the eviction in `lapidary-db`, mutation-checked. Both mutations were caught:
+    - dropping the shared-blob exclusion counts 57,350 bytes;
+    - dropping the age condition evicts a rung read yesterday.
+  - The route end to end, with the rebuild request, in the api tests.
+  - The dialog and the result line in web, mutation-checked.
+- **Found by the check, and fixed on its own branch:** rebuilding the flange's L1 failed with
+  "Unknown frame descriptor".
+  - Revision 4 came in through the agent's upload. Its `file` row says raw (level 0), but its `blob`
+    row still says zstd 3, from the upload's staging copy.
+  - Two readers, `revision_source` and the detail's source lateral, still read the `blob` row's level,
+    which migration `0013` retired.
+
 ---
 
 ## Phase 5 — Source links, bundles, collections
