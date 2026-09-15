@@ -652,6 +652,59 @@ example STLs, and headless Chrome.
 - **Not in the manifest:** materials. Import runs the kernel, which reads them from the file again.
 - **The live check** runs with import: 40 parts exported, then imported into a fresh library.
 
+**Bundle import** (`4d3e05c`).
+- **The route.** `POST /api/libraries/{id}/imports` stores a bundle sent through the chunked upload and
+  queues one `import_bundle` job. The api never opens the archive: reading stored source bytes is the
+  worker's.
+- **The bundle job** reads the archive back and checks it whole before anything is written:
+  - safe names;
+  - STORE entries only;
+  - a manifest format and version it knows;
+  - every revision's file present at the size and BLAKE3 the manifest names.
+
+  It then queues one `import_part` per part into the same batch, as a scan does.
+- **A part's job** replays its revisions through `index`, oldest first.
+  - Labels, parents and origins survive, and every figure and rung is this library's own.
+  - A hobby library gets each part's newest revision.
+  - A part already holding one of the bundle's revisions resumes after it, so a stopped or repeated
+    import finishes.
+  - A part holding anything else is refused rather than grafted.
+- **The grid's toolbar** gains Import a bundle.
+
+**Checked** on the native stack, with a debug `mock-kernel` build.
+- **The source library:** 40 mesh parts in a controlled library, the six examples scaled by part.
+- **Revision 2 of each:** the file scaled ×1.05 and re-scanned.
+- **Export:** through the plan and form routes.
+- **Import:** the bundle uploaded in 8 MiB chunks, then imported into a fresh controlled library.
+
+| Step | Result |
+|---|---|
+| Scans | 40 ingested, then 40 revised, 0 failed |
+| Plan | 40 parts, 80 revisions, 2,520,335 bytes |
+| Export | 200, a body of 2,520,335 bytes (its `Content-Length`) in 0.19 s. 81 entries, every one STORE; Python's `zipfile.testzip` reports no bad CRC |
+| Import | 202 with one job queued. The batch finished in 4.0 s: 40 ingested, 1 scanned, 0 failed |
+| Lineage | All 40 parts identical, row by row: labels, parent labels, origins and source hashes |
+
+- **Tests:**
+  - The reader's refusals, in `lapidary-targets`: an escaping name, no manifest, a wrong hash, a newer
+    version, an unknown origin, not a ZIP.
+  - The handler, all seen passing after being written with the code, then mutation-checked (every
+    mutation caught):
+    - labels, parents and origins kept, and a second import all skipped;
+    - a hobby library gets the newest revision only;
+    - a graft is refused;
+    - a tampered bundle queues nothing.
+  - The api route, and the client's upload-then-import order.
+  - Mutations: dropping the graft refusal, importing every revision into a hobby library, and
+    resuming from the start.
+- **What this does not cover:**
+  - Phase 5's exit asks for a 40-part STEP *assembly*, which needs OCCT.
+  - `created_at` becomes the time of import.
+  - The bundle is read whole into the worker's memory, marked `ponytail:`.
+  - A hobby import does not count the earlier revisions it left out.
+  - The lineage check's revisions all came by scan, so agent origins were checked only by the
+    handler test.
+
 ---
 
 ## Phase 5 — Source links, bundles, collections
