@@ -995,6 +995,9 @@ export const strings = {
      * is a tree that lies about what it contains.
      */
     root: 'All models',
+    /** A branch's disclosure, named for its category, since every row's control looks alike. */
+    showSubcategories: (name: string) => `Show the categories inside ${name}`,
+    hideSubcategories: (name: string) => `Hide the categories inside ${name}`,
     loading: 'Loading categories…',
     failed:
       'Could not load the categories in this library. Check that the api service is running, then reload.',
