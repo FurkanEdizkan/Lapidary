@@ -1233,8 +1233,6 @@ function Assembly({
   if (roots.length === 1 && roots[0]?.children.length === 0) return null
   const visibility = drawn === parts ? { hidden, parts, onHide } : null
   const firsts = firstLeaves(roots)
-  // ponytail: every node is in the DOM, open or not. Render a branch's children only once it
-  // is opened if a 10,000-part assembly makes this page slow.
   return (
     <section className="mb-6">
       {heading}
@@ -1272,6 +1270,9 @@ function AssemblyBranch({
   visibility: Visibility | null
   open?: boolean
 }) {
+  // Whether the branch's rows are drawn: only once it has been opened, so a closed branch of a large
+  // assembly is one row and not every part under it.
+  const [expanded, setExpanded] = useState(open)
   const count = leaves(node)
   const mine = (part: number) => part >= first && part < first + count
   const allHidden =
@@ -1328,21 +1329,23 @@ function AssemblyBranch({
   const firsts = firstLeaves(node.children, first)
   return (
     <li>
-      <details open={open}>
+      <details open={open} onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary className={`cursor-pointer py-0.5${muted}`}>
           {node.name}
           {controls}
         </summary>
-        <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
-          {node.children.map((child, index) => (
-            <AssemblyBranch
-              key={index}
-              node={child}
-              first={firsts[index] ?? first}
-              visibility={visibility}
-            />
-          ))}
-        </ul>
+        {expanded ? (
+          <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
+            {node.children.map((child, index) => (
+              <AssemblyBranch
+                key={index}
+                node={child}
+                first={firsts[index] ?? first}
+                visibility={visibility}
+              />
+            ))}
+          </ul>
+        ) : null}
       </details>
     </li>
   )

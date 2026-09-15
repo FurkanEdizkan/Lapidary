@@ -233,7 +233,11 @@ test('the assembly tree hides, shows and isolates parts in the view', async () =
   fireEvent.click(screen.getByRole('button', { name: strings.detail.showPart(station) }))
   await waitFor(() => expect(drawn.hidden).toEqual([]))
 
-  fireEvent.click(screen.getByRole('button', { name: strings.detail.isolatePart('stop-pin-d10x20-lp-9007-00') }))
+  // The pin is in the station's branch, whose rows are drawn once it is opened.
+  const branch = screen.getByText(station).closest('details') as HTMLDetailsElement
+  branch.open = true
+  fireEvent(branch, new Event('toggle'))
+  fireEvent.click(await screen.findByRole('button', { name: strings.detail.isolatePart('stop-pin-d10x20-lp-9007-00') }))
   await waitFor(() => expect(drawn.hidden).toEqual([0, 1]))
   fireEvent.click(screen.getByRole('button', { name: strings.detail.showAll }))
   await waitFor(() => expect(drawn.hidden).toEqual([]))

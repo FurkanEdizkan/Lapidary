@@ -675,7 +675,7 @@ const leaf = (name: string, prototype: string): AssemblyNode => ({
   children: [],
 })
 
-test('an assembly shows its tree, each branch a disclosure the keyboard can open', async () => {
+test('an assembly shows its tree, each branch a disclosure the keyboard can open, its rows drawn once opened', async () => {
   const structure = '4444444444444444444444444444444444444444444444444444444444444444'
   const tree: AssemblyTree = {
     roots: [
@@ -716,12 +716,17 @@ test('an assembly shows its tree, each branch a disclosure the keyboard can open
   // A branch is a native disclosure: its summary takes focus, and Enter or Space opens it.
   const rail = within(section).getByText('rail-lp-9002-00')
   expect(rail.tagName).toBe('SUMMARY')
-  expect(within(section).getByText('m6-screw-lp-9005-00').closest('details')).toBe(
-    rail.closest('details'),
-  )
   const root = within(section).getByText('fixture-plate-assembly-lp-9000-00').closest('details')
   expect(root?.open).toBe(true)
-  expect(rail.closest('details')?.open).toBe(false)
+  const branch = rail.closest('details') as HTMLDetailsElement
+  expect(branch.open).toBe(false)
+
+  // A closed branch draws none of its rows, and opening it draws them inside it.
+  expect(within(section).queryByText('m6-screw-lp-9005-00')).toBeNull()
+  branch.open = true
+  fireEvent(branch, new Event('toggle'))
+  const screw = await within(section).findByText('m6-screw-lp-9005-00')
+  expect(screw.closest('details')).toBe(branch)
 })
 
 test('a mesh has no assembly section and never asks for one', async () => {
