@@ -16,11 +16,15 @@ pub enum DerivativeKind {
     Entities,
     /// The dimensions, tolerances and datums a CAD file specifies, as JSON. A mesh has none.
     Pmi,
+    /// The part's mesh as a binary STL Lapidary wrote, for a slicer. Served as `*.lapidary.stl`.
+    ExportStl,
+    /// The part's mesh as a 3MF package Lapidary wrote, for a slicer. Served as `*.lapidary.3mf`.
+    Export3mf,
 }
 
 impl DerivativeKind {
     /// Every kind, ascending — for a caller that genuinely wants all four.
-    pub const ALL: [DerivativeKind; 7] = [
+    pub const ALL: [DerivativeKind; 9] = [
         DerivativeKind::Thumbnail,
         DerivativeKind::TessellationL0,
         DerivativeKind::TessellationL1,
@@ -28,6 +32,8 @@ impl DerivativeKind {
         DerivativeKind::Structure,
         DerivativeKind::Entities,
         DerivativeKind::Pmi,
+        DerivativeKind::ExportStl,
+        DerivativeKind::Export3mf,
     ];
 
     /// Exactly the strings already in `derivative.kind`. Changing one orphans every row
@@ -41,6 +47,8 @@ impl DerivativeKind {
             DerivativeKind::Structure => "structure",
             DerivativeKind::Entities => "entities",
             DerivativeKind::Pmi => "pmi",
+            DerivativeKind::ExportStl => "export_stl",
+            DerivativeKind::Export3mf => "export_3mf",
         }
     }
 }
@@ -59,6 +67,8 @@ mod tests {
         assert_eq!(DerivativeKind::Structure.as_str(), "structure");
         assert_eq!(DerivativeKind::Entities.as_str(), "entities");
         assert_eq!(DerivativeKind::Pmi.as_str(), "pmi");
+        assert_eq!(DerivativeKind::ExportStl.as_str(), "export_stl");
+        assert_eq!(DerivativeKind::Export3mf.as_str(), "export_3mf");
     }
 
     #[test]
@@ -86,6 +96,8 @@ mod tests {
                 DerivativeKind::Structure,
                 DerivativeKind::Entities,
                 DerivativeKind::Pmi,
+                DerivativeKind::ExportStl,
+                DerivativeKind::Export3mf,
             ]
         );
     }

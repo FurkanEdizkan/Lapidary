@@ -89,6 +89,7 @@ impl Kernel for MockKernel {
         };
         let mut tessellations = Vec::new();
         let mut thumbnail_webp = None;
+        let mut exports = Vec::new();
         for want in &params.produce {
             match want {
                 DerivativeKind::Thumbnail => thumbnail_webp = Some(b"mock-thumbnail".to_vec()),
@@ -96,10 +97,14 @@ impl Kernel for MockKernel {
                 DerivativeKind::TessellationL1 => tessellations.push(canned_rung(Lod::L1)),
                 DerivativeKind::TessellationL2 => tessellations.push(canned_rung(Lod::L2)),
                 DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => {}
+                DerivativeKind::ExportStl | DerivativeKind::Export3mf => {
+                    exports.push((*want, format!("mock-{}", want.as_str()).into_bytes()));
+                }
             }
         }
         Ok(KernelOutput {
             topology: None,
+            exports,
             measurements,
             thumbnail_webp,
             tessellations,

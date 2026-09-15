@@ -74,6 +74,7 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
     let mut tessellations = Vec::new();
     let mut thumbnail_webp = None;
     let mut unproduced = Vec::new();
+    let mut exports = Vec::new();
     for want in &params.produce {
         let made = match want {
             DerivativeKind::Thumbnail => render_thumbnail(mesh).map(|webp| {
@@ -91,6 +92,13 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
             // A mesh has no assembly and no analytic surfaces: nothing to make, and
             // nothing that went wrong.
             DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => Ok(()),
+            // Written from the mesh as it was read, the bridge's own for a CAD file, never from a rung.
+            DerivativeKind::ExportStl => crate::stl::write_stl(mesh).map(|bytes| {
+                exports.push((DerivativeKind::ExportStl, bytes));
+            }),
+            DerivativeKind::Export3mf => crate::tmf::write_3mf(mesh).map(|bytes| {
+                exports.push((DerivativeKind::Export3mf, bytes));
+            }),
         };
         if let Err(reason) = made {
             unproduced.push(Unproduced {
@@ -101,6 +109,7 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
     }
     KernelOutput {
         topology: None,
+        exports,
         measurements: measure(mesh),
         thumbnail_webp,
         tessellations,

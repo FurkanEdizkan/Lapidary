@@ -29,8 +29,8 @@ pub use obj::parse_obj;
 #[cfg(feature = "occt-kernel")]
 pub use occt::OcctKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
-pub use stl::{Mesh, parse_stl};
-pub use tmf::parse_3mf;
+pub use stl::{Mesh, parse_stl, write_stl};
+pub use tmf::{parse_3mf, write_3mf};
 
 #[cfg(all(test, feature = "mock-kernel"))]
 mod tests {

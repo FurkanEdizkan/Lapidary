@@ -4,4 +4,4 @@
  * Also the discriminator a `derive` job carries, which is why it lives here rather than
  * in `lapidary-cad`: the job queue names it and the database stores it.
  */
-export type DerivativeKind = "thumbnail" | "tessellation_l0" | "tessellation_l1" | "tessellation_l2" | "structure" | "entities" | "pmi";
+export type DerivativeKind = "thumbnail" | "tessellation_l0" | "tessellation_l1" | "tessellation_l2" | "structure" | "entities" | "pmi" | "export_stl" | "export3mf";

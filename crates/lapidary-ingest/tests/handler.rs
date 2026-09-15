@@ -1125,6 +1125,66 @@ async fn each_rung_is_valid_gltf_and_l0_is_smaller_than_l2(pool: PgPool) {
     );
 }
 
+/// A slicer's file is written from the part's mesh when a derive job asks for it: a binary STL and
+/// a 3MF, each holding every triangle the file was read with, counted by readers that share
+/// nothing with the writers.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_derive_job_writes_a_slicer_its_stl_and_3mf_with_every_triangle(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(GEAR)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let revision = only_revision(&pool).await;
+    for export in [DerivativeKind::ExportStl, DerivativeKind::Export3mf] {
+        assert_eq!(
+            handler
+                .handle(&derive_job(revision, export))
+                .await
+                .unwrap_or_else(|error| panic!("derives {}: {error:?}", export.as_str())),
+            Outcome::Rendered
+        );
+    }
+
+    let triangles: i64 = sqlx::query_scalar("SELECT triangle_count::bigint FROM revision")
+        .fetch_one(&pool)
+        .await
+        .expect("the count ingest read");
+    let rows = derivatives(&pool).await;
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    let stored = |kind: &str| {
+        let hex = rows
+            .iter()
+            .find(|(row, _)| row == kind)
+            .and_then(|(_, hash)| hash.clone())
+            .unwrap_or_else(|| panic!("no stored {kind} row"));
+        store
+            .get(&BlobHash::parse_hex(&hex).expect("a stored hash parses"))
+            .expect("the bytes are on disk")
+    };
+
+    let stl = stored("export_stl");
+    let count = u32::from_le_bytes(stl[80..84].try_into().expect("four bytes"));
+    assert_eq!(i64::from(count), triangles, "every triangle, in the STL");
+    assert_eq!(
+        stl.len(),
+        84 + 50 * count as usize,
+        "a binary STL is as long as its count says"
+    );
+    let three_mf = stored("export_3mf");
+    assert!(three_mf.starts_with(b"PK\x03\x04"), "a 3MF is a ZIP");
+    assert_eq!(
+        String::from_utf8_lossy(&three_mf)
+            .matches("<triangle ")
+            .count() as i64,
+        triangles,
+        "every triangle, in the 3MF"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
