@@ -76,6 +76,41 @@ fn request<'a>(
     }
 }
 
+/// `metadata.json` is read while the part's row is held: a custom value being written waits the read out,
+/// and the manifest handed over holds that value, so the file is never written from rows a commit replaced.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_manifest_waits_for_a_change_to_its_part_and_holds_it(pool: sqlx::PgPool) {
+    let part = seed(&pool).await;
+    let mut writing = pool.begin().await.expect("begins");
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{custom}', '{\"supplier\": \"Misumi\"}') WHERE id = $1",
+    )
+    .bind(part.as_uuid())
+    .execute(&mut *writing)
+    .await
+    .expect("writes Misumi");
+    let describing = tokio::spawn({
+        let revisions = PgRevisions(pool.clone());
+        async move { revisions.write_manifest(part, |manifest| manifest).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !describing.is_finished(),
+        "the manifest waits for the value's commit"
+    );
+    writing.commit().await.expect("commits");
+
+    let manifest = describing
+        .await
+        .expect("joins")
+        .expect("reads")
+        .expect("the part exists");
+    assert_eq!(
+        manifest.part.metadata["custom"],
+        serde_json::json!({ "supplier": "Misumi" })
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn a_revision_goes_on_top_and_the_previous_file_is_set_aside_under_its_own_label(
     pool: sqlx::PgPool,
