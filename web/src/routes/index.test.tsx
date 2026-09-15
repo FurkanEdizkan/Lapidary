@@ -2770,7 +2770,13 @@ test("selecting a category puts it in the URL and asks the grid for that categor
   });
   const router = renderApp();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Rocks" }));
+  // Rocks sits under Terrain, and a branch's rows are drawn once it is opened.
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: strings.folders.showSubcategories("Terrain"),
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Rocks" }));
 
   // In the URL, not in component state: the filter survives a reload and is a link
   // someone can send.

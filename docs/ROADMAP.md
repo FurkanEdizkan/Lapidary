@@ -2204,6 +2204,47 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   and the probe's context kept.
 - **Decided without the owner:** `warmViewerWhenIdle` is renamed `loadViewerWhenIdle`, since it no longer warms.
 
+**The folder tree, grouped once and drawn lazily** (`ba382d7`).
+- **The change.**
+  - The sidebar groups the categories by parent once per tree (`groupByParent`). Before, every row filtered the
+    whole list for its children.
+  - The top level is always drawn. Every branch below it starts closed, with a disclosure button beside each
+    category that has children, and renders its rows only once opened.
+  - The selected category's ancestors open as it is selected, during render, so the first frame already shows it.
+    What is open is not remembered.
+  - The move chooser uses the same grouping and still lists every category.
+- **Measured** by goal 2's method on the native stack. Four libraries were made through
+  `POST /api/libraries/{id}/folders`: 1,000 and 10,000 categories, each flat and as a ten-way tree. The time is from
+  navigation start to the first frame whose sidebar holds the rows asked for, median of three fresh headless
+  sessions, `main` and then this branch over the same libraries:
+
+| Categories | Shape | Before: every row, the top level with it | After: the top level | After: every row | Opening a closed branch |
+|---|---|---|---|---|---|
+| 1,000 | flat | 366 ms | 399 ms | 399 ms | none is closed |
+| 1,000 | ten-way | 362 ms | 330 ms | not drawn | 12 ms |
+| 10,000 | flat | 1,113 ms | 490 ms | 490 ms | none is closed |
+| 10,000 | ten-way | 1,368 ms | 528 ms | not drawn | 12 ms |
+
+- **What the numbers say:**
+  - A flat 10,000 still draws every row, in 490 ms against 1,113 ms: that gain is the grouping alone.
+  - A ten-way 10,000 draws its top ten in 528 ms, against 1,368 ms for all of it, and a branch opens in 12 ms.
+  - At 1,000 the page's own load dominates. The ten-way tree drew 32 ms sooner. The flat one drew 33 ms later: its
+    runs took 383 to 408 ms, against 359 to 395 ms before.
+  - Goal 2 measured 127, 131, 1,389 and 1,676 ms for the same shapes. The page loads more before its sidebar now,
+    so these numbers compare with each other, not with those.
+- **Tests:**
+  - the categories are grouped under each parent in name order;
+  - a closed branch draws no rows, and opens and closes;
+  - the selected category's path is open, and nothing else is.
+  - Seven existing tests now open `Terrain` before they reach `Rocks`; one of them is in `index.test.tsx`.
+- **Mutation-checked, all 4 caught:** a closed branch drawn anyway, the selected path left closed, groups left
+  unsorted, and a toggle that only opens.
+- **Decided without the owner:**
+  - The move chooser keeps every category listed. A closed category cannot take a drop, so the chooser is the path
+    to one.
+  - A drag held over a closed branch does not open it.
+  - The disclosure is a button of its own beside the row, so selecting a category and opening it stay two actions.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

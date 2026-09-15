@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type DragEvent, type ReactNode } from 'react'
+import { useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Dialog } from './Dialog'
 import {
   createFolder,
@@ -161,9 +161,11 @@ function useMovePart(library: LibraryId, onMoved?: () => void) {
  * component can read — the same split `Index` already uses for `batch`, and the reason
  * every test in `index.test.tsx` can render the page with no router in scope.
  *
- * Rendered expanded, with no disclosure control. A category the user cannot see is a
- * category they cannot drop onto, and the tree is hundreds of rows at corpus scale, not
- * thousands. Collapsing arrives with the count that makes it worth having.
+ * The top level is always drawn, and every branch below it starts closed: a branch's rows are
+ * rendered only once it is opened, and the selected category's ancestors open with it. At
+ * 10,000 categories, drawing every row took more than a second (ROADMAP, goal 2). A closed
+ * category cannot be dropped onto, which is why the move chooser, the complete path, lists
+ * every category. What is open is not remembered past the page.
  */
 export function FolderTree({
   library,
@@ -175,6 +177,20 @@ export function FolderTree({
   onSelect: (folder: FolderId | null) => void
 }) {
   const folders = useFolders(library)
+  const groups = useMemo(() => groupByParent(folders.data ?? []), [folders.data])
+  const [opened, setOpened] = useState<ReadonlySet<FolderId>>(new Set())
+  // The selected category's ancestors open as it is selected: during render, not in an effect, so
+  // the first frame already shows it. Closing one afterwards is the user's to do.
+  const [openedFor, setOpenedFor] = useState<FolderId | null | undefined>(undefined)
+  if (folders.data !== undefined && openedFor !== selected) {
+    setOpenedFor(selected)
+    setOpened(withAncestors(opened, folders.data, selected))
+  }
+  const toggle = (folder: FolderId) => {
+    const next = new Set(opened)
+    if (!next.delete(folder)) next.add(folder)
+    setOpened(next)
+  }
   const queryClient = useQueryClient()
   const { move, duplicate, refusal, start, confirm, dismiss, forget } = useMovePart(library)
   const [pendingDelete, setPendingDelete] = useState<FolderNode | null>(null)
@@ -337,7 +353,9 @@ export function FolderTree({
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.folders.empty}</p>
       ) : (
         <FolderLevel
-          folders={folders.data}
+          groups={groups}
+          open={opened}
+          onToggle={toggle}
           parentId={null}
           depth={0}
           selected={selected}
@@ -433,6 +451,40 @@ function subcategoryCount(folders: readonly FolderNode[], root: FolderId): numbe
 }
 
 /**
+ * The categories under each parent, `null` for the top level, each list in name order. Built once
+ * per tree: filtering the whole list for every row's children was O(n²). A category with no
+ * children has no entry.
+ */
+export function groupByParent(
+  folders: readonly FolderNode[],
+): ReadonlyMap<FolderId | null, readonly FolderNode[]> {
+  const groups = new Map<FolderId | null, FolderNode[]>()
+  for (const folder of folders) {
+    const siblings = groups.get(folder.parentId)
+    if (siblings === undefined) groups.set(folder.parentId, [folder])
+    else siblings.push(folder)
+  }
+  for (const siblings of groups.values()) siblings.sort((a, b) => a.name.localeCompare(b.name))
+  return groups
+}
+
+/** `open` with every ancestor of `selected` added, by `isWithin`'s bounded walk. */
+function withAncestors(
+  open: ReadonlySet<FolderId>,
+  folders: readonly FolderNode[],
+  selected: FolderId | null,
+): ReadonlySet<FolderId> {
+  const byId = new Map(folders.map((folder) => [folder.id, folder]))
+  const next = new Set(open)
+  let current: FolderId | null = selected === null ? null : (byId.get(selected)?.parentId ?? null)
+  for (let hops = 0; current !== null && hops < 16; hops += 1) {
+    next.add(current)
+    current = byId.get(current)?.parentId ?? null
+  }
+  return next
+}
+
+/**
  * A failure, rendered where the thing that failed is.
  *
  * `role="alert"` because a note nobody is looking at is a note nobody gets: a keyboard user
@@ -470,7 +522,9 @@ function folderWriteMessage(reason: FolderWriteRefusal): string {
 }
 
 function FolderLevel({
-  folders,
+  groups,
+  open,
+  onToggle,
   parentId,
   depth,
   selected,
@@ -480,7 +534,9 @@ function FolderLevel({
   onRename,
   noteFor,
 }: {
-  folders: readonly FolderNode[]
+  groups: ReadonlyMap<FolderId | null, readonly FolderNode[]>
+  open: ReadonlySet<FolderId>
+  onToggle: (folder: FolderId) => void
   parentId: FolderId | null
   depth: number
   selected: FolderId | null
@@ -490,69 +546,95 @@ function FolderLevel({
   onRename: (folder: FolderNode) => void
   noteFor: (folder: FolderId) => string | null
 }) {
-  const children = folders
-    .filter((folder) => folder.parentId === parentId)
-    .sort((a, b) => a.name.localeCompare(b.name))
+  const children = groups.get(parentId) ?? []
   if (children.length === 0) {
     return null
   }
   return (
     <ul role="list" className="mt-0.5 space-y-0.5">
-      {children.map((folder) => (
-        <li key={folder.id}>
-          <div
-            className="group flex items-center gap-1"
-            style={{ paddingLeft: `${depth * 0.75}rem` }}
-          >
-            <FolderButton
-              name={folder.name}
-              selected={selected === folder.id}
-              onSelect={() => onSelect(folder.id)}
-              onDrop={(event) => onDropPart(event, folder.id)}
-            />
-            {/*
-              Present for every category and quiet until it is wanted: opacity only, so it
-              costs no layout, and it comes back on keyboard focus as well as on hover —
-              a control that only exists under a pointer is a control a keyboard cannot
-              reach.
+      {children.map((folder) => {
+        const branch = groups.has(folder.id)
+        const opened = open.has(folder.id)
+        return (
+          <li key={folder.id}>
+            <div
+              className="group flex items-center gap-1"
+              style={{ paddingLeft: `${depth * 0.75}rem` }}
+            >
+              {branch ? (
+                <button
+                  type="button"
+                  onClick={() => onToggle(folder.id)}
+                  aria-expanded={opened}
+                  aria-label={
+                    opened
+                      ? strings.folders.hideSubcategories(folder.name)
+                      : strings.folders.showSubcategories(folder.name)
+                  }
+                  className="flex size-5 shrink-0 items-center justify-center rounded text-[var(--color-muted)]"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`ease-mechanical block size-1.5 border-r border-b border-current transition-transform duration-[var(--duration-fast)] ${opened ? 'rotate-45' : '-rotate-45'}`}
+                  />
+                </button>
+              ) : (
+                <span aria-hidden="true" className="size-5 shrink-0" />
+              )}
+              <FolderButton
+                name={folder.name}
+                selected={selected === folder.id}
+                onSelect={() => onSelect(folder.id)}
+                onDrop={(event) => onDropPart(event, folder.id)}
+              />
+              {/*
+                Present for every category and quiet until it is wanted: opacity only, so it
+                costs no layout, and it comes back on keyboard focus as well as on hover —
+                a control that only exists under a pointer is a control a keyboard cannot
+                reach.
 
-              Transparent means untappable, and on a touch screen it means neither. An
-              invisible control that still takes taps is a delete nobody meant to press,
-              so `pointer-events` follows the opacity; and a device with no hover has no
-              way to reveal it at all, so `pointer-coarse` shows it outright rather than
-              leaving the row's only destructive action unreachable there.
-            */}
-            <button
-              type="button"
-              onClick={() => onRename(folder)}
-              aria-label={strings.folders.renameFor(folder.name)}
-              className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-            >
-              {strings.folders.renameAction}
-            </button>
-            <button
-              type="button"
-              onClick={() => onDelete(folder)}
-              aria-label={strings.folders.deleteFor(folder.name)}
-              className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-            >
-              {strings.folders.deleteAction}
-            </button>
-          </div>
-          <RowNote note={noteFor(folder.id)} />
-          <FolderLevel
-            folders={folders}
-            parentId={folder.id}
-            depth={depth + 1}
-            selected={selected}
-            onSelect={onSelect}
-            onDropPart={onDropPart}
-            onDelete={onDelete}
-            onRename={onRename}
-            noteFor={noteFor}
-          />
-        </li>
-      ))}
+                Transparent means untappable, and on a touch screen it means neither. An
+                invisible control that still takes taps is a delete nobody meant to press,
+                so `pointer-events` follows the opacity; and a device with no hover has no
+                way to reveal it at all, so `pointer-coarse` shows it outright rather than
+                leaving the row's only destructive action unreachable there.
+              */}
+              <button
+                type="button"
+                onClick={() => onRename(folder)}
+                aria-label={strings.folders.renameFor(folder.name)}
+                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+              >
+                {strings.folders.renameAction}
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(folder)}
+                aria-label={strings.folders.deleteFor(folder.name)}
+                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+              >
+                {strings.folders.deleteAction}
+              </button>
+            </div>
+            <RowNote note={noteFor(folder.id)} />
+            {opened ? (
+              <FolderLevel
+                groups={groups}
+                open={open}
+                onToggle={onToggle}
+                parentId={folder.id}
+                depth={depth + 1}
+                selected={selected}
+                onSelect={onSelect}
+                onDropPart={onDropPart}
+                onDelete={onDelete}
+                onRename={onRename}
+                noteFor={noteFor}
+              />
+            ) : null}
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -673,7 +755,7 @@ export function MovePartDialog({
           <li className="text-sm text-[var(--color-muted)]">{strings.folders.empty}</li>
         ) : (
           <MoveLevel
-            folders={folders.data}
+            groups={groupByParent(folders.data)}
             parentId={null}
             depth={1}
             busy={move.isPending}
@@ -735,7 +817,7 @@ export function PickCategoryDialog({
           <li className="text-sm text-[var(--color-muted)]">{strings.folders.empty}</li>
         ) : (
           <MoveLevel
-            folders={folders.data}
+            groups={groupByParent(folders.data)}
             parentId={null}
             depth={1}
             busy={false}
@@ -753,13 +835,13 @@ export function PickCategoryDialog({
 }
 
 function MoveLevel({
-  folders,
+  groups,
   parentId,
   depth,
   busy,
   onMove,
 }: {
-  folders: readonly FolderNode[]
+  groups: ReadonlyMap<FolderId | null, readonly FolderNode[]>
   parentId: FolderId | null
   depth: number
   busy: boolean
@@ -767,28 +849,25 @@ function MoveLevel({
 }) {
   return (
     <>
-      {folders
-        .filter((folder) => folder.parentId === parentId)
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((folder) => (
-          <li key={folder.id}>
-            <MoveRow
-              name={folder.name}
-              depth={depth}
+      {(groups.get(parentId) ?? []).map((folder) => (
+        <li key={folder.id}>
+          <MoveRow
+            name={folder.name}
+            depth={depth}
+            busy={busy}
+            onMove={() => onMove(folder)}
+          />
+          <ul role="list" className="space-y-1">
+            <MoveLevel
+              groups={groups}
+              parentId={folder.id}
+              depth={depth + 1}
               busy={busy}
-              onMove={() => onMove(folder)}
+              onMove={onMove}
             />
-            <ul role="list" className="space-y-1">
-              <MoveLevel
-                folders={folders}
-                parentId={folder.id}
-                depth={depth + 1}
-                busy={busy}
-                onMove={onMove}
-              />
-            </ul>
-          </li>
-        ))}
+          </ul>
+        </li>
+      ))}
     </>
   )
 }

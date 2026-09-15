@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
-import { FolderTree, MovePartDialog, PART_DRAG_TYPE, partDragPayload } from './FolderTree'
+import { FolderTree, MovePartDialog, PART_DRAG_TYPE, groupByParent, partDragPayload } from './FolderTree'
 import { strings } from '../lib/strings'
 import type { FolderId, FolderNode } from '../lib/types'
 
@@ -146,6 +146,11 @@ function renderTree(selected: FolderId | null = null) {
   return { onSelect }
 }
 
+/** Open a branch of the sidebar: below the top level, a category's rows are drawn only once it is opened. */
+async function openBranch(name: string) {
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.showSubcategories(name) }))
+}
+
 /**
  * What a card puts on the drag, read back the way a folder row reads it.
  *
@@ -179,6 +184,7 @@ test('nests a child under its parent and reports the category that was selected'
   const { onSelect } = renderTree()
 
   const terrain = await screen.findByRole('button', { name: 'Terrain' })
+  await openBranch('Terrain')
   const rocks = screen.getByRole('button', { name: 'Rocks' })
   // Nesting is structural, not a left margin: `Rocks` lives inside `Terrain`'s own list
   // item. An indented sibling would look identical and be a different tree.
@@ -199,6 +205,7 @@ test('dropping a card on a category files it there, and ignores anything else dr
   const fetchMock = stubFetch({ folders: ok([TERRAIN, ROCKS]), move: ok({}) })
   renderTree()
 
+  await openBranch('Terrain')
   const rocks = await screen.findByRole('button', { name: 'Rocks' })
   // `fireEvent` returns false when a handler called `preventDefault()`, and calling it on
   // `dragover` is the only thing that marks an element as willing to take a drop. jsdom
@@ -246,6 +253,7 @@ test('a name collision asks once, and confirming re-sends the same move acknowle
   })
   renderTree()
 
+  await openBranch('Terrain')
   fireEvent.drop(await screen.findByRole('button', { name: 'Rocks' }), draggingCliff)
 
   const dialog = await screen.findByRole('dialog')
@@ -730,6 +738,7 @@ test('a refused move is announced, and under the row it was refused for', async 
   stubFetch({ folders: ok([TERRAIN, ROCKS]), move: conflict('crossLibrary') })
   renderTree()
 
+  await openBranch('Terrain')
   const rocks = await screen.findByRole('button', { name: 'Rocks' })
   fireEvent.drop(rocks, draggingCliff)
 
@@ -813,6 +822,7 @@ test('a rename sends the name alone and never a parent', async () => {
   const fetchMock = stubFetch({ folders: ok([TERRAIN, ROCKS]), folderPatch: ok({}) })
   renderTree()
 
+  await openBranch('Terrain')
   fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Rocks') }))
   typeName('Boulders')
   fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
@@ -847,6 +857,7 @@ test('a refused rename keeps the dialog open and says which refusal it was', asy
   stubFetch({ folders: ok([TERRAIN, ROCKS]), folderPatch: conflict('slugTaken') })
   renderTree()
 
+  await openBranch('Terrain')
   fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Rocks') }))
   typeName('Scree')
   fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
@@ -867,4 +878,49 @@ test('the confirm stays disabled until the name has something in it', async () =
 
   typeName('   ')
   expect((create as HTMLButtonElement).disabled).toBe(true)
+})
+
+test('the categories are grouped under their parents once, each group in name order', () => {
+  const groups = groupByParent([ROCKS, TERRAIN, LIDS, FASTENERS, VENTS, ENCLOSURES])
+  expect(groups.get(null)?.map((folder) => folder.name)).toEqual(['Enclosures', 'Fasteners', 'Terrain'])
+  expect(groups.get(ENCLOSURES.id)?.map((folder) => folder.name)).toEqual(['Snap-fit lids', 'Vent grilles'])
+  expect(groups.get(TERRAIN.id)).toEqual([ROCKS])
+  expect(groups.has(FASTENERS.id)).toBe(false)
+})
+
+test('a closed branch draws none of its rows until it is opened, and closing it takes them away', async () => {
+  stubFetch({ folders: ok([ENCLOSURES, VENTS, LIDS, FASTENERS]) })
+  renderTree()
+
+  const show = await screen.findByRole('button', { name: strings.folders.showSubcategories('Enclosures') })
+  expect(show.getAttribute('aria-expanded')).toBe('false')
+  expect(screen.queryByRole('button', { name: 'Vent grilles' })).toBeNull()
+  // A category with nothing under it has nothing to open.
+  expect(screen.queryByRole('button', { name: strings.folders.showSubcategories('Fasteners') })).toBeNull()
+
+  fireEvent.click(show)
+  expect(screen.getByRole('button', { name: 'Vent grilles' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Snap-fit lids' })).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.hideSubcategories('Enclosures') }))
+  expect(screen.queryByRole('button', { name: 'Vent grilles' })).toBeNull()
+})
+
+test('the selected category is drawn with every branch above it open, and no other', async () => {
+  const BOULDERS: FolderNode = {
+    id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0008',
+    parentId: ROCKS.id,
+    name: 'Boulders',
+    slug: 'Boulders',
+    partCount: 3,
+  }
+  stubFetch({ folders: ok([TERRAIN, ROCKS, BOULDERS, ENCLOSURES, VENTS]) })
+  renderTree(BOULDERS.id)
+
+  const boulders = await screen.findByRole('button', { name: 'Boulders' })
+  expect(boulders.getAttribute('aria-current')).toBe('true')
+  const terrain = screen.getByRole('button', { name: strings.folders.hideSubcategories('Terrain') })
+  expect(terrain.getAttribute('aria-expanded')).toBe('true')
+  expect(screen.getByRole('button', { name: strings.folders.hideSubcategories('Rocks') })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Vent grilles' })).toBeNull()
 })
