@@ -56,7 +56,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
-use lapidary_db::{DbError, DownloadSource, PgParts, PgRevisions};
+use lapidary_db::{DbError, DownloadSource, PgParts};
 use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
 use lapidary_targets::{Format, Handover, Tool, bundle, negotiate};
 use serde::{Deserialize, Serialize};
@@ -777,10 +777,8 @@ pub async fn bundle(
 }
 
 /// Everything a bundle needs, or the refusal saying why there is none: parts of this library and
-/// not removed, each revision's source file, no two files at one path, and under 4 GiB.
-///
-/// ponytail: three queries per part and one per revision. Fine at the 500-part cap; one query
-/// for the whole selection if exports of large histories become slow.
+/// not removed, each revision's source file, no two files at one path, and under 4 GiB. The whole
+/// selection is read in one query, [`PgParts::bundle_parts`].
 async fn plan_bundle(
     state: &AppState,
     library: LibraryId,
@@ -813,7 +811,6 @@ async fn plan_bundle(
     }
 
     let repo = PgParts(state.db.clone());
-    let revisions = PgRevisions(state.db.clone());
     let Some(owner) = repo
         .libraries()
         .await
@@ -827,35 +824,32 @@ async fn plan_bundle(
         ));
     };
 
-    let not_here = || {
-        refuse(
+    let found = repo.bundle_parts(library, &parts).await.map_err(failed)?;
+    if found.len() != parts.len() {
+        return Err(refuse(
             StatusCode::NOT_FOUND,
             "One of the selected parts is not in this library, or was removed since the grid was loaded. Reload the grid, select again, then export.".to_owned(),
-        )
-    };
+        ));
+    }
     let mut paths = std::collections::HashSet::new();
     let mut entries = Vec::new();
-    let mut manifest_parts = Vec::with_capacity(parts.len());
-    for part in parts.iter().copied() {
-        if repo.library_of(part).await.map_err(failed)? != Some(library) {
-            return Err(not_here());
-        }
-        let Some(detail) = repo.detail(part).await.map_err(failed)? else {
-            return Err(not_here());
-        };
-        let sources = repo.part_sources(part).await.map_err(failed)?;
-        let mut history = revisions.history(part).await.map_err(failed)?;
-        history.reverse();
-        let last = history.len().saturating_sub(1);
+    let mut manifest_parts = Vec::with_capacity(found.len());
+    for part in found {
+        let labels: Vec<(RevisionId, String)> = part
+            .revisions
+            .iter()
+            .map(|row| (row.id, row.rev_label.clone()))
+            .collect();
+        let last = part.revisions.len().saturating_sub(1);
 
-        let mut manifest_revisions = Vec::with_capacity(history.len());
-        for (index, row) in history.iter().enumerate() {
-            let Some(source) = repo.source_for_download(row.id).await.map_err(failed)? else {
+        let mut manifest_revisions = Vec::with_capacity(part.revisions.len());
+        for (index, row) in part.revisions.into_iter().enumerate() {
+            let Some(source) = row.source else {
                 return Err(refuse(
                     StatusCode::CONFLICT,
                     format!(
                         "Revision {} of {} has no source file to put in a bundle. Re-scan its library to attach one, then export again.",
-                        row.rev_label, detail.name
+                        row.rev_label, part.name
                     ),
                 ));
             };
@@ -864,7 +858,7 @@ async fn plan_bundle(
                     StatusCode::CONFLICT,
                     format!(
                         "Nobody recorded how revision {} of {} was stored, so its bytes cannot be read back. Re-scan its library, then export again.",
-                        row.rev_label, detail.name
+                        row.rev_label, part.name
                     ),
                 ));
             }
@@ -874,7 +868,7 @@ async fn plan_bundle(
                     value: source.size_bytes,
                 })
             })?;
-            let path = bundle::entry_path(&detail.source_path, &row.rev_label, index == last);
+            let path = bundle::entry_path(&part.source_path, &row.rev_label, index == last);
             if path == bundle::MANIFEST || !paths.insert(path.clone()) {
                 return Err(refuse(
                     StatusCode::CONFLICT,
@@ -884,11 +878,11 @@ async fn plan_bundle(
                 ));
             }
             manifest_revisions.push(bundle::ManifestRevision {
-                rev_label: row.rev_label.clone(),
-                parent_label: history
+                parent_label: labels
                     .iter()
-                    .find(|parent| Some(parent.id) == row.parent)
-                    .map(|parent| parent.rev_label.clone()),
+                    .find(|(id, _)| Some(*id) == row.parent)
+                    .map(|(_, label)| label.clone()),
+                rev_label: row.rev_label,
                 origin: row.origin.as_str().to_owned(),
                 created_at: row.created_at.to_string(),
                 blake3: source.hash.to_hex(),
@@ -899,11 +893,12 @@ async fn plan_bundle(
             entries.push(BundleEntry { path, size, source });
         }
         manifest_parts.push(bundle::ManifestPart {
-            name: detail.name,
-            part_number: detail.part_number,
-            source_path: detail.source_path,
-            tags: detail.tags,
-            sources: sources
+            name: part.name,
+            part_number: part.part_number,
+            source_path: part.source_path,
+            tags: part.tags,
+            sources: part
+                .sources
                 .into_iter()
                 .map(|source| bundle::ManifestSource {
                     url: source.url,

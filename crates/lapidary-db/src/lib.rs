@@ -21,11 +21,12 @@ pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use repo::{
-    DerivativeBytes, DownloadSource, EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes,
-    IngestRequest, InstanceStorage, LibraryRow, MoveRow, MoveSource, NewPartImage, NewPartSource,
-    PartDetailRow, PartImageRow, PartRepository, PartRow, PartSourceRow, PgBlobs, PgIngest,
-    PgParts, PurgeReport, Purged, ReapReport, RenderCacheFreed, RevisionSource, Shows, Sort,
-    StorageTotals, StoredBlobRow, TessellationRow,
+    BundlePartRow, BundleRevisionRow, BundleSource, DerivativeBytes, DownloadSource,
+    EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage,
+    LibraryRow, MoveRow, MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow,
+    PartRepository, PartRow, PartSourceRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged,
+    ReapReport, RenderCacheFreed, RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
+    TessellationRow,
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
