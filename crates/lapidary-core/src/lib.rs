@@ -26,7 +26,10 @@ pub use ids::{
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance};
-pub use part::{LibraryMode, PartSummary, RevisionOrigin, path_escapes, source_format};
+pub use part::{
+    CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, is_model_file,
+    path_escapes, source_format,
+};
 pub use pmi::{Pmi, PmiDatum, PmiDimension, PmiFace, PmiTolerance};
 
 #[cfg(test)]

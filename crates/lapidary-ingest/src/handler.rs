@@ -193,7 +193,7 @@ impl JobHandler for WorkerHandler {
 
 /// The formats that go to the CAD kernel, as `source_format` spells them. The scan walk
 /// accepts these beside the mesh extensions, so the two cannot disagree.
-pub(crate) const CAD_FORMATS: [&str; 4] = ["step", "stp", "iges", "igs"];
+pub(crate) use lapidary_core::CAD_FORMATS;
 
 impl WorkerHandler {
     /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
