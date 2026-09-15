@@ -18,6 +18,7 @@ async fn import(pool: sqlx::PgPool, body: serde_json::Value) -> (StatusCode, ser
             blob_root: "/nonexistent-blob-root".into(),
             upload_dir: "/nonexistent-upload-dir".into(),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     )

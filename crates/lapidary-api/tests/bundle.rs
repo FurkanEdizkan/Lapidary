@@ -122,6 +122,7 @@ async fn post(
             blob_root: root.to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     )

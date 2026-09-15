@@ -206,6 +206,15 @@ Keep an in-memory `HashMap<Blake3, Instant>` in the API process, flush every 5 m
 one batched `UPDATE … FROM (VALUES …)`, and only write rows more than a day stale. Day
 precision is plenty for a 30-day rule.
 
+**Built** in the correctness-and-debt goal, 2026-09-15 (`lapidary_db::Touches`).
+- **Recording.** A read records its hash and time in the api process's map.
+- **The flush.** It runs every five minutes and when the server stops. One `UPDATE … FROM unnest($1::text[], $2::bigint[])` writes rows more than a day stale.
+- **Why `unnest`.** Two typed arrays keep the statement static, where `VALUES` would be SQL built
+  from data.
+- **Tests** flush explicitly before they read the column.
+- **What a crash costs.** Up to five minutes of access times. That moves a blob's place in an age
+  ordering, and nothing else.
+
 ### 1.5 Eviction beats compression — for derivatives only
 
 - **Source blobs:** compress hard, **never delete**. `ref_count` guards removal.

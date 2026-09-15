@@ -204,7 +204,13 @@ fn blob_file(root: &Path, hash: &BlobHash) -> PathBuf {
 /// `blob.last_accessed_at` as epoch microseconds, `None` while the column is still NULL —
 /// the same trick `tests/blob.rs` uses, and for the same reason: sqlx here carries neither
 /// `chrono` nor `time`.
-async fn last_read_us(pool: &sqlx::PgPool, hash: &BlobHash) -> Option<i64> {
+async fn last_read_us(
+    touches: &lapidary_db::Touches,
+    pool: &sqlx::PgPool,
+    hash: &BlobHash,
+) -> Option<i64> {
+    // What the server's flush would have written by now (`DATA.md` §1.4).
+    touches.flush(pool).await.expect("flushes the reads");
     sqlx::query_scalar(
         "SELECT (extract(epoch FROM last_accessed_at) * 1000000)::bigint FROM blob WHERE blake3 = $1",
     )
@@ -314,6 +320,7 @@ async fn a_compressed_source_comes_back_byte_identical(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -361,6 +368,7 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -409,6 +417,7 @@ async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: s
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -487,6 +496,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -523,6 +533,7 @@ async fn bytes_at_a_folder_path_that_do_not_hash_truncate_the_download(pool: sql
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -558,6 +569,7 @@ async fn a_turkish_name_is_percent_encoded_in_one_half_and_degraded_in_the_other
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -586,6 +598,7 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: Default::default(),
     };
 
     let (converted, _, converted_body) = get(
@@ -628,6 +641,7 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -647,6 +661,7 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
@@ -659,6 +674,7 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: touches.clone(),
     };
 
     // Delete is soft, and a download URL is held by whoever was last shown the grid: the
@@ -670,7 +686,7 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
     .await;
     assert_eq!(deleted, StatusCode::NOT_FOUND);
     assert_eq!(
-        last_read_us(&pool, &seeded.hash).await,
+        last_read_us(&touches, &pool, &seeded.hash).await,
         None,
         "a request that served nothing is not somebody reading this blob — otherwise a \
          caller could warm any blob by asking for it"
@@ -690,13 +706,14 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
     .await;
     assert_eq!(restored, StatusCode::OK);
     assert!(
-        last_read_us(&pool, &seeded.hash).await.is_some(),
+        last_read_us(&touches, &pool, &seeded.hash).await.is_some(),
         "handing the bytes to somebody is what this column records"
     );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // Cleared directly, because this test is about the route's answer and not about how
@@ -715,6 +732,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: touches.clone(),
         },
         Role::Api,
     );
@@ -733,7 +751,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
         "the message must name the blob and say what is wrong with the row: {body}"
     );
     assert_eq!(
-        last_read_us(&pool, &seeded.hash).await,
+        last_read_us(&touches, &pool, &seeded.hash).await,
         None,
         "nothing was served, so nothing was read"
     );
@@ -741,6 +759,7 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // A different part's bytes, stored at the same level, then moved on top of this
@@ -765,6 +784,7 @@ async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: touches.clone(),
         },
         Role::Api,
     );
@@ -795,12 +815,12 @@ async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx
     );
 
     // The property that did NOT survive streaming, recorded rather than quietly dropped.
-    // `touch_blob` used to sit after the hash check, so refused bytes stayed cold. It now
+    // The touch used to sit after the hash check, so refused bytes stayed cold. It now
     // runs before the first chunk goes out, because there is no longer a point after the
     // check and before the response. A blob that was read is marked read, which is what
     // the column has always claimed to mean; slice 7's eviction inherits that.
     assert!(
-        last_read_us(&pool, &seeded.hash).await.is_some(),
+        last_read_us(&touches, &pool, &seeded.hash).await.is_some(),
         "the blob was read, so it is warm — even though the read ended in a refusal"
     );
 }
@@ -840,6 +860,7 @@ async fn a_file_larger_than_the_stream_buffer_still_comes_back_byte_identical(po
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -876,6 +897,7 @@ async fn the_worker_role_does_not_serve_downloads(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Worker,
     );
@@ -897,6 +919,7 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: Default::default(),
     };
 
     // The one shape that reaches the handler as a `QueryRejection`, and the reason that
@@ -931,6 +954,7 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
     // A volume that came back empty, which is the only way a referenced source blob goes
@@ -945,6 +969,7 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: touches.clone(),
         },
         Role::Api,
     );
@@ -975,7 +1000,7 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
         "the blob store's path stays out of the response: {body}"
     );
     assert_eq!(
-        last_read_us(&pool, &seeded.hash).await,
+        last_read_us(&touches, &pool, &seeded.hash).await,
         None,
         "nothing was served, so nothing was read"
     );
@@ -983,6 +1008,7 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     // The folder-path twin of `a_source_blob_missing_from_disk_is_its_own_500`, and not a
     // duplicate of it: "the file for that hash" is the wrong thing to tell an operator
     // about a part whose bytes were never written to `blobs/ab/cd/<hash>` at all — nothing
@@ -999,6 +1025,7 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: touches.clone(),
         },
         Role::Api,
     );
@@ -1023,7 +1050,7 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
         "the store's own path stays out of the response, same as the other layout: {body}"
     );
     assert_eq!(
-        last_read_us(&pool, &seeded.hash).await,
+        last_read_us(&touches, &pool, &seeded.hash).await,
         None,
         "nothing was served, so nothing was read"
     );
@@ -1066,6 +1093,7 @@ async fn a_tessellation_downloads_under_a_lapidary_name_and_an_absent_one_says_h
                 blob_root: root.to_path_buf(),
                 upload_dir: PathBuf::from("/nonexistent-upload-dir"),
                 host_storage_root: None,
+                touches: Default::default(),
             },
             Role::Api,
         )

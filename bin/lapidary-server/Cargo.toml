@@ -56,7 +56,8 @@ anyhow.workspace = true
 axum.workspace = true
 figment.workspace = true
 serde.workspace = true
-tokio.workspace = true
+# `time` for the api role's five-minute flush of which blobs were read (DATA.md §1.4).
+tokio = { workspace = true, features = ["time"] }
 # CancellationToken. Not optional: main() creates one for both roles so that the
 # graceful-shutdown path is one code path rather than two, only one of which is compiled.
 tokio-util.workspace = true

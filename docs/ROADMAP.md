@@ -836,6 +836,26 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Old housekeeping** from before the folder tree, not rechecked: the `lapidary_lapidary-blobs`
   volume, and a `storage/` directory left at `chmod 777`.
 
+### Goal 2: correctness and debt (2026-09-15)
+
+- **Goal file:** `docs/superpowers/plans/2026-09-15-correctness-debt-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger.
+
+**Batched access tracking** (`812567e`).
+- **Recording.** A read records its blob in `lapidary_db::Touches`, in the api process.
+- **The flush** runs every five minutes, and once when the server stops. It is one
+  `UPDATE … FROM unnest`, writing only rows more than a day stale.
+- **What went.** `PgBlobs::touch_blob` and its `UPDATE` per read.
+- **Tests:**
+  - A flush writes only the blobs that were read.
+  - 300 reads of one blob are one write.
+  - A row read today is not rewritten; one two days stale is.
+  - Mutation: dropping the day filter was caught by both the db test and the api test.
+  - The blob and download tests now flush before they read the column.
+  - "A second read moves the timestamp forward" became "a second read the same day writes nothing",
+    which is what §1.4 asks for.
+- **Not measured:** how long a flush takes on a real corpus.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

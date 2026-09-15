@@ -33,6 +33,7 @@ fn server(pool: sqlx::PgPool) -> Server {
         blob_root: blobs.path().to_path_buf(),
         upload_dir: uploads.path().to_path_buf(),
         host_storage_root: None,
+        touches: Default::default(),
     };
     Server {
         _blobs: blobs,

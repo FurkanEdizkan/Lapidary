@@ -89,6 +89,7 @@ async fn get_page(
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -426,6 +427,7 @@ async fn get_storage(
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         role,
     );
@@ -847,6 +849,7 @@ async fn get_instance_storage(
             blob_root: root,
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: host.map(str::to_owned),
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -1057,6 +1060,7 @@ async fn put_part_number(pool: sqlx::PgPool, part: &str, body: serde_json::Value
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     )
@@ -1174,6 +1178,7 @@ async fn get_uri(pool: sqlx::PgPool, uri: &str) -> (StatusCode, serde_json::Valu
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     )
@@ -1373,6 +1378,7 @@ async fn tags_request(
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     )
@@ -1562,6 +1568,7 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
             blob_root: store.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
