@@ -27,6 +27,15 @@ revLabel: string, name: string, partNumber: string | null,
  */
 tags: Array<string>, 
 /**
+ * What the part is made of: what a person typed, or else what its file states. The materials
+ * facet counts these.
+ */
+materials: Array<string>, 
+/**
+ * Whether a person typed `materials`, so a file's statement no longer replaces them.
+ */
+materialsTyped: boolean, 
+/**
  * The part's custom field values as stored, keyed by field (`docs/DATA.md` §3.5). A value
  * whose field was since removed is still here, and the page shows it as no longer defined.
  */

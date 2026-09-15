@@ -61,6 +61,11 @@ pub struct PartDetail {
     pub part_number: Option<String>,
     /// The tags a person gave the part, in their order. Empty when nobody has.
     pub tags: Vec<String>,
+    /// What the part is made of: what a person typed, or else what its file states. The materials
+    /// facet counts these.
+    pub materials: Vec<String>,
+    /// Whether a person typed `materials`, so a file's statement no longer replaces them.
+    pub materials_typed: bool,
     /// The part's custom field values as stored, keyed by field (`docs/DATA.md` §3.5). A value
     /// whose field was since removed is still here, and the page shows it as no longer defined.
     #[ts(type = "Record<string, unknown>")]
@@ -192,6 +197,8 @@ fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
         name: row.name,
         part_number: row.part_number,
         tags: row.tags,
+        materials: row.materials,
+        materials_typed: row.materials_typed,
         custom: row.custom,
         source_path: row.source_path,
         thumbnail: row

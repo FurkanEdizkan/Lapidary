@@ -1458,6 +1458,19 @@ export const strings = {
     /** A refusal that arrived without a sentence of its own. */
     refusedWithoutReason: 'Could not save these tags. Reload the part and try again.',
   },
+  materials: {
+    /** What a part is made of: typed here, or read off its CAD file until someone types them. */
+    title: 'Materials',
+    field: 'New material',
+    add: 'Add material',
+    saving: 'Saving…',
+    /** The remove button's whole name, so a screen reader hears which material goes. */
+    remove: (material: string) => `Remove material ${material}`,
+    /** Beside materials nobody typed. */
+    fromFile: 'As the file states. A list you change here is kept instead, until you remove every material.',
+    /** A refusal that arrived without a sentence of its own. */
+    refusedWithoutReason: 'Could not save these materials. Reload the part and try again.',
+  },
   fields: {
     /** A library's own named values on its parts: a supplier, a stock count. */
     title: 'Fields',

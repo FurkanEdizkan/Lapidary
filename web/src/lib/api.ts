@@ -50,6 +50,7 @@ import type {
   SetFieldValue,
   ScanAccepted,
   SetFraming,
+  SetMaterials,
   SetTags,
   StoredImage,
   UploadFile,
@@ -1078,7 +1079,34 @@ export async function setPartTags(
   tags: readonly string[],
 ): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
   const body: SetTags = { tags: [...tags] }
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/tags`, {
+  return putList(`/api/parts/${encodeURIComponent(part)}/tags`, body, strings.tags.refusedWithoutReason, 'tags')
+}
+
+/**
+ * `PUT /api/parts/{id}/materials` — replace a part's materials with `materials`, kept over what its file
+ * states. An empty list hands the part back to its file. Refused as tags are.
+ */
+export async function setPartMaterials(
+  part: PartId,
+  materials: readonly string[],
+): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  const body: SetMaterials = { materials: [...materials] }
+  return putList(
+    `/api/parts/${encodeURIComponent(part)}/materials`,
+    body,
+    strings.materials.refusedWithoutReason,
+    'materials',
+  )
+}
+
+/** One whole list PUT to a part: saved, or refused in the server's own sentence, else `fallback`. */
+async function putList(
+  path: string,
+  body: SetTags | SetMaterials,
+  fallback: string,
+  what: string,
+): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  const response = await fetch(path, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -1090,12 +1118,9 @@ export async function setPartTags(
       answer !== null && typeof answer === 'object'
         ? (answer as { message?: unknown }).message
         : undefined
-    return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.tags.refusedWithoutReason,
-    }
+    return { kind: 'refused', message: typeof message === 'string' ? message : fallback }
   }
-  throw new Error(`saving tags returned ${response.status}`)
+  throw new Error(`saving ${what} returned ${response.status}`)
 }
 
 /**

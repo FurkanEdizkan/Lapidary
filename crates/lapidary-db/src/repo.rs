@@ -1425,6 +1425,10 @@ pub struct PartDetailRow {
     pub part_number: Option<String>,
     /// The tags a person gave the part, in the order they gave them.
     pub tags: Vec<String>,
+    /// What the part is made of: what a person typed, or else what its file states.
+    pub materials: Vec<String>,
+    /// Whether a person typed `materials`, so a file's statement no longer replaces them.
+    pub materials_typed: bool,
     /// The part's custom field values as stored, `{}` when it has none (`docs/DATA.md` §3.5).
     pub custom: serde_json::Value,
     /// The part's identity within its library since slice 6a, and the path a scanned or
@@ -1488,6 +1492,8 @@ struct DetailColumns {
     name: String,
     part_number: Option<String>,
     tags: Vec<String>,
+    materials: Vec<String>,
+    materials_typed: bool,
     custom_json: Option<String>,
     source_path: String,
     rev_label: String,
@@ -1776,8 +1782,9 @@ impl PgParts {
     /// Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Written after
     /// the part commits and on its own, so a refusal here leaves a part already searchable.
     ///
-    /// The materials go to their typed column in the same statement, so the facet and the JSON
-    /// they are read from can never disagree about one part.
+    /// The materials go to their column in the same statement, so the facet and the JSON they are
+    /// read from agree about one part — unless a person typed the part's materials
+    /// ([`PgParts::set_materials`]), which a file's statement never replaces.
     pub async fn set_metadata(
         &self,
         part: PartId,
@@ -1787,7 +1794,8 @@ impl PgParts {
         // `||`, not `=`: the file's own statement replaces the keys it carries (`cad`) and leaves a
         // person's `custom` values alone.
         sqlx::query(
-            "UPDATE part SET metadata_json = metadata_json || $2, materials = $3 WHERE id = $1",
+            "UPDATE part SET metadata_json = metadata_json || $2, \
+             materials = CASE WHEN materials_typed THEN materials ELSE $3 END WHERE id = $1",
         )
         .bind(part.as_uuid())
         .bind(metadata)
@@ -1816,7 +1824,8 @@ impl PgParts {
     pub async fn detail(&self, part: PartId) -> Result<Option<PartDetailRow>, DbError> {
         let row: Option<DetailColumns> = sqlx::query_as(
             "SELECT p.id AS part_id, p.library_id, r.id AS revision_id, p.name, \
-                    p.part_number, p.tags, (p.metadata_json->'custom')::text AS custom_json, \
+                    p.part_number, p.tags, p.materials, p.materials_typed, \
+                    (p.metadata_json->'custom')::text AS custom_json, \
                     p.source_path, r.rev_label, \
                     d.thumb_bytes, d.kernel_version, \
                     r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
@@ -1881,6 +1890,8 @@ impl PgParts {
                 .and_then(|json| serde_json::from_str(&json).ok())
                 .unwrap_or_else(|| serde_json::json!({})),
             tags: c.tags,
+            materials: c.materials,
+            materials_typed: c.materials_typed,
             source_path: c.source_path,
             rev_label: c.rev_label,
             thumbnail_webp: c.thumb_bytes,
@@ -2057,6 +2068,28 @@ impl PgParts {
         )
         .bind(part.as_uuid())
         .bind(tags)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// The materials a person gave this part, replacing the ones it had and kept over whatever its file
+    /// states from then on. An empty list hands the part back to its file: the materials its file stated
+    /// when last read (`metadata_json.cad.materials`) at once, and each later read's after that. Only a
+    /// live part, for [`PgParts::set_part_number`]'s reason.
+    pub async fn set_materials(&self, part: PartId, materials: &[String]) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET \
+               materials = CASE WHEN cardinality($2::text[]) > 0 THEN $2::text[] \
+                 ELSE ARRAY(SELECT jsonb_array_elements_text( \
+                   CASE WHEN jsonb_typeof(metadata_json->'cad'->'materials') = 'array' \
+                        THEN metadata_json->'cad'->'materials' ELSE '[]'::jsonb END)) END, \
+               materials_typed = cardinality($2::text[]) > 0, \
+               updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(part.as_uuid())
+        .bind(materials)
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected() > 0)
