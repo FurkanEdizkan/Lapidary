@@ -9,7 +9,7 @@ const { mounts, prepare, drawn } = vi.hoisted(() => ({
   mounts: [] as string[],
   prepare: vi.fn(async () => {}),
   // What the stand-in view reports drawing, and the parts it was last told to hide.
-  drawn: { parts: 3 as number | null, hidden: [] as number[], ghost: null as string | null },
+  drawn: { parts: 3 as number | null, hidden: [] as number[], ghost: null as string | null, annotated: false },
 }))
 
 // jsdom draws no WebGL, so the view is a stand-in that records each time it is mounted.
@@ -25,11 +25,13 @@ vi.mock('./Viewer', async () => {
       hidden,
       onParts,
       ghost,
+      annotated,
     }: {
       part: PartDetail
       hidden?: ReadonlySet<number>
       onParts?: (parts: number | null) => void
       ghost?: string | null
+      annotated?: boolean
     }) {
       useEffect(() => {
         mounts.push(part.id)
@@ -39,6 +41,7 @@ vi.mock('./Viewer', async () => {
       }, [onParts])
       drawn.hidden = [...(hidden ?? [])].sort((a, b) => a - b)
       drawn.ghost = ghost ?? null
+      drawn.annotated = annotated ?? false
       return null
     },
     prepare,
@@ -278,6 +281,51 @@ test('a part lists the dimensions and tolerances its file specifies, labelled as
   expect(item(strings.pmi.tolerance('perpendicularity', 0.05, ['A']))).toContain(strings.pmi.face('cylinder'))
   expect(item(strings.pmi.datum('A'))).toContain(strings.pmi.face('plane'))
   expect(screen.queryByText(/≈/)).toBeNull()
+  vi.unstubAllGlobals()
+})
+
+/** The list can be drawn in the view, and says which annotations the view has no face to put beside. */
+test('dimensions and tolerances can be shown in the 3D view, and say which the view cannot place', async () => {
+  const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
+  const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
+  const cylinder = { prototype: '0:1:1:1', face: 1 }
+  const freeform = { prototype: '0:1:1:1', face: 9 }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith(pmiHash)
+          ? {
+              dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }],
+              tolerances: [{ type: 'profile_of_surface', value: 0.1, datums: [], faces: [freeform] }],
+              datums: [],
+            }
+          : url.endsWith(entitiesHash)
+            ? [{ type: 'cylinder', prototype: '0:1:1:1', face: 1, radius: 11, origin: [0, 0, 0], axis: [0, 0, 1] }]
+            : [],
+    })),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, tessellationL0: 'a0'.repeat(32) }} />
+    </QueryClientProvider>,
+  )
+
+  const toggle = await screen.findByRole('button', { name: strings.pmi.showInView })
+  expect(toggle.getAttribute('aria-pressed')).toBe('false')
+  expect(drawn.annotated).toBe(false)
+  const item = (text: string) => screen.getByText(text).closest('li')?.textContent ?? ''
+  await waitFor(() => expect(item(strings.pmi.dimension('diameter', 22, 0.05, 0))).toContain(strings.pmi.face('cylinder')))
+  expect(item(strings.pmi.tolerance('profile_of_surface', 0.1, []))).not.toContain(strings.pmi.notDrawn(false))
+
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-pressed')).toBe('true')
+  await waitFor(() => expect(drawn.annotated).toBe(true))
+  expect(item(strings.pmi.tolerance('profile_of_surface', 0.1, []))).toContain(strings.pmi.notDrawn(false))
+  expect(item(strings.pmi.dimension('diameter', 22, 0.05, 0))).not.toContain(strings.pmi.notDrawn(false))
   vi.unstubAllGlobals()
 })
 
