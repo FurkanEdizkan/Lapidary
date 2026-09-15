@@ -69,6 +69,14 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | B-rep formats: STEP, IGES | 2 |
 | Failed-file drawer with actionable errors and per-file retry | 2 |
 | Watched-folder ingest (agent) | 4 |
+<!--
+  Built in the local product goal, on Linux: `lapidary watch <folder> --library <id>`.
+  - Polls the tree every 2 s, applies DATA §6.2's ignore list whole, settles, and hashes.
+  - Uploads through the probe, chunks and commit that check-in uses, with no lock. The server
+    decides ingested, skipped, revised or unkept.
+  - A local deletion changes nothing in the library.
+  - Not yet: `notify` in place of the poll, macOS and Windows.
+-->
 | Auto-detect and offer duplicate merge on ingest | 6 |
 
 ## 2. Browse, search, triage

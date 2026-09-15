@@ -1337,6 +1337,56 @@ needed a `test/` branch.
 - **Not checked: a part hidden in an assembly.** Its stencil passes draw the whole mesh, so a cap likely
   shows across a hidden part's section. Cutting assemblies still needs OCCT.
 
+**Watched-folder ingest through the agent** (`f737b6b`).
+- **The command:** `lapidary watch <folder> --library <id>`, on Linux.
+  - Every 2 s the folder is listed recursively, without following symlinks.
+  - DATA §6.2's ignore list applies whole. What a model file is now lives in `lapidary-core`, so the
+    scan and the agent read one list.
+  - A change settles for 2 s and is hashed before anything is believed. A hash equal to the one last
+    sent is not a change.
+- **Uploads.**
+  - The probe, the 8 MiB chunks and the commit came out of check-in, which now shares them. Watch
+    sends no lock.
+  - Files that settle in the same poll go up together, in uploads of at most 64 MiB each, so a first
+    run over a large folder does not hold it all in memory.
+  - The source path is the file's path under the folder.
+  - The agent prints the batch's counts, and each failure with its path.
+- **A deletion** is printed once and forgotten. Nothing is sent.
+- **State:** `$XDG_STATE_HOME/lapidary/watch-<library>.json` keeps each path's size, mtime and BLAKE3
+  as last sent. Nothing is written inside the watched folder. A first run uploads the whole folder,
+  and the probe skips the bytes the server already holds.
+- **The ceiling,** marked `ponytail:`, is the spec's measurement above: 12 to 13 ms a poll, warm, over
+  the corpus's 2,778 files. `notify` replaces the poll when a tree is large enough for that to matter.
+- **Tests:**
+  - the ignore list;
+  - source paths, nested, and never leaving the folder;
+  - a deletion that sends nothing;
+  - after a restart, an unchanged file sends nothing, and a file changed while stopped is hashed;
+  - uploads split under 64 MiB;
+  - a model file known by its extension in any case.
+  - Mutation-checked, all 7 caught: `.lck` dropped from the ignore list, a `..` skipped instead of
+    refused, the deletion filter inverted, deleted paths sent, every file starting unseen after a
+    restart, an upload's running total ignored, and extensions compared case-sensitively.
+- **Check,** on the native stack with the mock kernel. A copy of `example/parts` in `target/` was
+  watched into a new controlled library:
+
+| Step | Result |
+|---|---|
+| Start, with no state | all 6 files in one upload: ingested 6, parts listed 3.1 s after start |
+| Add `hex-spacer-m4x30-lp-2146-01.stl` | ingested 1; 7 parts, 3.6 s after the copy |
+| Change `hex-spacer-m4x20-lp-2145-01.stl`, bore 4.2 → 4.5 mm | revised 1; revision 1 → 2, 4.7 s after the copy |
+| Write `flange-dn40-lp-3310-02.stl.tmp` | nothing printed or sent in 10 s; 7 parts |
+| Delete `vee-block-lp-3072-02.stl` | printed once; the part is still on the server; 7 parts |
+| Restart over the same state | nothing printed but the start line in 12 s; 7 parts |
+
+  - The state file named the six files still present, and the watched folder held only the files put
+    there.
+- **Not checked:** an upload onto a part checked out to somebody, which the worker refuses. The agent
+  prints the refusal with its path, as it arrives.
+
+**Bundles** (the goal's stage 7). Slice 2 shipped export (`da9ff39`) and import (`4d3e05c`), so this goal
+builds nothing for them.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
