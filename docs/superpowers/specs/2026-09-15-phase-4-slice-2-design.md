@@ -352,7 +352,8 @@ path, then calls the import route and follows the batch as any upload does.
    return 30 days later.
 9. **Export limits.**
    - It is a form post of at most 500 part ids.
-   - It refuses a bundle whose sources total 4 GiB or more, rather than writing ZIP64.
+   - It refuses a bundle past an import's own limits, 2 GiB or 10,000 files, so it never needs
+     ZIP64 (the review fixes).
    - The ZIP writer is written by hand, since no crate here streams one.
 10. **One import job per part.** The batch counts parts, not revisions.
 11. **Import stamps `created_at`.** Imported revisions get the time of import. Their order and the

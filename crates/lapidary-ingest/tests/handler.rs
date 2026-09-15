@@ -2960,6 +2960,156 @@ async fn a_changed_file_in_a_hobby_library_is_unkept_and_writes_nothing(pool: Pg
     assert_eq!(blobs_after, blobs_before, "no blob row written");
 }
 
+/// The model directory a race gives the file: the plain name is taken, so it takes the
+/// disambiguated one, and `bytes` are already written there.
+fn taken_path(blob_root: &Path, bytes: &[u8]) -> PathBuf {
+    let library = blob_root.join(LIBRARY_DIR);
+    std::fs::create_dir_all(library.join("bracket-lp-1042-03")).expect("the plain name, taken");
+    let taken = library
+        .join(format!(
+            "bracket-lp-1042-03_{}",
+            &hex_of(BRACKET_FIXTURE)[..6]
+        ))
+        .join(BRACKET);
+    stage(
+        blob_root,
+        taken
+            .strip_prefix(blob_root)
+            .expect("under the root")
+            .to_str()
+            .expect("utf-8"),
+        bytes,
+    );
+    taken
+}
+
+/// A new part's file never lands on another's (Phase 4 slice 1 spec §3.3): other bytes already
+/// at its path are left exactly as they are, and the job is decided again.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_new_file_never_replaces_other_bytes_already_at_its_path(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let taken = taken_path(blob_root.path(), GEAR_FIXTURE);
+
+    let error = handler
+        .handle(&job_for(BRACKET))
+        .await
+        .expect_err("another job's bytes are at this path");
+    assert!(matches!(error, HandlerError::Transient { .. }), "{error:?}");
+    assert_eq!(
+        std::fs::read(&taken).expect("the other job's file"),
+        GEAR_FIXTURE,
+        "the bytes already there are left as they are"
+    );
+    assert_eq!(part_count(&pool).await, 0);
+}
+
+/// The same bytes already at that path are this file, left by an attempt that stopped before its
+/// row. They ingest as written, rather than failing every attempt after the first.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_same_bytes_already_at_its_path_ingest_as_written(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let taken = taken_path(blob_root.path(), BRACKET_FIXTURE);
+
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let rows = revision_rows(&pool).await;
+    assert_eq!(
+        blob_root.path().join(&rows[0].4),
+        taken,
+        "the row names the file already there"
+    );
+}
+
+/// Holds a job inside the kernel until the test lets it go, so another job can finish first.
+struct HeldCad {
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl Kernel for HeldCad {
+    fn version(&self, params: &KernelParams) -> KernelVersion {
+        FakeCad.version(params)
+    }
+
+    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
+        self.reached.notify_one();
+        self.release.notified().await;
+        FakeCad.process(bytes, params).await
+    }
+}
+
+/// Two jobs, different bytes, one new path (slice 1 spec §3.3). The loser read no part there, and
+/// the winner files one while the loser is in the kernel. The loser is decided again rather than
+/// skipped, and its retry reads the winner's part: unkept in a hobby library, a revision in a
+/// controlled one. Neither file replaces the other, and the loser leaves no copy behind.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let controlled = second_library(&pool).await;
+    make_controlled(&pool, controlled).await;
+
+    for (library, settled) in [(seeded(), Outcome::Unkept), (controlled, Outcome::Revised)] {
+        let winner_dir = tempfile::tempdir().expect("temp dir");
+        let loser_dir = tempfile::tempdir().expect("temp dir");
+        stage(winner_dir.path(), FIXTURE_PLATE, BRACKET_FIXTURE);
+        stage(loser_dir.path(), FIXTURE_PLATE, GEAR_FIXTURE);
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let winner = WorkerHandler {
+            cad: Some(Arc::new(FakeCad)),
+            ..handler_over(&pool, winner_dir.path(), blob_root.path())
+        };
+        let loser = WorkerHandler {
+            cad: Some(Arc::new(HeldCad {
+                reached: reached.clone(),
+                release: release.clone(),
+            })),
+            ..handler_over(&pool, loser_dir.path(), blob_root.path())
+        };
+        let job = job_for_library(library, FIXTURE_PLATE);
+
+        let (lost, ()) = tokio::join!(loser.handle(&job), async {
+            reached.notified().await;
+            assert_eq!(
+                winner.handle(&job).await.expect("the winner ingests"),
+                Outcome::Ingested
+            );
+            release.notify_one();
+        });
+        let lost = lost.expect_err("the loser is not skipped");
+        assert!(matches!(lost, HandlerError::Transient { .. }), "{lost:?}");
+        let copies: Vec<PathBuf> = all_files(blob_root.path())
+            .into_iter()
+            .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes == GEAR_FIXTURE))
+            .collect();
+        assert!(copies.is_empty(), "the loser left its bytes at {copies:?}");
+
+        let retry = WorkerHandler {
+            cad: Some(Arc::new(FakeCad)),
+            ..handler_over(&pool, loser_dir.path(), blob_root.path())
+        };
+        assert_eq!(
+            retry.handle(&job).await.expect("the retry settles"),
+            settled
+        );
+    }
+
+    for (label, _, _, hash, path) in revision_rows(&pool).await {
+        let bytes = std::fs::read(blob_root.path().join(&path))
+            .unwrap_or_else(|e| panic!("revision {label} at {path} is not on disk: {e}"));
+        assert_eq!(hex_of(&bytes), hash, "{path} holds its own row's bytes");
+    }
+}
+
 /// Purge collects every revision's file, and the sweep leaves no directory behind whichever
 /// order it reaches them in: not `revisions/1`, not `revisions`, not the model directory.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
