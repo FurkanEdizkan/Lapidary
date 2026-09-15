@@ -2331,6 +2331,14 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 - **Decided without the owner:** only the items that open a dialog close the menu. A scan or a sweep reports on
   the page beside it, and the view menu's layout buttons are chosen while watching the grid.
 
+**The agent's lock check, tested** (`8d1df2a`).
+- **The change.** `lapidary open` reuses a checkout only while its lock is the part's active one, and compared the
+  two inline in `main.rs`, which has no tests. The comparison is now `Checkout::holds` in `checkout.rs`, beside the
+  checkout tests, and `open` calls it.
+- **Test:** a checkout holds its part while its own lock is active, and not once that lock is released or another
+  holder's is active.
+- **Mutation-checked, all 3 caught:** any lock passing, every lock passing, and the held lock refused.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
