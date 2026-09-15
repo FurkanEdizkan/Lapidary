@@ -222,12 +222,20 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
     found
 }
 
-/// `$XDG_STATE_HOME/lapidary/watch-<library>.json`, falling back to `~/.local/state`. Nothing is ever
-/// written inside the watched folder.
-fn state_path(library: &str) -> Result<PathBuf> {
+/// `$XDG_STATE_HOME/lapidary/<state_name>`, falling back to `~/.local/state`. Nothing is ever written
+/// inside the watched folder.
+fn state_path(library: &str, root: &Path) -> Result<PathBuf> {
     Ok(crate::desktop::xdg_dir("XDG_STATE_HOME", ".local/state")?
         .join("lapidary")
-        .join(format!("watch-{library}.json")))
+        .join(state_name(library, root)))
+}
+
+/// `watch-<library>-<folder>.json`, the folder as the first 16 hex digits of its canonical path's hash.
+/// One state per folder: two watches into one library would otherwise each read the other's files as
+/// deleted here, and whichever saved last would leave the other to send everything again.
+pub fn state_name(library: &str, root: &Path) -> String {
+    let folder = blake3::hash(root.as_os_str().as_encoded_bytes()).to_hex();
+    format!("watch-{library}-{}.json", &folder[..16])
 }
 
 pub async fn watch(folder: &Path, library: &str) -> Result<()> {
@@ -242,7 +250,7 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
             folder.display()
         )
     })?;
-    let state = state_path(library)?;
+    let state = state_path(library, &root)?;
     let mut known: BTreeMap<String, Known> = match std::fs::read_to_string(&state) {
         Ok(text) => serde_json::from_str(&text).with_context(|| {
             format!(
@@ -406,6 +414,19 @@ mod tests {
             .iter()
             .map(|(path, seen)| ((*path).to_owned(), *seen))
             .collect()
+    }
+
+    #[test]
+    fn two_folders_watched_into_one_library_keep_separate_states() {
+        let library = "01931b6e-0000-7000-8000-000000000001";
+        let flanges = state_name(library, Path::new("/home/jbo/parts/flanges"));
+        let brackets = state_name(library, Path::new("/home/jbo/parts/brackets"));
+        assert_ne!(flanges, brackets);
+        assert_eq!(
+            flanges,
+            state_name(library, Path::new("/home/jbo/parts/flanges"))
+        );
+        assert!(flanges.starts_with(&format!("watch-{library}-")) && flanges.ends_with(".json"));
     }
 
     #[test]
