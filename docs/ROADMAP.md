@@ -2310,6 +2310,14 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
     since nothing there is replaced. The sweep's own guard for that case was tried here first, its mutation
     survived, and it was dropped as a rule with nothing to protect.
 
+**The watch follows a symlinked file** (`db4729c`).
+- **The change.** The agent's folder listing reads a model file's metadata with `std::fs::metadata`, which follows
+  a symlink, so a symlinked STL is watched as a scan ingests it. Directories are still typed by
+  `DirEntry::file_type`, which does not follow one, so a symlinked directory is not descended.
+- **Test:** a folder holding a symlinked STL, and a symlinked directory with an STL inside, lists the one file at
+  its target's size. It failed first, listing nothing.
+- **Mutation-checked, both caught:** the link not followed, and a linked directory descended.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
