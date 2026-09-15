@@ -96,10 +96,12 @@ function kit(): Kit {
     markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
     // Drawn through the part rather than hidden behind it: a smaller earlier revision sits inside
     // the current one, and a ghost only visible where it sticks out would read as no change there.
+    // Amber, `--color-warn`, not grey: a grey ghost over a grey part on a near-black ground showed
+    // almost nothing in the browser check, and the accent is the marks' colour.
     ghostMaterial: new MeshBasicMaterial({
-      color: new Color(0x8a8f98),
+      color: new Color(0xe8b06a),
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.4,
       depthTest: false,
       depthWrite: false,
     }),

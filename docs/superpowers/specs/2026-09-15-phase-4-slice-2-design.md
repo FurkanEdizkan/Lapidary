@@ -63,7 +63,11 @@ coordinates as their source files.
   and disposes `model`'s meshes, and `applyHidden` rewrites their materials, so the ghost has to stay
   out of both.
 - **Its material:**
-  - `MeshBasicMaterial`, grey, `transparent`, opacity 0.35, `depthWrite: false`;
+  - `MeshBasicMaterial`, amber (`--color-warn`), `transparent`, opacity 0.4, with `depthTest` and
+    `depthWrite` both off, so it is drawn through the part;
+  - amber rather than DATA §6.1's grey. The first browser check drew a grey ghost over the grey part
+    on the near-black ground, and it was barely visible. A smaller earlier revision sits inside the
+    current one, so it has to show through;
   - drawn after the solid (`renderOrder` 1);
   - the same `clippingPlanes` as the solid's while a cut is on, so a cut hides both halves alike.
 - **It is never picked.** `pick` and `through` cast against `model` only.
