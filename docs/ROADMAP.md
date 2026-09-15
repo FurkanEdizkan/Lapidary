@@ -2318,6 +2318,19 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   its target's size. It failed first, listing nothing.
 - **Mutation-checked, both caught:** the link not followed, and a linked directory descended.
 
+**The library menu closes for its dialogs** (`8ea41bc`).
+- **The change.** The toolbar's menus are native popovers, which a click inside never dismisses, and the dialogs
+  their items open are drawn outside them, so the library menu stayed open beside a dialog. A menu now carries
+  `data-menu`. The four items that open a dialog (New library, Keep every change…, Fields… and Densities…) call
+  `closeMenu`, which hides the popover they sit in. Scan, Sweep and the thumbnail setting act in place and leave
+  the menu open, as before.
+- **Test:** choosing each of the four closes the library menu and opens its dialog. It failed first for all four:
+  the menu was never hidden. jsdom has no popovers, so the test stubs the menu's `hidePopover`.
+- **Mutation-checked, all 4 caught:** `closeMenu` closing nothing, the menu left unmarked, New library leaving the
+  menu open, and Fields leaving it open.
+- **Decided without the owner:** only the items that open a dialog close the menu. A scan or a sweep reports on
+  the page beside it, and the view menu's layout buttons are chosen while watching the grid.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
