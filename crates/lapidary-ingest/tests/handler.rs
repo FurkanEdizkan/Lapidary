@@ -2853,7 +2853,7 @@ async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: Pg
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
     let (_, current) = l0_row(&pool).await;
 
-    handler.enqueue_stale_rungs().await;
+    handler.enqueue_stale_derivatives().await;
     let jobs = lapidary_db::PgJobs(pool.clone());
     assert!(
         jobs.dequeue("worker-a", std::time::Duration::from_secs(60))
@@ -2870,7 +2870,7 @@ async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: Pg
     .execute(&pool)
     .await
     .expect("ages the rung");
-    handler.enqueue_stale_rungs().await;
+    handler.enqueue_stale_derivatives().await;
     let job = jobs
         .dequeue("worker-a", std::time::Duration::from_secs(60))
         .await
@@ -2884,6 +2884,91 @@ async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: Pg
         l0_row(&pool).await.1,
         current,
         "written at the current version"
+    );
+}
+
+/// A CAD file an older bridge read has its tree, entities and PMI read again when a worker starts,
+/// which is how a part ingested before the bridge read PMI gets its PMI, and it is not queued again
+/// once the tree is current.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_cad_read_an_older_kernel_wrote_is_read_again_with_its_pmi(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+    handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("the STEP file ingests");
+    // As a part ingested before the bridge read PMI stands: no PMI row, and a tree an older bridge
+    // wrote.
+    sqlx::query("DELETE FROM derivative WHERE kind = 'pmi'")
+        .execute(&pool)
+        .await
+        .expect("drops the PMI");
+    sqlx::query(
+        "UPDATE derivative SET kernel_version = 'occt bridge-5' WHERE kind IN ('structure', 'entities')",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages the read");
+
+    handler.enqueue_stale_derivatives().await;
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let job = jobs
+        .dequeue("worker-a", std::time::Duration::from_secs(60))
+        .await
+        .expect("dequeues")
+        .expect("the old read is queued");
+    assert_eq!(
+        handler.handle(&job).await.expect("reads the file again"),
+        Outcome::Rendered
+    );
+    sqlx::query("UPDATE job SET state = 'done', outcome = 'rendered' WHERE id = $1")
+        .bind(job.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("settles the job");
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT kind, kernel_version, blake3 FROM derivative \
+         WHERE kind IN ('structure', 'entities', 'pmi') ORDER BY kind",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("rows");
+    let versions: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|(kind, version, _)| (kind.as_str(), version.as_str()))
+        .collect();
+    assert_eq!(
+        versions,
+        [
+            ("entities", "occt test"),
+            ("pmi", "occt test"),
+            ("structure", "occt test")
+        ],
+        "all three written again, at this kernel's version"
+    );
+    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
+    let pmi: lapidary_core::Pmi = serde_json::from_slice(
+        &store
+            .get(&BlobHash::parse_hex(&rows[1].2).expect("a hash"))
+            .expect("the bytes are in the store"),
+    )
+    .expect("the PMI parses");
+    assert_eq!(pmi, fake_pmi());
+
+    handler.enqueue_stale_derivatives().await;
+    assert!(
+        jobs.dequeue("worker-a", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a read at this kernel's version is not queued again"
     );
 }
 
