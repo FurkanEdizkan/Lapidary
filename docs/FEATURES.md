@@ -152,7 +152,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   Shared by everyone who opens the library, because there are no users yet. `ROADMAP.md` Phase 5
   records the check.
 -->
-| User-defined custom fields, max 8 offered as grid filters. Built (`2484c17`): text, number and choice, one GIN index; a number field filters by a range since goal 5 (`870ac66`) | 5 |
+| User-defined custom fields, max 8 offered as grid filters. Built (`2484c17`): text, number and choice, one GIN index; a number field filters by a range since goal 5 (`870ac66`), and each choice shows how many parts hold it (`0a193c4`) | 5 |
 | Turkish text search config per library. Built (`aad407e`), then removed at the owner's word (`8bb5ea4`): search is `simple` for every library | 5 |
 | Near-duplicate clustering with merge-or-link-as-variant | 6 |
 | Similarity search by geometry embedding (pgvector) | 6 |

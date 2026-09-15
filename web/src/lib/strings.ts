@@ -1518,6 +1518,9 @@ export const strings = {
     /** A number field's two range boxes, named for the field, each showing its end as a hint. */
     filterFrom: (label: string) => `${label} from`,
     filterTo: (label: string) => `${label} to`,
+    /** A choice's option as its filter button names it, with how many of the grid's parts hold it. */
+    choiceOption: (option: string, count: number | null) =>
+      count === null ? option : `${option}, ${count.toLocaleString('en-US')} ${count === 1 ? 'part' : 'parts'}`,
     from: 'from',
     to: 'to',
     filterApply: 'Filter',

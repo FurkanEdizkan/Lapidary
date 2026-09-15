@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { createField, fetchFields, removeField, updateField, type FieldWritten } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { CustomField, FieldKind, LibraryId } from '../lib/types'
+import type { CustomField, FieldFacet, FieldKind, LibraryId } from '../lib/types'
 import { Dialog } from './Dialog'
 
 /**
@@ -312,6 +312,7 @@ export function FieldFilters({
   fieldValue,
   fieldMin,
   fieldMax,
+  counts,
   onSelect,
 }: {
   library: LibraryId
@@ -319,6 +320,8 @@ export function FieldFilters({
   fieldValue?: string
   fieldMin?: string
   fieldMax?: string
+  /** How many of the grid's parts hold each option of each choice field, once the facets have come back. */
+  counts?: readonly FieldFacet[]
   onSelect: FieldSelect
 }) {
   const fields = useQuery({ queryKey: ['fields', library], queryFn: () => fetchFields(library) })
@@ -334,6 +337,7 @@ export function FieldFilters({
           field={one}
           active={field === one.key ? fieldValue : undefined}
           range={field === one.key && ranged ? { min: fieldMin, max: fieldMax } : undefined}
+          counts={counts?.find((counted) => counted.key === one.key)?.values}
           onSelect={onSelect}
         />
       ))}
@@ -345,12 +349,15 @@ function FieldFilter({
   field,
   active,
   range,
+  counts,
   onSelect,
 }: {
   field: CustomField
   active?: string
   /** The range in force on this number field, when one is. */
   range?: { min?: string; max?: string }
+  /** How many of the grid's parts hold each option, for a choice. Absent until the facets come back. */
+  counts?: FieldFacet['values']
   onSelect: FieldSelect
 }) {
   const [draft, setDraft] = useState(active ?? '')
@@ -360,6 +367,13 @@ function FieldFilter({
   const id = `field-filter-${field.key}`
   const choice = field.kind === 'choice'
   const numeric = field.kind === 'number'
+  // An option no part holds is left out of the counts, and holds none. A count withheld past the server's
+  // threshold stays withheld.
+  const countOf = (option: string): number | null => {
+    if (counts === undefined) return null
+    const counted = counts.find(({ value }) => value === option)
+    return counted === undefined ? 0 : counted.count
+  }
   return (
     <section aria-labelledby={id} className="mb-6">
       <h2 id={id} className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -367,20 +381,27 @@ function FieldFilter({
       </h2>
       {choice ? (
         <ul role="list" className="flex list-none flex-col gap-0.5">
-          {field.options.map((option) => (
-            <li key={option}>
-              <button
-                type="button"
-                aria-pressed={active === option}
-                onClick={() =>
-                  active === option ? onSelect(null, null) : onSelect(field.key, option)
-                }
-                className="ease-mechanical w-full rounded-sm px-2 py-0.5 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-surface)] aria-pressed:bg-[var(--color-surface)] aria-pressed:text-[var(--color-bright)]"
-              >
-                {option}
-              </button>
-            </li>
-          ))}
+          {field.options.map((option) => {
+            const count = countOf(option)
+            return (
+              <li key={option}>
+                <button
+                  type="button"
+                  aria-pressed={active === option}
+                  aria-label={strings.fields.choiceOption(option, count)}
+                  onClick={() =>
+                    active === option ? onSelect(null, null) : onSelect(field.key, option)
+                  }
+                  className="ease-mechanical flex w-full items-center justify-between gap-2 rounded-sm px-2 py-0.5 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-surface)] aria-pressed:bg-[var(--color-surface)] aria-pressed:text-[var(--color-bright)]"
+                >
+                  <span>{option}</span>
+                  {count === null ? null : (
+                    <span className="tabular text-xs text-[var(--color-muted)]">{strings.facets.count(count)}</span>
+                  )}
+                </button>
+              </li>
+            )
+          })}
         </ul>
       ) : numeric ? (
         <form

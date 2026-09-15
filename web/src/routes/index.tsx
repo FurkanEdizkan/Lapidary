@@ -3537,6 +3537,8 @@ function Facets({
         fieldValue={fieldValue}
         fieldMin={fieldMin}
         fieldMax={fieldMax}
+        // `?? []` for a server from before counts per choice, which answers without them.
+        counts={facets.data.fields ?? []}
         onSelect={onSelectField}
       />
     </>

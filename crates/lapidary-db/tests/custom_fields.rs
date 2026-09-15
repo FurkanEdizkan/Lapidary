@@ -713,3 +713,93 @@ async fn a_number_range_narrows_the_grid_and_passes_over_words(pool: sqlx::PgPoo
         2
     );
 }
+
+/// Each choice field's options are counted among the parts the grid's other filters leave: a range on another
+/// field narrows the counts, and a filter on the field itself does not, or every other option would read as none.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_choice_fields_options_are_counted_under_every_filter_but_its_own(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    for definition in [
+        field(
+            "supplier",
+            "Supplier",
+            "choice",
+            &["Hoffmann", "Misumi", "Norelem"],
+            true,
+        ),
+        field("bore_mm", "Bore", "number", &[], true),
+    ] {
+        fields
+            .create(library(), &definition)
+            .await
+            .expect("defines");
+    }
+    let bushing = part(&pool, "bushing-d8-lp-3008-00", 0x41).await;
+    let flange = part(&pool, "flange-d22-lp-3022-00", 0x42).await;
+    let sleeve = part(&pool, "sleeve-d12-lp-3012-00", 0x43).await;
+    for (part, supplier, bore) in [
+        (bushing, "Misumi", 8),
+        (flange, "Hoffmann", 22),
+        (sleeve, "Misumi", 12),
+    ] {
+        assert_eq!(
+            set(&fields, part, "supplier", Some(json!(supplier))).await,
+            ValueSet::Set
+        );
+        assert_eq!(
+            set(&fields, part, "bore_mm", Some(json!(bore))).await,
+            ValueSet::Set
+        );
+    }
+
+    let parts = PgParts(pool.clone());
+    let keys = ["supplier".to_owned()];
+    let counted = |field: Option<&str>, range: Option<&str>, filtered: Option<&str>| {
+        let parts = &parts;
+        let keys = &keys;
+        let (field, range, filtered) = (
+            field.map(str::to_owned),
+            range.map(str::to_owned),
+            filtered.map(str::to_owned),
+        );
+        async move {
+            parts
+                .choice_facet(
+                    library(),
+                    None,
+                    None,
+                    lapidary_db::Shows::Live,
+                    None,
+                    None,
+                    None,
+                    field.as_deref(),
+                    range.as_deref(),
+                    filtered.as_deref(),
+                    keys,
+                )
+                .await
+                .expect("counts")
+                .remove("supplier")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| (value.value, value.count))
+                .collect::<Vec<_>>()
+        }
+    };
+    let both = vec![
+        ("Hoffmann".to_owned(), Some(1)),
+        ("Misumi".to_owned(), Some(2)),
+    ];
+    assert_eq!(counted(None, None, None).await, both);
+    assert_eq!(
+        counted(None, Some(r#"$."bore_mm" ? (@ <= 12)"#), Some("bore_mm")).await,
+        [("Misumi".to_owned(), Some(2))],
+        "a range on the bore narrows the supplier's counts"
+    );
+    let misumi = json!({ "supplier": "Misumi" }).to_string();
+    assert_eq!(
+        counted(Some(&misumi), None, Some("supplier")).await,
+        both,
+        "a filter on the supplier leaves its own counts alone"
+    );
+}

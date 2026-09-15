@@ -582,6 +582,9 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
   as `@?` over the jsonpath `$."<key>" ? (@ >= min && @ <= max)`. The GIN index cannot serve a comparison, so a
   range compares every part the other filters leave; an expression index on one field's value is the upgrade
   when a large library measures slow. A value that is not a number is passed over, never an error.
+- **A choice field's options are counted** in one `jsonb_each_text` query over every choice field offered as a
+  filter, under the grid's other filters. A field filter never narrows its own field's counts, by §3.4's rule for
+  the other lists, and an option no part holds is left out.
 - **`indexed` means "offered as a grid filter".** Still **capped at 8**, now as the grid's limit
   rather than a write cost.
 - **Removing a field removes its definition only.** Its values stay.

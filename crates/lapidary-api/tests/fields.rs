@@ -190,6 +190,14 @@ async fn a_choice_takes_only_its_options_and_narrows_the_grid_its_facets_and_a_s
     .await;
     assert_eq!(status, StatusCode::OK, "{facets}");
     assert_eq!(facets["formats"], json!([{ "value": "stl", "count": 1 }]));
+    // The supplier's own options are counted as if it were not chosen, so the other one can still be.
+    assert_eq!(
+        facets["fields"],
+        json!([{ "key": "supplier", "values": [
+            { "value": "Hoffmann", "count": 1 },
+            { "value": "Misumi", "count": 1 },
+        ] }])
+    );
 
     let (status, saved) = send(
         &pool,
