@@ -771,14 +771,16 @@ cylindrical face and Datum A on a planar face, with no ≈, and the plain cylind
 `occt_bridge` checks that each annotation lands on the face it was written on.
 
 What it does not do:
-- **No 3D annotation.** The viewer draws nothing for PMI; that needs per-face triangle ranges.
+- **No 3D annotation.** The viewer draws nothing for PMI; that needs per-face triangle ranges. Since goal 4
+  (`d0a9a86`), annotations on analytic faces are drawn beside them; a freeform face's still need those ranges.
 - **One writer.** The fixture is OCCT reading what OCCT wrote, so AP242 files from other CAD
   systems are untested.
 - **Datums through tolerances only.** OCCT reads a datum while reading a tolerance that refers to
   it, so a datum nothing refers to is not listed. OCCT's writer likewise drops a tolerance whose
   datum has no place in its reference frame, which the fixture generator had to set.
 - **Parts ingested before bridge 6 have none.** The stale-rung sweep rebuilds rungs, not PMI, and
-  a known file's hash skips the kernel, so nothing re-reads a stored file for it yet.
+  a known file's hash skips the kernel, so nothing re-reads a stored file for it yet. Fixed since goal 4
+  (`bc4f06e`): a worker reads an older CAD part's tree, entities and PMI again as it starts.
 
 **Early, 2026-09-14: section plane.** The viewer cuts the part along X, Y or Z, anywhere across its
 box, and keeps either side (`SectionBar`, and `sectionPlane` in `viewer-math.ts`). The cut clips the
@@ -1675,6 +1677,37 @@ checked against the code first. Each fix has a test that a mutation turned red, 
 - **Found by that check, and fixed** (`b58d4f2`). The angle tool asked only its first click whether it was on a
   cone, so a click on the cone that came second was measured against the first, approximately. The latest
   click decides now.
+
+**PMI drawn in the view, on analytic faces** (`d0a9a86`).
+- **A toggle** beside the Dimensions and tolerances list, "Show in the 3D view", off by default, draws each
+  annotation beside the face it names.
+- **Where a label sits:**
+  - a plane, at its origin;
+  - a cylinder, cone or torus, at a point on the rim it starts from;
+  - a sphere, at its top.
+
+  Each is placed through the assembly tree as measurement places entities, once per placed instance.
+  Annotations on one face share one label, a line each.
+- **Not drawn:** an annotation on a freeform face, which has no entity to say where it is, and one on the whole
+  part. Once the toggle is on, the list says which and why.
+  - Recorded: per-face triangle ranges in the GLB would place a freeform face's annotations.
+- **How:** DOM elements that three's `CSS2DRenderer` keeps over the canvas. No new dependency, and a label never
+  takes a click.
+- **Tests:**
+  - labels grouped per face and placed per instance;
+  - an anchor for each surface kind;
+  - an annotation on the whole part, and one on a face with no entity, not drawn;
+  - the toggle handing the view its choice, while the list marks what was not placed.
+- **Mutation-checked, all 4 caught:** a cylinder's label at its origin, a label per annotation, the whole part
+  counted as drawn, and the note shown before the toggle.
+- **Checked in Chrome** on the native stack, with `cylinder-d22-pmi-lp-9012-00.step` (SwiftShader, no page
+  errors):
+  - no labels before the toggle, and none once it was turned off again;
+  - with it on, three labels, each inside the view: "⌀22 mm +0.05 / 0" with "⟂ Perpendicularity 0.05 mm to A"
+    on the cylinder, "⏥ Flatness 0.02 mm" on the top face, and "Datum A" on the base;
+  - the list marked nothing as not drawn, since every face of that part is analytic.
+- **Seen, not changed:** a label is drawn over the part whether or not its face is turned towards the viewer, as
+  a measure mark is. So "Datum A", at the base face's origin, shows through the cylinder.
 
 ---
 

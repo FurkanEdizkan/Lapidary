@@ -186,7 +186,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 <!--
   **Listed since bridge 6.** Recorded 2026-09-13. Dimensions with their bounds, geometric
   tolerances with the datums they refer to, and datums, read from an AP242 file's semantic PMI and
-  listed on the part's page, each on its face. Not drawn in 3D, and checked only against a fixture
+  listed on the part's page, each on its face. Drawn in the 3D view beside analytic faces since goal 4
+  (`d0a9a86`), and checked only against a fixture
   OCCT wrote. `ROADMAP.md` Phase 5 records the check and the limits.
 -->
 | Explode view | 5 |
