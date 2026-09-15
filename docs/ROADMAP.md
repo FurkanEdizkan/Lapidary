@@ -486,6 +486,45 @@ example STLs, and headless Chrome.
   deletes the rows by name.
 - The old deleted-part test counted a rung the skip path leaked. It now counts one.
 
+### Slice 2 — overlay, `lapidary://`, render cache, bundles (2026-09-15)
+
+- **Spec:** `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md`.
+- **Goal:** `docs/superpowers/plans/2026-09-15-phase-4-slice-2-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger, and grows as each stage merges.
+
+**Overlay diff** (`88dd8cd`, `de6ee47`).
+- **What it draws.** Compare's From revision can be drawn in the 3D view as a translucent amber ghost:
+  - drawn through the part;
+  - cut by the same section;
+  - never picked.
+- **Which mesh.**
+  - `PartRevision` carries `tessellationL0` and `tessellationL1`.
+  - The ghost is L1, else L0.
+  - A coarse ghost says so, and a revision with no mesh says so.
+- **Why amber.** DATA §6.1 says grey, but the first shot of a grey ghost over the grey part was barely
+  visible.
+
+**Checked** in headless Chrome on SwiftShader.
+- **Setup:**
+  - a native stack: a `mock-kernel` build, with STL through the mesh kernel;
+  - the flange, in a controlled library;
+  - the viewer shot at 350 × 350 px with the ghost off and then on;
+  - "changed" means pixels that differ between the two shots by more than 12 in any channel.
+
+| Current revision | Ghost | Part's width on screen | Width the ghost changed | Changed pixels outside the part |
+|---|---|---|---|---|
+| 2, ×1.1 in X (164.8 mm) | 1 (149.8 mm), its L0 | 235 px | 223 px, inside the part | 124, along antialiased edges |
+| 3, ×0.9 in X (134.8 mm) | 1 (149.8 mm), its L0 | 235 px | 247 px, past the part | 3,025 |
+
+- **The coarse-ghost line** showed in both cases, because revision 1 had only its L0.
+- **Tests:**
+  - The history's rung fields: seen failing first.
+  - An earlier revision's rung is still served once a newer one is current: a guard, which already
+    passed before the change.
+  - The toggle, the coarse line and the no-mesh line: mutation-checked. A Compare that never hands the
+    ghost up fails the test.
+- **Not shot:** the ghost with a section cut on, and an assembly with hidden parts.
+
 ---
 
 ## Phase 5 — Source links, bundles, collections
