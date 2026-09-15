@@ -1417,6 +1417,13 @@ export const strings = {
       return `${symbol} ${name} ${zone}${from}`.trim()
     },
     datum: (name: string) => `Datum ${name}`,
+    /** The toggle beside the list that draws each annotation beside its face in the 3D view. */
+    showInView: 'Show in the 3D view',
+    /** Beside an annotation the view cannot place, once the list is shown in the view. */
+    notDrawn: (wholePart: boolean) =>
+      wholePart
+        ? 'not in the view: it applies to the whole part'
+        : 'not in the view: its face is not a plane, cylinder, cone, sphere or torus',
     /** Where an annotation applies: the kind of face measurement reads there, or the whole part. */
     face: (surface: string | null) =>
       surface === null

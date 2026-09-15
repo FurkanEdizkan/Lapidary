@@ -1,3 +1,4 @@
+import { annotationsOf, labelsFor } from '../lib/annotations'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -638,11 +639,13 @@ function Preview({
   hidden,
   onParts,
   ghost,
+  annotated,
 }: {
   part: PartDetailData
   hidden?: ReadonlySet<number>
   onParts?: (parts: number | null) => void
   ghost?: BlobHash | null
+  annotated?: boolean
 }) {
   const poster =
     part.thumbnail === null ? null : (
@@ -673,7 +676,15 @@ function Preview({
         its measuring tool and its picks, which would then be measured against the new part's
         entities. A new rung of the same part keeps the key, so it swaps in without a jump.
       */}
-      <Viewer key={part.id} part={part} poster={poster} hidden={hidden} onParts={onParts} ghost={ghost} />
+      <Viewer
+        key={part.id}
+        part={part}
+        poster={poster}
+        hidden={hidden}
+        onParts={onParts}
+        ghost={ghost}
+        annotated={annotated}
+      />
     </Suspense>
   )
 }
@@ -723,6 +734,10 @@ export function Detail({
   })
   const ghost = ghostFor.part === part.id ? ghostFor.hash : null
   const onGhost = useCallback((hash: BlobHash | null) => setGhostFor({ part: part.id, hash }), [part.id])
+  // Whether the file's PMI is drawn in the view. For this part only, as `hidden` is, and off until asked.
+  const [annotatedFor, setAnnotatedFor] = useState({ part: part.id, on: false })
+  const annotated = annotatedFor.part === part.id && annotatedFor.on
+  const setAnnotated = (on: boolean) => setAnnotatedFor({ part: part.id, on })
   // Opening in a desktop app is a checkout, which only a controlled library takes: a hobby library
   // keeps no revision for the save to come back as.
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
@@ -732,7 +747,7 @@ export function Detail({
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
-        <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} />
+        <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} annotated={annotated} />
         <div>
           {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
           {part.partNumber === null ? null : (
@@ -855,7 +870,7 @@ export function Detail({
         <Assembly hash={part.structure} hidden={hidden} onHide={setHidden} drawn={drawn} />
       )}
 
-      <Specified part={part} />
+      <Specified part={part} annotated={annotated} onAnnotate={setAnnotated} />
 
       <Section title={strings.detail.file}>
         <Row label={strings.detail.format}>
@@ -954,7 +969,15 @@ export function Detail({
  * nor approximate, and the ≈ mark would claim it was one or the other. Each annotation says which
  * face it is on by the entity measurement reads there, when the part has entities.
  */
-function Specified({ part }: { part: PartDetailData }) {
+function Specified({
+  part,
+  annotated,
+  onAnnotate,
+}: {
+  part: PartDetailData
+  annotated: boolean
+  onAnnotate: (on: boolean) => void
+}) {
   const pmi = useQuery({
     queryKey: ['pmi', part.pmi],
     queryFn: () => fetchPmi(part.pmi as BlobHash),
@@ -992,21 +1015,28 @@ function Specified({ part }: { part: PartDetailData }) {
         return strings.pmi.face(face.face === null ? null : (entity?.type ?? ''))
       })
       .join(', ')
-  const rows = [
-    ...pmi.data.dimensions.map((d) => ({
-      what: strings.pmi.dimension(d.type, d.value, d.upper, d.lower),
-      on: where(d.faces),
-    })),
-    ...pmi.data.tolerances.map((t) => ({
-      what: strings.pmi.tolerance(t.type, t.value, t.datums),
-      on: where(t.faces),
-    })),
-    ...pmi.data.datums.map((d) => ({ what: strings.pmi.datum(d.name), on: where(d.faces) })),
-  ]
+  const annotations = annotationsOf(pmi.data)
+  // Which annotations the view can place: those on a face measurement reads as an entity. Asked of the
+  // entities unplaced, since which faces exist does not depend on where they were drawn.
+  const { undrawn } = labelsFor(annotations, entities.data ?? [])
+  // A view to draw in: a rung, WebGL, and entities to say where each face is.
+  const drawable = part.tessellationL0 !== null && part.entities !== null && hasWebGL()
+  const rows = annotations.map((annotation, index) => ({
+    what: annotation.text,
+    on: where(annotation.faces),
+    undrawn: undrawn.has(index) ? strings.pmi.notDrawn(annotation.faces.every((face) => face.face === null)) : null,
+  }))
   return (
     <section className="mb-6">
       {heading}
-      <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.pmi.note}</p>
+      <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]">
+        {strings.pmi.note}
+        {drawable ? (
+          <button type="button" aria-pressed={annotated} onClick={() => onAnnotate(!annotated)} className={CONTROL}>
+            {strings.pmi.showInView}
+          </button>
+        ) : null}
+      </p>
       <ul role="list" className="space-y-0.5 text-sm">
         {rows.map((row, index) => (
           <li key={index}>
@@ -1017,6 +1047,12 @@ function Specified({ part }: { part: PartDetailData }) {
                 {row.on}
               </span>
             )}
+            {annotated && drawable && row.undrawn !== null ? (
+              <span className="text-[var(--color-muted)]">
+                {' · '}
+                {row.undrawn}
+              </span>
+            ) : null}
           </li>
         ))}
       </ul>

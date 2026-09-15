@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Group,
   AlwaysStencilFunc,
   AmbientLight,
   BackSide,
@@ -32,10 +33,13 @@ import {
   type Object3D,
   type Material,
 } from 'three'
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { annotationsOf, labelsFor, type Label } from '../lib/annotations'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { blobUrl, fetchBatchStatus, fetchEntities, fetchStructure, requestRung } from '../lib/api'
+import { blobUrl, fetchBatchStatus, fetchPmi,
+  fetchEntities, fetchStructure, requestRung } from '../lib/api'
 import { PICKS, measure, nearestCorner, placeEntities, type Pick, type Tool } from '../lib/measure'
 import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
@@ -67,10 +71,16 @@ type View = {
   closed: (closed: boolean) => void
   /** Draw an earlier revision's rung as a ghost over the part, or stop; never picked. */
   ghost: (model: Object3D | null) => void
+  /** Draw these labels over the part, each beside its face, or none. */
+  annotate: (labels: readonly Label[] | null) => void
   dispose: () => void
 }
 
 const NONE: ReadonlySet<number> = new Set()
+
+/** A PMI label beside its face: small, on the panel colour, one annotation to a line. */
+const LABEL =
+  'whitespace-pre rounded-sm border border-[var(--color-edge)] bg-[var(--color-surface)] px-1 text-[10px] leading-tight text-[var(--color-bright)]'
 
 /** How many placed parts a rung counts triangles for (`extras.parts`), or `null` when it counts none. */
 function partsOf(model: Object3D): number | null {
@@ -236,6 +246,7 @@ export default function Viewer({
   hidden = NONE,
   onParts,
   ghost = null,
+  annotated = false,
 }: {
   part: PartDetail
   poster: ReactNode
@@ -243,6 +254,8 @@ export default function Viewer({
   onParts?: (parts: number | null) => void
   /** An earlier revision's rung, drawn as a grey ghost over the part, or `null` for none. */
   ghost?: BlobHash | null
+  /** Whether the file's PMI is drawn beside the faces it names. */
+  annotated?: boolean
 }) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<View | null>(null)
@@ -373,12 +386,17 @@ export default function Viewer({
   const entities = useQuery({
     queryKey: ['entities', part.entities],
     queryFn: () => fetchEntities(part.entities as BlobHash),
-    enabled: fine && part.entities !== null,
+    enabled: (fine || annotated) && part.entities !== null,
   })
   const structure = useQuery({
     queryKey: ['structure', part.structure],
     queryFn: () => fetchStructure(part.structure as BlobHash),
-    enabled: fine && part.structure !== null,
+    enabled: (fine || annotated) && part.structure !== null,
+  })
+  const pmi = useQuery({
+    queryKey: ['pmi', part.pmi],
+    queryFn: () => fetchPmi(part.pmi as BlobHash),
+    enabled: annotated && part.pmi !== null,
   })
   // Each entity where the mesh drew it, or `null` while either half is on its way. A part whose
   // entities or tree could not be read is measured as a mesh is, every value approximate, rather
@@ -388,6 +406,15 @@ export default function Viewer({
     if (entities.data === undefined || (part.structure !== null && structure.data === undefined)) return null
     return placeEntities(entities.data, structure.data ?? null)
   }, [part.entities, part.structure, entities.data, entities.isError, structure.data, structure.isError])
+
+  const labels = useMemo(
+    () => (!annotated || pmi.data === undefined || placed === null ? null : labelsFor(annotationsOf(pmi.data), placed).labels),
+    [annotated, pmi.data, placed],
+  )
+  // After the rung is shown, so labels asked for before the view existed are drawn once it does.
+  useEffect(() => {
+    view.current?.annotate(labels)
+  }, [labels, shown])
 
   const ready = part.tessellationL2 !== null && shown === part.tessellationL2 && placed !== null
   const unavailable =
@@ -508,12 +535,20 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   }
   fit()
   const controls = new OrbitControls(camera, renderer.domElement)
+  // PMI labels: DOM elements laid over the canvas and moved with the camera every frame, so their text is
+  // the page's own, crisp and selectable by nothing that picks.
+  const labelRenderer = new CSS2DRenderer()
+  labelRenderer.setSize(node.clientWidth, node.clientHeight)
+  Object.assign(labelRenderer.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none' })
+  node.appendChild(labelRenderer.domElement)
+  const labels = new Group()
 
   const raycaster = new Raycaster()
   const markers = new Points(noMarks(), markMaterial)
   // Drawn over the part and its ghost, so a mark on a face turned away still shows where it was put.
   markers.renderOrder = 5
   scene.add(markers)
+  scene.add(labels)
   // A section's cap: a square on the cut, placed by `capPlacement` and drawn after the stencil passes and
   // before the part. Not inside `model`, so no pick or wall ray ever meets it.
   const cap = new Mesh(new PlaneGeometry(1, 1), capMaterial)
@@ -574,6 +609,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   }
   const render = () => {
     renderer.render(scene, camera)
+    labelRenderer.render(scene, camera)
     // The first frame with the part in it, not the resize observer's first call on an empty scene:
     // this mark is what the Phase 3 exit times.
     if (first && model !== null) {
@@ -585,6 +621,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   controls.addEventListener('change', render)
   const resize = new ResizeObserver(() => {
     renderer.setSize(node.clientWidth, node.clientHeight, false)
+    labelRenderer.setSize(node.clientWidth, node.clientHeight)
     fit()
     render()
   })
@@ -693,7 +730,22 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       }
       if (model !== null) render()
     },
+    annotate(next) {
+      // `clear` removes each label, and three takes a removed label's element out of the page.
+      labels.clear()
+      for (const { text, at } of next ?? []) {
+        const element = document.createElement('div')
+        element.className = LABEL
+        element.textContent = text
+        const label = new CSS2DObject(element)
+        label.position.set(...at)
+        labels.add(label)
+      }
+      render()
+    },
     dispose() {
+      labels.clear()
+      labelRenderer.domElement.remove()
       resize.disconnect()
       controls.dispose()
       if (model !== null) disposeModel(model)
