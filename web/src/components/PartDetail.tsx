@@ -458,7 +458,7 @@ function Fields({ part, recordable }: { part: PartDetailData; recordable: boolea
         <dl className="grid max-w-sm grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-sm">
           {shown.map((field) => (
             <FieldValue
-              key={field.key}
+              key={`${part.id}:${field.key}`}
               part={part}
               field={field}
               value={custom[field.key]}
@@ -502,6 +502,14 @@ function FieldValue({
   const queryClient = useQueryClient()
   const stored = value === undefined || value === null ? '' : String(value)
   const [draft, setDraft] = useState(stored)
+  // A value read back changed replaces the draft, so a blur never writes the old one over it. Set while
+  // rendering rather than by a key on the stored value, which would remount the input and drop its focus
+  // after every save.
+  const [seen, setSeen] = useState(stored)
+  if (seen !== stored) {
+    setSeen(stored)
+    setDraft(stored)
+  }
   const [refusal, setRefusal] = useState<string | null>(null)
   const save = useMutation({
     mutationFn: (next: string | number | null) => setFieldValue(part.id, field.key, next),
