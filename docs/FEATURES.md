@@ -135,7 +135,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | Sort by any promoted geometric column | 2 |
 | Quick look beside the grid at 1280px and up, a dialog below it; the open part rides in the URL | 2 |
-| Saved filters / smart collections | 5 |
+| Saved filters / smart collections. Built (`ce894a6`): saved, renamed, reordered, and a deleted category said out loud | 5 |
 <!--
   **Early, recorded 2026-09-14.** Named per library in the grid's rail, above the facets: the search,
   category, format, material and tag, put back in one step and marked while the grid shows them.

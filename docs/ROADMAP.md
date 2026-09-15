@@ -1256,6 +1256,53 @@ needed a `test/` branch.
   file, and it passed as many with the guard. The guard rests on the reasoning, not on a measured fix.
 - **Next time.** The test now prints both outcomes when it fails.
 
+**Saved filters, finished** (`ce894a6`).
+- **Order** (`0029`).
+  - `saved_filter.position`, backfilled in the order filters were made.
+  - A new filter goes last.
+  - A move swaps one place under the library's row lock, renumbering first, and does nothing at either
+    end.
+- **Rename.** `PATCH /api/libraries/{library}/filters/{filter}`, by the rules a new filter's name
+  follows, and still unique in the library.
+- **A deleted category.**
+  - The list route reports `folderGone`. It is read on every list, so a restored category clears it.
+  - The list marks the filter.
+  - A grid opened on a category the live tree does not hold says the category was deleted, and offers
+    the same filters without it, instead of an empty grid.
+  - The check is the grid's, so an old link is covered too.
+- **Tests:**
+  - **db:**
+    - the list in saved order;
+    - rename, and a taken name;
+    - moves in the middle and at both ends;
+    - a deleted category marked, and a restored one not.
+  - **api:**
+    - rename, a taken name, and an unknown filter;
+    - moves up, and at the top;
+    - `folderGone` after the category is deleted through its route.
+  - **web:**
+    - rename and move send their requests;
+    - the arrows at either end are disabled;
+    - the mark shows;
+    - the grid's notice clears only the category.
+  - **Mutation-checked, all seven caught:**
+    - the list order;
+    - the move's swap;
+    - the deleted-category mark;
+    - rename's taken-name refusal;
+    - the API's `folderGone`;
+    - the grid's notice;
+    - the up button's direction.
+- **Browser check,** on the native stack in headless Chrome. No page errors.
+  1. A category, and a flange filed in it, were set up through the API.
+  2. "Flanges in STL" and "All STL" were saved through the list.
+  3. "All STL" was moved up and renamed "Every STL".
+  4. The category was deleted, and the list marked "Flanges in STL".
+  5. Opening it showed the notice, not "Nothing filed here yet".
+  6. The notice's way out dropped the category, kept `format=stl`, and showed the 5 parts left.
+- **Found by the browser check, and fixed.** Beside the mark, the filter's name was cut to "Flang…" in
+  the narrow list. The mark now sits under the name, and the name shows in full.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
