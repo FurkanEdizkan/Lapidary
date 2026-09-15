@@ -83,21 +83,12 @@ pub struct NewFolder {
     pub name: String,
 }
 
-/// `PATCH /api/folders/{id}` — rename, reparent, or both.
+/// `PATCH /api/folders/{id}` — rename a category.
 ///
-/// `parentId` is a double `Option` because the two absences are different requests:
-/// leaving the field out means "do not move it", and sending `null` means "move it to the
-/// library root". Collapsing them would make every rename also move the folder to the root,
-/// which is the kind of silent data change this project treats as a defect, not a default.
-///
-/// **Both fields are `#[ts(optional = nullable)]`, and for `parentId` that is the whole
-/// point.** TypeScript can express the three states this type has — `{}`, `{parentId:
-/// null}` and `{parentId: id}` — only as an *optional* property, because an omitted key
-/// and a `null` one are different values there in a way they are not in most languages.
-/// Exported as `parentId?: FolderId | null`, a client that spreads an object with
-/// `parentId: undefined` sends nothing, and one that means the root has to write `null` on
-/// purpose. Bound to `T | null` instead — ts-rs's default for `Option` — the two states
-/// would collapse and every rename would quietly move its category to the library root.
+/// A category cannot move under another one yet (`DATA.md`, "Re-parenting a category"), so
+/// `parentId` is read only to be refused, and it is left out of the TypeScript type so that no
+/// client here can send it. Its double `Option` tells a key that is present from one that is
+/// absent, so a request naming the library root with `null` is refused, not taken for a rename.
 // A `//` comment and not a `///` one: this is about the Rust build, and a doc comment here
 // is copied verbatim into `web/src/bindings/FolderPatch.ts`, where a frontend reader has no
 // use for it. The build prints `ts-rs failed to parse this attribute. It will be ignored.`
@@ -113,16 +104,15 @@ pub struct FolderPatch {
     #[ts(optional)]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "present_or_absent")]
-    #[ts(optional = nullable)]
+    #[ts(skip)]
     pub parent_id: Option<Option<FolderId>>,
 }
 
 /// Tell "the field was not sent" from "the field was sent as `null`".
 ///
 /// `Option<Option<T>>` alone does not: serde hands `null` to the *outer* option, which
-/// makes an explicit null indistinguishable from an absent key — a rename would then also
-/// move the category to the library root, which is precisely the silent data change
-/// [`FolderPatch`] exists to avoid. `#[serde(default)]` covers the absent case and this
+/// makes an explicit null indistinguishable from an absent key — a request to move the
+/// category to the library root would then be taken for a plain rename. `#[serde(default)]` covers the absent case and this
 /// covers the present one, so only a key that is actually there reaches here at all.
 fn present_or_absent<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -208,40 +198,32 @@ pub async fn create(
     }
 }
 
-/// `PATCH /api/folders/{id}` — rename and/or reparent.
+/// `PATCH /api/folders/{id}` — rename a category.
 ///
-/// When a request asks for both, the move is applied first and the rename second, because
-/// a name has to be unique among its *destination* siblings and applying them the other way
-/// round would check it against the parent the folder is leaving. Each half is atomic on
-/// its own; a rename refused after the move landed says so rather than reporting a failure
-/// that would read as "nothing happened".
+/// A `parentId` is refused before anything is written, a name sent beside it included: the
+/// files of the models under a moved category would stay in its old directory while new ones
+/// land in the new (`DATA.md`, "Re-parenting a category"). `PgFolders::reparent` stays for
+/// when each folder stores its own directory path.
 pub async fn patch(
     State(state): State<AppState>,
     Path(folder): Path<FolderId>,
     Json(body): Json<FolderPatch>,
 ) -> Response {
-    let folders = PgFolders(state.db);
+    if body.parent_id.is_some() {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "cannotMove",
+            "A category cannot be moved under another one yet: the files of the models in it \
+             would be split between two folders on disk. To rearrange them, move its models \
+             into the other category instead.",
+        );
+    }
 
-    let library = match folders.library_of(folder).await {
-        Ok(Some(library)) => library,
+    let folders = PgFolders(state.db);
+    match folders.library_of(folder).await {
+        Ok(Some(_)) => {}
         Ok(None) => return no_such_folder(),
         Err(err) => return internal_error(&err, "folder lookup failed"),
-    };
-
-    let mut moved = false;
-    if let Some(parent) = body.parent_id {
-        if let Some(parent) = parent {
-            match folders.library_of(parent).await {
-                Ok(Some(owner)) if owner == library => {}
-                Ok(_) => return cross_library_parent(),
-                Err(err) => return internal_error(&err, "folder parent lookup failed"),
-            }
-        }
-        match folders.reparent(folder, parent).await {
-            Ok(true) => moved = true,
-            Ok(false) => return no_such_folder(),
-            Err(err) => return folder_error(&err, "folder reparent failed"),
-        }
     }
 
     if let Some(name) = body.name {
@@ -256,7 +238,6 @@ pub async fn patch(
         match folders.rename(folder, name).await {
             Ok(true) => {}
             Ok(false) => return no_such_folder(),
-            Err(err) if moved => return partly_applied(&err),
             Err(err) => return folder_error(&err, "folder rename failed"),
         }
     }
@@ -312,24 +293,9 @@ fn cross_library_parent() -> Response {
     )
 }
 
-/// A move that landed followed by a rename that did not. Reported as its own thing because
-/// the two obvious wordings are both wrong here: "nothing changed" is false, and the plain
-/// collision message would leave the caller believing the move was rolled back too.
-fn partly_applied(err: &DbError) -> Response {
-    refused(
-        StatusCode::CONFLICT,
-        "renamedAfterMove",
-        &format!(
-            "The category was moved, but keeping its name there was refused, so it still \
-             carries the old one: {err} Rename it separately once you have picked a name \
-             that is free."
-        ),
-    )
-}
-
 /// The `DbError`s these routes raise that are answers rather than failures — a name or
-/// directory a sibling already holds, a move that would put a category inside itself, and a
-/// library id that names nothing. Everything else is a 500.
+/// directory a sibling already holds, and a library id that names nothing. Everything else is
+/// a 500.
 fn folder_error(err: &DbError, what: &'static str) -> Response {
     match err {
         // `create` and `tree` deliberately answer an unknown library differently, and the
@@ -346,9 +312,6 @@ fn folder_error(err: &DbError, what: &'static str) -> Response {
         }
         DbError::FolderSlugTaken { .. } => {
             refused(StatusCode::CONFLICT, "slugTaken", &err.to_string())
-        }
-        DbError::WouldCreateCycle { .. } => {
-            refused(StatusCode::CONFLICT, "wouldCycle", &err.to_string())
         }
         other => internal_error(other, what),
     }

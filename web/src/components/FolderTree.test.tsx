@@ -802,11 +802,9 @@ test('creates at the library root when no category is selected', async () => {
 })
 
 /**
- * **The trap this test exists for.** `FolderPatch.parentId` is optional *and* nullable, and
- * the two are different requests: omitted means "leave it where it is", `null` means "move
- * it to the library root". A rename body built by spreading an object that carries a
- * `parentId` key at all — or written from a mental model where absent and null are the same
- * thing — moves every renamed category to the root, silently, on every rename.
+ * **The trap this test exists for.** The route refuses any `parentId`, `null` included, and
+ * renames nothing when it does, so a rename body built by spreading an object that carries a
+ * `parentId` key at all would make every rename fail.
  *
  * So the body is asserted by deep equality and not by looking for `name` in it: this has to
  * fail on an *extra* key, which `toMatchObject` would let through.

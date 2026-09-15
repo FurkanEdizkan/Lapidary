@@ -174,22 +174,20 @@ async fn renaming_into_a_collision_is_refused_with_no_override(pool: sqlx::PgPoo
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_folder_cannot_be_parented_into_another_library(pool: sqlx::PgPool) {
+async fn a_folder_cannot_be_created_under_another_librarys(pool: sqlx::PgPool) {
     let other = second_library(&pool).await;
-    let folders = PgFolders(pool.clone());
-    let mine = folders
-        .get_or_create(library(), None, "Terrain", "Terrain")
-        .await
-        .expect("mine");
-    let theirs = folders
+    let theirs = PgFolders(pool.clone())
         .get_or_create(other, None, "Terrain", "Terrain")
         .await
         .expect("theirs");
 
-    let (status, body) = patch_folder(
+    let (status, body) = send(
         &pool,
-        mine,
-        serde_json::json!({ "parentId": theirs.to_string() }),
+        json_request(
+            "POST",
+            format!("/api/libraries/{SEEDED_LIBRARY}/folders"),
+            serde_json::json!({ "name": "Rocks", "parentId": theirs.to_string() }),
+        ),
     )
     .await;
 
@@ -197,10 +195,12 @@ async fn a_folder_cannot_be_parented_into_another_library(pool: sqlx::PgPool) {
     assert_eq!(body["reason"], "crossLibrary");
 }
 
-/// A category cannot be moved inside itself, and the refusal is made by the same
-/// transaction that would have written the move — see `PgFolders::reparent`.
+/// A category cannot move under another one yet (`DATA.md`, "Re-parenting a category"): the
+/// files of the models under it would be split between its old directory and its new one. The
+/// refusal comes before any write, so a rename sent beside it renames nothing, and `null`, the
+/// library root, is refused the same. No folder route can reach a file at all.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_folder_cannot_be_parented_into_its_own_subtree(pool: sqlx::PgPool) {
+async fn a_category_is_not_moved_under_another_one_yet(pool: sqlx::PgPool) {
     let folders = PgFolders(pool.clone());
     let terrain = folders
         .get_or_create(library(), None, "Terrain", "Terrain")
@@ -210,21 +210,31 @@ async fn a_folder_cannot_be_parented_into_its_own_subtree(pool: sqlx::PgPool) {
         .get_or_create(library(), Some(terrain), "Rocks", "Rocks")
         .await
         .expect("Rocks");
+    let bases = folders
+        .get_or_create(library(), None, "Bases", "Bases")
+        .await
+        .expect("Bases");
+    seed_part(&pool, Some(rocks), "cliff", "Terrain/Rocks/cliff.stl", 7).await;
+    let before = tree(&pool).await;
 
-    let (status, body) = patch_folder(
-        &pool,
-        terrain,
-        serde_json::json!({ "parentId": rocks.to_string() }),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["reason"], "wouldCycle");
+    for body in [
+        serde_json::json!({ "parentId": bases.to_string(), "name": "Boulders" }),
+        serde_json::json!({ "parentId": null }),
+    ] {
+        let (status, answer) = patch_folder(&pool, rocks, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert_eq!(answer["reason"], "cannotMove");
+        assert!(
+            answer["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("move its models")),
+            "the refusal says what to do instead: {answer}"
+        );
+    }
+    assert_eq!(tree(&pool).await, before, "nothing moved, nothing renamed");
 }
 
-/// Reparenting to the library root is `parentId: null`, and leaving the field out is a
-/// rename that must not move anything. The two are different requests and the route reads
-/// them as such.
+/// Leaving `parentId` out is a rename that must not move anything.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_rename_alone_does_not_move_a_category_to_the_root(pool: sqlx::PgPool) {
     let folders = PgFolders(pool.clone());
@@ -253,21 +263,6 @@ async fn a_rename_alone_does_not_move_a_category_to_the_root(pool: sqlx::PgPool)
         renamed["parentId"],
         terrain.to_string(),
         "a rename that also moved the category to the root would be a silent data change"
-    );
-
-    let (moved, _) = patch_folder(&pool, rocks, serde_json::json!({ "parentId": null })).await;
-    assert_eq!(moved, StatusCode::OK);
-    let rows = tree(&pool).await;
-    let at_root = rows
-        .as_array()
-        .expect("an array")
-        .iter()
-        .find(|node| node["id"] == rocks.to_string())
-        .expect("the moved category")
-        .clone();
-    assert!(
-        at_root["parentId"].is_null(),
-        "`null` is a real destination"
     );
 }
 

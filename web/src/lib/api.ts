@@ -612,9 +612,8 @@ export async function deleteFolder(
  * never see. `'unknown'` covers an old server and a value this client does not recognise,
  * for the same reason it does there.
  *
- * `renamedAfterMove` and `wouldCycle` are deliberately absent: both need a `parentId`, and
- * neither function below ever sends one. If a client here ever grows a reparent, they come
- * back with it — and `renamedAfterMove` needs the test `folders.rs:283` never got.
+ * `cannotMove` is absent: the route refuses a `parentId`, and `FolderPatch` has no such field
+ * to send.
  */
 export type FolderWriteRefusal = 'nameTaken' | 'slugTaken' | 'emptyName' | 'gone' | 'unknown'
 
@@ -669,13 +668,10 @@ export async function createFolder(
 /**
  * `PATCH /api/folders/{id}` — change a category's name, and nothing else.
  *
- * **The body is `{ name }` and must stay that way.** `FolderPatch.parentId` is optional and
- * nullable, and the two are different requests: omitted means "do not move it", `null`
- * means "move it to the library root". A rename built by spreading an object that happens
- * to carry `parentId: null` would move every renamed category to the root — silently, and
- * on every rename. Sending one field also keeps this away from `409 renamedAfterMove`
- * (`folders.rs:283`), the both-fields branch no client has ever exercised and no test
- * covers.
+ * **The body is `{ name }` and must stay that way.** A category cannot move yet: the route
+ * refuses any `parentId`, `null` (the library root) included, with `400 cannotMove`, and renames
+ * nothing. `FolderPatch` has no `parentId`, so only a body spread from some other object could
+ * carry one.
  *
  * **The directory on disk does not follow the name.** `folder.slug` is the category's
  * address, allocated once at creation; `folder.name` is its label (`DATA.md` §1.1). The

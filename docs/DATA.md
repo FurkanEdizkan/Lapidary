@@ -76,10 +76,11 @@ a second one under the old name; and `slugTaken` can now refuse a name because a
 *renamed away from it* still holds the directory, which is why that message names the
 directory instead of explaining which of the two cases happened.
 
-Re-parenting a category splits it the same way one level up, because `slug_path` joins
-*ancestor* slugs and this folder's own slug staying put says nothing about theirs. Only
-`PATCH /api/folders/{id}` with `parent_id` reaches it, no client sends it, and closing it
-needs the stored per-folder directory path this rule made unnecessary for renames.
+Re-parenting a category would split it the same way one level up, because `slug_path` joins
+*ancestor* slugs and this folder's own slug staying put says nothing about theirs. So
+`PATCH /api/folders/{id}` refuses `parent_id` (`400 cannotMove`) before it writes anything,
+and a category's models are rearranged by moving them. Allowing the move needs the stored
+per-folder directory path this rule made unnecessary for renames.
 
 **Content addressing survives for `blobs/` only** — derivatives, which are evictable and
 rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,

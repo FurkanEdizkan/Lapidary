@@ -952,6 +952,24 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
     rename. That narrows the race to the gap between them and does not close it, marked
     `ponytail:`, with `renameat2(RENAME_NOREPLACE)` as the upgrade. No test covers that fallback.
 
+**Re-parenting refused** (`ae4c298`).
+- **The route.** `PATCH /api/folders/{id}` answers `400 cannotMove` to any `parentId`, `null`
+  included, before it writes anything.
+  - A name sent beside it is not applied either.
+  - The message says what to do instead: move the category's models.
+- **What went:**
+  - `renamedAfterMove`;
+  - the `wouldCycle` refusal;
+  - the route's move-then-rename branch, which no client ever reached.
+
+  `parentId` is gone from the TypeScript `FolderPatch`, so no client here can send one.
+- **What stays:** `PgFolders::reparent`, its cycle check and its tests, for when each folder stores
+  its own directory path (DATA, "Re-parenting a category").
+- **Tests:**
+  - A move carrying a rename, and a move to the root, are both refused, and the tree is unchanged.
+    Seen failing first, as a 200.
+  - The cross-library refusal is now tested through create, the only route left that reaches it.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
