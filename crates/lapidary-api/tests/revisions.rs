@@ -4,7 +4,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{Approximate, BlobHash, LibraryId, MeshMeasurements, PartId, RevisionOrigin};
-use lapidary_db::{IngestRequest, PgIngest, PgParts, PgRevisions, RevisionRequest, StoredBlobRow};
+use lapidary_db::{
+    IngestRequest, PgIngest, PgParts, PgRevisions, RevisionRequest, StoredBlobRow, TessellationRow,
+};
 use tower::ServiceExt;
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -157,6 +159,79 @@ async fn a_parts_history_lists_every_revision_newest_first_with_its_provenance(p
     assert_eq!(
         revisions[1]["thumbnail"],
         "data:image/webp;base64,d2VicC1maXJzdA=="
+    );
+}
+
+/// The overlay draws an earlier revision's own mesh, so each revision names its rungs: a first
+/// revision ingest left with L0 alone, and a later one somebody opened, which gained an L1.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn each_revision_names_its_own_rungs_for_the_overlay(pool: sqlx::PgPool) {
+    let rung = |kind: &'static str, seed: u8| TessellationRow {
+        kind,
+        blob: StoredBlobRow {
+            hash: BlobHash::from_bytes([seed; 32]),
+            size_bytes: 9_140,
+            stored_bytes: 9_140,
+            zstd_level: 0,
+        },
+        grid: Some(64),
+    };
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            library: library(),
+            name: "Flange DN40, LP-3310-02",
+            source_path: PATH,
+            folder: None,
+            storage_path: Some(STORED),
+            blob: &blob_row(0x41),
+            measurements: &flange(214_780.0, 150.0),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[rung("tessellation_l0", 0xa0)],
+        })
+        .await
+        .expect("revision 1");
+    let revisions = PgRevisions(pool.clone());
+    let first = revisions
+        .current(library(), PATH)
+        .await
+        .expect("reads")
+        .expect("the part")
+        .revision;
+    revisions
+        .record_revision(
+            RevisionRequest {
+                part,
+                parent: first,
+                origin: RevisionOrigin::Agent,
+                lock: None,
+                blob: &blob_row(0x42),
+                measurements: &flange(236_258.0, 165.0),
+                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+                thumbnail_webp: None,
+                kernel_version: "mesh stl-1+cpu-1",
+                format: "stl",
+                tessellations: &[rung("tessellation_l0", 0xb0), rung("tessellation_l1", 0xb1)],
+            },
+            |_, _| Ok(()),
+        )
+        .await
+        .expect("revision 2");
+
+    let (status, json) = send(
+        pool,
+        request("GET", &format!("/api/parts/{part}/revisions")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json[0]["tessellationL0"], "b0".repeat(32));
+    assert_eq!(json[0]["tessellationL1"], "b1".repeat(32));
+    assert_eq!(json[1]["tessellationL0"], "a0".repeat(32));
+    assert!(
+        json[1]["tessellationL1"].is_null(),
+        "never opened since ingest, so no L1: {json}"
     );
 }
 

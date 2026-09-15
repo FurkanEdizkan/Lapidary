@@ -45,8 +45,9 @@ coordinates as their source files.
 
 ## 2. Overlay diff
 
-**API.** `PartRevision` gains `tessellation: Option<BlobHash>`: that revision's L1, else its L0, else
-`None`.
+**API.** `PartRevision` gains `tessellationL0` and `tessellationL1`, named as on `PartDetail`.
+- The page draws L1, else L0, and knows from which of the two it drew whether the ghost is the coarse
+  one.
 - Read the same way `PgParts::detail` reads its rungs: a `LATERAL` per kind, bound from
   `DerivativeKind`.
 - No new route is needed.
@@ -62,7 +63,11 @@ coordinates as their source files.
   and disposes `model`'s meshes, and `applyHidden` rewrites their materials, so the ghost has to stay
   out of both.
 - **Its material:**
-  - `MeshBasicMaterial`, grey, `transparent`, opacity 0.35, `depthWrite: false`;
+  - `MeshBasicMaterial`, amber (`--color-warn`), `transparent`, opacity 0.4, with `depthTest` and
+    `depthWrite` both off, so it is drawn through the part;
+  - amber rather than DATA §6.1's grey. The first browser check drew a grey ghost over the grey part
+    on the near-black ground, and it was barely visible. A smaller earlier revision sits inside the
+    current one, so it has to show through;
   - drawn after the solid (`renderOrder` 1);
   - the same `clippingPlanes` as the solid's while a cut is on, so a cut hides both halves alike.
 - **It is never picked.** `pick` and `through` cast against `model` only.

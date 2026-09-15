@@ -10,6 +10,7 @@ import {
   Float32BufferAttribute,
   FrontSide,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   OrthographicCamera,
   Plane,
@@ -53,6 +54,8 @@ type View = {
   hide: (hidden: ReadonlySet<number>) => void
   /** Cut the part along a plane across its box, or stop cutting; kept for every rung shown after. */
   section: (section: Section | null) => void
+  /** Draw an earlier revision's rung as a ghost over the part, or stop; never picked. */
+  ghost: (model: Object3D | null) => void
   dispose: () => void
 }
 
@@ -74,7 +77,12 @@ const CLICK_SLOP_PX = 4
 const MARK = 0x2cb4f5
 
 /** What a view draws with. Everything here holds GPU state; the lights do not, so they are not here. */
-type Kit = { renderer: WebGLRenderer; material: MeshStandardMaterial; markMaterial: PointsMaterial }
+type Kit = {
+  renderer: WebGLRenderer
+  material: MeshStandardMaterial
+  markMaterial: PointsMaterial
+  ghostMaterial: MeshBasicMaterial
+}
 
 function kit(): Kit {
   const renderer = new WebGLRenderer({ antialias: true, alpha: true })
@@ -86,6 +94,17 @@ function kit(): Kit {
     renderer,
     material: new MeshStandardMaterial({ color: new Color(0xb8bcc4), roughness: 0.75, flatShading: true }),
     markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
+    // Drawn through the part rather than hidden behind it: a smaller earlier revision sits inside
+    // the current one, and a ghost only visible where it sticks out would read as no change there.
+    // Amber, `--color-warn`, not grey: a grey ghost over a grey part on a near-black ground showed
+    // almost nothing in the browser check, and the accent is the marks' colour.
+    ghostMaterial: new MeshBasicMaterial({
+      color: new Color(0xe8b06a),
+      transparent: true,
+      opacity: 0.4,
+      depthTest: false,
+      depthWrite: false,
+    }),
   }
 }
 
@@ -168,11 +187,14 @@ export default function Viewer({
   poster,
   hidden = NONE,
   onParts,
+  ghost = null,
 }: {
   part: PartDetail
   poster: ReactNode
   hidden?: ReadonlySet<number>
   onParts?: (parts: number | null) => void
+  /** An earlier revision's rung, drawn as a grey ghost over the part, or `null` for none. */
+  ghost?: BlobHash | null
 }) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<View | null>(null)
@@ -188,6 +210,7 @@ export default function Viewer({
   const [fineFailed, setFineFailed] = useState(false)
   const [parts, setParts] = useState<number | null>(null)
   const [section, setSection] = useState<Section | null>(null)
+  const [ghostFailed, setGhostFailed] = useState<BlobHash | null>(null)
   const queryClient = useQueryClient()
   const hash = (fine ? part.tessellationL2 : null) ?? part.tessellationL1 ?? part.tessellationL0
 
@@ -214,6 +237,31 @@ export default function Viewer({
       stale = true
     }
   }, [hash])
+
+  // After the rung's effect, which creates the view: a ghost has nothing to be drawn in before it.
+  useEffect(() => {
+    const current = view.current
+    if (current === null) return
+    if (ghost === null) {
+      current.ghost(null)
+      return
+    }
+    let stale = false
+    new GLTFLoader()
+      .setMeshoptDecoder(MeshoptDecoder)
+      .loadAsync(blobUrl(ghost))
+      .then((gltf) => {
+        if (!stale) current.ghost(gltf.scene)
+      })
+      .catch(() => {
+        if (stale) return
+        current.ghost(null)
+        setGhostFailed(ghost)
+      })
+    return () => {
+      stale = true
+    }
+  }, [ghost])
 
   useEffect(() => {
     view.current?.hide(hidden)
@@ -365,6 +413,10 @@ export default function Viewer({
           <p aria-live="polite" className="absolute bottom-2 left-2 text-xs text-[var(--color-muted)]">
             {strings.viewer.refining}
           </p>
+        ) : ghost !== null && ghostFailed === ghost ? (
+          <p role="alert" className="absolute inset-x-2 bottom-2 text-xs text-[var(--color-muted)]">
+            {strings.viewer.ghostFailed}
+          </p>
         ) : null}
       </div>
       {failed ? null : (
@@ -379,7 +431,7 @@ export default function Viewer({
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const own = sessionInUse
-  const { renderer, material, markMaterial } = own ? kit() : (session ??= kit())
+  const { renderer, material, markMaterial, ghostMaterial } = own ? kit() : (session ??= kit())
   sessionInUse = true
   renderer.setSize(node.clientWidth, node.clientHeight, false)
   renderer.domElement.style.width = '100%'
@@ -406,12 +458,14 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
 
   const raycaster = new Raycaster()
   const markers = new Points(noMarks(), markMaterial)
-  // Drawn over the part, so a mark on a face turned away still shows where it was put.
-  markers.renderOrder = 1
+  // Drawn over the part and its ghost, so a mark on a face turned away still shows where it was put.
+  markers.renderOrder = 2
   scene.add(markers)
 
   let first = true
   let model: Object3D | null = null
+  // An earlier revision, drawn over the part and never picked: `pick` and `through` cast at `model`.
+  let ghostModel: Object3D | null = null
   let hiddenParts = NONE
   // The part's box, from the first rung, which a section cuts across; the cut, and its plane.
   let bounds: { min: Vec3; max: Vec3 } | null = null
@@ -426,8 +480,13 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       clip.constant = cutPlane.constant
     }
     material.clippingPlanes = cutPlane === null ? null : [clip]
+    // The ghost is cut by the same plane, so a section hides the same half of both revisions.
+    ghostMaterial.clippingPlanes = material.clippingPlanes
     // three compiles a program per count of planes; moving the one plane is only a uniform.
-    if (wasCut !== (cutPlane !== null)) material.needsUpdate = true
+    if (wasCut !== (cutPlane !== null)) {
+      material.needsUpdate = true
+      ghostMaterial.needsUpdate = true
+    }
   }
   // three's raycaster meets what a section has cut away, so a hit counts only on the side still drawn.
   const drawn = (hit: Intersection) => cutPlane === null || kept(cutPlane, tuple(hit.point))
@@ -530,10 +589,28 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       applyCut()
       if (model !== null) render()
     },
+    ghost(next) {
+      if (ghostModel !== null) {
+        scene.remove(ghostModel)
+        disposeModel(ghostModel)
+      }
+      ghostModel = next
+      if (next !== null) {
+        next.traverse((object) => {
+          if (!(object instanceof Mesh)) return
+          object.material = ghostMaterial
+          // After the part, which is opaque, and before the marks.
+          object.renderOrder = 1
+        })
+        scene.add(next)
+      }
+      if (model !== null) render()
+    },
     dispose() {
       resize.disconnect()
       controls.dispose()
       if (model !== null) disposeModel(model)
+      if (ghostModel !== null) disposeModel(ghostModel)
       markers.geometry.dispose()
       // The session's material outlives this view, and the next view starts uncut.
       cut = null
@@ -541,6 +618,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       renderer.domElement.remove()
       if (own) {
         markMaterial.dispose()
+        ghostMaterial.dispose()
         material.dispose()
         renderer.dispose()
       } else {

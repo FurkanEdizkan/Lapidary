@@ -21,4 +21,10 @@ thumbnail: string | null, triangleCount: number | null, bboxMm: Approximate<[num
  * What changed from the revision this one was recorded on top of. `None` for a part's
  * first revision.
  */
-deltaFromParent: RevisionDiff | null, };
+deltaFromParent: RevisionDiff | null, 
+/**
+ * This revision's own rungs, which the overlay draws as a ghost behind the current part.
+ * Ingest writes L0; an L1 exists only if somebody opened the part while this revision was
+ * current, so an earlier revision usually has L0 alone.
+ */
+tessellationL0: BlobHash | null, tessellationL1: BlobHash | null, };

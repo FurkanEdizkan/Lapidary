@@ -752,7 +752,8 @@ The design is `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-desig
 The design is `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §2–3.
 
 **Overlay.**
-- The earlier revision is drawn as a grey, translucent ghost: its L1, else its L0.
+- The earlier revision is drawn as a translucent amber ghost, through the part: its L1, else its L0.
+  It is amber, not grey, because a grey ghost over the grey part was barely visible.
 - It sits in the same scene frame as the current solid. Rungs are never recentred, so a ghost's offset
   is the file's own.
 - It is never picked.

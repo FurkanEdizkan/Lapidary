@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Suspense, lazy, useCallback, useRef, useState, type ReactNode } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   addPartSource,
   blobUrl,
@@ -470,10 +470,12 @@ function Preview({
   part,
   hidden,
   onParts,
+  ghost,
 }: {
   part: PartDetailData
   hidden?: ReadonlySet<number>
   onParts?: (parts: number | null) => void
+  ghost?: BlobHash | null
 }) {
   const poster =
     part.thumbnail === null ? null : (
@@ -504,7 +506,7 @@ function Preview({
         its measuring tool and its picks, which would then be measured against the new part's
         entities. A new rung of the same part keeps the key, so it swaps in without a jump.
       */}
-      <Viewer key={part.id} part={part} poster={poster} hidden={hidden} onParts={onParts} />
+      <Viewer key={part.id} part={part} poster={poster} hidden={hidden} onParts={onParts} ghost={ghost} />
     </Suspense>
   )
 }
@@ -547,10 +549,17 @@ export function Detail({
   })
   const drawn = drawnFor.part === part.id ? drawnFor.parts : null
   const onParts = useCallback((parts: number | null) => setDrawnFor({ part: part.id, parts }), [part.id])
+  // The earlier revision the comparison draws as a ghost. For this part only, as `hidden` is.
+  const [ghostFor, setGhostFor] = useState<{ part: PartId; hash: BlobHash | null }>({
+    part: part.id,
+    hash: null,
+  })
+  const ghost = ghostFor.part === part.id ? ghostFor.hash : null
+  const onGhost = useCallback((hash: BlobHash | null) => setGhostFor({ part: part.id, hash }), [part.id])
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
-        <Preview part={part} hidden={hidden} onParts={onParts} />
+        <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} />
         <div>
           {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
           {part.partNumber === null ? null : (
@@ -728,7 +737,7 @@ export function Detail({
         </Row>
       </Section>
 
-      <History part={part.id} />
+      <History part={part.id} onGhost={onGhost} />
     </article>
   )
 }
@@ -1018,7 +1027,7 @@ function AssemblyBranch({
  * mesh-derived figure keeps its ≈ here as everywhere, and each revision's original is a plain
  * download link, byte-identical to what that revision ingested.
  */
-function History({ part }: { part: PartId }) {
+function History({ part, onGhost }: { part: PartId; onGhost: (hash: BlobHash | null) => void }) {
   const revisions = useQuery({
     queryKey: ['revisions', part],
     queryFn: () => fetchRevisions(part),
@@ -1072,7 +1081,7 @@ function History({ part }: { part: PartId }) {
         ))}
       </ol>
       {/* Keyed: its picks are revision ids of this part, and another part's would be refused. */}
-      <Compare key={part} part={part} revisions={all} />
+      <Compare key={part} part={part} revisions={all} onGhost={onGhost} />
     </section>
   )
 }
@@ -1164,9 +1173,28 @@ function Change({
  * a person most likely came for, and asks the server, which keeps the ≈ rule in one place
  * instead of a second copy of the arithmetic here.
  */
-function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] }) {
+function Compare({
+  part,
+  revisions,
+  onGhost,
+}: {
+  part: PartId
+  revisions: PartRevision[]
+  onGhost: (hash: BlobHash | null) => void
+}) {
   const [from, setFrom] = useState<RevisionId | undefined>(revisions[1]?.id)
   const [to, setTo] = useState<RevisionId | undefined>(revisions[0]?.id)
+  const [ghosted, setGhosted] = useState(false)
+  // From's own mesh: the L1 somebody opened while it was current, else the L0 ingest wrote. Handed
+  // to the 3D view only while the box is ticked, and taken back when this comparison goes away.
+  const earlier = revisions.find((revision) => revision.id === from)
+  const ghost = earlier?.tessellationL1 ?? earlier?.tessellationL0 ?? null
+  useEffect(() => {
+    onGhost(ghosted ? ghost : null)
+  }, [ghosted, ghost, onGhost])
+  useEffect(() => () => onGhost(null), [onGhost])
+  // A coarse outline beside a finer part must not read as a change of shape.
+  const coarse = earlier?.tessellationL1 == null && revisions[0]?.tessellationL1 != null
   const compared = useQuery({
     queryKey: ['diff', part, from, to],
     queryFn: () => fetchDiff(part, from as RevisionId, to as RevisionId),
@@ -1220,7 +1248,22 @@ function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] 
         {strings.detail.compare}
         {pick(strings.detail.compareFrom, from, setFrom)}
         {pick(strings.detail.compareTo, to, setTo)}
+        {earlier === undefined ? null : ghost === null ? (
+          <span>{strings.detail.ghostNoMesh(earlier.revLabel)}</span>
+        ) : (
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={ghosted}
+              onChange={(event) => setGhosted(event.target.checked)}
+            />
+            {strings.detail.ghost}
+          </label>
+        )}
       </div>
+      {ghosted && ghost !== null && coarse ? (
+        <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.detail.ghostCoarse}</p>
+      ) : null}
       {compared.isError ? (
         <p role="alert" className="text-[var(--color-muted)]">
           {strings.detail.compareFailed}

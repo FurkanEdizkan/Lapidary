@@ -68,6 +68,10 @@ pub struct RevisionRow {
     pub source_hash: Option<BlobHash>,
     pub size_bytes: Option<i64>,
     pub storage_path: Option<String>,
+    /// This revision's own rungs, for the overlay's ghost. Ingest writes L0; L1 exists only once
+    /// somebody opened the part while this revision was current.
+    pub tessellation_l0: Option<BlobHash>,
+    pub tessellation_l1: Option<BlobHash>,
 }
 
 /// Matched by column name, for `DetailColumns`' reason: more columns than sqlx implements
@@ -95,6 +99,8 @@ struct HistoryColumns {
     blake3: Option<String>,
     size_bytes: Option<i64>,
     storage_path: Option<String>,
+    l0_blake3: Option<String>,
+    l1_blake3: Option<String>,
 }
 
 pub struct PgRevisions(pub PgPool);
@@ -309,11 +315,18 @@ impl PgRevisions {
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
                     r.bbox_x, r.bbox_y, r.bbox_z, r.bbox_source, \
                     r.triangle_count, r.is_watertight, r.units, \
-                    t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path \
+                    t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path, \
+                    l0.blake3 AS l0_blake3, l1.blake3 AS l1_blake3 \
              FROM revision r \
              LEFT JOIN LATERAL (SELECT thumb_bytes FROM derivative \
                                 WHERE revision_id = r.id AND kind = $2 \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) t ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
+                                WHERE revision_id = r.id AND kind = $3 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
+             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
+                                WHERE revision_id = r.id AND kind = $4 \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) l1 ON true \
              LEFT JOIN LATERAL (SELECT format, blake3, size_bytes, storage_path FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY id LIMIT 1) f ON true \
@@ -322,6 +335,8 @@ impl PgRevisions {
         )
         .bind(part.as_uuid())
         .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(DerivativeKind::TessellationL0.as_str())
+        .bind(DerivativeKind::TessellationL1.as_str())
         .fetch_all(&self.0)
         .await?;
 
@@ -356,6 +371,8 @@ impl PgRevisions {
                     source_hash: detail_hash("file.blake3", c.blake3)?,
                     size_bytes: c.size_bytes,
                     storage_path: c.storage_path,
+                    tessellation_l0: detail_hash("derivative.blake3", c.l0_blake3)?,
+                    tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
                 })
             })
             .collect()
