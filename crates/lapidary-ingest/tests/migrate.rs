@@ -416,8 +416,8 @@ async fn a_migrated_file_is_really_uncompressed_and_its_row_says_so(pool: PgPool
         "the file in the model directory is the file, not a zstd frame named .stl"
     );
 
-    let (level, stored_bytes, size_bytes): (Option<i16>, i64, i64) =
-        sqlx::query_as("SELECT zstd_level, stored_bytes, size_bytes FROM blob WHERE blake3 = $1")
+    let (level, stored_bytes): (Option<i16>, i64) =
+        sqlx::query_as("SELECT zstd_level, stored_bytes FROM blob WHERE blake3 = $1")
             .bind(hash.to_hex())
             .fetch_one(&pool)
             .await
@@ -428,8 +428,19 @@ async fn a_migrated_file_is_really_uncompressed_and_its_row_says_so(pool: PgPool
         "every reader follows the recorded level, so a moved blob has to say 0"
     );
     assert_eq!(
-        stored_bytes, size_bytes,
-        "and a row claiming level 0 cannot go on reporting a compressed size"
+        stored_bytes, 0,
+        "and the content-addressed copy it described is gone, so it holds no bytes (0026)"
+    );
+    let (file_stored, file_size): (Option<i64>, i64) =
+        sqlx::query_as("SELECT stored_bytes, size_bytes FROM file WHERE blake3 = $1")
+            .bind(hash.to_hex())
+            .fetch_one(&pool)
+            .await
+            .expect("reads the file row");
+    assert_eq!(
+        file_stored,
+        Some(file_size),
+        "the moved file's own size is on its file row, uncompressed"
     );
 }
 

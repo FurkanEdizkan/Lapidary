@@ -70,7 +70,8 @@ pub async fn restore(State(state): State<AppState>, Path(part): Path<PartId>) ->
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct PurgeResult {
-    /// Blobs this purge left with nothing pointing at them.
+    /// Files this purge put into quarantine: content-addressed blobs nothing points at any more,
+    /// and model files. A filed source is one file, counted once.
     quarantined: u32,
     /// `number`, not `bigint`: ts-rs maps a bare `u64` to `bigint`, which `JSON.parse`
     /// never produces — the same correction `PartSummary::source_bytes` carries, for the

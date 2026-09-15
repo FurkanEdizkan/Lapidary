@@ -856,6 +856,29 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
     which is what §1.4 asks for.
 - **Not measured:** how long a flush takes on a real corpus.
 
+**Phantom blob bytes** (`5da147f`).
+- **The cause.** A blob row's `stored_bytes` describes its content-addressed copy. Ingest, a revision
+  and `migrate_storage` still wrote a filed file's size onto the blob row of a hash that had no such
+  copy, so purge, the sweep and the instance figure counted a phantom copy beside the real model file.
+- **The fix.**
+  - Those writers write 0.
+  - Migration `0026` corrects the rows already written.
+  - Purge now counts the model files it quarantines, once each.
+- **Test:** a filed source plus one rung; purge, the instance figure and the sweep must all report the
+  bytes that leave the disk.
+  - Seen failing first: the instance figure counted 11,484 bytes for 7,388 on disk.
+  - Mutation: writing the file's size onto the blob row again was caught.
+- **Checked live** on the native stack's database, against parts imported by the bundle check.
+
+| Step | Result |
+|---|---|
+| Old build: purge of a two-revision filed part | Reported 0 bytes, though its two model files went into quarantine |
+| New build: migration `0026` | 86 blob rows now hold no copy |
+| New build: purge of another two-revision part | 2 files and 60,968 bytes (2 × 30,484); the instance quarantine figure rose by exactly 60,968 |
+
+- **Under-counts, recorded:** a 3MF upload's staged copy under `blobs/` is real, but reads as phantom
+  to the migration and becomes 0.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

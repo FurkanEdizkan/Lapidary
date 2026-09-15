@@ -278,6 +278,11 @@ figure — the number is library-less by construction. `LibraryStorage.removed_b
 the deleted-but-not-purged case, which is attributable; the quarantined figure belongs to
 an instance-wide view arriving with Phase 4's tiering job.
 
+**What `blob.stored_bytes` counts** (2026-09-15, migration `0026`).
+- It is the size of the content-addressed copy under `blobs/`, and 0 when the bytes are filed only in
+  model directories.
+- A filed file's size is on its `file` row, and purge and the sweep count it there, once.
+
 Keep the three apart in every string that reaches a user. **Delete** hides a part and
 leaves the bytes. **Purge** is a second, explicit action against data the user has already
 said they are done with. **Cache eviction** (§1.5) is neither — it drops derivatives the

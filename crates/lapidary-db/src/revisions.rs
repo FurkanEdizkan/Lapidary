@@ -272,7 +272,9 @@ impl PgRevisions {
         )
         .bind(req.blob.hash.to_hex())
         .bind(req.blob.size_bytes as i64)
-        .bind(req.blob.stored_bytes as i64)
+        // A revision is always filed in its model directory, so its blob row claims no
+        // content-addressed copy (`0026`).
+        .bind(0_i64)
         .bind(req.blob.zstd_level)
         .execute(&mut *tx)
         .await?;

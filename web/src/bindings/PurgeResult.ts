@@ -10,7 +10,8 @@
  */
 export type PurgeResult = { 
 /**
- * Blobs this purge left with nothing pointing at them.
+ * Files this purge put into quarantine: content-addressed blobs nothing points at any more,
+ * and model files. A filed source is one file, counted once.
  */
 quarantined: number, 
 /**
