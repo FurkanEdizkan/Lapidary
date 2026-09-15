@@ -47,6 +47,13 @@ impl Checkout {
         std::fs::rename(&temporary, &path)
             .with_context(|| format!("could not write {}", path.display()))
     }
+
+    /// Whether this checkout's lock is the part's active one, given the id of the lock the part holds now
+    /// (`None` when nobody holds one). A released lock, or another holder's, would have every save from this
+    /// folder refused.
+    pub fn holds(&self, active: Option<&str>) -> bool {
+        active == Some(self.lock.as_str())
+    }
 }
 
 /// `<part number, or else name>_<revision>`: flat and readable (`docs/DATA.md` §6.2), with
@@ -94,6 +101,32 @@ pub fn workspace() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `open` reuses a checkout only while its lock is the part's active one.
+    #[test]
+    fn a_checkout_holds_its_part_only_while_its_lock_is_the_active_one() {
+        let flange = Checkout {
+            server: "http://127.0.0.1:8080".to_owned(),
+            library: "01931b6e-0000-7000-8000-000000000001".to_owned(),
+            part: "01931b6e-0000-7000-8000-00000000aaaa".to_owned(),
+            source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
+            lock: "01931b6e-0000-7000-8000-00000000eeee".to_owned(),
+            holder: "mira@workshop-pc".to_owned(),
+            revision: "01931b6e-0000-7000-8000-00000000bbbb".to_owned(),
+            rev_label: "1".to_owned(),
+            file_name: "flange-dn40-lp-3310-02.stl".to_owned(),
+            blake3: "5a".repeat(32),
+        };
+        assert!(
+            flange.holds(Some("01931b6e-0000-7000-8000-00000000eeee")),
+            "its own lock, still active"
+        );
+        assert!(!flange.holds(None), "released, so nobody holds one");
+        assert!(
+            !flange.holds(Some("01931b6e-0000-7000-8000-00000000ffff")),
+            "another holder's lock"
+        );
+    }
 
     #[test]
     fn a_checkout_folder_is_named_for_the_part_number_and_its_revision() {

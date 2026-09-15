@@ -438,7 +438,7 @@ async fn open(link: &str) -> Result<()> {
                 what,
             )
             .await?;
-            if detail.lock.as_ref().map(|lock| lock.id.as_str()) != Some(checkout.lock.as_str()) {
+            if !checkout.holds(detail.lock.as_ref().map(|lock| lock.id.as_str())) {
                 bail!(
                     "{} is a check-out of this part whose lock was released, so a save there would be refused. Check that folder in (`lapidary checkin {}`), then open the link again.",
                     folder.display(),
