@@ -41,7 +41,13 @@ fn source_hash() -> BlobHash {
 /// `blob.last_accessed_at` as epoch microseconds, `None` while the column is still NULL.
 /// Microseconds because sqlx here carries neither `chrono` nor `time`, and the same
 /// `extract(epoch ...)` trick `PgParts::page` uses is cheaper than adding one.
-async fn last_read_us(pool: &sqlx::PgPool, hash: &BlobHash) -> Option<i64> {
+async fn last_read_us(
+    touches: &lapidary_db::Touches,
+    pool: &sqlx::PgPool,
+    hash: &BlobHash,
+) -> Option<i64> {
+    // What the server's flush would have written by now (`DATA.md` §1.4).
+    touches.flush(pool).await.expect("flushes the reads");
     sqlx::query_scalar(
         "SELECT (extract(epoch FROM last_accessed_at) * 1000000)::bigint FROM blob WHERE blake3 = $1",
     )
@@ -218,6 +224,7 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -237,6 +244,7 @@ async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sq
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -270,6 +278,7 @@ async fn a_blob_on_disk_that_no_derivative_references_is_not_found(pool: sqlx::P
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -294,6 +303,7 @@ async fn an_unknown_hash_is_not_found_with_the_same_body(pool: sqlx::PgPool) {
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: Default::default(),
     };
 
     let (unreferenced_status, _, unreferenced_body) =
@@ -318,6 +328,7 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Worker,
     );
@@ -331,6 +342,7 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let hash = seed_reachable_rung(&pool, root.path()).await;
     let app = router(
@@ -339,12 +351,13 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: touches.clone(),
         },
         Role::Api,
     );
 
     assert_eq!(
-        last_read_us(&pool, &hash).await,
+        last_read_us(&touches, &pool, &hash).await,
         None,
         "a blob nobody has read yet has never been touched"
     );
@@ -352,7 +365,7 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
     let (status, _, _) = get(app, &hash.to_hex()).await;
     assert_eq!(status, StatusCode::OK);
 
-    let read_at = last_read_us(&pool, &hash).await;
+    let read_at = last_read_us(&touches, &pool, &hash).await;
     assert!(
         read_at.is_some(),
         "handing the bytes to somebody is what this column records, got {read_at:?}"
@@ -361,14 +374,17 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
     // whole value of the column is that it discriminates: an UPDATE that lost its WHERE
     // would mark every blob recently used and still pass the assertion above.
     assert_eq!(
-        last_read_us(&pool, &source_hash()).await,
+        last_read_us(&touches, &pool, &source_hash()).await,
         None,
         "the source file was not the blob that was read"
     );
 }
 
+/// Day precision, `DATA.md` §1.4: a blob read again the same day is not written again, which is
+/// what keeps a busy afternoon from being a write per read.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn reading_a_blob_twice_moves_the_timestamp_forward(pool: sqlx::PgPool) {
+async fn reading_a_blob_again_the_same_day_does_not_write_it_again(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
     let hash = seed_reachable_rung(&pool, root.path()).await;
     let state = AppState {
@@ -376,32 +392,26 @@ async fn reading_a_blob_twice_moves_the_timestamp_forward(pool: sqlx::PgPool) {
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: touches.clone(),
     };
 
     let (first_status, _, _) = get(router(state.clone(), Role::Api), &hash.to_hex()).await;
-    let first = last_read_us(&pool, &hash)
+    let first = last_read_us(&touches, &pool, &hash)
         .await
         .expect("the first read recorded a timestamp");
     let (second_status, _, _) = get(router(state, Role::Api), &hash.to_hex()).await;
-    let second = last_read_us(&pool, &hash)
+    let second = last_read_us(&touches, &pool, &hash)
         .await
-        .expect("the second read recorded a timestamp");
+        .expect("still recorded");
 
     assert_eq!(first_status, StatusCode::OK);
     assert_eq!(second_status, StatusCode::OK);
-    // Strictly forward, and it cannot flake: `now()` is transaction-start time, each
-    // touch is its own implicit transaction, and a request costs at least two round trips
-    // to Postgres -- hundreds of microseconds against the column's one-microsecond
-    // resolution. Folding the touch into the reachability transaction would make these
-    // two equal, which is the regression this comparison exists to catch.
-    assert!(
-        second > first,
-        "the second read must record a later instant than the first, got {second} after {first}"
-    );
+    assert_eq!(second, first, "the same day's second read writes nothing");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     // The bytes live somewhere the server is not looking, so the rung is reachable in the
     // database and absent from the store it serves -- an evicted derivative, exactly.
     let elsewhere = tempfile::tempdir().expect("temp dir");
@@ -412,6 +422,7 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: touches.clone(),
     };
 
     // Refused after the reachability check, when the bytes turn out not to be there.
@@ -424,12 +435,12 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
     assert_eq!(missing, StatusCode::NOT_FOUND);
     assert_eq!(unreachable, StatusCode::NOT_FOUND);
     assert_eq!(
-        last_read_us(&pool, &hash).await,
+        last_read_us(&touches, &pool, &hash).await,
         None,
         "bytes that were never handed over were never read"
     );
     assert_eq!(
-        last_read_us(&pool, &source_hash()).await,
+        last_read_us(&touches, &pool, &source_hash()).await,
         None,
         "a hash this route refuses to serve must not be touchable by asking for it"
     );
@@ -437,6 +448,7 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::PgPool) {
+    let touches = lapidary_db::Touches::default();
     // Carried from slice 6a as an open item, and slice 7 is where it lands because
     // `last_accessed_at` is a lifecycle column: Phase 4's tiering job reads it to decide
     // what to move to cold storage, and a client that checks a blob is present is a client
@@ -455,8 +467,9 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: touches.clone(),
     };
-    assert_eq!(last_read_us(&pool, &hash).await, None);
+    assert_eq!(last_read_us(&touches, &pool, &hash).await, None);
 
     let response = router(state, Role::Api)
         .oneshot(
@@ -483,7 +496,7 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
         .expect("body reads");
     assert!(body.is_empty(), "HEAD carries no body");
     assert!(
-        last_read_us(&pool, &hash).await.is_some(),
+        last_read_us(&touches, &pool, &hash).await.is_some(),
         "a HEAD is somebody using these bytes, and the column that decides what gets \
          tiered out has to know it"
     );
@@ -539,6 +552,7 @@ async fn an_assembly_tree_is_named_by_its_part_and_served_as_json(pool: sqlx::Pg
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Api,
     );
@@ -579,6 +593,7 @@ async fn a_missing_rung_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPool)
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        touches: Default::default(),
     };
 
     for _ in 0..2 {

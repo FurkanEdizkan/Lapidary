@@ -57,9 +57,8 @@ pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) ->
             // After the bytes are in hand, never before: a 404 -- unreachable, or
             // referenced but absent from disk -- is not somebody reading this blob, and
             // recording it as one would let a caller move any timestamp by guessing a
-            // hash. Awaited and discarded rather than spawned, because a task racing the
-            // response is a timestamp nothing can assert.
-            blobs.touch_blob(&hash).await;
+            // hash. Recorded in memory, and written by the next flush (`DATA.md` §1.4).
+            state.touches.record(&hash);
             (
                 [
                     (header::CACHE_CONTROL, IMMUTABLE.to_owned()),

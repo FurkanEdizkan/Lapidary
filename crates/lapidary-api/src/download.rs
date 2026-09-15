@@ -55,7 +55,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
-use lapidary_db::{DbError, DownloadSource, PgBlobs, PgParts, PgRevisions};
+use lapidary_db::{DbError, DownloadSource, PgParts, PgRevisions};
 use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
 use lapidary_targets::bundle;
 use serde::{Deserialize, Serialize};
@@ -96,7 +96,7 @@ pub struct DownloadQuery {
 /// before any byte is read, because reading a file to then refuse the request is work
 /// nobody asked for. The compression level is checked before the read rather than after,
 /// because an unrecorded level makes the read itself meaningless. The re-hash is last
-/// because it is the only check that needs the bytes. And `touch_blob` comes after all of
+/// because it is the only check that needs the bytes. And the touch comes after all of
 /// them: this timestamp means *these bytes were handed to somebody*, so a request that
 /// refused to serve must not move it, or a caller could warm any blob by guessing.
 pub async fn original(
@@ -104,7 +104,12 @@ pub async fn original(
     Path(revision): Path<RevisionId>,
     query: Result<Query<DownloadQuery>, QueryRejection>,
 ) -> Response {
-    let AppState { db, blob_root, .. } = state;
+    let AppState {
+        db,
+        blob_root,
+        touches,
+        ..
+    } = state;
     let source = match PgParts(db.clone()).source_for_download(revision).await {
         Ok(Some(source)) => source,
         Ok(None) => return no_such_revision(),
@@ -131,7 +136,16 @@ pub async fn original(
         Some(other) => {
             return match RUNGS.iter().find(|(name, _)| *name == other) {
                 Some((level, kind)) => {
-                    rung(db, &blob_root, &source.part_name, revision, *kind, level).await
+                    rung(
+                        db,
+                        &blob_root,
+                        &touches,
+                        &source.part_name,
+                        revision,
+                        *kind,
+                        level,
+                    )
+                    .await
                 }
                 None => unknown_variant(other),
             };
@@ -178,11 +192,11 @@ pub async fn original(
     };
     let body = stream_verified(reader, source.hash);
 
-    // Awaited and discarded rather than spawned, exactly as `blob.rs` does: a task racing
-    // the response is a timestamp nothing can assert. This is the *only* warm input a
+    // Recorded in memory and written by the next flush (`DATA.md` §1.4), as `blob.rs` records.
+    // This is the *only* warm input a
     // source blob has — a library browsed constantly and never downloaded stays cold, and
     // spec §2.6 hands slice 7 that decision rather than letting it inherit it silently.
-    PgBlobs(db).touch_blob(&source.hash).await;
+    touches.record(&source.hash);
 
     let filename = download_filename(&source.part_name, &source.format);
     (
@@ -373,6 +387,7 @@ fn percent_encode(name: &str) -> String {
 async fn rung(
     db: lapidary_db::PgPool,
     blob_root: &std::path::Path,
+    touches: &lapidary_db::Touches,
     part_name: &str,
     revision: RevisionId,
     kind: DerivativeKind,
@@ -399,7 +414,7 @@ async fn rung(
                 .into_response();
         }
     };
-    PgBlobs(db).touch_blob(&hash).await;
+    touches.record(&hash);
     let filename = download_filename(part_name, &format!("lapidary.{level}.glb"));
     (
         [
@@ -674,9 +689,8 @@ pub async fn bundle(
         Err(refused) => return *refused,
     };
     // These bytes are about to be handed to somebody, which is what `last_accessed_at` means.
-    let blobs = PgBlobs(state.db.clone());
     for entry in &planned.entries {
-        blobs.touch_blob(&entry.source.hash).await;
+        state.touches.record(&entry.source.hash);
     }
 
     let filename = download_filename(

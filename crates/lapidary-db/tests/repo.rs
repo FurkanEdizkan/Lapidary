@@ -2114,35 +2114,68 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
     );
 }
 
-#[sqlx::test(migrations = "./migrations")]
-async fn touching_a_blob_leaves_every_other_blob_alone(pool: sqlx::PgPool) {
-    let read = blob_row(0x51);
-    let never_read = blob_row(0x52);
+async fn two_blob_rows(pool: &sqlx::PgPool) -> (StoredBlobRow, StoredBlobRow) {
+    let (read, never_read) = (blob_row(0x51), blob_row(0x52));
     for blob in [&read, &never_read] {
         sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, $2, $3)")
             .bind(blob.hash.to_hex())
             .bind(blob.size_bytes as i64)
             .bind(blob.stored_bytes as i64)
-            .execute(&pool)
+            .execute(pool)
             .await
             .expect("inserts a blob row");
     }
+    (read, never_read)
+}
 
-    PgBlobs(pool.clone()).touch_blob(&read.hash).await;
+#[sqlx::test(migrations = "./migrations")]
+async fn a_flush_writes_the_blobs_that_were_read_and_leaves_every_other_blob_alone(
+    pool: sqlx::PgPool,
+) {
+    let (read, _) = two_blob_rows(&pool).await;
+    let touches = lapidary_db::Touches::default();
+    touches.record(&read.hash);
+    assert_eq!(touches.flush(&pool).await.expect("flushes"), 1);
 
     // Which rows, not how many: an UPDATE that lost its WHERE clause would mark the whole
     // table recently used, and every age-based decision downstream reads this column to
-    // tell blobs apart. A touch that cannot discriminate is worse than no touch at all.
+    // tell blobs apart.
     let touched: Vec<String> =
         sqlx::query_scalar("SELECT blake3 FROM blob WHERE last_accessed_at IS NOT NULL")
             .fetch_all(&pool)
             .await
             .expect("queries the touched rows");
+    assert_eq!(touched, vec![read.hash.to_hex()]);
+}
+
+/// `DATA.md` §1.4: three hundred reads of one blob are one write, a row read today is not written
+/// again, and a row a day stale is.
+#[sqlx::test(migrations = "./migrations")]
+async fn three_hundred_reads_of_one_blob_are_one_write_and_a_fresh_row_is_not_rewritten(
+    pool: sqlx::PgPool,
+) {
+    let (read, _) = two_blob_rows(&pool).await;
+    let touches = lapidary_db::Touches::default();
+    for _ in 0..300 {
+        touches.record(&read.hash);
+    }
+    assert_eq!(touches.flush(&pool).await.expect("flushes"), 1);
+
+    touches.record(&read.hash);
     assert_eq!(
-        touched,
-        vec![read.hash.to_hex()],
-        "exactly the blob that was read carries a timestamp"
+        touches.flush(&pool).await.expect("flushes"),
+        0,
+        "read again the same day: nothing to write"
     );
+
+    sqlx::query("UPDATE blob SET last_accessed_at = now() - interval '2 days' WHERE blake3 = $1")
+        .bind(read.hash.to_hex())
+        .execute(&pool)
+        .await
+        .expect("ages the row");
+    touches.record(&read.hash);
+    assert_eq!(touches.flush(&pool).await.expect("flushes"), 1);
+    assert_eq!(touches.flush(&pool).await.expect("flushes"), 0, "drained");
 }
 
 #[sqlx::test(migrations = "./migrations")]

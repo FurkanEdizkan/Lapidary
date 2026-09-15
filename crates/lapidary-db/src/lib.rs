@@ -8,6 +8,7 @@ mod migrate;
 mod repo;
 mod revisions;
 mod saved_filters;
+mod touches;
 
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
@@ -23,6 +24,7 @@ pub use repo::{
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{PgSavedFilters, SavedFilterRow};
 pub use sqlx::PgPool;
+pub use touches::Touches;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
 // its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
 // on sqlx at all, not only about not writing queries.

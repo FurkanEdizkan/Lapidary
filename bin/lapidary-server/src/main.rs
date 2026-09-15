@@ -219,6 +219,7 @@ fn worker_router(
             upload_dir: PathBuf::new(),
             // The worker serves no route that shows a path to anybody.
             host_storage_root: None,
+            touches: Default::default(),
         },
         Role::Worker,
     );
@@ -585,7 +586,7 @@ async fn main() -> Result<()> {
     tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
     let shutdown = tokio_util::sync::CancellationToken::new();
-    let (app_router, worker) = match role {
+    let (app_router, worker, flusher) = match role {
         Role::Api => {
             // As required here as it is for the worker now that the api role serves
             // derivative bytes -- see deploy/compose.yaml's api service.
@@ -601,12 +602,35 @@ async fn main() -> Result<()> {
                 .upload_dir
                 .clone()
                 .context("Could not start as api: LAPIDARY_UPLOAD_DIR is not set.")?;
+            // Which blobs were read, written every five minutes and once more when the server
+            // stops (`docs/DATA.md` §1.4), rather than one UPDATE per read.
+            let touches = lapidary_db::Touches::default();
+            let flusher = {
+                let (touches, db, shutdown) = (touches.clone(), db.clone(), shutdown.clone());
+                tokio::spawn(async move {
+                    let mut every = tokio::time::interval(std::time::Duration::from_secs(300));
+                    every.tick().await;
+                    loop {
+                        tokio::select! {
+                            _ = every.tick() => {}
+                            () = shutdown.cancelled() => break,
+                        }
+                        if let Err(err) = touches.flush(&db).await {
+                            tracing::warn!(error = %err, "could not record which blobs were read; they keep their older access times");
+                        }
+                    }
+                    if let Err(err) = touches.flush(&db).await {
+                        tracing::warn!(error = %err, "could not record the last blobs read before stopping");
+                    }
+                })
+            };
             (
                 router(
                     AppState {
                         db,
                         blob_root,
                         upload_dir,
+                        touches,
                         // Absolute or nothing — see the field's doc. A relative path here
                         // is compose's unset default rather than an operator's choice, and
                         // showing it as though it were one is the mistake this guards.
@@ -619,6 +643,7 @@ async fn main() -> Result<()> {
                     Role::Api,
                 ),
                 None,
+                Some(flusher),
             )
         }
         Role::Worker => {
@@ -642,7 +667,7 @@ async fn main() -> Result<()> {
             // continues rather than joining the `?` chain the rest of this function uses.
             enqueue_pending_migrations(&db).await;
             let handle = spawn_worker(db, &config, shutdown.clone())?;
-            (app, Some(handle))
+            (app, Some(handle), None)
         }
     };
 
@@ -655,6 +680,11 @@ async fn main() -> Result<()> {
     // as well as in `shutdown_signal` covers the case where `serve` returned for some
     // other reason, so this is never reached with a worker that was never told to stop.
     shutdown.cancel();
+    if let Some(flusher) = flusher
+        && let Err(err) = flusher.await
+    {
+        tracing::warn!(error = %err, "the flush of which blobs were read did not finish");
+    }
     if let Some(worker) = worker {
         // Waiting is the point. `lapidary_jobs::run` awaits in-flight handlers and then
         // releases this worker's leases; returning from main before it gets there is the
@@ -828,6 +858,7 @@ mod tests {
                 // stages an upload.
                 blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
                 host_storage_root: None,
+                touches: Default::default(),
                 upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             },
             Role::Api,

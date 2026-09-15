@@ -68,6 +68,9 @@ pub struct AppState {
     /// confidently wrong absolute path is worse than an honest relative one, which is the
     /// same rule `ShowInFolder` already follows about not joining a path out of slugs.
     pub host_storage_root: Option<String>,
+    /// Which blobs were read since the last flush (`docs/DATA.md` §1.4). The server flushes it
+    /// every five minutes and when it stops; a test flushes it itself.
+    pub touches: lapidary_db::Touches,
 }
 
 /// Which process this is. `api` serves the open path and must never link the CAD kernel:
