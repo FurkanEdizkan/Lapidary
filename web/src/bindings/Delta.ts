@@ -10,7 +10,8 @@ export type Delta = { from: number, to: number,
 change: number, 
 /**
  * The change as a percentage of `from`. `None` when `from` is zero: a percentage of
- * nothing is not a number anyone can read.
+ * nothing is not a number anyone can read. `None` for a centre of mass too, whose
+ * percentage would say only where the origin is.
  */
 percent: number | null, 
 /**

@@ -17,7 +17,8 @@
 //   structure.json     the assembly tree: names, prototypes, 4x4 transforms relative to parent
 //   entities.json      analytic faces and circular edges, once per prototype, in its own
 //                      coordinates; structure.json places them
-//   measurements.json  volume, surface area, bounding box, faces and edges from the B-rep, in millimetres
+//   measurements.json  volume, centre of mass, surface area, bounding box, faces and edges from the
+//                      B-rep, in millimetres
 //   header.json        what the file says about itself: its STEP header or IGES global
 //                      section, and the materials it names
 //
@@ -113,7 +114,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 7;
+constexpr int BRIDGE_VERSION = 8;
 
 const double PI = std::acos(-1.0);
 
@@ -745,6 +746,8 @@ int convert(const std::string& in, const std::string& format, const std::string&
                              ",\"faces\":" + std::to_string(faces.Extent()) +
                              ",\"edges\":" + std::to_string(edges.Extent()) +
                              ",\"volume_mm3\":" + (solids > 0 ? number(volume.Mass()) : "null") +
+                             ",\"centre_mm\":" +
+                             (solids > 0 ? xyz(volume.CentreOfMass().XYZ()) : std::string("null")) +
                              ",\"surface_area_mm2\":" + number(area.Mass());
   if (box.IsVoid()) {
     measurements += ",\"bbox_min\":null,\"bbox_max\":null,\"bbox_mm\":null}\n";

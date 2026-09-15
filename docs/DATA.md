@@ -473,7 +473,9 @@ revision(
   volume double precision, surface_area double precision,
   bbox_x double precision, bbox_y double precision, bbox_z double precision,
   triangle_count integer, is_watertight boolean, units text,
-  mass_props_json jsonb
+  mass_props_json jsonb                 -- {"centre_mm": [x, y, z], "source": "analytic"|"tessellated"}: the
+                                        -- centre of the volume, needing no density; NULL before goal 5 or
+                                        -- with no volume. Mass is not stored: volume × density, when read
 );
 
 file(id, revision_id, role, format, blake3, size_bytes, created_at);

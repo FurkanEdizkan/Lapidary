@@ -14,7 +14,8 @@ pub struct Delta {
     /// `to - from`.
     pub change: f64,
     /// The change as a percentage of `from`. `None` when `from` is zero: a percentage of
-    /// nothing is not a number anyone can read.
+    /// nothing is not a number anyone can read. `None` for a centre of mass too, whose
+    /// percentage would say only where the origin is.
     pub percent: Option<f64>,
     /// When either figure is mesh-derived. A difference is no more exact than the less exact
     /// of the two figures it was taken between, and `CLAUDE.md` says the UI labels that.
@@ -41,4 +42,7 @@ pub struct RevisionDiff {
     /// Volume times the density of the part's one material as it is today, on both sides: always
     /// approximate, since a density is typed. `None` when there is no such density or no volume.
     pub mass_g: Option<Delta>,
+    /// Per axis: how far the centre of mass moved. Exact only between two B-reps. `None` when either
+    /// revision was recorded before centres were, or has no volume.
+    pub centre_mm: Option<[Delta; 3]>,
 }

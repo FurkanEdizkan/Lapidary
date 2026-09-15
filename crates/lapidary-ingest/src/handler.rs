@@ -274,6 +274,30 @@ impl WorkerHandler {
         }
     }
 
+    /// The centre of the volume the kernel measured, onto the revision just committed, marked with the
+    /// volume's provenance. Warn-only, as the counts are.
+    pub(crate) async fn record_centre_of_mass(
+        &self,
+        revision: RevisionId,
+        centre_mm: Option<[f64; 3]>,
+        source: lapidary_core::Provenance,
+        source_path: &str,
+    ) {
+        let Some(centre_mm) = centre_mm else {
+            return;
+        };
+        if let Err(error) = PgRevisions(self.db.clone())
+            .set_centre_of_mass(revision, centre_mm, source)
+            .await
+        {
+            tracing::warn!(
+                source_path,
+                %error,
+                "could not record the file's centre of mass; its revision diff leaves it out"
+            );
+        }
+    }
+
     /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
     /// one they fail here: the mesh parser's "no parser for step" would blame a file for
     /// what is the build's gap. Everything else goes to the mesh kernel, which answers an
@@ -733,6 +757,13 @@ impl WorkerHandler {
             if let Ok(revision) = &recorded {
                 self.record_topology(*revision, output.topology, source_path)
                     .await;
+                self.record_centre_of_mass(
+                    *revision,
+                    output.centre_of_mass_mm,
+                    output.provenance.volume,
+                    source_path,
+                )
+                .await;
             }
             if let Err(error) = recorded {
                 // Never `classify_write`: a unique violation here is a lost race for a label,
@@ -1028,6 +1059,13 @@ impl WorkerHandler {
             Ok(Some(revision)) => {
                 self.record_topology(revision, output.topology, source_path)
                     .await;
+                self.record_centre_of_mass(
+                    revision,
+                    output.centre_of_mass_mm,
+                    output.provenance.volume,
+                    source_path,
+                )
+                .await;
                 let m = &output.measurements;
                 let manifest = ModelManifest {
                     schema: ModelManifest::SCHEMA,

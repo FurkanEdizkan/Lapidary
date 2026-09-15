@@ -411,6 +411,7 @@ test('the history appears once a part has a second revision, and says where each
     volumeMm3: { value: 39424, approximate: true },
     surfaceAreaMm2: null,
     massG: { value: 309.478, approximate: true },
+    centreMm: null,
     sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
     sourceFormat: 'stl',
     sourceBytes: 20124,
@@ -424,6 +425,7 @@ test('the history appears once a part has a second revision, and says where each
       faceCount: null,
       edgeCount: null,
       massG: { from: 281.344, to: 309.478, change: 28.134, percent: 10, approximate: true },
+      centreMm: null,
     },
   } satisfies PartRevision
   const first = {
@@ -487,6 +489,8 @@ test('the history appears once a part has a second revision, and says where each
   // Revision 2 says what changed from its parent, marked as the mesh figure it is.
   expect(item('2')?.textContent).toContain(strings.detail.volumeChange(3584, 10))
   expect(strings.detail.volumeChange(3584, 10)).toBe('+3.58 cm³ (+10%)')
+  // A B-rep centre on its axis moves by float noise between revisions: too small for two places, not "−0 mm".
+  expect(strings.detail.lengthChange(-2.5e-13, null)).toBe('under 0.01 mm')
 
   // The comparison opens on the newest against the one before it, and a figure one of them
   // did not record says so rather than showing a zero.
@@ -502,6 +506,8 @@ test('the history appears once a part has a second revision, and says where each
   expect(table.textContent).toContain(strings.detail.mass)
   expect(table.textContent).toContain(strings.detail.massChange(28.134, 10))
   expect(screen.getByText(strings.detail.massNote)).toBeTruthy()
+  // A centre of mass neither revision recorded is said so per axis, not shown as no movement.
+  expect(table.textContent).toContain(strings.detail.centreAxis(2))
   vi.unstubAllGlobals()
 })
 
@@ -522,6 +528,7 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
     volumeMm3: null,
     surfaceAreaMm2: null,
     massG: null,
+    centreMm: null,
     sourceHash: null,
     sourceFormat: 'step',
     sourceBytes: 190356,
@@ -629,6 +636,7 @@ test('the comparison follows the part on screen instead of keeping the last part
     volumeMm3: null,
     surfaceAreaMm2: null,
     massG: null,
+    centreMm: null,
     sourceHash: null,
     sourceFormat: 'stl',
     sourceBytes: 20124,
@@ -700,6 +708,7 @@ test('the comparison draws its From revision as a ghost, and says when that revi
     volumeMm3: null,
     surfaceAreaMm2: null,
     massG: null,
+    centreMm: null,
     sourceHash: null,
     sourceFormat: 'stl',
     sourceBytes: 20124,

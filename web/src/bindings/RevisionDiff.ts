@@ -21,4 +21,9 @@ faceCount: Delta | null, edgeCount: Delta | null,
  * Volume times the density of the part's one material as it is today, on both sides: always
  * approximate, since a density is typed. `None` when there is no such density or no volume.
  */
-massG: Delta | null, };
+massG: Delta | null, 
+/**
+ * Per axis: how far the centre of mass moved. Exact only between two B-reps. `None` when either
+ * revision was recorded before centres were, or has no volume.
+ */
+centreMm: [Delta, Delta, Delta] | null, };

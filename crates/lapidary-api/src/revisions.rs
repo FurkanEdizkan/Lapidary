@@ -49,6 +49,9 @@ pub struct PartRevision {
     /// when read and never stored. Always approximate: a density is typed, not measured. `None` without
     /// a volume, or unless the part holds exactly one material and its library has a density for it.
     pub mass_g: Option<Approximate<f64>>,
+    /// The centre of the volume, in the part's own millimetres: exact from a B-rep, approximate from a mesh.
+    /// Needs no density. `None` for a revision recorded before centres were, or with no volume.
+    pub centre_mm: Option<Approximate<[f64; 3]>>,
     pub source_hash: Option<BlobHash>,
     pub source_format: Option<String>,
     #[ts(type = "number | null")]
@@ -171,6 +174,7 @@ fn figures(revision: &PartRevision) -> RevisionFigures {
         face_count: revision.face_count,
         edge_count: revision.edge_count,
         mass_g: revision.mass_g,
+        centre_mm: revision.centre_mm,
     }
 }
 
@@ -199,6 +203,7 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
     let volume_source = provenance(row.volume_source)?;
     let surface_area_source = provenance(row.surface_area_source)?;
     let bbox_source = provenance(row.bbox_source)?;
+    let centre_source = provenance(row.centre_source)?;
     Ok(PartRevision {
         id: row.id,
         parent: row.parent,
@@ -225,6 +230,11 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
         surface_area_mm2: pair(row.surface_area_mm2, surface_area_source),
         // Filled in once the part's density is read, as the parent's delta is.
         mass_g: None,
+        // A centre without its provenance is dropped, for the volume's reason.
+        centre_mm: row
+            .centre_mm
+            .zip(centre_source)
+            .map(|(centre, source)| wrap(centre, source)),
         source_hash: row.source_hash,
         source_format: row.format,
         source_bytes: row

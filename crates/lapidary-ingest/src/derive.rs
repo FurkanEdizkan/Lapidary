@@ -186,6 +186,14 @@ impl WorkerHandler {
                 // faces and edges gets them too, before `structure` marks the read current.
                 self.record_topology(revision, output.topology, &format!("revision {revision}"))
                     .await;
+                // And its centre of mass, which a bridge before 8 did not write.
+                self.record_centre_of_mass(
+                    revision,
+                    output.centre_of_mass_mm,
+                    output.provenance.volume,
+                    &format!("revision {revision}"),
+                )
+                .await;
                 for (read, json) in [
                     (DerivativeKind::Entities, entities),
                     (DerivativeKind::Pmi, pmi),

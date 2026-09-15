@@ -83,6 +83,9 @@ pub struct KernelOutput {
     pub pmi: Option<Pmi>,
     /// The faces and edges a CAD kernel counted on the B-rep. `None` for a mesh.
     pub topology: Option<Topology>,
+    /// The centre of the solid's volume, in the part's own millimetres. Its provenance is
+    /// `provenance.volume`'s. `None` where there is no volume: an open mesh, or no closed solid.
+    pub centre_of_mass_mm: Option<[f64; 3]>,
     /// Files for other tools, written from the mesh: one for each export `params.produce` asked for.
     pub exports: Vec<(DerivativeKind, Vec<u8>)>,
     /// Derivatives that were asked for and could not be made, with the reason.
