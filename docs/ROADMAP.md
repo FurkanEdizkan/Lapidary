@@ -2097,7 +2097,7 @@ stage's own build.
 **Teardown.**
 - **Review.** A fresh reader, a subagent, read the whole goal's code (`459001b..9a047b0`). It found nothing wrong in
   the SQL, the binds or the arithmetic, and four medium findings, six low ones and one record that said more than
-  the code. The last three items above came from it. The rest were fixed (`9a047b0`), each mutation-checked:
+  the code. The last three items above came from it. The rest were fixed (`b5688f5`), each mutation-checked:
   - The Densities dialog showed the server's refusal in kg/m³ under boxes typed in g/cm³, so following it asked for
     a density a thousand times too large. It now gives the range in g/cm³.
   - An open part's mass kept its old value after its materials or a density changed. Its history and comparison
