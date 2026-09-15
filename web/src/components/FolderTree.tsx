@@ -180,9 +180,14 @@ export function FolderTree({
   const groups = useMemo(() => groupByParent(folders.data ?? []), [folders.data])
   const [opened, setOpened] = useState<ReadonlySet<FolderId>>(new Set())
   // The selected category's ancestors open as it is selected: during render, not in an effect, so
-  // the first frame already shows it. Closing one afterwards is the user's to do.
+  // the first frame already shows it. Closing one afterwards is the user's to do. Only once the
+  // tree holds the category: one a first read did not have is opened to when a later read brings it.
   const [openedFor, setOpenedFor] = useState<FolderId | null | undefined>(undefined)
-  if (folders.data !== undefined && openedFor !== selected) {
+  if (
+    folders.data !== undefined &&
+    openedFor !== selected &&
+    (selected === null || folders.data.some((folder) => folder.id === selected))
+  ) {
     setOpenedFor(selected)
     setOpened(withAncestors(opened, folders.data, selected))
   }
@@ -232,7 +237,12 @@ export function FolderTree({
 
   const add = useMutation({
     mutationFn: (name: string) => createFolder(library, selected, name),
-    ...written(() => setCreating(false)),
+    // The new category goes inside the selected one, so that branch opens to show it.
+    ...written(() => {
+      setCreating(false)
+      const parent = selected
+      if (parent !== null) setOpened((open) => new Set(open).add(parent))
+    }),
   })
 
   const rename = useMutation({

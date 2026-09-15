@@ -364,6 +364,14 @@ impl PgRevisions {
 
     /// Every revision of `part`, newest first — the order the grid calls the first one current.
     pub async fn history(&self, part: PartId) -> Result<Vec<RevisionRow>, DbError> {
+        Self::history_on(&mut *self.0.acquire().await?, part).await
+    }
+
+    /// [`Self::history`] on `conn`, for a caller already holding a connection.
+    async fn history_on(
+        conn: &mut sqlx::PgConnection,
+        part: PartId,
+    ) -> Result<Vec<RevisionRow>, DbError> {
         let rows: Vec<HistoryColumns> = sqlx::query_as(
             "SELECT r.id, r.parent_revision_id, r.rev_label, r.origin, \
                     (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_us, \
@@ -396,7 +404,7 @@ impl PgRevisions {
         .bind(DerivativeKind::Thumbnail.as_str())
         .bind(DerivativeKind::TessellationL0.as_str())
         .bind(DerivativeKind::TessellationL1.as_str())
-        .fetch_all(&self.0)
+        .fetch_all(&mut *conn)
         .await?;
 
         rows.into_iter()
@@ -457,7 +465,9 @@ impl PgRevisions {
             .bind(part.as_uuid())
             .execute(&mut *held)
             .await?;
-        let written = write(self.manifest(part).await?);
+        // On the connection holding the row, not a second one: writers each holding one and waiting for
+        // another would stall a pool that every one of them had filled.
+        let written = write(Self::manifest_on(&mut held, part).await?);
         held.commit().await?;
         Ok(written)
     }
@@ -465,6 +475,14 @@ impl PgRevisions {
     /// `metadata.json` for `part`, from its rows: every revision, oldest first, so
     /// `revisions[0]` stays the original (spec §3.2). `None` means there is no such part.
     pub async fn manifest(&self, part: PartId) -> Result<Option<ModelManifest>, DbError> {
+        Self::manifest_on(&mut *self.0.acquire().await?, part).await
+    }
+
+    /// [`Self::manifest`] on `conn`, for a caller already holding a connection.
+    async fn manifest_on(
+        conn: &mut sqlx::PgConnection,
+        part: PartId,
+    ) -> Result<Option<ModelManifest>, DbError> {
         #[allow(clippy::type_complexity)]
         let row: Option<(Uuid, String, Option<String>, Option<String>, String, String)> =
             sqlx::query_as(
@@ -473,13 +491,13 @@ impl PgRevisions {
                  FROM part WHERE id = $1",
             )
             .bind(part.as_uuid())
-            .fetch_optional(&self.0)
+            .fetch_optional(&mut *conn)
             .await?;
         let Some((library, name, part_number, classification, source_path, metadata)) = row else {
             return Ok(None);
         };
 
-        let mut revisions = self.history(part).await?;
+        let mut revisions = Self::history_on(conn, part).await?;
         revisions.reverse();
         Ok(Some(ModelManifest {
             schema: ModelManifest::SCHEMA,

@@ -924,3 +924,32 @@ test('the selected category is drawn with every branch above it open, and no oth
   expect(screen.getByRole('button', { name: strings.folders.hideSubcategories('Rocks') })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Vent grilles' })).toBeNull()
 })
+
+/** A category made inside the selected one is shown: the branch it went into opens, so the new row is not hidden. */
+test('a category created inside the selected one is shown, its branch opened', async () => {
+  const SCREE: FolderNode = {
+    ...ROCKS,
+    id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0009',
+    name: 'Scree',
+    slug: 'Scree',
+  }
+  stubFetch({ folders: inOrder(ok([TERRAIN]), ok([TERRAIN, SCREE])), folderCreate: ok(SCREE) })
+  renderTree(TERRAIN.id)
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.newCategory }))
+  typeName('Scree')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.createConfirm }))
+  expect(await screen.findByRole('button', { name: 'Scree' })).toBeTruthy()
+})
+
+/** A selected category the first read did not hold is opened to once a later read brings it. */
+test('a selected category missing from the first read is opened to once a later read holds it', async () => {
+  stubFetch({ folders: inOrder(ok([TERRAIN]), ok([TERRAIN, ROCKS])), folderPatch: ok({}) })
+  renderTree(ROCKS.id)
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Terrain') }))
+  typeName('Terrain features')
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
+  const rocks = await screen.findByRole('button', { name: 'Rocks' })
+  expect(rocks.getAttribute('aria-current')).toBe('true')
+})
