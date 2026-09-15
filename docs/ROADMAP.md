@@ -43,8 +43,8 @@ Same run, same stage: the 22 mm cylinder reads with its volume exact to 1e-9 and
 cylindrical face of radius 11; the same cylinder written in inches reads back in millimetres;
 IGES reads with no volume claimed; half a STEP file is refused rather than crashing the kernel.
 
-**Verify here, not later:** `pgvector` installs against `postgres:18`; the Turkish
-snowball `tsvector` config is present.
+**Verify here, not later:** `pgvector` installs against `postgres:18`. The Turkish
+snowball `tsvector` config was present and used, until Turkish search was removed (`8bb5ea4`).
 
 ---
 
@@ -759,7 +759,7 @@ following, all fixed on one branch.
 - OpenGraph preview fetch behind an explicit button
 - Streaming ZIP bundles with `manifest.json`
 - Saved filters, custom fields, section plane, PMI display
-- Turkish search config
+- Turkish search config (built, then removed at the owner's word: `8bb5ea4`)
 
 **Early, 2026-09-13: PMI listed on the part.** The bridge reads an AP242 file's semantic PMI
 (`pmi.json`, bridge 6) and ingest stores it as the `pmi` derivative. The part's page lists it under
@@ -1215,6 +1215,7 @@ needed a `test/` branch.
   - `metadata.json`, which learned an edited value only on its next rewrite; fixed since (`fd3c018`).
 
 **Turkish search** (`aad407e`).
+- **Removed since** (`8bb5ea4`, migration `0031`), at the owner's word. What follows is what was built.
 - **Schema** (`0028`).
   - `library.language`, `simple` or `turkish`.
   - `part.search_config`, copied from the library by the insert that makes a part.
@@ -1448,8 +1449,8 @@ with a test that a mutation turned red, or left with its reason.
   - Tests: the job writes the value and refuses another library's part; the route queues the job.
     Mutation-checked, both caught.
 - **The upload commit stores a drop's files in parallel** (`588b0ca`). Each file's hashing and
-  compression run on the blocking pool, as many at once as there are cores, and each set of bytes is
-  stored once.
+  compression run on the blocking pool, as many at once as there are cores (at most 4 since the code
+  review below), and each set of bytes is stored once.
   - Test: 13 files, one a copy, store 12 blobs and queue 13 jobs. With copies stored twice it failed 2
     runs of 3, since that is a race.
   - Measured on the Phase 1 stand-in, 150 STLs and 270,719,950 bytes, with the api alone on a debug build
@@ -1459,11 +1460,78 @@ with a test that a mutation turned red, or left with its reason.
 | The commit route | Runs |
 |---|---|
 | Before | 9,849 ms, 9,552 ms, 9,709 ms, 9,666 ms |
-| After | 1,525 ms, 1,516 ms |
+| After, as many at once as cores (`588b0ca`) | 1,525 ms, 1,516 ms |
+| At most 4 at once (`f67184c`) | 2,634 ms, 2,708 ms |
 
 - **Capital I in Turkish search: not fixed, by the owner's answer.** Asked on 2026-09-15, the owner said
   Turkish search is not needed and regular word search is fine. Spec §2.1's record stands, and nothing was
-  built for it.
+  built for it. After the code review they chose to remove Turkish search itself (`8bb5ea4`).
+
+**The code review.** A background reviewer went over goal 3 (`ae0cdbc..80db719`), looking for code that
+is wrong, redundant, or slower or larger than it needs to be. It returned 15 findings, and each was
+checked against the code first. Each fix has a test that a mutation turned red, or a check that was run.
+- **Turkish search, removed at the owner's word** (`8bb5ea4`, `0031`). This closed two findings.
+  - `pg_upgrade` refuses `0028`'s `regconfig` column in a user table.
+  - A `tsquery` built from a library's language could not fold to a constant, so it was parsed again for
+    every candidate row.
+
+  Search is `simple` again. Test: no user table holds a `reg*` type; with `0031`'s drops taken out, it
+  fails on `part.search_config`.
+- **Fixed:**
+  - **A field's box kept the first value it showed** (`16009d4`). A value changed elsewhere and read back
+    left the old draft in the box, and a blur wrote it back.
+    - The draft now follows the stored value, and the row is keyed by part and field.
+    - Test: saving another field reads the part again, and the box shows the new value. Mutation-checked.
+  - **A field whose key is all digits lost its filter from the URL** (`9aad6eb`). Mutation-checked.
+  - **Locking a library's row blocked every insert that references it** (`8bd1234`).
+    - Defining a field and moving a saved filter held the row `FOR UPDATE`, which waits out every part,
+      job and folder insert's `FOR KEY SHARE`.
+    - They now take `FOR NO KEY UPDATE`. The two lock-order tests pass unchanged, but no test shows an
+      insert getting through.
+  - **Two watches into one library shared a state file** (`fd084ab`). It is now named by library and
+    folder. Test on the name, mutation-checked.
+  - **One stuck batch stopped a whole watch** (`9cef484`).
+    - The watch now asks about each batch once a round.
+    - A send the server did not answer, and a batch whose status did not arrive, wait 30 s.
+    - **Check,** against an api with no worker, so no batch finished:
+      - A second file was sent while the first batch was still pending.
+      - After the api stopped, each batch and the new file printed one error and waited, rather than
+        retrying every round.
+    - The loop itself has no unit test.
+  - **The probe made two queries per file, and the commit one** (`f67184c`, `ece82e0`).
+    - Both now take two queries and one, whatever the manifest's size.
+    - The first version matched held files by path, so one path named twice with different bytes had
+      both entries answered as held. It answers per entry now.
+    - Test: a held path with its own bytes, with other bytes, and its bytes under another path. Taking
+      the hash match out fails it, and 6 ingest tests.
+    - The probe over the 150 files above, into an empty library, took 78 ms and 76 ms, on the build
+      before the per-entry answer. No figure was taken before the change.
+  - **A commit could take every core** (`f67184c`).
+    - It stores at most 4 files at once, so a commit leaves cores to the process serving the grid.
+    - On this 12-core machine that costs about a second over 150 files (the table above).
+    - Under compose's one-CPU api, `available_parallelism` is 1, so a commit there stores one file at a
+      time either way. Raising that limit is a deployment decision, not made here.
+  - **Every value saved queued its own description** (`28e0324`). Only one is queued while it waits; a
+    running one does not count, since it may have read the rows before the value.
+    - Tests: in the db, pending and running; in the api, two values give one job. Mutation-checked, both
+      caught.
+  - **A description could overwrite a newer one** (`f68818f`).
+    - `describe_part` and the rewrite after a revision now read the manifest and write the file while
+      the part's row is held.
+    - Test: the read waits for a write to the part and holds its value. Mutation-checked.
+    - Not held: step 10's first manifest for a new part, which is built from the ingest's own ids.
+  - **A scan and a watch ignored different files** (`e9bdb1f`). By the owner's answer, a scan skips DATA
+    §6.2's whole list too.
+    - Test: a scan skips a `~$` file and a `.bak` folder holding a model. Mutation-checked.
+    - Not changed: the watch does not follow a symlinked file, and a scan does.
+  - **Bare glyphs on small buttons** (`7205a34`). `↑ ↓ ✎ ×` now come from `strings.glyphs`.
+- **Recorded, not fixed:**
+  - **A matching hash alone attaches stored bytes to a library** (the upload commit). By the owner's
+    answer, this is recorded under Phase 8: with auth, the commit must require the bytes, or a hash the
+    caller can reach.
+  - **`detail()` reads custom values as text and falls back to `{}`.** Not changed:
+    - `jsonb` rendered as text is JSON by construction, so the fallback cannot be reached.
+    - sqlx's json decoding would parse the same bytes, behind a feature the workspace does not enable.
 
 ---
 
@@ -1500,6 +1568,13 @@ run of 4 units, and the queue correctly answers what to make next with correct q
 ## Phase 8 — Enterprise and fleet
 
 - Auth, RBAC, audit log, lifecycle states and approvals
+- **An upload's hash must be reachable, once there is auth.**
+  - An upload commit attaches bytes some library already holds on a matching hash alone
+    (`crates/lapidary-api/src/upload.rs`, `commit`). That is sound only while one owner holds every
+    library.
+  - With auth, the commit must require one of two things: the bytes uploaded by this caller, or a hash
+    reachable from a library the caller may read. `import_bundle` already refuses a bundle's hash alone.
+  - Recorded at the owner's word from the 2026-09-15 code review.
 - Settings → Compute: enrolment tokens, worker registry, drain, revoke
 - Lease protocol with heartbeats; kernel-version pinning enforced
 - Ed25519 offline licence with `max_workers` and grace-period expiry
