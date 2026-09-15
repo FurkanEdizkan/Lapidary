@@ -156,7 +156,7 @@ async fn a_taken_name_conflicts_and_an_unknown_library_is_not_found(pool: sqlx::
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_category_from_another_library_is_not_kept(pool: sqlx::PgPool) {
     let workshop = PgParts(pool.clone())
-        .create_library("Workshop fixtures", "hobby")
+        .create_library("Workshop fixtures", "hobby", "simple")
         .await
         .expect("a second library");
     let jigs = PgFolders(pool.clone())
