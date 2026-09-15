@@ -19,6 +19,9 @@ pub enum DerivativeKind {
     /// The part's mesh as a binary STL Lapidary wrote, for a slicer. Served as `*.lapidary.stl`.
     ExportStl,
     /// The part's mesh as a 3MF package Lapidary wrote, for a slicer. Served as `*.lapidary.3mf`.
+    /// Named by hand: `snake_case` puts no `_` before a digit, and the job payload and the
+    /// bindings must say what `derivative.kind` does.
+    #[serde(rename = "export_3mf")]
     Export3mf,
 }
 
@@ -69,6 +72,17 @@ mod tests {
         assert_eq!(DerivativeKind::Pmi.as_str(), "pmi");
         assert_eq!(DerivativeKind::ExportStl.as_str(), "export_stl");
         assert_eq!(DerivativeKind::Export3mf.as_str(), "export_3mf");
+    }
+
+    /// A derive job's payload and the bindings name a kind with serde, the database with `as_str`.
+    #[test]
+    fn serde_names_every_kind_as_the_database_does() {
+        for kind in DerivativeKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).expect("serializes"),
+                serde_json::Value::from(kind.as_str())
+            );
+        }
     }
 
     #[test]
