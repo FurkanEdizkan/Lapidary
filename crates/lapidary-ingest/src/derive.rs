@@ -197,6 +197,19 @@ impl WorkerHandler {
                     }
                 }
             }
+            // A file for another tool, written from the part's mesh, and served as `*.lapidary.*`.
+            DerivativeKind::ExportStl | DerivativeKind::Export3mf => {
+                if let Some(refused) = output.unproduced.iter().find(|u| u.kind == want) {
+                    return Err(HandlerError::Permanent {
+                        message: refused.reason.clone(),
+                    });
+                }
+                let Some((_, bytes)) = output.exports.iter().find(|(made, _)| *made == want) else {
+                    return Err(missing(kind, revision));
+                };
+                self.store_hashed(revision, want, bytes, None, &kernel_version)
+                    .await?;
+            }
             DerivativeKind::Thumbnail => {
                 let Some(webp) = output.thumbnail_webp else {
                     return Err(missing(kind, revision));

@@ -233,6 +233,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
                 // The finer tessellations, built when the viewer first asks. See `derive.rs`.
                 .route("/api/parts/{id}/rungs/{level}", post(derive::part_rung))
+                // A part's mesh as a 3MF or an STL, for a slicer, built when first asked for.
+                .route(
+                    "/api/parts/{id}/exports/{format}",
+                    post(derive::part_export),
+                )
                 // The category tree and the two ways it changes. `Role::Api` for the reason
                 // everything else a browser calls is: nothing proxies a browser to the worker.
                 // None of these four reaches a file — see `folders.rs`, including why a

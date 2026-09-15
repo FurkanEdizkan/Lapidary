@@ -5,6 +5,8 @@ import {
   addPartSource,
   blobUrl,
   downloadUrl,
+  exportUrl,
+  fetchBatchStatus,
   fetchDiff,
   fetchEntities,
   fetchFields,
@@ -16,6 +18,7 @@ import {
   fetchStructure,
   openLink,
   releaseLock,
+  requestExport,
   setFieldValue,
   setImageFraming,
   setPartTags,
@@ -27,6 +30,7 @@ import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
 import type {
   AssemblyNode,
+  BatchId,
   BlobHash,
   CustomField,
   Delta,
@@ -689,6 +693,69 @@ function Preview({
   )
 }
 
+/** The formats a slicer reads as they are, so a part in one downloads for a slicer as its own file (`lapidary-targets`). */
+const slicerReads = ['stl', '3mf']
+
+const control =
+  'ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px'
+
+/**
+ * A 3MF for a slicer, from a part no slicer reads as it is: asked for, written by the worker when it is not yet,
+ * then offered as a download named `*.lapidary.3mf`.
+ */
+function SlicerExport({ part }: { part: PartDetailData }) {
+  const [state, setState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'building'; batch: BatchId | null }
+    | { kind: 'ready' }
+    | { kind: 'failed'; reason: string }
+  >({ kind: 'idle' })
+  const batch = state.kind === 'building' ? state.batch : null
+  const building = useQuery({
+    queryKey: ['batch', part.library, batch],
+    queryFn: () => fetchBatchStatus(part.library, batch as BatchId),
+    enabled: batch !== null,
+    refetchInterval: (query) => (query.state.data?.finishedAt == null ? 1000 : false),
+  })
+  const finished = batch !== null && building.data?.finishedAt != null ? building.data : null
+  useEffect(() => {
+    if (finished === null) return
+    const failure = finished.failed[0]
+    setState(failure === undefined ? { kind: 'ready' } : { kind: 'failed', reason: failure.reason })
+  }, [finished])
+
+  const ask = () => {
+    setState({ kind: 'building', batch: null })
+    requestExport(part.id)
+      .then((answer) =>
+        setState(answer.kind === 'ready' ? { kind: 'ready' } : { kind: 'building', batch: answer.queued.batchId }),
+      )
+      .catch((error: unknown) => setState({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) }))
+  }
+
+  if (state.kind === 'ready') {
+    return (
+      <a href={exportUrl(part.revision)} download className={control}>
+        {strings.download.forSlicerReady}
+      </a>
+    )
+  }
+  const busy = state.kind === 'building'
+  const failure = state.kind === 'failed' ? state.reason : null
+  return (
+    <>
+      <button type="button" onClick={ask} disabled={busy} className={control}>
+        {busy ? strings.download.forSlicerBuilding : strings.download.forSlicer}
+      </button>
+      {failure === null ? null : (
+        <span role="alert" className="text-sm text-[var(--color-muted)]">
+          {strings.download.forSlicerFailed(failure)}
+        </span>
+      )}
+    </>
+  )
+}
+
 export function Detail({
   part,
   actions,
@@ -773,6 +840,9 @@ export function Detail({
                 {strings.download.original}
               </a>
             )}
+            {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
+              <SlicerExport key={part.revision} part={part} />
+            ) : null}
             {controlled ? (
               <a
                 href={openLink(part.id)}

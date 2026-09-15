@@ -14,9 +14,10 @@
 //! own message because each has a different person who can act on it: it will not guess a
 //! `variant`, it will not serve bytes whose stored compression nobody recorded, it will
 //! not serve bytes that do not hash to the digest we filed them under, and it will not
-//! convert. The last one is not a limitation to lift here — converting invokes the CAD
-//! kernel, which this crate cannot link (`xtask/src/layers.rs`), so a converted download
-//! is a worker-side derivative and a different route entirely.
+//! convert. The last one is not a limitation to lift here — converting reads the source
+//! through the CAD kernel, which this crate cannot link (`xtask/src/layers.rs`), so a
+//! converted download (`variant=3mf`, `variant=stl`) is a derivative the worker wrote,
+//! asked for at `POST /api/parts/{id}/exports/{format}` and only served from here.
 //!
 //! # The body streams, and what that cost
 //!
@@ -57,13 +58,13 @@ use axum::response::{IntoResponse, Response};
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, DownloadSource, PgParts, PgRevisions};
 use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
-use lapidary_targets::bundle;
+use lapidary_targets::{Format, Handover, Tool, bundle, negotiate};
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
 use ts_rs::TS;
 
-/// The only `variant` this slice serves. Named in every message that rejects another
-/// one, so a caller is told what to send rather than what not to.
+/// The ingested bytes, unconverted. Named in every message that rejects a variant, so a
+/// caller is told what to send rather than what not to.
 const ORIGINAL: &str = "original";
 
 /// The tessellations this route also serves, by the name a URL asks for them with. Lapidary built
@@ -133,23 +134,16 @@ pub async fn original(
     // query-string value the same way, for the same reason.
     match variant.as_deref().filter(|variant| !variant.is_empty()) {
         Some(ORIGINAL) => {}
-        Some(other) => {
-            return match RUNGS.iter().find(|(name, _)| *name == other) {
-                Some((level, kind)) => {
-                    rung(
-                        db,
-                        &blob_root,
-                        &touches,
-                        &source.part_name,
-                        revision,
-                        *kind,
-                        level,
-                    )
-                    .await
-                }
-                None => unknown_variant(other),
-            };
-        }
+        Some(other) => match built_for(other, &source.format) {
+            Ok(Some(built)) => {
+                return serve_built(db, &blob_root, &touches, &source.part_name, revision, built)
+                    .await;
+            }
+            // The part's own file is already in the format asked for: served below, as
+            // `original` is.
+            Ok(None) => {}
+            Err(message) => return refused(message),
+        },
         None => return missing_variant(),
     }
 
@@ -379,35 +373,97 @@ fn percent_encode(name: &str) -> String {
     out
 }
 
-/// No such revision, or its part is soft-deleted. One body for both, and honestly so: a
-/// deleted part is gone from every view the grid offers, and a URL held from before the
-/// delete must stop serving bytes rather than outlive it (spec §2.1).
-/// One tessellation, streamed from the derivative store under a name that says Lapidary built it.
-/// Never the source file under another name: `variant=original` is the only way to those bytes.
-async fn rung(
+/// A file Lapidary built from a part, as this route serves it.
+struct Built {
+    kind: DerivativeKind,
+    /// How a message names it: `l1 tessellation`, `3mf export`.
+    what: String,
+    /// What follows `<part>.lapidary.` in its filename.
+    extension: String,
+    content_type: &'static str,
+    /// The route that builds it, after `/api/parts/{id}/`.
+    route: String,
+}
+
+/// What `variant` names for a part whose own file is in `source_format`: a tessellation, a
+/// mesh export, or `None` for the part's own file when that is already the format asked for.
+///
+/// A format is a download of that one format, negotiated as any hand-over is (`DATA.md`
+/// §5.1): never a mesh for a B-rep format, and never an export of a file already in it. A
+/// refusal is the message of a 400.
+fn built_for(variant: &str, source_format: &str) -> Result<Option<Built>, String> {
+    if let Some((level, kind)) = RUNGS.iter().find(|(name, _)| *name == variant) {
+        return Ok(Some(Built {
+            kind: *kind,
+            what: format!("{level} tessellation"),
+            extension: format!("{level}.glb"),
+            content_type: "model/gltf-binary",
+            route: format!("rungs/{level}"),
+        }));
+    }
+    let Some(format) = Format::named(variant) else {
+        return Err(unknown_variant(variant));
+    };
+    // Every extension ingest records is a named format, so this is a row written some other way.
+    let Some(source) = Format::named(source_format) else {
+        return Err(format!(
+            "This part's file is recorded as `{source_format}`, a format this server cannot \
+             negotiate a download for. Download it with `?variant={ORIGINAL}` instead."
+        ));
+    };
+    let download = Tool {
+        name: format!("a `{}` download", format.name()),
+        accepts: vec![format],
+    };
+    match negotiate(&download, source) {
+        Ok(Handover::Original) => Ok(None),
+        Ok(Handover::Export(format)) => match format.export() {
+            Some(kind) => Ok(Some(Built {
+                kind,
+                what: format!("{} export", format.name()),
+                extension: format.name().to_owned(),
+                content_type: "application/octet-stream",
+                route: format!("exports/{}", format.name()),
+            })),
+            // `negotiate` hands over only what `EXPORTS` lists, and every one of those is written.
+            None => Err(unknown_variant(variant)),
+        },
+        Err(refusal) => Err(refusal.to_string()),
+    }
+}
+
+/// One file Lapidary built, streamed from the derivative store under a name that says so.
+/// Never the source file under another name: the part's own file is served as `original` is.
+async fn serve_built(
     db: lapidary_db::PgPool,
     blob_root: &std::path::Path,
     touches: &lapidary_db::Touches,
     part_name: &str,
     revision: RevisionId,
-    kind: DerivativeKind,
-    level: &str,
+    built: Built,
 ) -> Response {
+    let Built {
+        kind,
+        what,
+        extension,
+        content_type,
+        route,
+    } = built;
     let hash = match PgParts(db.clone()).derivative_hash(revision, kind).await {
         Ok(Some(hash)) => hash,
-        Ok(None) => return no_such_rung(level),
+        Ok(None) => return not_built(&what, &route),
         Err(err) => return internal_error(&err),
     };
     let bytes = match DerivativeStore::open(blob_root).get(&hash) {
         Ok(bytes) => bytes,
         Err(err) => {
-            tracing::error!(error = %err, hash = %hash.to_hex(), "a recorded rung is not readable");
+            tracing::error!(error = %err, hash = %hash.to_hex(), "a recorded derivative is not readable");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "message": format!(
-                        "The {level} tessellation is recorded but its bytes could not be read. \
-                         Ask for it again with POST /api/parts/{{id}}/rungs/{level} to rebuild it."
+                        "The {what} is recorded but its bytes could not be read. \
+                         Ask for it again with POST /api/parts/{{id}}/{route} to rebuild it."
                     )
                 })),
             )
@@ -415,10 +471,10 @@ async fn rung(
         }
     };
     touches.record(&hash);
-    let filename = download_filename(part_name, &format!("lapidary.{level}.glb"));
+    let filename = download_filename(part_name, &format!("lapidary.{extension}"));
     (
         [
-            (header::CONTENT_TYPE, "model/gltf-binary".to_owned()),
+            (header::CONTENT_TYPE, content_type.to_owned()),
             (header::CACHE_CONTROL, "no-cache".to_owned()),
             (header::ETAG, format!("\"{}\"", hash.to_hex())),
             (header::CONTENT_DISPOSITION, content_disposition(&filename)),
@@ -429,19 +485,30 @@ async fn rung(
         .into_response()
 }
 
-fn no_such_rung(level: &str) -> Response {
+fn not_built(what: &str, route: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({
             "message": format!(
-                "This revision has no {level} tessellation yet. Ask for it with \
-                 POST /api/parts/{{id}}/rungs/{level}, then download it once that batch finishes."
+                "This revision has no {what} yet. Ask for it with \
+                 POST /api/parts/{{id}}/{route}, then download it once that batch finishes."
             )
         })),
     )
         .into_response()
 }
 
+fn refused(message: String) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "message": message })),
+    )
+        .into_response()
+}
+
+/// No such revision, or its part is soft-deleted. One body for both, and honestly so: a
+/// deleted part is gone from every view the grid offers, and a URL held from before the
+/// delete must stop serving bytes rather than outlive it (spec §2.1).
 fn no_such_revision() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -470,22 +537,16 @@ fn missing_variant() -> Response {
         .into_response()
 }
 
-/// Deliberately not [`missing_variant`]'s body. Someone who sent `variant=3mf` asked a
-/// real question — where converted downloads are — and telling them to add a parameter
-/// they already sent answers a question they did not ask.
-fn unknown_variant(got: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({
-            "message": format!(
-                "`{got}` is not a download variant. This server serves \
-                 `variant={ORIGINAL}` — the ingested bytes, unconverted — and `l0`, `l1` or \
-                 `l2`, the tessellations Lapidary built, named `*.lapidary.*`. Any other \
-                 converted download is produced as a derivative by the worker, not by this route."
-            )
-        })),
+/// Deliberately not [`missing_variant`]'s body. Someone who sent `variant=dxf` asked a
+/// real question — which downloads there are — and telling them to add a parameter they
+/// already sent answers a question they did not ask.
+fn unknown_variant(got: &str) -> String {
+    format!(
+        "`{got}` is not a download variant. This server serves `variant={ORIGINAL}`, the \
+         ingested bytes unconverted; `l0`, `l1` or `l2`, the tessellations Lapidary built; and \
+         a format — `3mf` or `stl` is a mesh Lapidary writes from any part, and the part's own \
+         format is its original file. Everything Lapidary built is named `*.lapidary.*`."
     )
-        .into_response()
 }
 
 /// Spec §2.5.1, and the one refusal that still happens *before* any bytes go out, which

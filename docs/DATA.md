@@ -228,14 +228,16 @@ render cache, show what it reclaims, and state that source files are untouched. 
 who reads "reclaim 40 GB" and fears for their models has lost trust in the thing we sell.
 
 **Built in Phase 4 slice 2** (`docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §4).
-- **What is evictable.** "Free cache space" removes L1 and L2 rung rows whose blob was last read more
-  than 90 days ago. A blob never read since tracking began counts from when it was written.
+- **What is evictable.** "Free cache space" removes L1 and L2 rung rows, and since goal 4 the 3MF and STL
+  exports written for slicers, whose blob was last read more than 90 days ago. A blob never read since
+  tracking began counts from when it was written.
 - **What it never touches.** L0, thumbnails, structure, entities, PMI and source files. Structure,
   entities and PMI cannot be rebuilt, and L0 keeps the open path drawing.
 - **Where the bytes go.** The rows go, `ref_count` is recomputed the way purge recomputes it, and a
   blob nothing else references enters the 30-day quarantine. The bytes leave with the hourly sweep.
 - **What it reports.** Bytes entering quarantine, never "freed", because nothing is gone on the day.
-- **What happens next.** A part opened afterwards draws L0 and asks for L1 again.
+- **What happens next.** A part opened afterwards draws L0 and asks for L1 again. An export is written
+  again when it is next asked for.
 
 **Thumbnails are the exception to "no blobs in Postgres."** Store WebP under 64 KB as
 `bytea` on the derivative row so they arrive in the same query as the grid page instead
@@ -651,15 +653,30 @@ Download is just a `Target` whose `accepts()` the user picks manually — so sen
 degrades to download naturally when no agent is present.
 
 **Built in slice 5, with three things this section did not specify.** `variant=original`
-is the only legal value today — `variant=3mf` is a 400 naming what to send, never a
-silent fallback, because a download that quietly returns something other than what was
-asked for is the failure this section exists to forbid. The route **re-hashes the bytes
+was the only legal value then — `variant=3mf` was a 400 naming what to send (goal 4 made
+it a download, below), never a silent fallback, because a download that quietly returns
+something other than what was asked for is the failure this section exists to forbid. The route **re-hashes the bytes
 before serving them** and refuses with a 500 on mismatch, which is what makes "verifiable
 against the stored BLAKE3" true rather than asserted; it costs microseconds against the
 transfer that follows. And `Cache-Control: no-cache` — revalidate before reuse. The blob
 route can promise `immutable` because its URL contains the hash of what it returns; this
 URL names a *revision*, whose source could be re-pointed, and sending no directive at all
 would leave heuristic freshness free to hand back a stale file.
+
+**Negotiated since goal 4.** A format is a download of that one format, a `Target` whose
+`accepts()` is just it, so the route runs the same `negotiate` as `lapidary open`:
+- the part's own file is already in that format: the original, byte-identical and under
+  its own name (`variant=stl` on an STL);
+- else a mesh export the worker wrote from the part's mesh, `variant=3mf` or `variant=stl`,
+  named `*.lapidary.3mf` or `*.lapidary.stl`;
+- a B-rep format for a mesh part (`variant=step` on an STL): a 400 naming what there is.
+
+Nothing converts on the download itself. An export not written yet is a 404 naming
+`POST /api/parts/{id}/exports/{format}`, which queues it as a derive job and answers with
+the batch, as a rung request does. `lapidary open` negotiates with this computer's apps as
+the target: a STEP part on a computer with a slicer and no CAD app opens as a read-only
+3MF under `exports/` in the workspace, no lock taken, and it says that nothing saved from
+it comes back.
 
 Measured on the 150-file corpus: the served bytes `cmp` clean against the file on disk,
 and a name carrying parentheses arrives as `filename*=UTF-8''…tex%28B%29.stl` with an

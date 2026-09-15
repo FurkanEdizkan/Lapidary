@@ -195,7 +195,7 @@ pub struct InstanceStorage {
     /// Purged, inside the thirty-day hold, on the disk and belonging to no library. The one
     /// figure this application can report nowhere else.
     pub quarantined_bytes: u64,
-    /// Rendered rungs Lapidary can rebuild and nobody has read in 90 days: what "free cache
+    /// Rungs and exports Lapidary can rebuild and nobody has read in 90 days: what "free cache
     /// space" would put into quarantine (`DATA.md` §1.5). Only blobs no other row points at,
     /// so a small part whose L0, L1 and L2 are one blob counts nothing here.
     pub render_cache_bytes: u64,
@@ -210,12 +210,15 @@ pub struct RenderCacheFreed {
     pub quarantined_bytes: u64,
 }
 
-/// The rungs "free cache space" may remove. Never L0, which keeps the open path drawing, and
-/// never structure, entities or PMI, which nothing can rebuild (`lapidary-ingest`'s `derive.rs`).
+/// The rungs and exports "free cache space" may remove: a derive job writes any of them again from
+/// the source when asked. Never L0, which keeps the open path drawing, and never structure,
+/// entities or PMI, which nothing can rebuild (`lapidary-ingest`'s `derive.rs`).
 fn cache_kinds() -> Vec<&'static str> {
     vec![
         DerivativeKind::TessellationL1.as_str(),
         DerivativeKind::TessellationL2.as_str(),
+        DerivativeKind::ExportStl.as_str(),
+        DerivativeKind::Export3mf.as_str(),
     ]
 }
 
@@ -2705,12 +2708,14 @@ impl PgParts {
         })
     }
 
-    /// "Free cache space" (`DATA.md` §1.5): remove every L1 and L2 rung row whose blob nobody
-    /// has read in 90 days, then recount those blobs as purge does, so a blob nothing else
-    /// points at enters the thirty-day quarantine and the hourly sweep takes its bytes after.
+    /// "Free cache space" (`DATA.md` §1.5): remove every L1 and L2 rung row, and every export
+    /// row, whose blob nobody has read in 90 days, then recount those blobs as purge does, so a
+    /// blob nothing else points at enters the thirty-day quarantine and the hourly sweep takes
+    /// its bytes after.
     ///
     /// Rows, not only bytes. The blob route rebuilds a rung whose bytes are missing, but a row
-    /// naming bytes that are gone would answer 404 for good. L0, thumbnails, structure,
+    /// naming bytes that are gone would answer 404 for good; an export whose row is gone is
+    /// written again when it is next asked for. L0, thumbnails, structure,
     /// entities, PMI and every source file stay, so a part opened afterwards draws at once and
     /// asks for its L1 again, as a freshly ingested part does.
     pub async fn free_render_cache(&self) -> Result<RenderCacheFreed, DbError> {

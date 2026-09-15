@@ -1,9 +1,39 @@
 //! `lapidary register` and `lapidary unregister`: the XDG handler that sends `lapidary://` links
-//! to `lapidary open` (Phase 4 slice 2 spec §3). Linux only.
+//! to `lapidary open` (Phase 4 slice 2 spec §3), and what `open` hands this desktop's apps.
+//! Linux only.
 
 use anyhow::{Context, Result, bail};
+use lapidary_targets::{EXPORTS, Format, Handover, Tool, negotiate};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The app this desktop opens `format` with, as `xdg-mime` names it for any of the format's MIME
+/// types: its desktop file. `None` when there is none, or no `xdg-mime` to ask.
+pub fn default_app(format: Format) -> Option<String> {
+    format.mimes().iter().find_map(|mime| {
+        let output = Command::new("xdg-mime")
+            .args(["query", "default", mime])
+            .output()
+            .ok()?;
+        let app = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !app.is_empty()).then_some(app)
+    })
+}
+
+/// What `lapidary open` hands this desktop for a part whose file is in `source`: that file when an
+/// app here opens its format, else the export an app here does, so a STEP part on a computer with
+/// only a slicer opens as a 3MF. With no app for any of them it is still the part's own file, and
+/// `xdg-open` says what is missing.
+pub fn handover(source: Format, opens: impl Fn(Format) -> bool) -> Handover {
+    let apps = Tool {
+        name: "this computer's apps".to_owned(),
+        accepts: std::iter::once(source)
+            .chain(EXPORTS)
+            .filter(|format| opens(*format))
+            .collect(),
+    };
+    negotiate(&apps, source).unwrap_or(Handover::Original)
+}
 
 /// The handler's file name, which `xdg-mime` records as the default for [`SCHEME`].
 const ENTRY: &str = "lapidary-url.desktop";
@@ -178,6 +208,32 @@ pub fn unregister() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_opens_as_its_own_file_where_an_app_takes_it_and_as_an_export_only_where_none_does() {
+        fn only(apps: &[Format]) -> impl Fn(Format) -> bool + '_ {
+            move |format| apps.contains(&format)
+        }
+        assert_eq!(
+            handover(Format::Step, only(&[Format::Step, Format::ThreeMf])),
+            Handover::Original
+        );
+        assert_eq!(
+            handover(Format::Step, only(&[Format::Stl, Format::ThreeMf])),
+            Handover::Export(Format::ThreeMf),
+            "a 3MF first: it keeps its units"
+        );
+        assert_eq!(
+            handover(Format::Iges, only(&[Format::Stl])),
+            Handover::Export(Format::Stl)
+        );
+        // No app for any of them: the part's own file, so xdg-open says what is missing.
+        assert_eq!(handover(Format::Step, only(&[])), Handover::Original);
+        assert_eq!(
+            handover(Format::Step, only(&[Format::Obj])),
+            Handover::Original
+        );
+    }
 
     #[test]
     fn the_handler_runs_this_binary_with_the_server_and_workspace_it_was_registered_with() {

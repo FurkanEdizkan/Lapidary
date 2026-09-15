@@ -16,11 +16,18 @@ pub enum DerivativeKind {
     Entities,
     /// The dimensions, tolerances and datums a CAD file specifies, as JSON. A mesh has none.
     Pmi,
+    /// The part's mesh as a binary STL Lapidary wrote, for a slicer. Served as `*.lapidary.stl`.
+    ExportStl,
+    /// The part's mesh as a 3MF package Lapidary wrote, for a slicer. Served as `*.lapidary.3mf`.
+    /// Named by hand: `snake_case` puts no `_` before a digit, and the job payload and the
+    /// bindings must say what `derivative.kind` does.
+    #[serde(rename = "export_3mf")]
+    Export3mf,
 }
 
 impl DerivativeKind {
     /// Every kind, ascending — for a caller that genuinely wants all four.
-    pub const ALL: [DerivativeKind; 7] = [
+    pub const ALL: [DerivativeKind; 9] = [
         DerivativeKind::Thumbnail,
         DerivativeKind::TessellationL0,
         DerivativeKind::TessellationL1,
@@ -28,6 +35,8 @@ impl DerivativeKind {
         DerivativeKind::Structure,
         DerivativeKind::Entities,
         DerivativeKind::Pmi,
+        DerivativeKind::ExportStl,
+        DerivativeKind::Export3mf,
     ];
 
     /// Exactly the strings already in `derivative.kind`. Changing one orphans every row
@@ -41,6 +50,8 @@ impl DerivativeKind {
             DerivativeKind::Structure => "structure",
             DerivativeKind::Entities => "entities",
             DerivativeKind::Pmi => "pmi",
+            DerivativeKind::ExportStl => "export_stl",
+            DerivativeKind::Export3mf => "export_3mf",
         }
     }
 }
@@ -59,6 +70,19 @@ mod tests {
         assert_eq!(DerivativeKind::Structure.as_str(), "structure");
         assert_eq!(DerivativeKind::Entities.as_str(), "entities");
         assert_eq!(DerivativeKind::Pmi.as_str(), "pmi");
+        assert_eq!(DerivativeKind::ExportStl.as_str(), "export_stl");
+        assert_eq!(DerivativeKind::Export3mf.as_str(), "export_3mf");
+    }
+
+    /// A derive job's payload and the bindings name a kind with serde, the database with `as_str`.
+    #[test]
+    fn serde_names_every_kind_as_the_database_does() {
+        for kind in DerivativeKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).expect("serializes"),
+                serde_json::Value::from(kind.as_str())
+            );
+        }
     }
 
     #[test]
@@ -86,6 +110,8 @@ mod tests {
                 DerivativeKind::Structure,
                 DerivativeKind::Entities,
                 DerivativeKind::Pmi,
+                DerivativeKind::ExportStl,
+                DerivativeKind::Export3mf,
             ]
         );
     }

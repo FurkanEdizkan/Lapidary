@@ -231,6 +231,13 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | `Target` trait with automatic format negotiation | 4 |
 | Download `variant=original` (byte-identical, hash shown) | 1 |
 | Download derivatives, `.lapidary.` infix | 3 |
+<!--
+  Built: `variant=l0|l1|l2`, and since goal 4 `variant=3mf|stl` (DATA §5.1).
+  - A format negotiates through `Target`: the original when the file is already in it, else a
+    mesh export the worker wrote (`POST /api/parts/{id}/exports/{format}`), and a 400 for a B-rep
+    format on a mesh part.
+  - The part page offers "3MF for a slicer" on a part no slicer reads as it is.
+-->
 | Streaming ZIP bundle + `manifest.json` | 5 |
 <!--
   Export built in Phase 4 slice 2: POST /api/libraries/{id}/bundle, planned first.
@@ -253,7 +260,9 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   - Phase 4 slice 2 adds `lapidary register`, `unregister` and `open`.
     - A `lapidary://open?part=<uuid>` link from a controlled library's part page checks the part
       out, or reuses this computer's checkout, and opens the file with `xdg-open`.
-    - The `Target` trait is not built yet: nothing negotiates a format.
+    - Goal 4 negotiates the format through `Target`: the part's own file when an app here
+      opens it, else a read-only 3MF or STL export an app here does, which takes no lock and
+      sends nothing back.
   - Not yet: macOS and Windows watchers.
 -->
 

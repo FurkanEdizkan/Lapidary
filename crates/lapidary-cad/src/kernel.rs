@@ -83,6 +83,8 @@ pub struct KernelOutput {
     pub pmi: Option<Pmi>,
     /// The faces and edges a CAD kernel counted on the B-rep. `None` for a mesh.
     pub topology: Option<Topology>,
+    /// Files for other tools, written from the mesh: one for each export `params.produce` asked for.
+    pub exports: Vec<(DerivativeKind, Vec<u8>)>,
     /// Derivatives that were asked for and could not be made, with the reason.
     ///
     /// **A derivative is not the part.** The mesh parsed — measurements are above and are
@@ -131,6 +133,11 @@ pub enum CadError {
         "Could not read this {format} — {detail}. Re-export it from your CAD or slicing tool and retry; if it came from a download, the transfer may have been cut short."
     )]
     MalformedMesh { format: String, detail: String },
+
+    #[error(
+        "Could not write this part's {format} export: {detail}. This is a bug in Lapidary; please report it with the part's file."
+    )]
+    ExportFailed { format: String, detail: String },
 
     /// Raised by both the thumbnail rasterizer and the glTF writer, which is why the
     /// wording no longer says "thumbnail": it claimed one for years while `glb.rs` raised it

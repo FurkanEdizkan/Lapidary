@@ -1290,6 +1290,7 @@ dependencies = [
  "blake3",
  "clap",
  "lapidary-core",
+ "lapidary-targets",
  "reqwest",
  "serde",
  "serde_json",

@@ -388,6 +388,8 @@ impl PgJobs {
             DerivativeKind::TessellationL1,
             DerivativeKind::TessellationL2,
             DerivativeKind::Structure,
+            DerivativeKind::ExportStl,
+            DerivativeKind::Export3mf,
         ]
         .map(DerivativeKind::as_str)
         .to_vec();

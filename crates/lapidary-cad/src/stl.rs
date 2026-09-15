@@ -20,6 +20,51 @@ const HEADER: usize = 80;
 const COUNT: usize = 4;
 const TRIANGLE: usize = 50;
 
+/// `mesh` as binary STL, the form every slicer reads: an 80-byte header naming Lapidary, the triangle count,
+/// then each triangle with a facet normal worked out from its corners and a zero attribute word.
+pub fn write_stl(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
+    let count = u32::try_from(mesh.triangles.len()).map_err(|_| CadError::ExportFailed {
+        format: "STL".to_owned(),
+        detail: format!(
+            "{} triangles is more than an STL can count",
+            mesh.triangles.len()
+        ),
+    })?;
+    let mut out = Vec::with_capacity(HEADER + COUNT + TRIANGLE * mesh.triangles.len());
+    let mut header = [0u8; HEADER];
+    // Not `solid`: a binary STL whose header starts with it reads as ASCII to some tools.
+    let name = b"Lapidary export, binary STL, millimetres";
+    header[..name.len()].copy_from_slice(name);
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&count.to_le_bytes());
+    for [a, b, c] in &mesh.triangles {
+        for v in [facet_normal(a, b, c), *a, *b, *c] {
+            for x in v {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// A triangle's unit normal by the right-hand rule, or zero for a triangle with no area.
+fn facet_normal(a: &[f32; 3], b: &[f32; 3], c: &[f32; 3]) -> [f32; 3] {
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if length > 0.0 {
+        [n[0] / length, n[1] / length, n[2] / length]
+    } else {
+        [0.0; 3]
+    }
+}
+
 pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
     if bytes.is_empty() {
         return Err(CadError::MalformedMesh {
@@ -429,5 +474,43 @@ endsolid corrupt
             "message names the structural defect: {msg}"
         );
         assert!(msg.contains("line 6"), "message names the line: {msg}");
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    /// A written STL reads back as the triangles it was written from, each with a unit normal.
+    #[test]
+    fn a_written_stl_reads_back_as_the_same_triangles() {
+        let mesh = Mesh {
+            triangles: vec![
+                [[0.0, 0.0, 0.0], [22.5, 0.0, 0.0], [0.0, 30.25, 0.0]],
+                [[0.0, 0.0, 5.0], [1.0, 1.0, 5.0], [2.0, 2.0, 5.0]],
+            ],
+            parts: Vec::new(),
+        };
+        let bytes = write_stl(&mesh).expect("writes");
+        assert_eq!(bytes.len(), 84 + 50 * 2);
+        assert!(!bytes.starts_with(b"solid"));
+        assert_eq!(
+            parse_stl(&bytes).expect("reads back").triangles,
+            mesh.triangles
+        );
+        let normal: Vec<f32> = bytes[84..96]
+            .chunks(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_eq!(normal, [0.0, 0.0, 1.0], "the first triangle faces up");
+        let flat: Vec<f32> = bytes[134..146]
+            .chunks(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_eq!(
+            flat,
+            [0.0, 0.0, 0.0],
+            "a triangle with no area has no normal"
+        );
     }
 }

@@ -76,7 +76,8 @@ async fn blob(pool: &sqlx::PgPool, seed: u8) -> (i32, bool) {
 }
 
 /// A bracket nobody has opened in months, whose L2 is the same bytes as its L0 (a small part's
-/// rungs often are), beside a spacer whose L1 somebody read yesterday.
+/// rungs often are) and whose 3MF was written for a slicer, beside a spacer whose L1 somebody
+/// read yesterday.
 #[sqlx::test(migrations = "./migrations")]
 async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine(
     pool: sqlx::PgPool,
@@ -89,6 +90,7 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
             rung("tessellation_l0", 0xa0, 9_140),
             rung("tessellation_l1", 0xa1, 48_210),
             rung("tessellation_l2", 0xa0, 9_140),
+            rung("export_3mf", 0xa2, 12_405),
         ],
     )
     .await;
@@ -121,16 +123,16 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
             .await
             .expect("reads")
             .render_cache_bytes,
-        48_210,
-        "the bracket's L1 only: its L2 shares L0's blob, and the spacer's L1 was read yesterday"
+        48_210 + 12_405,
+        "the bracket's L1 and 3MF only: its L2 shares L0's blob, and the spacer's L1 was read yesterday"
     );
 
     let freed = parts.free_render_cache().await.expect("frees");
     assert_eq!(
-        freed.rungs, 1,
-        "the bracket's L1 only: its L2 shares L0's blob, which the figure never counted, so it stays"
+        freed.rungs, 2,
+        "the bracket's L1 and 3MF only: its L2 shares L0's blob, which the figure never counted, so it stays"
     );
-    assert_eq!(freed.quarantined_bytes, 48_210);
+    assert_eq!(freed.quarantined_bytes, 48_210 + 12_405);
 
     assert_eq!(
         kinds(&pool, bracket).await,
@@ -144,6 +146,11 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
         blob(&pool, 0xa1).await,
         (0, true),
         "quarantined, not deleted"
+    );
+    assert_eq!(
+        blob(&pool, 0xa2).await,
+        (0, true),
+        "the export too: it is written again when next asked for"
     );
     assert_eq!(
         blob(&pool, 0xa0).await,

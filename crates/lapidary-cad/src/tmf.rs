@@ -236,6 +236,70 @@ struct Object {
     components: Vec<(String, [f64; 12])>,
 }
 
+/// `mesh` as a 3MF package: one object in millimetres, each distinct corner a vertex once, in an OPC container
+/// whose entries are stored rather than deflated, as `DATA.md` §5.3 asks of the bundles beside it.
+pub fn write_3mf(mesh: &Mesh) -> Result<Vec<u8>, CadError> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let failed = |detail: String| CadError::ExportFailed {
+        format: FORMAT.to_owned(),
+        detail,
+    };
+    let mut seen: std::collections::HashMap<[u32; 3], usize> = std::collections::HashMap::new();
+    let mut vertices = String::new();
+    let mut triangles = String::new();
+    for corners in &mesh.triangles {
+        let mut ids = [0usize; 3];
+        for (id, corner) in ids.iter_mut().zip(corners) {
+            let key = corner.map(f32::to_bits);
+            let next = seen.len();
+            *id = *seen.entry(key).or_insert_with(|| {
+                let _ = write!(
+                    vertices,
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    corner[0], corner[1], corner[2]
+                );
+                next
+            });
+        }
+        let _ = write!(
+            triangles,
+            "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
+            ids[0], ids[1], ids[2]
+        );
+    }
+    let model = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" \
+         xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\"><resources><object id=\"1\" type=\"model\">\
+         <mesh><vertices>{vertices}</vertices><triangles>{triangles}</triangles></mesh></object></resources>\
+         <build><item objectid=\"1\"/></build></model>\n"
+    );
+    let entries: [(&str, &[u8]); 3] = [
+        (
+            "[Content_Types].xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>\n",
+        ),
+        (
+            "_rels/.rels",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>\n",
+        ),
+        ("3D/3dmodel.model", model.as_bytes()),
+    ];
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in entries {
+        archive
+            .start_file(name, options)
+            .and_then(|()| archive.write_all(bytes).map_err(zip::result::ZipError::Io))
+            .map_err(|error| failed(error.to_string()))?;
+    }
+    let cursor = archive
+        .finish()
+        .map_err(|error| failed(error.to_string()))?;
+    Ok(cursor.into_inner())
+}
+
 pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
     let caps = Caps::DEFAULT;
     let mut archive = open_archive(bytes, &caps)?;
@@ -1021,5 +1085,35 @@ mod tests {
         let width = xs.iter().cloned().fold(f32::MIN, f32::max)
             - xs.iter().cloned().fold(f32::MAX, f32::min);
         assert!((width - 108.0).abs() < 0.01, "width {width}");
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    /// A written 3MF reads back as the triangles it was written from, corners shared where they repeat.
+    #[test]
+    fn a_written_3mf_reads_back_as_the_same_triangles() {
+        let mesh = Mesh {
+            triangles: vec![
+                [[0.0, 0.0, 0.0], [22.5, 0.0, 0.0], [0.0, 30.25, 0.0]],
+                [[22.5, 0.0, 0.0], [22.5, 30.25, 0.0], [0.0, 30.25, 0.0]],
+                [[0.0, 0.0, 0.0], [0.0, 30.25, 0.0], [0.0, 0.0, 11.125]],
+            ],
+            parts: Vec::new(),
+        };
+        let bytes = write_3mf(&mesh).expect("writes");
+        assert_eq!(
+            parse_3mf(&bytes).expect("reads back").triangles,
+            mesh.triangles
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(
+            text.matches("<vertex ").count(),
+            5,
+            "four shared corners and one on its own"
+        );
+        assert!(text.contains("unit=\"millimeter\""));
     }
 }

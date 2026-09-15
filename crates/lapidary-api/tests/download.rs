@@ -603,7 +603,7 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
 
     let (converted, _, converted_body) = get(
         router(state.clone(), Role::Api),
-        &download_uri(seeded.revision, "?variant=3mf"),
+        &download_uri(seeded.revision, "?variant=dxf"),
     )
     .await;
     let (absent, _, absent_body) =
@@ -613,12 +613,12 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
     assert_eq!(absent, StatusCode::BAD_REQUEST);
     let converted_body = message(&converted_body);
     let absent_body = message(&absent_body);
-    // Two different questions. Somebody who sent `variant=3mf` asked where converted
-    // downloads are; telling them to add a parameter they already sent answers a question
-    // they did not ask. A single shared body would be the tidy version of exactly that.
+    // Two different questions. Somebody who sent `variant=dxf` asked which downloads there
+    // are; telling them to add a parameter they already sent answers a question they did
+    // not ask. A single shared body would be the tidy version of exactly that.
     assert_ne!(converted_body, absent_body);
     assert!(
-        converted_body.contains("`3mf` is not a download variant"),
+        converted_body.contains("`dxf` is not a download variant"),
         "the unknown-variant message names what was sent: {converted_body}"
     );
     assert!(
@@ -1114,5 +1114,98 @@ async fn a_tessellation_downloads_under_a_lapidary_name_and_an_absent_one_says_h
     assert!(
         message(&body).contains("rungs/l2"),
         "the 404 names the route that builds the rung"
+    );
+}
+
+/// A format is a download of that one format (`DATA.md` §5.1): the part's own file when it is
+/// already in it, else the mesh export Lapidary wrote — a 404 naming the route that builds one
+/// not written yet — and a refusal, never a mesh, for a B-rep format.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_mesh_as_b_rep(
+    pool: sqlx::PgPool,
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let root = root.path();
+    let stl = ascii_stl();
+    let seeded = seed(&pool, root, "Bracket, LP-1042-03", "stl", &stl).await;
+    let app = || {
+        router(
+            AppState {
+                db: pool.clone(),
+                blob_root: root.to_path_buf(),
+                upload_dir: PathBuf::from("/nonexistent-upload-dir"),
+                host_storage_root: None,
+                touches: Default::default(),
+            },
+            Role::Api,
+        )
+    };
+
+    let (status, headers, body) = get(app(), &download_uri(seeded.revision, "?variant=stl")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, stl, "an STL asked for as an STL is its own bytes");
+    assert!(
+        header(&headers, "content-disposition").is_some_and(|value| value
+            .contains("Bracket, LP-1042-03.stl")
+            && !value.contains("lapidary")),
+        "under its own name, since Lapidary built nothing: {headers:?}"
+    );
+
+    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=3mf")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        message(&body).contains("exports/3mf"),
+        "the 404 names the route that builds the export"
+    );
+
+    let three_mf = b"PK\x03\x04 a 3MF Lapidary wrote from the bracket".to_vec();
+    let stored = lapidary_storage::DerivativeStore::open(root)
+        .put(&three_mf)
+        .expect("stores the export");
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            seeded.revision,
+            lapidary_core::DerivativeKind::Export3mf,
+            lapidary_db::DerivativeBytes::Hashed {
+                blob: &StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                },
+                grid: None,
+            },
+            "mesh stl-1+cpu-1",
+        )
+        .await
+        .expect("the export lands");
+    let (status, headers, body) = get(app(), &download_uri(seeded.revision, "?variant=3mf")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, three_mf, "the export's own bytes");
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("application/octet-stream")
+    );
+    assert!(
+        header(&headers, "content-disposition")
+            .is_some_and(|value| value.contains("Bracket, LP-1042-03.lapidary.3mf")),
+        "named as something Lapidary built: {headers:?}"
+    );
+
+    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=step")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let refusal = message(&body);
+    assert!(
+        refusal.contains("B-rep") && refusal.contains("stl, 3mf"),
+        "a mesh is never handed over as a STEP: {refusal}"
+    );
+
+    // OBJ is a mesh too, only not one Lapidary writes: refused for that, not for B-rep.
+    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=obj")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let refusal = message(&body);
+    assert!(
+        refusal.contains("writes meshes only as 3mf and stl") && !refusal.contains("B-rep"),
+        "{refusal}"
     );
 }
