@@ -1122,11 +1122,9 @@ async fn insert_part_chain(
     req: &IngestRequest<'_>,
 ) -> Result<PartId, DbError> {
     let part = PartId::new();
-    // The library's search language, copied into the part as it is made (`0028`): the search column is
-    // generated from its own row, and a move never leaves the library.
     sqlx::query(
-        "INSERT INTO part (id, library_id, name, source_path, folder_id, search_config) \
-         VALUES ($1, $2, $3, $4, $5, (SELECT language::regconfig FROM library WHERE id = $2))",
+        "INSERT INTO part (id, library_id, name, source_path, folder_id) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(part.as_uuid())
     .bind(req.library.as_uuid())
@@ -1617,7 +1615,7 @@ impl PgParts {
              WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
                AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $4)) \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
@@ -1665,7 +1663,7 @@ impl PgParts {
              WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
                AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $4)) \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
                AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
                     AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
@@ -1711,7 +1709,7 @@ impl PgParts {
              WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
                AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $4)) \
+                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
                AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
                     AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
@@ -3154,9 +3152,9 @@ impl PartRepository for PgParts {
                SELECT p.id, \
                       ( (coalesce(p.part_number, '') ILIKE $9)::int * 8 \
                       + (p.name ILIKE $9)::int * 4 \
-                      + (p.search @@ plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $8))::int * 2 \
+                      + (p.search @@ plainto_tsquery('simple', $8))::int * 2 \
                       + (p.source_path ILIKE $9)::int \
-                      + least(ts_rank(p.search, plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $8)), 0.999) ) AS rank \
+                      + least(ts_rank(p.search, plainto_tsquery('simple', $8)), 0.999) ) AS rank \
                  FROM part p \
                 WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
                   AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
@@ -3169,7 +3167,7 @@ impl PartRepository for PgParts {
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.source_path ILIKE $9 \
-                     OR p.search @@ plainto_tsquery((SELECT l.language FROM library l WHERE l.id = $1)::regconfig, $8) ) ), \
+                     OR p.search @@ plainto_tsquery('simple', $8) ) ), \
              anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
              top AS ( \
                SELECT id, rank FROM hits \
@@ -3188,8 +3186,7 @@ impl PartRepository for PgParts {
         .bind(DerivativeKind::TessellationL0.as_str())
         .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
-        // The raw query, for `plainto_tsquery`, which must not see the LIKE escapes. Each tsquery is built
-        // with the library's own language (`0028`), the configuration its parts were indexed with.
+        // The raw query, for `plainto_tsquery`, which must not see the LIKE escapes.
         .bind(query)
         // And the escaped one, wrapped. Two bindings of one input, and they are not
         // interchangeable.
@@ -3828,40 +3825,32 @@ impl PgParts {
     /// with. Nothing reads it yet — governance is Phase 8 — but choosing it is a decision
     /// made once, at creation, and asking later would mean asking about a library somebody
     /// has already filled.
-    pub async fn create_library(
-        &self,
-        name: &str,
-        mode: &str,
-        language: &str,
-    ) -> Result<LibraryId, DbError> {
+    pub async fn create_library(&self, name: &str, mode: &str) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
         // Derived here and never sent by a client, exactly as a category's is: `slugify` is
         // the one place that decides what a filesystem may hold, and a caller who could name
         // the directory could name one outside the store. Lowercased because that is what
         // `library_slug` has always returned and what every existing directory is called.
         let slug = lapidary_core::slug::slugify(name).to_lowercase();
-        sqlx::query(
-            "INSERT INTO library (id, name, mode, slug, language) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(id.as_uuid())
-        .bind(name)
-        .bind(mode)
-        .bind(&slug)
-        .bind(language)
-        .execute(&self.0)
-        .await
-        .map_err(|err| match constraint_of(&err).as_deref() {
-            Some("library_name_unique") => DbError::LibraryNameTaken {
-                name: name.to_owned(),
-            },
-            // Distinct names, one directory. The pair a user can see is refused above;
-            // this is the pair that looks different on screen and is not on disk.
-            Some("library_slug_unique") => DbError::LibrarySlugTaken {
-                name: name.to_owned(),
-                slug,
-            },
-            _ => DbError::Query(err),
-        })?;
+        sqlx::query("INSERT INTO library (id, name, mode, slug) VALUES ($1, $2, $3, $4)")
+            .bind(id.as_uuid())
+            .bind(name)
+            .bind(mode)
+            .bind(&slug)
+            .execute(&self.0)
+            .await
+            .map_err(|err| match constraint_of(&err).as_deref() {
+                Some("library_name_unique") => DbError::LibraryNameTaken {
+                    name: name.to_owned(),
+                },
+                // Distinct names, one directory. The pair a user can see is refused above;
+                // this is the pair that looks different on screen and is not on disk.
+                Some("library_slug_unique") => DbError::LibrarySlugTaken {
+                    name: name.to_owned(),
+                    slug,
+                },
+                _ => DbError::Query(err),
+            })?;
         Ok(id)
     }
 }

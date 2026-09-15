@@ -14,7 +14,7 @@ pub enum IndexError {
     ExtractionFailed { stage: u8 },
 
     #[error(
-        "PostgreSQL has no text-search configuration named '{config}'. Install it on the database server or pick a different search language for this library."
+        "PostgreSQL has no text-search configuration named '{config}'. Install it on the database server, then retry."
     )]
     SearchConfigMissing { config: String },
 }

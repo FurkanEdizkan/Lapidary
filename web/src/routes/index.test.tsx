@@ -3598,47 +3598,6 @@ test("a library name another library has keeps the dialog open with the reason",
 });
 
 /**
- * A library's search language is asked for once, when it is made, and travels with its name and its
- * governance in the one request (`docs/DATA.md` §3.3).
- */
-test("a new library is made with the search language chosen for it", async () => {
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    libraries: ok(LIBRARIES),
-    libraryCreate: ok({
-      id: "01931b6e-0000-7000-8000-0000000000c3",
-      name: "Atölye fikstürleri",
-      mode: "hobby",
-      partCount: 0,
-    }),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  fireEvent.click(await screen.findByRole("button", { name: strings.libraries.create }));
-  fireEvent.change(screen.getByRole("textbox", { name: strings.libraries.nameLabel }), {
-    target: { value: "Atölye fikstürleri" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: strings.libraries.languageLabel }), {
-    target: { value: "turkish" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: strings.libraries.createConfirm }));
-
-  await waitFor(() => {
-    const post = fetchMock.mock.calls.find(
-      ([url, init]) =>
-        url === "/api/libraries" && (init as RequestInit | undefined)?.method === "POST",
-    );
-    expect(post === undefined ? null : JSON.parse(String((post[1] as RequestInit).body))).toEqual({
-      name: "Atölye fikstürleri",
-      mode: "hobby",
-      language: "turkish",
-    });
-  });
-});
-
-/**
  * The one-way switch a changed file in a hobby library points to. Offered on a hobby library,
  * asked about once in a dialog because it cannot be undone, and the list read again after.
  */
