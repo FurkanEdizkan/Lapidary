@@ -26,6 +26,7 @@ use lapidary_core::{
     BlobHash, DerivativeKind, JobPayload, LibraryId, LibraryMode, PartId, ScanAccepted,
 };
 use lapidary_db::{DbError, PgJobs, PgParts, PgPool};
+use lapidary_targets::Format;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -318,7 +319,7 @@ pub async fn library_thumbnails(
 /// One batch, `202`, and the id to poll it with. Shared by every enqueue route in this
 /// crate — the two thumbnail routes here and `scan.rs` — so they cannot drift into
 /// answering differently.
-/// What a rung request answers when the rung already exists: its hash, ready for
+/// What a rung or export request answers when that file already exists: its hash, ready for
 /// `GET /api/blob/{blake3}`.
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
@@ -342,6 +343,35 @@ pub async fn part_rung(
         "l2" => DerivativeKind::TessellationL2,
         _ => return unknown_rung(&level),
     };
+    build(state, part, kind).await
+}
+
+/// `POST /api/parts/{id}/exports/{format}` — ask for a part's mesh written as a 3MF or an STL,
+/// the formats a slicer reads.
+///
+/// Answered as a rung request is. The file downloads from
+/// `GET /api/revisions/{id}/download?variant={format}`, named `*.lapidary.{format}`.
+pub async fn part_export(
+    State(state): State<AppState>,
+    Path((part, format)): Path<(PartId, String)>,
+) -> Response {
+    let Some(kind) = Format::named(&format).and_then(Format::export) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "message": format!(
+                    "`{format}` is not a format this route exports. Ask for `3mf` or `stl`; a \
+                     part's own format downloads as its original file."
+                )
+            })),
+        )
+            .into_response();
+    };
+    build(state, part, kind).await
+}
+
+/// A derivative of the part's newest revision: its hash when it exists, else the batch building it.
+async fn build(state: AppState, part: PartId, kind: DerivativeKind) -> Response {
     let parts = PgParts(state.db.clone());
     let library = match parts.library_of(part).await {
         Ok(Some(library)) => library,
@@ -359,7 +389,7 @@ pub async fn part_rung(
             .enqueue_derive_if_absent(library, revision, kind)
             .await
         {
-            // `queued: 1` whichever call queued it: one job is building this rung, and its
+            // `queued: 1` whichever call queued it: one job is building this file, and its
             // batch is the one to poll.
             Ok((batch_id, _)) => (
                 StatusCode::ACCEPTED,
@@ -371,7 +401,7 @@ pub async fn part_rung(
                 .into_response(),
             Err(err) => internal_error(&err, "enqueue failed"),
         },
-        Err(err) => internal_error(&err, "rung lookup failed"),
+        Err(err) => internal_error(&err, "derivative lookup failed"),
     }
 }
 

@@ -16,6 +16,7 @@ mod watch;
 use anyhow::{Context, Result, anyhow, bail};
 use checkout::Checkout;
 use clap::{Parser, Subcommand};
+use lapidary_targets::{Format, Handover};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
@@ -150,6 +151,13 @@ struct Detail {
     part_number: Option<String>,
     source_path: String,
     source_hash: Option<String>,
+    source_format: Option<String>,
+}
+
+/// A file Lapidary builds when asked, already built.
+#[derive(Deserialize)]
+struct Ready {
+    hash: String,
 }
 
 #[derive(Deserialize)]
@@ -439,12 +447,42 @@ async fn open(link: &str) -> Result<()> {
             }
             (folder, checkout)
         }
-        None => take(part).await?,
+        None => {
+            let what = "reading the part";
+            let detail: Detail = read(
+                send(
+                    reqwest::Client::new().get(format!("{server}/api/parts/{part}")),
+                    what,
+                )
+                .await?,
+                what,
+            )
+            .await?;
+            // Negotiated only before a check-out exists: one taken already is the part's own file.
+            if let Some(source) = detail.source_format.as_deref().and_then(Format::named)
+                && let Handover::Export(export) =
+                    desktop::handover(source, |format| desktop::default_app(format).is_some())
+            {
+                return open_export(&server, &workspace, part, &detail, source, export).await;
+            }
+            take(part).await?
+        }
     };
     let file = folder.join(&checkout.file_name);
+    xdg_open(&file)?;
+    println!(
+        "Opened {} (revision {}). `lapidary agent` sends each save back while it runs.",
+        file.display(),
+        checkout.rev_label
+    );
+    Ok(())
+}
+
+/// `file` in the app this desktop opens its kind of file with.
+fn xdg_open(file: &Path) -> Result<()> {
     // One argument, never a shell: the folder is ours, but a file name is still somebody's text.
     let status = Command::new("xdg-open")
-        .arg(&file)
+        .arg(file)
         .status()
         .with_context(|| {
             format!(
@@ -458,11 +496,107 @@ async fn open(link: &str) -> Result<()> {
             file.display()
         );
     }
-    println!(
-        "Opened {} (revision {}). `lapidary agent` sends each save back while it runs.",
-        file.display(),
-        checkout.rev_label
+    Ok(())
+}
+
+/// A part no app here opens, handed out as the export one does (`DATA.md` §5.1): written when it
+/// is not yet, checked against the hash the server wrote it under, and saved read-only to
+/// `exports/` in the workspace. Not a check-out: no lock is taken, and nothing saved from it
+/// comes back.
+async fn open_export(
+    server: &str,
+    workspace: &Path,
+    part: lapidary_core::PartId,
+    detail: &Detail,
+    source: Format,
+    export: Format,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let what = "writing the export";
+    let mut written = None;
+    // A second ask finds the export the first one's batch wrote.
+    for _ in 0..2 {
+        let response = send(
+            client.post(format!(
+                "{server}/api/parts/{part}/exports/{}",
+                export.name()
+            )),
+            what,
+        )
+        .await?;
+        if response.status() != reqwest::StatusCode::ACCEPTED {
+            written = Some(read::<Ready>(response, what).await?.hash);
+            break;
+        }
+        let accepted: Accepted = read(response, what).await?;
+        let batch = follow(&client, server, &detail.library, &accepted.batch_id).await?;
+        if let Some(failure) = batch.failed.first() {
+            bail!("{what}: {}", failure.reason);
+        }
+    }
+    let hash = written.with_context(|| {
+        format!("{what}: its batch finished without writing one; open the link again")
+    })?;
+
+    let what = "downloading the export";
+    let response = send(
+        client.get(format!(
+            "{server}/api/revisions/{}/download?variant={}",
+            detail.revision,
+            export.name()
+        )),
+        what,
+    )
+    .await?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("{what}: the download was cut off"))?;
+    if !status.is_success() {
+        bail!("{what}: {}", refusal(status, &bytes));
+    }
+    // Hash before believing anything (DATA §6.2): these must be the bytes the server wrote.
+    if blake3::hash(&bytes).to_hex().as_str() != hash {
+        bail!(
+            "{what}: the bytes that arrived are not the export the server wrote; open the link again"
+        );
+    }
+
+    let exports = workspace.join("exports");
+    std::fs::create_dir_all(&exports)
+        .with_context(|| format!("could not create {}", exports.display()))?;
+    let file = exports.join(format!(
+        "{}.lapidary.{}",
+        checkout::folder_name(
+            detail.part_number.as_deref(),
+            &detail.name,
+            &detail.rev_label
+        ),
+        export.name()
+    ));
+    // Renamed over rather than written in place, since one opened before is read-only.
+    let mut partial = file.clone().into_os_string();
+    partial.push(".part");
+    std::fs::write(&partial, &bytes)
+        .with_context(|| format!("could not write {}", file.display()))?;
+    std::fs::rename(&partial, &file)
+        .with_context(|| format!("could not write {}", file.display()))?;
+    let mut permissions = std::fs::metadata(&file)
+        .with_context(|| format!("could not read {}", file.display()))?
+        .permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&file, permissions)
+        .with_context(|| format!("could not make {} read-only", file.display()))?;
+
+    xdg_open(&file)?;
+    let (from, to) = (source.name().to_uppercase(), export.name().to_uppercase());
+    let note = format!(
+        "No app on this computer opens {from} files, so revision {} opened as a {to} Lapidary wrote from its mesh, read-only: nothing saved from it comes back. To edit the part itself, install an app for {from} files and open the link again.",
+        detail.rev_label
     );
+    println!("{note} The file is {}.", file.display());
+    notify(&note);
     Ok(())
 }
 

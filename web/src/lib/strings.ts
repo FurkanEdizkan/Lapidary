@@ -775,6 +775,15 @@ export const strings = {
     /** DATA §6.3's honesty line: which tools send a save back, and the way without the agent. */
     openInAppNote:
       'Needs lapidary register and lapidary agent on this computer. Rhino, FreeCAD and Blender save back as a new revision; Fusion 360 and Onshape keep their own copy, so export from them and upload instead. Without the agent, use Download.',
+    /**
+     * A part no slicer reads as it is, a STEP or IGES part, handed to one as a 3MF Lapidary writes
+     * from its mesh. Beside Download, which stays the part's own file.
+     */
+    forSlicer: '3MF for a slicer',
+    forSlicerBuilding: 'Writing the 3MF…',
+    forSlicerReady: 'Download the 3MF',
+    /** The worker's or the server's own message, which says what broke and what to do. */
+    forSlicerFailed: (reason: string) => `The 3MF was not written: ${reason}`,
   },
   /**
    * What the library occupies, split by the storage classes `DATA.md` §1.1 splits it

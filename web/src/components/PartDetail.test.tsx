@@ -706,3 +706,39 @@ test('a controlled library’s part offers to open in a desktop app, and a hobby
   expect(screen.queryByText(strings.download.openInAppNote)).toBeNull()
   vi.unstubAllGlobals()
 })
+
+/** A slicer reads an STL as it is, so only a part it does not read is offered a 3MF, written when asked. */
+test('a STEP part offers a 3MF for a slicer, watches it being written, then links to it', async () => {
+  const batchId = '01931b6e-0000-7000-8000-0000000000b1'
+  let finishedAt: string | null = null
+  const fetch = vi.fn(async (url: string, init?: RequestInit) => ({
+    ok: true,
+    status: init?.method === 'POST' ? 202 : 200,
+    json: async () =>
+      init?.method === 'POST'
+        ? { batchId, queued: 1 }
+        : url.endsWith(`/jobs/${batchId}`)
+          ? { batchId, failed: [], finishedAt }
+          : [],
+  }))
+  vi.stubGlobal('fetch', fetch)
+  const page = (sourceFormat: string) => (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={{ ...BRACKET, sourceHash: '7'.repeat(64), sourceFormat }} />
+    </QueryClientProvider>
+  )
+
+  const view = render(page('stl'))
+  await screen.findByRole('link', { name: strings.download.original })
+  expect(screen.queryByRole('button', { name: strings.download.forSlicer })).toBeNull()
+  view.unmount()
+
+  render(page('step'))
+  fireEvent.click(await screen.findByRole('button', { name: strings.download.forSlicer }))
+  expect(await screen.findByRole('button', { name: strings.download.forSlicerBuilding })).toBeTruthy()
+  expect(fetch).toHaveBeenCalledWith(`/api/parts/${BRACKET.id}/exports/3mf`, { method: 'POST' })
+  finishedAt = '2026-09-15T10:00:00Z'
+  const link = await screen.findByRole('link', { name: strings.download.forSlicerReady }, { timeout: 3000 })
+  expect(link.getAttribute('href')).toBe(`/api/revisions/${BRACKET.revision}/download?variant=3mf`)
+  vi.unstubAllGlobals()
+})

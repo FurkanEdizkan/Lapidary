@@ -5,7 +5,7 @@ import type { BlobHash } from "./BlobHash";
  * One batch, `202`, and the id to poll it with. Shared by every enqueue route in this
  * crate — the two thumbnail routes here and `scan.rs` — so they cannot drift into
  * answering differently.
- * What a rung request answers when the rung already exists: its hash, ready for
+ * What a rung or export request answers when that file already exists: its hash, ready for
  * `GET /api/blob/{blake3}`.
  */
 export type RungReady = { hash: BlobHash, };

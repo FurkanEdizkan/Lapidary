@@ -592,6 +592,51 @@ async fn the_worker_role_serves_none_of_these_routes(pool: sqlx::PgPool) {
     assert_eq!(queued, 0);
 }
 
+/// An export is asked for as a rung is, queued as a derive job for that format; a format
+/// Lapidary does not write a mesh to is refused by name.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_export_not_built_yet_is_queued_and_a_format_lapidary_does_not_write_is_refused(
+    pool: sqlx::PgPool,
+) {
+    let part = seed_part(&pool, library(), 0x42, "Ball knob, LP-9020-00", None).await;
+
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/exports/3mf"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(json["queued"], 1);
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
+            .fetch_one(&pool)
+            .await
+            .expect("one derive job");
+    assert_eq!(
+        payload["produce"],
+        serde_json::to_value(lapidary_core::DerivativeKind::Export3mf).expect("serializes")
+    );
+
+    let (status, json) = send(
+        pool.clone(),
+        Role::Api,
+        "POST",
+        format!("/api/parts/{part}/exports/step"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("`step`") && message.contains("`3mf` or `stl`")),
+        "names what was sent and what to send: {json}"
+    );
+}
+
 /// A rung not built yet is queued as a derive job for that level; once it exists, asking again
 /// answers with its hash and queues nothing. L0 and anything else is refused by name.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

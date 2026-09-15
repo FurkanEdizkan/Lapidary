@@ -321,6 +321,11 @@ export function downloadUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`
 }
 
+/** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
+export function exportUrl(revision: RevisionId): string {
+  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`
+}
+
 /**
  * `lapidary://open?part=` — what `lapidary open` acts on (Phase 4 slice 2 spec §3). A part id is
  * all a link carries: the handler was registered with its own server and workspace.
@@ -1323,16 +1328,32 @@ export async function requestRung(
   part: PartId,
   level: 'l1' | 'l2',
 ): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/rungs/${level}`, {
-    method: 'POST',
-  })
+  return requestBuilt(`/api/parts/${encodeURIComponent(part)}/rungs/${level}`)
+}
+
+/**
+ * `POST /api/parts/{id}/exports/3mf` — ask for a part's mesh written as a 3MF, for a slicer. Answered as a rung
+ * request is; the file downloads from `exportUrl`.
+ */
+export async function requestExport(
+  part: PartId,
+): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
+  return requestBuilt(`/api/parts/${encodeURIComponent(part)}/exports/3mf`)
+}
+
+/** A file Lapidary builds when asked: its hash when it exists, else the batch building it. A refusal throws the server's message. */
+async function requestBuilt(
+  path: string,
+): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
+  const response = await fetch(path, { method: 'POST' })
   if (response.status === 200) {
     return { kind: 'ready', hash: ((await response.json()) as RungReady).hash }
   }
   if (response.status === 202) {
     return { kind: 'queued', queued: (await response.json()) as ScanAccepted }
   }
-  throw new Error(`rung request returned ${response.status}`)
+  const refusal = (await response.json().catch(() => null)) as { message?: string } | null
+  throw new Error(refusal?.message ?? `${path} returned ${response.status}`)
 }
 
 /**
