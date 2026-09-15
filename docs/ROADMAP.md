@@ -475,11 +475,11 @@ example STLs, and headless Chrome.
   - mass and centre of mass.
 
 **Recorded rather than fixed.**
-- A new part's first revision says `ingest` whatever route it arrived by.
+- Fixed in slice 2 (`b34e8b3`): a new part's first revision now records its route, not always
+  `ingest`.
 - Two different jobs racing different bytes onto one *new* path is unchanged from before.
 - Known test weaknesses, found by mutation checks:
-  - Only the settle test guards against the watcher hashing a change immediately; the rename
-    and still-writing tests make no assertion on the change poll itself.
+  - Fixed in slice 2 (`b34e8b3`): the rename and still-writing tests now assert the change poll too.
   - The database revision tests and every lock test were written alongside their code, and
     were mutation-checked instead of being seen failing first.
 - The purge coverage test caught `part_lock`'s `ON DELETE CASCADE` before merge. Purge now
@@ -614,6 +614,14 @@ example STLs, and headless Chrome.
   - **Fixed in `568d799`.** Both readers now take `file.zstd_level`, and the detail its size from `file`
     too. A `lapidary-db` test that stages a zstd copy and then files the bytes raw was seen failing
     first: it read level 3 where the file said 0.
+
+**Slice 1's debts** (`b34e8b3`).
+- **Origin.** `IngestRequest` carries the origin, so a part that arrives by upload says `upload` on
+  its first revision, and a scanned one `ingest`. The handler test was seen failing first: the upload
+  said `ingest`.
+- **Watcher tests.** The rename and still-writing tests assert `Wait` on every change poll.
+  - Mutation: a watcher that hashes a change at once.
+  - Before, only the settle test caught it. Now all three watcher tests do.
 
 ---
 

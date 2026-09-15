@@ -37,6 +37,7 @@ fn measurements() -> MeshMeasurements {
 async fn seed(pool: &sqlx::PgPool) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Vee block, LP-3072-02",
             source_path: PATH,

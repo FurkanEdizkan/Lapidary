@@ -686,6 +686,7 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: seeded(),
@@ -2986,5 +2987,40 @@ async fn purging_a_revised_part_leaves_no_file_or_directory_behind(pool: PgPool)
         !model_dir.exists(),
         "the model directory must go with its last file; left behind: {:?}",
         all_files(&model_dir)
+    );
+}
+
+/// A new part's first revision says how its bytes arrived: a scan is `ingest`, an upload is
+/// `upload`. Until Phase 4 slice 2 every new part said `ingest`, whatever its route.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_new_parts_first_revision_says_whether_it_was_scanned_or_uploaded(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    handler.handle(&job_for(BRACKET)).await.expect("scans");
+    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    handler
+        .handle(&blob_job(hash, "brackets/spare/LP-1042-03.stl"))
+        .await
+        .expect("uploads");
+
+    let origins: Vec<(String, String)> = sqlx::query_as(
+        "SELECT p.source_path, r.origin FROM revision r JOIN part p ON p.id = r.part_id \
+         ORDER BY r.origin",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("origins");
+    assert_eq!(
+        origins,
+        [
+            (BRACKET.to_owned(), "ingest".to_owned()),
+            (
+                "brackets/spare/LP-1042-03.stl".to_owned(),
+                "upload".to_owned()
+            ),
+        ]
     );
 }

@@ -47,6 +47,7 @@ fn state(pool: sqlx::PgPool, root: &std::path::Path) -> AppState {
 async fn seed_part(pool: &sqlx::PgPool) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(
                 "libraries/default/idler-pulley-lp-4820-00/idler-pulley-lp-4820-00.stl",

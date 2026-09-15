@@ -243,6 +243,7 @@ async fn the_worker_role_serves_no_detail_route(pool: sqlx::PgPool) {
 async fn a_part_page_names_the_file_on_disk_and_the_directory_holding_it(pool: sqlx::PgPool) {
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/vee-block-lp-3072-02/vee-block-lp-3072-02.stl"),
             library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid")),

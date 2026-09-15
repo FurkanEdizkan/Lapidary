@@ -1472,6 +1472,7 @@ async fn part_written_by(
 ) -> RevisionId {
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: seeded(),

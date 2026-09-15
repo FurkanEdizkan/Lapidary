@@ -176,6 +176,7 @@ async fn the_count_belongs_to_the_library_that_holds_the_parts(pool: sqlx::PgPoo
 
     lapidary_db::PgIngest(pool.clone())
         .record(lapidary_db::IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/vee-block/vee-block.stl"),
             library: lapidary_core::LibraryId::from_uuid(

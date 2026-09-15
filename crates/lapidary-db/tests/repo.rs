@@ -44,6 +44,7 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
     let blob = blob_row(0xab);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -78,6 +79,7 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
     let blob = blob_row(0xcd);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -109,6 +111,7 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
     let blob = blob_row(0xef);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -150,6 +153,7 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
     assert!(!blobs.exists(&blob.hash).await.expect("query"));
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -193,6 +197,7 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
     let other = second_library(&pool).await;
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -286,6 +291,7 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
     // (E0515) — the brief's original listing does not compile.
     let measurements = watertight();
     let req = |name: &'static str| IngestRequest {
+        origin: lapidary_core::RevisionOrigin::Ingest,
         folder: None,
         storage_path: None,
         library: library(),
@@ -329,6 +335,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
     {
         ingest
             .record(IngestRequest {
+                origin: lapidary_core::RevisionOrigin::Ingest,
                 folder: None,
                 storage_path: None,
                 library: library(),
@@ -388,6 +395,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
 async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -432,6 +440,7 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
     // as current, not a crash.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -491,6 +500,7 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
     // the grid query ever runs. What's left to assert is that refusal.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -535,6 +545,7 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
     // WHERE kind = 'thumbnail' filter inside the LATERAL not regressing later.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -586,6 +597,7 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
     // — exactly what the error message says.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -636,6 +648,7 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
     };
     let err = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -675,6 +688,7 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
 async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -804,6 +818,7 @@ async fn three_tessellations_and_a_thumbnail_coexist_on_one_revision(pool: sqlx:
     ];
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -882,6 +897,7 @@ async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool
     for (seed, name) in [(0x90, "Bracket, LP-1042-03"), (0x92, "Spacer, LP-2001-00")] {
         PgIngest(pool.clone())
             .record(IngestRequest {
+                origin: lapidary_core::RevisionOrigin::Ingest,
                 folder: None,
                 storage_path: None,
                 library: library(),
@@ -918,6 +934,7 @@ async fn a_rung_shared_between_two_revisions_is_one_blob_with_ref_count_two(pool
 async fn the_file_row_records_the_format_it_was_given(pool: sqlx::PgPool) {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -979,6 +996,7 @@ async fn seed_part(
 ) -> PartId {
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library,
@@ -1012,6 +1030,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
     // LATERAL` is what guarantees it, so it is asserted rather than assumed.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1084,6 +1103,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let bracket = ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1101,6 +1121,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
         .expect("records the compressed source");
     let impeller = ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1252,6 +1273,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
     let rungs = [rung("tessellation_l0", 0xe6, Some(32))];
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1278,6 +1300,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
     };
     let clip = ingest
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1359,6 +1382,7 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
     let shared = blob_row(0xf1);
     let legacy = ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             // Null: the bytes are still at `blobs/ab/cd/<hash>`, compressed at 3, and
             // `migrate_storage` has not reached them.
@@ -1387,6 +1411,7 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
     };
     let duplicate = ingest
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/rocks/cliff-face-lp-7712-04"),
             library: library(),
@@ -1524,6 +1549,7 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
     // is how a half-repaired database becomes an invisible one.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1566,6 +1592,7 @@ async fn upserting_a_thumbnail_twice_leaves_one_row_holding_the_second_bytes(poo
     let ingest = PgIngest(pool.clone());
     let id = ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1643,6 +1670,7 @@ async fn upserting_over_the_other_storage_shape_moves_the_reference(pool: sqlx::
     let ingest = PgIngest(pool.clone());
     let id = ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1838,6 +1866,7 @@ async fn revision_source_returns_the_source_files_hash_and_format(pool: sqlx::Pg
     let blob = blob_row(0xe0);
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1922,6 +1951,7 @@ async fn a_deleted_part_has_nothing_to_download_and_a_live_one_answers_in_full(p
         "libraries/default/spindle-housing-lp-4180-02/spindle-housing-lp-4180-02.3mf";
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(storage_path),
             library: library(),
@@ -2034,6 +2064,7 @@ async fn latest_revision_names_the_revision_the_grid_shows(pool: sqlx::PgPool) {
     // smallest shape where an ASC ordering picks the other one.
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -2297,6 +2328,7 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
     let ingest = PgIngest(pool.clone());
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/Terrain/cliff/cliff.stl"),
             library: library(),
@@ -2314,6 +2346,7 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
         .expect("records the first part");
     ingest
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/Bases/cliff/cliff.stl"),
             library: library(),
@@ -2366,6 +2399,7 @@ async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at
     let rungs = [rung("tessellation_l0", 0xd5, Some(32))];
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -2386,6 +2420,7 @@ async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at
     // store became a folder tree: one blob ROW, two model directories.
     ingest
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -2405,6 +2440,7 @@ async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at
     let other = second_library(&pool).await;
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: other,
@@ -2768,6 +2804,7 @@ async fn the_instance_total_counts_a_shared_derivative_once_where_two_libraries_
     ] {
         ingest
             .record(IngestRequest {
+                origin: lapidary_core::RevisionOrigin::Ingest,
                 folder: None,
                 storage_path: None,
                 library,
@@ -3144,6 +3181,7 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
 async fn seed_pathed(pool: &sqlx::PgPool, blob: u8, name: &str, source_path: &str) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -3253,6 +3291,7 @@ async fn a_name_that_matches_outranks_a_path_that_matches(pool: sqlx::PgPool) {
 async fn seed_with_format(ingest: &PgIngest, name: &str, blob: u8, format: &str) -> PartId {
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -3360,6 +3399,7 @@ async fn seed_measured(
 ) -> PartId {
     ingest
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -3748,6 +3788,7 @@ async fn a_filed_source_is_read_at_its_own_level_not_the_staged_copys(pool: sqlx
         .expect("the upload's staged copy");
     let part = PgIngest(pool.clone())
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(
                 "libraries/default/flange-dn40-lp-3310-02/flange-dn40-lp-3310-02.stl",

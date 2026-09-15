@@ -13,6 +13,7 @@ fn library() -> LibraryId {
 async fn seed(pool: &sqlx::PgPool) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Flange DN40, LP-3310-02",
             source_path: "flange-dn40-lp-3310-02.stl",

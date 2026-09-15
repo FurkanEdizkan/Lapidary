@@ -120,6 +120,7 @@ async fn seed_cas_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library,
             name,
             source_path,
@@ -1207,6 +1208,7 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
     };
     PgIngest(pool.clone())
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: other,
             name: "cliff",
             source_path: "Cliffs/cliff.stl",

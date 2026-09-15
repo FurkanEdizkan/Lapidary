@@ -21,6 +21,7 @@ fn state(pool: sqlx::PgPool) -> AppState {
 async fn seed_part(pool: &sqlx::PgPool) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/vee-block-lp-3072-02/vee-block-lp-3072-02.stl"),
             library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid")),

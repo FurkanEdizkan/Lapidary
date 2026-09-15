@@ -64,6 +64,7 @@ async fn call(pool: sqlx::PgPool, method: &str, uri: &str) -> (StatusCode, serde
 async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name,
             source_path: path,
@@ -304,6 +305,7 @@ async fn deleted_at(pool: &sqlx::PgPool, part: PartId) -> Option<jiff::Timestamp
 async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
     PgIngest(pool.clone())
         .link_existing(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name,
             source_path: path,

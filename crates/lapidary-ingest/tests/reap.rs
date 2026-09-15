@@ -49,6 +49,7 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
     let blob = stage_bytes(blob_root, seed);
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: path,
@@ -354,6 +355,7 @@ async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel
     .expect("a manifest beside the model file");
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: path,
