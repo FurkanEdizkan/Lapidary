@@ -80,6 +80,7 @@ import type {
   FolderId,
   InstanceStorageView,
   LibraryId,
+  LibraryLanguage,
   LibraryStorage,
   NewLibrary,
   PartCard,
@@ -1843,13 +1844,14 @@ function NewLibraryDialog({
 }) {
   const [name, setName] = useState('')
   const [mode, setMode] = useState<NewLibrary['mode']>('hobby')
+  const [language, setLanguage] = useState<LibraryLanguage>('simple')
   const trimmed = name.trim()
   return (
     <Dialog title={strings.libraries.createTitle} onClose={onCancel}>
       <form
         onSubmit={(event) => {
           event.preventDefault()
-          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode })
+          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode, language })
         }}
       >
         <input
@@ -1870,6 +1872,24 @@ function NewLibraryDialog({
             {LIBRARY_MODES.map((option) => (
               <option key={option} value={option}>
                 {MODE_LABEL[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {/*
+          Asked here and never again: a text search configuration is fixed when a part is indexed, so
+          changing it later would mean re-indexing every part (`docs/DATA.md` §3.3).
+        */}
+        <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+          {strings.libraries.languageLabel}
+          <select
+            value={language}
+            onChange={(event) => setLanguage(event.target.value as LibraryLanguage)}
+            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
+          >
+            {LIBRARY_LANGUAGES.map((option) => (
+              <option key={option} value={option}>
+                {LANGUAGE_LABEL[option]}
               </option>
             ))}
           </select>
@@ -1906,6 +1926,13 @@ const LIBRARY_MODES = ['hobby', 'controlled'] as const
 const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
   hobby: strings.libraries.hobby,
   controlled: strings.libraries.controlled,
+}
+
+/** The search languages, labelled the same way: the language a library's search stems words in. */
+const LIBRARY_LANGUAGES = ['simple', 'turkish'] as const satisfies readonly LibraryLanguage[]
+const LANGUAGE_LABEL: Record<LibraryLanguage, string> = {
+  simple: strings.libraries.languageSimple,
+  turkish: strings.libraries.languageTurkish,
 }
 
 /**

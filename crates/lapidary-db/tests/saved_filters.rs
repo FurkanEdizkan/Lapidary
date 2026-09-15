@@ -55,7 +55,7 @@ async fn a_name_is_taken_once_per_library_and_free_in_another(pool: sqlx::PgPool
     );
 
     let workshop = PgParts(pool.clone())
-        .create_library("Workshop fixtures", "hobby")
+        .create_library("Workshop fixtures", "hobby", "simple")
         .await
         .expect("a second library");
     filters
@@ -85,7 +85,7 @@ async fn removing_a_filter_takes_it_off_its_own_library_only(pool: sqlx::PgPool)
         .await
         .expect("saves");
     let workshop = PgParts(pool.clone())
-        .create_library("Workshop fixtures", "hobby")
+        .create_library("Workshop fixtures", "hobby", "simple")
         .await
         .expect("a second library");
 

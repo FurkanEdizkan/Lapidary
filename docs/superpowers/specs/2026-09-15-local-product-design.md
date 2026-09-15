@@ -163,8 +163,9 @@ CREATE INDEX part_custom_gin ON part USING gin ((metadata_json->'custom') jsonb_
   chosen at creation.
 - **`part.search_config`:** `regconfig NOT NULL DEFAULT 'simple'`. The insert that creates a part sets
   it from the library.
-- **`part.search`** is dropped and added again as `to_tsvector(search_config, …)`, with the same three
-  weights and `lapidary_words`. `part_search_gin` is dropped and rebuilt with it.
+- **`part.search`** gets `to_tsvector(search_config, …)`, with the same three weights and
+  `lapidary_words`, through `ALTER COLUMN … SET EXPRESSION`, as `0022` did.
+  - The column stays STORED, and `part_search_gin` stays with it.
   - The migration rewrites every part row once.
 - **Queries** use `plainto_tsquery((SELECT language FROM library WHERE id = $1)::regconfig, $q)`, in
   `search` and in the three facets.
@@ -180,11 +181,15 @@ The create-library dialog gains a search language: "Any language" (`simple`) or 
 
 ### 2.4 Tests
 
-- In a `turkish` library, "Şaft yatağı kapağı" is found by "yatak kapak".
-  - The name holds ğ, ş and ı, and neither query word is a substring of it.
-  - In a `simple` library the same query finds nothing, so a pass means the library's config was used.
+- In a `turkish` library, "Şaft yatağı kapağı" is found by "yatak kapak" and by "yataklar kapakları".
+  - The name holds ğ, ş and ı, and neither query is a substring of it.
+  - In a `simple` library neither query finds it.
+  - "yatak kapak" passes even when the query is built with `simple`, because the name was indexed with
+    Turkish stems. The inflected "yataklar kapakları" is the one that fails until the query uses the
+    library's language.
 - A `simple` library answers exactly as before: the existing search tests run unchanged.
-- A part moved to another category keeps its `search_config`.
+- A part takes its library's `search_config` as it is made. No move writes the column, so there is no
+  move test.
 
 ## 3. Saved filters, finished
 
@@ -336,7 +341,8 @@ what a model file is.
 8. **No prefix matching for Turkish.** Stemming matched 12 of 22 pairs, and the `ILIKE` substring
    search already there covers the prefix cases (§2.1).
 9. **The goal's example test is replaced.** "bağlantı finds bağlantılar" already passes today, through
-   `ILIKE`, so it cannot fail first. "yatak kapak" finding "Şaft yatağı kapağı" can.
+   `ILIKE`, so it cannot fail first. "yataklar kapakları" finding "Şaft yatağı kapağı" can; "yatak kapak"
+   cannot, since the name's Turkish stems already match base forms (§2.4).
 10. **Capital I under `en_US.utf8`** is recorded, not fixed.
 11. **A deleted category is the grid's check,** made against the live tree, so an old link is covered
     too. The list's `folderGone` mark sits beside it.

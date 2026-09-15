@@ -100,6 +100,30 @@ pub struct NewLibrary {
     /// with no governance is.
     #[serde(default)]
     pub mode: LibraryMode,
+    /// The language its search stems words in (`docs/DATA.md` §3.3). Chosen at creation and not
+    /// changed later, because changing it would rewrite every part's search vector.
+    #[serde(default)]
+    pub language: LibraryLanguage,
+}
+
+/// A library's search language, as `library.language` holds it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum LibraryLanguage {
+    /// Words as they are written, with no stemming: what every library was before there was a choice.
+    #[default]
+    Simple,
+    Turkish,
+}
+
+impl LibraryLanguage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::Turkish => "turkish",
+        }
+    }
 }
 
 /// `POST /api/libraries` — make one.
@@ -116,7 +140,7 @@ pub async fn create_library(
         return refused(
             StatusCode::BAD_REQUEST,
             "badBody",
-            "A library needs a name, and `mode` must be `hobby` or `controlled` if you send it.",
+            "A library needs a name. `mode` must be `hobby` or `controlled`, and `language` `simple` or `turkish`, if you send them.",
         );
     };
     let name = body.name.trim();
@@ -129,7 +153,7 @@ pub async fn create_library(
     }
 
     match PgParts(state.db)
-        .create_library(name, body.mode.as_str())
+        .create_library(name, body.mode.as_str(), body.language.as_str())
         .await
     {
         Ok(id) => (

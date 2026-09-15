@@ -143,7 +143,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   records the check.
 -->
 | User-defined custom fields, max 8 offered as grid filters. Built (`2484c17`): text, number and choice, one GIN index | 5 |
-| Turkish text search config per library | 5 |
+| Turkish text search config per library. Built (`aad407e`): chosen at creation, used by search and the facets | 5 |
 | Near-duplicate clustering with merge-or-link-as-variant | 6 |
 | Similarity search by geometry embedding (pgvector) | 6 |
 

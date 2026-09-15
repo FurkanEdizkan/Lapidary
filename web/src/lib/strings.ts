@@ -1164,6 +1164,13 @@ export const strings = {
     createConfirm: 'Create',
     modeLabel: 'Governance',
     /**
+     * The language a library's search stems words in, asked once: a text search configuration is
+     * fixed when a part is indexed (`docs/DATA.md` §3.3).
+     */
+    languageLabel: 'Search language',
+    languageSimple: 'Any language — words matched as written',
+    languageTurkish: 'Turkish — also finds other forms of a word',
+    /**
      * Chosen at creation, and switchable one way afterwards: a hobby library can start keeping
      * every change, and nothing switches one back, because a controlled library switched back
      * would hold revisions no screen shows. States and approvals are still Phase 8.
