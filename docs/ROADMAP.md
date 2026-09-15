@@ -850,7 +850,7 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
 **Goals, run in this order.** Each goal is one long `/goal` session with its own file under
-`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–5 are merged. Goals 4–6 were planned after goal 3's code review, from the owner's answers
+`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–6 are merged. Goals 4–6 were planned after goal 3's code review, from the owner's answers
 below.
 
 | Order | Goal file | Holds |
@@ -2389,6 +2389,51 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
     at all, since either without the other orphans the rest.
   - From goal 5, whether to remove the tagged images `lapidary-occt:goal4` and `lapidary-occt:goal5`, about
     1.14 GB between them.
+
+**Recorded, not built.**
+- **From the goal file,** until a real library needs each:
+  - streaming bundle import, and ZIP64;
+  - `notify` in place of the watch's poll;
+  - per-file job stages, decided against (FEATURES §1);
+  - the `renameat2(RENAME_NOREPLACE)` fallback;
+  - a lock across the adopting and reaping jobs;
+  - a 3MF upload's staged copy counted as phantom by `0026`.
+- **Found along the way:**
+  - A touch tap on the grid with no hover at all, which now compiles the viewer as it opens, was not measured,
+    and neither was the warm-up on a GPU renderer.
+  - A drag held over a closed category does not open it.
+  - A new file whose 12-digit and whole-hash names are both held by quarantined bytes fails transiently until
+    the sweep, and no test reaches that.
+  - `write_manifest` still writes `metadata.json` with blocking file I/O while the part's row is held.
+
+**Teardown.**
+- **Review.** A fresh reader, a subagent, read the goal's code (`d07629e..08d7d69`, docs aside). It found nothing
+  high. It found these sound: the copy's writers, `sorted_page!`'s binds, `bundle_parts`' refusals and order, step
+  8's names and reaps, the watch, the menu and the lock check. It raised seven findings, all acted on
+  (`1556601`), each fix's test seen failing first or mutation-checked:
+  - **A category created inside the selected one stayed hidden** in its closed branch. That branch now opens. Seen
+    failing first.
+  - **A selected category the tree did not yet hold was never opened to** once a later read brought it. The
+    sidebar now waits until it holds the category. Seen failing first.
+  - **A part row with no revision ended a sorted grid early.** It took a place on the page, the cards' join dropped
+    it, and the short page read as the last. `top` now leaves it out. Seen failing first. The check costs sorted
+    pages over 20,000 parts about 0.2 ms: 3.1 ms against 2.9 to 3.0 ms.
+  - **`write_manifest` read on a second pooled connection while holding the first,** so writers that filled the
+    pool stalled it, and every ingest now writes its first manifest there. It reads on the held connection. Seen
+    failing first, on a pool of one, as `PoolTimedOut`.
+  - **`bundle_parts` aggregated a part's sources once per revision.** Now once per part. Over three alternated
+    rounds on the same data, planning 500 parts went from 70.9–71.5 ms to 66.0–67.3 ms, and 40 parts from
+    6.8–7.0 ms to 6.4–6.5 ms.
+  - **The sorted anchor's doc** said a part revised since the last page still marks where the next one starts. It
+    now says the anchor moves with it, so the next page repeats rows or skips them.
+  - **Tests that proved less than they claimed:**
+    - the first-manifest test now also checks the file against the fixture: its hash, its name and the triangle
+      count;
+    - a new test takes the whole-hash name past two quarantined names;
+    - the bundle refusal test covers a part with no revision.
+  - **Mutation-checked, all 6 caught:** the new branch left closed, a category opened to before the tree holds it,
+    the revision check dropped, the second connection, a part with no revision bundled, and the 12-digit name
+    alone.
 
 ---
 

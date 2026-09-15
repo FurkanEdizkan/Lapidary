@@ -431,3 +431,21 @@ async fn a_part_deleted_while_its_change_was_measured_is_not_revised(pool: sqlx:
         "and the retry sees it deleted"
     );
 }
+
+/// `metadata.json` is read on the connection that holds the part's row, not on a second one from the pool: with every
+/// connection held by a writer waiting for another, manifests would stall until the pool timed out.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_manifest_is_read_on_the_connection_that_holds_its_part(pool: sqlx::PgPool) {
+    let part = seed(&pool).await;
+    let one = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .expect("a pool of one connection");
+    let found = PgRevisions(one)
+        .write_manifest(part, |manifest| manifest.is_some())
+        .await
+        .expect("reads the manifest while the part is held");
+    assert!(found, "the part's manifest");
+}

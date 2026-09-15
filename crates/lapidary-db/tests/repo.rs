@@ -3923,3 +3923,57 @@ async fn a_filed_source_is_read_at_its_own_level_not_the_staged_copys(pool: sqlx
     assert_eq!(detail.compressed, Some(false));
     assert_eq!(detail.stored_bytes, Some(39_284));
 }
+
+/// A part row with no revision takes no place on a sorted page. The page's keys come off `part` and its cards through
+/// the latest revision; a row that join dropped left a short page, which the api reads as the last one, so the parts
+/// after it could not be reached.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_part_with_no_revision_does_not_end_a_sorted_grid_early(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let clip = "cable-clip-lp-3300-01.stl";
+    let duct = "fan-duct-lp-3311-01.stl";
+    seed_measured(
+        &ingest,
+        clip,
+        0xf1,
+        "stl",
+        MeshMeasurements {
+            volume_mm3: Some(1_250.0),
+            ..watertight()
+        },
+    )
+    .await;
+    seed_measured(&ingest, duct, 0xf2, "stl", open_mesh()).await;
+    // After the open mesh, so its id puts it first among the parts with no volume.
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path) \
+         VALUES (uuidv7(), $1, 'gasket-lp-3312-01.stl', 'gasket-lp-3312-01.stl')",
+    )
+    .bind(library().as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a part row with no revision");
+    let parts = PgParts(pool.clone());
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = parts
+            .page(
+                &GridQuery {
+                    after,
+                    ..GridQuery::new(library(), 2)
+                },
+                Sort::Volume,
+            )
+            .await
+            .expect("sorted page");
+        seen.extend(names(&page).into_iter().map(str::to_owned));
+        // As the api decides whether there is a next page.
+        if page.len() < 2 {
+            break;
+        }
+        after = page.last().map(|row| row.summary.id);
+    }
+    assert_eq!(seen, [clip, duct]);
+}

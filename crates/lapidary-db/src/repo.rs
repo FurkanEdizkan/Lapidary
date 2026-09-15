@@ -1604,7 +1604,8 @@ macro_rules! grid_laterals {
 
 /// [`PgParts::sorted`]'s query for one sort key. `$key` is the part row's copy of the key, spelled as that
 /// key's index spells it (`0035`), so the page is read off the index in order. The filters are `page`'s
-/// newest-first query's, with the same numbering.
+/// newest-first query's, with the same numbering, and a part with no revision is left out before the limit: the cards'
+/// join to the latest revision would drop it after, and a short page reads as the last one.
 macro_rules! sorted_page {
     ($key:literal) => {
         concat!(
@@ -1621,6 +1622,7 @@ macro_rules! sorted_page {
             $key,
             " AS value FROM part p \
                 WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+                  AND EXISTS (SELECT 1 FROM revision WHERE part_id = p.id) \
                   AND ($2::uuid IS NULL OR (",
             $key,
             ", p.id) < (SELECT value, id FROM anchor)) \
@@ -2719,7 +2721,8 @@ impl PgParts {
     ///
     /// The revisions are [`PgRevisions::history`]'s, oldest first. Each file is [`Self::source_for_download`]'s,
     /// by the same `role = 'source'` filter and ordering, and the sources are [`Self::part_sources`]'s, in its
-    /// order. Each source field is aggregated on its own, all in that one order, so the arrays line up.
+    /// order. Each source field is aggregated on its own, all in that one order, so the arrays line up, and once per
+    /// part rather than once per revision.
     ///
     /// [`PgRevisions::history`]: crate::PgRevisions::history
     pub async fn bundle_parts(
@@ -2729,24 +2732,28 @@ impl PgParts {
     ) -> Result<Vec<BundlePartRow>, DbError> {
         let ids: Vec<Uuid> = parts.iter().map(|part| part.as_uuid()).collect();
         let rows: Vec<BundleColumns> = sqlx::query_as(
-            "SELECT p.id AS part_id, p.name, p.part_number, p.source_path, p.tags, \
-                    ps.urls, ps.vendors, ps.external_ids, ps.titles, ps.licenses, \
+            "WITH chosen AS MATERIALIZED ( \
+               SELECT p.id, p.name, p.part_number, p.source_path, p.tags, wanted.position, \
+                      ps.urls, ps.vendors, ps.external_ids, ps.titles, ps.licenses \
+                 FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted(id, position) \
+                 JOIN part p ON p.id = wanted.id AND p.library_id = $1 AND p.deleted_at IS NULL \
+                 LEFT JOIN LATERAL (SELECT array_agg(url ORDER BY created_at, id) AS urls, \
+                                           array_agg(vendor ORDER BY created_at, id) AS vendors, \
+                                           array_agg(external_id ORDER BY created_at, id) AS external_ids, \
+                                           array_agg(title ORDER BY created_at, id) AS titles, \
+                                           array_agg(license ORDER BY created_at, id) AS licenses \
+                                    FROM part_source WHERE part_id = p.id) ps ON true) \
+             SELECT c.id AS part_id, c.name, c.part_number, c.source_path, c.tags, \
+                    c.urls, c.vendors, c.external_ids, c.titles, c.licenses, \
                     r.id AS revision_id, r.parent_revision_id, r.rev_label, r.origin, \
                     (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_us, \
                     f.blake3, f.format, f.storage_path, f.zstd_level, f.size_bytes \
-             FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted(id, position) \
-             JOIN part p ON p.id = wanted.id AND p.library_id = $1 AND p.deleted_at IS NULL \
-             JOIN revision r ON r.part_id = p.id \
-             LEFT JOIN LATERAL (SELECT array_agg(url ORDER BY created_at, id) AS urls, \
-                                       array_agg(vendor ORDER BY created_at, id) AS vendors, \
-                                       array_agg(external_id ORDER BY created_at, id) AS external_ids, \
-                                       array_agg(title ORDER BY created_at, id) AS titles, \
-                                       array_agg(license ORDER BY created_at, id) AS licenses \
-                                FROM part_source WHERE part_id = p.id) ps ON true \
+             FROM chosen c \
+             JOIN revision r ON r.part_id = c.id \
              LEFT JOIN LATERAL (SELECT blake3, format, storage_path, zstd_level, size_bytes FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) f ON true \
-             ORDER BY wanted.position, r.created_at, r.id",
+             ORDER BY c.position, r.created_at, r.id",
         )
         .bind(library.as_uuid())
         .bind(&ids)
@@ -3576,8 +3583,9 @@ impl PgParts {
     /// missing ones on id.
     ///
     /// `anchor` reads the previous page's last part by id, filters aside, so a part removed
-    /// since that page still marks where the next one starts. One purged since ends the paging
-    /// early rather than repeating rows, as `search`'s does.
+    /// since that page still marks where the next one starts. Its key is read when the next page
+    /// is asked for, though: a part revised since then moves the anchor with it, and the next
+    /// page repeats rows or skips them. One purged since ends the paging early, as `search`'s does.
     async fn sorted(
         &self,
         grid: &GridQuery<'_>,

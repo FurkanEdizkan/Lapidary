@@ -485,6 +485,23 @@ async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
         StatusCode::NOT_FOUND,
         "a part of another library"
     );
+    let gasket = PartId::new();
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path) \
+         VALUES ($1, $2, 'Gasket, LP-3312-01', 'gaskets/gasket-lp-3312-01.stl')",
+    )
+    .bind(gasket.as_uuid())
+    .bind(library().as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a part row with no revision");
+    assert_eq!(
+        plan(pool.clone(), root, serde_json::json!([vee, gasket]))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "a part with no revision"
+    );
     assert_eq!(
         plan(pool, root, serde_json::json!([vee])).await.status(),
         StatusCode::OK
