@@ -759,6 +759,11 @@ export const strings = {
      */
     noSource:
       'No source file on this revision, so there is nothing to download. Re-scan the library to attach one.',
+    /** A controlled library's part, opened in a desktop app through `lapidary://` (Phase 4 slice 2). */
+    openInApp: 'Open in desktop app',
+    /** DATA §6.3's honesty line: which tools send a save back, and the way without the agent. */
+    openInAppNote:
+      'Needs lapidary register and lapidary agent on this computer. Rhino, FreeCAD and Blender save back as a new revision; Fusion 360 and Onshape keep their own copy, so export from them and upload instead. Without the agent, use Download.',
   },
   /**
    * What the library occupies, split by the storage classes `DATA.md` §1.1 splits it

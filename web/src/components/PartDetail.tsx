@@ -6,11 +6,13 @@ import {
   downloadUrl,
   fetchDiff,
   fetchEntities,
+  fetchLibraries,
   fetchPartImages,
   fetchPartSources,
   fetchPmi,
   fetchRevisions,
   fetchStructure,
+  openLink,
   releaseLock,
   setImageFraming,
   setPartTags,
@@ -556,6 +558,12 @@ export function Detail({
   })
   const ghost = ghostFor.part === part.id ? ghostFor.hash : null
   const onGhost = useCallback((hash: BlobHash | null) => setGhostFor({ part: part.id, hash }), [part.id])
+  // Opening in a desktop app is a checkout, which only a controlled library takes: a hobby library
+  // keeps no revision for the save to come back as.
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
+  const controlled =
+    libraries.data?.find((library) => library.id === part.library)?.mode === 'controlled' &&
+    part.sourceHash !== null
   return (
     <article className="mt-4">
       <header className="mb-6 flex flex-wrap items-start gap-6">
@@ -585,6 +593,14 @@ export function Detail({
                 {strings.download.original}
               </a>
             )}
+            {controlled ? (
+              <a
+                href={openLink(part.id)}
+                className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+              >
+                {strings.download.openInApp}
+              </a>
+            ) : null}
             {/*
               A slot rather than a component, so that what changes the part stays with the
               page and the panel gets only what is safe to show in something transient.
@@ -593,6 +609,9 @@ export function Detail({
             */}
             {actions}
           </div>
+          {controlled ? (
+            <p className="mt-2 max-w-md text-xs text-[var(--color-muted)]">{strings.download.openInAppNote}</p>
+          ) : null}
         </div>
       </header>
 

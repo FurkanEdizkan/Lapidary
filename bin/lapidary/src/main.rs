@@ -2,10 +2,14 @@
 //!
 //! `checkout`, `checkin` and `agent` are Phase 4 slice 1's round trip
 //! (`docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md` §6): hand a part's
-//! file out under a lock, watch it, and send each save back as a new revision. Linux only for
-//! now, by polling. `worker` and `up` are still to come.
+//! file out under a lock, watch it, and send each save back as a new revision. `open`,
+//! `register` and `unregister` are slice 2's (`2026-09-15-phase-4-slice-2-design.md` §3): a
+//! `lapidary://` link from a part's page, opened in the desktop's app for that file. Linux only
+//! for now. `worker` and `up` are still to come.
 
 mod checkout;
+mod desktop;
+mod link;
 mod watch;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -15,6 +19,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 use watch::{Seen, Verdict, Watch};
 
@@ -41,6 +46,17 @@ enum Commands {
         /// The checkout's folder in the workspace.
         folder: PathBuf,
     },
+    /// Open a `lapidary://` link: this computer's checkout of the part, or a new one, in the app
+    /// the desktop opens that kind of file with.
+    Open {
+        /// The link, `lapidary://open?part=<part id>`.
+        link: String,
+    },
+    /// Make `lapidary open` the handler for `lapidary://` links on this desktop, with today's
+    /// LAPIDARY_SERVER and LAPIDARY_WORKSPACE.
+    Register,
+    /// Remove what `lapidary register` set up.
+    Unregister,
     /// Watch every checkout in the workspace, and send each save back as a new revision.
     Agent,
     /// Run a job worker against a Lapidary server.
@@ -54,6 +70,15 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Commands::Checkout { part } => checkout(&part).await,
         Commands::Checkin { folder } => checkin(&folder).await,
+        Commands::Open { link } => {
+            let opened = open(&link).await;
+            if let Err(error) = &opened {
+                notify(&format!("{error:#}"));
+            }
+            opened
+        }
+        Commands::Register => desktop::register(&server(), &checkout::workspace()?),
+        Commands::Unregister => desktop::unregister(),
         Commands::Agent => agent().await,
         Commands::Worker => later("worker"),
         Commands::Up => later("up"),
@@ -191,6 +216,20 @@ async fn read<T: DeserializeOwned>(response: reqwest::Response, what: &str) -> R
 
 async fn checkout(part: &str) -> Result<()> {
     let part: lapidary_core::PartId = part.parse().map_err(|error| anyhow!("{error}"))?;
+    let (folder, checkout) = take(part).await?;
+    println!(
+        "Checked out {} (revision {}) to {}.\nEdit it there: `lapidary agent` sends each save back as a new revision, and `lapidary checkin {}` hands the lock back.",
+        checkout.file_name,
+        checkout.rev_label,
+        folder.display(),
+        folder.display()
+    );
+    Ok(())
+}
+
+/// Take the part's lock and hand its file out. A checkout that does not finish hands the lock
+/// back, so a failure leaves the part as it was.
+async fn take(part: lapidary_core::PartId) -> Result<(PathBuf, Checkout)> {
     let (server, holder, workspace) = (server(), holder(), checkout::workspace()?);
     let client = reqwest::Client::new();
 
@@ -210,16 +249,7 @@ async fn checkout(part: &str) -> Result<()> {
 
     // From here the part is locked, so anything that stops the checkout hands the lock back.
     match hand_out(&client, &server, part, &holder, &workspace, &taken.lock.id).await {
-        Ok((folder, checkout)) => {
-            println!(
-                "Checked out {} (revision {}) to {}.\nEdit it there: `lapidary agent` sends each save back as a new revision, and `lapidary checkin {}` hands the lock back.",
-                checkout.file_name,
-                checkout.rev_label,
-                folder.display(),
-                folder.display()
-            );
-            Ok(())
-        }
+        Ok(done) => Ok(done),
         Err(error) => {
             let _ = send(
                 json(
@@ -354,6 +384,56 @@ async fn checkin(folder: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------------------
+// open
+// ---------------------------------------------------------------------------------------
+
+/// A `lapidary://` link from a part's page: this computer's checkout of the part, or a new one,
+/// opened in whatever app the desktop opens that kind of file with.
+async fn open(link: &str) -> Result<()> {
+    let part = link::part(link).map_err(anyhow::Error::msg)?;
+    let (server, workspace) = (server(), checkout::workspace()?);
+    let (folder, checkout) = match checkout::find(&workspace, &server, &part.to_string()) {
+        Some(found) => found,
+        None => take(part).await?,
+    };
+    let file = folder.join(&checkout.file_name);
+    // One argument, never a shell: the folder is ours, but a file name is still somebody's text.
+    let status = Command::new("xdg-open")
+        .arg(&file)
+        .status()
+        .with_context(|| {
+            format!(
+                "could not run xdg-open for {}; install xdg-utils, or open the file yourself",
+                file.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "xdg-open could not open {} ({status}). Choose an app for this kind of file in your desktop's settings, or open it yourself.",
+            file.display()
+        );
+    }
+    println!(
+        "Opened {} (revision {}). `lapidary agent` sends each save back while it runs.",
+        file.display(),
+        checkout.rev_label
+    );
+    Ok(())
+}
+
+/// A link is opened by a handler with no terminal, so a refusal is also shown as a desktop
+/// notification where `notify-send` exists. A convenience only: nothing waits on it.
+fn notify(text: &str) {
+    // Quiet: without a session bus notify-send says so on stderr, under the refusal that matters.
+    let _ = Command::new("notify-send")
+        .arg("Lapidary")
+        .arg(text)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+// ---------------------------------------------------------------------------------------
 // agent
 // ---------------------------------------------------------------------------------------
 
@@ -372,7 +452,7 @@ async fn agent() -> Result<()> {
     loop {
         // The workspace is read again every round: a checkout made while the agent runs is
         // picked up, and a checked-in one is dropped.
-        let folders = checkout_folders(&workspace);
+        let folders = checkout::folders(&workspace);
         watching.retain(|folder, _| folders.contains(folder));
         for folder in folders {
             if watching.contains_key(&folder) || unreadable.contains(&folder) {
@@ -427,17 +507,6 @@ async fn agent() -> Result<()> {
 
         tokio::time::sleep(watch::POLL).await;
     }
-}
-
-/// Every folder in the workspace that holds a checkout file.
-fn checkout_folders(workspace: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(workspace)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|folder| folder.join(checkout::FILE).is_file())
-        .collect()
 }
 
 fn look(path: &Path) -> Option<Seen> {
