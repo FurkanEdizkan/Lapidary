@@ -1131,6 +1131,87 @@ needed a `test/` branch.
     disambiguated name.
 - **No mutation runs.** Both new tests were seen failing first, which the goal accepts in their place.
 
+### Goal 3: the local product (2026-09-15)
+
+- **Goal file:** `docs/superpowers/plans/2026-09-15-local-product-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger.
+
+**Preflight.** The test database was up, and `cargo deny check` was green on `main` (the gate's
+`deny` step on `b31ad4f`).
+
+**The spec** (`bc0a464`): `docs/superpowers/specs/2026-09-15-local-product-design.md`.
+- It settles all five stages from the goal's defaults, with 15 decisions made without the owner.
+- **Checked on `postgres:18` before building on it:**
+  - A STORED column may use `to_tsvector(regconfig, …)` over its own row's config.
+  - Over 22 real inflection pairs, the `turkish` config matched 12. The `ILIKE` search already there
+    covers the prefix cases, so there is no prefix matching.
+  - Capital I folds the English way under `en_US.utf8`. Recorded, not fixed.
+- **A listing-only poll over the STL corpus** took 109 ms cold and 12 to 13 ms warm.
+- **DATA:** §3.3, §3.5 (amended to one GIN index), §3.6 and §6.2 carry the decisions.
+
+**Custom fields** (`2484c17`).
+- **Schema.**
+  - `custom_field` (`0027`).
+  - Values under `part.metadata_json->'custom'`.
+  - One GIN index over that object, `jsonb_path_ops`, and filters written as `@>`.
+- **Rules.**
+  - Keys are `[a-z0-9_]{1,40}` and never renamed.
+  - Kinds are text, number and choice.
+  - A library holds 32 fields, 8 of them offered as filters, counted under the library's row lock.
+  - An option some part holds is not removed.
+  - A removed field's values stay.
+- **API.**
+  - Routes: `GET` and `POST /api/libraries/{id}/fields`, `PATCH` and `DELETE …/fields/{key}`, and
+    `PUT /api/parts/{id}/fields/{key}`.
+  - The grid, its facets and saved filters take `field` and `fieldValue`, and refuse a field not
+    offered as a filter.
+  - The part detail carries `custom`.
+  - `set_metadata` now merges `cad` instead of replacing the object, so a value survives the file's
+    own statement.
+- **UI.**
+  - A Fields dialog in the library menu.
+  - A Fields section on the part page.
+  - A filter for each offered field beside the facets, carried in the URL.
+- **Tests:**
+  - **db:**
+    - the cap of 8;
+    - a duplicate key;
+    - an option in use;
+    - a removed field's values;
+    - `set_metadata` leaving `custom` alone;
+    - the `@>` filter through page, sort, search and a facet.
+  - **api:**
+    - a number field refusing "twelve";
+    - a choice narrowing the grid, the facets and a saved filter;
+    - a field not offered as a filter;
+    - key and option checks;
+    - a removed field.
+  - **web:**
+    - a refused number shown in the server's words, then 12 kept;
+    - a key proposed from a Turkish label.
+  - **Mutation-checked instead of seen failing first,** since they were written with the code. All six
+    were caught:
+    - the cap;
+    - the option guard;
+    - `set_metadata`'s merge;
+    - the grid's predicate;
+    - a number field's type check;
+    - the filter check.
+- **Browser check,** on the native stack in headless Chrome, through the UI only. No page errors.
+  1. Supplier (a choice, offered as a filter) and Stock count (a number) were defined in the dialog.
+  2. They were set on two example parts' pages: `hex-spacer-m4x20-lp-2145-01` got Misumi and 12, and
+     `flange-dn40-lp-3310-02` got Hoffmann.
+  3. The grid, filtered by Supplier → Misumi, showed one card. Its URL carried
+     `field=supplier&fieldValue=Misumi`.
+  4. The filter was saved as "From Misumi".
+  5. Reopened from the unfiltered grid, it showed the same one card.
+- **Noticed, not changed:** the library menu stays open beside a dialog it opened, as it already does
+  for a new library.
+- **Not in this stage** (spec §1.5):
+  - number ranges;
+  - facet counts per value;
+  - `metadata.json`, which learns an edited value only when the manifest is next rewritten.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
