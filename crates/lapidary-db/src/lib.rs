@@ -2,6 +2,7 @@
 //! repository traits below.
 
 mod custom_fields;
+mod densities;
 mod folders;
 mod jobs;
 mod locks;
@@ -14,6 +15,7 @@ mod touches;
 pub use custom_fields::{
     CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields, ValueSet,
 };
+pub use densities::{DensityRow, PgDensities};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};

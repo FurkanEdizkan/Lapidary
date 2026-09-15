@@ -1502,6 +1502,23 @@ export const strings = {
     filterApply: 'Filter',
     filterClear: (label: string) => `Clear the ${label} filter`,
   },
+  densities: {
+    /** Each material's density in a library, typed by a person: what a part's mass is worked out from. */
+    menu: 'Densities…',
+    dialogTitle: 'Densities in this library',
+    intro:
+      'A part’s mass is its volume times the density of its material. Densities are typed here, not measured, so a mass is always approximate.',
+    none: 'No part in this library has a material yet. Give a part its material on its page, then set a density here.',
+    /** A density box, named for its material and the unit it is typed in. */
+    field: (material: string) => `${material}, g/cm³`,
+    save: 'Save',
+    saving: 'Saving…',
+    remove: (material: string) => `Remove the density of ${material}`,
+    unreadable: 'Type the density as a number of grams per cubic centimetre, such as 7.85 for steel.',
+    close: 'Close',
+    loadFailed: 'Could not load this library’s densities. Reload to try again.',
+    refusedWithoutReason: 'Could not save this density. Reload and try again.',
+  },
   sources: {
     /**
      * Where the model came from. The licence is the field this exists for: `docs/DATA.md`

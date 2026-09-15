@@ -601,6 +601,16 @@ there are no users yet.
   one place at a time.
 - **An indexed custom field** (§3.5) is one more thing a filter may carry: `field` and `fieldValue`.
 
+### 3.7 Material densities
+
+`material_density(library_id, material, density_kg_m3 numeric)` (`0034`): a library's density for a
+material, keyed by the material exactly as parts hold it, and removed with its library.
+- **Typed, never measured.** Set in the library's Densities dialog, typed in g/cm³ and stored in kg/m³.
+  The API refuses anything but a finite number above 0 and below 25,000 kg/m³, in words.
+- **A material no part holds yet** may have one, so a density can be set before the parts that need it.
+- **What it is for:** a part's mass, worked out when read from its volume and the density of its one
+  material, and always approximate (goal 5).
+
 ---
 
 ## 4. Source links and images

@@ -17,6 +17,7 @@ import type {
   BundlePlan,
   JobId,
   LibraryId,
+  MaterialDensity,
   LibrarySettings,
   LibraryStorage,
   LibrarySummary,
@@ -47,6 +48,7 @@ import type {
   CustomField,
   CustomFieldChange,
   NewCustomField,
+  SetDensity,
   SetFieldValue,
   ScanAccepted,
   SetFraming,
@@ -194,7 +196,10 @@ export async function fetchFields(library: LibraryId): Promise<CustomField[]> {
 /** A field write the route answered rather than failed: saved, or refused in its own words. */
 export type FieldWritten = { kind: 'saved' } | { kind: 'refused'; message: string }
 
-async function fieldWritten(response: Response): Promise<FieldWritten> {
+async function fieldWritten(
+  response: Response,
+  fallback: string = strings.fields.refusedWithoutReason,
+): Promise<FieldWritten> {
   if (response.ok) return { kind: 'saved' }
   if (response.status === 400 || response.status === 404 || response.status === 409) {
     const answer: unknown = await response.json().catch(() => null)
@@ -202,12 +207,9 @@ async function fieldWritten(response: Response): Promise<FieldWritten> {
       answer !== null && typeof answer === 'object'
         ? (answer as { message?: unknown }).message
         : undefined
-    return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.fields.refusedWithoutReason,
-    }
+    return { kind: 'refused', message: typeof message === 'string' ? message : fallback }
   }
-  throw new Error(`field write returned ${response.status}`)
+  throw new Error(`write returned ${response.status}`)
 }
 
 /** `POST /api/libraries/{id}/fields` — define a field. */
@@ -242,6 +244,38 @@ export async function removeField(library: LibraryId, key: string): Promise<Fiel
     await fetch(`/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`, {
       method: 'DELETE',
     }),
+  )
+}
+
+/** `GET /api/libraries/{id}/densities` — a library's density per material, in kg/m³. */
+export async function fetchDensities(library: LibraryId): Promise<MaterialDensity[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/densities`)
+  if (!response.ok) {
+    throw new Error(`densities returned ${response.status}`)
+  }
+  return (await response.json()) as MaterialDensity[]
+}
+
+/** `PUT /api/libraries/{library}/densities/{material}` — a material's density in kg/m³, replacing its old one. */
+export async function setDensity(library: LibraryId, material: string, densityKgM3: number): Promise<FieldWritten> {
+  const body: SetDensity = { densityKgM3 }
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.densities.refusedWithoutReason,
+  )
+}
+
+/** `DELETE /api/libraries/{library}/densities/{material}` — a material's density; its parts then have no mass. */
+export async function removeDensity(library: LibraryId, material: string): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`, {
+      method: 'DELETE',
+    }),
+    strings.densities.refusedWithoutReason,
   )
 }
 
