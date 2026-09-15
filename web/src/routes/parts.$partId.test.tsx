@@ -91,7 +91,7 @@ function stub(
         return { ok: true, status: 200, json: async () => images }
       }
       // And its history, for the same reason: one revision, so no History section.
-      if (url.endsWith('/revisions')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/revisions') || url.endsWith('/api/libraries')) return { ok: true, status: 200, json: async () => [] }
       // The page reads its sources too. Same reason as the gallery above: a stub that
       // answered this with a `PartDetail` would hand `[].map` an object.
       if (url.endsWith('/sources')) {
@@ -282,7 +282,7 @@ test('a refused picture shows the reason the server gave', async () => {
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -331,7 +331,7 @@ test('pasting an address posts it to the fetch route and shows the picture', asy
         return { ok: true, status: 201, json: async () => ({ id: 'x', width: 900, height: 600 }) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => gallery }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -371,7 +371,7 @@ test('an address the server will not fetch from keeps the explanation it gave', 
         }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -434,7 +434,7 @@ test('clicking a picture sets its focal point', async () => {
         return { ok: true, status: 204, json: async () => ({}) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -473,7 +473,7 @@ test('a re-frame the server refuses says so and leaves the picture as it was', a
     vi.fn(async (url: string, init?: { method?: string }) => {
       if (init?.method === 'PATCH') return { ok: false, status: 503, json: async () => ({}) }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -499,7 +499,7 @@ test('a recorded source shows its licence and its price', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
-      if (url.endsWith('/images') || url.endsWith('/revisions'))
+      if (url.endsWith('/images') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       if (url.endsWith('/sources')) {
         return {
@@ -547,7 +547,7 @@ test('a price typed as a decimal is sent as exact minor units', async () => {
         return { ok: true, status: 201, json: async () => ({}) }
       }
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
-      if (url.endsWith('/sources') || url.endsWith('/revisions'))
+      if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries'))
         return { ok: true, status: 200, json: async () => [] }
       return { ok: true, status: 200, json: async () => PART }
     }),
@@ -697,7 +697,7 @@ test('an assembly shows its tree, each branch a disclosure the keyboard can open
     'fetch',
     vi.fn(async (url: string) => {
       if (url === `/api/blob/${structure}`) return { ok: true, status: 200, json: async () => tree }
-      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions')) {
+      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
         return { ok: true, status: 200, json: async () => [] }
       }
       return { ok: true, status: 200, json: async () => ({ ...PART, structure }) }

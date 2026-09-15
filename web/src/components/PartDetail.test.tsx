@@ -563,3 +563,38 @@ test('the comparison draws its From revision as a ghost, and says when that revi
   expect(screen.queryByLabelText(strings.detail.ghost)).toBeNull()
   vi.unstubAllGlobals()
 })
+
+/** The link that opens a part in a desktop app, offered only where a save can come back as a revision. */
+test('a controlled library’s part offers to open in a desktop app, and a hobby library’s does not', async () => {
+  const part = { ...BRACKET, sourceHash: '7'.repeat(64) }
+  let mode: 'controlled' | 'hobby' = 'controlled'
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith('/api/libraries') ? [{ id: part.library, name: 'Workshop', mode, partCount: 6 }] : [],
+    })),
+  )
+  const page = (client: QueryClient) => (
+    <QueryClientProvider client={client}>
+      <Detail part={part} />
+    </QueryClientProvider>
+  )
+
+  const view = render(page(new QueryClient({ defaultOptions: { queries: { retry: false } } })))
+  const link = await screen.findByRole('link', { name: strings.download.openInApp })
+  expect(link.getAttribute('href')).toBe(`lapidary://open?part=${part.id}`)
+  expect(screen.getByText(strings.download.openInAppNote)).toBeTruthy()
+  view.unmount()
+
+  mode = 'hobby'
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(page(client))
+  // Settled, not merely asked: a link absent before the answer arrives proves nothing.
+  await waitFor(() => expect(client.getQueryState(['libraries'])?.status).toBe('success'))
+  expect(screen.queryByRole('link', { name: strings.download.openInApp })).toBeNull()
+  expect(screen.queryByText(strings.download.openInAppNote)).toBeNull()
+  vi.unstubAllGlobals()
+})

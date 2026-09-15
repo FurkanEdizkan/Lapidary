@@ -217,6 +217,14 @@ export function downloadUrl(revision: RevisionId): string {
 }
 
 /**
+ * `lapidary://open?part=` — what `lapidary open` acts on (Phase 4 slice 2 spec §3). A part id is
+ * all a link carries: the handler was registered with its own server and workspace.
+ */
+export function openLink(part: PartId): string {
+  return `lapidary://open?part=${encodeURIComponent(part)}`
+}
+
+/**
  * `GET /api/libraries/{id}/storage` — what this library occupies on disk, by storage
  * class, and the ratio between the two.
  *

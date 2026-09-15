@@ -97,7 +97,12 @@ coordinates as their source files.
 - **The server and workspace are fixed when you register.**
   - A handler started by a browser does not get the shell's environment, so `Exec` carries
     `LAPIDARY_SERVER` and `LAPIDARY_WORKSPACE` itself: `env LAPIDARY_SERVER=… LAPIDARY_WORKSPACE=…`.
-  - Values are quoted by the Desktop Entry rules.
+  - Arguments are written unquoted. `register` refuses a server, workspace or install path holding
+    anything but letters, digits and `/ . _ - : = @ + ,`.
+    - `xdg-open`'s own launcher, the one used outside GNOME and KDE, splits `Exec` on spaces and
+      keeps the quotes.
+    - The check caught it: a spec-quoted `Exec` handed `env` the literal text
+      `"LAPIDARY_SERVER=…"`.
   - This is also the security property: nothing in a URI can change either value. Re-run `register`
     after changing either one.
 - **`lapidary unregister`**

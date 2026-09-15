@@ -59,6 +59,26 @@ pub fn folder_name(part_number: Option<&str>, name: &str, rev_label: &str) -> St
     lapidary_core::slug::slugify(&format!("{base}_{rev_label}"))
 }
 
+/// Every folder in the workspace that holds a checkout file.
+pub fn folders(workspace: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(workspace)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|folder| folder.join(FILE).is_file())
+        .collect()
+}
+
+/// This workspace's checkout of `part` from `server`, if there is one: what `lapidary open`
+/// reuses rather than asking for a second lock on a part this computer already holds.
+pub fn find(workspace: &Path, server: &str, part: &str) -> Option<(PathBuf, Checkout)> {
+    folders(workspace).into_iter().find_map(|folder| {
+        let checkout = Checkout::read(&folder).ok()?;
+        (checkout.part == part && checkout.server == server).then_some((folder, checkout))
+    })
+}
+
 /// Where checkouts go: `$LAPIDARY_WORKSPACE`, else `~/Lapidary/workspace`.
 pub fn workspace() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("LAPIDARY_WORKSPACE") {
@@ -90,6 +110,63 @@ mod tests {
         assert!(
             !folder_name(None, "brackets/steel", "1").contains('/'),
             "a name cannot make a nested folder"
+        );
+    }
+
+    #[test]
+    fn open_reuses_this_workspaces_checkout_of_the_part_from_the_same_server_only() {
+        let workspace = tempfile::tempdir().expect("temp dir");
+        let flange = Checkout {
+            server: "http://127.0.0.1:8080".to_owned(),
+            library: "01931b6e-0000-7000-8000-000000000001".to_owned(),
+            part: "01931b6e-0000-7000-8000-00000000aaaa".to_owned(),
+            source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
+            lock: "01931b6e-0000-7000-8000-00000000eeee".to_owned(),
+            holder: "mira@workshop-pc".to_owned(),
+            revision: "01931b6e-0000-7000-8000-00000000bbbb".to_owned(),
+            rev_label: "1".to_owned(),
+            file_name: "flange-dn40-lp-3310-02.stl".to_owned(),
+            blake3: "5a".repeat(32),
+        };
+        let at = |name: &str, checkout: &Checkout| {
+            let folder = workspace.path().join(name);
+            std::fs::create_dir_all(&folder).expect("folder");
+            checkout.write(&folder).expect("writes");
+            folder
+        };
+        let here = at("LP-3310-02_1", &flange);
+        at(
+            "LP-3310-02_1-other-server",
+            &Checkout {
+                server: "http://lapidary.example:8080".to_owned(),
+                ..flange.clone()
+            },
+        );
+        let done = at(
+            "LP-3310-02_1-checked-in",
+            &Checkout {
+                part: "01931b6e-0000-7000-8000-00000000cccc".to_owned(),
+                ..flange.clone()
+            },
+        );
+        std::fs::rename(done.join(FILE), done.join(CHECKED_IN)).expect("checked in");
+
+        assert_eq!(
+            find(workspace.path(), &flange.server, &flange.part),
+            Some((here, flange.clone()))
+        );
+        assert_eq!(
+            find(
+                workspace.path(),
+                &flange.server,
+                "01931b6e-0000-7000-8000-00000000cccc"
+            ),
+            None,
+            "a checked-in folder is not a checkout any more"
+        );
+        assert_eq!(
+            find(workspace.path(), "http://127.0.0.1:9999", &flange.part),
+            None
         );
     }
 
