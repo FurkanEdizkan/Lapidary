@@ -41,6 +41,9 @@ import type {
   RungReady,
   SavedFilter,
   SavedFilterId,
+  MoveDirection,
+  MoveSavedFilter,
+  RenameSavedFilter,
   CustomField,
   CustomFieldChange,
   NewCustomField,
@@ -553,6 +556,51 @@ export async function removeSavedFilter(library: LibraryId, filter: SavedFilterI
   )
   if (!response.ok && response.status !== 404) {
     throw new Error(`removing a saved filter returned ${response.status}`)
+  }
+}
+
+/**
+ * `PATCH /api/libraries/{library}/filters/{filter}`: a new name for a saved filter. A refusal (a name
+ * already taken, empty or too long) comes back with the server's own sentence, to show as it is.
+ */
+export async function renameSavedFilter(
+  library: LibraryId,
+  filter: SavedFilterId,
+  name: string,
+): Promise<{ kind: 'renamed' } | { kind: 'refused'; message: string }> {
+  const body: RenameSavedFilter = { name }
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}`,
+    { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+  )
+  if (response.ok) return { kind: 'renamed' }
+  if (response.status === 400 || response.status === 404 || response.status === 409) {
+    const answer: unknown = await response.json().catch(() => null)
+    const message =
+      answer !== null && typeof answer === 'object'
+        ? (answer as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.savedFilters.refusedWithoutReason,
+    }
+  }
+  throw new Error(`renaming a saved filter returned ${response.status}`)
+}
+
+/** `POST /api/libraries/{library}/filters/{filter}/move`: one place up or down the list. */
+export async function moveSavedFilter(
+  library: LibraryId,
+  filter: SavedFilterId,
+  direction: MoveDirection,
+): Promise<void> {
+  const body: MoveSavedFilter = { direction }
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}/move`,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+  )
+  if (!response.ok) {
+    throw new Error(`moving a saved filter returned ${response.status}`)
   }
 }
 

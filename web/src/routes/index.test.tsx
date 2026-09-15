@@ -607,6 +607,86 @@ test("the grid's filters are saved under a name, put back from the list, and rem
   await waitFor(() => expect(screen.queryByRole("button", { name: "Stock STL" })).toBeNull());
 });
 
+/**
+ * Saved filters are renamed where they are listed and moved one place at a time, and a filter whose
+ * category was deleted says so in the list.
+ */
+test("a saved filter is renamed, moved, and marked when its category is gone", async () => {
+  const requests: { method: string; url: string; body: unknown }[] = [];
+  const listed = [
+    {
+      id: "01a0a1b2-0000-7000-8000-000000000001",
+      name: "Stock STL",
+      search: { format: "stl" },
+      folderGone: false,
+    },
+    {
+      id: "01a0a1b2-0000-7000-8000-000000000002",
+      name: "Terrain",
+      search: { folderId: "01a0a1b2-0000-7000-8000-00000000f001" },
+      folderGone: true,
+    },
+  ];
+  stubFetch({
+    parts: ok(page([])),
+    filters: async (url, init) => {
+      if (init?.method !== undefined) {
+        requests.push({ method: init.method, url, body: JSON.parse(init.body ?? "null") });
+        return { ok: true, status: 204, json: async () => null };
+      }
+      return { ok: true, status: 200, json: async () => listed };
+    },
+  });
+  renderIndex();
+
+  const mark = await screen.findByText(strings.savedFilters.folderGone);
+  expect(mark.closest("button")?.textContent).toContain("Terrain");
+  const moveUp = (name: string) =>
+    screen.getByRole("button", { name: strings.savedFilters.moveUp(name) }) as HTMLButtonElement;
+  const moveDown = (name: string) =>
+    screen.getByRole("button", { name: strings.savedFilters.moveDown(name) }) as HTMLButtonElement;
+  expect(moveUp("Stock STL").disabled).toBe(true);
+  expect(moveDown("Terrain").disabled).toBe(true);
+
+  fireEvent.click(moveUp("Terrain"));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  fireEvent.click(screen.getByRole("button", { name: strings.savedFilters.rename("Stock STL") }));
+  fireEvent.change(screen.getByLabelText(strings.savedFilters.renameLabel), {
+    target: { value: "Stock meshes" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: strings.savedFilters.renameConfirm }));
+
+  const base = "/api/libraries/01931b6e-0000-7000-8000-000000000001/filters";
+  await waitFor(() =>
+    expect(requests).toEqual([
+      {
+        method: "POST",
+        url: `${base}/01a0a1b2-0000-7000-8000-000000000002/move`,
+        body: { direction: "up" },
+      },
+      {
+        method: "PATCH",
+        url: `${base}/01a0a1b2-0000-7000-8000-000000000001`,
+        body: { name: "Stock meshes" },
+      },
+    ]),
+  );
+});
+
+/**
+ * A grid opened on a category deleted since a saved filter or a link named it says so, where an empty
+ * grid would have said nothing is filed there yet, and offers the same filters without the category.
+ */
+test("a grid opened on a deleted category says so and offers the same filters without it", async () => {
+  stubFetch({ parts: ok(page([])), folders: ok([]) });
+  const onSelectFolder = vi.fn();
+  renderIndex({ folderId: "01a0a1b2-0000-7000-8000-00000000f001", format: "stl", onSelectFolder });
+
+  expect(await screen.findByText(strings.categoryGone.title)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: strings.categoryGone.widen }));
+  expect(onSelectFolder).toHaveBeenCalledWith(null);
+});
+
 test("with no filter set and none saved, the rail offers nothing to save", async () => {
   stubFetch({ parts: ok(page([])) });
   renderIndex();

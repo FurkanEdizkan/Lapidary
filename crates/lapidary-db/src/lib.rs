@@ -26,7 +26,7 @@ pub use repo::{
     StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
-pub use saved_filters::{PgSavedFilters, SavedFilterRow};
+pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use sqlx::PgPool;
 pub use touches::Touches;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
