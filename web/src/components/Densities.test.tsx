@@ -56,3 +56,38 @@ test('the dialog lists materials held and materials with a density, and saves on
   )
   vi.unstubAllGlobals()
 })
+
+test('a density out of range is refused in the unit it was typed in, not the server’s', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string }) =>
+      init?.method === 'PUT'
+        ? {
+            ok: false,
+            status: 400,
+            json: async () => ({
+              reason: 'badDensity',
+              message: 'A density is a number of kilograms per cubic metre above 0 and below 25,000, such as 7850 for steel. Type it again.',
+            }),
+          }
+        : {
+            ok: true,
+            status: 200,
+            json: async () =>
+              url.includes('/facets') ? { formats: [], materials: [{ value: 'AISI 1045 steel', count: 3 }], tags: [] } : [],
+          },
+    ),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <DensitiesMenuItem library={LIBRARY} />
+    </QueryClientProvider>,
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: strings.densities.menu }))
+  const steel = (await screen.findByLabelText(strings.densities.field('AISI 1045 steel'))) as HTMLInputElement
+  fireEvent.change(steel, { target: { value: '30' } })
+  fireEvent.submit(steel.closest('form') as HTMLFormElement)
+  expect(await screen.findByText(strings.densities.outOfRange)).toBeTruthy()
+  vi.unstubAllGlobals()
+})

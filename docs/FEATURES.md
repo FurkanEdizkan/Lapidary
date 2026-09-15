@@ -227,8 +227,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
       figure is mesh-derived;
     - face and edge counts since goal 4 (`718d8ad`), exact, for a CAD part read by bridge 7 or later;
     - mass since goal 5: each revision's volume times the density of the part's one material as
-      it is today, worked out when read and always ≈, beside volume in the history and the
-      comparison;
+      it is today, worked out when read and always ≈: its change beside volume's in the history,
+      and a Mass row in the comparison, with no mass of its own on the page yet;
     - centre of mass since goal 5, per axis: exact from a B-rep (bridge 8), ≈ from a closed mesh,
       stored at ingest; a revision recorded before then has none and its rows say so.
   - Locks: one per part, free-text holder, no auth; a forced release is recorded.

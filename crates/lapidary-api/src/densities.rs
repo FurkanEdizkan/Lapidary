@@ -101,7 +101,9 @@ pub async fn remove(
         Ok(false) => refused(
             StatusCode::NOT_FOUND,
             "noSuchDensity",
-            &format!("{material} has no density in this library, so there is nothing to remove."),
+            &format!(
+                "{material} has no density in this library, so there is nothing to remove. Reload the list to see the densities it has."
+            ),
         ),
         Err(err) => internal_error(&err, "density remove failed"),
     }
@@ -117,6 +119,6 @@ fn bad_material() -> Response {
     refused(
         StatusCode::BAD_REQUEST,
         "badMaterial",
-        "A material is named as parts hold it: 1 to 64 characters, with no space at either end.",
+        "A material is named as parts hold it: 1 to 64 characters, with no space at either end. Choose one from the library's list and try again.",
     )
 }

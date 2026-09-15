@@ -384,6 +384,9 @@ function WordList({
       }
       setDraft('')
       void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
+      // A part's mass is worked out from its materials when read, so its history and comparison read again.
+      void queryClient.invalidateQueries({ queryKey: ['revisions', part.id] })
+      void queryClient.invalidateQueries({ queryKey: ['diff', part.id] })
     },
   })
   const tags = values

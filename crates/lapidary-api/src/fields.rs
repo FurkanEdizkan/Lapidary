@@ -343,7 +343,7 @@ pub(crate) async fn filter_of(
                     StatusCode::BAD_REQUEST,
                     "wrongType",
                     &format!(
-                        "“{}” is a number field, and “{value}” is not a number.",
+                        "“{}” is a number field, and “{value}” is not a number. Type a number, such as 12.5, and try again.",
                         field.label
                     ),
                 ));
@@ -387,7 +387,9 @@ fn range_of(
                 .ok_or_else(|| {
                     (
                         "wrongType",
-                        format!("“{label}” is a number field, and “{text}” is not a number."),
+                        format!(
+                            "“{label}” is a number field, and “{text}” is not a number. Type a number, such as 12.5, and try again."
+                        ),
                     )
                 })
         })

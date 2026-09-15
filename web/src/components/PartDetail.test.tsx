@@ -186,6 +186,7 @@ test('materials are edited like tags, and a list nobody typed says it is the fil
     }),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
   render(
     <QueryClientProvider client={client}>
       <Detail part={{ ...BRACKET, materials: ['AISI 1045 steel'], materialsTyped: false }} recordable />
@@ -200,6 +201,9 @@ test('materials are edited like tags, and a list nobody typed says it is the fil
       { url: `/api/parts/${BRACKET.id}/materials`, body: { materials: ['AISI 1045 steel', 'EN AW-6082 T6'] } },
     ]),
   )
+  // Its mass is worked out from its materials, so its history and comparison read again.
+  await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['revisions', BRACKET.id] }))
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['diff', BRACKET.id] })
   vi.unstubAllGlobals()
 })
 

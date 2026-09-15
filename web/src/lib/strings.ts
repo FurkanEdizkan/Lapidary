@@ -953,10 +953,10 @@ export const strings = {
     body: 'Since this filter or link was made, the field was removed, stopped being offered as a filter, or was defined again for a different kind of value. The rest of these filters still work without it.',
     widen: 'Show these filters without the field',
   },
-  /** A field filter no grid can take, which only a link typed by hand holds. */
+  /** A field filter no grid can take: a link typed by hand, or a bound typed into the range boxes that is not a number. */
   fieldUnreadable: {
     title: 'This field filter is not one the grid can use',
-    body: 'It gives the field a value and a range at once, or a range that starts above where it ends. The rest of these filters still work without it.',
+    body: 'It gives the field a value and a range at once, a bound that is not a number, or a range that starts above where it ends. The rest of these filters still work without it.',
     widen: 'Show these filters without the field',
   },
   /** The filters beside the grid. `docs/DATA.md` §3.4. */
@@ -1539,6 +1539,8 @@ export const strings = {
     saving: 'Saving…',
     remove: (material: string) => `Remove the density of ${material}`,
     unreadable: 'Type the density as a number of grams per cubic centimetre, such as 7.85 for steel.',
+    /** A density the server refused as out of range, said in the unit this dialog is typed in. */
+    outOfRange: 'A density is a number of grams per cubic centimetre above 0 and below 25, such as 7.85 for steel. Type it again.',
     close: 'Close',
     loadFailed: 'Could not load this library’s densities. Reload to try again.',
     refusedWithoutReason: 'Could not save this density. Reload and try again.',

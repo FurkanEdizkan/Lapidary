@@ -206,7 +206,7 @@ export async function fetchFields(library: LibraryId): Promise<CustomField[]> {
 }
 
 /** A field write the route answered rather than failed: saved, or refused in its own words. */
-export type FieldWritten = { kind: 'saved' } | { kind: 'refused'; message: string }
+export type FieldWritten = { kind: 'saved' } | { kind: 'refused'; message: string; reason?: string }
 
 async function fieldWritten(
   response: Response,
@@ -215,11 +215,15 @@ async function fieldWritten(
   if (response.ok) return { kind: 'saved' }
   if (response.status === 400 || response.status === 404 || response.status === 409) {
     const answer: unknown = await response.json().catch(() => null)
-    const message =
+    const { message, reason } =
       answer !== null && typeof answer === 'object'
-        ? (answer as { message?: unknown }).message
-        : undefined
-    return { kind: 'refused', message: typeof message === 'string' ? message : fallback }
+        ? (answer as { message?: unknown; reason?: unknown })
+        : ({} as { message?: unknown; reason?: unknown })
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : fallback,
+      ...(typeof reason === 'string' ? { reason } : {}),
+    }
   }
   throw new Error(`write returned ${response.status}`)
 }

@@ -783,6 +783,48 @@ test("a choice field's options show how many parts hold each", async () => {
   expect(strings.fields.choiceOption("Misumi", 2)).toBe("Misumi, 2 parts");
 });
 
+/** Past the server's threshold every count is withheld, and an option no part holds shows no number either. */
+test("a choice field's counts withheld past the threshold leave every option without a number", async () => {
+  stubFetch({
+    parts: ok(page([])),
+    folders: ok([]),
+    facets: ok({ formats: [], materials: [], tags: [], fields: [{ key: "supplier", values: [{ value: "Misumi", count: null }] }] }),
+    fields: ok([{ key: "supplier", label: "Supplier", kind: "choice", options: ["Hoffmann", "Misumi"], indexed: true }]),
+  });
+  renderIndex();
+
+  expect(await screen.findByRole("button", { name: strings.fields.choiceOption("Misumi", null) })).toBeDefined();
+  expect(screen.getByRole("button", { name: strings.fields.choiceOption("Hoffmann", null) })).toBeDefined();
+});
+
+/** A bound typed into the range boxes that is not a number is named as that, not as a field gone. */
+test("a range bound the server cannot read says the filter is unusable, not that the field is gone", async () => {
+  stubFetch({
+    parts: async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ reason: "wrongType", message: "“Bore” is a number field, and “abc” is not a number." }),
+    }),
+    folders: ok([]),
+  });
+  renderIndex({ field: "bore_mm", fieldMin: "abc" });
+
+  expect(await screen.findByText(strings.fieldUnreadable.title)).toBeDefined();
+  expect(screen.queryByText(strings.fieldGone.title)).toBeNull();
+});
+
+/** Any other failure of the facets while a field filter is set still says the facets could not load. */
+test("a facets failure that is not the field filter's still says so", async () => {
+  stubFetch({
+    parts: ok(page([])),
+    folders: ok([]),
+    facets: async () => ({ ok: false, status: 500, json: async () => ({ message: "internal error" }) }),
+  });
+  renderIndex({ field: "supplier", fieldValue: "Misumi" });
+
+  expect(await screen.findByText(strings.facets.failed)).toBeDefined();
+});
+
 test("with no filter set and none saved, the rail offers nothing to save", async () => {
   stubFetch({ parts: ok(page([])) });
   renderIndex();

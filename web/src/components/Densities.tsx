@@ -42,7 +42,7 @@ export function DensitiesMenuItem({ library }: { library: LibraryId }) {
 /**
  * A library's densities: a box for each material its parts hold, and for each material that already has a
  * density though no part holds it now. Typed and shown in g/cm³, stored in kg/m³. Every refusal is the
- * server's own sentence, shown under the list.
+ * server's own sentence, shown under the list, but for a density out of range, which the server says in kg/m³.
  */
 function DensitiesDialog({ library, onClose }: { library: LibraryId; onClose: () => void }) {
   const queryClient = useQueryClient()
@@ -51,11 +51,14 @@ function DensitiesDialog({ library, onClose }: { library: LibraryId; onClose: ()
   const [note, setNote] = useState<string | null>(null)
   const settle = (result: FieldWritten): boolean => {
     if (result.kind === 'refused') {
-      setNote(result.message)
+      setNote(result.reason === 'badDensity' ? strings.densities.outOfRange : result.message)
       return false
     }
     setNote(null)
     void queryClient.invalidateQueries({ queryKey: ['densities', library] })
+    // A mass is worked out from its density when read, so an open part's history and comparison read again.
+    void queryClient.invalidateQueries({ queryKey: ['revisions'] })
+    void queryClient.invalidateQueries({ queryKey: ['diff'] })
     return true
   }
   const loaded = densities.data !== undefined && facets.data !== undefined

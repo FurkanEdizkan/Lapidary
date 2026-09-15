@@ -516,16 +516,16 @@ export function Index({
   })
   // A field filter the server refuses: no longer offered, or its value no longer fits the field. The grid
   // says so, where "check that the api service is running" would be untrue.
+  const refusal = field !== undefined && parts.error instanceof RefusedError ? parts.error.reason : undefined
+  const rangeGiven = fieldMin !== undefined || fieldMax !== undefined
+  // A value that no longer fits reads as a field defined again, as it always has. A bound that is not a number
+  // is a slip in the range boxes, not a field gone.
   const fieldGone =
-    field !== undefined &&
-    parts.error instanceof RefusedError &&
-    (parts.error.reason === 'notAFilter' || parts.error.reason === 'wrongType' || parts.error.reason === 'notARange')
-  // A field filter no grid can take: a value beside a range, or a range that runs backwards. Only a link
-  // typed by hand holds one, since the filter's own boxes write neither.
+    refusal === 'notAFilter' || refusal === 'notARange' || (refusal === 'wrongType' && !rangeGiven)
+  // A field filter no grid can take: a value beside a range, a range that runs backwards, or a bound that is
+  // not a number.
   const fieldUnreadable =
-    field !== undefined &&
-    parts.error instanceof RefusedError &&
-    (parts.error.reason === 'valueAndRange' || parts.error.reason === 'emptyRange')
+    refusal === 'valueAndRange' || refusal === 'emptyRange' || (refusal === 'wrongType' && rangeGiven)
   // Flattened once per render rather than at each use: three things read it (the grid,
   // the extent line and the empty state) and they must agree about how many parts there
   // are.
@@ -3428,6 +3428,9 @@ function FilterGone({
   )
 }
 
+/** The refusals of a field filter itself, which the grid names. Any other failure of the facets says so. */
+const FIELD_REFUSALS: readonly string[] = ['notAFilter', 'wrongType', 'notARange', 'valueAndRange', 'emptyRange']
+
 const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag', 'field', 'fieldValue', 'fieldMin', 'fieldMax'] as const
 
 /** The grid's filters as a saved filter holds them: only the ones that are set. */
@@ -3492,7 +3495,9 @@ function Facets({
   if (facets.isError) {
     // A field filter the server refuses fails the facets with the grid, and the grid says why and offers the way
     // out, where "reload to try again" would not help.
-    if (field !== undefined && facets.error instanceof RefusedError) return null
+    if (field !== undefined && facets.error instanceof RefusedError && FIELD_REFUSALS.includes(facets.error.reason ?? '')) {
+      return null
+    }
     return (
       <p role="alert" className="mb-6 text-xs text-[var(--color-muted)]">
         {strings.facets.failed}
