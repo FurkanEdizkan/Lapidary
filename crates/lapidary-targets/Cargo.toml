@@ -9,8 +9,14 @@ publish = false
 
 [dependencies]
 lapidary-core.workspace = true
+# The bundle writer's per-entry CRC, which a STORE entry's data descriptor carries.
+crc32fast.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+# Reads a written bundle back, as any other tool would.
+zip.workspace = true
 
 [lints]
 workspace = true

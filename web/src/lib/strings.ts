@@ -170,6 +170,11 @@ export const strings = {
     failedHeading: (count: number) =>
       count === 1 ? '1 part was not changed:' : `${count.toLocaleString('en-US')} parts were not changed:`,
     failure: (name: string, reason: string) => `${name} — ${reason}`,
+    /** A bundle of the selection (Phase 4 slice 2): every revision's original file and a manifest. */
+    exportBundle: 'Export bundle',
+    exporting: (count: number, revisions: number, size: number) =>
+      `Exporting ${count === 1 ? 'the selected part' : `the ${count.toLocaleString('en-US')} selected parts`} with ${revisions.toLocaleString('en-US')} ${revisions === 1 ? 'revision' : 'revisions'} (${bytes(size)}). Your browser saves the bundle.`,
+    exportFailed: 'Could not export the selection. Check that the api service is running, then try again.',
   },
   layouts: {
     detail: 'Detail',

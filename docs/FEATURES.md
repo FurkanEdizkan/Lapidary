@@ -221,6 +221,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Download `variant=original` (byte-identical, hash shown) | 1 |
 | Download derivatives, `.lapidary.` infix | 3 |
 | Streaming ZIP bundle + `manifest.json` | 5 |
+<!--
+  Export built in Phase 4 slice 2: POST /api/libraries/{id}/bundle, planned first.
+  - STORE entries written by hand, with every revision and a manifest.
+  - At most 500 parts, and under 4 GiB (no ZIP64).
+  - Import: see ROADMAP, Phase 4 slice 2.
+-->
 | `lapidary://` URI scheme + agent launch | 4 |
 | Native watcher → automatic new revision on external save | 4 |
 <!--

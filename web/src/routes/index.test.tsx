@@ -176,6 +176,8 @@ function stubFetch(routes: {
   instanceStorage?: () => Promise<StubResponse>;
   /** `POST /api/storage/render-cache`, "free cache space". */
   freeCache?: () => Promise<StubResponse>;
+  /** `POST /api/libraries/{id}/bundle/plan`. */
+  bundlePlan?: () => Promise<StubResponse>;
   partDetail?: (url?: string) => Promise<StubResponse>;
   partImages?: () => Promise<StubResponse>;
   partSources?: () => Promise<StubResponse>;
@@ -194,6 +196,7 @@ function stubFetch(routes: {
   const fetchMock = vi.fn((url: string, init?: { method?: string; body?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
     if (url.startsWith("/api/blob/")) return (routes.blob ?? pending)();
+    if (url.endsWith("/bundle/plan")) return (routes.bundlePlan ?? pending)();
     if (init?.method === "DELETE" && url.startsWith("/api/parts/"))
       return (routes.partRemove ?? pending)(url);
     // Above the batch rule further down, which every job route contains.
@@ -4022,4 +4025,62 @@ test("freeing cache space asks first and reports what went into quarantine", asy
   expect(await screen.findByText(strings.storage.cacheFreed(2, 48210))).toBeDefined();
   expect(fetchMock).toHaveBeenCalledWith("/api/storage/render-cache", { method: "POST" });
   expect(strings.storage.cacheFreed(2, 48210)).not.toMatch(/freed|delet/i);
+});
+
+/** Exporting a selection plans the bundle, says what it holds, and posts the form the browser saves. */
+test("exporting a selection plans the bundle, then posts the form the browser downloads", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    bundlePlan: ok({ parts: 2, revisions: 3, bytes: 612480 }),
+  });
+  const posted: { action: string; parts: string }[] = [];
+  const submit = vi
+    .spyOn(HTMLFormElement.prototype, "submit")
+    .mockImplementation(function (this: HTMLFormElement) {
+      posted.push({
+        action: this.getAttribute("action") ?? "",
+        parts: (this.elements.namedItem("parts") as HTMLInputElement).value,
+      });
+    });
+  renderIndex();
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) }),
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: strings.selection.selectPart(HEX_NUT.name) }));
+  fireEvent.click(screen.getByRole("button", { name: strings.selection.exportBundle }));
+
+  expect(await screen.findByText(strings.selection.exporting(2, 3, 612480))).toBeTruthy();
+  expect(posted).toHaveLength(1);
+  const [form] = posted;
+  expect(form?.action).toMatch(/^\/api\/libraries\/.+\/bundle$/);
+  expect(form?.parts.split(",").sort()).toEqual([MOTOR_MOUNT.id, HEX_NUT.id].sort());
+  submit.mockRestore();
+});
+
+/** A bundle the server will not make is refused on the grid, in its words, and nothing downloads. */
+test("a bundle the server refuses says why and downloads nothing", async () => {
+  const message =
+    "These parts come to 4400000000 bytes as a bundle, and a bundle stops short of 4 GiB. Export them in several smaller bundles.";
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    bundlePlan: async (): Promise<StubResponse> => ({
+      ok: false,
+      status: 413,
+      json: async () => ({ message }),
+    }),
+  });
+  const submit = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {});
+  renderIndex();
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: strings.selection.exportBundle }));
+
+  expect(await screen.findByText(message)).toBeTruthy();
+  expect(submit).not.toHaveBeenCalled();
+  submit.mockRestore();
 });

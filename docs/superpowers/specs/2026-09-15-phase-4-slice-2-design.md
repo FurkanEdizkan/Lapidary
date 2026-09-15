@@ -220,8 +220,11 @@ source, derivative, inline-preview, removed and quarantined bytes.
 
 ## 6. Bundle export (only once 1–5 are merged)
 
-**Route.** `POST /api/libraries/{id}/bundle`, a form with one field, `parts`: comma-separated part ids,
-at most 500.
+**Routes.**
+- `POST /api/libraries/{id}/bundle/plan` takes JSON `{ parts }`. It makes every check below and answers
+  with parts, revisions and exact bytes, so the page can show a refusal before any download starts.
+- `POST /api/libraries/{id}/bundle` is a form with one field, `parts`: comma-separated part ids, at
+  most 500.
 - **Why a form post:** a browser form post keeps the response's `Content-Disposition` filename, which a
   `fetch` into a blob URL would lose. A GET that carries 500 ids would be an 18 KB URL.
 - **Where it lives:** in `crates/lapidary-api/src/download.rs`. The deploy gate allows `SourceReader`
@@ -257,8 +260,10 @@ imports back to the same paths:
 
 **`manifest.json`.**
 - **Bundle level:** `{ "format": "lapidary-bundle", "version": 1, "library": {name, mode}, "parts": [...] }`.
-- **Per part:** `name`, `partNumber`, `sourcePath`, `tags`, `materials`, and `sources` (url, vendor,
-  externalId, title, licence), plus `revisions`, oldest first.
+- **Per part:** `name`, `partNumber`, `sourcePath`, `tags` and `sources` (url, vendor, externalId,
+  title, licence), plus `revisions`, oldest first.
+  - Materials are left out. Import runs the kernel on every revision, and it reads them from the file
+    again.
 - **Per revision:** `revLabel`, `parentLabel`, `origin`, `createdAt`, `blake3`, `sizeBytes`, `format`,
   `path` (inside the ZIP).
 

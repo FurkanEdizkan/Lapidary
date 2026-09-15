@@ -50,15 +50,17 @@
 use crate::AppState;
 use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::rejection::QueryRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::rejection::{FormRejection, JsonRejection, QueryRejection};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, DerivativeKind, RevisionId};
-use lapidary_db::{DbError, PgBlobs, PgParts};
+use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
+use lapidary_db::{DbError, DownloadSource, PgBlobs, PgParts, PgRevisions};
 use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
-use serde::Deserialize;
+use lapidary_targets::bundle;
+use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
+use ts_rs::TS;
 
 /// The only `variant` this slice serves. Named in every message that rejects another
 /// one, so a caller is told what to send rather than what not to.
@@ -558,6 +560,435 @@ fn internal_error(err: &DbError) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------------------
+// Bundles (Phase 4 slice 2 spec §6): the selected parts, every revision, one ZIP.
+// ---------------------------------------------------------------------------------------
+
+/// At most this many parts in one bundle: a selection's worth, and an export that finishes.
+const MAX_BUNDLE_PARTS: usize = 500;
+
+/// `POST /api/libraries/{id}/bundle`'s form: the selected parts' ids, comma-separated. A form
+/// rather than JSON, so the browser posts it itself and saves the stream under the name the
+/// response gives, instead of a page holding the whole archive in memory.
+#[derive(Debug, Deserialize)]
+pub struct BundleForm {
+    parts: String,
+}
+
+/// `POST /api/libraries/{id}/bundle/plan`'s body.
+#[derive(Debug, Deserialize)]
+pub struct BundlePlanRequest {
+    parts: Vec<PartId>,
+}
+
+/// What a bundle of the selected parts holds, said before the download starts.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePlan {
+    pub parts: u32,
+    pub revisions: u32,
+    /// The archive's exact length: the download's `Content-Length`.
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
+struct BundleEntry {
+    path: String,
+    size: u64,
+    source: DownloadSource,
+}
+
+struct PlannedBundle {
+    library_name: String,
+    entries: Vec<BundleEntry>,
+    manifest: Vec<u8>,
+    parts: usize,
+    bytes: u64,
+}
+
+/// `POST /api/libraries/{id}/bundle/plan` — every check the download makes, answered before the
+/// browser commits to a download, so a refusal is a message on the grid rather than a page of JSON
+/// the browser navigates to.
+pub async fn bundle_plan(
+    State(state): State<AppState>,
+    Path(library): Path<LibraryId>,
+    body: Result<Json<BundlePlanRequest>, JsonRejection>,
+) -> Response {
+    let Ok(Json(request)) = body else {
+        return bundle_refusal(
+            StatusCode::BAD_REQUEST,
+            "Send the parts to bundle as {\"parts\": [part ids]}, then plan again.",
+        );
+    };
+    match plan_bundle(&state, library, &request.parts).await {
+        Ok(planned) => Json(BundlePlan {
+            parts: u32::try_from(planned.parts).unwrap_or(u32::MAX),
+            revisions: u32::try_from(planned.entries.len()).unwrap_or(u32::MAX),
+            bytes: planned.bytes,
+        })
+        .into_response(),
+        Err(refused) => *refused,
+    }
+}
+
+/// `POST /api/libraries/{id}/bundle` — the selected parts as one ZIP: every revision's original
+/// bytes and a `manifest.json`, streamed. `lapidary-targets`' `bundle` says why the ZIP is
+/// written by hand.
+pub async fn bundle(
+    State(state): State<AppState>,
+    Path(library): Path<LibraryId>,
+    form: Result<Form<BundleForm>, FormRejection>,
+) -> Response {
+    let Ok(Form(form)) = form else {
+        return bundle_refusal(
+            StatusCode::BAD_REQUEST,
+            "Send the parts to bundle as the form field `parts`: part ids separated by commas.",
+        );
+    };
+    let mut parts = Vec::new();
+    for id in form
+        .parts
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        match id.parse::<PartId>() {
+            Ok(part) => parts.push(part),
+            Err(_) => {
+                return bundle_refusal(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "{id} is not a part id. Select the parts in the grid, then export again."
+                    ),
+                );
+            }
+        }
+    }
+    let planned = match plan_bundle(&state, library, &parts).await {
+        Ok(planned) => planned,
+        Err(refused) => return *refused,
+    };
+    // These bytes are about to be handed to somebody, which is what `last_accessed_at` means.
+    let blobs = PgBlobs(state.db.clone());
+    for entry in &planned.entries {
+        blobs.touch_blob(&entry.source.hash).await;
+    }
+
+    let filename = download_filename(
+        &format!(
+            "{}-bundle.lapidary",
+            lapidary_core::slug::slugify(&planned.library_name)
+        ),
+        "zip",
+    );
+    let length = planned.bytes;
+    let body = stream_bundle(state.blob_root.clone(), planned.entries, planned.manifest);
+    (
+        [
+            (header::CONTENT_TYPE, "application/zip".to_owned()),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+            (header::CONTENT_DISPOSITION, content_disposition(&filename)),
+            // Exact, from `archive_len`: a bundle that stops short of it did not finish.
+            (header::CONTENT_LENGTH, length.to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Everything a bundle needs, or the refusal saying why there is none: parts of this library and
+/// not removed, each revision's source file, no two files at one path, and under 4 GiB.
+///
+/// ponytail: three queries per part and one per revision. Fine at the 500-part cap; one query
+/// for the whole selection if exports of large histories become slow.
+async fn plan_bundle(
+    state: &AppState,
+    library: LibraryId,
+    requested: &[PartId],
+) -> Result<PlannedBundle, Box<Response>> {
+    let refuse = |status: StatusCode, message: String| Box::new(bundle_refusal(status, message));
+    let failed = |err: DbError| Box::new(internal_error(&err));
+    if requested.is_empty() {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "Select at least one part to export.".to_owned(),
+        ));
+    }
+    let mut parts: Vec<PartId> = Vec::with_capacity(requested.len());
+    for part in requested {
+        if !parts.contains(part) {
+            parts.push(*part);
+        }
+    }
+    if parts.len() > MAX_BUNDLE_PARTS {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "A bundle holds at most {MAX_BUNDLE_PARTS} parts, and {} were selected. Export them in several bundles.",
+                parts.len()
+            ),
+        ));
+    }
+
+    let repo = PgParts(state.db.clone());
+    let revisions = PgRevisions(state.db.clone());
+    let Some(owner) = repo
+        .libraries()
+        .await
+        .map_err(failed)?
+        .into_iter()
+        .find(|row| row.id == library)
+    else {
+        return Err(refuse(
+            StatusCode::NOT_FOUND,
+            "No such library. Reload the page, then export again.".to_owned(),
+        ));
+    };
+
+    let not_here = || {
+        refuse(
+            StatusCode::NOT_FOUND,
+            "One of the selected parts is not in this library, or was removed since the grid was loaded. Reload the grid, select again, then export.".to_owned(),
+        )
+    };
+    let mut paths = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+    let mut manifest_parts = Vec::with_capacity(parts.len());
+    for part in parts.iter().copied() {
+        if repo.library_of(part).await.map_err(failed)? != Some(library) {
+            return Err(not_here());
+        }
+        let Some(detail) = repo.detail(part).await.map_err(failed)? else {
+            return Err(not_here());
+        };
+        let sources = repo.part_sources(part).await.map_err(failed)?;
+        let mut history = revisions.history(part).await.map_err(failed)?;
+        history.reverse();
+        let last = history.len().saturating_sub(1);
+
+        let mut manifest_revisions = Vec::with_capacity(history.len());
+        for (index, row) in history.iter().enumerate() {
+            let Some(source) = repo.source_for_download(row.id).await.map_err(failed)? else {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Revision {} of {} has no source file to put in a bundle. Re-scan its library to attach one, then export again.",
+                        row.rev_label, detail.name
+                    ),
+                ));
+            };
+            if source.zstd_level.is_none() {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Nobody recorded how revision {} of {} was stored, so its bytes cannot be read back. Re-scan its library, then export again.",
+                        row.rev_label, detail.name
+                    ),
+                ));
+            }
+            let size = u64::try_from(source.size_bytes).map_err(|_| {
+                failed(DbError::NegativeByteCount {
+                    column: "file.size_bytes",
+                    value: source.size_bytes,
+                })
+            })?;
+            let path = bundle::entry_path(&detail.source_path, &row.rev_label, index == last);
+            if path == bundle::MANIFEST || !paths.insert(path.clone()) {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Two files would sit at {path} in this bundle. Export those parts in separate bundles."
+                    ),
+                ));
+            }
+            manifest_revisions.push(bundle::ManifestRevision {
+                rev_label: row.rev_label.clone(),
+                parent_label: history
+                    .iter()
+                    .find(|parent| Some(parent.id) == row.parent)
+                    .map(|parent| parent.rev_label.clone()),
+                origin: row.origin.as_str().to_owned(),
+                created_at: row.created_at.to_string(),
+                blake3: source.hash.to_hex(),
+                size_bytes: size,
+                format: source.format.clone(),
+                path: path.clone(),
+            });
+            entries.push(BundleEntry { path, size, source });
+        }
+        manifest_parts.push(bundle::ManifestPart {
+            name: detail.name,
+            part_number: detail.part_number,
+            source_path: detail.source_path,
+            tags: detail.tags,
+            sources: sources
+                .into_iter()
+                .map(|source| bundle::ManifestSource {
+                    url: source.url,
+                    vendor: source.vendor,
+                    external_id: source.external_id,
+                    title: source.title,
+                    license: source.license,
+                })
+                .collect(),
+            revisions: manifest_revisions,
+        });
+    }
+
+    let manifest = bundle::Manifest {
+        format: bundle::FORMAT.to_owned(),
+        version: bundle::VERSION,
+        library: bundle::ManifestLibrary {
+            name: owner.name.clone(),
+            mode: owner.mode.clone(),
+        },
+        parts: manifest_parts,
+    };
+    let manifest = match serde_json::to_vec_pretty(&manifest) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!(error = %err, "a bundle manifest did not serialise");
+            return Err(refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not write this bundle's manifest. Try again, and if it keeps failing, check the api log.".to_owned(),
+            ));
+        }
+    };
+    if entries.len() >= bundle::MAX_ENTRIES {
+        return Err(refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "These parts hold {} files, and a bundle holds at most {}. Export them in several bundles.",
+                entries.len(),
+                bundle::MAX_ENTRIES - 1
+            ),
+        ));
+    }
+    let bytes = bundle::archive_len(
+        entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.size))
+            .chain(std::iter::once((bundle::MANIFEST, manifest.len() as u64))),
+    );
+    if bytes >= bundle::MAX_BYTES {
+        return Err(refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "These parts come to {bytes} bytes as a bundle, and a bundle stops short of 4 GiB. Export them in several smaller bundles."
+            ),
+        ));
+    }
+    Ok(PlannedBundle {
+        library_name: owner.name,
+        entries,
+        manifest,
+        parts: parts.len(),
+        bytes,
+    })
+}
+
+/// The bundle as a response body. One blocking thread reads each file, hashes it on the way into
+/// the ZIP, and hands the archive to the response through a bounded channel, as `stream_verified`
+/// does for one file. A file that will not open, will not read, or no longer hashes to its digest
+/// ends the body short of its `Content-Length`, rather than finishing a bundle with a wrong file.
+fn stream_bundle(
+    blob_root: std::path::PathBuf,
+    entries: Vec<BundleEntry>,
+    manifest: Vec<u8>,
+) -> Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    tokio::task::spawn_blocking(move || {
+        let stop = tx.clone();
+        let fail = |message: String| {
+            tracing::error!(%message, "a bundle stopped short");
+            let _ = stop.blocking_send(Err(std::io::Error::other(message)));
+        };
+        let store = SourceReader::open(&blob_root);
+        let mut zip =
+            bundle::StoreZip::new(std::io::BufWriter::with_capacity(64 * 1024, Channel(tx)));
+        for entry in entries {
+            let opened = match entry.source.storage_path.as_deref() {
+                Some(rel) => store.stream_at(rel, entry.source.zstd_level),
+                None => store.stream(&entry.source.hash, entry.source.zstd_level),
+            };
+            let reader = match opened {
+                Ok(reader) => reader,
+                Err(err) => {
+                    return fail(format!(
+                        "Could not open {} for the bundle: {err}. Re-scan the part's library, then export again.",
+                        entry.path
+                    ));
+                }
+            };
+            let mut hashed = Hashed {
+                inner: reader,
+                hasher: blake3::Hasher::new(),
+            };
+            if let Err(err) = zip.add(&entry.path, &mut hashed) {
+                return fail(format!(
+                    "Could not put {} in the bundle: {err}.",
+                    entry.path
+                ));
+            }
+            let served = BlobHash::from_bytes(*hashed.hasher.finalize().as_bytes());
+            if served != entry.source.hash {
+                return fail(format!(
+                    "The bytes stored for {} hash to {}, not {}, so they are not the file that was ingested. The bundle was stopped rather than finished. Restore that file from a backup, or re-ingest it.",
+                    entry.path,
+                    served.to_hex(),
+                    entry.source.hash.to_hex()
+                ));
+            }
+        }
+        if let Err(err) = zip.add(bundle::MANIFEST, &mut manifest.as_slice()) {
+            return fail(format!("Could not put the manifest in the bundle: {err}."));
+        }
+        if let Err(err) = zip.finish() {
+            fail(format!("Could not finish the bundle: {err}."));
+        }
+    });
+    Body::from_stream(ReceiverStream::new(rx))
+}
+
+/// A `Write` over the response's channel. A closed channel is a client that stopped reading.
+struct Channel(tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>);
+
+impl std::io::Write for Channel {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .blocking_send(Ok(Bytes::copy_from_slice(bytes)))
+            .map_err(|_| std::io::Error::other("the client stopped reading the bundle"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A file's bytes, hashed as the bundle reads them.
+struct Hashed {
+    inner: Box<dyn std::io::Read + Send>,
+    hasher: blake3::Hasher,
+}
+
+impl std::io::Read for Hashed {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        Ok(read)
+    }
+}
+
+fn bundle_refusal(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "message": message.into() })),
     )
         .into_response()
 }

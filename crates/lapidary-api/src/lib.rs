@@ -128,6 +128,14 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // What that page of cards costs, summed. `Role::Api` with the grid it totals
                 // — see `parts.rs`.
                 .route("/api/libraries/{id}/storage", get(parts::storage))
+                // Bundles (Phase 4 slice 2): planned first, so a refusal is said before a
+                // download starts, then streamed. In `download.rs`, the one file allowed to read
+                // source bytes.
+                .route(
+                    "/api/libraries/{id}/bundle/plan",
+                    post(download::bundle_plan),
+                )
+                .route("/api/libraries/{id}/bundle", post(download::bundle))
                 // What the whole store holds, and where it is. Not under `/api/libraries/{id}`
                 // because two of its figures belong to no library and its derivative total is
                 // deliberately not what adding the libraries up gives.

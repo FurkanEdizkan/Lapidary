@@ -37,6 +37,8 @@ tracing.workspace = true
 ts-rs.workspace = true
 
 [dev-dependencies]
+# Reads the bundle route's archive back in its tests.
+zip.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

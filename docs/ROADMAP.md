@@ -623,6 +623,35 @@ example STLs, and headless Chrome.
   - Mutation: a watcher that hashes a change at once.
   - Before, only the settle test caught it. Now all three watcher tests do.
 
+**Bundle export** (`da9ff39`).
+- **`POST /api/libraries/{id}/bundle`** streams the grid's selection as one ZIP:
+  - every revision's original bytes;
+  - the current one at the part's source path, earlier ones under `revisions/<label>/`;
+  - a `manifest.json` with parts, sources and licences, and each revision's label, parent, origin,
+    hash and path.
+- **Integrity.** Each file is hashed as it goes out. A mismatch ends the body short of its exact
+  `Content-Length`.
+- **The ZIP writer** (`lapidary-targets`' `bundle`) is hand-rolled: STORE entries with data
+  descriptors, because `zip` 2.4.2 needs a seekable writer. It has no ZIP64, so a bundle stops short
+  of 4 GiB, marked `ponytail:`.
+- **`POST …/bundle/plan`** makes the download's checks first:
+  - at most 500 parts;
+  - all of them in this library and not removed;
+  - no two files at one path;
+  - under 4 GiB.
+
+  The selection bar plans, then posts the form the browser saves, and shows a refusal in the
+  server's words.
+- **Tests:**
+  - The writer, read back by `zip::ZipArchive`: STORE entries, their bytes, and the promised length.
+  - The route: three revisions byte-identical, the manifest's labels, parents, origins and licence,
+    `Content-Length` equal to the plan's figure, the refusals, and a changed file ending the body in
+    an error.
+  - Mutation-checked, and every mutation was caught: dropping the hash check, dropping the collision
+    check, and downloading before planning.
+- **Not in the manifest:** materials. Import runs the kernel, which reads them from the file again.
+- **The live check** runs with import: 40 parts exported, then imported into a fresh library.
+
 ---
 
 ## Phase 5 — Source links, bundles, collections
