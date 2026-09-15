@@ -747,6 +747,9 @@ bundle verifiable rather than a folder of mystery files.
   - It validates the whole archive (§5.4) before queuing anything.
   - It then replays each part's revisions through ingest, oldest first.
   - Labels, parents, origins and hashes survive. `created_at` becomes the import time.
+  - A part the import creates also arrives with its number, its tags and its sources, the licence
+    among them (`634df2c`). A part the library already holds keeps what was typed here instead: the
+    bundle's values are older, and nothing records which of the two a person wrote.
   - A hobby library receives the newest revision only.
 
 ### 5.4 Archive security

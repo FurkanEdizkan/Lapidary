@@ -2437,6 +2437,41 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 
 ---
 
+## Shared libraries (2026-09-16)
+
+Sharing models between people who already know each other, decided with the owner on 2026-09-16 and
+sequenced ahead of Phase 8. What the work is built on:
+
+- people who know each other, paired by hand: no public directory, no tracker, no swarm;
+- a LAN, or a VPN they already run: no hole punching and no relay;
+- a share is a category and everything under it, including parts added later;
+- everyone paired sees every share, and a request is granted unless that share says ask first;
+- the package is pulled straight from the sharer, in hash-checked pieces that resume;
+- licences travel and are shown, with a warning to the sharer, and never a block;
+- a `peer` role beside `api` and `worker`, off until switched on. `PRODUCT.md`'s line that the image
+  fetch is the only outbound request is rewritten when that role lands, not before.
+
+**What a bundle carries, carried** (`634df2c`).
+- **The hole.** `import_part` replayed a part's revisions and read nothing else from the manifest, so
+  a part's number, its tags and its sources — the licence among them — were dropped on every import.
+  The export has written all three since Phase 4 slice 2, so the loss showed only on the receiving
+  side.
+- **The change.** A part the import creates is given its number, its tags and each of its sources,
+  through `PgParts::set_part_number`, `set_tags` and `add_part_source`. A part this library already
+  holds is left alone. Prices stay out, as they stay out of a manifest.
+- **Tests:** an imported part arrives with its number, its tags and its source licence, seen failing
+  first with `part_number` still `None`; a second import leaves a part's own tags alone.
+- **Mutation-checked, all 5 caught:** the number never written, the tags never written, the sources
+  never written, the licence dropped while the rest of a source travels, and the guard widened so a
+  part already held has what was typed here overwritten — which only the second test catches.
+- **Decided without the owner:**
+  - Metadata is written for a part the import creates and not for one it revises. Nothing records
+    whether a local value was typed here or imported, so the safe half is the one taken.
+  - A part's *name* is still not taken from the manifest. `part_name()` derives it from the file name
+    on every path into ingest, and changing that reaches scans and uploads too.
+
+---
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

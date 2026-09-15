@@ -3622,15 +3622,34 @@ fn hash_hex(bytes: &[u8]) -> String {
     BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()).to_hex()
 }
 
+/// What a manifest says about a part besides its files. `download.rs` fills these from the part's
+/// own row and its `part_source` rows, so a bundle carrying them is what an export really looks
+/// like.
+#[derive(Default, Clone)]
+struct PartMeta {
+    part_number: Option<String>,
+    tags: Vec<String>,
+    sources: Vec<lapidary_targets::bundle::ManifestSource>,
+}
+
 /// A bundle as `download.rs` writes one: each part's revisions oldest first, the current one at its
 /// source path and the earlier ones under `revisions/<label>/`, then the manifest.
 fn bundle_of(parts: &[(&str, &[&[u8]])]) -> Vec<u8> {
+    let described: Vec<(&str, &[&[u8]], PartMeta)> = parts
+        .iter()
+        .map(|(source_path, versions)| (*source_path, *versions, PartMeta::default()))
+        .collect();
+    bundle_describing(&described)
+}
+
+/// The same bundle, carrying what a person typed about each part as well as its bytes.
+fn bundle_describing(parts: &[(&str, &[&[u8]], PartMeta)]) -> Vec<u8> {
     use lapidary_targets::bundle::{
         self, Manifest, ManifestLibrary, ManifestPart, ManifestRevision, StoreZip,
     };
     let mut zip = StoreZip::new(Vec::new());
     let mut manifest_parts = Vec::new();
-    for (source_path, versions) in parts {
+    for (source_path, versions, meta) in parts {
         let mut revisions = Vec::new();
         for (index, bytes) in versions.iter().enumerate() {
             let label = (index + 1).to_string();
@@ -3649,10 +3668,10 @@ fn bundle_of(parts: &[(&str, &[&[u8]])]) -> Vec<u8> {
         }
         manifest_parts.push(ManifestPart {
             name: (*source_path).to_owned(),
-            part_number: None,
+            part_number: meta.part_number.clone(),
             source_path: (*source_path).to_owned(),
-            tags: vec![],
-            sources: vec![],
+            tags: meta.tags.clone(),
+            sources: meta.sources.clone(),
             revisions,
         });
     }
@@ -3787,6 +3806,116 @@ async fn a_bundle_imported_into_a_controlled_library_keeps_each_parts_labels_par
         ]
     );
     assert_eq!(revision_rows(&pool).await.len(), 3, "nothing twice");
+}
+
+/// A bundle carries what a person typed as well as the bytes: the part number, the tags, and each
+/// source's licence. Replaying only the revisions loses all three, and the licence is exactly what a
+/// part has to arrive with when it came from somebody else's library.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_imported_part_arrives_with_its_number_tags_and_source_licence(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let path = "brackets/bracket-lp-1042-03.stl";
+    let bundle = bundle_describing(&[(
+        path,
+        &[BRACKET_FIXTURE],
+        PartMeta {
+            part_number: Some("LP-1042-03".to_owned()),
+            tags: vec!["bracket".to_owned(), "corner".to_owned()],
+            sources: vec![lapidary_targets::bundle::ManifestSource {
+                url: Some("https://www.printables.com/model/412903-corner-bracket".to_owned()),
+                vendor: Some("Printables".to_owned()),
+                external_id: Some("412903".to_owned()),
+                title: Some("Corner bracket, 40 mm".to_owned()),
+                license: Some("CC-BY-4.0".to_owned()),
+            }],
+        },
+    )]);
+
+    let outcomes = import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports");
+    assert_eq!(outcomes, [lapidary_core::Outcome::Ingested]);
+
+    let part = lapidary_db::PgRevisions(pool.clone())
+        .current(seeded(), path)
+        .await
+        .expect("the imported part reads back")
+        .expect("a part at the bundle's path")
+        .part;
+    let (number, tags): (Option<String>, Vec<String>) =
+        sqlx::query_as("SELECT part_number, tags FROM part WHERE id = $1")
+            .bind(part.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("the part row");
+    assert_eq!(number.as_deref(), Some("LP-1042-03"), "the part number");
+    assert_eq!(tags, ["bracket", "corner"], "the tags");
+
+    let sources = PgParts(pool.clone())
+        .part_sources(part)
+        .await
+        .expect("its sources");
+    assert_eq!(sources.len(), 1, "the one source the manifest holds");
+    assert_eq!(
+        sources[0].license.as_deref(),
+        Some("CC-BY-4.0"),
+        "the licence it arrived under"
+    );
+    assert_eq!(sources[0].vendor.as_deref(), Some("Printables"));
+    assert_eq!(
+        sources[0].url.as_deref(),
+        Some("https://www.printables.com/model/412903-corner-bracket")
+    );
+}
+
+/// A second import must not quietly overwrite what was typed here since. The bundle's values are
+/// older than this library's own, so a part it already holds keeps the tags it was given here.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_second_import_leaves_a_parts_own_tags_alone(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let path = "brackets/bracket-lp-1042-03.stl";
+    let bundle = bundle_describing(&[(
+        path,
+        &[BRACKET_FIXTURE],
+        PartMeta {
+            part_number: Some("LP-1042-03".to_owned()),
+            tags: vec!["bracket".to_owned()],
+            sources: vec![],
+        },
+    )]);
+    import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports");
+    let part = lapidary_db::PgRevisions(pool.clone())
+        .current(seeded(), path)
+        .await
+        .expect("the imported part reads back")
+        .expect("a part at the bundle's path")
+        .part;
+    PgParts(pool.clone())
+        .set_tags(part, &["corner".to_owned(), "printed".to_owned()])
+        .await
+        .expect("the tags typed here");
+
+    let again = import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports again");
+    assert_eq!(again, [lapidary_core::Outcome::Skipped]);
+    let (_, tags): (Option<String>, Vec<String>) =
+        sqlx::query_as("SELECT part_number, tags FROM part WHERE id = $1")
+            .bind(part.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("the part row");
+    assert_eq!(
+        tags,
+        ["corner", "printed"],
+        "what was typed in this library stays"
+    );
 }
 
 /// A hobby library keeps no history, so a part arrives as its newest revision alone.
