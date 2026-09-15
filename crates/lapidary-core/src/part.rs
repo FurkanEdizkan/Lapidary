@@ -206,6 +206,28 @@ pub fn source_format(source_path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The extensions a mesh arrives with, lowercase. The scan, the upload's formats and the agent that
+/// watches a folder all read this one list.
+pub const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
+
+/// The extensions a CAD kernel reads, lowercase. A worker built without one refuses them by name.
+pub const CAD_FORMATS: [&str; 4] = ["step", "stp", "iges", "igs"];
+
+/// Whether a file's name makes it a model file: its extension, in any case, is a mesh's or a CAD
+/// kernel's. Not a byte sniff: the extension is what an owner sees, so a file skipped is skipped for a
+/// reason they can see.
+pub fn is_model_file(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            MESH_EXTENSIONS
+                .iter()
+                .chain(&CAD_FORMATS)
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::path_escapes;
@@ -231,5 +253,31 @@ mod path_tests {
     #[test]
     fn the_empty_path_escapes() {
         assert!(path_escapes(""));
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::is_model_file;
+
+    #[test]
+    fn a_model_file_is_known_by_its_extension_in_any_case() {
+        for name in [
+            "flange-dn40-lp-3310-02.stl",
+            "planetary-carrier-lp-3480-02.3MF",
+            "idler-bracket-lp-2210-01.obj",
+            "fixture-plate-lp-9000-00.STEP",
+            "bracket.igs",
+        ] {
+            assert!(is_model_file(name), "{name}");
+        }
+        for name in [
+            "assembly-notes.txt",
+            "flange-dn40-lp-3310-02.stl.bak",
+            ".stl",
+            "README",
+        ] {
+            assert!(!is_model_file(name), "{name}");
+        }
     }
 }

@@ -756,6 +756,9 @@ This is why the watcher lives in the native agent binary and not in a container.
 - **Every 2 s** the tree is listed. A settled change is hashed, then uploaded with its path relative to
   the folder.
 - **A local deletion** changes nothing in the library.
+- **What was sent,** each path's size, mtime and BLAKE3, is kept in
+  `$XDG_STATE_HOME/lapidary/watch-<library>.json`, never inside the folder. A restart sends nothing for
+  a file that is unchanged.
 - **Polling costs a listing per interval:** 12 ms warm over 2,778 files. `notify` replaces it once a
   tree is large enough for that to matter.
 

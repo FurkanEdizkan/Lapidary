@@ -79,7 +79,7 @@
 //! candidates the walk finds.
 
 use crate::AppState;
-use crate::handler::{CAD_FORMATS, WorkerHandler};
+use crate::handler::WorkerHandler;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -163,17 +163,12 @@ impl WorkerHandler {
 fn is_model_candidate(path: &FsPath) -> bool {
     path.is_file()
         && path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                MESH_EXTENSIONS
-                    .iter()
-                    .chain(&CAD_FORMATS)
-                    .any(|k| ext.eq_ignore_ascii_case(k))
-            })
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(lapidary_core::is_model_file)
 }
 
-pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
+pub(crate) use lapidary_core::MESH_EXTENSIONS;
 
 /// How deep the walk will descend before it stops and says so.
 ///

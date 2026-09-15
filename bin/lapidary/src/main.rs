@@ -9,6 +9,7 @@
 
 mod checkout;
 mod desktop;
+mod folder;
 mod link;
 mod watch;
 
@@ -59,6 +60,15 @@ enum Commands {
     Unregister,
     /// Watch every checkout in the workspace, and send each save back as a new revision.
     Agent,
+    /// Watch a folder, and upload every model file in it into a library as it settles. A file deleted
+    /// here changes nothing in the library.
+    Watch {
+        /// The folder to watch, and every folder under it.
+        folder: PathBuf,
+        /// The library to upload into: its id, from its page in Lapidary.
+        #[arg(long)]
+        library: String,
+    },
     /// Run a job worker against a Lapidary server.
     Worker,
     /// Start a local Lapidary stack.
@@ -80,6 +90,7 @@ async fn main() -> Result<()> {
         Commands::Register => desktop::register(&server(), &checkout::workspace()?),
         Commands::Unregister => desktop::unregister(),
         Commands::Agent => agent().await,
+        Commands::Watch { folder, library } => folder::watch(&folder, &library).await,
         Commands::Worker => later("worker"),
         Commands::Up => later("up"),
     }
@@ -163,12 +174,20 @@ struct Accepted {
 #[serde(rename_all = "camelCase")]
 struct Batch {
     finished_at: Option<String>,
+    #[serde(default)]
+    ingested: u32,
+    #[serde(default)]
+    skipped: u32,
     revised: u32,
+    #[serde(default)]
+    unkept: u32,
     failed: Vec<Failure>,
 }
 
 #[derive(Deserialize)]
 struct Failure {
+    #[serde(default)]
+    path: String,
     reason: String,
 }
 
@@ -548,64 +567,22 @@ async fn send_back(
     bytes: &[u8],
     blake3: &str,
 ) -> Result<Option<(String, String)>> {
-    let (server, library) = (&checkout.server, &checkout.library);
-
-    let what = "asking what the server needs";
-    let plan: Plan = read(
-        send(
-            json(
-                client.post(format!("{server}/api/libraries/{library}/uploads/probe")),
-                &serde_json::json!({ "files": [{ "path": checkout.source_path, "blake3": blake3 }] }),
-            ),
-            what,
-        )
-        .await?,
-        what,
+    let server = &checkout.server;
+    let sent = send_files(
+        client,
+        server,
+        &checkout.library,
+        &[Outgoing {
+            path: &checkout.source_path,
+            bytes,
+            blake3,
+        }],
+        Some(checkout.lock.as_str()),
     )
     .await?;
-    if plan.have.contains(&checkout.source_path) {
+    // No batch: the part's current revision already holds these bytes.
+    let Some(batch) = sent.batch else {
         return Ok(None);
-    }
-    if plan.need_bytes.contains(&checkout.source_path) {
-        upload(client, checkout, bytes, blake3).await?;
-    }
-
-    let what = "committing the save";
-    let accepted: Accepted = read(
-        send(
-            json(
-                client.post(format!("{server}/api/libraries/{library}/uploads/commit")),
-                &serde_json::json!({ "files": [{
-                    "path": checkout.source_path,
-                    "blake3": blake3,
-                    "lock": checkout.lock,
-                }] }),
-            ),
-            what,
-        )
-        .await?,
-        what,
-    )
-    .await?;
-
-    let what = "following the save";
-    let batch = loop {
-        let batch: Batch = read(
-            send(
-                client.get(format!(
-                    "{server}/api/libraries/{library}/jobs/{}",
-                    accepted.batch_id
-                )),
-                what,
-            )
-            .await?,
-            what,
-        )
-        .await?;
-        if batch.finished_at.is_some() {
-            break batch;
-        }
-        tokio::time::sleep(watch::POLL).await;
     };
     // The worker's refusal, verbatim: a released lock names who released it.
     if let Some(failure) = batch.failed.first() {
@@ -628,18 +605,112 @@ async fn send_back(
     Ok(Some((detail.revision, detail.rev_label)))
 }
 
+/// A file on its way to a library: the path it is filed under, its bytes and their BLAKE3.
+struct Outgoing<'a> {
+    path: &'a str,
+    bytes: &'a [u8],
+    blake3: &'a str,
+}
+
+/// What a library did with files sent: the paths it already held as they are, and the batch that took
+/// the rest, followed to its end. No batch when there was nothing left to take.
+struct Sent {
+    have: Vec<String>,
+    batch: Option<Batch>,
+}
+
+/// Files sent into a library the way the browser sends a drop: the probe, the bytes the server needs, one
+/// commit, under `lock` when a checkout sends them, and the batch followed to its end.
+async fn send_files(
+    client: &reqwest::Client,
+    server: &str,
+    library: &str,
+    files: &[Outgoing<'_>],
+    lock: Option<&str>,
+) -> Result<Sent> {
+    let what = "asking what the server needs";
+    let manifest: Vec<serde_json::Value> = files
+        .iter()
+        .map(|file| serde_json::json!({ "path": file.path, "blake3": file.blake3 }))
+        .collect();
+    let plan: Plan = read(
+        send(
+            json(
+                client.post(format!("{server}/api/libraries/{library}/uploads/probe")),
+                &serde_json::json!({ "files": manifest }),
+            ),
+            what,
+        )
+        .await?,
+        what,
+    )
+    .await?;
+    for file in files {
+        if plan.need_bytes.iter().any(|path| path == file.path) {
+            upload(client, server, library, file.bytes, file.blake3).await?;
+        }
+    }
+    let committed: Vec<serde_json::Value> = files
+        .iter()
+        .filter(|file| !plan.have.iter().any(|path| path == file.path))
+        .map(|file| serde_json::json!({ "path": file.path, "blake3": file.blake3, "lock": lock }))
+        .collect();
+    if committed.is_empty() {
+        return Ok(Sent {
+            have: plan.have,
+            batch: None,
+        });
+    }
+
+    let what = "committing the files";
+    let accepted: Accepted = read(
+        send(
+            json(
+                client.post(format!("{server}/api/libraries/{library}/uploads/commit")),
+                &serde_json::json!({ "files": committed }),
+            ),
+            what,
+        )
+        .await?,
+        what,
+    )
+    .await?;
+
+    let what = "following the batch";
+    let batch = loop {
+        let batch: Batch = read(
+            send(
+                client.get(format!(
+                    "{server}/api/libraries/{library}/jobs/{}",
+                    accepted.batch_id
+                )),
+                what,
+            )
+            .await?,
+            what,
+        )
+        .await?;
+        if batch.finished_at.is_some() {
+            break batch;
+        }
+        tokio::time::sleep(watch::POLL).await;
+    };
+    Ok(Sent {
+        have: plan.have,
+        batch: Some(batch),
+    })
+}
+
 /// The bytes, in chunks the size the web client sends, under the server's 16 MiB limit.
 async fn upload(
     client: &reqwest::Client,
-    checkout: &Checkout,
+    server: &str,
+    library: &str,
     bytes: &[u8],
     blake3: &str,
 ) -> Result<()> {
     const CHUNK_BYTES: usize = 8 * 1024 * 1024;
-    let url = format!(
-        "{}/api/libraries/{}/uploads/{blake3}",
-        checkout.server, checkout.library
-    );
+    let url = format!("{server}/api/libraries/{library}/uploads/{blake3}");
     let what = "sending the bytes";
     let mut offset = 0;
     while offset < bytes.len() {

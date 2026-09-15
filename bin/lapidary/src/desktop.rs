@@ -69,18 +69,20 @@ fn without_default(mimeapps: &str) -> String {
 }
 
 /// `$<variable>`, else `$HOME/<fallback>`: where the XDG Base Directory Specification puts it.
-fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
+pub(crate) fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(variable).filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME").with_context(|| {
-        format!("neither {variable} nor HOME is set, so there is nowhere for the handler; set {variable}")
+        format!(
+            "neither {variable} nor HOME is set, so there is nowhere to keep this; set {variable}"
+        )
     })?;
     Ok(PathBuf::from(home).join(fallback))
 }
 
 /// Written whole under a temporary name and renamed over, so nothing reads half a file.
-fn write_whole(path: &Path, contents: &str) -> Result<()> {
+pub(crate) fn write_whole(path: &Path, contents: &str) -> Result<()> {
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".part");
     std::fs::write(&temporary, contents)
