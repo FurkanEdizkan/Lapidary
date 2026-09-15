@@ -102,6 +102,24 @@ export function sectionPlane(axis: Axis, at: number, flip: boolean, min: Vec3, m
 }
 
 /**
+ * Where a section's cap lies: on the cut plane, over the middle of the part's box, facing along the
+ * plane's normal, and wide enough to cover any cross-section the box can hold whatever the axis. The
+ * stencil decides which of it is drawn; this only has to be large enough and in the right place.
+ */
+export function capPlacement(
+  plane: PlaneLike,
+  min: Vec3,
+  max: Vec3,
+): { position: Vec3; normal: Vec3; size: number } {
+  const centre: Vec3 = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2]
+  const [nx, ny, nz] = plane.normal
+  const distance = nx * centre[0] + ny * centre[1] + nz * centre[2] + plane.constant
+  const position: Vec3 = [centre[0] - nx * distance, centre[1] - ny * distance, centre[2] - nz * distance]
+  const size = 2 * Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 1e-3)
+  return { position, normal: plane.normal, size }
+}
+
+/**
  * Whether a point is on the side of a section's plane that is drawn, give or take a micrometre so a
  * face lying in the plane still counts. three's raycaster ignores clipping, so a pick asks this.
  */

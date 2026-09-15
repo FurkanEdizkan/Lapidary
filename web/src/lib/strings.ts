@@ -1557,6 +1557,10 @@ export const strings = {
     axes: { x: 'X', y: 'Y', z: 'Z' },
     position: 'Where the cut is',
     flip: 'Flip',
+    /** Beside a cut through a mesh measured open: it has no inside, so nothing is filled. */
+    open: 'This mesh is open, so the cut shows no filled face.',
+    /** Beside a cut through a mesh nobody measured: it might be open, so nothing is filled. */
+    unknown: 'Whether this mesh is closed was not measured, so the cut shows no filled face.',
   },
   quickLook: {
     /**

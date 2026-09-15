@@ -68,11 +68,18 @@ export function MeasureBar({
 export function SectionBar({
   section,
   onSection,
+  closed,
 }: {
   section: Section | null
   onSection: (section: Section | null) => void
+  /** Whether the part is a closed mesh: `null` when nobody measured. Only a closed one's cut is filled. */
+  closed: boolean | null
 }) {
+  // Said while cutting, and only then: an open mesh has no inside to fill, and one nobody measured might
+  // not, so neither gets a filled face, and neither is called closed or open when it was not measured.
+  const note = section === null || closed === true ? null : closed === false ? strings.section.open : strings.section.unknown
   return (
+    <>
     <div role="toolbar" aria-label={strings.section.label} className="mt-2 flex flex-wrap items-center gap-1">
       <button type="button" aria-pressed={section === null} onClick={() => onSection(null)} className={CONTROL}>
         {strings.section.off}
@@ -110,5 +117,7 @@ export function SectionBar({
         </>
       )}
     </div>
+    {note === null ? null : <p className="mt-1 text-xs text-[var(--color-muted)]">{note}</p>}
+    </>
   )
 }
