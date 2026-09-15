@@ -1212,6 +1212,38 @@ needed a `test/` branch.
   - facet counts per value;
   - `metadata.json`, which learns an edited value only when the manifest is next rewritten.
 
+**Turkish search** (`aad407e`).
+- **Schema** (`0028`).
+  - `library.language`, `simple` or `turkish`.
+  - `part.search_config`, copied from the library by the insert that makes a part.
+  - `part.search` recomputed over it with `SET EXPRESSION`, as `0022` did. The column stays STORED
+    and its index stays.
+- **Queries.** Search and the three facets build their `tsquery` with the library's own language.
+  The `ILIKE` substring search is unchanged.
+- **API and UI.** `POST /api/libraries` takes `language`, defaulting to `simple`, and refuses an
+  unknown one. The create-library dialog asks for it.
+- **Tests:**
+  - **db:**
+    - a Turkish library finds "Şaft yatağı kapağı" by "yatak kapak" and by "yataklar kapakları";
+    - a `simple` library finds it by neither;
+    - the part holds its library's config;
+    - a facet counts what search finds.
+
+    Seen failing first: while the queries still used `simple`, the inflected query found nothing and
+    the facet counted 0.
+  - **api:** a library made with `turkish`, `simple` when none is asked for, and an unknown language
+    refused.
+  - **web:** the dialog sends the chosen language. Mutation-checked: dropping it was caught.
+  - The existing search tests ran unchanged.
+- **Corrected in the spec:**
+  - The column is not dropped and re-added.
+  - The base-form query passes before the change, so the inflected one is the test.
+  - No move writes `search_config`, so there is no move test.
+- **No browser check.** The goal names tests and the dialog choice for this stage.
+- **Not in this stage:**
+  - changing a library's language after it is made;
+  - capital I under `en_US.utf8`, recorded in the spec's §2.1.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
