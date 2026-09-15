@@ -1564,6 +1564,11 @@ function Compare({
             delta: diff.bboxMm?.[axis] ?? null,
             render: strings.detail.lengthChange,
           })),
+          ...([0, 1, 2] as const).map((axis) => ({
+            label: strings.detail.centreAxis(axis),
+            delta: diff.centreMm?.[axis] ?? null,
+            render: strings.detail.lengthChange,
+          })),
           {
             label: strings.detail.triangles,
             delta: diff.triangleCount,

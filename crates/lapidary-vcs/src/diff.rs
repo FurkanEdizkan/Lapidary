@@ -17,6 +17,8 @@ pub struct RevisionFigures {
     pub edge_count: Option<u32>,
     /// Worked out when read from the volume and a typed density, never recorded. Always approximate.
     pub mass_g: Option<Approximate<f64>>,
+    /// The centre of the volume, recorded at ingest. `None` for a revision recorded before centres were.
+    pub centre_mm: Option<Approximate<[f64; 3]>>,
 }
 
 /// `to` against `from`: a delta for every figure both revisions recorded, and none for the rest.
@@ -24,16 +26,25 @@ pub fn diff(from: &RevisionFigures, to: &RevisionFigures) -> RevisionDiff {
     RevisionDiff {
         volume_mm3: figure(from.volume_mm3, to.volume_mm3),
         surface_area_mm2: figure(from.surface_area_mm2, to.surface_area_mm2),
-        bbox_mm: from.bbox_mm.zip(to.bbox_mm).map(|(from, to)| {
-            let approximate = from.is_approximate() || to.is_approximate();
-            let (from, to) = (from.value(), to.value());
-            [0, 1, 2].map(|axis| delta(from[axis], to[axis], approximate))
-        }),
+        bbox_mm: axes(from.bbox_mm, to.bbox_mm),
         triangle_count: count(from.triangle_count, to.triangle_count),
         face_count: count(from.face_count, to.face_count),
         edge_count: count(from.edge_count, to.edge_count),
         mass_g: figure(from.mass_g, to.mass_g),
+        centre_mm: axes(from.centre_mm, to.centre_mm),
     }
+}
+
+/// A figure with three axes, each axis's change approximate if either end of the figure is.
+fn axes(
+    from: Option<Approximate<[f64; 3]>>,
+    to: Option<Approximate<[f64; 3]>>,
+) -> Option<[Delta; 3]> {
+    from.zip(to).map(|(from, to)| {
+        let approximate = from.is_approximate() || to.is_approximate();
+        let (from, to) = (from.value(), to.value());
+        [0, 1, 2].map(|axis| delta(from[axis], to[axis], approximate))
+    })
 }
 
 /// A count's change, exact: a count states exactly what it counts.
@@ -77,7 +88,36 @@ mod tests {
             face_count: None,
             edge_count: None,
             mass_g: None,
+            centre_mm: None,
         }
+    }
+
+    /// A centre of mass moves per axis, exactly between two B-reps and approximately where either is a
+    /// mesh. A revision recorded before centres were has none to move from.
+    #[test]
+    fn a_centre_of_mass_moves_per_axis_and_is_exact_only_between_two_b_reps() {
+        let at = |centre: [f64; 3], exact: bool| RevisionFigures {
+            centre_mm: Some(if exact {
+                Approximate::analytic(centre)
+            } else {
+                Approximate::tessellated(centre)
+            }),
+            ..RevisionFigures::default()
+        };
+        let moved = diff(&at([0.0, 0.0, 15.0], true), &at([0.0, 0.0, 20.0], true))
+            .centre_mm
+            .expect("both have a centre");
+        assert_eq!(moved.map(|axis| axis.change), [0.0, 0.0, 5.0]);
+        assert!(moved.iter().all(|axis| !axis.approximate));
+        let meshed = diff(&at([0.0, 0.0, 15.0], true), &at([0.0, 0.0, 20.0], false))
+            .centre_mm
+            .expect("both have a centre");
+        assert!(meshed.iter().all(|axis| axis.approximate));
+        assert!(
+            diff(&RevisionFigures::default(), &at([0.0, 0.0, 20.0], true))
+                .centre_mm
+                .is_none()
+        );
     }
 
     /// The flange widened 10% along X: its volume and its box grow by about a tenth, and every

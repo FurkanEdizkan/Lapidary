@@ -3080,6 +3080,33 @@ async fn revision_rows(pool: &PgPool) -> Vec<(String, Option<String>, String, St
     .expect("revision rows")
 }
 
+/// A closed mesh's centre of mass is recorded on its revision, marked as the mesh's own: approximate.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_closed_meshs_centre_of_mass_is_recorded_on_its_revision(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let (centre, source): (serde_json::Value, String) = sqlx::query_as(
+        "SELECT mass_props_json->'centre_mm', mass_props_json->>'source' FROM revision",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the revision has a centre of mass");
+    assert_eq!(source, "tessellated", "a mesh's centre is approximate");
+    let axes = centre.as_array().expect("three axes");
+    assert_eq!(axes.len(), 3, "{centre}");
+    assert!(
+        axes.iter()
+            .all(|axis| axis.as_f64().is_some_and(f64::is_finite)),
+        "{centre}"
+    );
+}
+
 /// The one part's materials, and whether a person typed them.
 async fn materials_of(pool: &PgPool) -> (Vec<String>, bool) {
     sqlx::query_as("SELECT materials, materials_typed FROM part")

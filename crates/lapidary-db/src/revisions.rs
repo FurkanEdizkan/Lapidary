@@ -63,6 +63,10 @@ pub struct RevisionRow {
     /// The B-rep's faces and edges, as the CAD kernel counted them. `None` for a mesh.
     pub face_count: Option<i32>,
     pub edge_count: Option<i32>,
+    /// The centre of the volume, from `mass_props_json`, and where it came from. `None` for a revision
+    /// recorded before centres were, or with no volume.
+    pub centre_mm: Option<[f64; 3]>,
+    pub centre_source: Option<String>,
     pub is_watertight: Option<bool>,
     pub units: Option<String>,
     /// The inline preview, as the grid serves it. Rows only — the open path reads no file.
@@ -97,6 +101,10 @@ struct HistoryColumns {
     triangle_count: Option<i32>,
     face_count: Option<i32>,
     edge_count: Option<i32>,
+    centre_x: Option<f64>,
+    centre_y: Option<f64>,
+    centre_z: Option<f64>,
+    centre_source: Option<String>,
     is_watertight: Option<bool>,
     units: Option<String>,
     thumb_bytes: Option<Vec<u8>>,
@@ -333,6 +341,27 @@ impl PgRevisions {
         Ok(())
     }
 
+    /// The centre of `revision`'s volume and where it came from, written after the revision commits as its
+    /// counts are: `mass_props_json = {"centre_mm": [x, y, z], "source": "analytic" | "tessellated"}`. It
+    /// needs no density. A revision with no volume never gets one.
+    pub async fn set_centre_of_mass(
+        &self,
+        revision: RevisionId,
+        centre_mm: [f64; 3],
+        source: lapidary_core::Provenance,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE revision SET mass_props_json = \
+             jsonb_build_object('centre_mm', $2::jsonb, 'source', $3::text) WHERE id = $1",
+        )
+        .bind(revision.as_uuid())
+        .bind(serde_json::json!(centre_mm))
+        .bind(source.as_str())
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
     /// Every revision of `part`, newest first — the order the grid calls the first one current.
     pub async fn history(&self, part: PartId) -> Result<Vec<RevisionRow>, DbError> {
         let rows: Vec<HistoryColumns> = sqlx::query_as(
@@ -341,6 +370,10 @@ impl PgRevisions {
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
                     r.bbox_x, r.bbox_y, r.bbox_z, r.bbox_source, \
                     r.triangle_count, r.face_count, r.edge_count, r.is_watertight, r.units, \
+                    (r.mass_props_json->'centre_mm'->>0)::float8 AS centre_x, \
+                    (r.mass_props_json->'centre_mm'->>1)::float8 AS centre_y, \
+                    (r.mass_props_json->'centre_mm'->>2)::float8 AS centre_z, \
+                    r.mass_props_json->>'source' AS centre_source, \
                     t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path, \
                     l0.blake3 AS l0_blake3, l1.blake3 AS l1_blake3 \
              FROM revision r \
@@ -392,6 +425,11 @@ impl PgRevisions {
                     triangle_count: c.triangle_count,
                     face_count: c.face_count,
                     edge_count: c.edge_count,
+                    centre_mm: match (c.centre_x, c.centre_y, c.centre_z) {
+                        (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                        _ => None,
+                    },
+                    centre_source: c.centre_source,
                     is_watertight: c.is_watertight,
                     units: c.units,
                     thumbnail: c.thumb_bytes,

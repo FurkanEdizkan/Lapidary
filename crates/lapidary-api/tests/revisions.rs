@@ -470,3 +470,62 @@ async fn mass_is_volume_times_the_density_of_the_parts_one_material(pool: sqlx::
     );
     assert_eq!(change["approximate"], true);
 }
+
+/// A revision's centre of mass comes back with where it came from, and how far it moved per axis from
+/// its parent. A revision recorded before centres were has none, and so no change is read against it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_centre_of_mass_moves_per_axis_and_a_revision_without_one_has_no_change(
+    pool: sqlx::PgPool,
+) {
+    let part = two_revisions(&pool).await;
+    let revisions = PgRevisions(pool.clone());
+    let recorded = revisions.history(part).await.expect("history");
+    let (newer, older) = (recorded[0].id, recorded[1].id);
+    let history = || {
+        let pool = pool.clone();
+        async move {
+            send(
+                pool,
+                request("GET", &format!("/api/parts/{part}/revisions")),
+            )
+            .await
+            .1
+        }
+    };
+
+    revisions
+        .set_centre_of_mass(
+            newer,
+            [82.5, 75.0, 9.0],
+            lapidary_core::Provenance::Tessellated,
+        )
+        .await
+        .expect("writes");
+    let json = history().await;
+    assert_eq!(
+        json[0]["centreMm"],
+        serde_json::to_value(Approximate::tessellated([82.5_f64, 75.0, 9.0])).expect("serialises")
+    );
+    assert!(
+        json[1]["centreMm"].is_null(),
+        "revision 1 was recorded before centres were"
+    );
+    assert!(
+        json[0]["deltaFromParent"]["centreMm"].is_null(),
+        "no change is read against a revision with none"
+    );
+
+    revisions
+        .set_centre_of_mass(
+            older,
+            [75.0, 75.0, 9.0],
+            lapidary_core::Provenance::Tessellated,
+        )
+        .await
+        .expect("writes");
+    let json = history().await;
+    let moved = &json[0]["deltaFromParent"]["centreMm"];
+    assert_eq!(moved[0]["change"], 7.5, "{moved}");
+    assert_eq!(moved[1]["change"], 0.0);
+    assert_eq!(moved[0]["approximate"], true);
+}

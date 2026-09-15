@@ -110,6 +110,15 @@ async fn a_22_mm_cylinder_reads_as_an_exact_cylinder() {
         (2..=3).contains(&topology.edges),
         "two rims, and a seam where OCCT closes the side: {topology:?}"
     );
+    let centre = out
+        .centre_of_mass_mm
+        .expect("a closed solid has a centre of mass");
+    for (got, want) in centre.iter().zip([0.0, 0.0, 15.0]) {
+        assert!(
+            (got - want).abs() <= 1e-9,
+            "on its axis at half its length, exactly: {centre:?}"
+        );
+    }
     // What the file says about itself, as the fixture generator's OCCT writer put it.
     let metadata = out.metadata.as_ref().expect("a STEP file has a header");
     assert!(

@@ -104,6 +104,7 @@ impl Kernel for MockKernel {
         }
         Ok(KernelOutput {
             topology: None,
+            centre_of_mass_mm: None,
             exports,
             measurements,
             thumbnail_webp,

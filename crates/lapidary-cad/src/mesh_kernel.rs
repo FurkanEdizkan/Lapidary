@@ -5,7 +5,7 @@ use crate::cluster::{Lod, cluster};
 use crate::glb::GLB_VERSION;
 use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, Unproduced};
 use crate::stl::Mesh;
-use crate::{RASTER_VERSION, measure, parse_3mf, parse_obj, parse_stl, render_thumbnail};
+use crate::{RASTER_VERSION, parse_3mf, parse_obj, parse_stl, render_thumbnail};
 use lapidary_core::DerivativeKind;
 
 pub struct MeshKernel;
@@ -71,6 +71,7 @@ impl Kernel for MeshKernel {
 /// `OcctKernel`, which reads the bridge's mesh together with the parts it names rather than as
 /// a plain STL.
 pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
+    let (measurements, centre_of_mass_mm) = crate::measure::measured(mesh);
     let mut tessellations = Vec::new();
     let mut thumbnail_webp = None;
     let mut unproduced = Vec::new();
@@ -109,8 +110,9 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
     }
     KernelOutput {
         topology: None,
+        centre_of_mass_mm,
         exports,
-        measurements: measure(mesh),
+        measurements,
         thumbnail_webp,
         tessellations,
         unproduced,

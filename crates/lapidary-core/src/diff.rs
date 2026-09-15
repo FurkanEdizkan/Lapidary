@@ -41,4 +41,7 @@ pub struct RevisionDiff {
     /// Volume times the density of the part's one material as it is today, on both sides: always
     /// approximate, since a density is typed. `None` when there is no such density or no volume.
     pub mass_g: Option<Delta>,
+    /// Per axis: how far the centre of mass moved. Exact only between two B-reps. `None` when either
+    /// revision was recorded before centres were, or has no volume.
+    pub centre_mm: Option<[Delta; 3]>,
 }

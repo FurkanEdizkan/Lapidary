@@ -26,7 +26,12 @@ faceCount: number | null, edgeCount: number | null, bboxMm: Approximate<[number,
  * when read and never stored. Always approximate: a density is typed, not measured. `None` without
  * a volume, or unless the part holds exactly one material and its library has a density for it.
  */
-massG: Approximate<number> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
+massG: Approximate<number> | null, 
+/**
+ * The centre of the volume, in the part's own millimetres: exact from a B-rep, approximate from a mesh.
+ * Needs no density. `None` for a revision recorded before centres were, or with no volume.
+ */
+centreMm: Approximate<[number, number, number]> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
 /**
  * What changed from the revision this one was recorded on top of. `None` for a part's
  * first revision.

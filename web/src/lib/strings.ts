@@ -473,6 +473,8 @@ export const strings = {
     massNote:
       'Mass is each revision’s volume times the density of the part’s material as it is now, so both revisions use today’s material and density.',
     boundingBoxAxis: (axis: 0 | 1 | 2) => `Bounding box ${'XYZ'[axis]}`,
+    /** The centre of a revision's volume, per axis: exact from a B-rep, ≈ from a mesh. */
+    centreAxis: (axis: 0 | 1 | 2) => `Centre of mass ${'XYZ'[axis]}`,
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',

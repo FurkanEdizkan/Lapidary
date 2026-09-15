@@ -5,10 +5,21 @@ use lapidary_core::MeshMeasurements;
 use std::collections::HashMap;
 
 pub fn measure(mesh: &Mesh) -> MeshMeasurements {
+    measured(mesh).0
+}
+
+/// The mesh's measurements, and the centre of its volume where it has one.
+///
+/// The centre is summed in the loop the volume is: each tetrahedron (origin, a, b, c) weighs in at its
+/// signed volume, centred at (a + b + c) / 4, and the sum is divided by the signed total rather than its
+/// absolute value, so a mesh wound inside out has the same centre. Closed meshes only, for the volume's
+/// reason.
+pub(crate) fn measured(mesh: &Mesh) -> (MeshMeasurements, Option<[f64; 3]>) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     let mut area = 0.0f64;
     let mut signed_volume = 0.0f64;
+    let mut moment = [0.0f64; 3];
 
     for tri in &mesh.triangles {
         for v in tri {
@@ -26,23 +37,32 @@ pub fn measure(mesh: &Mesh) -> MeshMeasurements {
             / 2.0;
         // Signed volume of the tetrahedron (origin, a, b, c). Sums to the enclosed
         // volume only when the surface is closed — hence the watertight gate below.
-        signed_volume += dot(a, cross(b, c)) / 6.0;
+        let tetrahedron = dot(a, cross(b, c)) / 6.0;
+        signed_volume += tetrahedron;
+        for i in 0..3 {
+            moment[i] += tetrahedron * (a[i] + b[i] + c[i]) / 4.0;
+        }
     }
 
     let is_watertight = is_closed(mesh);
+    let centre =
+        (is_watertight && signed_volume != 0.0).then(|| moment.map(|axis| axis / signed_volume));
 
-    MeshMeasurements {
-        bbox_mm: [
-            (max[0] - min[0]) as f64,
-            (max[1] - min[1]) as f64,
-            (max[2] - min[2]) as f64,
-        ],
-        triangle_count: mesh.triangles.len() as u32,
-        surface_area_mm2: area,
-        // A wrong number is worse than no number: only report volume for a closed surface.
-        volume_mm3: is_watertight.then_some(signed_volume.abs()),
-        is_watertight,
-    }
+    (
+        MeshMeasurements {
+            bbox_mm: [
+                (max[0] - min[0]) as f64,
+                (max[1] - min[1]) as f64,
+                (max[2] - min[2]) as f64,
+            ],
+            triangle_count: mesh.triangles.len() as u32,
+            surface_area_mm2: area,
+            // A wrong number is worse than no number: only report volume for a closed surface.
+            volume_mm3: is_watertight.then_some(signed_volume.abs()),
+            is_watertight,
+        },
+        centre,
+    )
 }
 
 /// Closed means every edge is shared by exactly two triangles. Vertices are quantised
@@ -129,6 +149,22 @@ mod tests {
         }
     }
 
+    /// The unit cube moved by (10, 20, 30), its winding kept or turned inside out.
+    fn moved_cube(inward: bool) -> Mesh {
+        let mut mesh = unit_cube();
+        for tri in &mut mesh.triangles {
+            for v in tri.iter_mut() {
+                v[0] += 10.0;
+                v[1] += 20.0;
+                v[2] += 30.0;
+            }
+            if inward {
+                tri.swap(1, 2);
+            }
+        }
+        mesh
+    }
+
     #[test]
     fn a_closed_cube_measures_its_bbox_and_volume() {
         let m = measure(&unit_cube());
@@ -139,15 +175,33 @@ mod tests {
         assert!((volume - 1.0).abs() < 1e-4, "unit cube volume was {volume}");
     }
 
+    /// The centre of a unit cube moved by (10, 20, 30) is its middle, (10.5, 20.5, 30.5), and a mesh
+    /// wound inside out has the same one: the moment is divided by the signed volume, not its size.
+    #[test]
+    fn a_closed_cube_has_its_centre_of_mass_at_its_middle_whichever_way_it_is_wound() {
+        for inward in [false, true] {
+            let centre = measured(&moved_cube(inward))
+                .1
+                .expect("a closed mesh has a centre of mass");
+            for (got, want) in centre.iter().zip([10.5, 20.5, 30.5]) {
+                assert!((got - want).abs() < 1e-4, "inward {inward}: {centre:?}");
+            }
+        }
+    }
+
     #[test]
     fn an_open_mesh_reports_no_volume() {
         let mut mesh = unit_cube();
         mesh.triangles.pop(); // remove one face: no longer closed
-        let m = measure(&mesh);
+        let (m, centre) = measured(&mesh);
         assert!(!m.is_watertight);
         assert!(
             m.volume_mm3.is_none(),
             "an open mesh must report no volume rather than a meaningless number"
+        );
+        assert!(
+            centre.is_none(),
+            "nor a centre of a volume it does not have"
         );
     }
 

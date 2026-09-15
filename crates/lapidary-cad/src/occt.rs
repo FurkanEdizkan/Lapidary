@@ -189,6 +189,8 @@ impl Kernel for OcctKernel {
             .faces
             .zip(measured.edges)
             .map(|(faces, edges)| lapidary_core::Topology { faces, edges });
+        // The B-rep's own, as the volume is: the mesh made face by face is never closed, so it has none.
+        out.centre_of_mass_mm = measured.centre_mm;
         out.provenance = MeasurementProvenance {
             bbox: Provenance::Tessellated,
             ..MeasurementProvenance::ANALYTIC
@@ -221,6 +223,9 @@ struct BridgeMeasurements {
     volume_mm3: Option<f64>,
     surface_area_mm2: f64,
     bbox_mm: Option<[f64; 3]>,
+    /// The closed solids' centre of mass, since bridge 8. Absent from an older bridge's file.
+    #[serde(default)]
+    centre_mm: Option<[f64; 3]>,
 }
 
 #[derive(Deserialize)]
