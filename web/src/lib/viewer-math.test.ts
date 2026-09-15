@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { AXES, VIEW_DIR, frameBox, hasWebGL, kept, sectionPlane, visibleRanges } from './viewer-math'
+import { AXES, VIEW_DIR, capPlacement, frameBox, hasWebGL, kept, sectionPlane, visibleRanges } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -56,3 +56,17 @@ test('a section keeps what is below the cut on its axis, and flipped keeps what 
   expect(kept(sectionPlane('y', 1, false, min, max), [0, 40, 0])).toBe(true)
   expect(AXES).toEqual(['x', 'y', 'z'])
 })
+
+test('a cap lies on the cut, over the whole box, whichever side is kept', () => {
+  // A flange's box: 80 mm across, 16 mm tall, cut halfway up.
+  const min: [number, number, number] = [-40, -40, 0]
+  const max: [number, number, number] = [40, 40, 16]
+  for (const flip of [false, true]) {
+    const cap = capPlacement(sectionPlane('z', 0.5, flip, min, max), min, max)
+    expect(cap.position).toEqual([0, 0, 8])
+    expect(Math.abs(cap.normal[2])).toBe(1)
+    expect(cap.size).toBeGreaterThanOrEqual(Math.hypot(80, 80))
+  }
+  expect(capPlacement(sectionPlane('x', 0.25, false, min, max), min, max).position).toEqual([-20, 0, 8])
+})
+

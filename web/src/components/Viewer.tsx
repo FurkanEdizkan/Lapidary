@@ -1,22 +1,29 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlwaysStencilFunc,
   AmbientLight,
   BackSide,
   Box3,
   BufferGeometry,
   Color,
+  DecrementWrapStencilOp,
   DirectionalLight,
+  DoubleSide,
   Float32BufferAttribute,
   FrontSide,
+  IncrementWrapStencilOp,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  NotEqualStencilFunc,
   OrthographicCamera,
   Plane,
+  PlaneGeometry,
   Points,
   PointsMaterial,
   Raycaster,
+  ReplaceStencilOp,
   Scene,
   Vector2,
   Vector3,
@@ -33,6 +40,7 @@ import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
 import {
   LIGHT_DIR,
+  capPlacement,
   frameBox,
   kept,
   sectionPlane,
@@ -54,6 +62,8 @@ type View = {
   hide: (hidden: ReadonlySet<number>) => void
   /** Cut the part along a plane across its box, or stop cutting; kept for every rung shown after. */
   section: (section: Section | null) => void
+  /** Whether the part is known to be a closed mesh, which is when a section's cut face is filled. */
+  closed: (closed: boolean) => void
   /** Draw an earlier revision's rung as a ghost over the part, or stop; never picked. */
   ghost: (model: Object3D | null) => void
   dispose: () => void
@@ -82,10 +92,15 @@ type Kit = {
   material: MeshStandardMaterial
   markMaterial: PointsMaterial
   ghostMaterial: MeshBasicMaterial
+  capMaterial: MeshBasicMaterial
+  capBack: MeshBasicMaterial
+  capFront: MeshBasicMaterial
 }
 
 function kit(): Kit {
-  const renderer = new WebGLRenderer({ antialias: true, alpha: true })
+  // A stencil buffer, which three 0.186 no longer gives by default: a section's cap is drawn where it says
+  // the cut crosses material.
+  const renderer = new WebGLRenderer({ antialias: true, alpha: true, stencil: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   // On for every view, so a section needs nothing of its own. With no plane on a material it changes
   // no program, so `prepare` still compiles what a view draws.
@@ -105,7 +120,39 @@ function kit(): Kit {
       depthTest: false,
       depthWrite: false,
     }),
+    // A section's filled face, flat and unlit, so it reads as the inside of the part and never as a lit
+    // surface of it: brick, distinct from the part's grey and the ghost's amber. Drawn only where the
+    // stencil passes below left the count non-zero, and it sets the count back as it draws.
+    capMaterial: new MeshBasicMaterial({
+      color: new Color(0xc4665a),
+      side: DoubleSide,
+      stencilWrite: true,
+      stencilRef: 0,
+      stencilFunc: NotEqualStencilFunc,
+      stencilFail: ReplaceStencilOp,
+      stencilZFail: ReplaceStencilOp,
+      stencilZPass: ReplaceStencilOp,
+    }),
+    // The two stencil passes, three's clipping-stencil technique: clipped by the section's plane, a
+    // closed mesh's back faces count up and its front faces count down, so the count is non-zero exactly
+    // where a ray from the eye enters material behind the cut. Neither writes colour or depth.
+    capBack: stencilPass(BackSide, IncrementWrapStencilOp),
+    capFront: stencilPass(FrontSide, DecrementWrapStencilOp),
   }
+}
+
+function stencilPass(side: typeof BackSide | typeof FrontSide, op: typeof IncrementWrapStencilOp | typeof DecrementWrapStencilOp) {
+  return new MeshBasicMaterial({
+    side,
+    colorWrite: false,
+    depthWrite: false,
+    depthTest: false,
+    stencilWrite: true,
+    stencilFunc: AlwaysStencilFunc,
+    stencilFail: op,
+    stencilZFail: op,
+    stencilZPass: op,
+  })
 }
 
 /**
@@ -270,6 +317,9 @@ export default function Viewer({
     view.current?.section(section)
   }, [section])
   useEffect(() => {
+    view.current?.closed(part.isWatertight === true)
+  }, [part.isWatertight])
+  useEffect(() => {
     onParts?.(parts)
   }, [parts, onParts])
 
@@ -422,7 +472,7 @@ export default function Viewer({
       {failed ? null : (
         <>
           <MeasureBar tool={tool} onTool={choose} reading={reading} note={note} />
-          <SectionBar section={section} onSection={setSection} />
+          <SectionBar section={section} onSection={setSection} closed={part.isWatertight} />
         </>
       )}
     </div>
@@ -431,7 +481,9 @@ export default function Viewer({
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const own = sessionInUse
-  const { renderer, material, markMaterial, ghostMaterial } = own ? kit() : (session ??= kit())
+  const { renderer, material, markMaterial, ghostMaterial, capMaterial, capBack, capFront } = own
+    ? kit()
+    : (session ??= kit())
   sessionInUse = true
   renderer.setSize(node.clientWidth, node.clientHeight, false)
   renderer.domElement.style.width = '100%'
@@ -459,8 +511,14 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const raycaster = new Raycaster()
   const markers = new Points(noMarks(), markMaterial)
   // Drawn over the part and its ghost, so a mark on a face turned away still shows where it was put.
-  markers.renderOrder = 2
+  markers.renderOrder = 5
   scene.add(markers)
+  // A section's cap: a square on the cut, placed by `capPlacement` and drawn after the stencil passes and
+  // before the part. Not inside `model`, so no pick or wall ray ever meets it.
+  const cap = new Mesh(new PlaneGeometry(1, 1), capMaterial)
+  cap.renderOrder = 2
+  cap.visible = false
+  scene.add(cap)
 
   let first = true
   let model: Object3D | null = null
@@ -471,6 +529,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   let bounds: { min: Vec3; max: Vec3 } | null = null
   let cut: Section | null = null
   let cutPlane: PlaneLike | null = null
+  let closedMesh = false
   const clip = new Plane()
   const applyCut = () => {
     const wasCut = (material.clippingPlanes?.length ?? 0) > 0
@@ -483,9 +542,26 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
     // The ghost is cut by the same plane, so a section hides the same half of both revisions.
     ghostMaterial.clippingPlanes = material.clippingPlanes
     // three compiles a program per count of planes; moving the one plane is only a uniform.
+    capBack.clippingPlanes = material.clippingPlanes
+    capFront.clippingPlanes = material.clippingPlanes
     if (wasCut !== (cutPlane !== null)) {
       material.needsUpdate = true
       ghostMaterial.needsUpdate = true
+      capBack.needsUpdate = true
+      capFront.needsUpdate = true
+    }
+    // Filled only over a mesh known to be closed. An open mesh has no inside, and a guessed cap would
+    // say it had one.
+    const capped = cutPlane !== null && closedMesh && bounds !== null
+    cap.visible = capped
+    model?.traverse((object) => {
+      if (object.userData.stencil === true) object.visible = capped
+    })
+    if (capped && cutPlane !== null && bounds !== null) {
+      const placed = capPlacement(cutPlane, bounds.min, bounds.max)
+      cap.position.set(...placed.position)
+      cap.scale.set(placed.size, placed.size, 1)
+      cap.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), new Vector3(...placed.normal))
     }
   }
   // three's raycaster meets what a section has cut away, so a hit counts only on the side still drawn.
@@ -494,7 +570,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   // mesh's groups when its material is an array, so a hidden part is neither seen nor picked.
   const applyHidden = () => {
     model?.traverse((object) => {
-      if (!(object instanceof Mesh)) return
+      if (!(object instanceof Mesh) || object.userData.stencil === true) return
       const parts: unknown = object.userData.parts
       object.geometry.clearGroups()
       if (hiddenParts.size === 0 || !Array.isArray(parts)) {
@@ -527,9 +603,25 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
 
   return {
     show(next) {
+      const meshes: Mesh[] = []
       next.traverse((object) => {
-        if (object instanceof Mesh) object.material = material
+        if (!(object instanceof Mesh)) return
+        object.material = material
+        object.renderOrder = 3
+        meshes.push(object)
       })
+      // The cap's stencil passes, a pair per mesh sharing its geometry. Children of the mesh, so they
+      // follow its transform, and a raycast passes straight through them.
+      for (const mesh of meshes) {
+        for (const pass of [capBack, capFront]) {
+          const stencil = new Mesh(mesh.geometry, pass)
+          stencil.userData.stencil = true
+          stencil.renderOrder = 1
+          stencil.visible = false
+          stencil.raycast = () => {}
+          mesh.add(stencil)
+        }
+      }
       const framing = model === null
       if (model !== null) {
         scene.remove(model)
@@ -553,6 +645,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
         controls.target.set(...frame.target)
         controls.update()
       }
+      applyCut()
       render()
     },
     pick(x, y) {
@@ -589,6 +682,11 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       applyCut()
       if (model !== null) render()
     },
+    closed(next) {
+      closedMesh = next
+      applyCut()
+      if (model !== null) render()
+    },
     ghost(next) {
       if (ghostModel !== null) {
         scene.remove(ghostModel)
@@ -600,7 +698,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
           if (!(object instanceof Mesh)) return
           object.material = ghostMaterial
           // After the part, which is opaque, and before the marks.
-          object.renderOrder = 1
+          object.renderOrder = 4
         })
         scene.add(next)
       }
@@ -612,6 +710,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       if (model !== null) disposeModel(model)
       if (ghostModel !== null) disposeModel(ghostModel)
       markers.geometry.dispose()
+      cap.geometry.dispose()
       // The session's material outlives this view, and the next view starts uncut.
       cut = null
       applyCut()
@@ -619,6 +718,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       if (own) {
         markMaterial.dispose()
         ghostMaterial.dispose()
+        capMaterial.dispose()
+        capBack.dispose()
+        capFront.dispose()
         material.dispose()
         renderer.dispose()
       } else {
