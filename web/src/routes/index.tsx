@@ -36,7 +36,7 @@ import {
   startScan,
 } from '../lib/api'
 import { flipFrom } from '../lib/flip'
-import { Dialog } from '../components/Dialog'
+import { Dialog, closeMenu } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Detail, loadViewerWhenIdle, warmViewer } from '../components/PartDetail'
 import { FieldFilters, FieldsMenuItem } from '../components/Fields'
@@ -1587,6 +1587,7 @@ function Menu({ id, label, children }: { id: string; label: string; children: Re
       <div
         id={id}
         popover="auto"
+        data-menu
         role="group"
         aria-label={label}
         style={anchor}
@@ -1819,7 +1820,10 @@ function LibrarySwitcher({
       )}
       <button
         type="button"
-        onClick={() => setCreating(true)}
+        onClick={(event) => {
+          closeMenu(event.currentTarget)
+          setCreating(true)
+        }}
         className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.libraries.create}
@@ -1827,7 +1831,10 @@ function LibrarySwitcher({
       {!offerSwitch ? null : (
         <button
           type="button"
-          onClick={() => setSwitching(true)}
+          onClick={(event) => {
+            closeMenu(event.currentTarget)
+            setSwitching(true)
+          }}
           className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           {strings.libraries.makeControlled}

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { createField, fetchFields, removeField, updateField, type FieldWritten } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { CustomField, FieldFacet, FieldKind, LibraryId } from '../lib/types'
-import { Dialog } from './Dialog'
+import { Dialog, closeMenu } from './Dialog'
 
 /**
  * A key proposed from a label: lowercase, Turkish and accented letters folded to plain ones, anything
@@ -50,7 +50,10 @@ export function FieldsMenuItem({ library }: { library: LibraryId }) {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={(event) => {
+          closeMenu(event.currentTarget)
+          setOpen(true)
+        }}
         className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.fields.menu}
