@@ -30,6 +30,7 @@ import {
   WebGLRenderer,
   type Intersection,
   type Object3D,
+  type Material,
 } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
@@ -569,19 +570,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   // A hidden part is a gap in the index ranges drawn. three draws, and a raycast meets, only a
   // mesh's groups when its material is an array, so a hidden part is neither seen nor picked.
   const applyHidden = () => {
-    model?.traverse((object) => {
-      if (!(object instanceof Mesh) || object.userData.stencil === true) return
-      const parts: unknown = object.userData.parts
-      object.geometry.clearGroups()
-      if (hiddenParts.size === 0 || !Array.isArray(parts)) {
-        object.material = material
-        return
-      }
-      for (const { start, count } of visibleRanges(parts as number[], hiddenParts)) {
-        object.geometry.addGroup(start, count, 0)
-      }
-      object.material = [material]
-    })
+    if (model !== null) hideParts(model, material, hiddenParts)
   }
   const render = () => {
     renderer.render(scene, camera)
@@ -728,6 +717,34 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       }
     },
   }
+}
+
+/**
+ * An assembly's hidden parts, left out of what each mesh draws: its groups cover only the parts left,
+ * and three draws only a mesh's groups when its material is an array. The cap's stencil passes share the
+ * mesh's geometry, so they take the same array, or they would count a hidden part's inside and fill its
+ * section.
+ */
+export function hideParts(model: Object3D, material: Material, hidden: ReadonlySet<number>) {
+  model.traverse((object) => {
+    if (!(object instanceof Mesh)) return
+    if (object.userData.stencil === true) {
+      const pass: Material | undefined = Array.isArray(object.material) ? object.material[0] : object.material
+      if (pass === undefined) return
+      object.material = hidden.size > 0 && Array.isArray(object.parent?.userData.parts) ? [pass] : pass
+      return
+    }
+    const parts: unknown = object.userData.parts
+    object.geometry.clearGroups()
+    if (hidden.size === 0 || !Array.isArray(parts)) {
+      object.material = material
+      return
+    }
+    for (const { start, count } of visibleRanges(parts as number[], hidden)) {
+      object.geometry.addGroup(start, count, 0)
+    }
+    object.material = [material]
+  })
 }
 
 function disposeModel(model: Object3D) {
