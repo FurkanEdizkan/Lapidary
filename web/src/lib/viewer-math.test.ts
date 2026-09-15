@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { AXES, VIEW_DIR, capPlacement, explodeOffsets, frameBox, hasWebGL, kept, partCentres, sectionPlane, visibleRanges, type Vec3 } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
@@ -25,6 +25,23 @@ test('a degenerate box still frames something', () => {
 
 test('jsdom cannot draw, so the viewer is never loaded there', () => {
   expect(hasWebGL()).toBe(false)
+})
+
+test('asking whether the browser can draw lets the probe context go', async () => {
+  const loseContext = vi.fn()
+  vi.stubGlobal('WebGL2RenderingContext', class {})
+  const canvas = document.createElement('canvas')
+  vi.spyOn(canvas, 'getContext').mockReturnValue({
+    getExtension: (name: string) => (name === 'WEBGL_lose_context' ? { loseContext } : null),
+  } as never)
+  vi.spyOn(document, 'createElement').mockReturnValue(canvas)
+  vi.resetModules()
+  const { hasWebGL: askedAfresh } = await import('./viewer-math')
+
+  expect(askedAfresh()).toBe(true)
+  expect(loseContext).toHaveBeenCalledTimes(1)
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 test('hidden parts are left out of the ranges drawn, and the visible ones between merge', () => {

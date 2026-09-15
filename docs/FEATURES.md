@@ -162,7 +162,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Feature | Phase |
 |---|---|
 | three.js viewer, glTF + meshopt, LOD streaming | 3 |
-| Prefetch L0 and warm the viewer on hover, L1 on inspector open; the viewer also warms with no hover, once the grid is idle or as a part's page opens | 3 |
+| Prefetch L0 and warm the viewer on hover, L1 on inspector open; the viewer's code also loads once the grid is idle, and the viewer warms as a part's page opens | 3 |
 | Assembly tree navigation, isolate and hide | 3 |
 <!--
   **Isolate and hide since glb-3.** Recorded 2026-09-13. The tree offers Hide/Show and Isolate per

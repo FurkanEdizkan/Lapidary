@@ -39,14 +39,16 @@ let webgl: boolean | undefined
  * Whether this browser can draw the view, asked once. It is asked before the viewer's code is
  * fetched, so a browser that cannot — jsdom, a locked-down machine — never downloads three.js for
  * nothing. `WebGL2RenderingContext` is checked first: jsdom has none, and asking its canvas for a
- * context logs that the method is not implemented.
+ * context logs that the method is not implemented. The probe's context is let go at once, so asking
+ * holds none of the few a browser allows.
  */
 export function hasWebGL(): boolean {
   if (webgl === undefined) {
     try {
-      webgl =
-        typeof WebGL2RenderingContext !== 'undefined' &&
-        document.createElement('canvas').getContext('webgl2') !== null
+      const probe =
+        typeof WebGL2RenderingContext === 'undefined' ? null : document.createElement('canvas').getContext('webgl2')
+      webgl = probe !== null
+      probe?.getExtension('WEBGL_lose_context')?.loseContext()
     } catch {
       webgl = false
     }
