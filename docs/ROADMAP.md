@@ -1939,6 +1939,26 @@ stage's own build.
   - 7.85 g/cm³ was stored as 7850 kg/m³;
   - removed, nothing was stored and the box was empty.
 
+**Mass** (`dc8238e`).
+- **Worked out when read, never stored:** a revision's volume times the density of the part's one material as it is
+  today (`PgDensities::of_part`), in grams. No mass unless the part holds exactly one material and its library has a
+  density for it.
+- **Always ≈:** a density is typed, not measured, so even an exact STEP volume gives an approximate mass.
+- **The diff** carries the mass change, worked out from the same density on both sides. The history strip shows it
+  beside volume's, and the comparison gains a Mass row, with a note saying both revisions use today's material and
+  density. The row appears only when there is a mass: a part without one material and its density has no mass to
+  compare, which is not a figure "not measured in both". Decided without the owner.
+- **Tests:** a 21,478.5 mm³ part of a 7,850 kg/m³ steel reads ≈ 168.6 g, marked approximate; two materials, none,
+  or a material with no density give none; a 21,478 mm³ widening changes mass by 168.602 g, approximate; and the
+  page shows the change in the history, the comparison and the note.
+- **Mutation-checked, all 5 caught:** the one-material rule loosened, mass reported as exact, the gram factor
+  wrong, the history's mass change dropped, and the Mass row dropped.
+- **Checked in Chrome** on the native stack: a controlled library's bracket (21,472 mm³), rescanned with a spacer's
+  bytes (615.88 mm³), given "S235JR steel" at 7,850 kg/m³ (no page errors):
+  - the history API read 168.555 g for revision 1 and 4.835 g for revision 2, both approximate;
+  - the comparison's Mass row read "−163.72 g (−97.1%) ≈", under volume's "−20.86 cm³ (−97.1%)";
+  - revision 2's history line showed the mass change beside the volume change, and the note was there.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

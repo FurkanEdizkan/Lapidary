@@ -226,7 +226,10 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
     - delivered: volume, surface area, bbox per axis and triangle count, each ≈ when either
       figure is mesh-derived;
     - face and edge counts since goal 4 (`718d8ad`), exact, for a CAD part read by bridge 7 or later;
-    - not yet: mass and centre of mass (nothing stores a density).
+    - mass since goal 5: each revision's volume times the density of the part's one material as
+      it is today, worked out when read and always ≈, beside volume in the history and the
+      comparison;
+    - not yet: centre of mass.
   - Locks: one per part, free-text holder, no auth; a forced release is recorded.
   - Overlay diff (Phase 4 slice 2): the From revision is drawn as an amber ghost through the part,
     its L1 or else its L0, and never picked.
