@@ -1199,4 +1199,13 @@ async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_me
         refusal.contains("B-rep") && refusal.contains("stl, 3mf"),
         "a mesh is never handed over as a STEP: {refusal}"
     );
+
+    // OBJ is a mesh too, only not one Lapidary writes: refused for that, not for B-rep.
+    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=obj")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let refusal = message(&body);
+    assert!(
+        refusal.contains("writes meshes only as 3mf and stl") && !refusal.contains("B-rep"),
+        "{refusal}"
+    );
 }

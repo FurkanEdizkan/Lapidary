@@ -592,8 +592,9 @@ async fn open_export(
     xdg_open(&file)?;
     let (from, to) = (source.name().to_uppercase(), export.name().to_uppercase());
     let note = format!(
-        "No app on this computer opens {from} files, so revision {} opened as a {to} Lapidary wrote from its mesh, read-only: nothing saved from it comes back. To edit the part itself, install an app for {from} files and open the link again.",
-        detail.rev_label
+        "No app on this computer opens {from} files, so revision {} opened as a {to} Lapidary wrote from its mesh, read-only: nothing saved from it comes back. To edit the part itself, make a CAD app the default for {from} files (`xdg-mime default <its .desktop file> {}`) and open the link again.",
+        detail.rev_label,
+        source.mimes()[0]
     );
     println!("{note} The file is {}.", file.display());
     notify(&note);

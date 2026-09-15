@@ -19,6 +19,11 @@ pub enum TargetsError {
     NoFormatMatch { target: String, available: String },
 
     #[error(
+        "No format satisfies {target}. This part has {available} available, and Lapidary writes meshes only as 3mf and stl. Download one of those and convert it in a mesh tool."
+    )]
+    NoExport { target: String, available: String },
+
+    #[error(
         "Export failed: {reason}. Retry, and if it keeps failing, check the source derivative is not corrupt."
     )]
     ExportFailed { reason: String },
@@ -47,14 +52,31 @@ impl Format {
         }
     }
 
-    /// The MIME type a desktop knows this format by, as shared-mime-info names it.
-    pub fn mime(self) -> &'static str {
+    /// The MIME types a desktop may know this format by: the registered one first, then its
+    /// shared-mime-info aliases and the older spellings apps still register under.
+    ///
+    /// Every one is asked for because missing an app is not symmetric: a CAD app missed for STEP
+    /// would be handed a mesh. shared-mime-info 2.4 has no STEP type at all, so for STEP these
+    /// spellings are all there is.
+    pub fn mimes(self) -> &'static [&'static str] {
         match self {
-            Format::Step => "model/step",
-            Format::Iges => "model/iges",
-            Format::Stl => "model/stl",
-            Format::ThreeMf => "model/3mf",
-            Format::Obj => "model/obj",
+            Format::Step => &[
+                "model/step",
+                "model/step+zip",
+                "application/step",
+                "application/STEP",
+                "application/x-step",
+                "application/p21",
+            ],
+            Format::Iges => &["model/iges", "application/iges", "application/x-iges"],
+            Format::Stl => &[
+                "model/stl",
+                "model/x.stl-ascii",
+                "model/x.stl-binary",
+                "application/sla",
+            ],
+            Format::ThreeMf => &["model/3mf", "application/vnd.ms-3mfdocument"],
+            Format::Obj => &["model/obj"],
         }
     }
 
@@ -76,6 +98,11 @@ impl Format {
             Format::Stl => Some(DerivativeKind::ExportStl),
             Format::Step | Format::Iges | Format::Obj => None,
         }
+    }
+
+    /// Whether this format holds triangles rather than B-rep.
+    pub fn is_mesh(self) -> bool {
+        matches!(self, Format::Stl | Format::ThreeMf | Format::Obj)
     }
 }
 
@@ -115,14 +142,19 @@ pub fn negotiate(target: &dyn Target, source: Format) -> Result<Handover, Target
     {
         return Ok(Handover::Export(export));
     }
-    let available: Vec<&str> = std::iter::once(source)
-        .chain(EXPORTS.into_iter().filter(|export| *export != source))
-        .map(Format::name)
-        .collect();
-    Err(TargetsError::NoFormatMatch {
-        target: target.name(),
-        available: available.join(", "),
-    })
+    let (target, available) = (
+        target.name(),
+        std::iter::once(source)
+            .chain(EXPORTS.into_iter().filter(|export| *export != source))
+            .map(Format::name)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    // A target that reads a mesh Lapidary does not write, OBJ, is not one that needs B-rep.
+    if accepts.iter().any(|format| format.is_mesh()) {
+        return Err(TargetsError::NoExport { target, available });
+    }
+    Err(TargetsError::NoFormatMatch { target, available })
 }
 
 /// A tool by the formats it reads: a download of the one format somebody picked (`DATA.md` §5.1), or the apps
@@ -190,7 +222,22 @@ mod tests {
                 && refused.to_string().contains("has stl, 3mf available"),
             "names the tool, and what there is once each: {refused}"
         );
-        assert!(negotiate(&tool("MeshLab", &[Format::Obj]), Format::Step).is_err());
+        assert!(refused.to_string().contains("B-rep"));
+    }
+
+    /// OBJ is a mesh Lapidary does not write, so a tool reading only OBJ is refused for that, not
+    /// told it needs B-rep.
+    #[test]
+    fn a_mesh_format_lapidary_does_not_write_is_refused_as_one() {
+        let refused = negotiate(&tool("MeshLab", &[Format::Obj]), Format::Step)
+            .expect_err("no OBJ is written");
+        assert!(
+            refused
+                .to_string()
+                .contains("writes meshes only as 3mf and stl")
+                && !refused.to_string().contains("B-rep"),
+            "{refused}"
+        );
     }
 
     #[test]
@@ -199,7 +246,17 @@ mod tests {
         assert_eq!(Format::named("igs"), Some(Format::Iges));
         assert_eq!(Format::named("3MF"), Some(Format::ThreeMf));
         assert_eq!(Format::named("fcstd"), None);
-        assert_eq!(Format::ThreeMf.mime(), "model/3mf");
+    }
+
+    /// Each format's registered type first, and STEP under the spellings apps still register it by,
+    /// since the MIME database has none of its own.
+    #[test]
+    fn a_format_is_asked_for_under_every_type_a_desktop_may_know_it_by() {
+        assert_eq!(Format::ThreeMf.mimes()[0], "model/3mf");
+        assert_eq!(Format::Step.mimes()[0], "model/step");
+        assert!(Format::Step.mimes().contains(&"application/step"));
+        assert!(Format::Iges.mimes().contains(&"application/iges"));
+        assert!(Format::Stl.mimes().contains(&"model/x.stl-binary"));
     }
 
     #[test]

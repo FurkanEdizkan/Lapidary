@@ -7,15 +7,17 @@ use lapidary_targets::{EXPORTS, Format, Handover, Tool, negotiate};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The app this desktop opens `format` with, as `xdg-mime` names it: its desktop file. `None` when
-/// there is none, or no `xdg-mime` to ask.
+/// The app this desktop opens `format` with, as `xdg-mime` names it for any of the format's MIME
+/// types: its desktop file. `None` when there is none, or no `xdg-mime` to ask.
 pub fn default_app(format: Format) -> Option<String> {
-    let output = Command::new("xdg-mime")
-        .args(["query", "default", format.mime()])
-        .output()
-        .ok()?;
-    let app = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (output.status.success() && !app.is_empty()).then_some(app)
+    format.mimes().iter().find_map(|mime| {
+        let output = Command::new("xdg-mime")
+            .args(["query", "default", mime])
+            .output()
+            .ok()?;
+        let app = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !app.is_empty()).then_some(app)
+    })
 }
 
 /// What `lapidary open` hands this desktop for a part whose file is in `source`: that file when an
