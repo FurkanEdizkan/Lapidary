@@ -157,12 +157,11 @@ export const Route = createFileRoute('/')({
         : typeof tag === 'number'
           ? { tag: String(tag) }
           : {}),
-      // A field offered as a filter and its value, both or neither, as the route reads them. A value
-      // can be all digits, which arrives as a number for the reason `q` gives.
-      ...(typeof field === 'string' &&
-      field.length > 0 &&
+      // A field offered as a filter and its value, both or neither, as the route reads them. A key and a
+      // value can each be all digits, which arrives as a number for the reason `q` gives.
+      ...(((typeof field === 'string' && field.length > 0) || typeof field === 'number') &&
       ((typeof fieldValue === 'string' && fieldValue.length > 0) || typeof fieldValue === 'number')
-        ? { field, fieldValue: String(fieldValue) }
+        ? { field: String(field), fieldValue: String(fieldValue) }
         : {}),
     }
   },

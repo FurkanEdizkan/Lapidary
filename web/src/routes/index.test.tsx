@@ -3361,6 +3361,17 @@ test("a numeric query in the URL is still a search", () => {
   expect(validate({ q: "" })).toEqual({});
 });
 
+/** A field key may be all digits (`^[a-z0-9_]{1,40}$`), and the router hands one back as a number. */
+test("a field whose key is all digits keeps its filter in the URL", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { field?: string; fieldValue?: string };
+
+  expect(validate({ field: 2024, fieldValue: "A" })).toEqual({ field: "2024", fieldValue: "A" });
+  expect(validate({ field: "finish", fieldValue: 12 })).toEqual({ field: "finish", fieldValue: "12" });
+  expect(validate({ field: 2024 })).toEqual({});
+});
+
 /**
  * Changing the page size changes what the grid asks for, and is remembered.
  *
