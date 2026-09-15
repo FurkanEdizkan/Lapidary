@@ -501,11 +501,30 @@ impl PgBlobs {
     /// have to be written to the blob store — and asks [`PgBlobs::library_holds`] for
     /// anything about a particular library.
     pub async fn exists(&self, hash: &BlobHash) -> Result<bool, DbError> {
-        let found: Option<String> = sqlx::query_scalar("SELECT blake3 FROM blob WHERE blake3 = $1")
-            .bind(hash.to_hex())
-            .fetch_optional(&self.0)
-            .await?;
-        Ok(found.is_some())
+        Ok(!self.existing(std::slice::from_ref(hash)).await?.is_empty())
+    }
+
+    /// Which of `hashes` the store holds: [`PgBlobs::exists`] for a whole upload, in one query, and the
+    /// same global answer.
+    pub async fn existing(
+        &self,
+        hashes: &[BlobHash],
+    ) -> Result<std::collections::HashSet<BlobHash>, DbError> {
+        let hex: Vec<String> = hashes.iter().map(BlobHash::to_hex).collect();
+        let found: Vec<String> =
+            sqlx::query_scalar("SELECT blake3 FROM blob WHERE blake3 = ANY($1)")
+                .bind(&hex)
+                .fetch_all(&self.0)
+                .await?;
+        found
+            .into_iter()
+            .map(|hex| {
+                BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                    column: "blob.blake3",
+                    value: hex,
+                })
+            })
+            .collect()
     }
 
     /// The stored form of a blob: its sizes and the level it was written at.
@@ -845,20 +864,34 @@ impl PgBlobs {
         source_path: &str,
         hash: &BlobHash,
     ) -> Result<bool, DbError> {
-        let found: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM part p \
+        let held = self
+            .library_holds_paths(library, &[(source_path, *hash)])
+            .await?;
+        Ok(!held.is_empty())
+    }
+
+    /// The paths among `files` that [`PgBlobs::library_holds`] with their bytes: the question for a whole
+    /// upload, in one query.
+    pub async fn library_holds_paths(
+        &self,
+        library: LibraryId,
+        files: &[(&str, BlobHash)],
+    ) -> Result<std::collections::HashSet<String>, DbError> {
+        let paths: Vec<&str> = files.iter().map(|(path, _)| *path).collect();
+        let hashes: Vec<String> = files.iter().map(|(_, hash)| hash.to_hex()).collect();
+        let held: Vec<String> = sqlx::query_scalar(
+            "SELECT t.path FROM unnest($2::text[], $3::text[]) AS t(path, blake3) \
+             JOIN part p ON p.library_id = $1 AND p.source_path = t.path \
              JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                            ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
-             WHERE p.library_id = $1 AND p.source_path = $2 AND f.blake3 = $3 \
-             LIMIT 1",
+             JOIN file f ON f.revision_id = r.id AND f.role = 'source' AND f.blake3 = t.blake3",
         )
         .bind(library.as_uuid())
-        .bind(source_path)
-        .bind(hash.to_hex())
-        .fetch_optional(&self.0)
+        .bind(&paths)
+        .bind(&hashes)
+        .fetch_all(&self.0)
         .await?;
-        Ok(found.is_some())
+        Ok(held.into_iter().collect())
     }
 }
 
