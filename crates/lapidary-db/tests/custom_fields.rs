@@ -3,7 +3,7 @@
 use lapidary_core::{BlobHash, LibraryId, PartId};
 use lapidary_db::{
     CustomFieldPatch, CustomFieldRow, DbError, GridQuery, IngestRequest, PartRepository,
-    PgCustomFields, PgIngest, PgParts, Sort, StoredBlobRow,
+    PgCustomFields, PgIngest, PgParts, Sort, StoredBlobRow, ValueSet,
 };
 use serde_json::json;
 
@@ -21,6 +21,24 @@ fn field(key: &str, label: &str, kind: &str, options: &[&str], indexed: bool) ->
         options: options.iter().map(|option| (*option).to_owned()).collect(),
         indexed,
     }
+}
+
+/// One part's value for the library's field `key`, checked against that field as it is now.
+async fn set(
+    fields: &PgCustomFields,
+    part: PartId,
+    key: &str,
+    value: Option<serde_json::Value>,
+) -> ValueSet {
+    let field = fields
+        .field(library(), key)
+        .await
+        .expect("reads")
+        .expect("defined");
+    fields
+        .set_value(part, &field, value.as_ref())
+        .await
+        .expect("sets")
 }
 
 /// A part in the seeded library, database only.
@@ -158,11 +176,9 @@ async fn an_option_a_part_holds_is_not_removed(pool: sqlx::PgPool) {
         .await
         .expect("defines");
     let bracket = part(&pool, "bracket-lp-1042-03", 0x41).await;
-    assert!(
-        fields
-            .set_value(bracket, "supplier", Some(&json!("Misumi")))
-            .await
-            .expect("sets")
+    assert_eq!(
+        set(&fields, bracket, "supplier", Some(json!("Misumi"))).await,
+        ValueSet::Set
     );
 
     let kept = ["Hoffmann".to_owned()];
@@ -224,11 +240,9 @@ async fn an_option_only_a_removed_part_holds_says_to_restore_it(pool: sqlx::PgPo
         .await
         .expect("defines");
     let plate = part(&pool, "mounting-plate-lp-1180-01", 0x42).await;
-    assert!(
-        fields
-            .set_value(plate, "finish", Some(&json!("Zinc plated")))
-            .await
-            .expect("sets")
+    assert_eq!(
+        set(&fields, plate, "finish", Some(json!("Zinc plated"))).await,
+        ValueSet::Set
     );
     assert!(
         PgParts(pool.clone())
@@ -277,11 +291,9 @@ async fn a_removed_field_leaves_every_value_where_it_was(pool: sqlx::PgPool) {
         .await
         .expect("defines");
     let bracket = part(&pool, "bracket-lp-1042-03", 0x41).await;
-    assert!(
-        fields
-            .set_value(bracket, "stock_count", Some(&json!(12)))
-            .await
-            .expect("sets")
+    assert_eq!(
+        set(&fields, bracket, "stock_count", Some(json!(12))).await,
+        ValueSet::Set
     );
 
     assert!(
@@ -308,6 +320,15 @@ async fn a_removed_field_leaves_every_value_where_it_was(pool: sqlx::PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn a_value_is_set_and_cleared_without_touching_what_the_file_said(pool: sqlx::PgPool) {
     let fields = PgCustomFields(pool.clone());
+    for definition in [
+        field("supplier", "Supplier", "text", &[], false),
+        field("stock_count", "Stock count", "number", &[], false),
+    ] {
+        fields
+            .create(library(), &definition)
+            .await
+            .expect("defines");
+    }
     let parts = PgParts(pool.clone());
     let bracket = part(&pool, "bracket-lp-1042-03", 0x41).await;
     parts
@@ -319,23 +340,17 @@ async fn a_value_is_set_and_cleared_without_touching_what_the_file_said(pool: sq
         .await
         .expect("the file's own statement");
 
-    assert!(
-        fields
-            .set_value(bracket, "supplier", Some(&json!("Misumi")))
-            .await
-            .expect("sets")
+    assert_eq!(
+        set(&fields, bracket, "supplier", Some(json!("Misumi"))).await,
+        ValueSet::Set
     );
-    assert!(
-        fields
-            .set_value(bracket, "stock_count", Some(&json!(12)))
-            .await
-            .expect("sets")
+    assert_eq!(
+        set(&fields, bracket, "stock_count", Some(json!(12))).await,
+        ValueSet::Set
     );
-    assert!(
-        fields
-            .set_value(bracket, "stock_count", None)
-            .await
-            .expect("clears")
+    assert_eq!(
+        set(&fields, bracket, "stock_count", None).await,
+        ValueSet::Set
     );
     // A later statement from the file replaces `cad` and leaves a person's values alone.
     parts
@@ -353,32 +368,39 @@ async fn a_value_is_set_and_cleared_without_touching_what_the_file_said(pool: sq
         stored,
         json!({ "cad": { "authors": ["M. Reyes"] }, "custom": { "supplier": "Misumi" } })
     );
-    assert!(
-        !fields
-            .set_value(PartId::new(), "supplier", Some(&json!("Misumi")))
-            .await
-            .expect("asks")
+    assert_eq!(
+        set(&fields, PartId::new(), "supplier", Some(json!("Misumi"))).await,
+        ValueSet::NoSuchPart
     );
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn the_grid_filters_by_a_field_value(pool: sqlx::PgPool) {
     let fields = PgCustomFields(pool.clone());
+    for definition in [
+        field("supplier", "Supplier", "text", &[], false),
+        field("stock_count", "Stock count", "number", &[], false),
+    ] {
+        fields
+            .create(library(), &definition)
+            .await
+            .expect("defines");
+    }
     let bracket = part(&pool, "bracket-lp-1042-03", 0x41).await;
     let spacer = part(&pool, "spacer-lp-2001-00", 0x42).await;
     part(&pool, "gear-m2-20t-lp-5140-00", 0x43).await;
-    fields
-        .set_value(bracket, "supplier", Some(&json!("Misumi")))
-        .await
-        .expect("sets");
-    fields
-        .set_value(spacer, "supplier", Some(&json!("Hoffmann")))
-        .await
-        .expect("sets");
-    fields
-        .set_value(spacer, "stock_count", Some(&json!(12)))
-        .await
-        .expect("sets");
+    assert_eq!(
+        set(&fields, bracket, "supplier", Some(json!("Misumi"))).await,
+        ValueSet::Set
+    );
+    assert_eq!(
+        set(&fields, spacer, "supplier", Some(json!("Hoffmann"))).await,
+        ValueSet::Set
+    );
+    assert_eq!(
+        set(&fields, spacer, "stock_count", Some(json!(12))).await,
+        ValueSet::Set
+    );
 
     let parts = PgParts(pool.clone());
     let ids = |rows: Vec<lapidary_db::PartRow>| {
@@ -428,4 +450,191 @@ async fn the_grid_filters_by_a_field_value(pool: sqlx::PgPool) {
         .await
         .expect("facets");
     assert_eq!(tags.iter().filter_map(|value| value.count).sum::<u64>(), 1);
+}
+
+/// A field defined again under a removed field's key takes back the values left under it, as long as it
+/// can show them. Values it could not show refuse the key, where they would read as unset.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_key_defined_again_takes_back_only_values_it_can_show(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    fields
+        .create(
+            library(),
+            &field("supplier", "Supplier", "text", &[], false),
+        )
+        .await
+        .expect("defines");
+    let bracket = part(&pool, "bracket-lp-1042-03", 0x43).await;
+    assert_eq!(
+        set(&fields, bracket, "supplier", Some(json!("Misumi Europe"))).await,
+        ValueSet::Set
+    );
+    assert!(fields.remove(library(), "supplier").await.expect("removes"));
+
+    for (kind, options) in [("choice", &["Misumi", "Hoffmann"][..]), ("number", &[][..])] {
+        let refused = fields
+            .create(
+                library(),
+                &field("supplier", "Supplier", kind, options, false),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(DbError::FieldValuesDoNotFit { key, parts: 1 }) if key == "supplier"),
+            "{kind}: {refused:?}"
+        );
+    }
+    fields
+        .create(
+            library(),
+            &field(
+                "supplier",
+                "Supplier",
+                "choice",
+                &["Misumi Europe", "Hoffmann"],
+                false,
+            ),
+        )
+        .await
+        .expect("a field that shows the values takes them back");
+    let custom: String =
+        sqlx::query_scalar("SELECT (metadata_json->'custom')::text FROM part WHERE id = $1")
+            .bind(bracket.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("reads");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&custom).expect("json"),
+        json!({ "supplier": "Misumi Europe" })
+    );
+}
+
+/// An option removed while a value naming it is on its way: the write waits for the removal's lock, then
+/// finds the field changed, rather than leaving a part holding an option that is gone.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_value_checked_against_a_field_that_changes_meanwhile_is_not_written(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    fields
+        .create(
+            library(),
+            &field(
+                "supplier",
+                "Supplier",
+                "choice",
+                &["Hoffmann", "Misumi"],
+                true,
+            ),
+        )
+        .await
+        .expect("defines");
+    let bracket = part(&pool, "bracket-lp-1042-03", 0x44).await;
+    let checked = fields
+        .field(library(), "supplier")
+        .await
+        .expect("reads")
+        .expect("defined");
+
+    // Removing the option, caught between taking the field's lock and committing.
+    let mut removing = pool.begin().await.expect("begins");
+    sqlx::query("SELECT 1 FROM custom_field WHERE library_id = $1 AND key = 'supplier' FOR UPDATE")
+        .bind(library().as_uuid())
+        .execute(&mut *removing)
+        .await
+        .expect("locks");
+    let writing = tokio::spawn({
+        let fields = PgCustomFields(pool.clone());
+        async move {
+            fields
+                .set_value(bracket, &checked, Some(&json!("Misumi")))
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !writing.is_finished(),
+        "the write waits for the field's lock"
+    );
+    sqlx::query(
+        "UPDATE custom_field SET options_json = '[\"Hoffmann\"]' WHERE library_id = $1 AND key = 'supplier'",
+    )
+    .bind(library().as_uuid())
+    .execute(&mut *removing)
+    .await
+    .expect("drops Misumi");
+    removing.commit().await.expect("commits");
+
+    assert_eq!(
+        writing.await.expect("joins").expect("writes nothing"),
+        ValueSet::FieldChanged
+    );
+    let custom: Option<String> =
+        sqlx::query_scalar("SELECT (metadata_json->'custom')::text FROM part WHERE id = $1")
+            .bind(bracket.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("reads");
+    assert_eq!(custom, None, "the part holds no value");
+}
+
+/// A value written while an option is being removed: the removal waits for the write's lock on the
+/// field, then counts the part the write left holding the option.
+#[sqlx::test(migrations = "./migrations")]
+async fn removing_an_option_waits_for_a_value_being_written_and_then_counts_it(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    fields
+        .create(
+            library(),
+            &field(
+                "supplier",
+                "Supplier",
+                "choice",
+                &["Hoffmann", "Misumi"],
+                true,
+            ),
+        )
+        .await
+        .expect("defines");
+    let bracket = part(&pool, "bracket-lp-1042-03", 0x45).await;
+
+    // A value being written, caught between its share lock on the field and its commit.
+    let mut writing = pool.begin().await.expect("begins");
+    sqlx::query("SELECT 1 FROM custom_field WHERE library_id = $1 AND key = 'supplier' FOR SHARE")
+        .bind(library().as_uuid())
+        .execute(&mut *writing)
+        .await
+        .expect("locks");
+    let removing = tokio::spawn({
+        let fields = PgCustomFields(pool.clone());
+        async move {
+            let kept = ["Hoffmann".to_owned()];
+            fields
+                .update(
+                    library(),
+                    "supplier",
+                    &CustomFieldPatch {
+                        options: Some(&kept),
+                        ..CustomFieldPatch::default()
+                    },
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !removing.is_finished(),
+        "removing the option waits for the value's lock"
+    );
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{custom}', '{\"supplier\": \"Misumi\"}') WHERE id = $1",
+    )
+    .bind(bracket.as_uuid())
+    .execute(&mut *writing)
+    .await
+    .expect("writes Misumi");
+    writing.commit().await.expect("commits");
+
+    let removed = removing.await.expect("joins");
+    assert!(
+        matches!(&removed, Err(DbError::OptionInUse { parts: 1, .. })),
+        "{removed:?}"
+    );
 }

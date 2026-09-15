@@ -11,7 +11,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{LibraryId, PartId};
-use lapidary_db::{CustomFieldPatch, CustomFieldRow, DbError, PgCustomFields, PgPool};
+use lapidary_db::{CustomFieldPatch, CustomFieldRow, DbError, PgCustomFields, PgPool, ValueSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -237,9 +237,17 @@ pub async fn set_value(
         Ok(value) => value,
         Err(message) => return refused(StatusCode::BAD_REQUEST, "wrongType", &message),
     };
-    match fields.set_value(part, &key, value.as_ref()).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => no_such_part(),
+    match fields.set_value(part, &field, value.as_ref()).await {
+        Ok(ValueSet::Set) => StatusCode::NO_CONTENT.into_response(),
+        Ok(ValueSet::NoSuchPart) => no_such_part(),
+        Ok(ValueSet::FieldChanged) => refused(
+            StatusCode::CONFLICT,
+            "fieldChanged",
+            &format!(
+                "“{}” was changed or removed while this value was being saved. Reload the part, then set the value again.",
+                field.label
+            ),
+        ),
         Err(err) => internal_error(&err, "custom field value write failed"),
     }
 }
@@ -409,6 +417,9 @@ fn refusal(err: &DbError, what: &'static str) -> Response {
         }
         DbError::OptionInUse { .. } => {
             refused(StatusCode::CONFLICT, "optionInUse", &err.to_string())
+        }
+        DbError::FieldValuesDoNotFit { .. } => {
+            refused(StatusCode::CONFLICT, "valuesDoNotFit", &err.to_string())
         }
         other => internal_error(other, what),
     }

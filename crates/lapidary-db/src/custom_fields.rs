@@ -49,6 +49,17 @@ fn to_row((key, label, kind, options, indexed): FieldColumns) -> CustomFieldRow 
     }
 }
 
+/// What setting one part's value came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSet {
+    Set,
+    /// No live part by that id.
+    NoSuchPart,
+    /// The field is no longer what the value was checked against: an option or the field itself was
+    /// removed, or its options changed, while the value was on its way.
+    FieldChanged,
+}
+
 pub struct PgCustomFields(pub PgPool);
 
 impl PgCustomFields {
@@ -98,6 +109,31 @@ impl PgCustomFields {
         if field.indexed && indexed >= MAX_INDEXED {
             return Err(DbError::TooManyIndexed { max: MAX_INDEXED });
         }
+        // A removed field's values stay (DATA §3.5), and a field defined again under its key takes them
+        // back. Values this field could not show refuse the key, where they would read as unset and slip
+        // past its filter and its option check. Removed parts count: a value comes back with its part.
+        let unfit: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM part \
+             WHERE library_id = $1 AND jsonb_typeof(metadata_json->'custom') = 'object' \
+               AND metadata_json->'custom' ? $2 \
+               AND NOT CASE $3 \
+                   WHEN 'number' THEN jsonb_typeof(metadata_json->'custom'->$2) = 'number' \
+                   WHEN 'text' THEN jsonb_typeof(metadata_json->'custom'->$2) = 'string' \
+                   ELSE jsonb_typeof(metadata_json->'custom'->$2) = 'string' \
+                        AND metadata_json->'custom'->>$2 = ANY($4::text[]) END",
+        )
+        .bind(library.as_uuid())
+        .bind(&field.key)
+        .bind(&field.kind)
+        .bind(&field.options)
+        .fetch_one(&mut *tx)
+        .await?;
+        if unfit > 0 {
+            return Err(DbError::FieldValuesDoNotFit {
+                key: field.key.clone(),
+                parts: unfit,
+            });
+        }
         sqlx::query(
             "INSERT INTO custom_field (id, library_id, key, label, type, options_json, indexed) \
              VALUES ($1, $2, $3, $4, $5, to_jsonb($6::text[]), $7)",
@@ -133,7 +169,7 @@ impl PgCustomFields {
         lock_library(&mut tx, library).await?;
         let current: Option<(bool, Vec<String>)> = sqlx::query_as(
             "SELECT indexed, ARRAY(SELECT jsonb_array_elements_text(options_json)) \
-             FROM custom_field WHERE library_id = $1 AND key = $2",
+             FROM custom_field WHERE library_id = $1 AND key = $2 FOR UPDATE",
         )
         .bind(library.as_uuid())
         .bind(key)
@@ -243,14 +279,38 @@ impl PgCustomFields {
         }))
     }
 
-    /// Set one part's value for `key`, or clear it with `None`. Only this key under `custom` changes.
-    /// `false` when there is no live part by that id.
+    /// Set one part's value for the field `checked`, or clear it with `None`, while the field is still what
+    /// the value was checked against. Only this key under `custom` changes.
+    ///
+    /// The field's row is share-locked before it is read again, so removing one of its options, or the
+    /// field, waits for this write, and this write waits for either. `update` locks the same row before it
+    /// counts the parts holding an option, so neither sees the other half done.
     pub async fn set_value(
         &self,
         part: PartId,
-        key: &str,
+        checked: &CustomFieldRow,
         value: Option<&serde_json::Value>,
-    ) -> Result<bool, DbError> {
+    ) -> Result<ValueSet, DbError> {
+        let mut tx = self.0.begin().await?;
+        let library: Option<Uuid> =
+            sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1 AND deleted_at IS NULL")
+                .bind(part.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(library) = library else {
+            return Ok(ValueSet::NoSuchPart);
+        };
+        let now: Option<(String, Vec<String>)> = sqlx::query_as(
+            "SELECT type, ARRAY(SELECT jsonb_array_elements_text(options_json)) \
+             FROM custom_field WHERE library_id = $1 AND key = $2 FOR SHARE",
+        )
+        .bind(library)
+        .bind(&checked.key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if now.as_ref() != Some(&(checked.kind.clone(), checked.options.clone())) {
+            return Ok(ValueSet::FieldChanged);
+        }
         let updated = sqlx::query(
             "UPDATE part SET metadata_json = CASE WHEN $3::jsonb IS NULL \
                  THEN metadata_json #- ARRAY['custom', $2::text] \
@@ -261,11 +321,15 @@ impl PgCustomFields {
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(part.as_uuid())
-        .bind(key)
+        .bind(&checked.key)
         .bind(value.map(|value| value.to_string()))
-        .execute(&self.0)
+        .execute(&mut *tx)
         .await?;
-        Ok(updated.rows_affected() == 1)
+        if updated.rows_affected() != 1 {
+            return Ok(ValueSet::NoSuchPart);
+        }
+        tx.commit().await?;
+        Ok(ValueSet::Set)
     }
 }
 
