@@ -228,14 +228,16 @@ render cache, show what it reclaims, and state that source files are untouched. 
 who reads "reclaim 40 GB" and fears for their models has lost trust in the thing we sell.
 
 **Built in Phase 4 slice 2** (`docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §4).
-- **What is evictable.** "Free cache space" removes L1 and L2 rung rows whose blob was last read more
-  than 90 days ago. A blob never read since tracking began counts from when it was written.
+- **What is evictable.** "Free cache space" removes L1 and L2 rung rows, and since goal 4 the 3MF and STL
+  exports written for slicers, whose blob was last read more than 90 days ago. A blob never read since
+  tracking began counts from when it was written.
 - **What it never touches.** L0, thumbnails, structure, entities, PMI and source files. Structure,
   entities and PMI cannot be rebuilt, and L0 keeps the open path drawing.
 - **Where the bytes go.** The rows go, `ref_count` is recomputed the way purge recomputes it, and a
   blob nothing else references enters the 30-day quarantine. The bytes leave with the hourly sweep.
 - **What it reports.** Bytes entering quarantine, never "freed", because nothing is gone on the day.
-- **What happens next.** A part opened afterwards draws L0 and asks for L1 again.
+- **What happens next.** A part opened afterwards draws L0 and asks for L1 again. An export is written
+  again when it is next asked for.
 
 **Thumbnails are the exception to "no blobs in Postgres."** Store WebP under 64 KB as
 `bytea` on the derivative row so they arrive in the same query as the grid page instead

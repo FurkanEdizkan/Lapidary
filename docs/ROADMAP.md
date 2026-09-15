@@ -1739,7 +1739,7 @@ checked against the code first. Each fix has a test that a mutation turned red, 
 - **Seen, not changed:** the camera keeps the assembled framing, so at full some parts leave the view until it is
   zoomed out.
 
-**Slicers get 3MF or STL, through the `Target` trait** (`600f745`, `22ce8ad`, `de9ea24`).
+**Slicers get 3MF or STL, through the `Target` trait** (`600f745`, `22ce8ad`, `de9ea24`, `82e88d0`, `aa1bb18`).
 - **Exports are derivatives.** `export_stl` and `export_3mf` are written in Rust from the mesh the kernel read (the
   bridge's own for a CAD file), never from a rung:
   - a binary STL;
@@ -1759,7 +1759,7 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   - **`lapidary open`.** This computer's apps are the target, as `xdg-mime query default` names them. When none
     opens the part's format but one opens 3MF or STL:
     - the export is written, checked against its hash, and opened read-only from `exports/` in the workspace;
-    - no lock is taken;
+    - no lock is taken, since nothing saved from it can come back. Decided without the owner;
     - the agent says, and notifies, that nothing saved from it comes back.
 - **Part page:** "3MF for a slicer" beside Download, on a part whose file is neither STL nor 3MF. It asks, watches
   the batch, then links to the download.
@@ -1767,20 +1767,23 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   where `derivative.kind` holds `export_3mf`. It is named by hand now, and a test pins every kind's serde name to
   its database string.
 - **Tests:**
-  - negotiation's outcomes, and every extension ingest records being a named format;
-  - the download: the original in its own format, the export, the 404, and the B-rep refusal;
+  - negotiation's outcomes, OBJ refused as a mesh Lapidary does not write, every extension ingest records being a
+    named format, and each format's MIME types;
+  - the download: the original in its own format, the export, the 404, and the B-rep and OBJ refusals;
   - the export route's queue and refusal;
   - a derive job writing both files with every triangle, counted by readers that share nothing with the writers;
   - `open`'s hand-over for each set of apps;
-  - the part page's button, batch and link.
-- **Mutation-checked, all 7 caught:** the original handed over whatever the tool reads, the apps ignored, the
+  - the part page's button, batch and link;
+  - an old export freed with the render cache.
+- **Mutation-checked, all 10 caught:** the original handed over whatever the tool reads, the apps ignored, the
   original refused in its own format, every format queued as an STL, the button on an STL part, every export stored
-  as an STL, and the rename removed.
+  as an STL, the rename removed, OBJ refused as needing B-rep, `application/step` dropped from STEP's types, and
+  exports left out of the cache.
 - **Checked on the native stack** with the real bridge, on `ball-knob-d20-lp-9020-00.step`:
 
 | Export | Before it is written | Ask to finished batch | Download | Read back by Python's zip and XML readers |
 |---|---|---|---|---|
-| 3MF | 404 naming `exports/3mf` | 195 ms | 107,669 bytes, `ball-knob-d20-lp-9020-00.lapidary.3mf`, BLAKE3 as answered | 1,686 triangles, millimetres, 19.893 × 19.941 × 54.000 mm |
+| 3MF | 404 naming `exports/3mf` | 192 ms | 107,669 bytes, `ball-knob-d20-lp-9020-00.lapidary.3mf`, BLAKE3 as answered | 1,686 triangles, millimetres, 19.893 × 19.941 × 54.000 mm |
 | STL | 404 naming `exports/stl` | 191 ms | 84,384 bytes, `ball-knob-d20-lp-9020-00.lapidary.stl`, BLAKE3 as answered | 1,686 triangles, 19.893 × 19.941 × 54.000 mm |
 
   - Ingest recorded 1,686 triangles and an exact 20 × 20 × 54 mm box. The mesh's box is up to 0.11 mm under 20
@@ -1789,14 +1792,27 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   - `lapidary open` under throwaway XDG dirs, never the real `mimeapps.list`, with stand-in apps that record what
     they were started on:
     - a slicer for 3MF and no app for STEP: the 3MF at `exports/ball-knob-d20-lp-9020-00_1.lapidary.3mf`, mode
-      `r--r--r--`, BLAKE3 as the server answered, in 203 ms. No lock was taken, and the agent printed its note;
-    - with a CAD app for STEP added: a check-out of the `.step` file, opened in it with its lock taken, then checked
-      in.
+      `r--r--r--`, BLAKE3 as the server answered, in 289 ms. No lock was taken, and the agent printed its note;
+    - a CAD app beside the slicer, declaring STEP only as `application/step`: a check-out of the `.step` file,
+      opened in the CAD app with its lock taken, then checked in. Before the fix below, that computer was handed the
+      3MF;
+    - the same app declaring `model/step`: the same.
   - In Chrome, on the PMI cylinder: "Writing the 3MF…", then "Download the 3MF" 1,217 ms after the press. The link
     answered 200 with `cylinder-d22-pmi-lp-9012-00.lapidary.3mf`, 8,518 bytes. No page errors.
-- **Seen, not changed:** this desktop's MIME database has no STEP type, so `xdg-open` reads a `.step` file as
-  `text/plain`, and `open` asks for `model/step`'s default. An app that registers STEP under another name is not
-  seen, so a computer with a slicer would get the 3MF. Stage 8, with FreeCAD, meets this first.
+- **Found in review, and fixed** (`82e88d0`, `aa1bb18`):
+  - `open` asked for an app under `model/step` alone, and this desktop's MIME database (shared-mime-info 2.4) has no
+    STEP type at all. A CAD app declaring `application/step` went unseen, so a slicer beside it was handed the 3MF.
+    `open` now asks under every spelling on record for each format, and hands over the part's own file when any
+    answers.
+  - `variant=obj` on an STL part was refused as needing B-rep. OBJ is a mesh Lapidary does not write, and is now
+    refused for that.
+  - Nothing could ever free an export. "Free cache space" now takes 3MF and STL exports nobody has read in 90 days,
+    as it takes L1 and L2, and its wording names slicer files beside the previews (DATA §1.5). Decided without the
+    owner.
+- **Still true:**
+  - an app declaring STEP under a spelling not on that list is missed;
+  - `xdg-open` reads a `.step` file as `text/plain` here, whatever the agent decides.
+  - Stage 8, with FreeCAD, meets both first.
 
 ---
 
