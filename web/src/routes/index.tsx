@@ -2,35 +2,36 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import {
-  DEFAULT_LIBRARY_ID,
   batchEventsUrl,
-  downloadUrl,
   blobUrl,
-  fetchBatchStatus,
-  fetchFailures,
-  movePart,
-  removePart,
-  retryFailed,
-  fetchHealth,
   createLibrary,
-  fetchInstanceStorage,
-  freeRenderCache,
+  DEFAULT_LIBRARY_ID,
   downloadBundle,
-  planBundle,
+  downloadUrl,
+  fetchBatchStatus,
+  fetchFacets,
+  fetchFailures,
+  fetchHealth,
+  fetchInstanceStorage,
   fetchLibraries,
   fetchLibrarySettings,
   fetchLibraryStorage,
   fetchPartDetail,
-  fetchFacets,
   fetchParts,
   fetchSavedFilters,
+  freeRenderCache,
+  makeControlled,
+  movePart,
   moveSavedFilter,
+  planBundle,
+  RefusedError,
+  removePart,
   removeSavedFilter,
   renameSavedFilter,
-  saveFilter,
   renderLibraryThumbnails,
   renderPartThumbnail,
-  makeControlled,
+  retryFailed,
+  saveFilter,
   setAutoThumbnail,
   startScan,
 } from '../lib/api'
@@ -494,6 +495,12 @@ export function Index({
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
+  // A field filter the server refuses: no longer offered, or its value no longer fits the field. The grid
+  // says so, where "check that the api service is running" would be untrue.
+  const fieldGone =
+    field !== undefined &&
+    parts.error instanceof RefusedError &&
+    (parts.error.reason === 'notAFilter' || parts.error.reason === 'wrongType')
   // Flattened once per render rather than at each use: three things read it (the grid,
   // the extent line and the empty state) and they must agree about how many parts there
   // are.
@@ -1025,6 +1032,8 @@ export function Index({
         )}
         {parts.isPending ? (
           <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
+        ) : fieldGone ? (
+          <FilterGone text={strings.fieldGone} onWiden={() => onSelectField?.(null, null)} />
         ) : parts.isError ? (
           <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
         ) : loaded.length === 0 ? (
@@ -1033,7 +1042,7 @@ export function Index({
           // whether a category is filtering it, because "this library is empty" is false
           // and alarming when the library is full and the category is not.
           categoryGone ? (
-            <CategoryGone onWiden={() => onSelectFolder?.(null)} />
+            <FilterGone text={strings.categoryGone} onWiden={() => onSelectFolder?.(null)} />
           ) : (
             <EmptyLibrary
               filtered={folderId !== undefined}
@@ -3388,23 +3397,27 @@ const UP: MoveDirection = 'up'
 const DOWN: MoveDirection = 'down'
 
 /**
- * The grid opened on a category that has been deleted since, by a saved filter or an old link. It says
- * so, where an empty grid would claim nothing is filed there yet, and offers the same filters without
- * the category.
+ * The grid opened, by a saved filter or an old link, on a filter the library no longer holds: a category
+ * deleted since, or a field it no longer filters by. It says so, where an empty grid would claim nothing
+ * is filed there yet and a failed one would blame the server, and offers the same filters without it.
  */
-function CategoryGone({ onWiden }: { onWiden: () => void }) {
+function FilterGone({
+  text,
+  onWiden,
+}: {
+  text: { title: string; body: string; widen: string }
+  onWiden: () => void
+}) {
   return (
     <section role="status" className="max-w-prose">
-      <h2 className="text-[15px] font-semibold text-[var(--color-bright)]">
-        {strings.categoryGone.title}
-      </h2>
-      <p className="mt-1 text-sm text-[var(--color-muted)]">{strings.categoryGone.body}</p>
+      <h2 className="text-[15px] font-semibold text-[var(--color-bright)]">{text.title}</h2>
+      <p className="mt-1 text-sm text-[var(--color-muted)]">{text.body}</p>
       <button
         type="button"
         onClick={onWiden}
         className="ease-mechanical mt-3 min-h-6 rounded-sm border border-[var(--color-edge)] px-2 text-sm duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
       >
-        {strings.categoryGone.widen}
+        {text.widen}
       </button>
     </section>
   )
