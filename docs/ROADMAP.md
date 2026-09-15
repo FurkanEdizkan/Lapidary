@@ -1642,6 +1642,40 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   delta left out, the Faces row removed, and the re-read's write taken out.
 - **On the real bridge** (`verify occt`, 39 s): all 7 tests pass, including the cylinder's counts.
 
+**Snapping to cones, spheres and tori** (`2b19af8`, `b58d4f2`; fixture `95370a0`, `a43bc98`).
+- **What each reads:**
+  - a sphere, its diameter, exact;
+  - a torus, its tube's diameter, the size a fillet or an O-ring groove is drawn with, exact;
+  - a cone, its included angle, exact, from the click on it;
+  - a cone's diameter at the height of the click, approximate, since the height comes from the mesh.
+- **Decided without the owner:** a cone reads its included angle, not the goal's default half-angle, since a
+  drawing states a countersink as 90°, not 45°.
+- **A fixture with those surfaces.** `generate-fixtures` now also writes `ball-knob-d20-lp-9020-00.step`: a
+  ⌀20 ball on a ⌀12 shaft, a 90° countersunk tip and an O-ring groove of ⌀3 section. The other fixtures were
+  not regenerated. The native bridge reads 5 faces and 11 edges, and 7,571.5 mm³.
+- **Tests:**
+  - **web:** a ball's and a tube's diameters; a countersink's angle, and its diameter at the click; a cone
+    clicked after another face; a triangle off a surface snapping to nothing.
+  - **kernel** (`verify occt`, 40 s, 8 tests): the knob reads a sphere of radius 10, a cone at 45° to its
+    axis, and a torus of 1.5 mm section on a 6 mm ring.
+  - **Mutation-checked, all 6 caught:** sphere snapping dropped, the ring read for the tube, the half-angle
+    reported, a cone snapping from anywhere, a cone's diameter called exact, and the angle asked of the first
+    click only.
+- **Checked in Chrome** on the native stack, clicking down the middle of the knob (SwiftShader, no page
+  errors):
+
+| Tool, where | Reading |
+|---|---|
+| Diameter, the ball | 20.000 mm |
+| Diameter, the shaft | 12.000 mm |
+| Diameter, the O-ring groove | 3.000 mm |
+| Diameter, the countersunk tip | 2.389 mm ≈ |
+| Angle, the countersunk tip | 90.000° |
+
+- **Found by that check, and fixed** (`b58d4f2`). The angle tool asked only its first click whether it was on a
+  cone, so a click on the cone that came second was measured against the first, approximately. The latest
+  click decides now.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
