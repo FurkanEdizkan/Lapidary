@@ -298,6 +298,13 @@ async fn a_bundle_that_cannot_be_made_whole_is_refused_before_a_byte_is_sent(poo
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
+        plan(pool.clone(), root, serde_json::json!(vec![flange; 501]))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST,
+        "counted before de-duplicating"
+    );
+    assert_eq!(
         plan(pool.clone(), root, serde_json::json!([PartId::new()]))
             .await
             .status(),

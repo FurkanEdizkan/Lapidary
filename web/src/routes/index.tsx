@@ -608,11 +608,15 @@ export function Index({
   const exportSelected = async () => {
     const ids = [...selected]
     try {
-      const plan = await planBundle(library, ids)
+      const answer = await planBundle(library, ids)
+      if ('refused' in answer) {
+        setExportNote(answer.refused ?? strings.selection.exportFailed)
+        return
+      }
       downloadBundle(library, ids)
-      setExportNote(strings.selection.exporting(plan.parts, plan.revisions, plan.bytes))
-    } catch (error) {
-      setExportNote(error instanceof Error ? error.message : strings.selection.exportFailed)
+      setExportNote(strings.selection.exporting(answer.plan.parts, answer.plan.revisions, answer.plan.bytes))
+    } catch {
+      setExportNote(strings.selection.exportFailed)
     }
   }
   const scan = useQuery({

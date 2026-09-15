@@ -136,11 +136,28 @@ pub struct PartDetail {
 /// same reason: distinguishing them would confirm that a part exists to someone who
 /// cannot see it.
 pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
+    let touches = state.touches.clone();
     match PgParts(state.db.clone()).detail(part).await {
         // The lock is its own read rather than a column on the detail query: it is a row of
         // its own table, and that query is already at its column ceiling.
         Ok(Some(row)) => match PgLocks(state.db).active(part).await {
-            Ok(lock) => Json(to_detail(row, lock.map(PartLock::from))).into_response(),
+            Ok(lock) => {
+                // Opening a part is using its previews. Rungs are served `immutable`, so a
+                // browser that holds one never asks the blob route again, and only this uncached
+                // read can say the part is still in use before the render cache counts it
+                // (Phase 4 slice 2 spec §4).
+                for rung in [
+                    row.tessellation_l0,
+                    row.tessellation_l1,
+                    row.tessellation_l2,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    touches.record(&rung);
+                }
+                Json(to_detail(row, lock.map(PartLock::from))).into_response()
+            }
             Err(err) => internal_error(&err, "part lock lookup failed"),
         },
         Ok(None) => (

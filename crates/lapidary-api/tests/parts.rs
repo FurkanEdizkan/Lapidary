@@ -1616,3 +1616,91 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
         "an evicted L1 is asked for again, as one never built is"
     );
 }
+
+/// Rungs are served `immutable`, so a browser holding one never asks the blob route again: opening
+/// the part is what says its previews are in use, before the render cache counts them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn opening_a_part_keeps_its_previews_out_of_the_render_cache(pool: sqlx::PgPool) {
+    let rung = |kind: &'static str, seed: u8, stored: u64| lapidary_db::TessellationRow {
+        kind,
+        blob: lapidary_db::StoredBlobRow {
+            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+            size_bytes: stored,
+            stored_bytes: stored,
+            zstd_level: 0,
+        },
+        grid: Some(64),
+    };
+    let part = lapidary_db::PgIngest(pool.clone())
+        .record(lapidary_db::IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            folder: None,
+            storage_path: Some(
+                "libraries/default/mounting-plate-lp-1180-01/mounting-plate-lp-1180-01.stl",
+            ),
+            library: lapidary_core::LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid")),
+            name: "Mounting plate, LP-1180-01",
+            source_path: "mounting-plate-lp-1180-01.stl",
+            blob: &lapidary_db::StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([0xe9; 32]),
+                size_bytes: 91_204,
+                stored_bytes: 91_204,
+                zstd_level: 0,
+            },
+            measurements: &lapidary_core::MeshMeasurements {
+                bbox_mm: [120.0, 80.0, 6.0],
+                triangle_count: 2_412,
+                surface_area_mm2: 21_540.0,
+                volume_mm3: Some(52_110.0),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: Some(b"plate-thumbnail"),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[
+                rung("tessellation_l0", 0xe0, 9_140),
+                rung("tessellation_l1", 0xe1, 48_210),
+            ],
+        })
+        .await
+        .expect("records");
+    sqlx::query(
+        "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages every blob");
+    let store = tempfile::tempdir().expect("a store");
+    let (_, before) =
+        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
+    assert_eq!(before["renderCacheBytes"], 48_210);
+
+    let touches = lapidary_db::Touches::default();
+    let response = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: store.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+            touches: touches.clone(),
+        },
+        Role::Api,
+    )
+    .oneshot(
+        Request::builder()
+            .uri(format!("/api/parts/{part}"))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    touches.flush(&pool).await.expect("flushes the reads");
+
+    let (_, after) = get_instance_storage(pool, store.path().to_path_buf(), None, "").await;
+    assert_eq!(
+        after["renderCacheBytes"], 0,
+        "a part just opened has no cold previews"
+    );
+}

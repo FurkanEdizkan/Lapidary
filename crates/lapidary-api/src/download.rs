@@ -733,20 +733,22 @@ async fn plan_bundle(
             "Select at least one part to export.".to_owned(),
         ));
     }
+    // Before de-duplicating, which is quadratic: a body of fifty thousand ids is refused, not
+    // searched.
+    if requested.len() > MAX_BUNDLE_PARTS {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "A bundle holds at most {MAX_BUNDLE_PARTS} parts, and {} were selected. Export them in several bundles.",
+                requested.len()
+            ),
+        ));
+    }
     let mut parts: Vec<PartId> = Vec::with_capacity(requested.len());
     for part in requested {
         if !parts.contains(part) {
             parts.push(*part);
         }
-    }
-    if parts.len() > MAX_BUNDLE_PARTS {
-        return Err(refuse(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "A bundle holds at most {MAX_BUNDLE_PARTS} parts, and {} were selected. Export them in several bundles.",
-                parts.len()
-            ),
-        ));
     }
 
     let repo = PgParts(state.db.clone());
@@ -873,13 +875,15 @@ async fn plan_bundle(
             ));
         }
     };
-    if entries.len() >= bundle::MAX_ENTRIES {
+    // An import's limits, not the ZIP writer's: a bundle that plans and downloads must also be
+    // one Lapidary can import again.
+    if entries.len() + 1 > bundle::MAX_IMPORT_ENTRIES {
         return Err(refuse(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
-                "These parts hold {} files, and a bundle holds at most {}. Export them in several bundles.",
+                "These parts hold {} files, and a bundle holds at most {} so that it can be imported. Export them in several bundles.",
                 entries.len(),
-                bundle::MAX_ENTRIES - 1
+                bundle::MAX_IMPORT_ENTRIES - 1
             ),
         ));
     }
@@ -889,11 +893,11 @@ async fn plan_bundle(
             .map(|entry| (entry.path.as_str(), entry.size))
             .chain(std::iter::once((bundle::MANIFEST, manifest.len() as u64))),
     );
-    if bytes >= bundle::MAX_BYTES {
+    if bytes > bundle::MAX_IMPORT_BYTES {
         return Err(refuse(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
-                "These parts come to {bytes} bytes as a bundle, and a bundle stops short of 4 GiB. Export them in several smaller bundles."
+                "These parts come to {bytes} bytes as a bundle, and a bundle stops at 2 GiB, the most an import reads. Export them in several smaller bundles."
             ),
         ));
     }

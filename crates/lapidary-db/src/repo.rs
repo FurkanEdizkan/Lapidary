@@ -605,6 +605,16 @@ impl PgBlobs {
         Ok(())
     }
 
+    /// Recount one blob and quarantine it when nothing points at it: bytes the api stored that only
+    /// a job reads, such as an imported bundle, whose parts are replayed into files of their own.
+    /// The bytes stay on disk for the 30-day hold, readable by the jobs still queued.
+    pub async fn release(&self, hash: &BlobHash) -> Result<(), DbError> {
+        let mut tx = self.0.begin().await?;
+        recount(&mut tx, &[hash.to_hex()]).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Step three of the three: remove bytes nothing has pointed at for `older_than`.
     ///
     /// This is the only code in Lapidary that destroys user data, and it is written on the
@@ -2638,6 +2648,9 @@ impl PgParts {
             "DELETE FROM derivative d USING blob b \
              WHERE b.blake3 = d.blake3 AND d.kind = ANY($1) \
                AND coalesce(b.last_accessed_at, b.created_at) < now() - interval '90 days' \
+               AND NOT EXISTS (SELECT 1 FROM derivative o \
+                               WHERE o.blake3 = b.blake3 AND NOT o.kind = ANY($1)) \
+               AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3) \
              RETURNING d.blake3",
         )
         .bind(cache_kinds())

@@ -131,6 +131,8 @@ struct Lock {
 #[serde(rename_all = "camelCase")]
 struct Detail {
     library: String,
+    /// The part's active check-out, if anybody holds one.
+    lock: Option<Lock>,
     revision: String,
     rev_label: String,
     name: String,
@@ -393,7 +395,28 @@ async fn open(link: &str) -> Result<()> {
     let part = link::part(link).map_err(anyhow::Error::msg)?;
     let (server, workspace) = (server(), checkout::workspace()?);
     let (folder, checkout) = match checkout::find(&workspace, &server, &part.to_string()) {
-        Some(found) => found,
+        // Reused only while its lock is still the part's: a released or broken lock would have
+        // every save from this folder refused.
+        Some((folder, checkout)) => {
+            let what = "reading the part";
+            let detail: Detail = read(
+                send(
+                    reqwest::Client::new().get(format!("{server}/api/parts/{part}")),
+                    what,
+                )
+                .await?,
+                what,
+            )
+            .await?;
+            if detail.lock.as_ref().map(|lock| lock.id.as_str()) != Some(checkout.lock.as_str()) {
+                bail!(
+                    "{} is a check-out of this part whose lock was released, so a save there would be refused. Check that folder in (`lapidary checkin {}`), then open the link again.",
+                    folder.display(),
+                    folder.display()
+                );
+            }
+            (folder, checkout)
+        }
         None => take(part).await?,
     };
     let file = folder.join(&checkout.file_name);

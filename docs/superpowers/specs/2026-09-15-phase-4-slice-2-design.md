@@ -234,7 +234,8 @@ source, derivative, inline-preview, removed and quarantined bytes.
 - a part from another library, or one that is deleted;
 - more than 500 parts;
 - two parts whose ZIP paths collide;
-- a bundle whose sources total 4 GiB or more.
+- a bundle past an import's own limits, 2 GiB or 10,000 files, so that every bundle exported can be
+  imported again.
 
 **The ZIP is written by hand: STORE entries with data descriptors.**
 - **Why:** `zip` 2.4.2 and 4.0.0 both need `Write + Seek`, because they seek back to patch sizes and

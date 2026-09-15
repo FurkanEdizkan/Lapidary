@@ -27,6 +27,10 @@ fn permanent(message: String) -> HandlerError {
 
 impl WorkerHandler {
     /// Check the bundle whole, then queue its parts into this job's batch.
+    ///
+    /// Whatever the answer, nothing will ever point at the bundle's own bytes: its parts are
+    /// replayed into files of their own. So its blob is released into the 30-day quarantine here,
+    /// which outlasts the part jobs that still read it, instead of staying on disk uncounted.
     pub(crate) async fn import_bundle(
         &self,
         batch: BatchId,
@@ -34,7 +38,13 @@ impl WorkerHandler {
         blake3: BlobHash,
         path: &str,
     ) -> Result<Outcome, HandlerError> {
-        let bundle = self.open_bundle(blake3, path).await?;
+        let bundle = match self.open_bundle(blake3, path, true).await {
+            Ok(bundle) => bundle,
+            Err(refused) => {
+                self.release_bundle(blake3).await;
+                return Err(refused);
+            }
+        };
         let mut jobs = Vec::with_capacity(bundle.manifest.parts.len());
         for (index, part) in bundle.manifest.parts.iter().enumerate() {
             jobs.push(JobPayload::ImportPart {
@@ -53,7 +63,16 @@ impl WorkerHandler {
             .enqueue_into(batch, library, &jobs)
             .await
             .map_err(transient)?;
+        self.release_bundle(blake3).await;
         Ok(Outcome::Scanned)
+    }
+
+    /// A release that fails leaves a blob out of quarantine: disk not reclaimed, which is not worth
+    /// failing an import over.
+    async fn release_bundle(&self, blake3: BlobHash) {
+        if let Err(err) = PgBlobs(self.db.clone()).release(&blake3).await {
+            tracing::warn!(error = %err, bundle = %blake3.to_hex(), "could not release an imported bundle's bytes into quarantine");
+        }
     }
 
     /// One part: its revisions through `index`, oldest first, from wherever this library already is
@@ -66,7 +85,7 @@ impl WorkerHandler {
         index: u32,
         path: &str,
     ) -> Result<Outcome, HandlerError> {
-        let mut bundle = self.open_bundle(blake3, path).await?;
+        let mut bundle = self.open_bundle(blake3, path, false).await?;
         let Some(part) = usize::try_from(index)
             .ok()
             .and_then(|index| bundle.manifest.parts.get(index))
@@ -92,35 +111,62 @@ impl WorkerHandler {
             part.revisions.last().cloned().into_iter().collect()
         };
 
-        // Where this library already is in the part's history. A part holding one of the bundle's
-        // revisions resumes after it, which makes an import that stopped half way, or one run
-        // twice, finish rather than fail. A part holding anything else is another part's history.
-        let held = PgRevisions(self.db.clone())
+        // Where this library already is in the part's history. A controlled part whose revisions are
+        // the bundle's first ones, in order, resumes after them, which makes an import that stopped
+        // half way, or one run twice, finish rather than fail, reverts included. A part with any
+        // other history is another part's, and is refused rather than grafted onto. A hobby library
+        // keeps one revision, and `index` decides between skipped and unkept.
+        let revisions_db = PgRevisions(self.db.clone());
+        let held: Vec<String> = match revisions_db
             .current(library, &part.source_path)
             .await
             .map_err(transient)?
-            .and_then(|current| current.source_hash)
-            .map(|hash| hash.to_hex());
-        let start = match held {
-            None => 0,
-            Some(held) => match revisions
+        {
+            None => Vec::new(),
+            Some(current) => {
+                let mut rows = revisions_db
+                    .history(current.part)
+                    .await
+                    .map_err(transient)?;
+                rows.reverse();
+                rows.into_iter()
+                    .map(|row| {
+                        row.source_hash
+                            .map(|hash| hash.to_hex())
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            }
+        };
+        let start = if held.is_empty() || !controlled {
+            0
+        } else if held.len() <= revisions.len()
+            && held
                 .iter()
-                .position(|revision| revision.blake3 == held)
-            {
-                Some(at) => at,
-                None if !controlled => 0,
-                None => {
-                    return Err(permanent(format!(
-                        "{} already holds a different file in this library, so importing its history would graft it onto another part's. Import the bundle into another library, or move that part aside first.",
-                        part.source_path
-                    )));
-                }
-            },
+                .zip(&revisions)
+                .all(|(held, revision)| *held == revision.blake3)
+        {
+            held.len()
+        } else {
+            return Err(permanent(format!(
+                "{} already holds a different history in this library, so importing this one would graft it onto another part's. Import the bundle into another library, or move that part aside first.",
+                part.source_path
+            )));
         };
 
         let mut outcome = Outcome::Skipped;
         for revision in &revisions[start..] {
             let bytes = bundle.bytes(&revision.path).map_err(permanent)?;
+            // The unpacking job hashed every file; a part's job hashes its own, since the stored
+            // bundle could change between the two.
+            if bytes.len() as u64 != revision.size_bytes
+                || blake3::hash(&bytes).to_hex().as_str() != revision.blake3
+            {
+                return Err(permanent(format!(
+                    "The file at {} in the bundle is not the one its manifest names. Import the bundle again.",
+                    revision.path
+                )));
+            }
             let hash = BlobHash::parse_hex(&revision.blake3).map_err(|_| {
                 permanent(format!(
                     "The bundle names {} for {}, which is not a BLAKE3 digest. Export the bundle again.",
@@ -147,7 +193,12 @@ impl WorkerHandler {
 
     /// The uploaded bundle, read back and checked whole. Every refusal is `Permanent`: another
     /// attempt reads the same bytes.
-    async fn open_bundle(&self, blake3: BlobHash, path: &str) -> Result<Bundle, HandlerError> {
+    async fn open_bundle(
+        &self,
+        blake3: BlobHash,
+        path: &str,
+        hash_every_file: bool,
+    ) -> Result<Bundle, HandlerError> {
         let stored = PgBlobs(self.db.clone())
             .blob(&blake3)
             .await
@@ -169,6 +220,10 @@ impl WorkerHandler {
                 "The stored bundle {path} no longer hashes to what was uploaded. Upload it again."
             )));
         }
-        Bundle::open(bytes).map_err(permanent)
+        if hash_every_file {
+            Bundle::open(bytes).map_err(permanent)
+        } else {
+            Bundle::read(bytes).map_err(permanent)
+        }
     }
 }

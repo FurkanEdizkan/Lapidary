@@ -435,14 +435,11 @@ pub async fn import_bundle(
         blake3: request.blake3,
         lock: None,
     };
-    match blobs.exists(&request.blake3).await {
-        Ok(true) => {}
-        Ok(false) => {
-            if let Err(response) = store_staged(&state, &writer, &blobs, library, &file).await {
-                return response;
-            }
-        }
-        Err(err) => return internal_error(&err, "bundle import failed"),
+    // Always from this library's own staged upload, never from bytes the store already holds:
+    // content addressing is not authorization, and a bundle's hash alone must not import another
+    // library's export here.
+    if let Err(response) = store_staged(&state, &writer, &blobs, library, &file).await {
+        return response;
     }
     accept(
         state.db,

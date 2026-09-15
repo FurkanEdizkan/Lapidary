@@ -632,8 +632,8 @@ example STLs, and headless Chrome.
 - **Integrity.** Each file is hashed as it goes out. A mismatch ends the body short of its exact
   `Content-Length`.
 - **The ZIP writer** (`lapidary-targets`' `bundle`) is hand-rolled: STORE entries with data
-  descriptors, because `zip` 2.4.2 needs a seekable writer. It has no ZIP64, so a bundle stops short
-  of 4 GiB, marked `ponytail:`.
+  descriptors, because `zip` 2.4.2 needs a seekable writer. It has no ZIP64, marked `ponytail:`. The plan
+  refuses past an import's own limits, 2 GiB and 10,000 files (the review fixes).
 - **`POST …/bundle/plan`** makes the download's checks first:
   - at most 500 parts;
   - all of them in this library and not removed;
@@ -704,6 +704,44 @@ example STLs, and headless Chrome.
   - A hobby import does not count the earlier revisions it left out.
   - The lineage check's revisions all came by scan, so agent origins were checked only by the
     handler test.
+
+**Review fixes** (`3ef304a`). A fresh reader reviewed the whole slice (`f1f6ae8..50d9099`) and found the
+following, all fixed on one branch.
+- **Bugs:**
+  - **The render cache could not see a part in daily use.** Rungs are served `immutable`, so a
+    browser that holds one never asks the blob route again, and after 90 days the rungs looked cold.
+    Opening a part (`GET /api/parts/{id}`, not cached) now records its rungs as read.
+  - **An uploaded bundle stayed on disk, uncounted:** its blob had `ref_count` 0, and nothing ever
+    quarantined it. The unpacking job now releases it into the 30-day quarantine, whether the bundle
+    imports or is refused.
+  - **A bundle's hash alone imported it:** the route skipped the staged upload when the store already
+    held those bytes. It now reads only this library's own upload, and the client always sends the
+    bundle.
+  - **Import resumed from the first matching hash.** A history with a revert imported twice, and a
+    part whose history began elsewhere was grafted onto. Import now resumes only after a matching
+    prefix of the bundle's history, and refuses anything else.
+- **Risks:**
+  - `lapidary open` reused a checkout whose lock had been released. It now checks the part's lock
+    against the folder's first.
+  - "Free cache space" removed rows its own figure never counted, such as an L2 sharing L0's blob.
+    The removal now has the figure's two exclusions.
+  - Every part job hashed the whole bundle. The unpacking job now hashes every file once, and each
+    part job hashes its own.
+  - Export could make a bundle that import refuses (4 GiB and 65,534 files, against 2 GiB and
+    10,000). The plan now refuses at the import's limits.
+- **Smaller:**
+  - The 500-part cap is checked before de-duplicating.
+  - `register` refuses an install path holding `=`.
+  - An export refused with no message says `exportFailed` rather than an HTTP status.
+  - The bundle downloads into a hidden frame, so a late refusal never replaces the grid.
+  - The path guard now runs inside `index`, where every route into the pipeline passes.
+- **Tests:**
+  - New: the rungs an open records; the bundle's release; a revert imported twice; a graft by
+    prefix; an import by hash alone refused; the cap checked before de-duplication.
+  - Mutation-checked, all caught: the prefix, the open's touch, the staged-only import, the release.
+  - The render cache test now keeps the L2 that shares L0's blob.
+- **Not covered:** the agent's lock check has no automated test. The agent's HTTP half is still the
+  exit check's.
 
 ---
 

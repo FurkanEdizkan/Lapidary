@@ -221,10 +221,11 @@ test('a re-drop of a folder this library already holds sends and commits nothing
   expect(result.alreadyHere).toBe(2)
 })
 
-test('a bundle is sent only when the server lacks it, then handed to the import route by hash and name', async () => {
-  // Never committed as a part: the worker checks the whole archive before writing any of it.
+test('a bundle is always sent, then handed to the import route by hash and name', async () => {
+  // Never committed as a part: the worker checks the whole archive before writing any of it. And
+  // sent even when the server holds those bytes: an import reads only this library's own upload.
   const bundle = new File(['PK a bundle of flange revisions'], 'workshop-bundle.lapidary.zip')
-  let calls = stubApi({ needBytes: ['workshop-bundle.lapidary.zip'] })
+  const calls = stubApi({ needRows: ['workshop-bundle.lapidary.zip'] })
 
   const accepted = await importBundle(LIBRARY, bundle)
 
@@ -237,8 +238,5 @@ test('a bundle is sent only when the server lacks it, then handed to the import 
   })
   expect(accepted.queued).toBe(1)
   expect(calls.some((call) => call.url.includes('/uploads/commit'))).toBe(false)
-
-  calls = stubApi({ needRows: ['workshop-bundle.lapidary.zip'] })
-  await importBundle(LIBRARY, bundle)
-  expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(0)
+  expect(calls.some((call) => call.url.includes('/uploads/probe'))).toBe(false)
 })
