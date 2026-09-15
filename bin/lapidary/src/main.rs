@@ -587,6 +587,7 @@ async fn send_back(
     let Some(batch) = sent.batch else {
         return Ok(None);
     };
+    let batch = follow(client, server, &checkout.library, &batch).await?;
     // The worker's refusal, verbatim: a released lock names who released it.
     if let Some(failure) = batch.failed.first() {
         bail!("{}", failure.reason);
@@ -615,15 +616,16 @@ struct Outgoing<'a> {
     blake3: &'a str,
 }
 
-/// What a library did with files sent: the paths it already held as they are, and the batch that took
-/// the rest, followed to its end. No batch when there was nothing left to take.
+/// What a library did with files sent: the paths it already held as they are, and the id of the batch
+/// taking the rest. No batch when there was nothing left to take.
 struct Sent {
     have: Vec<String>,
-    batch: Option<Batch>,
+    batch: Option<String>,
 }
 
-/// Files sent into a library the way the browser sends a drop: the probe, the bytes the server needs, one
-/// commit, under `lock` when a checkout sends them, and the batch followed to its end.
+/// Files sent into a library the way the browser sends a drop: the probe, the bytes the server needs, and
+/// one commit, under `lock` when a checkout sends them. Following the batch is the caller's: [`follow`] to
+/// its end, or [`batch_status`] a round at a time.
 async fn send_files(
     client: &reqwest::Client,
     server: &str,
@@ -679,29 +681,45 @@ async fn send_files(
     )
     .await?;
 
-    let what = "following the batch";
-    let batch = loop {
-        let batch: Batch = read(
-            send(
-                client.get(format!(
-                    "{server}/api/libraries/{library}/jobs/{}",
-                    accepted.batch_id
-                )),
-                what,
-            )
-            .await?,
-            what,
-        )
-        .await?;
-        if batch.finished_at.is_some() {
-            break batch;
-        }
-        tokio::time::sleep(watch::POLL).await;
-    };
     Ok(Sent {
         have: plan.have,
-        batch: Some(batch),
+        batch: Some(accepted.batch_id),
     })
+}
+
+/// Where a batch has got to, asked once.
+async fn batch_status(
+    client: &reqwest::Client,
+    server: &str,
+    library: &str,
+    batch: &str,
+) -> Result<Batch> {
+    let what = "following the batch";
+    read(
+        send(
+            client.get(format!("{server}/api/libraries/{library}/jobs/{batch}")),
+            what,
+        )
+        .await?,
+        what,
+    )
+    .await
+}
+
+/// A batch followed to its end.
+async fn follow(
+    client: &reqwest::Client,
+    server: &str,
+    library: &str,
+    batch: &str,
+) -> Result<Batch> {
+    loop {
+        let status = batch_status(client, server, library, batch).await?;
+        if status.finished_at.is_some() {
+            return Ok(status);
+        }
+        tokio::time::sleep(watch::POLL).await;
+    }
 }
 
 /// The bytes, in chunks the size the web client sends, under the server's 16 MiB limit.

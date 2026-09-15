@@ -3361,6 +3361,17 @@ test("a numeric query in the URL is still a search", () => {
   expect(validate({ q: "" })).toEqual({});
 });
 
+/** A field key may be all digits (`^[a-z0-9_]{1,40}$`), and the router hands one back as a number. */
+test("a field whose key is all digits keeps its filter in the URL", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { field?: string; fieldValue?: string };
+
+  expect(validate({ field: 2024, fieldValue: "A" })).toEqual({ field: "2024", fieldValue: "A" });
+  expect(validate({ field: "finish", fieldValue: 12 })).toEqual({ field: "finish", fieldValue: "12" });
+  expect(validate({ field: 2024 })).toEqual({});
+});
+
 /**
  * Changing the page size changes what the grid asks for, and is remembered.
  *
@@ -3595,47 +3606,6 @@ test("a library name another library has keeps the dialog open with the reason",
     (screen.getByRole("textbox", { name: strings.libraries.nameLabel }) as HTMLInputElement)
       .value,
   ).toBe("Tabletop terrain");
-});
-
-/**
- * A library's search language is asked for once, when it is made, and travels with its name and its
- * governance in the one request (`docs/DATA.md` §3.3).
- */
-test("a new library is made with the search language chosen for it", async () => {
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    libraries: ok(LIBRARIES),
-    libraryCreate: ok({
-      id: "01931b6e-0000-7000-8000-0000000000c3",
-      name: "Atölye fikstürleri",
-      mode: "hobby",
-      partCount: 0,
-    }),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  fireEvent.click(await screen.findByRole("button", { name: strings.libraries.create }));
-  fireEvent.change(screen.getByRole("textbox", { name: strings.libraries.nameLabel }), {
-    target: { value: "Atölye fikstürleri" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: strings.libraries.languageLabel }), {
-    target: { value: "turkish" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: strings.libraries.createConfirm }));
-
-  await waitFor(() => {
-    const post = fetchMock.mock.calls.find(
-      ([url, init]) =>
-        url === "/api/libraries" && (init as RequestInit | undefined)?.method === "POST",
-    );
-    expect(post === undefined ? null : JSON.parse(String((post[1] as RequestInit).body))).toEqual({
-      name: "Atölye fikstürleri",
-      mode: "hobby",
-      language: "turkish",
-    });
-  });
 });
 
 /**

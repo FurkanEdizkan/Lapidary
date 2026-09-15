@@ -777,3 +777,39 @@ test('a field value that is not a number is refused in the server’s words, and
   fireEvent.keyDown(box, { key: 'Enter' })
   await waitFor(() => expect(puts).toEqual(['twelve', 12]))
 })
+
+test('a field value changed elsewhere replaces what the box shows when the part is read again', async () => {
+  let custom: Record<string, unknown> = { stock_count: 5 }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT' && url.endsWith('/fields/bin')) {
+        // Someone else set the stock count to 7 meanwhile; this read is the first to see it.
+        custom = { stock_count: 7, bin: 'B-14' }
+        return { ok: true, status: 204, json: async () => ({}) }
+      }
+      if (url.endsWith('/fields')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            { key: 'stock_count', label: 'Stock count', kind: 'number', options: [], indexed: false },
+            { key: 'bin', label: 'Bin', kind: 'text', options: [], indexed: false },
+          ],
+        }
+      }
+      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
+        return { ok: true, status: 200, json: async () => [] }
+      }
+      return { ok: true, status: 200, json: async () => ({ ...PART, custom }) }
+    }),
+  )
+  renderPage()
+
+  const stock = (await screen.findByLabelText('Stock count')) as HTMLInputElement
+  expect(stock.value).toBe('5')
+  const bin = screen.getByLabelText('Bin')
+  fireEvent.change(bin, { target: { value: 'B-14' } })
+  fireEvent.keyDown(bin, { key: 'Enter' })
+  await waitFor(() => expect(stock.value).toBe('7'))
+})

@@ -155,28 +155,39 @@ pub async fn probe(
         return response;
     }
     let blobs = PgBlobs(state.db.clone());
+    // Two queries for the whole manifest, however many files it names.
+    let files: Vec<(&str, BlobHash)> = manifest
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.blake3))
+        .collect();
+    let held = match blobs.library_holds_each(library, &files).await {
+        Ok(held) => held,
+        Err(err) => return internal_error(&err, "upload probe failed"),
+    };
+    let hashes: Vec<BlobHash> = manifest
+        .files
+        .iter()
+        .zip(&held)
+        .filter(|(_, held)| !**held)
+        .map(|(file, _)| file.blake3)
+        .collect();
+    let stored = match blobs.existing(&hashes).await {
+        Ok(stored) => stored,
+        Err(err) => return internal_error(&err, "upload probe failed"),
+    };
     let mut plan = UploadPlan {
         have: Vec::new(),
         need_rows: Vec::new(),
         need_bytes: Vec::new(),
     };
-    // Two queries per file, in sequence. A folder of 1,700 files is 3,400 round trips
-    // against a database in the same compose network, once, before any byte moves — the
-    // transfer it decides about is several orders of magnitude longer. A single query
-    // over an unnested array is the upgrade if a corpus ever makes this visible.
-    for file in &manifest.files {
-        match blobs.library_holds(library, &file.path, &file.blake3).await {
-            Ok(true) => {
-                plan.have.push(file.path.clone());
-                continue;
-            }
-            Ok(false) => {}
-            Err(err) => return internal_error(&err, "upload probe failed"),
-        }
-        match blobs.exists(&file.blake3).await {
-            Ok(true) => plan.need_rows.push(file.path.clone()),
-            Ok(false) => plan.need_bytes.push(file.path.clone()),
-            Err(err) => return internal_error(&err, "upload probe failed"),
+    for (file, held) in manifest.files.into_iter().zip(held) {
+        if held {
+            plan.have.push(file.path);
+        } else if stored.contains(&file.blake3) {
+            plan.need_rows.push(file.path);
+        } else {
+            plan.need_bytes.push(file.path);
         }
     }
     Json(plan).into_response()
@@ -373,24 +384,20 @@ pub async fn commit(
         ));
     }
 
-    let blobs = PgBlobs(state.db.clone());
+    let hashes: Vec<BlobHash> = manifest.files.iter().map(|file| file.blake3).collect();
+    // Bytes some library already holds need nothing verified and nothing written: the store is
+    // content-addressed, so the bytes at that hash are already the bytes a file names.
+    let mut stored = match PgBlobs(state.db.clone()).existing(&hashes).await {
+        Ok(stored) => stored,
+        Err(err) => return internal_error(&err, "upload commit failed"),
+    };
     let mut jobs = Vec::with_capacity(manifest.files.len());
-    // Each set of bytes the store lacks, once: two files with the same bytes stage one file, and storing
-    // it twice at once would race over it.
-    let mut hashes = std::collections::HashSet::new();
     let mut storing = Vec::new();
     for file in &manifest.files {
-        match blobs.exists(&file.blake3).await {
-            // Some library already holds these bytes. There is nothing to verify and
-            // nothing to write — the store is content-addressed, so the bytes at that
-            // hash are already the bytes this file names.
-            Ok(true) => {}
-            Ok(false) => {
-                if hashes.insert(file.blake3.to_hex()) {
-                    storing.push(file.clone());
-                }
-            }
-            Err(err) => return internal_error(&err, "upload commit failed"),
+        // Each set of bytes the store lacks, once: two files with the same bytes stage one file, and
+        // storing it twice at once would race over it.
+        if stored.insert(file.blake3) {
+            storing.push(file.clone());
         }
         jobs.push(JobPayload::IngestBlob {
             blake3: file.blake3,
@@ -404,8 +411,10 @@ pub async fn commit(
     accept(state.db, library, &jobs).await
 }
 
-/// Every staged file the store lacks, verified and stored as many at a time as there are cores. Hashing
-/// and compressing are the commit's cost, and a drop's files are independent of each other.
+/// Every staged file the store lacks, verified and stored as many at a time as there are cores, less one.
+/// Hashing and compressing are the commit's cost and take a core each, a drop's files are independent of
+/// each other, and the core left over is for the rest of what this process serves. Under compose's one-CPU
+/// api, `available_parallelism` is 1 and a commit stores one file at a time.
 ///
 /// The first refusal is the answer, and no file is started after it. Files already stored stay, as
 /// unreferenced blobs the reaper collects, as they did when a commit was refused partway.
@@ -414,7 +423,8 @@ async fn store_all(
     library: LibraryId,
     files: Vec<UploadFile>,
 ) -> Result<(), Response> {
-    let at_once = std::thread::available_parallelism().map_or(4, |cores| cores.get());
+    let at_once = std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get().saturating_sub(1).max(1));
     let mut running = tokio::task::JoinSet::new();
     let mut refused = None;
     for file in files {

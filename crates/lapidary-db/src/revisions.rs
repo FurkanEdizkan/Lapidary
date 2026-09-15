@@ -380,6 +380,24 @@ impl PgRevisions {
             .collect()
     }
 
+    /// `metadata.json` for `part`, read and handed to `write` while the part's row is held. A revision or a
+    /// custom value committing meanwhile waits for the file, so two writers never put an older description
+    /// over a newer one. `write` gets `None` when there is no such part.
+    pub async fn write_manifest<T>(
+        &self,
+        part: PartId,
+        write: impl FnOnce(Option<ModelManifest>) -> T,
+    ) -> Result<T, DbError> {
+        let mut held = self.0.begin().await?;
+        sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(part.as_uuid())
+            .execute(&mut *held)
+            .await?;
+        let written = write(self.manifest(part).await?);
+        held.commit().await?;
+        Ok(written)
+    }
+
     /// `metadata.json` for `part`, from its rows: every revision, oldest first, so
     /// `revisions[0]` stays the original (spec §3.2). `None` means there is no such part.
     pub async fn manifest(&self, part: PartId) -> Result<Option<ModelManifest>, DbError> {

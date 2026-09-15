@@ -894,6 +894,13 @@ export const strings = {
    * Saved filters, in the rail above the facets: the grid's filters kept under a name for a library,
    * and shared by everyone who opens it. Removing one takes the name off the list and touches no part.
    */
+  /** The marks on small buttons whose words are their `aria-label`s. */
+  glyphs: {
+    moveUp: '↑',
+    moveDown: '↓',
+    rename: '✎',
+    remove: '×',
+  },
   savedFilters: {
     title: 'Saved filters',
     saveThis: 'Save this filter',
@@ -1182,13 +1189,6 @@ export const strings = {
     nameLabel: 'Library name',
     createConfirm: 'Create',
     modeLabel: 'Governance',
-    /**
-     * The language a library's search stems words in, asked once: a text search configuration is
-     * fixed when a part is indexed (`docs/DATA.md` §3.3).
-     */
-    languageLabel: 'Search language',
-    languageSimple: 'Any language — words matched as written',
-    languageTurkish: 'Turkish — also finds other forms of a word',
     /**
      * Chosen at creation, and switchable one way afterwards: a hobby library can start keeping
      * every change, and nothing switches one back, because a controlled library switched back

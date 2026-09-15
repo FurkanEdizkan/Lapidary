@@ -544,17 +544,17 @@ Run both, union, and rank trigram similarity above text rank when the query look
 identifier (contains a digit and a separator). A user typing a part number wants an
 exact-ish hit at position one, always.
 
-Turkish: `tsvector` config is fixed at index time, so it is a `language` column on `library`
-(`simple` or `turkish`, chosen at creation), not a global setting.
-- Each part copies it into `part.search_config`, and `part.search` is built with that config.
-- A query reads the library's.
-- Stemming finds a softened root (*kapak* finds *kapağı*) and inflected tags and materials. The
-  `ILIKE` substring search already covers a word's prefix, so there is no prefix matching.
-- Under an `en_US.utf8` database, capital I lowercases as `i`, not `ı`, so a name written in capitals
-  is not found by a query typed with `ı`. Recorded, not fixed (`2026-09-15-local-product-design.md`
-  §2.1).
-- **The owner does not need Turkish search** (2026-09-15): regular word search is fine, so capital I
-  stays as it is.
+Every library searches with the `simple` configuration: words as written, with no stemming.
+- **Turkish search was built, then removed.** A `language` column on `library` chose `simple` or
+  `turkish` at creation, and each part copied it into `part.search_config` (`0028`, `aad407e`). The
+  owner does not need it (2026-09-15): regular word search is fine. `0031` put the literal `simple`
+  expression back and dropped both columns (`8bb5ea4`).
+- **Two costs went with it.**
+  - `pg_upgrade` refuses a cluster with a `regconfig` column in a user table.
+  - A `tsquery` built from a library's language could not fold to a constant, so it was parsed again
+    for every candidate row.
+
+  `no_table_holds_a_type_pg_upgrade_refuses` keeps a `reg*` column from coming back.
 
 ### 3.4 Facets
 
@@ -757,15 +757,21 @@ This is why the watcher lives in the native agent binary and not in a container.
 
 **A watched folder polls too:** `lapidary watch <folder> --library <id>`
 (`2026-09-15-local-product-design.md` §5).
-- **The ignore list** above applies whole, because every file under the folder is watched.
+- **The ignore list** above applies whole, because every file under the folder is watched. A server scan
+  skips the same names (`lapidary_core::is_ignored`), so a folder gives a library the same files whichever
+  reads it.
 - **Every 2 s** the tree is listed. A settled change is hashed, then uploaded with its path relative to
   the folder.
 - **A local deletion** changes nothing in the library.
 - **What was sent,** each path's size, mtime and BLAKE3, is kept in
-  `$XDG_STATE_HOME/lapidary/watch-<library>.json`, never inside the folder. A restart sends nothing for
-  a file that is unchanged.
+  `$XDG_STATE_HOME/lapidary/watch-<library>-<folder>.json`, never inside the folder. `<folder>` is 16 hex
+  digits of the canonical path's BLAKE3, so two folders watched into one library keep separate states.
+  A restart sends nothing for a file that is unchanged.
 - **A file the library refuses** is not recorded as sent. It is sent again after 5 minutes, sooner if it
   changes, and on a restart.
+- **Batches are followed a round at a time.** The watch keeps listing and sending while its uploads'
+  batches run, so a slow job or a stopped worker holds up nothing else. A send the server did not answer,
+  and a batch whose status did not arrive, wait 30 s.
 - **Polling costs a listing per interval:** 12 ms warm over 2,778 files. `notify` replaces it once a
   tree is large enough for that to matter.
 

@@ -24,21 +24,14 @@ pub const INTERVAL: Duration = Duration::from_secs(2);
 /// checked out to somebody refuses every upload until it is checked in, and each try fails a job.
 pub const RETRY: Duration = Duration::from_secs(5 * 60);
 
+/// How long files wait to be sent again when the server could not be reached, and how long a batch waits
+/// to be asked about again when its answer did not arrive, so an outage is not a hash and a request of
+/// every changed file every round.
+const BACKOFF: Duration = Duration::from_secs(30);
+
 /// The most bytes one upload holds in memory. Files that settle together go up together (spec §5.3),
 /// in as many uploads as keep each under this; a file larger than it goes up by itself.
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
-
-/// `docs/DATA.md` §6.2's ignore list, whole: hidden files and folders (`.DS_Store` among them), an
-/// office lock file, and the backups, temporaries, locks and autosaves editors leave beside a model.
-pub fn ignored(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    name.starts_with('.')
-        || name.starts_with("~$")
-        || lower == "thumbs.db"
-        || [".bak", ".tmp", ".lck", ".autosave"]
-            .iter()
-            .any(|suffix| lower.ends_with(suffix))
-}
 
 /// A file's source path in the library: its path under the folder, with `/` between the parts. `None`
 /// for anything not plainly under it.
@@ -77,12 +70,12 @@ pub struct Round {
     pub deleted: Vec<String>,
 }
 
-/// The round, decided from this listing, what was last sent, each file's watch, and when each refused
-/// file was refused.
+/// The round, decided from this listing, what was last sent, each file's watch, and when each file refused
+/// or not sent is due again.
 ///
 /// A file whose size and modification time are what was last sent starts as seen, so a restart sends
 /// nothing for having noticed it. Anything else starts unseen, and is hashed once it has settled: a new
-/// file, one changed while the watch was stopped, and one refused [`RETRY`] ago.
+/// file, one changed while the watch was stopped, and one whose wait is over.
 pub fn plan(
     known: &BTreeMap<String, Known>,
     listing: &BTreeMap<String, Seen>,
@@ -91,8 +84,8 @@ pub fn plan(
     now: Instant,
 ) -> Round {
     let mut round = Round::default();
-    refused.retain(|path, at| {
-        let waiting = listing.contains_key(path) && now.duration_since(*at) < RETRY;
+    refused.retain(|path, due| {
+        let waiting = listing.contains_key(path) && now < *due;
         if !waiting {
             watches.remove(path);
         }
@@ -150,12 +143,22 @@ fn settle(
 ) {
     for (path, last) in sent {
         if refusals.contains(&path) {
-            refused.insert(path, now);
+            refused.insert(path, now + RETRY);
         } else {
             refused.remove(&path);
             known.insert(path, last);
         }
     }
+}
+
+/// An accepted upload whose batch is still being worked, followed a round at a time so the watch keeps
+/// listing and sending while it runs.
+struct Following {
+    batch: String,
+    /// When the batch is next asked about.
+    due: Instant,
+    committed: Vec<String>,
+    sent: Vec<(String, Known)>,
 }
 
 /// The files to hash, in uploads of at most [`BATCH_BYTES`] by their listed sizes, in order.
@@ -190,7 +193,7 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if ignored(name) {
+            if lapidary_core::is_ignored(name) {
                 continue;
             }
             let Ok(kind) = entry.file_type() else {
@@ -222,12 +225,20 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
     found
 }
 
-/// `$XDG_STATE_HOME/lapidary/watch-<library>.json`, falling back to `~/.local/state`. Nothing is ever
-/// written inside the watched folder.
-fn state_path(library: &str) -> Result<PathBuf> {
+/// `$XDG_STATE_HOME/lapidary/<state_name>`, falling back to `~/.local/state`. Nothing is ever written
+/// inside the watched folder.
+fn state_path(library: &str, root: &Path) -> Result<PathBuf> {
     Ok(crate::desktop::xdg_dir("XDG_STATE_HOME", ".local/state")?
         .join("lapidary")
-        .join(format!("watch-{library}.json")))
+        .join(state_name(library, root)))
+}
+
+/// `watch-<library>-<folder>.json`, the folder as the first 16 hex digits of its canonical path's hash.
+/// One state per folder: two watches into one library would otherwise each read the other's files as
+/// deleted here, and whichever saved last would leave the other to send everything again.
+pub fn state_name(library: &str, root: &Path) -> String {
+    let folder = blake3::hash(root.as_os_str().as_encoded_bytes()).to_hex();
+    format!("watch-{library}-{}.json", &folder[..16])
 }
 
 pub async fn watch(folder: &Path, library: &str) -> Result<()> {
@@ -242,7 +253,7 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
             folder.display()
         )
     })?;
-    let state = state_path(library)?;
+    let state = state_path(library, &root)?;
     let mut known: BTreeMap<String, Known> = match std::fs::read_to_string(&state) {
         Ok(text) => serde_json::from_str(&text).with_context(|| {
             format!(
@@ -268,6 +279,7 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
 
     let mut watches: HashMap<String, Watch> = HashMap::new();
     let mut refused: HashMap<String, Instant> = HashMap::new();
+    let mut following: Vec<Following> = Vec::new();
     loop {
         let listing = list(&root);
         let round = plan(&known, &listing, &mut watches, &mut refused, Instant::now());
@@ -333,45 +345,88 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
                                 done.have.join(", ")
                             );
                         }
-                        if let Some(batch) = &done.batch {
-                            println!(
-                                "Ingested {}, skipped {}, revised {}, unkept {}.",
-                                batch.ingested, batch.skipped, batch.revised, batch.unkept
-                            );
-                            for failure in &batch.failed {
-                                eprintln!("{} was not kept: {}", failure.path, failure.reason);
-                            }
-                        }
                         let committed: Vec<String> = outgoing
                             .iter()
                             .map(|(path, ..)| path.clone())
                             .filter(|path| !done.have.contains(path))
                             .collect();
-                        let refusals = refusals(&committed, done.batch.as_ref());
-                        if !refusals.is_empty() {
-                            eprintln!(
-                                "Sent again in {} minutes, or sooner if they change: {}.",
-                                RETRY.as_secs() / 60,
-                                refusals.join(", ")
-                            );
-                        }
-                        let sent = outgoing
+                        let sent: Vec<(String, Known)> = outgoing
                             .into_iter()
                             .map(|(path, _, sent)| (path, sent))
                             .collect();
-                        settle(&mut known, &mut refused, sent, &refusals, Instant::now());
-                        dirty = true;
+                        match done.batch {
+                            Some(batch) => following.push(Following {
+                                batch,
+                                due: Instant::now(),
+                                committed,
+                                sent,
+                            }),
+                            None => {
+                                settle(&mut known, &mut refused, sent, &[], Instant::now());
+                                dirty = true;
+                            }
+                        }
                     }
                     Err(error) => {
-                        eprintln!("Not sent: {error:#}");
-                        // Watched afresh, so they are sent again once they settle.
-                        for (path, ..) in &outgoing {
-                            watches.remove(path);
+                        eprintln!(
+                            "Not sent: {error:#}. Sent again in {} seconds, or sooner if they change.",
+                            BACKOFF.as_secs()
+                        );
+                        let due = Instant::now() + BACKOFF;
+                        for (path, ..) in outgoing {
+                            refused.insert(path, due);
                         }
                     }
                 }
             }
         }
+
+        // Each batch asked about once a round, so a slow or stuck one never stops the watch.
+        let mut unfinished = Vec::new();
+        for mut batch in std::mem::take(&mut following) {
+            if Instant::now() < batch.due {
+                unfinished.push(batch);
+                continue;
+            }
+            match crate::batch_status(&client, &server, library, &batch.batch).await {
+                Ok(status) if status.finished_at.is_some() => {
+                    println!(
+                        "Ingested {}, skipped {}, revised {}, unkept {}.",
+                        status.ingested, status.skipped, status.revised, status.unkept
+                    );
+                    for failure in &status.failed {
+                        eprintln!("{} was not kept: {}", failure.path, failure.reason);
+                    }
+                    let refusals = refusals(&batch.committed, Some(&status));
+                    if !refusals.is_empty() {
+                        eprintln!(
+                            "Sent again in {} minutes, or sooner if they change: {}.",
+                            RETRY.as_secs() / 60,
+                            refusals.join(", ")
+                        );
+                    }
+                    settle(
+                        &mut known,
+                        &mut refused,
+                        batch.sent,
+                        &refusals,
+                        Instant::now(),
+                    );
+                    dirty = true;
+                }
+                Ok(_) => unfinished.push(batch),
+                Err(error) => {
+                    eprintln!(
+                        "Could not follow batch {}: {error:#}. Asked again in {} seconds.",
+                        batch.batch,
+                        BACKOFF.as_secs()
+                    );
+                    batch.due = Instant::now() + BACKOFF;
+                    unfinished.push(batch);
+                }
+            }
+        }
+        following = unfinished;
 
         if dirty {
             let written = serde_json::to_string_pretty(&known)
@@ -409,27 +464,16 @@ mod tests {
     }
 
     #[test]
-    fn the_ignore_list_is_data_6_2s_whole() {
-        for name in [
-            ".DS_Store",
-            "Thumbs.db",
-            "~$flange-dn40-lp-3310-02.stl",
-            "flange-dn40-lp-3310-02.stl.bak",
-            "fixture-plate.3dm.bak",
-            "spur-gear-m2-20t.3mf.tmp",
-            "vee-block.stl.lck",
-            "bracket.FCStd.autosave",
-            ".git",
-        ] {
-            assert!(ignored(name), "{name} is ignored");
-        }
-        for name in [
-            "flange-dn40-lp-3310-02.stl",
-            "spur-gear-m2-20t.3mf",
-            "fixture-plate.STEP",
-        ] {
-            assert!(!ignored(name), "{name} is watched");
-        }
+    fn two_folders_watched_into_one_library_keep_separate_states() {
+        let library = "01931b6e-0000-7000-8000-000000000001";
+        let flanges = state_name(library, Path::new("/home/jbo/parts/flanges"));
+        let brackets = state_name(library, Path::new("/home/jbo/parts/brackets"));
+        assert_ne!(flanges, brackets);
+        assert_eq!(
+            flanges,
+            state_name(library, Path::new("/home/jbo/parts/flanges"))
+        );
+        assert!(flanges.starts_with(&format!("watch-{library}-")) && flanges.ends_with(".json"));
     }
 
     #[test]

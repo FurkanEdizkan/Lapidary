@@ -1455,6 +1455,40 @@ async fn a_failed_migration_is_not_retried_from_the_failure_list(pool: PgPool) {
     assert_eq!(retried, 0);
 }
 
+/// A part's description asked for again while one waits is written once, by the waiting job, which reads the
+/// rows when it runs. Asked for while one runs, it is queued again: the running job may have read the rows
+/// before the change.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_waiting_description_is_not_queued_twice_and_a_running_one_does_not_count(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let describe = lapidary_core::JobPayload::DescribePart {
+        part: lapidary_core::PartId::new(),
+    };
+    let (batch, queued) = jobs
+        .enqueue_if_absent(seeded(), &describe, false)
+        .await
+        .expect("enqueues");
+    assert!(queued);
+    let again = jobs
+        .enqueue_if_absent(seeded(), &describe, false)
+        .await
+        .expect("a waiting description is not an error");
+    assert_eq!(again, (batch, false), "pending");
+
+    jobs.dequeue("worker-a", LEASE)
+        .await
+        .expect("dequeues")
+        .expect("the description is claimable");
+    let (again, queued) = jobs
+        .enqueue_if_absent(seeded(), &describe, false)
+        .await
+        .expect("enqueues");
+    assert!(
+        queued && again != batch,
+        "a running description does not stand in for a new one"
+    );
+}
+
 /// A rung asked for twice while its build is pending or running is built once, and the second
 /// ask is handed the batch already building it. Another rung of the same revision is its own job.
 #[sqlx::test(migrations = "./migrations")]

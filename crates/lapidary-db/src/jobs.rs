@@ -308,9 +308,6 @@ impl PgJobs {
     /// its way is not a refusal: the caller watches that batch, which is the answer it got the
     /// first time. Best-effort in `enqueue_migration_if_absent`'s way -- two callers racing can
     /// each see nothing and each insert -- and the second build only rewrites the same row.
-    // ponytail: the NOT EXISTS scans pending and running jobs with no index of its own, and it runs
-    // on the first open of every part that lacks the rung. Add a partial index on
-    // (library_id, kind) where state in ('pending', 'running') when the job table makes it slow.
     pub async fn enqueue_derive_if_absent(
         &self,
         library: LibraryId,
@@ -318,11 +315,29 @@ impl PgJobs {
         produce: DerivativeKind,
     ) -> Result<(BatchId, bool), DbError> {
         let payload = JobPayload::Derive { revision, produce };
+        self.enqueue_if_absent(library, &payload, true).await
+    }
+
+    /// Queue `payload`, unless the same job is already pending, or running when `running_counts`.
+    ///
+    /// Returns the batch holding the job and whether this call queued it. A running job stands in for a
+    /// new one only when what it writes cannot depend on when it read: a rung's build does not, and a
+    /// part's description does, since a running one may have read the rows before the change asking
+    /// again. Best-effort in `enqueue_migration_if_absent`'s way.
+    // ponytail: the NOT EXISTS scans pending and running jobs with no index of its own, and it runs
+    // on the first open of every part that lacks the rung and on every custom value set. Add a partial
+    // index on (library_id, kind) where state in ('pending', 'running') when the job table makes it slow.
+    pub async fn enqueue_if_absent(
+        &self,
+        library: LibraryId,
+        payload: &JobPayload,
+        running_counts: bool,
+    ) -> Result<(BatchId, bool), DbError> {
         let (batch, queued): (Uuid, bool) = sqlx::query_as(
             "WITH existing AS ( \
                  SELECT batch_id FROM job \
                   WHERE kind = $2 AND library_id = $1 AND payload = $3 \
-                    AND state IN ('pending', 'running') \
+                    AND (state = 'pending' OR ($4 AND state = 'running')) \
                   LIMIT 1), \
              queued AS ( \
                  INSERT INTO job (id, batch_id, library_id, kind, payload) \
@@ -334,6 +349,7 @@ impl PgJobs {
         .bind(library.as_uuid())
         .bind(payload.kind())
         .bind(payload.to_json())
+        .bind(running_counts)
         .fetch_one(&self.0)
         .await?;
 

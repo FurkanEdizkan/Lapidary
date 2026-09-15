@@ -209,39 +209,45 @@ impl WorkerHandler {
             message: error.to_string(),
         };
         let revisions = PgRevisions(self.db.clone());
-        let Some(manifest) = revisions
-            .manifest(part)
-            .await
-            .map_err(transient)?
-            .filter(|manifest| manifest.part.library == library)
-        else {
-            return Err(HandlerError::Permanent {
-                message: format!(
-                    "There is no part {part} in this library to describe. It may have been purged; nothing needs doing."
-                ),
-            });
-        };
         let history = revisions.history(part).await.map_err(transient)?;
-        let Some((model_dir, _)) = history
+        let model_dir = history
             .iter()
             .find_map(|revision| revision.storage_path.as_deref())
             .and_then(|path| path.rsplit_once('/'))
-        else {
-            return Ok(Outcome::Described);
-        };
-        let json =
-            serde_json::to_vec_pretty(&manifest).map_err(|error| HandlerError::Permanent {
-                message: format!("could not describe part {part} as JSON: {error}"),
-            })?;
-        SourceStore::open(&self.blob_root, &WorkerRole::assume())
-            .put_at(
-                &format!("{model_dir}/metadata.json"),
-                &json,
-                Compression::AsIs,
-            )
-            .map_err(|error| HandlerError::Transient {
-                message: format!("could not write {model_dir}/metadata.json: {error}"),
-            })?;
+            .map(|(dir, _)| dir.to_owned());
+        let store = SourceStore::open(&self.blob_root, &WorkerRole::assume());
+        let written = revisions
+            .write_manifest(part, |manifest| {
+                let Some(manifest) = manifest.filter(|manifest| manifest.part.library == library)
+                else {
+                    return Err(HandlerError::Permanent {
+                        message: format!(
+                            "There is no part {part} in this library to describe. It may have been purged; nothing needs doing."
+                        ),
+                    });
+                };
+                let Some(model_dir) = &model_dir else {
+                    return Ok(());
+                };
+                let json = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+                    HandlerError::Permanent {
+                        message: format!("could not describe part {part} as JSON: {error}"),
+                    }
+                })?;
+                store
+                    .put_at(
+                        &format!("{model_dir}/metadata.json"),
+                        &json,
+                        Compression::AsIs,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| HandlerError::Transient {
+                        message: format!("could not write {model_dir}/metadata.json: {error}"),
+                    })
+            })
+            .await
+            .map_err(transient)?;
+        written?;
         Ok(Outcome::Described)
     }
 
@@ -725,22 +731,24 @@ impl WorkerHandler {
             if let Some((current, _)) = &moved
                 && let Some((model_dir, _)) = current.rsplit_once('/')
             {
-                let written = match PgRevisions(self.db.clone()).manifest(existing.part).await {
-                    Ok(Some(manifest)) => serde_json::to_vec_pretty(&manifest)
-                        .map_err(|e| e.to_string())
-                        .and_then(|json| {
-                            source
-                                .put_at(
-                                    &format!("{model_dir}/metadata.json"),
-                                    &json,
-                                    Compression::AsIs,
-                                )
-                                .map(|_| ())
-                                .map_err(|e| e.to_string())
-                        }),
-                    Ok(None) => Err("the part could not be found again".to_owned()),
-                    Err(error) => Err(error.to_string()),
-                };
+                let written = PgRevisions(self.db.clone())
+                    .write_manifest(existing.part, |manifest| {
+                        let manifest = manifest
+                            .ok_or_else(|| "the part could not be found again".to_owned())?;
+                        let json =
+                            serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+                        source
+                            .put_at(
+                                &format!("{model_dir}/metadata.json"),
+                                &json,
+                                Compression::AsIs,
+                            )
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(std::convert::identity);
                 if let Err(error) = written {
                     tracing::warn!(
                         source_path,

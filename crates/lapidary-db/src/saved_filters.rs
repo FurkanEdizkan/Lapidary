@@ -124,7 +124,7 @@ impl PgSavedFilters {
     ) -> Result<bool, DbError> {
         let mut tx = self.0.begin().await?;
         let locked: Option<i32> =
-            sqlx::query_scalar("SELECT 1 FROM library WHERE id = $1 FOR UPDATE")
+            sqlx::query_scalar("SELECT 1 FROM library WHERE id = $1 FOR NO KEY UPDATE")
                 .bind(library.as_uuid())
                 .fetch_optional(&mut *tx)
                 .await?;

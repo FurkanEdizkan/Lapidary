@@ -83,7 +83,6 @@ import type {
   FolderId,
   InstanceStorageView,
   LibraryId,
-  LibraryLanguage,
   MoveDirection,
   LibraryStorage,
   NewLibrary,
@@ -158,12 +157,11 @@ export const Route = createFileRoute('/')({
         : typeof tag === 'number'
           ? { tag: String(tag) }
           : {}),
-      // A field offered as a filter and its value, both or neither, as the route reads them. A value
-      // can be all digits, which arrives as a number for the reason `q` gives.
-      ...(typeof field === 'string' &&
-      field.length > 0 &&
+      // A field offered as a filter and its value, both or neither, as the route reads them. A key and a
+      // value can each be all digits, which arrives as a number for the reason `q` gives.
+      ...(((typeof field === 'string' && field.length > 0) || typeof field === 'number') &&
       ((typeof fieldValue === 'string' && fieldValue.length > 0) || typeof fieldValue === 'number')
-        ? { field, fieldValue: String(fieldValue) }
+        ? { field: String(field), fieldValue: String(fieldValue) }
         : {}),
     }
   },
@@ -1866,14 +1864,13 @@ function NewLibraryDialog({
 }) {
   const [name, setName] = useState('')
   const [mode, setMode] = useState<NewLibrary['mode']>('hobby')
-  const [language, setLanguage] = useState<LibraryLanguage>('simple')
   const trimmed = name.trim()
   return (
     <Dialog title={strings.libraries.createTitle} onClose={onCancel}>
       <form
         onSubmit={(event) => {
           event.preventDefault()
-          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode, language })
+          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode })
         }}
       >
         <input
@@ -1894,24 +1891,6 @@ function NewLibraryDialog({
             {LIBRARY_MODES.map((option) => (
               <option key={option} value={option}>
                 {MODE_LABEL[option]}
-              </option>
-            ))}
-          </select>
-        </label>
-        {/*
-          Asked here and never again: a text search configuration is fixed when a part is indexed, so
-          changing it later would mean re-indexing every part (`docs/DATA.md` §3.3).
-        */}
-        <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
-          {strings.libraries.languageLabel}
-          <select
-            value={language}
-            onChange={(event) => setLanguage(event.target.value as LibraryLanguage)}
-            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
-          >
-            {LIBRARY_LANGUAGES.map((option) => (
-              <option key={option} value={option}>
-                {LANGUAGE_LABEL[option]}
               </option>
             ))}
           </select>
@@ -1948,13 +1927,6 @@ const LIBRARY_MODES = ['hobby', 'controlled'] as const
 const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
   hobby: strings.libraries.hobby,
   controlled: strings.libraries.controlled,
-}
-
-/** The search languages, labelled the same way: the language a library's search stems words in. */
-const LIBRARY_LANGUAGES = ['simple', 'turkish'] as const satisfies readonly LibraryLanguage[]
-const LANGUAGE_LABEL: Record<LibraryLanguage, string> = {
-  simple: strings.libraries.languageSimple,
-  turkish: strings.libraries.languageTurkish,
 }
 
 /**
@@ -2129,7 +2101,7 @@ function SearchBox({
           {categoryName === null
             ? strings.search.inThisCategory
             : strings.search.inCategory(categoryName)}{' '}
-          ×
+          {strings.glyphs.remove}
         </button>
       )}
       {!waiting ? null : (
@@ -3300,7 +3272,7 @@ function SavedFilters({
                   onClick={() => move.mutate({ filter: filter.id, direction: UP })}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
                 >
-                  ↑
+                  {strings.glyphs.moveUp}
                 </button>
                 <button
                   type="button"
@@ -3309,7 +3281,7 @@ function SavedFilters({
                   onClick={() => move.mutate({ filter: filter.id, direction: DOWN })}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
                 >
-                  ↓
+                  {strings.glyphs.moveDown}
                 </button>
                 <button
                   type="button"
@@ -3321,7 +3293,7 @@ function SavedFilters({
                   }}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)]"
                 >
-                  ✎
+                  {strings.glyphs.rename}
                 </button>
                 <button
                   type="button"
@@ -3330,7 +3302,7 @@ function SavedFilters({
                   onClick={() => remove.mutate(filter.id)}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
                 >
-                  ×
+                  {strings.glyphs.remove}
                 </button>
               </li>
             ),

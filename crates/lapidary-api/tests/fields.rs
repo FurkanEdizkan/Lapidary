@@ -317,9 +317,10 @@ async fn a_removed_field_keeps_its_values_and_takes_no_new_ones(pool: sqlx::PgPo
 }
 
 /// A value set on a part queues its `metadata.json` to be written again, since the worker is what writes
-/// into a model's directory.
+/// into a model's directory. A second value set while that rewrite waits queues nothing more: the waiting
+/// one reads both.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_value_set_on_a_part_queues_its_description(pool: sqlx::PgPool) {
+async fn values_set_on_a_part_queue_one_description_while_it_waits(pool: sqlx::PgPool) {
     define(
         &pool,
         json!({ "key": "supplier", "label": "Supplier", "kind": "text" }),
@@ -332,6 +333,14 @@ async fn a_value_set_on_a_part_queues_its_description(pool: sqlx::PgPool) {
         "PUT",
         &format!("/api/parts/{bracket}/fields/supplier"),
         Some(json!({ "value": "Misumi" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, body) = send(
+        &pool,
+        "PUT",
+        &format!("/api/parts/{bracket}/fields/supplier"),
+        Some(json!({ "value": "Hoffmann" })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");

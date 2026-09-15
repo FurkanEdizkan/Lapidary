@@ -338,10 +338,11 @@ async fn lock_library(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     library: LibraryId,
 ) -> Result<(), DbError> {
-    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM library WHERE id = $1 FOR UPDATE")
-        .bind(library.as_uuid())
-        .fetch_optional(&mut **tx)
-        .await?;
+    let found: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM library WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(library.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await?;
     match found {
         Some(_) => Ok(()),
         None => Err(DbError::NoSuchLibrary { library }),

@@ -34,6 +34,26 @@ async fn the_search_column_is_stored_not_virtual(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn no_table_holds_a_type_pg_upgrade_refuses(pool: sqlx::PgPool) {
+    // `pg_upgrade` refuses a cluster with a `reg*` column (other than regclass, regrole and regtype) in a
+    // user table, and the next major version is meant to be a `pg_upgrade --link` (`deploy/compose.yaml`).
+    // `0028`'s `part.search_config` was one, until `0031`.
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT c.relname || '.' || a.attname FROM pg_attribute a \
+           JOIN pg_class c ON c.oid = a.attrelid \
+           JOIN pg_namespace n ON n.oid = c.relnamespace \
+          WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped \
+            AND a.atttypid IN ('regcollation'::regtype, 'regconfig'::regtype, 'regdictionary'::regtype, \
+                               'regnamespace'::regtype, 'regoper'::regtype, 'regoperator'::regtype, \
+                               'regproc'::regtype, 'regprocedure'::regtype)",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the catalog reads");
+    assert!(columns.is_empty(), "pg_upgrade would refuse: {columns:?}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn a_default_library_is_seeded(pool: sqlx::PgPool) {
     // Nothing in this slice creates a library, so the scan endpoint needs one to address.
     let (id, name): (uuid::Uuid, String) =
