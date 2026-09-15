@@ -2101,7 +2101,7 @@ function SearchBox({
           {categoryName === null
             ? strings.search.inThisCategory
             : strings.search.inCategory(categoryName)}{' '}
-          ×
+          {strings.glyphs.remove}
         </button>
       )}
       {!waiting ? null : (
@@ -3272,7 +3272,7 @@ function SavedFilters({
                   onClick={() => move.mutate({ filter: filter.id, direction: UP })}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
                 >
-                  ↑
+                  {strings.glyphs.moveUp}
                 </button>
                 <button
                   type="button"
@@ -3281,7 +3281,7 @@ function SavedFilters({
                   onClick={() => move.mutate({ filter: filter.id, direction: DOWN })}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
                 >
-                  ↓
+                  {strings.glyphs.moveDown}
                 </button>
                 <button
                   type="button"
@@ -3293,7 +3293,7 @@ function SavedFilters({
                   }}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)]"
                 >
-                  ✎
+                  {strings.glyphs.rename}
                 </button>
                 <button
                   type="button"
@@ -3302,7 +3302,7 @@ function SavedFilters({
                   onClick={() => remove.mutate(filter.id)}
                   className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
                 >
-                  ×
+                  {strings.glyphs.remove}
                 </button>
               </li>
             ),

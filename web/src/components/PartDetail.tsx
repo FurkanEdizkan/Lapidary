@@ -389,7 +389,7 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
                   onClick={() => save.mutate(tags.filter((kept) => kept !== tag))}
                   className="text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
                 >
-                  ×
+                  {strings.glyphs.remove}
                 </button>
               ) : null}
             </li>
