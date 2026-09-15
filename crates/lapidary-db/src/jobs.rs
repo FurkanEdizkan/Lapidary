@@ -323,10 +323,8 @@ impl PgJobs {
     /// Returns the batch holding the job and whether this call queued it. A running job stands in for a
     /// new one only when what it writes cannot depend on when it read: a rung's build does not, and a
     /// part's description does, since a running one may have read the rows before the change asking
-    /// again. Best-effort in `enqueue_migration_if_absent`'s way.
-    // ponytail: the NOT EXISTS scans pending and running jobs with no index of its own, and it runs
-    // on the first open of every part that lacks the rung and on every custom value set. Add a partial
-    // index on (library_id, kind) where state in ('pending', 'running') when the job table makes it slow.
+    /// again. Best-effort in `enqueue_migration_if_absent`'s way. `existing` reads the pending and
+    /// running jobs alone, however many finished ones the table keeps, off `job_active_idx` (`0036`).
     pub async fn enqueue_if_absent(
         &self,
         library: LibraryId,
