@@ -253,7 +253,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 .route(
                     "/api/libraries/{library}/filters/{filter}",
-                    axum::routing::delete(filters::remove),
+                    axum::routing::delete(filters::remove).patch(filters::rename),
+                )
+                .route(
+                    "/api/libraries/{library}/filters/{filter}/move",
+                    post(filters::move_filter),
                 )
                 // Custom fields: a library's own named values on its parts. See `fields.rs`.
                 .route(

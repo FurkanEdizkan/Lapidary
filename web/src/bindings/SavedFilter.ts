@@ -5,4 +5,9 @@ import type { SavedFilterId } from "./SavedFilterId";
 /**
  * One saved filter.
  */
-export type SavedFilter = { id: SavedFilterId, name: string, search: FilterSearch, };
+export type SavedFilter = { id: SavedFilterId, name: string, search: FilterSearch, 
+/**
+ * It names a category that has been deleted since. The list marks it, and the grid opened on it
+ * says the category is gone instead of showing an empty grid.
+ */
+folderGone: boolean, };

@@ -24,7 +24,9 @@ import {
   fetchFacets,
   fetchParts,
   fetchSavedFilters,
+  moveSavedFilter,
   removeSavedFilter,
+  renameSavedFilter,
   saveFilter,
   renderLibraryThumbnails,
   renderPartThumbnail,
@@ -81,6 +83,7 @@ import type {
   InstanceStorageView,
   LibraryId,
   LibraryLanguage,
+  MoveDirection,
   LibraryStorage,
   NewLibrary,
   PartCard,
@@ -438,6 +441,12 @@ export function Index({
     folderId === undefined
       ? null
       : (folders.data?.find((folder) => folder.id === folderId)?.name ?? null)
+  // A category the live tree does not hold: deleted since a saved filter or a link named it. Decided
+  // only once the tree has loaded, so a tree still on its way never reads as a deleted category.
+  const categoryGone =
+    folderId !== undefined &&
+    folders.data !== undefined &&
+    !folders.data.some((folder) => folder.id === folderId)
 
   // Where the store is on the host, and what the whole of it holds. **One query for the
   // page**, read by two places: every card needs the host root to show a path, and the
@@ -1023,13 +1032,17 @@ export function Index({
           // that came back empty gets the empty state — and which empty state depends on
           // whether a category is filtering it, because "this library is empty" is false
           // and alarming when the library is full and the category is not.
-          <EmptyLibrary
-            filtered={folderId !== undefined}
-            categoryName={selectedFolderName}
-            query={q ?? null}
-            onWiden={() => onSelectFolder?.(null)}
-            onClearSearch={() => onSearch?.('')}
-          />
+          categoryGone ? (
+            <CategoryGone onWiden={() => onSelectFolder?.(null)} />
+          ) : (
+            <EmptyLibrary
+              filtered={folderId !== undefined}
+              categoryName={selectedFolderName}
+              query={q ?? null}
+              onWiden={() => onSelectFolder?.(null)}
+              onClearSearch={() => onSearch?.('')}
+            />
+          )
         ) : (
           <>
             {/*
@@ -3171,6 +3184,28 @@ function SavedFilters({
     mutationFn: (filter: SavedFilterId) => removeSavedFilter(library, filter),
     onSettled: refresh,
   })
+  const [renaming, setRenaming] = useState<SavedFilterId | null>(null)
+  const [newName, setNewName] = useState('')
+  const [renameRefusal, setRenameRefusal] = useState<string | null>(null)
+  const rename = useMutation({
+    mutationFn: ({ filter, name: next }: { filter: SavedFilterId; name: string }) =>
+      renameSavedFilter(library, filter, next),
+    onSuccess: (answer) => {
+      if (answer.kind === 'refused') {
+        setRenameRefusal(answer.message)
+        return
+      }
+      setRenaming(null)
+      setRenameRefusal(null)
+      refresh()
+    },
+    onError: () => setRenameRefusal(strings.savedFilters.refusedWithoutReason),
+  })
+  const move = useMutation({
+    mutationFn: ({ filter, direction }: { filter: SavedFilterId; direction: MoveDirection }) =>
+      moveSavedFilter(library, filter, direction),
+    onSettled: refresh,
+  })
   const filtering = Object.keys(current).length > 0
   const saved = filters.data ?? []
   if (!filtering && saved.length === 0 && !filters.isError) return null
@@ -3186,27 +3221,111 @@ function SavedFilters({
       ) : null}
       {saved.length === 0 ? null : (
         <ul role="list" className="space-y-0.5">
-          {saved.map((filter) => (
-            <li key={filter.id} className="flex items-center gap-1">
-              <button
-                type="button"
-                aria-current={sameFilters(filter.search, current) ? 'true' : undefined}
-                onClick={() => onApply(filter.search)}
-                className="ease-mechanical flex min-h-6 min-w-0 flex-1 items-center rounded-sm px-2 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)] aria-[current=true]:bg-[var(--color-raised)] aria-[current=true]:text-[var(--color-bright)]"
-              >
-                <span className="truncate">{filter.name}</span>
-              </button>
-              <button
-                type="button"
-                aria-label={strings.savedFilters.remove(filter.name)}
-                disabled={remove.isPending}
-                onClick={() => remove.mutate(filter.id)}
-                className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
-              >
-                ×
-              </button>
-            </li>
-          ))}
+          {saved.map((filter, index) =>
+            renaming === filter.id ? (
+              <li key={filter.id}>
+                <form
+                  className="space-y-1"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (newName.trim().length > 0) rename.mutate({ filter: filter.id, name: newName })
+                  }}
+                >
+                  <label className="block text-xs text-[var(--color-muted)]">
+                    {strings.savedFilters.renameLabel}
+                    <input
+                      value={newName}
+                      maxLength={80}
+                      autoFocus
+                      onChange={(event) => setNewName(event.target.value)}
+                      className="mt-1 block w-full rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-sm text-[var(--color-text)]"
+                    />
+                  </label>
+                  <div className="flex gap-1">
+                    <button
+                      type="submit"
+                      disabled={rename.isPending || newName.trim().length === 0}
+                      className="ease-mechanical min-h-6 rounded-sm border border-[var(--color-edge)] px-2 text-xs duration-[var(--duration-fast)] hover:text-[var(--color-bright)] disabled:opacity-50"
+                    >
+                      {strings.savedFilters.renameConfirm}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenaming(null)
+                        setRenameRefusal(null)
+                      }}
+                      className="ease-mechanical min-h-6 rounded-sm px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+                    >
+                      {strings.savedFilters.cancel}
+                    </button>
+                  </div>
+                  {renameRefusal === null ? null : (
+                    <p role="alert" className="text-xs text-[var(--color-muted)]">
+                      {renameRefusal}
+                    </p>
+                  )}
+                </form>
+              </li>
+            ) : (
+              <li key={filter.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-current={sameFilters(filter.search, current) ? 'true' : undefined}
+                  onClick={() => onApply(filter.search)}
+                  className="ease-mechanical flex min-h-6 min-w-0 flex-1 flex-col items-start justify-center rounded-sm px-2 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)] aria-[current=true]:bg-[var(--color-raised)] aria-[current=true]:text-[var(--color-bright)]"
+                >
+                  <span className="w-full truncate">{filter.name}</span>
+                  {filter.folderGone ? (
+                    // Under the name rather than beside it: beside it, the mark took the narrow rail's
+                    // width and cut the filter's own name to a few letters.
+                    <span className="pb-0.5 text-[10px] leading-none text-[var(--color-muted)]">
+                      {strings.savedFilters.folderGone}
+                    </span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  aria-label={strings.savedFilters.moveUp(filter.name)}
+                  disabled={index === 0 || move.isPending}
+                  onClick={() => move.mutate({ filter: filter.id, direction: UP })}
+                  className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  aria-label={strings.savedFilters.moveDown(filter.name)}
+                  disabled={index === saved.length - 1 || move.isPending}
+                  onClick={() => move.mutate({ filter: filter.id, direction: DOWN })}
+                  className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-30"
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  aria-label={strings.savedFilters.rename(filter.name)}
+                  onClick={() => {
+                    setRenaming(filter.id)
+                    setNewName(filter.name)
+                    setRenameRefusal(null)
+                  }}
+                  className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)]"
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  aria-label={strings.savedFilters.remove(filter.name)}
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(filter.id)}
+                  className="px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
+                >
+                  ×
+                </button>
+              </li>
+            ),
+          )}
         </ul>
       )}
       {!filtering ? null : naming ? (
@@ -3260,6 +3379,33 @@ function SavedFilters({
           {strings.savedFilters.saveThis}
         </button>
       )}
+    </section>
+  )
+}
+
+/** The two ways a saved filter moves, named once rather than spelled inside the JSX. */
+const UP: MoveDirection = 'up'
+const DOWN: MoveDirection = 'down'
+
+/**
+ * The grid opened on a category that has been deleted since, by a saved filter or an old link. It says
+ * so, where an empty grid would claim nothing is filed there yet, and offers the same filters without
+ * the category.
+ */
+function CategoryGone({ onWiden }: { onWiden: () => void }) {
+  return (
+    <section role="status" className="max-w-prose">
+      <h2 className="text-[15px] font-semibold text-[var(--color-bright)]">
+        {strings.categoryGone.title}
+      </h2>
+      <p className="mt-1 text-sm text-[var(--color-muted)]">{strings.categoryGone.body}</p>
+      <button
+        type="button"
+        onClick={onWiden}
+        className="ease-mechanical mt-3 min-h-6 rounded-sm border border-[var(--color-edge)] px-2 text-sm duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+      >
+        {strings.categoryGone.widen}
+      </button>
     </section>
   )
 }

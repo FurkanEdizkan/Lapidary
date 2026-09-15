@@ -901,9 +901,22 @@ export const strings = {
     save: 'Save',
     cancel: 'Cancel',
     remove: (name: string) => `Remove the saved filter ${name}`,
+    rename: (name: string) => `Rename the saved filter ${name}`,
+    renameLabel: 'New name',
+    renameConfirm: 'Rename',
+    moveUp: (name: string) => `Move ${name} up`,
+    moveDown: (name: string) => `Move ${name} down`,
+    /** Beside a saved filter whose category was deleted after it was saved. */
+    folderGone: 'category deleted',
     failed: 'Could not load the saved filters. Check that the api service is running, then reload.',
     refusedWithoutReason:
       'The filter was not saved, and the server gave no reason. Try again, and check the server logs if it keeps failing.',
+  },
+  /** The grid opened on a category deleted since a saved filter or a link named it. */
+  categoryGone: {
+    title: 'This category was deleted',
+    body: 'Its models were removed with it, and Removed parts can bring them back. The rest of these filters still work without it.',
+    widen: 'Show these filters without the category',
   },
   /** The filters beside the grid. `docs/DATA.md` §3.4. */
   facets: {

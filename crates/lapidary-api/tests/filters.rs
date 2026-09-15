@@ -182,3 +182,124 @@ async fn a_category_from_another_library_is_not_kept(pool: sqlx::PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{answer}");
 }
+
+async fn save(pool: &sqlx::PgPool, name: &str, search: Value) -> String {
+    let (status, body) = send(
+        pool,
+        "POST",
+        filters(),
+        Some(json!({ "name": name, "search": search })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_str().expect("an id").to_owned()
+}
+
+async fn names(pool: &sqlx::PgPool) -> Vec<String> {
+    let (status, listed) = send(pool, "GET", filters(), None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    listed
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|filter| filter["name"].as_str().expect("a name").to_owned())
+        .collect()
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_saved_filter_is_renamed_and_a_taken_name_is_refused(pool: sqlx::PgPool) {
+    let stock = save(&pool, "Stock STL", json!({ "format": "stl" })).await;
+    save(&pool, "Spares", json!({ "tag": "spare" })).await;
+
+    let (status, body) = send(
+        &pool,
+        "PATCH",
+        format!("{}/{stock}", filters()),
+        Some(json!({ "name": "Spares" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "nameTaken");
+
+    let (status, body) = send(
+        &pool,
+        "PATCH",
+        format!("{}/{stock}", filters()),
+        Some(json!({ "name": "  Stock meshes " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = send(
+        &pool,
+        "PATCH",
+        format!("{}/01a0a1b2-0000-7000-8000-0000000000ff", filters()),
+        Some(json!({ "name": "Anything" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(names(&pool).await, ["Stock meshes", "Spares"]);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_saved_filter_moves_up_and_down_its_list(pool: sqlx::PgPool) {
+    let stock = save(&pool, "Stock STL", json!({ "format": "stl" })).await;
+    save(&pool, "Printable 3MF", json!({ "format": "3mf" })).await;
+    let step = save(&pool, "CAD STEP", json!({ "format": "step" })).await;
+
+    let (status, body) = send(
+        &pool,
+        "POST",
+        format!("{}/{step}/move", filters()),
+        Some(json!({ "direction": "up" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(
+        names(&pool).await,
+        ["Stock STL", "CAD STEP", "Printable 3MF"]
+    );
+
+    let (status, body) = send(
+        &pool,
+        "POST",
+        format!("{}/{stock}/move", filters()),
+        Some(json!({ "direction": "up" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the top answers as done: {body}"
+    );
+    assert_eq!(
+        names(&pool).await,
+        ["Stock STL", "CAD STEP", "Printable 3MF"]
+    );
+
+    let (status, _) = send(
+        &pool,
+        "POST",
+        format!("{}/{stock}/move", filters()),
+        Some(json!({ "direction": "sideways" })),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_filter_whose_category_is_deleted_is_marked_in_the_list(pool: sqlx::PgPool) {
+    let library = lapidary_core::LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid"));
+    let terrain = PgFolders(pool.clone())
+        .get_or_create(library, None, "Terrain", "Terrain")
+        .await
+        .expect("a category");
+    save(&pool, "Terrain", json!({ "folderId": terrain.to_string() })).await;
+    let (_, listed) = send(&pool, "GET", filters(), None).await;
+    assert_eq!(listed[0]["folderGone"], false, "{listed}");
+
+    let (status, body) = send(&pool, "DELETE", format!("/api/folders/{terrain}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, listed) = send(&pool, "GET", filters(), None).await;
+    assert_eq!(listed[0]["folderGone"], true, "{listed}");
+}

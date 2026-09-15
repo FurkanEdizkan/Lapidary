@@ -14,7 +14,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{FolderId, LibraryId, SavedFilterId};
-use lapidary_db::{DbError, PgFolders, PgSavedFilters};
+use lapidary_db::{DbError, FilterMove, PgFolders, PgSavedFilters};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -62,6 +62,34 @@ pub struct SavedFilter {
     pub id: SavedFilterId,
     pub name: String,
     pub search: FilterSearch,
+    /// It names a category that has been deleted since. The list marks it, and the grid opened on it
+    /// says the category is gone instead of showing an empty grid.
+    pub folder_gone: bool,
+}
+
+/// `PATCH /api/libraries/{library}/filters/{filter}`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct RenameSavedFilter {
+    pub name: String,
+}
+
+/// `POST /api/libraries/{library}/filters/{filter}/move`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct MoveSavedFilter {
+    pub direction: MoveDirection,
+}
+
+/// One place up the list, or one place down it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MoveDirection {
+    Up,
+    Down,
 }
 
 /// `POST /api/libraries/{id}/filters`.
@@ -87,6 +115,7 @@ pub async fn list(State(state): State<AppState>, Path(library): Path<LibraryId>)
                 id: row.id,
                 name: row.name,
                 search,
+                folder_gone: row.folder_gone,
             }),
             // Only `create` below writes the column, through this same type, so a row it cannot
             // read was written by something else.
@@ -107,23 +136,10 @@ pub async fn create(
     Path(library): Path<LibraryId>,
     Json(body): Json<NewSavedFilter>,
 ) -> Response {
-    let name = body.name.trim();
-    if name.is_empty() {
-        return refused(
-            StatusCode::BAD_REQUEST,
-            "emptyName",
-            "A saved filter needs a name. Type one and save again.",
-        );
-    }
-    if name.chars().count() > NAME_MAX {
-        return refused(
-            StatusCode::BAD_REQUEST,
-            "nameTooLong",
-            &format!(
-                "A saved filter's name can be at most {NAME_MAX} characters. Shorten it and save again."
-            ),
-        );
-    }
+    let name = match tidy_name(&body.name) {
+        Ok(name) => name,
+        Err((reason, message)) => return refused(StatusCode::BAD_REQUEST, reason, &message),
+    };
     let search = match tidy(body.search) {
         Ok(search) => search,
         Err((reason, message)) => return refused(StatusCode::BAD_REQUEST, reason, &message),
@@ -176,6 +192,8 @@ pub async fn create(
                 id,
                 name: name.to_owned(),
                 search,
+                // Its category was just found live in this library, or it has none.
+                folder_gone: false,
             }),
         )
             .into_response(),
@@ -196,13 +214,79 @@ pub async fn remove(
 ) -> Response {
     match PgSavedFilters(state.db).remove(library, filter).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => refused(
-            StatusCode::NOT_FOUND,
-            "noSuchFilter",
-            "This library has no saved filter with that id. It may have been removed already, so reload the list.",
-        ),
+        Ok(false) => no_such_filter(),
         Err(err) => internal_error(&err, "saved filter remove failed"),
     }
+}
+
+/// `PATCH /api/libraries/{library}/filters/{filter}`: a new name, by the rules a new filter's name
+/// follows, and still unique in the library.
+pub async fn rename(
+    State(state): State<AppState>,
+    Path((library, filter)): Path<(LibraryId, SavedFilterId)>,
+    Json(body): Json<RenameSavedFilter>,
+) -> Response {
+    let name = match tidy_name(&body.name) {
+        Ok(name) => name,
+        Err((reason, message)) => return refused(StatusCode::BAD_REQUEST, reason, &message),
+    };
+    match PgSavedFilters(state.db).rename(library, filter, name).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_such_filter(),
+        Err(err @ DbError::SavedFilterNameTaken { .. }) => {
+            refused(StatusCode::CONFLICT, "nameTaken", &err.to_string())
+        }
+        Err(err) => internal_error(&err, "saved filter rename failed"),
+    }
+}
+
+/// `POST /api/libraries/{library}/filters/{filter}/move`: one place up or down the list. At either end
+/// nothing moves, and the answer is the same as for a move that did.
+pub async fn move_filter(
+    State(state): State<AppState>,
+    Path((library, filter)): Path<(LibraryId, SavedFilterId)>,
+    Json(body): Json<MoveSavedFilter>,
+) -> Response {
+    let direction = match body.direction {
+        MoveDirection::Up => FilterMove::Up,
+        MoveDirection::Down => FilterMove::Down,
+    };
+    match PgSavedFilters(state.db)
+        .move_filter(library, filter, direction)
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_such_filter(),
+        Err(err) => internal_error(&err, "saved filter move failed"),
+    }
+}
+
+/// A name trimmed, and refused with the reason and the sentence to show when it is empty or too long.
+fn tidy_name(name: &str) -> Result<&str, (&'static str, String)> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err((
+            "emptyName",
+            "A saved filter needs a name. Type one and save again.".to_owned(),
+        ));
+    }
+    if name.chars().count() > NAME_MAX {
+        return Err((
+            "nameTooLong",
+            format!(
+                "A saved filter's name can be at most {NAME_MAX} characters. Shorten it and save again."
+            ),
+        ));
+    }
+    Ok(name)
+}
+
+fn no_such_filter() -> Response {
+    refused(
+        StatusCode::NOT_FOUND,
+        "noSuchFilter",
+        "This library has no saved filter with that id. It may have been removed, so reload the list.",
+    )
 }
 
 /// Each value trimmed and an empty one dropped. Refused, with the reason and the sentence to show,
