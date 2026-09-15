@@ -1959,6 +1959,47 @@ stage's own build.
   - the comparison's Mass row read "−163.72 g (−97.1%) ≈", under volume's "−20.86 cm³ (−97.1%)";
   - revision 2's history line showed the mass change beside the volume change, and the note was there.
 
+**Centre of mass** (`1204353`, `bf2ba27`).
+- **Mesh:** summed over the same signed tetrahedra as the volume and divided by the signed total, so a mesh wound
+  inside out has the same centre. Closed meshes only, and ≈.
+- **STEP:** bridge 8 writes OCCT's `CentreOfMass()` beside the volume, exact. `cargo xtask verify occt` was green
+  (bridge 8, 8 tests, its test image removed), and the copied-out bridge answers `occt 8.0.1 bridge 8`.
+- **Stored** when a new part, a revision or a derive is recorded, in `revision.mass_props_json` as
+  `{"centre_mm": [x, y, z], "source": …}` with the volume's provenance. It needs no density. The kernel hands it
+  back beside its measurements rather than inside `MeshMeasurements`, which every kernel and fixture builds.
+  Decided without the owner.
+- **The diff** carries a change per axis, approximate when either centre is. The comparison gains Centre of mass X,
+  Y and Z rows; a revision recorded before centres has none, and its rows say "Not measured in both".
+- **Found on the stack:** a cylinder revised into a knob showed its centre X moving "−0 mm (−34,741.9%)", a centre on
+  its axis at float noise. A coordinate's percentage says only where the origin is, so a centre's change carries
+  none. Any figure's change too small for two places now reads "under 0.01" rather than a signed zero, which "No
+  change" would have hidden. Decided without the owner.
+- **Tests:**
+  - a unit cube moved by (10, 20, 30) centres at (10.5, 20.5, 30.5) whichever way it is wound, and an open one has
+    no centre;
+  - the bridge's plain cylinder centres at (0, 0, 15);
+  - ingest records a closed mesh's centre as tessellated;
+  - the api reads a centre back with its provenance, and a revision without one has no change;
+  - the diff is exact only between two B-reps, with no percent;
+  - the page shows the rows, and "under 0.01 mm".
+- **Mutation-checked, all 10 caught:**
+  - the signed volume made absolute;
+  - each tetrahedron centred at a third;
+  - the closed-mesh gate dropped;
+  - the change approximate only when both centres are;
+  - a new part not recording its centre;
+  - the api dropping the centre;
+  - the database not reading its source;
+  - the rows relabelled;
+  - the percent kept;
+  - the "under 0.01" wording dropped.
+- **Checked in Chrome** on the native stack with the OCCT worker, in a controlled library (no page errors, none
+  logged):
+  - `cylinder-d22-lp-9010-00.step`, rescanned with the ball knob's bytes: centres (0, 0, 15) then (0, 0, 27.01),
+    exact. The rows read "under 0.01 mm", "under 0.01 mm" and "+12.01 mm", with no ≈.
+  - The bracket, rescanned with the spacer's bytes: (44, 13.8, 6.3) then (0, 0, 0), tessellated. The rows read
+    "−44 mm", "−13.8 mm" and "−6.3 mm", each ≈.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
