@@ -621,9 +621,9 @@ const loadViewer = () => import('./Viewer')
 const Viewer = lazy(loadViewer)
 
 /**
- * Fetch the viewer's chunk and compile its shaders ahead of an open; the grid calls this on hover
- * (`DATA.md` §2.4). Nothing happens where the browser cannot draw, and a failure is left for the
- * open itself to meet and report.
+ * Fetch the viewer's chunk and compile its shaders ahead of an open; the grid calls this on hover and a
+ * part's page as it mounts (`DATA.md` §2.4). Nothing happens where the browser cannot draw, and a failure
+ * is left for the open itself to meet and report.
  */
 export function warmViewer(): Promise<void> {
   if (!hasWebGL()) return Promise.resolve()
@@ -633,18 +633,22 @@ export function warmViewer(): Promise<void> {
 }
 
 /**
- * `warmViewer` once the browser is idle, for a screen a part can be opened from with no hover first:
- * a tap on a touch screen, or a press before the pointer rested. Returns what calls it off.
- * `setTimeout` stands in where there is no `requestIdleCallback`.
+ * The viewer's chunk once the browser is idle, for a screen a part can be opened from with no hover first:
+ * a tap on a touch screen, or a press before the pointer rested. Its code only, no renderer, so a visitor
+ * who never opens a part holds no WebGL context; a part opened with no hover compiles as it opens. Returns
+ * what calls it off. `setTimeout` stands in where there is no `requestIdleCallback`.
  */
-export function warmViewerWhenIdle(): () => void {
+export function loadViewerWhenIdle(): () => void {
+  const load = () => {
+    if (hasWebGL()) void loadViewer().catch(() => undefined)
+  }
   if (typeof requestIdleCallback === 'function') {
     // The pair taken together: the call-off can run after whoever supplied the request is gone.
     const cancel = cancelIdleCallback.bind(globalThis)
-    const id = requestIdleCallback(() => void warmViewer(), { timeout: 2000 })
+    const id = requestIdleCallback(load, { timeout: 2000 })
     return () => cancel(id)
   }
-  const id = setTimeout(() => void warmViewer(), 1)
+  const id = setTimeout(load, 1)
   return () => clearTimeout(id)
 }
 

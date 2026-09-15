@@ -390,9 +390,10 @@ Hover a grid card → prefetch `L0`. Open the inspector → prefetch `L1` for th
 previous parts in sort order. Bound the pool at 2 concurrent and cancel on navigate, or
 fast scrolling saturates the queue with parts already passed.
 
-The same hover warms the viewer: its chunk loads and its shaders compile. Where there may be no
-hover it warms without one — the grid once the browser is idle, for a tap or a press before the
-pointer rested, and a part's own page as it opens, for a link.
+The same hover warms the viewer: its chunk loads and its shaders compile. A part's own page warms
+it as it opens, for a link. Where a tap or a press before the pointer rested gives the grid no
+hover, the grid loads the viewer's chunk once the browser is idle, and only that: a visitor who
+never opens a part holds no WebGL context, and a part opened with no hover compiles as it opens.
 
 ### 2.5 Targets — treat as regression tests
 

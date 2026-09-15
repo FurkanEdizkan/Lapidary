@@ -38,7 +38,7 @@ import {
 import { flipFrom } from '../lib/flip'
 import { Dialog } from '../components/Dialog'
 import { ShowInFolder } from '../components/ShowInFolder'
-import { Detail, warmViewer, warmViewerWhenIdle } from '../components/PartDetail'
+import { Detail, loadViewerWhenIdle, warmViewer } from '../components/PartDetail'
 import { FieldFilters, FieldsMenuItem } from '../components/Fields'
 import { DensitiesMenuItem } from '../components/Densities'
 import {
@@ -560,9 +560,9 @@ export function Index({
     prefetch.request(blobUrl(card.tessellationL0))
     void warmViewer()
   }
-  // A tap, or a press with no hover first, gives the hover nothing to warm on, so the grid warms
-  // the viewer as soon as the browser is idle as well.
-  useEffect(warmViewerWhenIdle, [])
+  // A tap, or a press with no hover first, gives the hover nothing to warm on, so the grid loads the
+  // viewer's code as soon as the browser is idle; its renderer waits for a hover or an open.
+  useEffect(loadViewerWhenIdle, [])
   const lookingIndex = looking === undefined ? -1 : loaded.indexOf(looking)
   useEffect(() => {
     if (lookingIndex === -1) return
