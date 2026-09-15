@@ -53,6 +53,7 @@ async-trait = "0.1.92"
 axum = "0.8.9"
 base64 = "0.22.1"
 blake3 = "1.8.7"
+crc32fast = "1.5.1"
 clap = { version = "4.6.6", features = ["derive"] }
 figment = { version = "0.10.19", features = ["env", "toml"] }
 # `webp` is what we write: every image this application stores is re-encoded to it, which

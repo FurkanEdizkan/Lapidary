@@ -1327,6 +1327,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "url",
+ "zip",
 ]
 
 [[package]]
@@ -1481,9 +1482,11 @@ dependencies = [
 name = "lapidary-targets"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "lapidary-core",
  "serde",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

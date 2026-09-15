@@ -15,6 +15,8 @@ import {
   createLibrary,
   fetchInstanceStorage,
   freeRenderCache,
+  downloadBundle,
+  planBundle,
   fetchLibraries,
   fetchLibrarySettings,
   fetchLibraryStorage,
@@ -599,6 +601,19 @@ export function Index({
         return strings.removal.removeFailed
       }
     })
+  // One request for the whole selection, planned first, so a refusal is said on the grid rather
+  // than as a page of JSON the browser navigates to. Then a form post, which streams to disk.
+  const [exportNote, setExportNote] = useState<string | null>(null)
+  const exportSelected = async () => {
+    const ids = [...selected]
+    try {
+      const plan = await planBundle(library, ids)
+      downloadBundle(library, ids)
+      setExportNote(strings.selection.exporting(plan.parts, plan.revisions, plan.bytes))
+    } catch (error) {
+      setExportNote(error instanceof Error ? error.message : strings.selection.exportFailed)
+    }
+  }
   const scan = useQuery({
     queryKey: ['batch', library, activeBatch],
     queryFn: () => fetchBatchStatus(library, activeBatch as string),
@@ -989,6 +1004,8 @@ export function Index({
                 bulk={bulk}
                 onMove={() => setPicking(true)}
                 onRemove={() => void removeSelected()}
+                onExport={() => void exportSelected()}
+                note={exportNote}
                 onClear={() => setSelected(new Set())}
               />
             ) : null}
@@ -2551,12 +2568,18 @@ function SelectionBar({
   bulk,
   onMove,
   onRemove,
+  onExport,
+  note,
   onClear,
 }: {
   count: number
   bulk: BulkProgress | null
   onMove: () => void
   onRemove: () => void
+  /** A bundle of the selection: planned, then downloaded. */
+  onExport: () => void
+  /** What the last export said: what it holds, or why the server refused it. */
+  note: string | null
   onClear: () => void
 }) {
   const busy = bulk !== null && bulk.done < bulk.total
@@ -2585,10 +2608,18 @@ function SelectionBar({
         >
           {strings.removal.remove}
         </button>
+        <button type="button" className={button} disabled={count === 0 || busy} onClick={onExport}>
+          {strings.selection.exportBundle}
+        </button>
         <button type="button" className={button} disabled={count === 0 || busy} onClick={onClear}>
           {strings.selection.clear}
         </button>
       </div>
+      {note === null ? null : (
+        <p aria-live="polite" className="text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
       {bulk === null || busy || bulk.failures.length === 0 ? null : (
         <div role="alert">
           <p>{strings.selection.failedHeading(bulk.failures.length)}</p>

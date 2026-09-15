@@ -1,8 +1,11 @@
 //! Automatic format negotiation: slicers get 3MF/STL, CAD gets STEP, the viewer gets
 //! glTF.
 //!
-//! Empty. Implementation lands in **Phase 4** (`ROADMAP.md`), beside the `Target` trait
-//! and the round-trip the format negotiation exists to serve. See `docs/DATA.md` §5.
+//! Export bundles live here (`bundle`, Phase 4 slice 2). The `Target` trait does not yet: download
+//! and `lapidary open` both hand out `variant=original`, so nothing negotiates a format (spec §3).
+//! See `docs/DATA.md` §5.
+
+pub mod bundle;
 
 use thiserror::Error;
 

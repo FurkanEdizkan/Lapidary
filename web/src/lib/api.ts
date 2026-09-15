@@ -14,6 +14,7 @@ import type {
   FolderPatch,
   InstanceStorageView,
   RenderCacheFreedView,
+  BundlePlan,
   JobId,
   LibraryId,
   LibrarySettings,
@@ -711,6 +712,41 @@ export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStor
     throw new Error(`instance storage returned ${response.status}`)
   }
   return (await response.json()) as InstanceStorageView
+}
+
+/**
+ * `POST /api/libraries/{id}/bundle/plan` — what exporting these parts would put in a bundle, or,
+ * thrown, the server's own words for why it will not.
+ */
+export async function planBundle(library: LibraryId, parts: PartId[]): Promise<BundlePlan> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/bundle/plan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ parts }),
+  })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { message?: string } | null
+    throw new Error(body?.message ?? `bundle plan returned ${response.status}`)
+  }
+  return (await response.json()) as BundlePlan
+}
+
+/**
+ * `POST /api/libraries/{id}/bundle`, as a form the browser posts itself: the bundle streams to
+ * disk under the name the server gives it, where a `fetch` would hold the whole archive in memory.
+ */
+export function downloadBundle(library: LibraryId, parts: PartId[]): void {
+  const form = document.createElement('form')
+  form.method = 'post'
+  form.action = `/api/libraries/${encodeURIComponent(library)}/bundle`
+  const field = document.createElement('input')
+  field.type = 'hidden'
+  field.name = 'parts'
+  field.value = parts.join(',')
+  form.append(field)
+  document.body.append(form)
+  form.submit()
+  form.remove()
 }
 
 /**
