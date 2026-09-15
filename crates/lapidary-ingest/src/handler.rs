@@ -456,6 +456,12 @@ impl WorkerHandler {
             if existing.deleted {
                 return Ok(Outcome::Skipped);
             }
+            // The same bytes, committed by another job between step 3's question and this one. Two
+            // queries leave that window open, and without this a lease-expiry duplicate of one file
+            // was told it was a change nobody keeps.
+            if existing.source_hash == Some(hash) {
+                return Ok(Outcome::Skipped);
+            }
             // A hobby library keeps no revisions. Counted, not failed: nothing broke, the new
             // bytes are still where they came from, and a retry could not change the answer.
             if existing.mode != LibraryMode::Controlled {

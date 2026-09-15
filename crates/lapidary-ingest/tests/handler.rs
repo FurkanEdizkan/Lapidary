@@ -585,8 +585,8 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         first.expect("one succeeds"),
         second.expect("the other does too"),
     ];
-    assert!(outcomes.contains(&Outcome::Ingested));
-    assert!(outcomes.contains(&Outcome::Skipped));
+    assert!(outcomes.contains(&Outcome::Ingested), "{outcomes:?}");
+    assert!(outcomes.contains(&Outcome::Skipped), "{outcomes:?}");
 
     let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE library_id = $1")
         .bind(seeded().as_uuid())
