@@ -1574,6 +1574,27 @@ checked against the code first. Each fix has a test that a mutation turned red, 
     first on its `PATH` and `LD_LIBRARY_PATH=target/occt/lib`. `target/goal4-check/stack.sh` starts it with
     an api and `vite preview`.
 
+**Checks on the fixtures** (no code).
+- **The stack:** the api, a worker with the copied-out kernel, `vite preview` (all debug builds), a scratch
+  database, and headless Chrome with a throwaway profile. The scripts stay in `target/goal4-check/`.
+- **The files:** the repo's generated fixtures, not real-world files, by the owner's answer.
+
+| Check | Result |
+|---|---|
+| Phase 0 exit, `verify occt` | 113 ms; 118 ms and 117 ms on stage 4's rebuilds |
+| Scan of `fixtures/step` (4 STEP, 1 IGES) into a controlled library, request to finished batch | 754 ms: 5 ingested, 0 failed |
+| Each STEP file saved again (its header's time stamp changed), scanned | 458 ms: 4 revised, 1 skipped |
+| Bundle of those 5 parts and 9 revisions | 455,560 bytes, exported in 22 ms |
+| Imported into another controlled library | 1,115 ms: 5 ingested, 0 failed |
+| Lineage, row by row | identical: labels, parents, origins and source hashes; each current revision's derivative kinds too |
+| Section cut along Z through the imported 200-part assembly: cap pixels on a 350 × 350 canvas | 0 uncut, 4,389 with every part shown, 2 with one stop pin isolated, 4,389 with every part shown again |
+
+- **Phase 5's "40-part assembly"** is read as met by one assembly of 200 placed parts, exported and imported
+  with its lineage. Decided without the owner.
+- **A hidden part's section is not filled** (`8a1c239`, now seen). With 199 of 200 parts hidden, 2 cap
+  pixels were left where 4,389 had been. The screenshots show the pin alone and uncapped. SwiftShader, no
+  page errors.
+
 **CAD derivatives on demand** (`bc4f06e`).
 - **The sweep.** `enqueue_stale_rungs` is now `enqueue_stale_derivatives`. Besides the rungs, it queues a
   CAD source's `structure` row when a different kernel version wrote it.
@@ -1591,6 +1612,35 @@ checked against the code first. Each fix has a test that a mutation turned red, 
     job, at this kernel's version, and is not queued again.
   - **Mutation-checked, all 3 caught:** `structure` dropped from the sweep (both tests), and the derive
     writing only the kind it was asked for.
+- **Checked on the native stack** with the OCCT worker.
+  - On the AP242 cylinder's current revision, the PMI row was deleted and the tree and entities were aged to a
+    `bridge-5` version, so the part's page served no PMI.
+  - After a worker restart, the sweep queued 1 read, and its job finished 326 ms after the restart.
+  - All three rows came back at `bridge-6`. The page's PMI hash was the one it had before, listing ⌀22
+    +0.05/0, flatness 0.02 and perpendicularity 0.05 to A.
+
+**Face and edge counts** (`718d8ad`, `3fceac7`).
+- **The bridge,** now bridge 7, counts every face and edge of the placed shape into `measurements.json`:
+  analytic or not, and once per placed instance.
+  - Read natively: the ⌀22 cylinder has 3 faces and 3 edges, and the 200-part assembly has
+    1011 faces and 1437 edges.
+- **Stored on the revision** (`0032`: `face_count` and `edge_count`, both or neither).
+  - Written after the revision commits, for a new part and for a revision, warn-only as the header is.
+- **Read again for older parts.** Bridge 7 makes the stale sweep read every older CAD part again, and that
+  read now writes the counts too, so a part ingested earlier gets them without a new ingest.
+- **The diff** compares them exactly, and the Compare table has Faces and Edges rows. A mesh has no counts,
+  and a pair missing them says so.
+- **The two count errors** now say "count", since they guard faces and edges as well as triangles.
+- **Tests:**
+  - the fake bridge's counts reach the kernel output;
+  - counts compare exactly, and only between two B-reps;
+  - a revision's counts come back with its history;
+  - a STEP ingest writes them, and an STL's revision has none;
+  - the re-read of a part with no counts brings them back;
+  - the Compare table shows both rows.
+- **Mutation-checked, all 5 caught:** the new part's write skipped, the bridge's counts dropped, the face
+  delta left out, the Faces row removed, and the re-read's write taken out.
+- **On the real bridge** (`verify occt`, 39 s): all 7 tests pass, including the cylinder's counts.
 
 ---
 
