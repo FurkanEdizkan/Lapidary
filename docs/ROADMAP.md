@@ -483,6 +483,7 @@ example STLs, and headless Chrome.
   - Fixed in slice 2 (`b34e8b3`): the rename and still-writing tests now assert the change poll too.
   - The database revision tests and every lock test were written alongside their code, and
     were mutation-checked instead of being seen failing first.
+    Seen failing in the correctness goal: each fails when the line it guards is broken.
 - The purge coverage test caught `part_lock`'s `ON DELETE CASCADE` before merge. Purge now
   deletes the rows by name.
 - The old deleted-part test counted a rung the skip path leaked. It now counts one.
@@ -969,6 +970,21 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
   - A move carrying a rename, and a move to the root, are both refused, and the tree is unchanged.
     Seen failing first, as a 200.
   - The cross-library refusal is now tested through create, the only route left that reaches it.
+
+**Slice 1's revision and lock tests, seen failing** (no code change). For each test, the line it
+guards was broken once, the test run, and the line restored. All eight failed as expected, so none
+needed a `test/` branch.
+
+| Test | Line broken | Failed with |
+|---|---|---|
+| `a_revision_goes_on_top_and_the_previous_file_is_set_aside_under_its_own_label` | the aside path takes the new label | `revisions/2/` where `revisions/1/` was expected |
+| `a_parent_that_is_no_longer_current_is_a_conflict_and_moves_no_file` | the stale-parent check skipped | no conflict returned |
+| `a_failed_file_move_records_nothing` | a failed move commits | 2 revisions where 1 was expected |
+| `a_part_deleted_while_its_change_was_measured_is_not_revised` | the deleted-part filter dropped | the deleted part revised |
+| `a_part_is_checked_out_once_and_the_next_asker_is_told_by_whom` | a held lock ignored | the second check-out errored instead of naming the holder |
+| `a_hobby_library_and_a_missing_part_have_nothing_to_check_out` | the hobby refusal skipped | `Taken` in a hobby library |
+| `only_the_held_lock_checks_in_and_then_the_part_is_free` | check-in without `released_at IS NULL` | a second check-in succeeded |
+| `a_forced_release_is_recorded_as_forced_and_by_whom` | `forced = false` | `(false, "jonas@laptop")` |
 
 ---
 
