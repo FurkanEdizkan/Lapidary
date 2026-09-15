@@ -173,6 +173,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | Point-to-point, edge length, diameter, angle | 3 |
 | Snap to analytic B-rep entities; exact nominal values | 3 |
+<!--
+  Planes, cylinders and circular edges since bridge 6. Spheres, tori and cones since goal 4 (`2b19af8`):
+  - exact: a sphere's diameter, a torus's tube diameter, and a cone's included angle;
+  - approximate: a cone's diameter where it was clicked.
+-->
+
 | Mesh-derived values visibly labelled "approximate" | 3 |
 | Wall thickness | 3 |
 | Section plane. Capped (`13fd3bf`): a closed mesh's cut face is filled, and an open one says why not | 5 |
@@ -191,6 +197,13 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   OCCT wrote. `ROADMAP.md` Phase 5 records the check and the limits.
 -->
 | Explode view | 5 |
+<!--
+  Built in goal 4 (`f128516`), for a rung that counts its placed parts (`extras.parts`):
+  - a slider moves each part straight out from the assembly's centre;
+  - hidden parts stay hidden;
+  - measuring is off while the parts are apart, and says why.
+-->
+
 
 ## 4. Versioning
 
@@ -212,8 +225,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   - Geometric diff, part of it:
     - delivered: volume, surface area, bbox per axis and triangle count, each ≈ when either
       figure is mesh-derived;
-    - not yet: mass and centre of mass (nothing stores a density), and face and edge counts
-      (STEP entities, checked with OCCT).
+    - face and edge counts since goal 4 (`718d8ad`), exact, for a CAD part read by bridge 7 or later;
+    - not yet: mass and centre of mass (nothing stores a density).
   - Locks: one per part, free-text holder, no auth; a forced release is recorded.
   - Overlay diff (Phase 4 slice 2): the From revision is drawn as an amber ghost through the part,
     its L1 or else its L0, and never picked.
