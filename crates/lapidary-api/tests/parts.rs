@@ -57,6 +57,7 @@ async fn seed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library,
@@ -461,6 +462,7 @@ async fn seed_sized_part(
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(storage_path),
             library: library(),
@@ -578,6 +580,7 @@ async fn seed_filed_part(
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder,
             storage_path: Some(storage_path),
             library: library(),
@@ -759,6 +762,7 @@ async fn a_card_carries_the_l0_rung_hash_so_those_bytes_are_addressable(pool: sq
     };
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library,
             name: "LP-1042-03",
             source_path: "brackets/LP-1042-03.stl",
@@ -1140,6 +1144,7 @@ async fn a_part_number_for_no_part_or_past_the_limit_is_refused(pool: sqlx::PgPo
 async fn seed_format(pool: &sqlx::PgPool, seed: u8, name: &str, format: &str) {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1235,6 +1240,7 @@ async fn the_facets_route_counts_formats_and_the_grid_filters_by_one(pool: sqlx:
 async fn seed_volume(pool: &sqlx::PgPool, seed: u8, name: &str, volume_mm3: Option<f64>) {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -1503,6 +1509,7 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
     };
     let part = lapidary_db::PgIngest(pool.clone())
         .record(lapidary_db::IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(
                 "libraries/default/idler-pulley-lp-4820-00/idler-pulley-lp-4820-00.stl",

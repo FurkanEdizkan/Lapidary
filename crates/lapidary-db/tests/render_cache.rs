@@ -27,6 +27,7 @@ async fn part(
 ) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid")),

@@ -58,6 +58,7 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
         .expect("stores the rung");
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),
@@ -138,6 +139,7 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
     // only on top of a file with a `storage_path` to set aside.
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl"),
             library: library(),
@@ -501,6 +503,7 @@ async fn an_assembly_tree_is_named_by_its_part_and_served_as_json(pool: sqlx::Pg
         .expect("stores the tree");
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
             library: library(),

@@ -732,6 +732,8 @@ impl WorkerHandler {
             zstd_level: stored.zstd_level,
         };
         let request = IngestRequest {
+            // The route these bytes came by: `ingest` for a scan, `upload` for the browser.
+            origin,
             library,
             name,
             source_path,

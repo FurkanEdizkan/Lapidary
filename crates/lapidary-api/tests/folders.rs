@@ -121,6 +121,7 @@ async fn seed_part(
     let storage_path = format!("libraries/default/{source_path}");
     PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name,
             source_path,

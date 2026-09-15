@@ -74,6 +74,7 @@ fn flange(volume: f64, x: f64) -> MeshMeasurements {
 async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Flange DN40, LP-3310-02",
             source_path: PATH,
@@ -178,6 +179,7 @@ async fn each_revision_names_its_own_rungs_for_the_overlay(pool: sqlx::PgPool) {
     };
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "Flange DN40, LP-3310-02",
             source_path: PATH,

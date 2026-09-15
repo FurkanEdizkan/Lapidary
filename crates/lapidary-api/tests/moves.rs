@@ -56,6 +56,7 @@ async fn seed_model(
     };
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name,
             source_path,
@@ -255,6 +256,7 @@ async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPo
 
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "rock",
             source_path: "Terrain/rock.stl",
@@ -534,6 +536,7 @@ async fn a_model_the_storage_migration_has_not_reached_cannot_be_moved(pool: sql
     };
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name: "corner bracket",
             source_path: "corner bracket.stl",

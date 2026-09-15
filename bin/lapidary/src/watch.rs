@@ -120,9 +120,17 @@ mod tests {
     fn a_write_still_going_restarts_the_wait() {
         let start = Instant::now();
         let mut watch = Watch::new(seen(0, 100));
-        watch.poll(start, seen(8_192, 101));
+        assert_eq!(
+            watch.poll(start, seen(8_192, 101)),
+            Verdict::Wait,
+            "a write just seen is not hashed"
+        );
         let still_growing = start + Duration::from_millis(1_500);
-        watch.poll(still_growing, seen(65_536, 102));
+        assert_eq!(
+            watch.poll(still_growing, seen(65_536, 102)),
+            Verdict::Wait,
+            "nor is one still growing"
+        );
         assert_eq!(
             watch.poll(start + SETTLE, seen(65_536, 102)),
             Verdict::Wait,
@@ -138,7 +146,11 @@ mod tests {
     fn a_file_mid_rename_is_hashed_only_once_it_is_back_and_still() {
         let start = Instant::now();
         let mut watch = Watch::new(seen(184_342, 100));
-        watch.poll(start, None);
+        assert_eq!(
+            watch.poll(start, None),
+            Verdict::Wait,
+            "the file just went away"
+        );
         assert_eq!(
             watch.poll(start + SETTLE, None),
             Verdict::Wait,

@@ -439,6 +439,10 @@ fn rung_params(grid: Option<u32>) -> serde_json::Value {
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
+    /// How the bytes arrived, written on the part's first revision: `ingest` for a scan,
+    /// `upload` for the browser (Phase 4 slice 2 spec §5). A later revision takes its own from
+    /// `RevisionRequest`.
+    pub origin: lapidary_core::RevisionOrigin,
     /// Where the file sat, relative to the library's ingest root, `/`-separated.
     ///
     /// This — not `name` — is what identifies a part inside a library, and
@@ -1150,7 +1154,7 @@ async fn insert_part_chain(
             revision: Uuid::now_v7(),
             rev_label: "1",
             parent: None,
-            origin: lapidary_core::RevisionOrigin::Ingest,
+            origin: req.origin,
             storage_path: req.storage_path,
             blob: req.blob,
             measurements: req.measurements,
