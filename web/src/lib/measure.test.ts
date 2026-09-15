@@ -194,6 +194,13 @@ test('a countersink reads its included angle exactly, and its diameter at the cl
   expect(diameter?.value).toBeCloseTo(2 * (5 + 4 / 3), 1)
 })
 
+test('a click on a cone reads its included angle, whatever was clicked before it', () => {
+  const outward: Vec3 = [Math.cos(0.3) * Math.SQRT1_2, Math.sin(0.3) * Math.SQRT1_2, -Math.SQRT1_2]
+  const side = facet(outward, onSink(0.2, 1), onSink(0.4, 1), onSink(0.3, 2))
+  const top = facet([0, 0, 1], [0, 0, 30], [1, 0, 30], [0, 1, 30])
+  expect(measure('angle', [top, side], [SINK, ...CYLINDER])).toEqual({ value: 90, approximate: false })
+})
+
 test('a triangle off a curved surface does not snap to it', () => {
   const off = facet(scale3(onBall(0.3, 0.25), 1 / 6), onBall(0.2, 0.2), onBall(0.4, 0.2), scale3(onBall(0.3, 0.3), 1.01))
   expect(snap(off, [BALL], ['sphere'])).toBeNull()

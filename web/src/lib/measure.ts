@@ -116,8 +116,9 @@ export function measure(tool: Tool, picks: readonly Pick[], entities: readonly E
       return fit === null ? null : approximate(fit)
     }
     case 'angle': {
-      // A cone's included angle, as a drawing states a countersink: exact, and from its one face.
-      const cone = snap(a, entities, ['cone'])
+      // A cone's included angle, as a drawing states a countersink: exact, and from the latest click alone, so a
+      // click on a cone reads it whatever was clicked before.
+      const cone = snap(picks[picks.length - 1] ?? a, entities, ['cone'])
       if (cone?.type === 'cone') return exact((Math.abs(cone.semi_angle_rad) * 360) / Math.PI)
       if (b === undefined) return null
       const first = snap(a, entities, ['plane'])
