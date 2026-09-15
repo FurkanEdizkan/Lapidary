@@ -51,9 +51,12 @@ pub struct RevisionSource {
     pub format: String,
     /// `file.storage_path`. `None` means the bytes are still content-addressed.
     pub storage_path: Option<String>,
-    /// `blob.zstd_level` exactly as stored, for the same reason [`DownloadSource`] keeps
+    /// `file.zstd_level` exactly as stored, for the same reason [`DownloadSource`] keeps
     /// it: a reader must follow the level that was recorded when the bytes were written,
-    /// never re-derive one from the format.
+    /// never re-derive one from the format. The `file` row's and never the `blob` row's
+    /// (migration `0013`): an upload leaves the blob row at its zstd staging copy's level
+    /// while the worker files the same bytes raw, and a derive job reading the filed copy
+    /// at the staged level failed with "Unknown frame descriptor".
     pub zstd_level: Option<i16>,
 }
 
@@ -1788,8 +1791,8 @@ impl PgParts {
                                 ORDER BY created_at DESC, id DESC LIMIT 1) ent ON true \
              LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $8 \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) pm ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, b.size_bytes, b.stored_bytes, b.zstd_level \
-                                FROM file f JOIN blob b ON b.blake3 = f.blake3 \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
+                                FROM file f \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
              WHERE p.id = $1 AND p.deleted_at IS NULL",
@@ -1843,11 +1846,11 @@ impl PgParts {
             source_format: c.source_format,
             source_bytes: c
                 .source_size_bytes
-                .map(|v| bytes_column("blob.size_bytes", v))
+                .map(|v| bytes_column("file.size_bytes", v))
                 .transpose()?,
             stored_bytes: c
                 .source_stored_bytes
-                .map(|v| bytes_column("blob.stored_bytes", v))
+                .map(|v| bytes_column("file.stored_bytes", v))
                 .transpose()?,
             // Keyed off the source row's presence, never off `zstd_level`'s — see
             // `PartSummary::compressed` for the whole argument.
@@ -2347,10 +2350,9 @@ impl PgParts {
         revision: RevisionId,
     ) -> Result<Option<RevisionSource>, DbError> {
         let row: Option<(String, String, Option<String>, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, f.storage_path, b.zstd_level FROM file f \
+            "SELECT f.blake3, f.format, f.storage_path, f.zstd_level FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id AND p.library_id = $2 \
-             LEFT JOIN blob b ON b.blake3 = f.blake3 \
              WHERE f.revision_id = $1 AND f.role = 'source' \
              ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
         )

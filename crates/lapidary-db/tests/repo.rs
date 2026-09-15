@@ -3728,3 +3728,61 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "kept in the order given"
     );
 }
+
+/// An upload's bytes are staged compressed and the `blob` row remembers that level, while the
+/// worker files the same bytes raw in the model directory and says so on the `file` row. Every
+/// reader of a filed source follows the `file` row (migration `0013`): the derive job reading
+/// the source for a rung, and the part's detail saying what it occupies. Found when an agent
+/// revision's L1 would not rebuild: "Unknown frame descriptor".
+#[sqlx::test(migrations = "./migrations")]
+async fn a_filed_source_is_read_at_its_own_level_not_the_staged_copys(pool: sqlx::PgPool) {
+    let hash = BlobHash::from_bytes([0xd4; 32]);
+    PgBlobs(pool.clone())
+        .record_unreferenced(&StoredBlobRow {
+            hash,
+            size_bytes: 39_284,
+            stored_bytes: 7_352,
+            zstd_level: 3,
+        })
+        .await
+        .expect("the upload's staged copy");
+    let part = PgIngest(pool.clone())
+        .link_existing(IngestRequest {
+            folder: None,
+            storage_path: Some(
+                "libraries/default/flange-dn40-lp-3310-02/flange-dn40-lp-3310-02.stl",
+            ),
+            library: library(),
+            name: "Flange DN40, LP-3310-02",
+            source_path: "flange-dn40-lp-3310-02.stl",
+            blob: &StoredBlobRow {
+                hash,
+                size_bytes: 39_284,
+                stored_bytes: 39_284,
+                zstd_level: 0,
+            },
+            measurements: &watertight(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: Some(b"the-thumbnail"),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("filed raw in its model directory");
+
+    let parts = PgParts(pool.clone());
+    let source = parts
+        .revision_source(library(), only_revision(&pool, part).await)
+        .await
+        .expect("reads")
+        .expect("a source");
+    assert_eq!(
+        source.zstd_level,
+        Some(0),
+        "the derive job must read the filed copy raw"
+    );
+    let detail = parts.detail(part).await.expect("reads").expect("the part");
+    assert_eq!(detail.compressed, Some(false));
+    assert_eq!(detail.stored_bytes, Some(39_284));
+}
