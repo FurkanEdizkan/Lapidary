@@ -78,7 +78,8 @@ function notKept(unkept: number): string {
 /**
  * A figure's change between two revisions: signed, and with its share of where it started
  * when that was not zero. No change says so in words, because "+0 cm³" reads as a
- * measurement of something.
+ * measurement of something. A change too small for two places says it is under 0.01, because
+ * "−0 mm" reads as no change with a sign, and "No change" would hide it.
  */
 function change(value: number, unit: string, percent: number | null): string {
   if (value === 0) return 'No change'
@@ -88,7 +89,8 @@ function change(value: number, unit: string, percent: number | null): string {
     percent === null
       ? ''
       : ` (${sign}${Math.abs(percent).toLocaleString('en-US', { maximumFractionDigits: 1 })}%)`
-  return `${sign}${amount}${unit === '' ? '' : ` ${unit}`}${share}`
+  const shown = amount === '0' ? 'under 0.01' : `${sign}${amount}`
+  return `${shown}${unit === '' ? '' : ` ${unit}`}${share}`
 }
 
 /**

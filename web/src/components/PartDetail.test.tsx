@@ -489,6 +489,8 @@ test('the history appears once a part has a second revision, and says where each
   // Revision 2 says what changed from its parent, marked as the mesh figure it is.
   expect(item('2')?.textContent).toContain(strings.detail.volumeChange(3584, 10))
   expect(strings.detail.volumeChange(3584, 10)).toBe('+3.58 cm³ (+10%)')
+  // A B-rep centre on its axis moves by float noise between revisions: too small for two places, not "−0 mm".
+  expect(strings.detail.lengthChange(-2.5e-13, null)).toBe('under 0.01 mm')
 
   // The comparison opens on the newest against the one before it, and a figure one of them
   // did not record says so rather than showing a zero.

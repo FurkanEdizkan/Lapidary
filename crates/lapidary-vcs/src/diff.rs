@@ -31,7 +31,14 @@ pub fn diff(from: &RevisionFigures, to: &RevisionFigures) -> RevisionDiff {
         face_count: count(from.face_count, to.face_count),
         edge_count: count(from.edge_count, to.edge_count),
         mass_g: figure(from.mass_g, to.mass_g),
-        centre_mm: axes(from.centre_mm, to.centre_mm),
+        // No percent: a coordinate's share of where it started says only where the origin is, and a
+        // centre on its axis at 1e-16 mm would read as moving by thousands of percent.
+        centre_mm: axes(from.centre_mm, to.centre_mm).map(|axes| {
+            axes.map(|axis| Delta {
+                percent: None,
+                ..axis
+            })
+        }),
     }
 }
 
@@ -108,6 +115,10 @@ mod tests {
             .centre_mm
             .expect("both have a centre");
         assert_eq!(moved.map(|axis| axis.change), [0.0, 0.0, 5.0]);
+        assert!(
+            moved.iter().all(|axis| axis.percent.is_none()),
+            "a position has no percent: {moved:?}"
+        );
         assert!(moved.iter().all(|axis| !axis.approximate));
         let meshed = diff(&at([0.0, 0.0, 15.0], true), &at([0.0, 0.0, 20.0], false))
             .centre_mm
