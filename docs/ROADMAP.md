@@ -1244,6 +1244,18 @@ needed a `test/` branch.
   - changing a library's language after it is made;
   - capital I under `en_US.utf8`, recorded in the spec's §2.1.
 
+**Found by the gate, and not reproduced** (`621f57f`).
+- **What failed.** The Turkish search branch's first gate run failed one test,
+  `losing_the_race_for_a_file_is_a_skip_rather_than_a_failure`. Both concurrent jobs ingesting one
+  file succeeded, and neither was `skipped`.
+- **The reasoning.** The only outcome left is `unkept`. Step 3b gives it when step 3 asked before the
+  other job committed and step 3b read after. Two queries leave that window open.
+- **The guard.** Step 3b now skips a part whose current revision already holds these bytes, which is
+  step 3's own answer. No other outcome changes.
+- **Not reproduced.** Without the guard the test passed 30 runs alone and 10 runs of the whole handler
+  file, and it passed as many with the guard. The guard rests on the reasoning, not on a measured fix.
+- **Next time.** The test now prints both outcomes when it fails.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
