@@ -550,6 +550,10 @@ pub struct InstanceStorageView {
     /// Purged and inside the thirty-day hold. Bytes no per-library panel can admit to.
     #[ts(type = "number")]
     pub quarantined_bytes: u64,
+    /// Rendered previews nobody has opened in 90 days, which "free cache space" would put into
+    /// quarantine. Lapidary rebuilds each one when its part is next opened.
+    #[ts(type = "number")]
+    pub render_cache_bytes: u64,
     /// A real walk of the storage root, or `None` when one was not asked for.
     ///
     /// Behind `?onDisk=true` because it costs a `stat` per file: instant on the 156-part
@@ -603,10 +607,36 @@ pub async fn instance_storage(
         inline_preview_bytes: totals.inline_preview_bytes,
         removed_bytes: totals.removed_bytes,
         quarantined_bytes: totals.quarantined_bytes,
+        render_cache_bytes: totals.render_cache_bytes,
         on_disk_bytes: on_disk.flatten(),
         host_storage_root: state.host_storage_root.clone(),
     })
     .into_response()
+}
+
+/// What `POST /api/storage/render-cache` answers: the rungs it removed, and the bytes that entered
+/// the thirty-day quarantine. Named for what happened, never "freed".
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderCacheFreedView {
+    #[ts(type = "number")]
+    pub removed: u64,
+    #[ts(type = "number")]
+    pub quarantined_bytes: u64,
+}
+
+/// `POST /api/storage/render-cache` — "free cache space" (`DATA.md` §1.5). Instance-wide, as
+/// the figure it acts on is.
+pub async fn free_render_cache(State(state): State<AppState>) -> Response {
+    match PgParts(state.db).free_render_cache().await {
+        Ok(freed) => Json(RenderCacheFreedView {
+            removed: freed.rungs,
+            quarantined_bytes: freed.quarantined_bytes,
+        })
+        .into_response(),
+        Err(err) => internal_error(&err, "freeing the render cache failed"),
+    }
 }
 
 /// `?onDisk=true` asks for the walk. Anything else, including absent, does not.

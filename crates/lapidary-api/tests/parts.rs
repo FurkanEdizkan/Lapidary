@@ -1483,3 +1483,122 @@ async fn tags_set_through_the_api_narrow_the_grid_and_are_counted(pool: sqlx::Pg
         "an empty list clears them"
     );
 }
+
+/// "Free cache space" end to end through the router: a rung nobody has read in 90 days is
+/// counted, removed and quarantined; L0 and the source file stay; and the part asks for its L1
+/// again the way a freshly ingested part does.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_again(
+    pool: sqlx::PgPool,
+) {
+    let rung = |kind: &'static str, seed: u8, stored: u64| lapidary_db::TessellationRow {
+        kind,
+        blob: lapidary_db::StoredBlobRow {
+            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+            size_bytes: stored,
+            stored_bytes: stored,
+            zstd_level: 0,
+        },
+        grid: Some(64),
+    };
+    let part = lapidary_db::PgIngest(pool.clone())
+        .record(lapidary_db::IngestRequest {
+            folder: None,
+            storage_path: Some(
+                "libraries/default/idler-pulley-lp-4820-00/idler-pulley-lp-4820-00.stl",
+            ),
+            library: lapidary_core::LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid")),
+            name: "Idler pulley, LP-4820-00",
+            source_path: "idler-pulley-lp-4820-00.stl",
+            blob: &lapidary_db::StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([0xc9; 32]),
+                size_bytes: 184_342,
+                stored_bytes: 184_342,
+                zstd_level: 0,
+            },
+            measurements: &lapidary_core::MeshMeasurements {
+                bbox_mm: [42.0, 42.0, 12.0],
+                triangle_count: 9_216,
+                surface_area_mm2: 4_211.0,
+                volume_mm3: Some(11_904.0),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: Some(b"idler-thumbnail"),
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[
+                rung("tessellation_l0", 0xc0, 9_140),
+                rung("tessellation_l1", 0xc1, 48_210),
+            ],
+        })
+        .await
+        .expect("records");
+    sqlx::query(
+        "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages every blob");
+
+    let store = tempfile::tempdir().expect("a store");
+    let (_, before) =
+        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
+    assert_eq!(
+        before["renderCacheBytes"], 48_210,
+        "the L1 only: L0 is not cache"
+    );
+
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: store.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    );
+    let post = |uri: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request builds")
+    };
+    let response = app
+        .clone()
+        .oneshot(post("/api/storage/render-cache".to_owned()))
+        .await
+        .expect("responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(body["removed"], 1);
+    assert_eq!(body["quarantinedBytes"], 48_210);
+
+    let (_, after) = get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
+    assert_eq!(after["renderCacheBytes"], 0);
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT d.kind FROM derivative d JOIN revision r ON r.id = d.revision_id \
+         WHERE r.part_id = $1 ORDER BY d.kind",
+    )
+    .bind(part.as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("kinds");
+    assert_eq!(kinds, ["tessellation_l0", "thumbnail"]);
+
+    let rebuilt = app
+        .oneshot(post(format!("/api/parts/{part}/rungs/l1")))
+        .await
+        .expect("responds");
+    assert_eq!(
+        rebuilt.status(),
+        StatusCode::ACCEPTED,
+        "an evicted L1 is asked for again, as one never built is"
+    );
+}

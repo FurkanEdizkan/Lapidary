@@ -192,6 +192,28 @@ pub struct InstanceStorage {
     /// Purged, inside the thirty-day hold, on the disk and belonging to no library. The one
     /// figure this application can report nowhere else.
     pub quarantined_bytes: u64,
+    /// Rendered rungs Lapidary can rebuild and nobody has read in 90 days: what "free cache
+    /// space" would put into quarantine (`DATA.md` §1.5). Only blobs no other row points at,
+    /// so a small part whose L0, L1 and L2 are one blob counts nothing here.
+    pub render_cache_bytes: u64,
+}
+
+/// What "free cache space" did: how many rung rows it removed, and how many bytes entered the
+/// thirty-day quarantine because nothing else pointed at them. Never "freed": the bytes stay
+/// on the disk until the quarantine ends and the sweep takes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderCacheFreed {
+    pub rungs: u64,
+    pub quarantined_bytes: u64,
+}
+
+/// The rungs "free cache space" may remove. Never L0, which keeps the open path drawing, and
+/// never structure, entities or PMI, which nothing can rebuild (`lapidary-ingest`'s `derive.rs`).
+fn cache_kinds() -> Vec<&'static str> {
+    vec![
+        DerivativeKind::TessellationL1.as_str(),
+        DerivativeKind::TessellationL2.as_str(),
+    ]
 }
 
 /// Which side of `deleted_at` a page reads.
@@ -1067,6 +1089,38 @@ impl PgIngest {
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// Recompute each blob's `ref_count` from the rows that point at it, and quarantine the ones
+/// nothing does, in one statement. One row comes back per hash: its `stored_bytes` when nothing
+/// points at it any more, `NULL` when something still does.
+///
+/// Purge's, and the render cache's: two ways of taking references away, one rule for what that
+/// does to a blob, so the two cannot drift apart. [`PgParts::purge`] says why it is one
+/// statement and why `quarantined_at` keeps a clock that is already running.
+async fn recount(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    hashes: &[String],
+) -> Result<Vec<Option<i64>>, DbError> {
+    Ok(sqlx::query_scalar(
+        "WITH counts AS ( \
+             SELECT h AS blake3, \
+                    (SELECT count(*) FROM file f WHERE f.blake3 = h) \
+                  + (SELECT count(*) FROM derivative d WHERE d.blake3 = h) AS actual \
+             FROM unnest($1::text[]) AS h \
+         ) \
+         UPDATE blob b SET \
+             ref_count = c.actual, \
+             quarantined_at = CASE WHEN c.actual = 0 \
+                                   THEN coalesce(b.quarantined_at, now()) \
+                                   ELSE NULL END \
+         FROM counts c \
+         WHERE b.blake3 = c.blake3 \
+         RETURNING CASE WHEN c.actual = 0 THEN b.stored_bytes ELSE NULL END",
+    )
+    .bind(hashes)
+    .fetch_all(&mut **tx)
+    .await?)
 }
 
 async fn insert_part_chain(
@@ -2103,25 +2157,7 @@ impl PgParts {
         // a new `file` row at a blob whose clock was running, and the next purge that
         // touches it stops that clock. `coalesce` on the other branch is what stops a
         // second purge from restarting a clock that is already running.
-        let sizes: Vec<Option<i64>> = sqlx::query_scalar(
-            "WITH counts AS ( \
-                 SELECT h AS blake3, \
-                        (SELECT count(*) FROM file f WHERE f.blake3 = h) \
-                      + (SELECT count(*) FROM derivative d WHERE d.blake3 = h) AS actual \
-                 FROM unnest($1::text[]) AS h \
-             ) \
-             UPDATE blob b SET \
-                 ref_count = c.actual, \
-                 quarantined_at = CASE WHEN c.actual = 0 \
-                                       THEN coalesce(b.quarantined_at, now()) \
-                                       ELSE NULL END \
-             FROM counts c \
-             WHERE b.blake3 = c.blake3 \
-             RETURNING CASE WHEN c.actual = 0 THEN b.stored_bytes ELSE NULL END",
-        )
-        .bind(&doomed)
-        .fetch_all(&mut *tx)
-        .await?;
+        let sizes = recount(&mut tx, &doomed).await?;
 
         // The path half of quarantine. Written after the chain comes down rather than
         // before it, so a `storage_path` a `file` row still holds cannot briefly appear in
@@ -2549,9 +2585,16 @@ impl PgParts {
         // One row, four scalar subqueries, same `::bigint` casts as `storage_totals` and
         // for the same reason: `sum()` over bigint is `numeric`, which sqlx will not decode
         // into i64.
-        let (source, derivative, inline, removed, quarantined): (i64, i64, i64, i64, i64) =
-            sqlx::query_as(
-                "SELECT \
+        #[allow(clippy::type_complexity)]
+        let (source, derivative, inline, removed, quarantined, cache): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
               JOIN part p ON p.id = r.part_id \
@@ -2565,10 +2608,19 @@ impl PgParts {
               WHERE p.deleted_at IS NOT NULL AND f.role = 'source'), \
              (SELECT coalesce(sum(q.stored_bytes), 0)::bigint FROM quarantined_file q) \
              + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
-                WHERE b.quarantined_at IS NOT NULL)",
-            )
-            .fetch_one(&self.0)
-            .await?;
+                WHERE b.quarantined_at IS NOT NULL), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+              WHERE b.quarantined_at IS NULL \
+                AND coalesce(b.last_accessed_at, b.created_at) < now() - interval '90 days' \
+                AND EXISTS (SELECT 1 FROM derivative d \
+                            WHERE d.blake3 = b.blake3 AND d.kind = ANY($1)) \
+                AND NOT EXISTS (SELECT 1 FROM derivative d \
+                                WHERE d.blake3 = b.blake3 AND NOT d.kind = ANY($1)) \
+                AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3))",
+        )
+        .bind(cache_kinds())
+        .fetch_one(&self.0)
+        .await?;
 
         Ok(InstanceStorage {
             source_bytes: bytes_column("file.stored_bytes", source)?,
@@ -2576,6 +2628,42 @@ impl PgParts {
             inline_preview_bytes: bytes_column("derivative.thumb_bytes", inline)?,
             removed_bytes: bytes_column("file.stored_bytes", removed)?,
             quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
+            render_cache_bytes: bytes_column("blob.stored_bytes", cache)?,
+        })
+    }
+
+    /// "Free cache space" (`DATA.md` §1.5): remove every L1 and L2 rung row whose blob nobody
+    /// has read in 90 days, then recount those blobs as purge does, so a blob nothing else
+    /// points at enters the thirty-day quarantine and the hourly sweep takes its bytes after.
+    ///
+    /// Rows, not only bytes. The blob route rebuilds a rung whose bytes are missing, but a row
+    /// naming bytes that are gone would answer 404 for good. L0, thumbnails, structure,
+    /// entities, PMI and every source file stay, so a part opened afterwards draws at once and
+    /// asks for its L1 again, as a freshly ingested part does.
+    pub async fn free_render_cache(&self) -> Result<RenderCacheFreed, DbError> {
+        let mut tx = self.0.begin().await?;
+        let mut hashes: Vec<String> = sqlx::query_scalar(
+            "DELETE FROM derivative d USING blob b \
+             WHERE b.blake3 = d.blake3 AND d.kind = ANY($1) \
+               AND coalesce(b.last_accessed_at, b.created_at) < now() - interval '90 days' \
+             RETURNING d.blake3",
+        )
+        .bind(cache_kinds())
+        .fetch_all(&mut *tx)
+        .await?;
+        let rungs = hashes.len() as u64;
+        hashes.sort_unstable();
+        hashes.dedup();
+        let sizes = recount(&mut tx, &hashes).await?;
+        tx.commit().await?;
+
+        let mut quarantined_bytes = 0u64;
+        for stored in sizes.into_iter().flatten() {
+            quarantined_bytes += bytes_column("blob.stored_bytes", stored)?;
+        }
+        Ok(RenderCacheFreed {
+            rungs,
+            quarantined_bytes,
         })
     }
 

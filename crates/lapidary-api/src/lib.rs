@@ -132,6 +132,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // because two of its figures belong to no library and its derivative total is
                 // deliberately not what adding the libraries up gives.
                 .route("/api/storage", get(parts::instance_storage))
+                // "Free cache space": rungs Lapidary can rebuild, into quarantine (DATA §1.5).
+                .route("/api/storage/render-cache", post(parts::free_render_cache))
                 .route(
                     "/api/libraries/{library}/jobs/{batch}",
                     get(jobs::batch_status),

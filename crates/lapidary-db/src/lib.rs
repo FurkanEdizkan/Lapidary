@@ -17,8 +17,8 @@ pub use repo::{
     DerivativeBytes, DownloadSource, EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes,
     IngestRequest, InstanceStorage, LibraryRow, MoveRow, MoveSource, NewPartImage, NewPartSource,
     PartDetailRow, PartImageRow, PartRepository, PartRow, PartSourceRow, PgBlobs, PgIngest,
-    PgParts, PurgeReport, Purged, ReapReport, RevisionSource, Shows, Sort, StorageTotals,
-    StoredBlobRow, TessellationRow,
+    PgParts, PurgeReport, Purged, ReapReport, RenderCacheFreed, RevisionSource, Shows, Sort,
+    StorageTotals, StoredBlobRow, TessellationRow,
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{PgSavedFilters, SavedFilterRow};

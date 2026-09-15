@@ -174,6 +174,8 @@ function stubFetch(routes: {
   move?: () => Promise<StubResponse>;
   folderDelete?: () => Promise<StubResponse>;
   instanceStorage?: () => Promise<StubResponse>;
+  /** `POST /api/storage/render-cache`, "free cache space". */
+  freeCache?: () => Promise<StubResponse>;
   partDetail?: (url?: string) => Promise<StubResponse>;
   partImages?: () => Promise<StubResponse>;
   partSources?: () => Promise<StubResponse>;
@@ -204,6 +206,8 @@ function stubFetch(routes: {
     if (url === "/api/libraries") return (routes.libraries ?? pending)();
     // Before the per-library storage rule: this one has no library in its path, and the
     // two would otherwise be told apart only by which substring was tested first.
+    if (url === "/api/storage/render-cache" && init?.method === "POST")
+      return (routes.freeCache ?? pending)();
     if (url.startsWith("/api/storage"))
       return (routes.instanceStorage ?? pending)();
     // Above the settings rule below, which claims every `PATCH` there is. The move is a
@@ -3984,4 +3988,38 @@ test("the tag facet lists what people tagged, and a chosen tag narrows the grid"
   expect(urls().some((url) => url.includes("/facets") && url.includes("tag=welding+jig"))).toBe(true);
   fireEvent.click(jig);
   expect(onSelectTag).toHaveBeenCalledWith(null);
+});
+
+/**
+ * "Free cache space" asks first, says no model file is touched and that the space comes back only
+ * when the quarantine ends, and then reports what it removed without calling any of it freed.
+ */
+test("freeing cache space asks first and reports what went into quarantine", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    instanceStorage: (() => {
+      const bodies = [
+        { ...instanceStorage(null), renderCacheBytes: 48210 },
+        { ...instanceStorage(null), renderCacheBytes: 0 },
+      ];
+      let call = 0;
+      return async (): Promise<StubResponse> => ({
+        ok: true,
+        json: async () => bodies[Math.min(call++, bodies.length - 1)],
+      });
+    })(),
+    freeCache: ok({ removed: 2, quarantinedBytes: 48210 }),
+  });
+  renderIndex();
+
+  expect(await screen.findByText(strings.storage.renderCache(48210))).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: strings.storage.freeCache }));
+  expect(screen.getByText(strings.storage.freeCacheBody(48210))).toBeDefined();
+  expect(fetchMock).not.toHaveBeenCalledWith("/api/storage/render-cache", expect.anything());
+
+  fireEvent.click(screen.getByRole("button", { name: strings.storage.freeCacheConfirm }));
+  expect(await screen.findByText(strings.storage.cacheFreed(2, 48210))).toBeDefined();
+  expect(fetchMock).toHaveBeenCalledWith("/api/storage/render-cache", { method: "POST" });
+  expect(strings.storage.cacheFreed(2, 48210)).not.toMatch(/freed|delet/i);
 });
