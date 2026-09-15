@@ -2170,6 +2170,40 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   served it together. The gain is the migration check's, and the migration's comment says so.
 - No test: the goal asked for the `EXPLAIN` check, and every database test applies the migration.
 
+**The grid's idle warm-up, code only** (`1320876`).
+- **The change.** `loadViewerWhenIdle` takes `warmViewerWhenIdle`'s place on the grid. It imports the viewer's
+  chunk and stops, so a visitor who never opens a part holds no WebGL context, as the owner decided. A hovered card
+  and a part's page still call `warmViewer`, which prepares the renderer. `hasWebGL()` lets its probe context go
+  once it has asked.
+- **Measured** on the native stack (mock kernel, three fixture STLs) in headless Chrome on SwiftShader, a fresh
+  profile per session: `main`'s web build first, then this branch's over the same stack. Medians of nine:
+
+| | Before | After |
+|---|---|---|
+| Grid idle 4 s, nothing hovered: WebGL contexts made, still live | 2, 2 | 1, 0 |
+| The same: shader programs linked, viewer chunk fetched | 2, yes | 0, yes |
+| The same, then a press with no rest: pointerdown to first frame | 398 ms | 396 ms |
+| `open-timing.mjs`, the grid then an open after a 250 ms rest | 393 ms | 393 ms |
+| `open-timing.mjs`, the grid then an open with no rest | 393 ms | 399 ms |
+| `open-timing.mjs --direct`, a cold link: navigation start to first frame | 668 ms | 676 ms |
+
+- **What the numbers say:**
+  - No open linked a shader program during itself, before or after.
+  - Every grid open here begins with the pointer moving onto the card, which is a hover, so the renderer starts
+    there and is ready before the open draws.
+  - The differences sit inside each row's own spread: 387 to 407 ms for the grid, 650 to 697 ms for a link.
+  - A link is unchanged by design, since a part's page warms as it mounts.
+- **Not measured:** a touch tap with no hover at all, which now compiles as it opens, and a GPU renderer.
+- **Tests:**
+  - an idle grid loads the viewer's chunk, prepares nothing, and can be called off;
+  - a hover prepares;
+  - the probe's context is let go.
+  - The two warm tests moved from `PartDetail.test.tsx` into `warm.test.ts`, where nothing else loads the viewer,
+    so the chunk's load can be counted.
+- **Mutation-checked, all 4 caught:** idle preparing the renderer, idle loading nothing, a hover preparing nothing,
+  and the probe's context kept.
+- **Decided without the owner:** `warmViewerWhenIdle` is renamed `loadViewerWhenIdle`, since it no longer warms.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
