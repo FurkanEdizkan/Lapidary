@@ -651,15 +651,30 @@ Download is just a `Target` whose `accepts()` the user picks manually — so sen
 degrades to download naturally when no agent is present.
 
 **Built in slice 5, with three things this section did not specify.** `variant=original`
-is the only legal value today — `variant=3mf` is a 400 naming what to send, never a
-silent fallback, because a download that quietly returns something other than what was
-asked for is the failure this section exists to forbid. The route **re-hashes the bytes
+was the only legal value then — `variant=3mf` was a 400 naming what to send (goal 4 made
+it a download, below), never a silent fallback, because a download that quietly returns
+something other than what was asked for is the failure this section exists to forbid. The route **re-hashes the bytes
 before serving them** and refuses with a 500 on mismatch, which is what makes "verifiable
 against the stored BLAKE3" true rather than asserted; it costs microseconds against the
 transfer that follows. And `Cache-Control: no-cache` — revalidate before reuse. The blob
 route can promise `immutable` because its URL contains the hash of what it returns; this
 URL names a *revision*, whose source could be re-pointed, and sending no directive at all
 would leave heuristic freshness free to hand back a stale file.
+
+**Negotiated since goal 4.** A format is a download of that one format, a `Target` whose
+`accepts()` is just it, so the route runs the same `negotiate` as `lapidary open`:
+- the part's own file is already in that format: the original, byte-identical and under
+  its own name (`variant=stl` on an STL);
+- else a mesh export the worker wrote from the part's mesh, `variant=3mf` or `variant=stl`,
+  named `*.lapidary.3mf` or `*.lapidary.stl`;
+- a B-rep format for a mesh part (`variant=step` on an STL): a 400 naming what there is.
+
+Nothing converts on the download itself. An export not written yet is a 404 naming
+`POST /api/parts/{id}/exports/{format}`, which queues it as a derive job and answers with
+the batch, as a rung request does. `lapidary open` negotiates with this computer's apps as
+the target: a STEP part on a computer with a slicer and no CAD app opens as a read-only
+3MF under `exports/` in the workspace, no lock taken, and it says that nothing saved from
+it comes back.
 
 Measured on the 150-file corpus: the served bytes `cmp` clean against the file on disk,
 and a name carrying parentheses arrives as `filename*=UTF-8''…tex%28B%29.stl` with an
