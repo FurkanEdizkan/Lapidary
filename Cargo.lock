@@ -1415,6 +1415,7 @@ dependencies = [
  "lapidary-db",
  "lapidary-jobs",
  "lapidary-storage",
+ "lapidary-targets",
  "serde",
  "serde_json",
  "sqlx",
@@ -1482,9 +1483,11 @@ dependencies = [
 name = "lapidary-targets"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crc32fast",
  "lapidary-core",
  "serde",
+ "serde_json",
  "thiserror",
  "zip",
 ]

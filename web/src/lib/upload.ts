@@ -1,5 +1,5 @@
 import { createBLAKE3 } from 'hash-wasm'
-import { commitUpload, probeUpload, putChunk } from './api'
+import { commitUpload, probeUpload, putChunk, startImport } from './api'
 import type { BlobHash, LibraryId, ScanAccepted, UploadFile } from './types'
 
 /**
@@ -205,6 +205,20 @@ export async function uploadFiles(
     alreadyHere: progress.alreadyHere,
     bytesSkipped: progress.bytesSkipped,
   }
+}
+
+/**
+ * A bundle (Phase 4 slice 2): hashed, sent through the same chunked upload as any file unless the
+ * server already holds its bytes, then handed to the import route. Nothing is committed as a part:
+ * the worker checks the whole archive before any part of it is written.
+ */
+export async function importBundle(library: LibraryId, file: File): Promise<ScanAccepted> {
+  const blake3 = await hashFile(file)
+  const plan = await probeUpload(library, [{ path: file.name, blake3 }])
+  if (plan.needBytes.includes(file.name)) {
+    await transfer(library, blake3, file, () => {})
+  }
+  return startImport(library, blake3, file.name)
 }
 
 /**

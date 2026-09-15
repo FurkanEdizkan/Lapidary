@@ -136,6 +136,7 @@ pub fn router(state: AppState, role: Role) -> Router {
                     post(download::bundle_plan),
                 )
                 .route("/api/libraries/{id}/bundle", post(download::bundle))
+                .route("/api/libraries/{id}/imports", post(upload::import_bundle))
                 // What the whole store holds, and where it is. Not under `/api/libraries/{id}`
                 // because two of its figures belong to no library and its derivative total is
                 // deliberately not what adding the libraries up gives.

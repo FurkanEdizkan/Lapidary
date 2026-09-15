@@ -225,7 +225,10 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   Export built in Phase 4 slice 2: POST /api/libraries/{id}/bundle, planned first.
   - STORE entries written by hand, with every revision and a manifest.
   - At most 500 parts, and under 4 GiB (no ZIP64).
-  - Import: see ROADMAP, Phase 4 slice 2.
+  - Import built too: POST /api/libraries/{id}/imports.
+    - The worker checks the whole bundle, then replays each part's revisions.
+    - A controlled library gets its history, a hobby library the newest revision.
+    - Checked with 40 parts, lineage identical.
 -->
 | `lapidary://` URI scheme + agent launch | 4 |
 | Native watcher → automatic new revision on external save | 4 |

@@ -57,7 +57,7 @@ import {
 import { strings } from '../lib/strings'
 import { eachAtMost } from '../lib/bulk'
 import { createPrefetch } from '../lib/prefetch'
-import { filesFromDrop, filesFromInput, uploadFiles } from '../lib/upload'
+import { filesFromDrop, filesFromInput, importBundle, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import {
   FolderTree,
@@ -434,6 +434,7 @@ export function Index({
   // Owned here rather than inside `DropTarget`, because two controls open the same picker
   // now: the drop strip's link, and the toolbar's Upload button.
   const picker = useRef<HTMLInputElement>(null)
+  const bundlePicker = useRef<HTMLInputElement>(null)
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
     queryFn: () => fetchInstanceStorage(measure),
@@ -745,6 +746,15 @@ export function Index({
       setUploadNote(strings.upload.failed)
     },
   })
+  // A bundle follows the same batch line an upload does, once its import job is queued.
+  const importing = useMutation({
+    mutationFn: (file: File) => importBundle(library, file),
+    onSuccess: (accepted) => {
+      setUploadNote(null)
+      watch(accepted, 'upload')
+    },
+    onError: () => setUploadNote(strings.toolbar.importFailed),
+  })
   const startUpload = (picked: PickedFile[]) => {
     setUploadNote(picked.length === 0 ? strings.upload.empty : null)
     if (picked.length > 0) {
@@ -929,6 +939,8 @@ export function Index({
           }}
           onUpload={() => picker.current?.click()}
           uploadBusy={upload.isPending}
+          onImport={() => bundlePicker.current?.click()}
+          importBusy={importing.isPending}
           search={
             <SearchBox
               q={q ?? ''}
@@ -940,6 +952,18 @@ export function Index({
           }
         />
         <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} picker={picker} />
+        <input
+          ref={bundlePicker}
+          type="file"
+          accept=".zip,application/zip"
+          hidden
+          aria-label={strings.toolbar.importBundle}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (file !== undefined) importing.mutate(file)
+          }}
+        />
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
         )}
@@ -1232,6 +1256,8 @@ function Toolbar({
   onSelecting,
   onUpload,
   uploadBusy,
+  onImport,
+  importBusy,
   search,
 }: {
   autoThumbnail: boolean | undefined
@@ -1259,6 +1285,9 @@ function Toolbar({
   onSelecting: (on: boolean) => void
   onUpload: () => void
   uploadBusy: boolean
+  /** Opens the picker for a bundle exported from Lapidary. */
+  onImport: () => void
+  importBusy: boolean
   /** The search field, built by the route that owns its query. */
   search: ReactNode
 }) {
@@ -1420,6 +1449,14 @@ function Toolbar({
           className="ease-mechanical flex min-h-6 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
         >
           {strings.toolbar.upload}
+        </button>
+        <button
+          type="button"
+          onClick={onImport}
+          disabled={importBusy}
+          className="ease-mechanical flex min-h-6 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {strings.toolbar.importBundle}
         </button>
       </div>
       {/*

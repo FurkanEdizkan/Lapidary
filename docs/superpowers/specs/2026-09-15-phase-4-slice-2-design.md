@@ -281,8 +281,11 @@ current selection, which lives in component state, not the URL.
 
 **How the bundle arrives.**
 1. The ZIP arrives through the existing chunked upload, as one blob of at most 2 GiB (the upload cap).
-2. `POST /api/libraries/{id}/imports { blake3 }` validates the bundle before anything is queued.
-3. It then enqueues one `ImportPart { bundle, index }` job per part, in one batch.
+2. `POST /api/libraries/{id}/imports { blake3, name }` stores it and queues one `ImportBundle` job.
+   - The api does not open the archive, because reading stored source bytes is the worker's.
+3. That job checks the bundle whole (below), then queues one `ImportPart { bundle, part }` job per
+   part into its own batch, as a scan does.
+   - A bundle that fails the checks is refused by that job, and nothing is written.
 
 **Validation, all before any write** (DATA §5.4):
 - at most 10,000 entries and 2 GiB in total;
@@ -296,7 +299,7 @@ current selection, which lives in component state, not the URL.
 - **Controlled library:** `ImportPart` runs the ingest pipeline's `index` once per revision, oldest
   first, with that revision's bytes, `sourcePath` and origin.
 - **Hobby library:** it runs `index` once, with the newest revision only, because a hobby library keeps
-  no history. The job's line says how many earlier revisions were left out.
+  no history. Nothing counts the earlier revisions it left out, and that gap is recorded.
 
 **What each call does.**
 - **The first call** makes the part: `ingested`, or `skipped` when the library already holds those
