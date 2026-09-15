@@ -45,8 +45,9 @@ coordinates as their source files.
 
 ## 2. Overlay diff
 
-**API.** `PartRevision` gains `tessellation: Option<BlobHash>`: that revision's L1, else its L0, else
-`None`.
+**API.** `PartRevision` gains `tessellationL0` and `tessellationL1`, named as on `PartDetail`.
+- The page draws L1, else L0, and knows from which of the two it drew whether the ghost is the coarse
+  one.
 - Read the same way `PgParts::detail` reads its rungs: a `LATERAL` per kind, bound from
   `DerivativeKind`.
 - No new route is needed.

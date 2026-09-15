@@ -125,6 +125,106 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
+/// The overlay's ghost is an earlier revision's rung. It stays served once a newer revision is
+/// current, because reachability asks whether any revision of a live part points at the bytes,
+/// not whether the newest one does.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let earlier = DerivativeStore::open(root.path())
+        .put(RUNG)
+        .expect("stores the rung");
+    // Filed in its model directory, as every file ingest writes now: a revision is recorded
+    // only on top of a file with a `storage_path` to set aside.
+    PgIngest(pool.clone())
+        .record(IngestRequest {
+            folder: None,
+            storage_path: Some("libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl"),
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
+            blob: &StoredBlobRow {
+                hash: source_hash(),
+                size_bytes: 204_800,
+                stored_bytes: 204_800,
+                zstd_level: 0,
+            },
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[TessellationRow {
+                kind: "tessellation_l0",
+                blob: StoredBlobRow {
+                    hash: earlier.hash,
+                    size_bytes: earlier.size_bytes,
+                    stored_bytes: earlier.stored_bytes,
+                    zstd_level: earlier.zstd_level,
+                },
+                grid: Some(32),
+            }],
+        })
+        .await
+        .expect("revision 1");
+    let earlier = earlier.hash;
+    let revisions = lapidary_db::PgRevisions(pool.clone());
+    let current = revisions
+        .current(library(), "bracket-lp-1042-03.stl")
+        .await
+        .expect("reads")
+        .expect("the part");
+    let newer = DerivativeStore::open(root.path())
+        .put(b"pretend-this-is-the-wider-bracket")
+        .expect("stores the newer rung");
+    revisions
+        .record_revision(
+            lapidary_db::RevisionRequest {
+                part: current.part,
+                parent: current.revision,
+                origin: lapidary_core::RevisionOrigin::Agent,
+                lock: None,
+                blob: &StoredBlobRow {
+                    hash: BlobHash::from_bytes([0xb2; 32]),
+                    size_bytes: 214_016,
+                    stored_bytes: 214_016,
+                    zstd_level: 0,
+                },
+                measurements: &measurements(),
+                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+                thumbnail_webp: None,
+                kernel_version: "mesh stl-1+glb-1+cpu-1",
+                format: "stl",
+                tessellations: &[TessellationRow {
+                    kind: "tessellation_l0",
+                    blob: StoredBlobRow {
+                        hash: newer.hash,
+                        size_bytes: newer.size_bytes,
+                        stored_bytes: newer.stored_bytes,
+                        zstd_level: newer.zstd_level,
+                    },
+                    grid: Some(32),
+                }],
+            },
+            |_, _| Ok(()),
+        )
+        .await
+        .expect("revision 2");
+    let app = router(
+        AppState {
+            db: pool,
+            blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+        },
+        Role::Api,
+    );
+
+    let (status, _, body) = get(app, &earlier.to_hex()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, RUNG);
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");

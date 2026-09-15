@@ -49,6 +49,11 @@ pub struct PartRevision {
     /// What changed from the revision this one was recorded on top of. `None` for a part's
     /// first revision.
     pub delta_from_parent: Option<RevisionDiff>,
+    /// This revision's own rungs, which the overlay draws as a ghost behind the current part.
+    /// Ingest writes L0; an L1 exists only if somebody opened the part while this revision was
+    /// current, so an earlier revision usually has L0 alone.
+    pub tessellation_l0: Option<BlobHash>,
+    pub tessellation_l1: Option<BlobHash>,
 }
 
 /// A part that is not there — never existed, or deleted — answers the `404` its page does:
@@ -204,5 +209,7 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
             .transpose()?,
         // Filled in once the whole history is read: a parent is another row.
         delta_from_parent: None,
+        tessellation_l0: row.tessellation_l0,
+        tessellation_l1: row.tessellation_l1,
     })
 }

@@ -459,6 +459,11 @@ export const strings = {
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
+    /** The overlay: the From revision drawn as a grey ghost over the part (Phase 4 slice 2). */
+    ghost: 'Show From as a ghost in the 3D view',
+    ghostNoMesh: (label: string) => `Revision ${label} has no mesh to draw as a ghost.`,
+    ghostCoarse:
+      'The ghost is that revision’s coarse preview, so a small difference along its outline may be the preview rather than the part.',
     /** Who has the part checked out, and since when (Phase 4 slice 1). */
     checkedOut: 'Checked out',
     checkedOutBy: (holder: string, since: string) =>
@@ -1431,6 +1436,7 @@ export const strings = {
     noWebGL: 'This browser cannot draw the 3D view here, so this is the rendered preview.',
     refining: 'Loading more detail…',
     failed: 'The 3D view could not load. The rendered preview is shown instead.',
+    ghostFailed: 'The earlier revision’s mesh could not load, so no ghost is drawn.',
   },
   /**
    * The measuring tools under the 3D view. A value is exact only where it was read from an

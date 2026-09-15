@@ -9,7 +9,7 @@ const { mounts, prepare, drawn } = vi.hoisted(() => ({
   mounts: [] as string[],
   prepare: vi.fn(async () => {}),
   // What the stand-in view reports drawing, and the parts it was last told to hide.
-  drawn: { parts: 3 as number | null, hidden: [] as number[] },
+  drawn: { parts: 3 as number | null, hidden: [] as number[], ghost: null as string | null },
 }))
 
 // jsdom draws no WebGL, so the view is a stand-in that records each time it is mounted.
@@ -24,10 +24,12 @@ vi.mock('./Viewer', async () => {
       part,
       hidden,
       onParts,
+      ghost,
     }: {
       part: PartDetail
       hidden?: ReadonlySet<number>
       onParts?: (parts: number | null) => void
+      ghost?: string | null
     }) {
       useEffect(() => {
         mounts.push(part.id)
@@ -36,6 +38,7 @@ vi.mock('./Viewer', async () => {
         onParts?.(drawn.parts)
       }, [onParts])
       drawn.hidden = [...(hidden ?? [])].sort((a, b) => a - b)
+      drawn.ghost = ghost ?? null
       return null
     },
     prepare,
@@ -293,6 +296,8 @@ test('the history appears once a part has a second revision, and says where each
     sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
     sourceFormat: 'stl',
     sourceBytes: 20124,
+    tessellationL0: null,
+    tessellationL1: null,
     deltaFromParent: {
       volumeMm3: { from: 35840, to: 39424, change: 3584, percent: 10, approximate: true },
       surfaceAreaMm2: null,
@@ -446,6 +451,8 @@ test('the comparison follows the part on screen instead of keeping the last part
     sourceFormat: 'stl',
     sourceBytes: 20124,
     deltaFromParent: null,
+    tessellationL0: null,
+    tessellationL1: null,
   })
   const [b1, b2] = ['01931b6e-0000-7000-8000-0000000000b1', '01931b6e-0000-7000-8000-0000000000b2']
   const [c1, c2] = ['01931b6e-0000-7000-8000-0000000000c1', '01931b6e-0000-7000-8000-0000000000c2']
@@ -487,5 +494,72 @@ test('the comparison follows the part on screen instead of keeping the last part
   expect(diffs(), 'never the bracket’s revisions asked of the pin').not.toContain(
     `/api/parts/${PIN.id}/diff?from=${b1}&to=${b2}`,
   )
+  vi.unstubAllGlobals()
+})
+
+/** The comparison's From revision, drawn as a ghost in the 3D view, and said plainly when it cannot be. */
+test('the comparison draws its From revision as a ghost, and says when that revision has only a coarse mesh or none', async () => {
+  const revision = (
+    id: string,
+    revLabel: string,
+    parent: string | null,
+    rungs: { l0: string | null; l1: string | null },
+  ): PartRevision => ({
+    id,
+    parent,
+    revLabel,
+    origin: parent === null ? 'ingest' : 'agent',
+    createdAt: '2026-09-15T08:10:00Z',
+    thumbnail: null,
+    triangleCount: 44,
+    bboxMm: null,
+    volumeMm3: null,
+    surfaceAreaMm2: null,
+    sourceHash: null,
+    sourceFormat: 'stl',
+    sourceBytes: 20124,
+    deltaFromParent: null,
+    tessellationL0: rungs.l0,
+    tessellationL1: rungs.l1,
+  })
+  const [first, second] = ['01931b6e-0000-7000-8000-0000000000d1', '01931b6e-0000-7000-8000-0000000000d2']
+  const [coarse, fine0, fine1] = ['a0'.repeat(32), 'b0'.repeat(32), 'b1'.repeat(32)]
+  const newest = revision(second, '2', first, { l0: fine0, l1: fine1 })
+  let history = [newest, revision(first, '1', null, { l0: coarse, l1: null })]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith('/revisions')
+          ? history
+          : url.includes('/diff?')
+            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null }
+            : [],
+    })),
+  )
+  const page = () => (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={BRACKET} />
+    </QueryClientProvider>
+  )
+
+  const view = render(page())
+  const box = await screen.findByLabelText(strings.detail.ghost)
+  expect(drawn.ghost).toBeNull()
+  fireEvent.click(box)
+  // Revision 1 was not opened again after revision 2 arrived: its ghost is the L0 ingest wrote.
+  await waitFor(() => expect(drawn.ghost).toBe(coarse))
+  expect(screen.getByText(strings.detail.ghostCoarse)).toBeTruthy()
+  fireEvent.click(box)
+  await waitFor(() => expect(drawn.ghost).toBeNull())
+  view.unmount()
+
+  // A From revision with no mesh at all offers no ghost, and says why.
+  history = [newest, revision(first, '1', null, { l0: null, l1: null })]
+  render(page())
+  expect(await screen.findByText(strings.detail.ghostNoMesh('1'))).toBeTruthy()
+  expect(screen.queryByLabelText(strings.detail.ghost)).toBeNull()
   vi.unstubAllGlobals()
 })
