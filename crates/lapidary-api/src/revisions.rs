@@ -39,6 +39,9 @@ pub struct PartRevision {
     /// `data:image/webp;base64,…`, as `PartDetail.thumbnail` is.
     pub thumbnail: Option<String>,
     pub triangle_count: Option<u32>,
+    /// The B-rep's faces and edges, counted exactly by the CAD kernel. `None` for a mesh.
+    pub face_count: Option<u32>,
+    pub edge_count: Option<u32>,
     pub bbox_mm: Option<Approximate<[f64; 3]>>,
     pub volume_mm3: Option<Approximate<f64>>,
     pub surface_area_mm2: Option<Approximate<f64>>,
@@ -150,7 +153,21 @@ fn figures(revision: &PartRevision) -> RevisionFigures {
         surface_area_mm2: revision.surface_area_mm2,
         bbox_mm: revision.bbox_mm,
         triangle_count: revision.triangle_count,
+        face_count: revision.face_count,
+        edge_count: revision.edge_count,
     }
+}
+
+/// A count column into the wire shape, refused when negative for `NegativeTriangleCount`'s reason.
+fn count(column: &'static str, value: Option<i32>) -> Result<Option<u32>, DbError> {
+    value
+        .map(|count| {
+            u32::try_from(count).map_err(|_| DbError::NegativeTriangleCount {
+                column,
+                value: count,
+            })
+        })
+        .transpose()
 }
 
 /// A row into the wire shape, refusing what `detail.rs` refuses: a provenance word this
@@ -175,15 +192,9 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
         thumbnail: row
             .thumbnail
             .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),
-        triangle_count: row
-            .triangle_count
-            .map(|count| {
-                u32::try_from(count).map_err(|_| DbError::NegativeTriangleCount {
-                    column: "revision.triangle_count",
-                    value: count,
-                })
-            })
-            .transpose()?,
+        triangle_count: count("revision.triangle_count", row.triangle_count)?,
+        face_count: count("revision.face_count", row.face_count)?,
+        edge_count: count("revision.edge_count", row.edge_count)?,
         // The box's own provenance where ingest recorded one, else the surface area's, as
         // `detail.rs` reasons; tessellated when neither, which can only over-label.
         bbox_mm: row.bbox_mm.map(|bbox| {

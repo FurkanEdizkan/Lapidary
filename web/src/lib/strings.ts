@@ -385,6 +385,9 @@ export const strings = {
     size: 'Size',
     identity: 'Identity',
     triangles: 'Triangles',
+    /** A CAD revision's B-rep faces and edges, in the comparison between two revisions. */
+    faces: 'Faces',
+    edges: 'Edges',
     /** The count alone: this row is already labelled, unlike the card's line, which
      *  has to carry the word. Locale formatting belongs here rather than in the
      *  component — a bare 'en-US' in a component is a string the translator never

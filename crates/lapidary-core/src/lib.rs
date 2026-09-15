@@ -25,7 +25,7 @@ pub use ids::{
     RevisionId, SavedFilterId,
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
-pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance};
+pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
     CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, is_ignored,
     is_model_file, path_escapes, source_format,

@@ -16,7 +16,11 @@ parent: RevisionId | null, revLabel: string, origin: RevisionOrigin, createdAt: 
 /**
  * `data:image/webp;base64,…`, as `PartDetail.thumbnail` is.
  */
-thumbnail: string | null, triangleCount: number | null, bboxMm: Approximate<[number, number, number]> | null, volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
+thumbnail: string | null, triangleCount: number | null, 
+/**
+ * The B-rep's faces and edges, counted exactly by the CAD kernel. `None` for a mesh.
+ */
+faceCount: number | null, edgeCount: number | null, bboxMm: Approximate<[number, number, number]> | null, volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
 /**
  * What changed from the revision this one was recorded on top of. `None` for a part's
  * first revision.

@@ -1426,6 +1426,8 @@ function Compare({
             delta: diff.triangleCount,
             render: strings.detail.countChange,
           },
+          { label: strings.detail.faces, delta: diff.faceCount, render: strings.detail.countChange },
+          { label: strings.detail.edges, delta: diff.edgeCount, render: strings.detail.countChange },
         ]
   return (
     <div className="mt-3 text-sm">

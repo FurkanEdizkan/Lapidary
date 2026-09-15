@@ -100,6 +100,7 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
         }
     }
     KernelOutput {
+        topology: None,
         measurements: measure(mesh),
         thumbnail_webp,
         tessellations,

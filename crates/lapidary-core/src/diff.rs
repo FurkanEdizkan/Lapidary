@@ -34,4 +34,8 @@ pub struct RevisionDiff {
     /// Per axis: x, y, z.
     pub bbox_mm: Option<[Delta; 3]>,
     pub triangle_count: Option<Delta>,
+    /// A CAD revision's B-rep faces and edges, exact. `None` when either revision is a mesh, or was
+    /// read before the bridge counted them.
+    pub face_count: Option<Delta>,
+    pub edge_count: Option<Delta>,
 }

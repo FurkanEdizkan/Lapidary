@@ -111,6 +111,32 @@ async fn a_manifest_waits_for_a_change_to_its_part_and_holds_it(pool: sqlx::PgPo
     );
 }
 
+/// A revision's faces and edges, written after it commits, come back with its history; a revision never
+/// given any has none, not zero.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_revisions_faces_and_edges_come_back_with_its_history(pool: sqlx::PgPool) {
+    let part = seed(&pool).await;
+    let revisions = PgRevisions(pool.clone());
+    let history = revisions.history(part).await.expect("reads");
+    assert_eq!((history[0].face_count, history[0].edge_count), (None, None));
+
+    revisions
+        .set_topology(
+            history[0].id,
+            lapidary_core::Topology {
+                faces: 38,
+                edges: 96,
+            },
+        )
+        .await
+        .expect("records the counts");
+    let history = revisions.history(part).await.expect("reads");
+    assert_eq!(
+        (history[0].face_count, history[0].edge_count),
+        (Some(38), Some(96))
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn a_revision_goes_on_top_and_the_previous_file_is_set_aside_under_its_own_label(
     pool: sqlx::PgPool,

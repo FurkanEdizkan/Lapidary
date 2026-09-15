@@ -104,6 +104,12 @@ async fn a_22_mm_cylinder_reads_as_an_exact_cylinder() {
         );
     }
     assert_eq!(out.provenance, MeasurementProvenance::ANALYTIC);
+    let topology = out.topology.expect("a B-rep's faces and edges are counted");
+    assert_eq!(topology.faces, 3, "a side and two caps: {topology:?}");
+    assert!(
+        (2..=3).contains(&topology.edges),
+        "two rims, and a seam where OCCT closes the side: {topology:?}"
+    );
     // What the file says about itself, as the fixture generator's OCCT writer put it.
     let metadata = out.metadata.as_ref().expect("a STEP file has a header");
     assert!(
