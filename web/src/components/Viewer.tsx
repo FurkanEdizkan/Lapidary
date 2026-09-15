@@ -52,9 +52,8 @@ import {
   visibleRanges,
   type PlaneLike,
   type Section,
-  type Vec3,
-} from '../lib/viewer-math'
-import { MeasureBar, SectionBar } from './Measure'
+  type Vec3, explodeOffsets, partCentres } from '../lib/viewer-math'
+import { MeasureBar, SectionBar, ExplodeBar } from './Measure'
 
 type View = {
   show: (model: Object3D) => void
@@ -73,6 +72,8 @@ type View = {
   ghost: (model: Object3D | null) => void
   /** Draw these labels over the part, each beside its face, or none. */
   annotate: (labels: readonly Label[] | null) => void
+  /** Draw an assembly's parts apart by `amount`, from 0 as assembled to 1; kept for every rung shown after. */
+  explode: (amount: number) => void
   dispose: () => void
 }
 
@@ -81,6 +82,15 @@ const NONE: ReadonlySet<number> = new Set()
 /** A PMI label beside its face: small, on the panel colour, one annotation to a line. */
 const LABEL =
   'whitespace-pre rounded-sm border border-[var(--color-edge)] bg-[var(--color-surface)] px-1 text-[10px] leading-tight text-[var(--color-bright)]'
+
+/** The mesh a rung counts its parts on (`extras.parts`), or `null` for a rung that counts none. */
+function partsMesh(model: Object3D): Mesh | null {
+  let found: Mesh | null = null
+  model.traverse((object) => {
+    if (found === null && object instanceof Mesh && Array.isArray(object.userData.parts)) found = object
+  })
+  return found
+}
 
 /** How many placed parts a rung counts triangles for (`extras.parts`), or `null` when it counts none. */
 function partsOf(model: Object3D): number | null {
@@ -271,6 +281,7 @@ export default function Viewer({
   const [fineFailed, setFineFailed] = useState(false)
   const [parts, setParts] = useState<number | null>(null)
   const [section, setSection] = useState<Section | null>(null)
+  const [explosion, setExplosion] = useState(0)
   const [ghostFailed, setGhostFailed] = useState<BlobHash | null>(null)
   const queryClient = useQueryClient()
   const hash = (fine ? part.tessellationL2 : null) ?? part.tessellationL1 ?? part.tessellationL0
@@ -330,6 +341,10 @@ export default function Viewer({
   useEffect(() => {
     view.current?.section(section)
   }, [section])
+  // After the rung is shown, since the parts are the rung's.
+  useEffect(() => {
+    view.current?.explode(explosion)
+  }, [explosion, shown])
   useEffect(() => {
     view.current?.closed(part.isWatertight === true)
   }, [part.isWatertight])
@@ -499,8 +514,23 @@ export default function Viewer({
       </div>
       {failed ? null : (
         <>
-          <MeasureBar tool={tool} onTool={choose} reading={reading} note={note} />
+          <MeasureBar
+            tool={tool}
+            onTool={choose}
+            reading={reading}
+            note={note}
+            off={explosion > 0 ? strings.explode.measuringOff : null}
+          />
           <SectionBar section={section} onSection={setSection} closed={part.isWatertight} />
+          {parts !== null && parts > 1 ? (
+            <ExplodeBar
+              amount={explosion}
+              onAmount={(next) => {
+                setExplosion(next)
+                if (next > 0) choose(null)
+              }}
+            />
+          ) : null}
         </>
       )}
     </div>
@@ -561,6 +591,10 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   // An earlier revision, drawn over the part and never picked: `pick` and `through` cast at `model`.
   let ghostModel: Object3D | null = null
   let hiddenParts = NONE
+  // An assembly drawn apart: a mesh per placed part, sharing the rung's buffers and drawing only its own run of
+  // the index, each moved out from the box's centre. Built on the rung's first explode, and dropped with it.
+  let exploded: Group | null = null
+  let explosion = 0
   // The part's box, from the first rung, which a section cuts across; the cut, and its plane.
   let bounds: { min: Vec3; max: Vec3 } | null = null
   let cut: Section | null = null
@@ -588,7 +622,8 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
     }
     // Filled only over a mesh known to be closed. An open mesh has no inside, and a guessed cap would
     // say it had one.
-    const capped = cutPlane !== null && closedMesh && bounds !== null
+    // Not while the parts are apart: a cap fills the assembly's section, which is not where they are.
+    const capped = cutPlane !== null && closedMesh && bounds !== null && explosion === 0
     cap.visible = capped
     model?.traverse((object) => {
       if (object.userData.stencil === true) object.visible = capped
@@ -606,6 +641,49 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   // mesh's groups when its material is an array, so a hidden part is neither seen nor picked.
   const applyHidden = () => {
     if (model !== null) hideParts(model, material, hiddenParts)
+  }
+  const applyExplode = () => {
+    if (model === null) return
+    const source = partsMesh(model)
+    const index = source?.geometry.index ?? null
+    if (explosion === 0 || source === null || index === null || bounds === null) {
+      if (exploded !== null) scene.remove(exploded)
+      exploded = null
+      model.visible = true
+      return
+    }
+    if (exploded === null) {
+      const group = new Group()
+      const parts = source.userData.parts as number[]
+      const position = source.geometry.getAttribute('position')
+      const centres = partCentres(position.array, index.array, parts)
+      let at = 0
+      // The rung's one node has no transform (`glb.rs`), so a piece's position is its offset alone.
+      parts.forEach((triangles, part) => {
+        const piece = new BufferGeometry()
+        piece.setIndex(index)
+        piece.setAttribute('position', position)
+        piece.setDrawRange(at, triangles * 3)
+        at += triangles * 3
+        const mesh = new Mesh(piece, material)
+        mesh.renderOrder = 3
+        mesh.userData = { part, centre: centres[part] }
+        group.add(mesh)
+      })
+      scene.add(group)
+      exploded = group
+    }
+    const { min, max } = bounds
+    const offsets = explodeOffsets(
+      exploded.children.map((piece) => piece.userData.centre as Vec3),
+      [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2],
+      explosion,
+    )
+    exploded.children.forEach((piece, i) => {
+      piece.position.set(...(offsets[i] ?? [0, 0, 0]))
+      piece.visible = !hiddenParts.has(piece.userData.part as number)
+    })
+    model.visible = false
   }
   const render = () => {
     renderer.render(scene, camera)
@@ -656,6 +734,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       model = next
       scene.add(next)
       applyHidden()
+      // The pieces were the last rung's.
+      if (exploded !== null) scene.remove(exploded)
+      exploded = null
       // Framed once, on the first rung: a finer rung arriving must not move the camera out from
       // under someone who has already turned the part.
       if (framing) {
@@ -672,6 +753,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
         controls.update()
       }
       applyCut()
+      applyExplode()
       render()
     },
     pick(x, y) {
@@ -701,6 +783,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
     hide(next) {
       hiddenParts = next
       applyHidden()
+      applyExplode()
       if (model !== null) render()
     },
     section(next) {
@@ -728,6 +811,12 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
         })
         scene.add(next)
       }
+      if (model !== null) render()
+    },
+    explode(next) {
+      explosion = next
+      applyExplode()
+      applyCut()
       if (model !== null) render()
     },
     annotate(next) {

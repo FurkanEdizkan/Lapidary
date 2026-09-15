@@ -78,6 +78,37 @@ export function visibleRanges(parts: readonly number[], hidden: ReadonlySet<numb
   return ranges
 }
 
+/**
+ * Each placed part's centre: the middle of the box around the corners its own triangles use. `parts` counts
+ * each part's triangles, one run of `index` each, as `visibleRanges` reads them.
+ */
+export function partCentres(positions: ArrayLike<number>, index: ArrayLike<number>, parts: readonly number[]): Vec3[] {
+  let at = 0
+  return parts.map((triangles) => {
+    const min = [Infinity, Infinity, Infinity]
+    const max = [-Infinity, -Infinity, -Infinity]
+    for (let i = at; i < at + triangles * 3; i++) {
+      const vertex = (index[i] ?? 0) * 3
+      for (let axis = 0; axis < 3; axis++) {
+        const value = positions[vertex + axis] ?? 0
+        min[axis] = Math.min(min[axis] ?? value, value)
+        max[axis] = Math.max(max[axis] ?? value, value)
+      }
+    }
+    at += triangles * 3
+    if (triangles === 0) return [0, 0, 0] as const
+    return [((min[0] ?? 0) + (max[0] ?? 0)) / 2, ((min[1] ?? 0) + (max[1] ?? 0)) / 2, ((min[2] ?? 0) + (max[2] ?? 0)) / 2] as const
+  })
+}
+
+/**
+ * How far each part moves when an assembly is drawn apart by `amount`, from 0, as assembled, to 1: straight
+ * out from `centre` through its own centre, by as far again as it already is. A part at the centre stays put.
+ */
+export function explodeOffsets(centres: readonly Vec3[], centre: Vec3, amount: number): Vec3[] {
+  return centres.map((c) => [(c[0] - centre[0]) * amount, (c[1] - centre[1]) * amount, (c[2] - centre[2]) * amount] as const)
+}
+
 /** The axes a section can cut across. */
 export const AXES = ['x', 'y', 'z'] as const
 export type Axis = (typeof AXES)[number]

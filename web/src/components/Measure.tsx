@@ -5,7 +5,7 @@ import { AXES, type Section } from '../lib/viewer-math'
 import { Figure } from './Figure'
 
 const CONTROL =
-  'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]'
+  'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)] disabled:opacity-50'
 
 /**
  * The measuring tools under the 3D view, and the line saying what to click or what was measured.
@@ -19,6 +19,7 @@ export function MeasureBar({
   onTool,
   reading,
   note,
+  off = null,
 }: {
   tool: Tool | null
   /** Pressing the tool that is on turns it off. */
@@ -26,6 +27,8 @@ export function MeasureBar({
   reading: Approximate<number> | null
   /** What to do next, shown while there is no reading. */
   note: string | null
+  /** Why measuring is off, said in place of the measuring line; no tool can be picked while it is set. */
+  off?: string | null
 }) {
   return (
     <div className="mt-2">
@@ -35,6 +38,7 @@ export function MeasureBar({
             key={option}
             type="button"
             aria-pressed={tool === option}
+            disabled={off !== null}
             onClick={() => onTool(tool === option ? null : option)}
             className={CONTROL}
           >
@@ -42,7 +46,11 @@ export function MeasureBar({
           </button>
         ))}
       </div>
-      {tool === null ? null : (
+      {off !== null ? (
+        <p aria-live="polite" className="mt-2 text-sm text-[var(--color-muted)]">
+          {off}
+        </p>
+      ) : tool === null ? null : (
         <p aria-live="polite" className="mt-2 text-sm">
           {reading === null ? (
             <span className="text-[var(--color-muted)]">{note}</span>
@@ -119,5 +127,25 @@ export function SectionBar({
     </div>
     {note === null ? null : <p className="mt-1 text-xs text-[var(--color-muted)]">{note}</p>}
     </>
+  )
+}
+
+/**
+ * How far apart an assembly's parts are drawn, from as assembled to twice as far from its centre. Offered only
+ * for a rung that counts its parts, and measuring is off while they are apart.
+ */
+export function ExplodeBar({ amount, onAmount }: { amount: number; onAmount: (amount: number) => void }) {
+  return (
+    <label className="mt-2 flex items-center gap-2 text-xs text-[var(--color-muted)]">
+      {strings.explode.label}
+      <input
+        type="range"
+        min={0}
+        max={1000}
+        value={Math.round(amount * 1000)}
+        onChange={(event) => onAmount(Number(event.target.value) / 1000)}
+        className="min-w-24 flex-1 accent-[var(--color-accent)]"
+      />
+    </label>
   )
 }
