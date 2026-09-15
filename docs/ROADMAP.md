@@ -611,6 +611,9 @@ example STLs, and headless Chrome.
     row still says zstd 3, from the upload's staging copy.
   - Two readers, `revision_source` and the detail's source lateral, still read the `blob` row's level,
     which migration `0013` retired.
+  - **Fixed in `568d799`.** Both readers now take `file.zstd_level`, and the detail its size from `file`
+    too. A `lapidary-db` test that stages a zstd copy and then files the bytes raw was seen failing
+    first: it read level 3 where the file said 0.
 
 ---
 
