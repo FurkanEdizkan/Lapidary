@@ -580,6 +580,13 @@ pub async fn instance_storage(
     State(state): State<AppState>,
     Query(query): Query<InstanceStorageQuery>,
 ) -> Response {
+    // The render cache figure reads `last_accessed_at`, so the reads not yet written go first.
+    if let Err(err) = state.touches.flush(&state.db).await {
+        tracing::warn!(
+            error = %err,
+            "could not record recent reads; the render cache figure may count parts opened in the last five minutes"
+        );
+    }
     let totals = match PgParts(state.db).instance_storage().await {
         Ok(totals) => totals,
         Err(err) => return internal_error(&err, "instance storage query failed"),
@@ -629,6 +636,14 @@ pub struct RenderCacheFreedView {
 /// `POST /api/storage/render-cache` — "free cache space" (`DATA.md` §1.5). Instance-wide, as
 /// the figure it acts on is.
 pub async fn free_render_cache(State(state): State<AppState>) -> Response {
+    // Reads this process has not written yet are reads all the same: a part opened a moment ago must
+    // not lose its previews to when the next flush happens to be due.
+    if let Err(err) = state.touches.flush(&state.db).await {
+        return internal_error(
+            &err,
+            "recording recent reads before freeing the render cache failed",
+        );
+    }
     match PgParts(state.db).free_render_cache().await {
         Ok(freed) => Json(RenderCacheFreedView {
             removed: freed.rungs,

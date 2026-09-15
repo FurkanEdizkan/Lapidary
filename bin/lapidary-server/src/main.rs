@@ -619,11 +619,11 @@ async fn main() -> Result<()> {
                             tracing::warn!(error = %err, "could not record which blobs were read; they keep their older access times");
                         }
                     }
-                    if let Err(err) = touches.flush(&db).await {
-                        tracing::warn!(error = %err, "could not record the last blobs read before stopping");
-                    }
                 })
             };
+            // The last flush is `main`'s, once `serve` has drained every request that could still
+            // record a read.
+            let last = (touches.clone(), db.clone());
             (
                 router(
                     AppState {
@@ -643,7 +643,7 @@ async fn main() -> Result<()> {
                     Role::Api,
                 ),
                 None,
-                Some(flusher),
+                Some((flusher, last)),
             )
         }
         Role::Worker => {
@@ -671,20 +671,24 @@ async fn main() -> Result<()> {
         }
     };
 
-    axum::serve(listener, app_router)
+    let served = axum::serve(listener, app_router)
         .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
-        .await
-        .context("The HTTP server stopped unexpectedly")?;
+        .await;
 
     // The listener is closed; the worker may still be finishing a file. Cancelling here
     // as well as in `shutdown_signal` covers the case where `serve` returned for some
     // other reason, so this is never reached with a worker that was never told to stop.
     shutdown.cancel();
-    if let Some(flusher) = flusher
-        && let Err(err) = flusher.await
-    {
-        tracing::warn!(error = %err, "the flush of which blobs were read did not finish");
+    if let Some((flusher, (touches, db))) = flusher {
+        if let Err(err) = flusher.await {
+            tracing::warn!(error = %err, "the flush of which blobs were read did not finish");
+        }
+        // After `serve`, however it returned: no request is left to record a read after this.
+        if let Err(err) = touches.flush(&db).await {
+            tracing::warn!(error = %err, "could not record the last blobs read before stopping");
+        }
     }
+    served.context("The HTTP server stopped unexpectedly")?;
     if let Some(worker) = worker {
         // Waiting is the point. `lapidary_jobs::run` awaits in-flight handlers and then
         // releases this worker's leases; returning from main before it gets there is the

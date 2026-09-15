@@ -1621,6 +1621,97 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
 /// the part is what says its previews are in use, before the render cache counts them.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn opening_a_part_keeps_its_previews_out_of_the_render_cache(pool: sqlx::PgPool) {
+    let part = an_aged_part_with_previews(&pool).await;
+    let store = tempfile::tempdir().expect("a store");
+    let (_, before) =
+        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
+    assert_eq!(before["renderCacheBytes"], 48_210);
+
+    let touches = lapidary_db::Touches::default();
+    let response = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: store.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+            touches: touches.clone(),
+        },
+        Role::Api,
+    )
+    .oneshot(
+        Request::builder()
+            .uri(format!("/api/parts/{part}"))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    touches.flush(&pool).await.expect("flushes the reads");
+
+    let (_, after) = get_instance_storage(pool, store.path().to_path_buf(), None, "").await;
+    assert_eq!(
+        after["renderCacheBytes"], 0,
+        "a part just opened has no cold previews"
+    );
+}
+
+/// "Free cache space" runs in the process that holds the reads not yet written, so a part opened a
+/// moment ago keeps its previews whenever the next flush is due.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn freeing_cache_space_keeps_the_previews_of_a_part_opened_moments_ago(pool: sqlx::PgPool) {
+    let part = an_aged_part_with_previews(&pool).await;
+    let store = tempfile::tempdir().expect("a store");
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: store.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+            touches: lapidary_db::Touches::default(),
+        },
+        Role::Api,
+    );
+    let opened = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/parts/{part}"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("responds");
+    assert_eq!(opened.status(), StatusCode::OK);
+
+    let freed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/storage/render-cache")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("responds");
+    assert_eq!(freed.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(freed.into_body(), 64 * 1024)
+            .await
+            .expect("body reads"),
+    )
+    .expect("json");
+    assert_eq!(body["removed"], 0, "{body}");
+    let l1: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM derivative WHERE kind = 'tessellation_l1'")
+            .fetch_one(&pool)
+            .await
+            .expect("counts");
+    assert_eq!(l1, 1, "the open part's L1 is still there");
+}
+
+/// A mounting plate with an L0 and an L1 whose blobs are 120 days old and never read.
+async fn an_aged_part_with_previews(pool: &sqlx::PgPool) -> lapidary_core::PartId {
     let rung = |kind: &'static str, seed: u8, stored: u64| lapidary_db::TessellationRow {
         kind,
         blob: lapidary_db::StoredBlobRow {
@@ -1668,39 +1759,8 @@ async fn opening_a_part_keeps_its_previews_out_of_the_render_cache(pool: sqlx::P
     sqlx::query(
         "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("ages every blob");
-    let store = tempfile::tempdir().expect("a store");
-    let (_, before) =
-        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
-    assert_eq!(before["renderCacheBytes"], 48_210);
-
-    let touches = lapidary_db::Touches::default();
-    let response = router(
-        AppState {
-            db: pool.clone(),
-            blob_root: store.path().to_path_buf(),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            touches: touches.clone(),
-        },
-        Role::Api,
-    )
-    .oneshot(
-        Request::builder()
-            .uri(format!("/api/parts/{part}"))
-            .body(Body::empty())
-            .expect("request builds"),
-    )
-    .await
-    .expect("responds");
-    assert_eq!(response.status(), StatusCode::OK);
-    touches.flush(&pool).await.expect("flushes the reads");
-
-    let (_, after) = get_instance_storage(pool, store.path().to_path_buf(), None, "").await;
-    assert_eq!(
-        after["renderCacheBytes"], 0,
-        "a part just opened has no cold previews"
-    );
+    part
 }
