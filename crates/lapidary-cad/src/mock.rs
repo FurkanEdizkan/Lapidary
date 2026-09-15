@@ -99,6 +99,7 @@ impl Kernel for MockKernel {
             }
         }
         Ok(KernelOutput {
+            topology: None,
             measurements,
             thumbnail_webp,
             tessellations,

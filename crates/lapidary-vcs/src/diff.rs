@@ -12,6 +12,9 @@ pub struct RevisionFigures {
     pub bbox_mm: Option<Approximate<[f64; 3]>>,
     /// The tessellation's triangles, which a count states exactly for the mesh it counts.
     pub triangle_count: Option<u32>,
+    /// The B-rep's faces and edges, counted exactly. `None` on a mesh.
+    pub face_count: Option<u32>,
+    pub edge_count: Option<u32>,
 }
 
 /// `to` against `from`: a delta for every figure both revisions recorded, and none for the rest.
@@ -24,11 +27,16 @@ pub fn diff(from: &RevisionFigures, to: &RevisionFigures) -> RevisionDiff {
             let (from, to) = (from.value(), to.value());
             [0, 1, 2].map(|axis| delta(from[axis], to[axis], approximate))
         }),
-        triangle_count: from
-            .triangle_count
-            .zip(to.triangle_count)
-            .map(|(from, to)| delta(f64::from(from), f64::from(to), false)),
+        triangle_count: count(from.triangle_count, to.triangle_count),
+        face_count: count(from.face_count, to.face_count),
+        edge_count: count(from.edge_count, to.edge_count),
     }
+}
+
+/// A count's change, exact: a count states exactly what it counts.
+fn count(from: Option<u32>, to: Option<u32>) -> Option<Delta> {
+    from.zip(to)
+        .map(|(from, to)| delta(f64::from(from), f64::from(to), false))
 }
 
 /// One measured figure's change, approximate if either end of it is.
@@ -63,6 +71,8 @@ mod tests {
             surface_area_mm2: Some(Approximate::tessellated(41_210.5)),
             bbox_mm: Some(Approximate::tessellated([x, 150.0, 18.0])),
             triangle_count: Some(36_868),
+            face_count: None,
+            edge_count: None,
         }
     }
 
@@ -136,5 +146,25 @@ mod tests {
         let triangles = diff(&empty, &meshed).triangle_count.expect("both counted");
         assert_eq!(triangles.change, 12.0);
         assert_eq!(triangles.percent, None);
+    }
+
+    /// A CAD revision's faces and edges compare exactly, even beside a mesh-derived volume; a mesh on
+    /// either side has no counts to compare.
+    #[test]
+    fn faces_and_edges_compare_exactly_and_only_between_two_b_reps() {
+        let bored = |faces, edges| RevisionFigures {
+            face_count: Some(faces),
+            edge_count: Some(edges),
+            ..flange(214_780.0, 150.0)
+        };
+        let changed = diff(&bored(38, 96), &bored(42, 108));
+        let faces = changed.face_count.expect("both counted faces");
+        assert_eq!((faces.from, faces.to, faces.change), (38.0, 42.0, 4.0));
+        assert!(!faces.approximate, "a count is exact");
+        assert_eq!(changed.edge_count.map(|edges| edges.change), Some(12.0));
+
+        let mesh = flange(214_780.0, 150.0);
+        assert_eq!(diff(&mesh, &bored(42, 108)).face_count, None);
+        assert_eq!(diff(&bored(42, 108), &mesh).edge_count, None);
     }
 }

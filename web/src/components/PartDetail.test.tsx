@@ -291,6 +291,8 @@ test('the history appears once a part has a second revision, and says where each
     createdAt: '2026-09-14T09:30:00Z',
     thumbnail: null,
     triangleCount: 44,
+    faceCount: null,
+    edgeCount: null,
     bboxMm: { value: [66, 40, 60], approximate: true },
     volumeMm3: { value: 39424, approximate: true },
     surfaceAreaMm2: null,
@@ -304,6 +306,8 @@ test('the history appears once a part has a second revision, and says where each
       surfaceAreaMm2: null,
       bboxMm: null,
       triangleCount: null,
+      faceCount: null,
+      edgeCount: null,
     },
   } satisfies PartRevision
   const first = {
@@ -380,6 +384,57 @@ test('the history appears once a part has a second revision, and says where each
 })
 
 /** Who holds a check-out shows everywhere; releasing it is the part page's, behind a dialog. */
+/** A STEP part's revisions compare its B-rep faces and edges exactly, beside figures a mesh gave. */
+test('the comparison shows a CAD revision’s faces and edges exactly', async () => {
+  const revision = (id: string, revLabel: string, parent: string | null, faces: number, edges: number): PartRevision => ({
+    id,
+    parent,
+    revLabel,
+    origin: parent === null ? 'ingest' : 'agent',
+    createdAt: '2026-09-15T13:00:00Z',
+    thumbnail: null,
+    triangleCount: 28576,
+    faceCount: faces,
+    edgeCount: edges,
+    bboxMm: null,
+    volumeMm3: null,
+    surfaceAreaMm2: null,
+    sourceHash: null,
+    sourceFormat: 'step',
+    sourceBytes: 190356,
+    deltaFromParent: null,
+    tessellationL0: null,
+    tessellationL1: null,
+  })
+  const [first, second] = ['01931b6e-0000-7000-8000-0000000000e1', '01931b6e-0000-7000-8000-0000000000e2']
+  const exact = (from: number, to: number) => ({ from, to, change: to - from, percent: ((to - from) / from) * 100, approximate: false })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith('/revisions')
+          ? [revision(second, '2', first, 42, 108), revision(first, '1', null, 38, 96)]
+          : url.includes('/diff?')
+            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: exact(38, 42), edgeCount: exact(96, 108) }
+            : [],
+    })),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={BRACKET} />
+    </QueryClientProvider>,
+  )
+
+  const table = await screen.findByRole('table')
+  const row = (label: string) =>
+    [...table.querySelectorAll('tr')].find((tr) => tr.querySelector('th')?.textContent === label)
+  await waitFor(() => expect(row(strings.detail.faces)?.textContent).toContain(strings.detail.countChange(4, (4 / 38) * 100)))
+  expect(row(strings.detail.faces)?.textContent).not.toContain(strings.detail.approximate)
+  expect(row(strings.detail.edges)?.textContent).toContain(strings.detail.countChange(12, (12 / 96) * 100))
+})
+
 test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {
   const posts: { url: string; body: unknown }[] = []
   vi.stubGlobal(
@@ -445,6 +500,8 @@ test('the comparison follows the part on screen instead of keeping the last part
     createdAt: '2026-09-14T09:30:00Z',
     thumbnail: null,
     triangleCount: 44,
+    faceCount: null,
+    edgeCount: null,
     bboxMm: null,
     volumeMm3: null,
     surfaceAreaMm2: null,
@@ -461,7 +518,7 @@ test('the comparison follows the part on screen instead of keeping the last part
     [BRACKET.id]: [revision(b2, '2', b1), revision(b1, '1', null)],
     [PIN.id]: [revision(c2, '2', c1), revision(c1, '1', null)],
   }
-  const noChange = { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null }
+  const noChange = { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: null, edgeCount: null }
   const fetchMock = vi.fn(async (url: string) => {
     const part = Object.keys(histories).find((id) => url.startsWith(`/api/parts/${id}/`))
     const body =
@@ -513,6 +570,8 @@ test('the comparison draws its From revision as a ghost, and says when that revi
     createdAt: '2026-09-15T08:10:00Z',
     thumbnail: null,
     triangleCount: 44,
+    faceCount: null,
+    edgeCount: null,
     bboxMm: null,
     volumeMm3: null,
     surfaceAreaMm2: null,
@@ -536,7 +595,7 @@ test('the comparison draws its From revision as a ghost, and says when that revi
         url.endsWith('/revisions')
           ? history
           : url.includes('/diff?')
-            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null }
+            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: null, edgeCount: null }
             : [],
     })),
   )

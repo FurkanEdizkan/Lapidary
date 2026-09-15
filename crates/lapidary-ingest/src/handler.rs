@@ -115,8 +115,8 @@ use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::slug::{disambiguate, slugify};
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome,
-    RevisionOrigin, source_format,
+    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome, RevisionId,
+    RevisionOrigin, Topology, source_format,
 };
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, PgRevisions,
@@ -249,6 +249,29 @@ impl WorkerHandler {
             .map_err(transient)?;
         written?;
         Ok(Outcome::Described)
+    }
+
+    /// The faces and edges a CAD kernel counted, onto the revision just committed. Warn-only, as the header
+    /// is: the revision is committed and measured, and a count it lacks leaves its diff without one.
+    async fn record_topology(
+        &self,
+        revision: RevisionId,
+        topology: Option<Topology>,
+        source_path: &str,
+    ) {
+        let Some(topology) = topology else {
+            return;
+        };
+        if let Err(error) = PgRevisions(self.db.clone())
+            .set_topology(revision, topology)
+            .await
+        {
+            tracing::warn!(
+                source_path,
+                %error,
+                "could not record the file's face and edge counts; its revision diff leaves them out"
+            );
+        }
     }
 
     /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
@@ -707,6 +730,10 @@ impl WorkerHandler {
                     },
                 )
                 .await;
+            if let Ok(revision) = &recorded {
+                self.record_topology(*revision, output.topology, source_path)
+                    .await;
+            }
             if let Err(error) = recorded {
                 // Never `classify_write`: a unique violation here is a lost race for a label,
                 // not "already here", and every failure on this path is worth another attempt
@@ -980,6 +1007,8 @@ impl WorkerHandler {
         // ingest when it did.
         match PgParts(self.db.clone()).latest_revision(part).await {
             Ok(Some(revision)) => {
+                self.record_topology(revision, output.topology, source_path)
+                    .await;
                 let m = &output.measurements;
                 let manifest = ModelManifest {
                     schema: ModelManifest::SCHEMA,

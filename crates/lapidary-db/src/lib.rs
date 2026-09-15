@@ -73,12 +73,12 @@ pub enum DbError {
     TimestampOutOfRange { column: &'static str, value: i64 },
 
     #[error(
-        "`{column}` holds {value}, which is negative and cannot be a triangle count. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a negative count."
+        "`{column}` holds {value}, which is negative and cannot be a count. Check what else has write access to this database, then correct or remove the row — Lapidary never writes a negative count."
     )]
     NegativeTriangleCount { column: &'static str, value: i32 },
 
     #[error(
-        "A triangle count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the mesh kernel reported — a real mesh should never have this many triangles."
+        "A count of {value} does not fit in `{column}`'s 32-bit integer column. Check what the kernel reported — a real part never has this many triangles, faces or edges."
     )]
     TriangleCountTooLarge { column: &'static str, value: u32 },
 

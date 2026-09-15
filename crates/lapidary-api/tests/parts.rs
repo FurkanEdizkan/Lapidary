@@ -402,7 +402,7 @@ async fn a_corrupt_rows_own_error_text_reaches_the_client_verbatim(pool: sqlx::P
     // written to be safe and actionable on its own; genericising it too would point an
     // operator at server logs for a problem the message already fully explains.
     assert!(
-        message.contains("negative") && message.contains("triangle count"),
+        message.contains("negative") && message.contains("cannot be a count"),
         "must surface the variant's own actionable text verbatim: {message}"
     );
     assert!(

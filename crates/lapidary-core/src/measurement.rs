@@ -64,6 +64,16 @@ impl MeasurementProvenance {
     };
 }
 
+/// How many faces and edges a CAD kernel counted on a B-rep, every one of them, analytic or not. A mesh has
+/// no B-rep, so it has none, and a diff leaves the counts out rather than comparing a mesh's triangles to
+/// a solid's faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Topology {
+    pub faces: u32,
+    pub edges: u32,
+}
+
 /// The figures a kernel measured. A mesh's are all tessellated; a CAD kernel reads some
 /// off the B-rep instead, and [`MeasurementProvenance`] travels beside them saying which.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
