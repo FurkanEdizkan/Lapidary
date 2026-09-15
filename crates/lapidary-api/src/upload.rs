@@ -411,14 +411,10 @@ pub async fn commit(
     accept(state.db, library, &jobs).await
 }
 
-/// The most files one commit verifies and stores at once. Hashing and compressing take a core each, and
-/// the process storing them is the one serving the grid, so a commit on a many-core host leaves it the
-/// rest. Under compose's one-CPU api, `available_parallelism` is 1 and a commit stores one at a time.
-const STORING_AT_ONCE: usize = 4;
-
-/// Every staged file the store lacks, verified and stored as many at a time as there are cores, up to
-/// [`STORING_AT_ONCE`]. Hashing and compressing are the commit's cost, and a drop's files are independent
-/// of each other.
+/// Every staged file the store lacks, verified and stored as many at a time as there are cores, less one.
+/// Hashing and compressing are the commit's cost and take a core each, a drop's files are independent of
+/// each other, and the core left over is for the rest of what this process serves. Under compose's one-CPU
+/// api, `available_parallelism` is 1 and a commit stores one file at a time.
 ///
 /// The first refusal is the answer, and no file is started after it. Files already stored stay, as
 /// unreferenced blobs the reaper collects, as they did when a commit was refused partway.
@@ -428,8 +424,7 @@ async fn store_all(
     files: Vec<UploadFile>,
 ) -> Result<(), Response> {
     let at_once = std::thread::available_parallelism()
-        .map_or(1, |cores| cores.get())
-        .min(STORING_AT_ONCE);
+        .map_or(1, |cores| cores.get().saturating_sub(1).max(1));
     let mut running = tokio::task::JoinSet::new();
     let mut refused = None;
     for file in files {
