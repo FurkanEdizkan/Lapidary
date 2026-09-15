@@ -553,6 +553,8 @@ Turkish: `tsvector` config is fixed at index time, so it is a `language` column 
 - Under an `en_US.utf8` database, capital I lowercases as `i`, not `ı`, so a name written in capitals
   is not found by a query typed with `ı`. Recorded, not fixed (`2026-09-15-local-product-design.md`
   §2.1).
+- **The owner does not need Turkish search** (2026-09-15): regular word search is fine, so capital I
+  stays as it is.
 
 ### 3.4 Facets
 
@@ -574,6 +576,9 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
 - **`indexed` means "offered as a grid filter".** Still **capped at 8**, now as the grid's limit
   rather than a write cost.
 - **Removing a field removes its definition only.** Its values stay.
+- **A field defined again under that key** takes back the values it can show. Values it could not show
+  refuse the key.
+- **A value set** reaches the part's `metadata.json` through the worker's `describe_part` job.
 
 ### 3.6 Saved filters
 

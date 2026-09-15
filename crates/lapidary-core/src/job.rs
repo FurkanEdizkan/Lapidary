@@ -50,6 +50,8 @@ pub enum Outcome {
     Migrated,
     Revised,
     Unkept,
+    /// A part's `metadata.json` written again from its rows.
+    Described,
 }
 
 /// What a job carries, without its kind.
@@ -119,6 +121,17 @@ pub enum JobPayload {
         part: u32,
         path: String,
     },
+    /// Write a part's `metadata.json` again from its rows, after something only the rows held changed:
+    /// a custom field's value. The api queues it, because the worker is what writes into a model's
+    /// directory.
+    DescribePart {
+        part: crate::PartId,
+    },
+}
+
+#[derive(Deserialize)]
+struct DescribePartPayload {
+    part: crate::PartId,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +175,7 @@ impl JobPayload {
     pub const MIGRATE_STORAGE: &'static str = "migrate_storage";
     pub const IMPORT_BUNDLE: &'static str = "import_bundle";
     pub const IMPORT_PART: &'static str = "import_part";
+    pub const DESCRIBE_PART: &'static str = "describe_part";
 
     pub fn kind(&self) -> &'static str {
         match self {
@@ -172,6 +186,7 @@ impl JobPayload {
             JobPayload::MigrateStorage => Self::MIGRATE_STORAGE,
             JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
             JobPayload::ImportPart { .. } => Self::IMPORT_PART,
+            JobPayload::DescribePart { .. } => Self::DESCRIBE_PART,
         }
     }
 
@@ -205,6 +220,7 @@ impl JobPayload {
             JobPayload::ImportPart { bundle, part, path } => {
                 serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
+            JobPayload::DescribePart { part } => serde_json::json!({ "part": part }),
         }
     }
 
@@ -263,6 +279,12 @@ impl JobPayload {
                     part: p.part,
                     path: p.path,
                 })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            Self::DESCRIBE_PART => serde_json::from_value::<DescribePartPayload>(payload.clone())
+                .map(|p| JobPayload::DescribePart { part: p.part })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),
@@ -496,6 +518,17 @@ mod tests {
             JobPayload::IngestBlob { lock, .. } => assert_eq!(lock, None),
             other => panic!("an ingest_blob row is an IngestBlob: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_describe_part_payload_round_trips_through_its_row() {
+        let payload = JobPayload::DescribePart {
+            part: crate::PartId::new(),
+        };
+        assert_eq!(
+            JobPayload::from_row(payload.kind(), &payload.to_json()).expect("parses"),
+            payload
+        );
     }
 
     #[test]

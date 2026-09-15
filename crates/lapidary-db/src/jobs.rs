@@ -478,6 +478,7 @@ impl PgJobs {
             Outcome::Rendered => "rendered",
             Outcome::Scanned => "scanned",
             Outcome::Migrated => "migrated",
+            Outcome::Described => "described",
             Outcome::Revised => "revised",
             Outcome::Unkept => "unkept",
         };

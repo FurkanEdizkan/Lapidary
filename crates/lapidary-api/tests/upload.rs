@@ -473,3 +473,34 @@ async fn committing_nothing_is_a_success_with_no_batch_to_watch(pool: sqlx::PgPo
     let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
     assert_eq!(accepted.queued, 0);
 }
+
+/// A drop's files are stored several at a time, and each set of bytes once: two copies of a file under
+/// different names stage one blob, and every file still queues its own job.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn committing_many_files_stores_each_blob_once_and_queues_every_file(pool: sqlx::PgPool) {
+    let server = server(pool.clone());
+    let mut files = Vec::new();
+    for n in 0..12u8 {
+        let bytes = [BRACKET, &[n][..]].concat();
+        let hash = server.upload(&bytes).await;
+        files.push(serde_json::json!({
+            "path": format!("brackets/LP-1042-{n:02}.stl"),
+            "blake3": hash.to_hex(),
+        }));
+    }
+    let copy = files[0]["blake3"].clone();
+    files.push(serde_json::json!({ "path": "spares/LP-1042-00-copy.stl", "blake3": copy }));
+
+    let (status, json) = server.commit(serde_json::Value::Array(files)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    assert_eq!(json["queued"], 13);
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'ingest_blob'")
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    assert_eq!((blobs, jobs), (12, 13));
+}

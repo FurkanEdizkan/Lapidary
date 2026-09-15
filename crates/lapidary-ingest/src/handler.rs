@@ -187,6 +187,7 @@ impl JobHandler for WorkerHandler {
             JobPayload::ImportPart { bundle, part, path } => {
                 self.import_part(job.library_id, bundle, part, &path).await
             }
+            JobPayload::DescribePart { part } => self.describe_part(job.library_id, part).await,
         }
     }
 }
@@ -196,6 +197,54 @@ impl JobHandler for WorkerHandler {
 pub(crate) use lapidary_core::CAD_FORMATS;
 
 impl WorkerHandler {
+    /// `metadata.json` written again from the part's rows. Refused for a part this job's library does
+    /// not hold. A part whose file is still in the content-addressed store has no directory yet, and
+    /// the migration that gives it one writes `metadata.json` from the same rows.
+    async fn describe_part(
+        &self,
+        library: LibraryId,
+        part: lapidary_core::PartId,
+    ) -> Result<Outcome, HandlerError> {
+        let transient = |error: lapidary_db::DbError| HandlerError::Transient {
+            message: error.to_string(),
+        };
+        let revisions = PgRevisions(self.db.clone());
+        let Some(manifest) = revisions
+            .manifest(part)
+            .await
+            .map_err(transient)?
+            .filter(|manifest| manifest.part.library == library)
+        else {
+            return Err(HandlerError::Permanent {
+                message: format!(
+                    "There is no part {part} in this library to describe. It may have been purged; nothing needs doing."
+                ),
+            });
+        };
+        let history = revisions.history(part).await.map_err(transient)?;
+        let Some((model_dir, _)) = history
+            .iter()
+            .find_map(|revision| revision.storage_path.as_deref())
+            .and_then(|path| path.rsplit_once('/'))
+        else {
+            return Ok(Outcome::Described);
+        };
+        let json =
+            serde_json::to_vec_pretty(&manifest).map_err(|error| HandlerError::Permanent {
+                message: format!("could not describe part {part} as JSON: {error}"),
+            })?;
+        SourceStore::open(&self.blob_root, &WorkerRole::assume())
+            .put_at(
+                &format!("{model_dir}/metadata.json"),
+                &json,
+                Compression::AsIs,
+            )
+            .map_err(|error| HandlerError::Transient {
+                message: format!("could not write {model_dir}/metadata.json: {error}"),
+            })?;
+        Ok(Outcome::Described)
+    }
+
     /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
     /// one they fail here: the mesh parser's "no parser for step" would blame a file for
     /// what is the build's gap. Everything else goes to the mesh kernel, which answers an

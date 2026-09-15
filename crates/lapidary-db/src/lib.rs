@@ -12,7 +12,7 @@ mod saved_filters;
 mod touches;
 
 pub use custom_fields::{
-    CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields,
+    CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields, ValueSet,
 };
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
@@ -159,6 +159,12 @@ pub enum DbError {
         parts: i64,
         removed: i64,
     },
+
+    /// `parts` counts removed parts too: a value comes back with its part.
+    #[error(
+        "{parts} parts in this library still hold values under `{key}`, left by a field removed earlier, that this field could not show. Choose another key, or define `{key}` as the kind those values are, with each of them among a choice's options."
+    )]
+    FieldValuesDoNotFit { key: String, parts: i64 },
 
     /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
     /// the per-library advisory lock and runs the ancestry check — never by a caller's own
@@ -312,6 +318,7 @@ impl DbError {
             | DbError::TooManyFields { .. }
             | DbError::TooManyIndexed { .. }
             | DbError::OptionInUse { .. }
+            | DbError::FieldValuesDoNotFit { .. }
             | DbError::LibraryNameTaken { .. }
             | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }

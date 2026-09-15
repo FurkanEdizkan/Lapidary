@@ -315,3 +315,30 @@ async fn a_removed_field_keeps_its_values_and_takes_no_new_ones(pool: sqlx::PgPo
     assert_eq!(body["reason"], "noSuchField");
     assert_eq!(custom(&pool, bracket).await, json!({ "stock_count": 12 }));
 }
+
+/// A value set on a part queues its `metadata.json` to be written again, since the worker is what writes
+/// into a model's directory.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_value_set_on_a_part_queues_its_description(pool: sqlx::PgPool) {
+    define(
+        &pool,
+        json!({ "key": "supplier", "label": "Supplier", "kind": "text" }),
+    )
+    .await;
+    let bracket = part(&pool, "bracket-lp-1042-03", 0x61).await;
+
+    let (status, body) = send(
+        &pool,
+        "PUT",
+        &format!("/api/parts/{bracket}/fields/supplier"),
+        Some(json!({ "value": "Misumi" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let queued: Vec<Value> =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'describe_part'")
+            .fetch_all(&pool)
+            .await
+            .expect("reads");
+    assert_eq!(queued, [json!({ "part": bracket })]);
+}
