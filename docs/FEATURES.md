@@ -293,7 +293,8 @@ Three rows changed meaning rather than only phase, and each is a decision:
   (over which it is resized, not refused), 10 MB input.
 - **OpenGraph fetching is out**, by owner decision, and `DATA.md` §4 is emphatic about where
   that road ends: do not build a scraper. `part_image.origin` still carries `og_fetched`, so
-  adding it later stays additive.
+  adding it later stays additive. Phase 5's exit was rewritten to match on 2026-09-15 (`ROADMAP.md`,
+  Phase 5).
 
 A user image does not yet win over the render on a grid card. A blob-backed image cannot
 reach the grid without either a 17th column or a card-sized second copy on the row, and

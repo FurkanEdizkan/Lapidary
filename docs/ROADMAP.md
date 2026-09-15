@@ -756,7 +756,7 @@ following, all fixed on one branch.
 ## Phase 5 — Source links, bundles, collections
 
 - `part_source` + `part_image` with the full SSRF control set
-- OpenGraph preview fetch behind an explicit button
+- OpenGraph preview fetch: out, by owner decision (FEATURES §6)
 - Streaming ZIP bundles with `manifest.json`
 - Saved filters, custom fields, section plane, PMI display
 - Turkish search config (built, then removed at the owner's word: `8bb5ea4`)
@@ -828,8 +828,10 @@ What it does not do:
   the category is gone from the tree.
 - **No rename or reordering.** To change one, remove it and save again.
 
-**Exit:** paste a Printables URL, get title, licence and cached image; export a 40-part
-assembly as a bundle another user can import with full lineage intact.
+**Exit:** keep a part's source URL with a title and licence typed in, and an image fetched from a pasted
+image URL; export a 40-part assembly as a bundle another user can import with full lineage intact.
+Rewritten 2026-09-15 by the owner's answer, since OpenGraph fetching is out (FEATURES §6). The first clause
+is met. The bundle is met for 40 mesh parts; an OCCT assembly is goal 4's stage 2.
 
 ---
 
@@ -840,47 +842,57 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Exits.** Phases 0–3 are met. Phase 4's and Phase 5's are not.
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
-**Three goals, run in this order.** Each goal is one long `/goal` session with its own file under
-`docs/superpowers/plans/`, and keeps its record below as it merges.
+**Goals, run in this order.** Each goal is one long `/goal` session with its own file under
+`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–3 are merged; goals 4–6 were
+planned after goal 3's code review, from the owner's answers below.
 
 | Order | Goal file | Holds |
 |---|---|---|
 | 1 | `2026-09-15-phase-4-slice-2-goal.md` | overlay diff; `lapidary://` and launching a tool; render cache and quarantined directories in the storage view; slice 1's debts; bundles if time remains |
 | 2 | `2026-09-15-correctness-debt-goal.md` | batched access tracking (DATA §1.4); phantom bytes in the purge and sweep reports; two jobs racing onto one new path; re-parenting a category; tests never seen failing; the untimed drop path, tree fan-out and link open |
 | 3 | `2026-09-15-local-product-goal.md` | custom fields; Turkish search; saved-filter rename, reorder and deleted categories; a capped section cut; watched-folder ingest through the agent; bundles if slice 2 did not reach them |
+| 4 | `2026-09-15-occt-goal.md` | the OCCT image and a real kernel beside the native stack; fixture timings, the assembly's section cut and bundle; CAD derivatives on demand; face and edge counts; snapping to cones, spheres and tori; PMI in the view; explode view; Phase 4's exit on Linux; the `Target` trait if time remains |
+| 5 | `2026-09-15-materials-and-mass-goal.md` | editable materials; density per material; mass; centre of mass; number ranges and counts per choice for custom fields |
+| 6 | `2026-09-15-performance-debt-goal.md` | grid sort off the part row; the job index; idle warm-up loads code only; lazy folder and assembly trees; bundle planning in one query; a file that fails every attempt; watch and symlinks; the menu beside a dialog; the agent's lock test; step 10's manifest; two measurements; housekeeping |
 
 **Decided by the owner, 2026-09-15.**
 - **Tiering.** Source tiering is retired, and library files stay raw (DATA §1.2, §1.3).
 - **OCCT and FreeCAD wait.** Checks stay on mesh parts with the mock kernel.
 - **macOS and Windows watchers** wait for a machine to run them on.
 
+**Decided by the owner after goal 3's code review, 2026-09-15.**
+- **Build the OCCT image now** (goal 4). Only its stages are built, after `df -h /` shows 15 GB free, and
+  only its own leftover `occt-test` images are removed.
+- **STEP timings run on the repo's fixtures**, since the STL corpus holds no STEP or IGES file. Real-file
+  timing stays open.
+- **The owner installs FreeCAD** for Phase 4's exit.
+- **Phase 5's exit is rewritten** (below): typed title and licence, not OpenGraph.
+- **Mass:** a density per material, typed in, and a part's material editable like its tags; a file's
+  material fills it only while nobody has typed one. Mass is always ≈.
+- **The grid's idle warm-up loads the viewer's code only**; the renderer starts on hover.
+- **Custom fields get number ranges and counts per choice.**
+- **`lapidary up` stays a stub** until the managed-local or Tauri work.
+- **The local commits stay unpushed** (210 on 2026-09-15).
+
 **Blocked, and what unblocks each.**
 
 | Unblocked by | Items |
 |---|---|
-| Building the OCCT image (root disk, Docker shared with another project) | Timing Phase 0 and Phase 2 on real STEP files and assemblies; face and edge deltas; snapping to cones, spheres and tori; PMI drawn in 3D; datums no tolerance refers to; PMI for parts ingested before bridge 6; a section cut through an assembly with hidden parts; explode view (3MF components are flattened, so only an OCCT assembly has parts to explode); B-rep format negotiation behind `Target`; a 40-part STEP assembly as a bundle |
-| FreeCAD installed, plus OCCT | Phase 4's exit (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
+| Building the OCCT image: **now goal 4**, by the owner's answer | Timing Phase 0 and Phase 2 on real STEP files and assemblies; face and edge deltas; snapping to cones, spheres and tori; PMI drawn in 3D; datums no tolerance refers to; PMI for parts ingested before bridge 6; a section cut through an assembly with hidden parts; explode view (3MF components are flattened, so only an OCCT assembly has parts to explode); B-rep format negotiation behind `Target`; a 40-part STEP assembly as a bundle |
+| FreeCAD installed by the owner, plus OCCT: goal 4, stage 8 | Phase 4's exit (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
 | A macOS or Windows machine | The FSEvents and `ReadDirectoryChangesW` watchers, the Windows overflow rescan, and the rest of Phase 4's exit |
 | Pulling a pgvector image | Checking pgvector against `postgres:18`, before Phase 6 (see Open items) |
 | Phase 8 | The lifecycle facet, per-user saved filters, auth on locks, `lapidary worker` |
 
-**Open questions for the owner.**
-- **Phase 5's exit cannot be met as written.**
-  - Its first clause, a Printables URL giving title, licence and a cached image, needs OpenGraph
-    fetching.
-  - FEATURES §6 rules OpenGraph out by owner decision.
-  - Recommended: change the exit to a source URL kept with a title and licence entered by hand, and an
-    image fetched from a pasted image URL, which already works.
-- **Mass and centre of mass** need a density.
-  - Recommended: a density per material, entered by hand, with ≈ on every figure derived from it.
-- **`lapidary up`** writes compose files and pulls images.
-  - Recommended: it stays a stub until the managed-local or Tauri work.
-- **A grid visitor who never opens a part** still pays for the viewer chunk and a WebGL context (Phase
-  3 record).
-- **113 local commits are unpushed.** `origin/main` was last pushed on 2026-09-08. When to release is
-  the owner's call.
-- **Old housekeeping** from before the folder tree, not rechecked: the `lapidary_lapidary-blobs`
-  volume, and a `storage/` directory left at `chmod 777`.
+**Open questions, answered 2026-09-15.**
+- **Phase 5's exit** is rewritten to what already works; see Phase 5.
+- **Mass and centre of mass:** goal 5, with a density per material entered by hand.
+- **`lapidary up`** stays a stub.
+- **A grid visitor who never opens a part** will load the viewer's code but no WebGL context: goal 6,
+  stage 3.
+- **Unpushed commits** stay local, by the owner's answer.
+- **Old housekeeping:** goal 6, stage 13, rechecks `storage/` (155 MB, now mode 755) and the
+  `lapidary_lapidary-blobs` volume read-only, and asks before removing anything.
 
 ### Goal 2: correctness and debt (2026-09-15)
 
