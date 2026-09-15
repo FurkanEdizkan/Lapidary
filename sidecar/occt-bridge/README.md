@@ -55,6 +55,7 @@ geometry.
 | `cylinder-d22-lp-9010-00.step` | A 22.000 mm cylinder, 30 mm long — the one Phase 3's exit measures — carrying the material "Stainless steel 1.4301", so a fixture exercises what `header.json` reads. |
 | `cylinder-d22-inch-units-lp-9011-00.step` | The same cylinder, written in inches, to prove units are read from the file. |
 | `cylinder-d22-pmi-lp-9012-00.step` | The same cylinder with the PMI a drawing would give it, as AP242 semantic data: a diameter of 22 mm +0.05/0 on the cylindrical face, datum A on the base, flatness 0.02 mm on the top face and perpendicularity 0.05 mm of the cylindrical face to A. OCCT wrote it and OCCT reads it, so it proves the path, not other CAD systems' files. |
+| `ball-knob-d20-lp-9020-00.step` | A ⌀20 mm ball on a ⌀12 mm shaft with a 90° countersunk tip and an O-ring groove of ⌀3 mm section, so a fixture carries a sphere, a cone and a torus for measurement to snap to. |
 | `angle-bracket-60x60x40-lp-9004-00.igs` | One part as IGES. |
 
 ## How it is built

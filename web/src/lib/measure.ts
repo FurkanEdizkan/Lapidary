@@ -6,7 +6,8 @@ import type { Vec3 } from './viewer-math'
  *
  * A pick is where a click met the drawn mesh: the point, and the corners and outward normal of the
  * triangle it met. Where that triangle lies on an analytic entity the kernel read — a plane, a
- * cylinder, a circular edge — a value comes from the entity and is exact. Anything else comes from
+ * cylinder, a cone, a sphere, a torus, a circular edge — a value comes from the entity and is exact, except
+ * where it also depends on where the click fell. Anything else comes from
  * the picked points and is approximate. Every value is an `Approximate`, so none reaches the screen
  * without saying which it is.
  */
@@ -105,12 +106,20 @@ export function measure(tool: Tool, picks: readonly Pick[], entities: readonly E
   if (a === undefined) return null
   switch (tool) {
     case 'diameter': {
-      const round = snap(a, entities, ['cylinder', 'circle'])
-      if (round?.type === 'cylinder' || round?.type === 'circle') return exact(2 * round.radius)
+      const round = snap(a, entities, ['cylinder', 'circle', 'sphere', 'torus', 'cone'])
+      if (round?.type === 'cylinder' || round?.type === 'circle' || round?.type === 'sphere') return exact(2 * round.radius)
+      // A torus's round face is its tube: the diameter a fillet or an O-ring groove is drawn with.
+      if (round?.type === 'torus') return exact(2 * round.minor_radius)
+      // A cone has a diameter only at a height, and the height is where the click met the mesh.
+      if (round?.type === 'cone') return approximate(2 * coneRadius(round, a.point))
       const fit = b === undefined || c === undefined ? null : circumdiameter(a.point, b.point, c.point)
       return fit === null ? null : approximate(fit)
     }
     case 'angle': {
+      // A cone's included angle, as a drawing states a countersink: exact, and from the latest click alone, so a
+      // click on a cone reads it whatever was clicked before.
+      const cone = snap(picks[picks.length - 1] ?? a, entities, ['cone'])
+      if (cone?.type === 'cone') return exact((Math.abs(cone.semi_angle_rad) * 360) / Math.PI)
       if (b === undefined) return null
       const first = snap(a, entities, ['plane'])
       const second = snap(b, entities, ['plane'])
@@ -156,10 +165,47 @@ function offSurface({ point, normal, corners }: Pick, entity: Entity): number | 
         .sort((x, y) => x - y)
       return second ?? null
     }
-    default:
-      // Cones, spheres and tori are read but not snapped to: no tool measures one yet.
-      return null
+    case 'sphere': {
+      const out = sub(point, entity.center)
+      const reach = length(out)
+      if (reach === 0 || !facing(scale(out, 1 / reach), normal)) return null
+      return Math.max(...corners.map((corner) => Math.abs(length(sub(corner, entity.center)) - entity.radius)))
+    }
+    case 'cone': {
+      const radial = fromAxis(point, entity.origin, entity.axis)
+      const out = length(radial)
+      if (out === 0) return null
+      const [cos, sin] = [Math.cos(entity.semi_angle_rad), Math.sin(entity.semi_angle_rad)]
+      if (!facing(sub(scale(radial, cos / out), scale(entity.axis, sin)), normal)) return null
+      // A corner's gap from the radius at its own height, turned square to the surface.
+      return Math.max(
+        ...corners.map((corner) => Math.abs((length(fromAxis(corner, entity.origin, entity.axis)) - coneRadius(entity, corner)) * cos)),
+      )
+    }
+    case 'torus': {
+      const toPoint = fromTube(point, entity)
+      const out = toPoint === null ? 0 : length(toPoint)
+      if (toPoint === null || out === 0 || !facing(scale(toPoint, 1 / out), normal)) return null
+      return Math.max(
+        ...corners.map((corner) => {
+          const v = fromTube(corner, entity)
+          return v === null ? Number.POSITIVE_INFINITY : Math.abs(length(v) - entity.minor_radius)
+        }),
+      )
+    }
   }
+}
+
+/** A cone's radius at the height of `p` along its axis. */
+function coneRadius(cone: Extract<Entity, { type: 'cone' }>, p: Vec3): number {
+  return cone.ref_radius + dot(sub(p, cone.origin), cone.axis) * Math.tan(cone.semi_angle_rad)
+}
+
+/** From the nearest point of a torus's centre circle to `p`, or `null` for a point on its axis, where every point of that circle is as near. */
+function fromTube(p: Vec3, torus: Extract<Entity, { type: 'torus' }>): Vec3 | null {
+  const radial = fromAxis(p, torus.origin, torus.axis)
+  const out = length(radial)
+  return out === 0 ? null : sub(sub(p, torus.origin), scale(radial, torus.major_radius / out))
 }
 
 function place(entity: Entity, chain: readonly Transform[]): Entity {

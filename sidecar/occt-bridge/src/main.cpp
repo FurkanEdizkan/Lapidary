@@ -37,7 +37,10 @@
 #include <BRepLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -967,6 +970,18 @@ int generateFixtures(const std::string& dir) {
   XCAFDoc_GeomTolerance::Set(squareLabel)->SetObject(square);
   dimTol->SetDatumToGeomTol(datumLabel, squareLabel);
 
+  // A ball knob, so a fixture carries the surfaces measurement snaps to beyond planes and cylinders: a ⌀20 mm
+  // ball on a ⌀12 mm shaft, a 90° countersunk tip, and an O-ring groove of ⌀3 mm section around the shaft.
+  const occ::handle<TDocStd_Document> knob = newDocument();
+  const occ::handle<XCAFDoc_ShapeTool> knobTool = XCAFDoc_DocumentTool::ShapeTool(knob->Main());
+  const TopoDS_Shape tip =
+      BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(0.0, 0.0, -6.0), gp_Dir(0.0, 0.0, 1.0)), 0.0, 6.0, 6.0).Shape();
+  const TopoDS_Shape ball = BRepPrimAPI_MakeSphere(gp_Pnt(0.0, 0.0, 38.0), 10.0).Shape();
+  const TopoDS_Shape oringGroove =
+      BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0.0, 0.0, 15.0), gp_Dir(0.0, 0.0, 1.0)), 6.0, 1.5).Shape();
+  TDataStd_Name::Set(knobTool->AddShape(cut(fused(fused(cylinder(6.0, 30.0), tip), ball), oringGroove), false),
+                     "ball-knob-d20-lp-9020-00");
+
   const occ::handle<TDocStd_Document> iges = newDocument();
   const occ::handle<XCAFDoc_ShapeTool> igesTool = XCAFDoc_DocumentTool::ShapeTool(iges->Main());
   TDataStd_Name::Set(igesTool->AddShape(fused(box(60.0, 40.0, 8.0), box(8.0, 40.0, 60.0)), false),
@@ -978,6 +993,7 @@ int generateFixtures(const std::string& dir) {
       writeStep(single, dir + "/cylinder-d22-lp-9010-00.step", UnitsMethods_LengthUnit_Millimeter) &&
       writeStep(single, dir + "/cylinder-d22-inch-units-lp-9011-00.step", UnitsMethods_LengthUnit_Inch) &&
       writeStep(pmi, dir + "/cylinder-d22-pmi-lp-9012-00.step", UnitsMethods_LengthUnit_Millimeter) &&
+      writeStep(knob, dir + "/ball-knob-d20-lp-9020-00.step", UnitsMethods_LengthUnit_Millimeter) &&
       igesWriter.Transfer(iges) && igesWriter.Write((dir + "/angle-bracket-60x60x40-lp-9004-00.igs").c_str());
   if (!ok) {
     std::fprintf(stderr, "generate-fixtures: could not write into %s\n", dir.c_str());
