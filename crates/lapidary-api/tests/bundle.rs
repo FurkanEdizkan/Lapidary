@@ -352,3 +352,141 @@ async fn a_file_that_no_longer_matches_its_hash_ends_the_bundle_short(pool: sqlx
         "the body ends in an error, short of its Content-Length"
     );
 }
+
+/// Counts the statements sqlx runs, from its `sqlx::query` events, on the thread it is the default for.
+struct Statements(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl tracing::Subscriber for Statements {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.target() == "sqlx::query"
+    }
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Planning reads the selection in one query, not several per part and one per revision: forty parts, one of
+/// them revised, cost the library's row and the selection's, however long their histories are.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn forty_parts_are_planned_in_two_queries(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("a blob root");
+    let flange = filed(
+        &pool,
+        root.path(),
+        "Flange DN40, LP-3310-02",
+        FLANGE,
+        FLANGE_STORED,
+        b"solid flange-dn40 v1",
+    )
+    .await;
+    revise(&pool, root.path(), flange, b"solid flange-dn40 v2").await;
+    let mut parts = vec![flange.to_string()];
+    for n in 1..40 {
+        let file = format!("spacer-m8x{n:02}-lp-2001-{n:02}");
+        let part = filed(
+            &pool,
+            root.path(),
+            &format!("Spacer M8 x {n} mm, LP-2001-{n:02}"),
+            &format!("spacers/{file}.stl"),
+            &format!("libraries/default/spacers/{file}/{file}.stl"),
+            format!("solid {file}").as_bytes(),
+        )
+        .await;
+        parts.push(part.to_string());
+    }
+
+    let statements = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let response = {
+        let _counting = tracing::subscriber::set_default(Statements(statements.clone()));
+        plan(pool.clone(), root.path(), serde_json::json!(parts)).await
+    };
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        statements.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the library's row, then the selection's"
+    );
+}
+
+/// A removed part, and a part of another library, are refused as parts this library cannot bundle: the
+/// selection's one query holds them back, as the reads it replaced did one part at a time.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let root = store.path();
+    let vee = filed(
+        &pool,
+        root,
+        "Vee block, LP-3072-02",
+        VEE,
+        VEE_STORED,
+        b"solid vee-block\n",
+    )
+    .await;
+    let flange = filed(
+        &pool,
+        root,
+        "Flange DN40, LP-3310-02",
+        FLANGE,
+        FLANGE_STORED,
+        b"solid flange-dn40\n",
+    )
+    .await;
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(flange)
+            .await
+            .expect("removes")
+    );
+    assert_eq!(
+        plan(pool.clone(), root, serde_json::json!([vee, flange]))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "a removed part"
+    );
+
+    let jigs = PgParts(pool.clone())
+        .create_library("Workshop jigs", "hobby")
+        .await
+        .expect("a second library");
+    let clamp = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: RevisionOrigin::Ingest,
+            library: jigs,
+            name: "Toggle clamp, LP-4120-01",
+            source_path: "clamps/toggle-clamp-lp-4120-01.stl",
+            folder: None,
+            storage_path: None,
+            blob: &row(b"solid toggle-clamp-lp-4120-01\n"),
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+glb-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("records");
+    assert_eq!(
+        plan(pool.clone(), root, serde_json::json!([vee, clamp]))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "a part of another library"
+    );
+    assert_eq!(
+        plan(pool, root, serde_json::json!([vee])).await.status(),
+        StatusCode::OK
+    );
+}

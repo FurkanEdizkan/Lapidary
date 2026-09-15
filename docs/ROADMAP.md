@@ -2263,6 +2263,28 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 - **Decided without the owner:** a branch closed again drops its rows rather than keeping them, so what is in the
   page is what is open.
 
+**Bundle planning in one query** (`27ad4c7`).
+- **The change.** `PgParts::bundle_parts` reads the whole selection in one query: each part that is in the library
+  and not removed, in the order asked, with its sources and every revision's download source, oldest revision
+  first. Before, `plan_bundle` called `library_of`, `detail`, `part_sources` and `history` for each part, and
+  `source_for_download` for each revision. It now makes the same checks over the one answer, in the same order and
+  words. The `ponytail:` is gone.
+- **Counted:** planning 40 parts, one of them revised, ran 202 statements on `main` and runs 2 now: the library's
+  row and the selection's. They are counted from sqlx's `sqlx::query` events on the request's thread.
+- **Measured** through a debug api over 500 seeded parts, three revisions and two sources each, on the same data
+  before and after. Median of 21 requests after 3 warm-ups:
+  - 40 parts: 76.9 ms before, 6.9 ms after;
+  - 500 parts, the cap: 947 ms before, 72.5 ms after.
+- **Tests:**
+  - the existing bundle tests, unchanged and green;
+  - the statement count, which failed first at 202;
+  - a removed part and a part of another library are refused. This one was written with the change and
+    mutation-checked.
+- **Mutation-checked, all 6 caught:** the library filter dropped, removed parts let in, revisions newest first, a
+  source's licence read from its title, the missing-part check skipped, and a parent's label lost.
+- **Decided without the owner:** a part's sources travel as one array per field, all in one order, rather than as
+  JSON, so there is nothing new to fail decoding.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

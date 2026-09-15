@@ -2701,6 +2701,113 @@ impl PgParts {
         }))
     }
 
+    /// Every part of `parts` that is in `library`, not removed and holding a revision, in the order asked, with
+    /// its sources and every revision's download source, in one query. A part missing from the answer is one a
+    /// bundle cannot hold, and the caller refuses the bundle for it.
+    ///
+    /// The revisions are [`PgRevisions::history`]'s, oldest first. Each file is [`Self::source_for_download`]'s,
+    /// by the same `role = 'source'` filter and ordering, and the sources are [`Self::part_sources`]'s, in its
+    /// order. Each source field is aggregated on its own, all in that one order, so the arrays line up.
+    ///
+    /// [`PgRevisions::history`]: crate::PgRevisions::history
+    pub async fn bundle_parts(
+        &self,
+        library: LibraryId,
+        parts: &[PartId],
+    ) -> Result<Vec<BundlePartRow>, DbError> {
+        let ids: Vec<Uuid> = parts.iter().map(|part| part.as_uuid()).collect();
+        let rows: Vec<BundleColumns> = sqlx::query_as(
+            "SELECT p.id AS part_id, p.name, p.part_number, p.source_path, p.tags, \
+                    ps.urls, ps.vendors, ps.external_ids, ps.titles, ps.licenses, \
+                    r.id AS revision_id, r.parent_revision_id, r.rev_label, r.origin, \
+                    (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_us, \
+                    f.blake3, f.format, f.storage_path, f.zstd_level, f.size_bytes \
+             FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted(id, position) \
+             JOIN part p ON p.id = wanted.id AND p.library_id = $1 AND p.deleted_at IS NULL \
+             JOIN revision r ON r.part_id = p.id \
+             LEFT JOIN LATERAL (SELECT array_agg(url ORDER BY created_at, id) AS urls, \
+                                       array_agg(vendor ORDER BY created_at, id) AS vendors, \
+                                       array_agg(external_id ORDER BY created_at, id) AS external_ids, \
+                                       array_agg(title ORDER BY created_at, id) AS titles, \
+                                       array_agg(license ORDER BY created_at, id) AS licenses \
+                                FROM part_source WHERE part_id = p.id) ps ON true \
+             LEFT JOIN LATERAL (SELECT blake3, format, storage_path, zstd_level, size_bytes FROM file \
+                                WHERE revision_id = r.id AND role = 'source' \
+                                ORDER BY created_at DESC, id DESC LIMIT 1) f ON true \
+             ORDER BY wanted.position, r.created_at, r.id",
+        )
+        .bind(library.as_uuid())
+        .bind(&ids)
+        .fetch_all(&self.0)
+        .await?;
+
+        let mut bundled: Vec<BundlePartRow> = Vec::new();
+        for c in rows {
+            if bundled
+                .last()
+                .is_none_or(|part| part.id.as_uuid() != c.part_id)
+            {
+                let texts =
+                    |values: Option<Vec<Option<String>>>| values.unwrap_or_default().into_iter();
+                let sources = texts(c.urls)
+                    .zip(texts(c.vendors))
+                    .zip(texts(c.external_ids))
+                    .zip(texts(c.titles))
+                    .zip(texts(c.licenses))
+                    .map(
+                        |((((url, vendor), external_id), title), license)| BundleSource {
+                            url,
+                            vendor,
+                            external_id,
+                            title,
+                            license,
+                        },
+                    )
+                    .collect();
+                bundled.push(BundlePartRow {
+                    id: PartId::from_uuid(c.part_id),
+                    name: c.name,
+                    part_number: c.part_number,
+                    source_path: c.source_path,
+                    tags: c.tags,
+                    sources,
+                    revisions: Vec::new(),
+                });
+            }
+            let Some(part) = bundled.last_mut() else {
+                continue;
+            };
+            let origin = lapidary_core::RevisionOrigin::parse(&c.origin).ok_or_else(|| {
+                DbError::UnknownOrigin {
+                    value: c.origin.clone(),
+                }
+            })?;
+            let source = match (c.blake3, c.format, c.size_bytes) {
+                (Some(hex), Some(format), Some(size_bytes)) => Some(DownloadSource {
+                    hash: BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                        column: "file.blake3",
+                        value: hex,
+                    })?,
+                    size_bytes,
+                    format,
+                    part_name: part.name.clone(),
+                    storage_path: c.storage_path,
+                    zstd_level: c.zstd_level,
+                }),
+                _ => None,
+            };
+            part.revisions.push(BundleRevisionRow {
+                id: RevisionId::from_uuid(c.revision_id),
+                parent: c.parent_revision_id.map(RevisionId::from_uuid),
+                rev_label: c.rev_label,
+                origin,
+                created_at: detail_stamp("revision.created_at", c.created_us)?,
+                source,
+            });
+        }
+        Ok(bundled)
+    }
+
     /// What this library occupies, split the way `DATA.md` §1.1 splits storage classes.
     /// `None` means there is no such library, so a route can 404 rather than report zero
     /// bytes for an id that names nothing — the same distinction
@@ -4057,4 +4164,65 @@ impl PgParts {
             })?;
         Ok(id)
     }
+}
+
+/// One part of a bundle, as [`PgParts::bundle_parts`] reads it.
+#[derive(Debug)]
+pub struct BundlePartRow {
+    pub id: PartId,
+    pub name: String,
+    pub part_number: Option<String>,
+    pub source_path: String,
+    pub tags: Vec<String>,
+    /// Where it came from, oldest first.
+    pub sources: Vec<BundleSource>,
+    /// Every revision, oldest first.
+    pub revisions: Vec<BundleRevisionRow>,
+}
+
+/// The fields of a part's source that a bundle's manifest carries.
+#[derive(Debug)]
+pub struct BundleSource {
+    pub url: Option<String>,
+    pub vendor: Option<String>,
+    pub external_id: Option<String>,
+    pub title: Option<String>,
+    pub license: Option<String>,
+}
+
+/// One revision of a bundled part, and the file a bundle reads for it.
+#[derive(Debug)]
+pub struct BundleRevisionRow {
+    pub id: RevisionId,
+    pub parent: Option<RevisionId>,
+    pub rev_label: String,
+    pub origin: lapidary_core::RevisionOrigin,
+    pub created_at: jiff::Timestamp,
+    /// `None` for a revision with no source file, which a bundle refuses.
+    pub source: Option<DownloadSource>,
+}
+
+/// [`PgParts::bundle_parts`]'s row: one per revision, its part's columns beside it.
+#[derive(sqlx::FromRow)]
+struct BundleColumns {
+    part_id: Uuid,
+    name: String,
+    part_number: Option<String>,
+    source_path: String,
+    tags: Vec<String>,
+    urls: Option<Vec<Option<String>>>,
+    vendors: Option<Vec<Option<String>>>,
+    external_ids: Option<Vec<Option<String>>>,
+    titles: Option<Vec<Option<String>>>,
+    licenses: Option<Vec<Option<String>>>,
+    revision_id: Uuid,
+    parent_revision_id: Option<Uuid>,
+    rev_label: String,
+    origin: String,
+    created_us: i64,
+    blake3: Option<String>,
+    format: Option<String>,
+    storage_path: Option<String>,
+    zstd_level: Option<i16>,
+    size_bytes: Option<i64>,
 }
