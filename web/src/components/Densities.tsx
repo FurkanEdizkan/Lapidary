@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { fetchDensities, fetchFacets, removeDensity, setDensity, type FieldWritten } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { LibraryId } from '../lib/types'
-import { Dialog } from './Dialog'
+import { Dialog, closeMenu } from './Dialog'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -29,7 +29,10 @@ export function DensitiesMenuItem({ library }: { library: LibraryId }) {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={(event) => {
+          closeMenu(event.currentTarget)
+          setOpen(true)
+        }}
         className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {strings.densities.menu}

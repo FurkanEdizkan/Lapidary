@@ -4331,3 +4331,28 @@ test("a bundle the server refuses says why and downloads nothing", async () => {
   expect(submit).not.toHaveBeenCalled();
   submit.mockRestore();
 });
+
+/**
+ * Choosing an item that opens a dialog closes the library menu. The menu is a native popover, which a click inside
+ * it never dismisses, and the dialog is drawn outside it, so the menu stayed open beside the dialog.
+ */
+test.each([
+  strings.libraries.create,
+  strings.libraries.makeControlled,
+  strings.fields.menu,
+  strings.densities.menu,
+])("choosing %s from the library menu closes the menu", async (item) => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT])),
+    libraries: ok([{ ...SEEDED_LIBRARY_ROW, mode: "hobby" }]),
+  });
+  renderIndex();
+  const menu = await openMenu(strings.toolbar.library);
+  const hide = vi.fn();
+  menu.hidePopover = hide;
+
+  fireEvent.click(await within(menu).findByRole("button", { name: item }));
+  expect(hide).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole("dialog")).toBeDefined();
+});

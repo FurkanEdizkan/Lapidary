@@ -7,6 +7,14 @@ const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /**
+ * Close the toolbar menu `control` sits in, for a control that opens a dialog. A menu is a native popover, which a
+ * click inside it never dismisses, and a dialog is drawn outside it, so the menu would stay open beside the dialog.
+ */
+export function closeMenu(control: Element) {
+  control.closest<HTMLElement>('[data-menu]')?.hidePopover?.()
+}
+
+/**
  * The shell every dialog here shares: `role="dialog"` + `aria-modal`, Escape, a focus trap
  * and a portal. The caller autofocuses whichever control the safe answer is — cancel where
  * the action is destructive, confirm where it is not.
