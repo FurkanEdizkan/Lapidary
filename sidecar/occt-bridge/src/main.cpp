@@ -977,9 +977,9 @@ int generateFixtures(const std::string& dir) {
   const TopoDS_Shape tip =
       BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(0.0, 0.0, -6.0), gp_Dir(0.0, 0.0, 1.0)), 0.0, 6.0, 6.0).Shape();
   const TopoDS_Shape ball = BRepPrimAPI_MakeSphere(gp_Pnt(0.0, 0.0, 38.0), 10.0).Shape();
-  const TopoDS_Shape groove =
+  const TopoDS_Shape oringGroove =
       BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0.0, 0.0, 15.0), gp_Dir(0.0, 0.0, 1.0)), 6.0, 1.5).Shape();
-  TDataStd_Name::Set(knobTool->AddShape(cut(fused(fused(cylinder(6.0, 30.0), tip), ball), groove), false),
+  TDataStd_Name::Set(knobTool->AddShape(cut(fused(fused(cylinder(6.0, 30.0), tip), ball), oringGroove), false),
                      "ball-knob-d20-lp-9020-00");
 
   const occ::handle<TDocStd_Document> iges = newDocument();
