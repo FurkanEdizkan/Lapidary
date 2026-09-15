@@ -2349,6 +2349,47 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 - **Mutation-checked, both caught:** another part's manifest asked for, so no file is written, and a manifest that
   is not the rows'.
 
+**Two measurements** (no code).
+- **An access-tracking flush.** `Touches::flush`'s statement, prepared, over 20,000 blob rows in a scratch
+  database. Each run was rolled back; the figure is the median of five, server time from `EXPLAIN ANALYZE`:
+  - 150 reads, every row stale, for a busy interval over the stand-in's 150 parts: 3.5 ms;
+  - 20,000 reads, every row stale: 136 ms, plus 7 ms planning a statement that carries 20,000 hashes inline, which
+    sqlx's binary binds do not;
+  - 20,000 reads, every row already read today: 53 ms, writing nothing.
+  - Nothing changed. A repeat flush still joins every hash, but a flush runs every five minutes, off any request.
+- **Leaving a core free during a commit.** A 150-file commit through a debug api on 12 cores, into a scratch
+  library of 20,000 parts, with the grid's search asked back to back while it ran. `main`, which stores 11 files at
+  once, was alternated for three rounds with a local build storing 12, which was never committed:
+
+| | 11 at once (`main`) | 12 at once |
+|---|---|---|
+| The commit | 1,425, 1,372, 1,358 ms | 1,377, 1,385, 1,351 ms |
+| Search, api idle, median | 37 ms each round | 37 ms each round |
+| Search during the commit, median | 72.2, 69.0, 65.2 ms | 72.5, 72.0, 68.8 ms |
+| Search during the commit, p95 | 83.2, 79.8, 78.2 ms | 86.1, 81.0, 79.6 ms |
+
+  - **The default stays one fewer than the cores.** Leaving a core free is 0.3 to 3.6 ms better at the median,
+    inside the spread between rounds, and the commit takes the same time either way.
+  - The stand-in is the first 150 uniquely named STLs between 20 kB and 3 MB in the owner's corpus, sorted by path:
+    237,251,150 bytes, not goal 2's 270,719,950. The corpus has changed since.
+
+**Housekeeping** (read only; nothing removed).
+- **`storage/` in the repo root:** 155 MB, 484 files owned by the container's uid 10001, written from 2026-09-05 to
+  2026-09-13, and ignored by git. It is still the compose stack's storage root: `compose.yaml` mounts
+  `${LAPIDARY_STORAGE_ROOT:-../storage}`, and `deploy/.env` leaves that unset. Its rows are in
+  `lapidary_lapidary-db`.
+- **`lapidary_lapidary-db`:** 185.8 MB, the compose stack's Postgres, still declared.
+- **`lapidary_lapidary-uploads`:** empty, still declared.
+- **`lapidary_lapidary-blobs`:** 80 MB, 312 files under `blobs/`, written on 2026-09-05 and 2026-09-07.
+  `compose.yaml` no longer declares it; its note calls it the store of a deployment from before the folder layout,
+  which nothing copies across.
+- **Waiting for the owner:**
+  - whether to remove `lapidary_lapidary-blobs`;
+  - whether the compose stack's store is still wanted. `storage/` and `lapidary_lapidary-db` go together or not
+    at all, since either without the other orphans the rest.
+  - From goal 5, whether to remove the tagged images `lapidary-occt:goal4` and `lapidary-occt:goal5`, about
+    1.14 GB between them.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
