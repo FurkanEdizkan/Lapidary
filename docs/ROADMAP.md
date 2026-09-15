@@ -2285,6 +2285,31 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 - **Decided without the owner:** a part's sources travel as one array per field, all in one order, rather than as
   JSON, so there is nothing new to fail decoding.
 
+**A file that no longer fails past a purged part's bytes** (`c909d6b`).
+- **The failure, as goal 2 recorded it.** A controlled part in a disambiguated directory is revised, then purged, so
+  its newest file waits out its quarantine at that path. The part's first file, dropped back at the same source
+  path, resolved to the same directory, met those bytes, and failed every attempt until the sweep removed them.
+- **The change.** A new part's file that meets other bytes at a path `quarantined_file` records takes a longer name
+  beside them: `{slug}_{12 hex}`, then the whole hash (`disambiguate_with`). Other bytes that are not quarantined
+  are left alone and the job is decided again, as before. Nothing already on disk is replaced either way.
+- **Test:** goal 2's state, built through the handler: a part filed under a disambiguated name, revised, removed
+  and purged, then its first file dropped again. It failed first with the recorded message ("Another job wrote
+  other bytes to libraries/default/bracket-lp-1042-03_5a36c0/bracket-lp-1042-03.stl…"). It now ingests under 12
+  digits of its hash, and the purged part's bytes are still where they were.
+- **Mutation-checked, all 5 caught:**
+  - no longer name tried;
+  - a longer name taken for bytes that are not quarantined, caught by the existing race test;
+  - the directory left at six digits;
+  - every path read as quarantined;
+  - a suffix cut to six digits.
+- **Decided without the owner:**
+  - The goal said "no live part names that path". Bytes no row names include a racing job's file whose row has not
+    committed yet, and `a_new_file_never_replaces_other_bytes_already_at_its_path` decides that job again. So the
+    longer name is taken only for a path `quarantined_file` records, which is the state goal 2 recorded.
+  - A quarantined path a part has claimed again takes a longer name too, rather than being decided again forever,
+    since nothing there is replaced. The sweep's own guard for that case was tried here first, its mutation
+    survived, and it was dropped as a rule with nothing to protect.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
