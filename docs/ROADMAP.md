@@ -2339,6 +2339,16 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   holder's is active.
 - **Mutation-checked, all 3 caught:** any lock passing, every lock passing, and the held lock refused.
 
+**Step 10's first manifest, held** (`d868210`).
+- **The change.** A new part's first `metadata.json` was built by hand from the ingest's own ids and what the
+  handler had recorded, and written without the part-row hold the other two writers take. It is now written
+  through `PgRevisions::write_manifest`, from the rows, while the part's row is held, in the revision writer's
+  shape. The hand-built manifest, its imports and the handler's local copy of the file's statement are gone.
+- **Test:** a new part's `metadata.json` is the manifest its rows give. It passed on `main` too, since for an STL
+  the hand-built manifest already matched the rows, so it was mutation-checked instead.
+- **Mutation-checked, both caught:** another part's manifest asked for, so no file is written, and a manifest that
+  is not the rows'.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
