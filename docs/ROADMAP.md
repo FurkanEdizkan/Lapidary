@@ -1920,6 +1920,25 @@ stage's own build.
   - "EN AW-6082 T6" typed and added through the page: listed, marked typed, and counted once by the facet;
   - removed again: the list and the facet were empty.
 
+**Density per material** (`fefc8c4`).
+- **The table:** `material_density (library_id, material, density_kg_m3 numeric)` (`0034`), keyed by the material
+  exactly as parts hold it and removed with its library. Its check refuses a density outside 0 to 25,000 kg/m³.
+- **The routes:** `GET /api/libraries/{id}/densities`, and `PUT` and `DELETE` on
+  `/api/libraries/{library}/densities/{material}`. A density that is not a finite number above 0 and below 25,000
+  kg/m³ is refused in words, and so is a material no part could hold (blank, padded, or past 64 characters). A
+  library that does not exist is a 404.
+- **The Densities dialog,** from the library menu: a box for each material the library's parts hold, and for each
+  material that has a density though no part holds it now. Typed and shown in g/cm³, stored in kg/m³, a comma taken
+  for the point.
+- **Tests:** the bounds and a non-number, with nothing written; an upsert; a removal and a second one; a material no
+  part holds; a padded name; a missing library; and the dialog's listing and its g/cm³ to kg/m³.
+- **Mutation-checked, all 5 caught:** each bound loosened by one comparison, the upsert made `DO NOTHING`, the
+  library check dropped, and the conversion left in g/cm³.
+- **Checked in Chrome** on the native stack, with a bracket given "AISI 1045 steel" (no page errors):
+  - 30 g/cm³ was refused in the server's words, and nothing was stored;
+  - 7.85 g/cm³ was stored as 7850 kg/m³;
+  - removed, nothing was stored and the box was empty.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
