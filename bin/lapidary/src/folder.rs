@@ -179,8 +179,9 @@ fn batches(paths: Vec<String>, listing: &BTreeMap<String, Seen>) -> Vec<Vec<Stri
     groups
 }
 
-/// Every model file under the folder that the ignore list lets through, by source path. Symlinks are not
-/// followed, and an entry that cannot be read is left out of this round rather than stopping it.
+/// Every model file under the folder that the ignore list lets through, by source path. A symlinked model file
+/// is followed, as the scan follows one, and a symlinked directory is not descended, which keeps a loop
+/// unreachable. An entry that cannot be read is left out of this round rather than stopping it.
 fn list(root: &Path) -> BTreeMap<String, Seen> {
     let mut found = BTreeMap::new();
     let mut folders = vec![root.to_path_buf()];
@@ -200,16 +201,22 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
                 continue;
             };
             let path = entry.path();
+            // `DirEntry::file_type` does not follow a symlink, so a symlinked directory is not descended here.
             if kind.is_dir() {
                 folders.push(path);
                 continue;
             }
-            if !kind.is_file() || !lapidary_core::is_model_file(name) {
+            if !lapidary_core::is_model_file(name) {
                 continue;
             }
-            let (Ok(metadata), Some(source)) = (entry.metadata(), source_path(root, &path)) else {
+            // `std::fs::metadata` does follow one, so a symlinked model file is read as the file it names.
+            let (Ok(metadata), Some(source)) = (std::fs::metadata(&path), source_path(root, &path))
+            else {
                 continue;
             };
+            if !metadata.is_file() {
+                continue;
+            }
             let Ok(modified) = metadata.modified() else {
                 continue;
             };
@@ -753,6 +760,45 @@ mod tests {
             )
             .hash,
             ["flange-dn40-lp-3310-02.stl"]
+        );
+    }
+
+    /// A model file symlinked into the folder is watched, as the scan ingests one: someone who links an STL into
+    /// their library meant it. A symlinked directory is still not descended, which keeps a loop unreachable.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_model_file_is_listed_and_a_symlinked_directory_is_not_descended() {
+        const FLANGE: &[u8] = b"solid flange-dn40-lp-3310-02\n";
+        let elsewhere = tempfile::tempdir().expect("a folder outside the watch");
+        let folder = tempfile::tempdir().expect("the watched folder");
+        std::fs::write(elsewhere.path().join("flange-dn40-lp-3310-02.stl"), FLANGE)
+            .expect("the linked file");
+        std::fs::create_dir(elsewhere.path().join("clamps")).expect("a linked folder");
+        std::fs::write(
+            elsewhere.path().join("clamps/toggle-clamp-lp-4120-01.stl"),
+            b"solid toggle-clamp-lp-4120-01\n",
+        )
+        .expect("a file inside it");
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("flange-dn40-lp-3310-02.stl"),
+            folder.path().join("flange-dn40-lp-3310-02.stl"),
+        )
+        .expect("links the file");
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("clamps"),
+            folder.path().join("clamps"),
+        )
+        .expect("links the folder");
+
+        let listed = list(folder.path());
+        assert_eq!(
+            listed.keys().collect::<Vec<_>>(),
+            ["flange-dn40-lp-3310-02.stl"]
+        );
+        assert_eq!(
+            listed["flange-dn40-lp-3310-02.stl"].size,
+            FLANGE.len() as u64,
+            "the linked file's own size, not the link's"
         );
     }
 }
