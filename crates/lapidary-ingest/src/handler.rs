@@ -113,7 +113,7 @@
 
 use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
-use lapidary_core::slug::{disambiguate, slugify};
+use lapidary_core::slug::{disambiguate, disambiguate_with, slugify};
 use lapidary_core::{
     BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome, RevisionId,
     RevisionOrigin, Topology, source_format,
@@ -847,7 +847,7 @@ impl WorkerHandler {
 
         // 7. Where this model lives: its category rows, and the directory that holds it.
         // See `model_dir_for` for why this is here and not earlier.
-        let (folder, model_dir) = self
+        let (folder, mut model_dir) = self
             .model_dir_for(library, source_path, name, &hash)
             .await?;
         // The file keeps the name the user gave it, not the slugged part name: the whole
@@ -857,7 +857,7 @@ impl WorkerHandler {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(name);
-        let storage_path = format!("{model_dir}/{file_name}");
+        let mut storage_path = format!("{model_dir}/{file_name}");
 
         // 8. The bytes, written before the transaction exactly as they always were -- a
         // filesystem write cannot be rolled back by Postgres, so they must be on disk
@@ -881,39 +881,69 @@ impl WorkerHandler {
         // at them. The same bytes already there are this file, left by an attempt that stopped
         // before its row or by a job racing it with the same file, so they are used as written
         // and, being possibly another's, never reaped by this attempt. `ours` says which.
-        let (stored, ours) = match source.put_new_at(&storage_path, &bytes, Compression::AsIs) {
-            Ok(stored) => (stored, true),
-            Err(lapidary_storage::StorageError::AlreadyExists { .. }) => {
-                let there =
-                    source
-                        .get_at(&storage_path, Some(0))
-                        .map_err(|e| HandlerError::Transient {
+        //
+        // Other bytes that are a purged part's file, waiting out its 30 days in quarantine at a name
+        // this model resolves to again, are never got past by retrying (ROADMAP, goal 2's record). So
+        // this file takes a longer name beside them: 12 digits of its hash, then all of them. Other
+        // bytes that are not quarantined may be another job's, whose row is about to point at them,
+        // and this file is decided again as before.
+        let mut longer = [12, 64].into_iter();
+        let (stored, ours) = loop {
+            match source.put_new_at(&storage_path, &bytes, Compression::AsIs) {
+                Ok(stored) => break (stored, true),
+                Err(lapidary_storage::StorageError::AlreadyExists { .. }) => {
+                    let there = source.get_at(&storage_path, Some(0)).map_err(|e| {
+                        HandlerError::Transient {
                             message: e.to_string(),
-                        })?;
-                if BlobHash::from_bytes(*blake3::hash(&there).as_bytes()) != hash {
+                        }
+                    })?;
+                    if BlobHash::from_bytes(*blake3::hash(&there).as_bytes()) == hash {
+                        let stored = lapidary_storage::StoredBlob {
+                            hash,
+                            size_bytes: bytes.len() as u64,
+                            stored_bytes: bytes.len() as u64,
+                            zstd_level: 0,
+                        };
+                        break (stored, false);
+                    }
                     // The rungs stay, as they do for a lost race at step 9: the job that wrote
                     // this file may be serving the same ones.
+                    let purged = blobs
+                        .waits_in_quarantine(&storage_path)
+                        .await
+                        .map_err(classify_db)?;
+                    let longer_name = longer.next().filter(|_| purged);
+                    let (Some(digits), Some((base, _))) = (longer_name, model_dir.rsplit_once('/'))
+                    else {
+                        return Err(HandlerError::Transient {
+                            message: if !purged {
+                                format!(
+                                    "Another job wrote other bytes to {storage_path} while this file \
+                                     was being read, and they were left as they are. This file is \
+                                     decided again against the part that job records."
+                                )
+                            } else {
+                                format!(
+                                    "Purged parts' quarantined files are at {storage_path} and under \
+                                     each longer name tried, and they were left as they are. This file \
+                                     is tried again; move those files out of the storage folder if it \
+                                     keeps failing."
+                                )
+                            },
+                        });
+                    };
+                    model_dir = format!(
+                        "{base}/{}",
+                        disambiguate_with(&slugify(name), &hash, digits)
+                    );
+                    storage_path = format!("{model_dir}/{file_name}");
+                }
+                Err(e) => {
+                    reap(&derivatives, &reapable);
                     return Err(HandlerError::Transient {
-                        message: format!(
-                            "Another job wrote other bytes to {storage_path} while this file was \
-                             being read, and they were left as they are. This file is decided \
-                             again against the part that job records."
-                        ),
+                        message: e.to_string(),
                     });
                 }
-                let stored = lapidary_storage::StoredBlob {
-                    hash,
-                    size_bytes: bytes.len() as u64,
-                    stored_bytes: bytes.len() as u64,
-                    zstd_level: 0,
-                };
-                (stored, false)
-            }
-            Err(e) => {
-                reap(&derivatives, &reapable);
-                return Err(HandlerError::Transient {
-                    message: e.to_string(),
-                });
             }
         };
         let blob = StoredBlobRow {
