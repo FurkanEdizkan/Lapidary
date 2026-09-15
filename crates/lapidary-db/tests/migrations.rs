@@ -259,6 +259,70 @@ async fn pre_existing_tessellation_rungs_survive_the_auto_thumbnail_migration(po
     );
 }
 
+/// `0035` copies each part's latest revision's figures onto its row for the grid's order: not an older
+/// revision's, the longest side as the largest extent, and no volume where the mesh had none.
+#[sqlx::test(migrations = false)]
+async fn the_sort_figures_are_copied_from_each_parts_latest_revision(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(34, &pool)
+        .await
+        .expect("migrations up to 0034 apply");
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let (vee, duct) = (Uuid::now_v7(), Uuid::now_v7());
+    for (part, path) in [
+        (vee, "vee-block-lp-3072-02.stl"),
+        (duct, "fan-duct-lp-3311-01.stl"),
+    ] {
+        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $3)")
+            .bind(part)
+            .bind(library)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("part inserts");
+    }
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin, created_at, volume, volume_source, \
+         surface_area, surface_area_source, bbox_x, bbox_y, bbox_z, bbox_source, triangle_count) VALUES \
+         ($1, $4, '1', 'ingest', now() - interval '1 hour', 900.0, 'tessellated', 100.0, 'tessellated', \
+          20.0, 5.0, 5.0, 'tessellated', 3000), \
+         ($2, $4, '2', 'ingest', now(), 21478.5, 'tessellated', 9804.25, 'tessellated', \
+          42.0, 61.0, 18.5, 'tessellated', 48112), \
+         ($3, $5, '1', 'ingest', now(), NULL, NULL, 3310.0, 'tessellated', \
+          88.0, 34.0, 12.0, 'tessellated', 12940)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(vee)
+    .bind(duct)
+    .execute(&pool)
+    .await
+    .expect("revisions insert");
+
+    migrator.run(&pool).await.expect("0035 applies");
+
+    let copied = "SELECT latest_volume, latest_surface_area, latest_longest_side, latest_triangle_count \
+                  FROM part WHERE id = $1";
+    let vee: (Option<f64>, Option<f64>, Option<f64>, Option<i32>) = sqlx::query_as(copied)
+        .bind(vee)
+        .fetch_one(&pool)
+        .await
+        .expect("reads the vee block");
+    assert_eq!(
+        vee,
+        (Some(21_478.5), Some(9_804.25), Some(61.0), Some(48_112)),
+        "the latest revision's figures, not the first's"
+    );
+    let duct: (Option<f64>, Option<f64>, Option<f64>, Option<i32>) = sqlx::query_as(copied)
+        .bind(duct)
+        .fetch_one(&pool)
+        .await
+        .expect("reads the fan duct");
+    assert_eq!(duct, (None, Some(3_310.0), Some(88.0), Some(12_940)));
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn a_pending_job_that_claims_an_outcome_is_refused(pool: PgPool) {
     // The converse of `a_job_that_claims_done_without_an_outcome_is_refused`:

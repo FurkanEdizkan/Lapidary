@@ -440,13 +440,15 @@ A stage-4 failure still leaves a usable, searchable part.
 `ORDER BY (metadata->>'volume')::float` is unindexable in practice and becomes a seq scan
 at ~50k rows.
 
-**Sort has the typed column but not yet the index, and that was measured, not skipped.** The
-grid's order (volume, surface area, longest side, triangle count) reads the *latest* revision's
-typed columns, which a LATERAL finds part by part — so an index on `revision` cannot hand parts
-back in order. On 20,000 parts in one library a sorted page took 63 ms against 0.5 ms newest
-first, and `revision (volume DESC NULLS LAST)` changed neither the plan nor the time
-(2026-09-13, `PgParts::sorted`). The index that would serve it needs the figures on `part`
-itself; that comes when a library outgrows about 100k parts.
+**Sort reads the part row, one index per key.** The grid's order (volume, surface area, longest
+side, triangle count) is the *latest* revision's. While a LATERAL found that revision part by
+part, no index could hand parts back in order: on 20,000 parts in one library a sorted page took
+63 ms against 0.5 ms newest first, and `revision (volume DESC NULLS LAST)` changed neither the
+plan nor the time (2026-09-13). Since `0035` every revision write copies its figures onto `part`,
+and `PgParts::sorted` reads them off `(library_id, coalesce(key, '-infinity') DESC, id DESC)`.
+Measured on 20,000 parts through the api (goal 6, a debug build, the same data): a sorted page
+went from 45–47 ms to 3.0–3.2 ms, against 2.8 ms newest first, and the query itself from 65 ms to
+1.6 ms. Backfilling those parts left the api ready 1.2 s after it started.
 
 ```sql
 part(
@@ -460,6 +462,10 @@ part(
   materials text[] NOT NULL DEFAULT '{}',   -- what a person typed, else what the file declares; GIN, `materials @> array[$n]`
   materials_typed boolean NOT NULL DEFAULT false,  -- a person typed `materials`, so a file's statement no longer replaces them (0033)
   tags text[] NOT NULL DEFAULT '{}',        -- what a person gave it; GIN, `tags @> array[$n]`
+  latest_volume double precision,           -- the latest revision's figures, copied by every revision write for the
+  latest_surface_area double precision,     --   grid's order (0035); NULL where it has none. One index per key:
+  latest_longest_side double precision,     --   (library_id, coalesce(key, '-infinity') DESC, id DESC)
+  latest_triangle_count integer,
   search tsvector GENERATED ALWAYS AS (...) STORED   -- STORED IS MANDATORY (PG18)
 );
 

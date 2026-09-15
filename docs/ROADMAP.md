@@ -2111,6 +2111,50 @@ stage's own build.
   - Refusals that did not say what to do now do, the densities record no longer claims a 404 on a list, and
     FEATURES no longer says mass sits beside volume.
 
+### Goal 6: performance and debt (2026-09-15)
+
+- **Goal file:** `docs/superpowers/plans/2026-09-15-performance-debt-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger, updated as each stage merges.
+
+**Preflight.** The test database was up and `cargo deny check` was green on `main` (`d07629e`). Each timing runs a
+debug `lapidary-server` as the api alone, over a scratch database inside `lapidary-test-db`, dropped afterwards.
+
+**Grid sort off the part row** (`a7fc268`).
+- **Before, on `main`:** 20,000 parts seeded in one library, one revision each, every tenth an open mesh.
+  - Through the api, median of 31 requests after 3 warm-ups: 2.8 ms a page newest first, and 45–47 ms for every
+    sort key, on the first page and the next alike.
+  - The query alone, as prepared, under `EXPLAIN ANALYZE`: 65 ms. It scanned all of `part`, looked up 20,000
+    latest revisions and sorted them.
+- **The copy.** `0035` adds `latest_volume`, `latest_surface_area`, `latest_longest_side` and
+  `latest_triangle_count` to `part`, backfilled from each part's latest revision, and one index per key on
+  `(library_id, coalesce(key, '-infinity') DESC, id DESC)`. `insert_revision_chain` writes the copy in the same
+  transaction. It is the only writer of a revision row, so a scan, an upload, the agent and a revision all keep it.
+- **The query:** one per key, spelled as its index is, so a page is read off the index. Its filters are the
+  newest-first query's.
+- **After, on the same data by the same method:**
+  - every sort key 3.0–3.2 ms a page, first and next, against 2.8 ms newest first;
+  - the query 1.6 ms for the first page and 0.8 ms for the next, each an index scan with the keyset as its
+    index condition;
+  - on a fresh copy of the 20,000 parts, the api answered 1.2 s after it started, backfill included, and every
+    part's copy matched its revision.
+- **Tests,** beside the existing sort tests, unchanged and green:
+  - a revision that widens a part moves it from second to first in volume order, paging one part at a time lists
+    each part once before and after, and the part row holds the new revision's figures;
+  - the migration copies the latest revision's figures, not an older one's, the longest side as the largest
+    extent, and no volume for an open mesh.
+- **Mutation-checked, all 4 caught:**
+  - the copy never written (caught by the sort tests, and by the revision test run alone);
+  - the longest side written as the smallest extent;
+  - surface area's query reading volume;
+  - the backfill taking the oldest revision.
+- **Decided without the owner:**
+  - The copies are named `latest_*`, so no query joining `part` and `revision` meets an ambiguous column.
+  - A missing figure stays NULL on the row. The index and the query read it as `-infinity`, as the query did.
+  - The copy is written by the one function every revision write goes through, not by a trigger; the schema has
+    none.
+  - The anchor reads the previous page's last part by id, filters aside. A part removed since that page no longer
+    ends the paging early; one purged still does.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

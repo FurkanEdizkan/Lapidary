@@ -346,7 +346,7 @@ impl Sort {
         Self::Triangles,
     ];
 
-    /// The query-string spelling, and the one the sorted query matches on.
+    /// The query-string spelling.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Newest => "newest",
@@ -1273,6 +1273,23 @@ pub(crate) async fn insert_revision_chain(
     .execute(&mut **tx)
     .await?;
 
+    // The grid's sort keys ride on the part row, where one index per key hands parts back in
+    // order (`0035`). The revision just written is the part's latest, so its figures are the copy.
+    sqlx::query(
+        "UPDATE part SET latest_volume = $2, latest_surface_area = $3, \
+         latest_longest_side = greatest($4::double precision, $5::double precision, $6::double precision), \
+         latest_triangle_count = $7 WHERE id = $1",
+    )
+    .bind(part.as_uuid())
+    .bind(m.volume_mm3)
+    .bind(m.surface_area_mm2)
+    .bind(m.bbox_mm[0])
+    .bind(m.bbox_mm[1])
+    .bind(m.bbox_mm[2])
+    .bind(triangle_count)
+    .execute(&mut **tx)
+    .await?;
+
     // `zstd_level` and `stored_bytes` are recorded on the file row and not read back off
     // `blob` (migration `0013`): the blob row is per-hash and a hash can have a compressed
     // legacy copy and a raw model file at the same time, all through the migration window.
@@ -1570,6 +1587,48 @@ macro_rules! grid_laterals {
                         FROM file f \
                         WHERE f.revision_id = r.id AND f.role = 'source' \
                         ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true"
+    };
+}
+
+/// [`PgParts::sorted`]'s query for one sort key. `$key` is the part row's copy of the key, spelled as that
+/// key's index spells it (`0035`), so the page is read off the index in order. The filters are `page`'s
+/// newest-first query's, with the same numbering.
+macro_rules! sorted_page {
+    ($key:literal) => {
+        concat!(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $7 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
+             anchor AS (SELECT ",
+            $key,
+            " AS value, p.id FROM part p WHERE p.id = $2 AND p.library_id = $1), \
+             top AS ( \
+               SELECT p.id, ",
+            $key,
+            " AS value FROM part p \
+                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+                  AND ($2::uuid IS NULL OR (",
+            $key,
+            ", p.id) < (SELECT value, id FROM anchor)) \
+                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
+                       WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+                  AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
+                  AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
+                  AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
+                  AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
+                ORDER BY ",
+            $key,
+            " DESC, p.id DESC LIMIT $3) \
+             SELECT ",
+            grid_columns!(),
+            " FROM top JOIN part p ON p.id = top.id ",
+            grid_laterals!(),
+            " ORDER BY top.value DESC, top.id DESC",
+        )
     };
 }
 
@@ -3106,8 +3165,17 @@ fn model_directory(storage_path: &str) -> Option<String> {
 #[async_trait::async_trait]
 impl PartRepository for PgParts {
     async fn page(&self, grid: &GridQuery<'_>, sort: Sort) -> Result<Vec<PartRow>, DbError> {
-        if sort != Sort::Newest {
-            return self.sorted(grid, sort).await;
+        let sorted = match sort {
+            Sort::Newest => None,
+            Sort::Volume => Some(sorted_page!("coalesce(p.latest_volume, '-infinity')")),
+            Sort::SurfaceArea => Some(sorted_page!("coalesce(p.latest_surface_area, '-infinity')")),
+            Sort::LongestSide => Some(sorted_page!("coalesce(p.latest_longest_side, '-infinity')")),
+            Sort::Triangles => Some(sorted_page!(
+                "coalesce(p.latest_triangle_count::double precision, '-infinity')"
+            )),
+        };
+        if let Some(query) = sorted {
+            return self.sorted(grid, query).await;
         }
         let GridQuery {
             library,
@@ -3375,11 +3443,12 @@ impl PartRepository for PgParts {
 }
 
 impl PgParts {
-    /// [`PartRepository::page`] in an order other than newest.
+    /// [`PartRepository::page`] in an order other than newest: `query` is [`sorted_page!`] for
+    /// one key.
     ///
-    /// `search`'s shape with a column where the rank was: `keyed` reads each candidate's sort
-    /// value once, and `anchor` and `top` compare against that one copy. Nothing does
-    /// arithmetic on a float here — `greatest` picks one of three stored values — so the
+    /// The key is read off the part row, where every revision write copies its latest
+    /// revision's figures (`0035`), so the page is read off that key's index in order rather
+    /// than sorting the library. The figures are stored values compared as they are, so the
     /// comparison is exact.
     ///
     /// **A missing figure is `-infinity`, not NULL.** A NULL inside a row comparison makes the
@@ -3387,68 +3456,29 @@ impl PgParts {
     /// volume would come back empty. `-infinity` sorts below every real figure and ties the
     /// missing ones on id.
     ///
-    /// The honest hole is `search`'s: a part removed or re-ingested while it is somebody's
-    /// anchor ends their paging early rather than repeating rows.
-    ///
-    /// **No index serves this, and none was added.** Measured on 20,000 parts in one library:
-    /// 63 ms a page, against 0.5 ms newest first, and an index on
-    /// `revision (volume DESC NULLS LAST)` changed neither the plan nor the time. The value
-    /// lives on the *latest* revision, which the LATERAL finds part by part, so no index on
-    /// `revision` can hand parts back in order.
-    // ponytail: sorts the whole library on every page. Copy the latest revision's figures onto
-    // `part`, one index per key, when a library outgrows about 100k parts.
-    async fn sorted(&self, grid: &GridQuery<'_>, sort: Sort) -> Result<Vec<PartRow>, DbError> {
-        let rows: Vec<GridRow> = sqlx::query_as(concat!(
-            "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $7 \
-             UNION ALL \
-             SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
-             keyed AS ( \
-               SELECT p.id, \
-                      coalesce(CASE $9::text \
-                                 WHEN 'volume' THEN r.volume \
-                                 WHEN 'surface_area' THEN r.surface_area \
-                                 WHEN 'longest_side' THEN greatest(r.bbox_x, r.bbox_y, r.bbox_z) \
-                                 WHEN 'triangles' THEN r.triangle_count::double precision \
-                               END, '-infinity') AS value \
-                 FROM part p \
-                 JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id \
-                               ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
-                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                       AND f.format = $8 AND f.revision_id = r.id)) \
-                  AND ($10::text IS NULL OR p.materials @> ARRAY[$10::text]) \
-                  AND ($11::text IS NULL OR p.tags @> ARRAY[$11::text]) \
-                  AND ($12::jsonb IS NULL OR p.metadata_json->'custom' @> $12::jsonb) \
-                  AND ($13::jsonpath IS NULL OR p.metadata_json->'custom' @? $13::jsonpath) ), \
-             anchor AS (SELECT value, id FROM keyed WHERE id = $2), \
-             top AS ( \
-               SELECT id, value FROM keyed \
-                WHERE $2::uuid IS NULL OR (value, id) < (SELECT value, id FROM anchor) \
-                ORDER BY value DESC, id DESC LIMIT $3) \
-             SELECT ",
-            grid_columns!(),
-            " FROM top JOIN part p ON p.id = top.id ",
-            grid_laterals!(),
-            " ORDER BY top.value DESC, top.id DESC",
-        ))
-        .bind(grid.library.as_uuid())
-        .bind(grid.after.map(|a| a.as_uuid()))
-        .bind(i64::from(grid.limit))
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
-        .bind(grid.shows == Shows::Removed)
-        .bind(grid.folder.map(|f| f.as_uuid()))
-        .bind(grid.format)
-        .bind(sort.as_str())
-        .bind(grid.material)
-        .bind(grid.tag)
-        .bind(grid.field)
-        .bind(grid.field_range)
-        .fetch_all(&self.0)
-        .await?;
+    /// `anchor` reads the previous page's last part by id, filters aside, so a part removed
+    /// since that page still marks where the next one starts. One purged since ends the paging
+    /// early rather than repeating rows, as `search`'s does.
+    async fn sorted(
+        &self,
+        grid: &GridQuery<'_>,
+        query: &'static str,
+    ) -> Result<Vec<PartRow>, DbError> {
+        let rows: Vec<GridRow> = sqlx::query_as(query)
+            .bind(grid.library.as_uuid())
+            .bind(grid.after.map(|a| a.as_uuid()))
+            .bind(i64::from(grid.limit))
+            .bind(DerivativeKind::Thumbnail.as_str())
+            .bind(DerivativeKind::TessellationL0.as_str())
+            .bind(grid.shows == Shows::Removed)
+            .bind(grid.folder.map(|f| f.as_uuid()))
+            .bind(grid.format)
+            .bind(grid.material)
+            .bind(grid.tag)
+            .bind(grid.field)
+            .bind(grid.field_range)
+            .fetch_all(&self.0)
+            .await?;
 
         rows.into_iter().map(to_part_row).collect()
     }
