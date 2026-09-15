@@ -185,6 +185,10 @@ impl Kernel for OcctKernel {
         // A mesh made face by face is never welded shut, so the mesh's own answer is always
         // "open"; the B-rep says whether there is a closed solid.
         out.measurements.is_watertight = measured.solids > 0;
+        out.topology = measured
+            .faces
+            .zip(measured.edges)
+            .map(|(faces, edges)| lapidary_core::Topology { faces, edges });
         out.provenance = MeasurementProvenance {
             bbox: Provenance::Tessellated,
             ..MeasurementProvenance::ANALYTIC
@@ -211,6 +215,9 @@ impl Kernel for OcctKernel {
 #[derive(Deserialize)]
 struct BridgeMeasurements {
     solids: u32,
+    /// Every face and edge of the shape, since bridge 7. Absent from an older bridge's file.
+    faces: Option<u32>,
+    edges: Option<u32>,
     volume_mm3: Option<f64>,
     surface_area_mm2: f64,
     bbox_mm: Option<[f64; 3]>,
@@ -445,7 +452,7 @@ case "$1" in
         cp "BRACKET" "$out/mesh.stl"
         echo '[20]' > "$out/parts.json"
         echo '{"dimensions":[],"tolerances":[],"datums":[]}' > "$out/pmi.json"
-        echo '{"units":"mm","solids":1,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
+        echo '{"units":"mm","solids":1,"faces":3,"edges":3,"volume_mm3":11403.98133253095,"surface_area_mm2":2833.53958,"bbox_min":[-11,-11,0],"bbox_max":[11,11,30],"bbox_mm":[22,22,30]}' > "$out/measurements.json"
         echo '{"units":"mm","prototypes":[{"prototype":"0:1:1:1","faces":[{"face":1,"type":"cylinder","radius":11,"origin":[0,0,0],"axis":[0,0,1]},{"face":2,"type":"plane","origin":[0,0,30],"normal":[0,0,1]}],"circles":[{"edge":1,"radius":11,"center":[0,0,30],"normal":[0,0,1]}]}]}' > "$out/entities.json"
         echo '{"units":"mm","roots":[{"name":"cylinder-d22-lp-9010-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],"parts":1,"prototypes":1}' > "$out/structure.json"
         echo '{"file_name":"cylinder-d22-lp-9010-00.step","time_stamp":"2026-09-13T09:00:00","authors":["J. Okafor"],"organizations":["Lapidary fixtures"],"originating_system":"SOLIDWORKS 2025","preprocessor":"Open CASCADE 8.0.1","descriptions":[],"schemas":["AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"],"materials":["AISI 1045 steel"]}' > "$out/header.json"
@@ -498,6 +505,11 @@ esac
 
         assert_eq!(out.measurements.volume_mm3, Some(11403.98133253095));
         assert_eq!(out.measurements.bbox_mm, [22.0, 22.0, 30.0]);
+        assert_eq!(
+            out.topology,
+            Some(lapidary_core::Topology { faces: 3, edges: 3 }),
+            "the bridge's counts, as it wrote them"
+        );
         assert!(
             out.measurements.is_watertight,
             "one closed solid, whatever the mesh says"

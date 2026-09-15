@@ -17,7 +17,7 @@
 //   structure.json     the assembly tree: names, prototypes, 4x4 transforms relative to parent
 //   entities.json      analytic faces and circular edges, once per prototype, in its own
 //                      coordinates; structure.json places them
-//   measurements.json  volume, surface area and bounding box from the B-rep, in millimetres
+//   measurements.json  volume, surface area, bounding box, faces and edges from the B-rep, in millimetres
 //   header.json        what the file says about itself: its STEP header or IGES global
 //                      section, and the materials it names
 //
@@ -110,7 +110,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 6;
+constexpr int BRIDGE_VERSION = 7;
 
 const double PI = std::acos(-1.0);
 
@@ -732,7 +732,15 @@ int convert(const std::string& in, const std::string& format, const std::string&
   // From the B-rep, not the mesh: `useTriangulation` off, so the box is the geometry's.
   Bnd_Box box;
   BRepBndLib::AddOptimal(whole, box, false, false);
+  // Every face and edge of the placed shape, analytic or not: what the revision diff counts. Placed, so
+  // an assembly counts each instance of a prototype's faces.
+  ShapeMap faces;
+  ShapeMap edges;
+  TopExp::MapShapes(whole, TopAbs_FACE, faces);
+  TopExp::MapShapes(whole, TopAbs_EDGE, edges);
   std::string measurements = "{\"units\":\"mm\",\"solids\":" + std::to_string(solids) +
+                             ",\"faces\":" + std::to_string(faces.Extent()) +
+                             ",\"edges\":" + std::to_string(edges.Extent()) +
                              ",\"volume_mm3\":" + (solids > 0 ? number(volume.Mass()) : "null") +
                              ",\"surface_area_mm2\":" + number(area.Mass());
   if (box.IsVoid()) {

@@ -60,6 +60,9 @@ pub struct RevisionRow {
     pub bbox_mm: Option<[f64; 3]>,
     pub bbox_source: Option<String>,
     pub triangle_count: Option<i32>,
+    /// The B-rep's faces and edges, as the CAD kernel counted them. `None` for a mesh.
+    pub face_count: Option<i32>,
+    pub edge_count: Option<i32>,
     pub is_watertight: Option<bool>,
     pub units: Option<String>,
     /// The inline preview, as the grid serves it. Rows only — the open path reads no file.
@@ -92,6 +95,8 @@ struct HistoryColumns {
     bbox_z: Option<f64>,
     bbox_source: Option<String>,
     triangle_count: Option<i32>,
+    face_count: Option<i32>,
+    edge_count: Option<i32>,
     is_watertight: Option<bool>,
     units: Option<String>,
     thumb_bytes: Option<Vec<u8>>,
@@ -309,6 +314,25 @@ impl PgRevisions {
         Ok(RevisionId::from_uuid(revision))
     }
 
+    /// The faces and edges a CAD kernel counted on `revision`'s B-rep, written after the revision commits, as
+    /// a file's header is. A mesh revision never gets any.
+    pub async fn set_topology(
+        &self,
+        revision: RevisionId,
+        topology: lapidary_core::Topology,
+    ) -> Result<(), DbError> {
+        let count = |column: &'static str, value: u32| {
+            i32::try_from(value).map_err(|_| DbError::TriangleCountTooLarge { column, value })
+        };
+        sqlx::query("UPDATE revision SET face_count = $2, edge_count = $3 WHERE id = $1")
+            .bind(revision.as_uuid())
+            .bind(count("revision.face_count", topology.faces)?)
+            .bind(count("revision.edge_count", topology.edges)?)
+            .execute(&self.0)
+            .await?;
+        Ok(())
+    }
+
     /// Every revision of `part`, newest first — the order the grid calls the first one current.
     pub async fn history(&self, part: PartId) -> Result<Vec<RevisionRow>, DbError> {
         let rows: Vec<HistoryColumns> = sqlx::query_as(
@@ -316,7 +340,7 @@ impl PgRevisions {
                     (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_us, \
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
                     r.bbox_x, r.bbox_y, r.bbox_z, r.bbox_source, \
-                    r.triangle_count, r.is_watertight, r.units, \
+                    r.triangle_count, r.face_count, r.edge_count, r.is_watertight, r.units, \
                     t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path, \
                     l0.blake3 AS l0_blake3, l1.blake3 AS l1_blake3 \
              FROM revision r \
@@ -366,6 +390,8 @@ impl PgRevisions {
                     },
                     bbox_source: c.bbox_source,
                     triangle_count: c.triangle_count,
+                    face_count: c.face_count,
+                    edge_count: c.edge_count,
                     is_watertight: c.is_watertight,
                     units: c.units,
                     thumbnail: c.thumb_bytes,

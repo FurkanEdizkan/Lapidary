@@ -182,6 +182,10 @@ impl WorkerHandler {
                     .map(serde_json::to_vec)
                     .transpose()
                     .map_err(unserializable)?;
+                // The counts come from the same read, so a revision read before the bridge counted
+                // faces and edges gets them too, before `structure` marks the read current.
+                self.record_topology(revision, output.topology, &format!("revision {revision}"))
+                    .await;
                 for (read, json) in [
                     (DerivativeKind::Entities, entities),
                     (DerivativeKind::Pmi, pmi),

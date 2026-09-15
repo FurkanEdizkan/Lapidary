@@ -2539,6 +2539,10 @@ impl Kernel for FakeCad {
             axis: [0.0, 0.0, 1.0],
         }];
         output.pmi = Some(fake_pmi());
+        output.topology = Some(lapidary_core::Topology {
+            faces: 38,
+            edges: 96,
+        });
         Ok(output)
     }
 }
@@ -2623,6 +2627,43 @@ async fn a_step_files_exact_figures_are_stored_as_exact(pool: PgPool) {
             .as_deref(),
         Some("analytic"),
         "and metadata.json, which re-adoption rebuilds the rows from, says the same"
+    );
+}
+
+/// The faces and edges a CAD kernel counts reach the revision a file's ingest committed, and a mesh's
+/// revision has neither.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_step_files_faces_and_edges_are_recorded_on_its_revision(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(FIXTURE_PLATE), BRACKET_FIXTURE).expect("write");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+    handler
+        .handle(&job_for(FIXTURE_PLATE))
+        .await
+        .expect("the STEP file ingests");
+    handler
+        .handle(&job_for(BRACKET))
+        .await
+        .expect("the STL ingests");
+
+    let counts: Vec<(String, Option<i32>, Option<i32>)> = sqlx::query_as(
+        "SELECT p.name, r.face_count, r.edge_count FROM revision r \
+         JOIN part p ON p.id = r.part_id ORDER BY p.name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("rows");
+    assert_eq!(
+        counts,
+        [
+            ("bracket-lp-1042-03".to_owned(), None, None),
+            ("fixture-plate-lp-9000-00".to_owned(), Some(38), Some(96)),
+        ]
     );
 }
 
@@ -2868,6 +2909,10 @@ async fn a_cad_read_an_older_kernel_wrote_is_read_again_with_its_pmi(pool: PgPoo
         .execute(&pool)
         .await
         .expect("drops the PMI");
+    sqlx::query("UPDATE revision SET face_count = NULL, edge_count = NULL")
+        .execute(&pool)
+        .await
+        .expect("and the counts, which that bridge did not read");
     sqlx::query(
         "UPDATE derivative SET kernel_version = 'occt bridge-5' WHERE kind IN ('structure', 'entities')",
     )
@@ -2920,6 +2965,16 @@ async fn a_cad_read_an_older_kernel_wrote_is_read_again_with_its_pmi(pool: PgPoo
     )
     .expect("the PMI parses");
     assert_eq!(pmi, fake_pmi());
+    let counts: (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT face_count, edge_count FROM revision")
+            .fetch_one(&pool)
+            .await
+            .expect("the revision");
+    assert_eq!(
+        counts,
+        (Some(38), Some(96)),
+        "the faces and edges, read again"
+    );
 
     handler.enqueue_stale_derivatives().await;
     assert!(

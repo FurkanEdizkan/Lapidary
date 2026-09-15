@@ -11,4 +11,9 @@ export type RevisionDiff = { volumeMm3: Delta | null, surfaceAreaMm2: Delta | nu
 /**
  * Per axis: x, y, z.
  */
-bboxMm: [Delta, Delta, Delta] | null, triangleCount: Delta | null, };
+bboxMm: [Delta, Delta, Delta] | null, triangleCount: Delta | null, 
+/**
+ * A CAD revision's B-rep faces and edges, exact. `None` when either revision is a mesh, or was
+ * read before the bridge counted them.
+ */
+faceCount: Delta | null, edgeCount: Delta | null, };
