@@ -272,10 +272,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
     up.
   - Phase 4 slice 2 adds `lapidary register`, `unregister` and `open`.
     - A `lapidary://open?part=<uuid>` link from a controlled library's part page checks the part
-      out, or reuses this computer's checkout, and opens the file with `xdg-open`.
+      out, or reuses this computer's checkout, and opens the file in the app this desktop has for
+      its format: started by its desktop file with `gio launch`, else by `xdg-open`.
     - Goal 4 negotiates the format through `Target`: the part's own file when an app here
       opens it, else a read-only 3MF or STL export an app here does, which takes no lock and
       sends nothing back.
+  - Phase 4's exit met on Linux in goal 4's stage 8, with FreeCAD 0.21.2.
   - Not yet: macOS and Windows watchers.
 -->
 
