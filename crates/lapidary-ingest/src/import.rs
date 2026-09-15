@@ -10,7 +10,7 @@ use crate::handler::WorkerHandler;
 use lapidary_core::{
     BatchId, BlobHash, JobPayload, LibraryId, LibraryMode, Outcome, RevisionOrigin,
 };
-use lapidary_db::{PgBlobs, PgJobs, PgParts, PgRevisions};
+use lapidary_db::{NewPartSource, PgBlobs, PgJobs, PgParts, PgRevisions};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::SourceReader;
 use lapidary_targets::bundle::Bundle;
@@ -186,6 +186,56 @@ impl WorkerHandler {
             // held the start of its history, `skipped` when it held all of it.
             if outcome == Outcome::Skipped {
                 outcome = done;
+            }
+        }
+
+        // What a person typed travels with the bytes: the part number, the tags, and where the part
+        // came from — which is how its licence reaches whoever imports it. Only for a part this
+        // import created: one this library already held may have been edited here since, and the
+        // bundle's older values must never quietly replace that.
+        if outcome == Outcome::Ingested
+            && (part.part_number.is_some() || !part.tags.is_empty() || !part.sources.is_empty())
+        {
+            let imported = revisions_db
+                .current(library, &part.source_path)
+                .await
+                .map_err(transient)?
+                .ok_or_else(|| {
+                    transient(format!(
+                        "{} was imported but could not be found again.",
+                        part.source_path
+                    ))
+                })?
+                .part;
+            let parts = PgParts(self.db.clone());
+            if let Some(number) = part.part_number.as_deref() {
+                parts
+                    .set_part_number(imported, Some(number))
+                    .await
+                    .map_err(transient)?;
+            }
+            if !part.tags.is_empty() {
+                parts
+                    .set_tags(imported, &part.tags)
+                    .await
+                    .map_err(transient)?;
+            }
+            for source in &part.sources {
+                parts
+                    .add_part_source(
+                        imported,
+                        NewPartSource {
+                            url: source.url.as_deref(),
+                            vendor: source.vendor.as_deref(),
+                            external_id: source.external_id.as_deref(),
+                            title: source.title.as_deref(),
+                            license: source.license.as_deref(),
+                            // Prices stay out of a bundle, so there is none to write here.
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(transient)?;
             }
         }
         Ok(outcome)
