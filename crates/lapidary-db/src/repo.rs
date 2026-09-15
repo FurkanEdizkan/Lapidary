@@ -881,6 +881,18 @@ impl PgBlobs {
         Ok(held.contains(&true))
     }
 
+    /// Whether `quarantined_file` records `storage_path`: a purged part's file waiting out its 30 days,
+    /// or, until the sweep drops the record, a path a part has claimed since. Unlike the sweep, which
+    /// deletes and so asks whether a row names the path, a caller here only writes beside it.
+    pub async fn waits_in_quarantine(&self, storage_path: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM quarantined_file WHERE storage_path = $1)",
+        )
+        .bind(storage_path)
+        .fetch_one(&self.0)
+        .await?)
+    }
+
     /// [`PgBlobs::library_holds`] for each of `files`, in one query: the question for a whole upload,
     /// answered per entry in order, so one path named twice with different bytes gets two answers.
     pub async fn library_holds_each(

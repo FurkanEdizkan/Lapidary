@@ -3977,3 +3977,85 @@ async fn a_part_whose_history_began_elsewhere_is_refused_though_it_ends_on_a_bun
     );
     assert_eq!(revision_rows(&pool).await.len(), 2, "nothing grafted");
 }
+
+/// Goal 2's recorded failure. A controlled part in a disambiguated directory is revised, then purged, so its newest
+/// file waits out its quarantine at that path. The part's first file dropped back at the same source path resolves
+/// to the same directory and meets those bytes. No part names them, so the file takes a longer name instead of
+/// failing every attempt, and the quarantined bytes stay for the sweep.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_meeting_a_purged_parts_bytes_takes_a_longer_name_rather_than_failing(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    // Something of the owner's already holds the model's own name, so the part is filed under a disambiguated one.
+    std::fs::create_dir_all(
+        blob_root
+            .path()
+            .join("libraries/default/bracket-lp-1042-03"),
+    )
+    .expect("the owner's directory");
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("revises"),
+        Outcome::Revised
+    );
+    let hash = hex_of(BRACKET_FIXTURE);
+    let short = format!(
+        "libraries/default/bracket-lp-1042-03_{}/{BRACKET}",
+        &hash[..6]
+    );
+    assert_eq!(
+        revision_rows(&pool).await[1].4,
+        short,
+        "the revised file is on top in the disambiguated directory"
+    );
+
+    let part = lapidary_core::PartId::from_uuid(
+        sqlx::query_scalar("SELECT id FROM part")
+            .fetch_one(&pool)
+            .await
+            .expect("the part"),
+    );
+    let parts = PgParts(pool.clone());
+    assert!(parts.soft_delete(part).await.expect("removes"));
+    assert!(matches!(
+        parts.purge(part).await.expect("purges"),
+        lapidary_db::Purged::Done(_)
+    ));
+    assert_eq!(
+        std::fs::read(blob_root.path().join(&short)).expect("quarantined, still on disk"),
+        SPACER_FIXTURE
+    );
+
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    assert_eq!(
+        handler
+            .handle(&job_for(BRACKET))
+            .await
+            .expect("ingests under a longer name"),
+        Outcome::Ingested
+    );
+    let longer = format!(
+        "libraries/default/bracket-lp-1042-03_{}/{BRACKET}",
+        &hash[..12]
+    );
+    let rows = revision_rows(&pool).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].4, longer);
+    assert_eq!(
+        std::fs::read(blob_root.path().join(&longer)).expect("the new file"),
+        BRACKET_FIXTURE
+    );
+    assert_eq!(
+        std::fs::read(blob_root.path().join(&short)).expect("still quarantined"),
+        SPACER_FIXTURE,
+        "the purged part's bytes are left for the sweep"
+    );
+}

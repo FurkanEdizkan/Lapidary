@@ -87,7 +87,14 @@ pub fn slugify(name: &str) -> String {
 /// The suffix that resolves a directory collision. Deterministic, so the same model
 /// re-ingested lands on the same name.
 pub fn disambiguate(slug: &str, hash: &BlobHash) -> String {
-    format!("{slug}_{}", &hash.to_hex()[..6])
+    disambiguate_with(slug, hash, 6)
+}
+
+/// [`disambiguate`] with `digits` of the hash, for a name its six are already taken under: 12,
+/// then all 64. More than 64 is the whole hash.
+pub fn disambiguate_with(slug: &str, hash: &BlobHash, digits: usize) -> String {
+    let hex = hash.to_hex();
+    format!("{slug}_{}", &hex[..digits.min(hex.len())])
 }
 
 /// Refuse a relative path that would leave the directory it is joined to.
@@ -266,6 +273,15 @@ mod tests {
             0xdd, 0xee, 0xff, 0x00,
         ]);
         assert_eq!(disambiguate("cliff", &hash), "cliff_a1b2c3");
+        assert_eq!(disambiguate_with("cliff", &hash, 12), "cliff_a1b2c3445566");
+        assert_eq!(
+            disambiguate_with("cliff", &hash, 64),
+            format!("cliff_{}", hash.to_hex())
+        );
+        assert_eq!(
+            disambiguate_with("cliff", &hash, 80),
+            disambiguate_with("cliff", &hash, 64)
+        );
     }
 
     #[test]
