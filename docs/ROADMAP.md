@@ -2245,6 +2245,24 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
   - A drag held over a closed branch does not open it.
   - The disclosure is a button of its own beside the row, so selecting a category and opening it stay two actions.
 
+**The assembly tree, drawn as it opens** (`27121e4`).
+- **The change.** A branch of the part page's assembly tree renders its rows only once it is opened. Its native
+  `<details>` opens and closes as before, and its `toggle` event now draws or drops the rows. The root opens as
+  before. The `ponytail:` is gone.
+- **Checked in Chrome** on the native stack with the OCCT worker, on `fixture-plate-assembly-lp-9000-00.step` (200
+  placed parts), opening a closed branch by clicking its summary as a person would:
+  - on `main`: 215 rows in the page and 15 branches, the root open. Opening `bracket-station-lp-9100-00` added no
+    rows, since every row was already there.
+  - on this branch: 20 rows, the same 15 branches, the root open. Opening the same station drew its 12 rows in the
+    next frame, 32 rows in all.
+  - No page errors either time.
+- **Tests:**
+  - a closed branch draws none of its rows, and opening it draws them inside it;
+  - the hide and isolate test now opens the station before isolating a part inside it.
+- **Mutation-checked, both caught:** a closed branch drawn anyway, and an opened branch never drawn.
+- **Decided without the owner:** a branch closed again drops its rows rather than keeping them, so what is in the
+  page is what is open.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
