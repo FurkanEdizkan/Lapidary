@@ -316,7 +316,8 @@ export function FieldFilters({
     <>
       {offered.map((one) => (
         <FieldFilter
-          key={one.key}
+          // Keyed by the value in force too, so the box starts again from it whenever the URL changes.
+          key={`${one.key}:${field === one.key ? (fieldValue ?? '') : ''}`}
           field={one}
           active={field === one.key ? fieldValue : undefined}
           onSelect={onSelect}

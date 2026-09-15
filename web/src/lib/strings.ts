@@ -918,6 +918,12 @@ export const strings = {
     body: 'Its models were removed with it, and Removed parts can bring them back. The rest of these filters still work without it.',
     widen: 'Show these filters without the category',
   },
+  /** The grid opened on a field filter the library no longer takes: not offered, removed, or of another kind. */
+  fieldGone: {
+    title: 'This field no longer filters the grid',
+    body: 'Since this filter or link was made, the field was removed, stopped being offered as a filter, or was defined again for a different kind of value. The rest of these filters still work without it.',
+    widen: 'Show these filters without the field',
+  },
   /** The filters beside the grid. `docs/DATA.md` §3.4. */
   facets: {
     format: 'Format',

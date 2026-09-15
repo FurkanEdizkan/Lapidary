@@ -152,10 +152,13 @@ pub enum DbError {
     )]
     TooManyIndexed { max: i64 },
 
-    #[error(
-        "{parts} parts in this library hold the option `{option}`. Change their values first, then remove the option."
-    )]
-    OptionInUse { option: String, parts: i64 },
+    /// `parts` counts removed parts too, `removed` of them: a value on a removed part comes back with it.
+    #[error("{}", option_in_use(.option, *.parts, *.removed))]
+    OptionInUse {
+        option: String,
+        parts: i64,
+        removed: i64,
+    },
 
     /// Refused by [`PgFolders::reparent`] itself, inside the same transaction that holds
     /// the per-library advisory lock and runs the ancestry check — never by a caller's own
@@ -488,6 +491,18 @@ pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
         .fetch_one(pool)
         .await?;
     Ok(num)
+}
+
+fn option_in_use(option: &str, parts: i64, removed: i64) -> String {
+    if removed == 0 {
+        format!(
+            "{parts} parts in this library hold the option `{option}`. Change their values first, then remove the option."
+        )
+    } else {
+        format!(
+            "{parts} parts in this library hold the option `{option}`, {removed} of them removed. A removed part's value comes back with it, so restore those from Removed parts and change their values too, then remove the option."
+        )
+    }
 }
 
 #[cfg(test)]

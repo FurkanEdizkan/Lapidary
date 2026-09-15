@@ -155,8 +155,9 @@ impl PgCustomFields {
         }
         if let Some(kept) = patch.options {
             for dropped in options.iter().filter(|option| !kept.contains(option)) {
-                let parts: i64 = sqlx::query_scalar(
-                    "SELECT count(*) FROM part WHERE library_id = $1 \
+                let (parts, removed): (i64, i64) = sqlx::query_as(
+                    "SELECT count(*), count(*) FILTER (WHERE deleted_at IS NOT NULL) \
+                     FROM part WHERE library_id = $1 \
                      AND metadata_json->'custom' @> jsonb_build_object($2::text, $3::text)",
                 )
                 .bind(library.as_uuid())
@@ -168,6 +169,7 @@ impl PgCustomFields {
                     return Err(DbError::OptionInUse {
                         option: dropped.clone(),
                         parts,
+                        removed,
                     });
                 }
             }

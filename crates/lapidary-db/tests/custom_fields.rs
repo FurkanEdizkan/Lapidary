@@ -177,7 +177,7 @@ async fn an_option_a_part_holds_is_not_removed(pool: sqlx::PgPool) {
         )
         .await;
     assert!(
-        matches!(&dropped, Err(DbError::OptionInUse { option, parts: 1 }) if option == "Misumi"),
+        matches!(&dropped, Err(DbError::OptionInUse { option, parts: 1, removed: 0 }) if option == "Misumi"),
         "{dropped:?}"
     );
 
@@ -203,6 +203,67 @@ async fn an_option_a_part_holds_is_not_removed(pool: sqlx::PgPool) {
         .expect("defined");
     assert_eq!(supplier.label, "Supplier (catalogue)");
     assert_eq!(supplier.options, ["Misumi", "Norelem"]);
+}
+
+/// A removed part still holds its value, and it comes back with the part, so its option stays too. The
+/// refusal says so, because the grid and the part page no longer reach that part to change it.
+#[sqlx::test(migrations = "./migrations")]
+async fn an_option_only_a_removed_part_holds_says_to_restore_it(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    fields
+        .create(
+            library(),
+            &field(
+                "finish",
+                "Finish",
+                "choice",
+                &["Anodised", "Zinc plated"],
+                false,
+            ),
+        )
+        .await
+        .expect("defines");
+    let plate = part(&pool, "mounting-plate-lp-1180-01", 0x42).await;
+    assert!(
+        fields
+            .set_value(plate, "finish", Some(&json!("Zinc plated")))
+            .await
+            .expect("sets")
+    );
+    assert!(
+        PgParts(pool.clone())
+            .soft_delete(plate)
+            .await
+            .expect("removes")
+    );
+
+    let kept = ["Anodised".to_owned()];
+    let dropped = fields
+        .update(
+            library(),
+            "finish",
+            &CustomFieldPatch {
+                options: Some(&kept),
+                ..CustomFieldPatch::default()
+            },
+        )
+        .await;
+    assert!(
+        matches!(
+            &dropped,
+            Err(DbError::OptionInUse {
+                parts: 1,
+                removed: 1,
+                ..
+            })
+        ),
+        "{dropped:?}"
+    );
+    let message = dropped.expect_err("refused").to_string();
+    assert!(
+        message.contains("restore those from Removed parts"),
+        "{message}"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

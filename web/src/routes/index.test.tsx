@@ -78,6 +78,9 @@ function renderIndex(
     tag?: string;
     onSelectTag?: (tag: string | null) => void;
     onApplyFilter?: (search: FilterSearch) => void;
+    field?: string;
+    fieldValue?: string;
+    onSelectField?: (field: string | null, value: string | null) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -101,6 +104,9 @@ function renderIndex(
         tag={props.tag}
         onSelectTag={props.onSelectTag}
         onApplyFilter={props.onApplyFilter}
+        field={props.field}
+        fieldValue={props.fieldValue}
+        onSelectField={props.onSelectField}
       />
     ),
   });
@@ -685,6 +691,31 @@ test("a grid opened on a deleted category says so and offers the same filters wi
   expect(await screen.findByText(strings.categoryGone.title)).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: strings.categoryGone.widen }));
   expect(onSelectFolder).toHaveBeenCalledWith(null);
+});
+
+/**
+ * A grid opened on a field filter the library no longer takes, by a saved filter or a link, says so where
+ * "check that the api service is running" would be untrue, and offers the same filters without the field.
+ */
+test("a grid opened on a field filter the library no longer offers says so and offers the same filters without it", async () => {
+  stubFetch({
+    parts: async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        reason: "notAFilter",
+        message: "`supplier` is not a field this library offers as a filter.",
+      }),
+    }),
+    folders: ok([]),
+  });
+  const onSelectField = vi.fn();
+  renderIndex({ field: "supplier", fieldValue: "Misumi", format: "stl", onSelectField });
+
+  expect(await screen.findByText(strings.fieldGone.title)).toBeDefined();
+  expect(screen.queryByText(strings.parts.failed)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: strings.fieldGone.widen }));
+  expect(onSelectField).toHaveBeenCalledWith(null, null);
 });
 
 test("with no filter set and none saved, the rail offers nothing to save", async () => {

@@ -133,7 +133,7 @@ export async function fetchParts(
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
-    throw new Error(`parts returned ${response.status}`)
+    throw new RefusedError(`parts returned ${response.status}`, await refusalReason(response))
   }
   return (await response.json()) as PartsPage
 }
@@ -628,6 +628,15 @@ const KNOWN_MOVE_REFUSAL_REASONS: readonly string[] = [
   'duplicateName',
   'noSuchFolder',
 ]
+
+/** A read the server answered with an error, and the `reason` its body named, if any. */
+export class RefusedError extends Error {
+  readonly reason: string | undefined
+  constructor(message: string, reason: string | undefined) {
+    super(message)
+    this.reason = reason
+  }
+}
 
 /**
  * The `reason` a refusal names itself with, or `undefined` for a body that carries none

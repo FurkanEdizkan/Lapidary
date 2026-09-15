@@ -20,6 +20,10 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 /// ARCHITECTURE names, replaces the poll once a tree is large enough for that to matter.
 pub const INTERVAL: Duration = Duration::from_secs(2);
 
+/// How long a file the library refused waits before it is sent again, unless it changes first. A part
+/// checked out to somebody refuses every upload until it is checked in, and each try fails a job.
+pub const RETRY: Duration = Duration::from_secs(5 * 60);
+
 /// The most bytes one upload holds in memory. Files that settle together go up together (spec §5.3),
 /// in as many uploads as keep each under this; a file larger than it goes up by itself.
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
@@ -73,18 +77,27 @@ pub struct Round {
     pub deleted: Vec<String>,
 }
 
-/// The round, decided from this listing, what was last sent, and each file's watch.
+/// The round, decided from this listing, what was last sent, each file's watch, and when each refused
+/// file was refused.
 ///
 /// A file whose size and modification time are what was last sent starts as seen, so a restart sends
 /// nothing for having noticed it. Anything else starts unseen, and is hashed once it has settled: a new
-/// file, and one changed while the watch was stopped.
+/// file, one changed while the watch was stopped, and one refused [`RETRY`] ago.
 pub fn plan(
     known: &BTreeMap<String, Known>,
     listing: &BTreeMap<String, Seen>,
     watches: &mut HashMap<String, Watch>,
+    refused: &mut HashMap<String, Instant>,
     now: Instant,
 ) -> Round {
     let mut round = Round::default();
+    refused.retain(|path, at| {
+        let waiting = listing.contains_key(path) && now.duration_since(*at) < RETRY;
+        if !waiting {
+            watches.remove(path);
+        }
+        waiting
+    });
     watches.retain(|path, _| listing.contains_key(path));
     for (path, seen) in listing {
         let watch = watches.entry(path.clone()).or_insert_with(|| {
@@ -103,6 +116,46 @@ pub fn plan(
         .cloned()
         .collect();
     round
+}
+
+/// The paths committed that the library did not keep, by the batch's failures. All of them when the
+/// failures cannot all be matched to a path: more than the batch lists, or one naming a path not sent.
+fn refusals(committed: &[String], batch: Option<&crate::Batch>) -> Vec<String> {
+    let Some(batch) = batch else {
+        return Vec::new();
+    };
+    let listed = usize::try_from(batch.failed_total).unwrap_or(usize::MAX);
+    let matched = batch
+        .failed
+        .iter()
+        .all(|failure| committed.contains(&failure.path));
+    if listed > batch.failed.len() || !matched {
+        return committed.to_vec();
+    }
+    committed
+        .iter()
+        .filter(|path| batch.failed.iter().any(|failure| &failure.path == *path))
+        .cloned()
+        .collect()
+}
+
+/// An accepted upload's files, settled: each one kept is recorded as sent, and each one refused waits
+/// [`RETRY`] to be sent again, recorded as nothing, so a restart sends it too.
+fn settle(
+    known: &mut BTreeMap<String, Known>,
+    refused: &mut HashMap<String, Instant>,
+    sent: Vec<(String, Known)>,
+    refusals: &[String],
+    now: Instant,
+) {
+    for (path, last) in sent {
+        if refusals.contains(&path) {
+            refused.insert(path, now);
+        } else {
+            refused.remove(&path);
+            known.insert(path, last);
+        }
+    }
 }
 
 /// The files to hash, in uploads of at most [`BATCH_BYTES`] by their listed sizes, in order.
@@ -214,9 +267,10 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
     );
 
     let mut watches: HashMap<String, Watch> = HashMap::new();
+    let mut refused: HashMap<String, Instant> = HashMap::new();
     loop {
         let listing = list(&root);
-        let round = plan(&known, &listing, &mut watches, Instant::now());
+        let round = plan(&known, &listing, &mut watches, &mut refused, Instant::now());
         let mut dirty = false;
         for path in &round.deleted {
             println!("{path} was deleted here; nothing changes in the library.");
@@ -288,9 +342,24 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
                                 eprintln!("{} was not kept: {}", failure.path, failure.reason);
                             }
                         }
-                        for (path, _, sent) in outgoing {
-                            known.insert(path, sent);
+                        let committed: Vec<String> = outgoing
+                            .iter()
+                            .map(|(path, ..)| path.clone())
+                            .filter(|path| !done.have.contains(path))
+                            .collect();
+                        let refusals = refusals(&committed, done.batch.as_ref());
+                        if !refusals.is_empty() {
+                            eprintln!(
+                                "Sent again in {} minutes, or sooner if they change: {}.",
+                                RETRY.as_secs() / 60,
+                                refusals.join(", ")
+                            );
                         }
+                        let sent = outgoing
+                            .into_iter()
+                            .map(|(path, _, sent)| (path, sent))
+                            .collect();
+                        settle(&mut known, &mut refused, sent, &refusals, Instant::now());
                         dirty = true;
                     }
                     Err(error) => {
@@ -394,17 +463,32 @@ mod tests {
         let files = listing(&[("Flanges/flange-dn40-lp-3310-02.stl", seen(9_684, 10))]);
         let mut watches = HashMap::new();
         assert!(
-            plan(&known, &files, &mut watches, now).hash.is_empty(),
+            plan(&known, &files, &mut watches, &mut HashMap::new(), now)
+                .hash
+                .is_empty(),
             "still settling"
         );
         assert_eq!(
-            plan(&known, &files, &mut watches, now + SETTLE).hash,
+            plan(
+                &known,
+                &files,
+                &mut watches,
+                &mut HashMap::new(),
+                now + SETTLE
+            )
+            .hash,
             ["Flanges/flange-dn40-lp-3310-02.stl"]
         );
         assert!(
-            plan(&known, &files, &mut watches, now + SETTLE * 2)
-                .hash
-                .is_empty(),
+            plan(
+                &known,
+                &files,
+                &mut watches,
+                &mut HashMap::new(),
+                now + SETTLE * 2
+            )
+            .hash
+            .is_empty(),
             "once"
         );
     }
@@ -422,6 +506,7 @@ mod tests {
         let round = plan(
             &known,
             &BTreeMap::new(),
+            &mut HashMap::new(),
             &mut HashMap::new(),
             Instant::now(),
         );
@@ -443,7 +528,13 @@ mod tests {
         let files = listing(&[("flange-dn40-lp-3310-02.stl", look)]);
         let (mut watches, now) = (HashMap::new(), Instant::now());
         for later in [Duration::ZERO, SETTLE, SETTLE * 3] {
-            let round = plan(&known, &files, &mut watches, now + later);
+            let round = plan(
+                &known,
+                &files,
+                &mut watches,
+                &mut HashMap::new(),
+                now + later,
+            );
             assert!(
                 round.hash.is_empty() && round.deleted.is_empty(),
                 "{round:?}"
@@ -483,6 +574,114 @@ mod tests {
         );
     }
 
+    fn batch(failed_total: u32, failed: &[&str]) -> crate::Batch {
+        crate::Batch {
+            finished_at: Some("2026-09-15T08:12:40Z".to_owned()),
+            ingested: 0,
+            skipped: 0,
+            revised: 0,
+            unkept: 0,
+            failed_total,
+            failed: failed
+                .iter()
+                .map(|path| crate::Failure {
+                    path: (*path).to_owned(),
+                    reason: "LP-3310-02 is checked out to mira; check it in, then save again."
+                        .to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_refused_file_is_not_recorded_as_sent_and_is_sent_again_later() {
+        let files = listing(&[
+            ("flange-dn40-lp-3310-02.stl", seen(10_112, 40)),
+            ("idler-pulley-lp-4820-00.stl", seen(5_284, 40)),
+        ]);
+        let (mut known, mut watches, mut refused) =
+            (BTreeMap::new(), HashMap::new(), HashMap::new());
+        let start = Instant::now();
+        assert!(
+            plan(&known, &files, &mut watches, &mut refused, start)
+                .hash
+                .is_empty()
+        );
+        let settled = start + SETTLE;
+        let round = plan(&known, &files, &mut watches, &mut refused, settled);
+        assert_eq!(round.hash.len(), 2);
+
+        let committed = round.hash.clone();
+        let refusals = refusals(&committed, Some(&batch(1, &["flange-dn40-lp-3310-02.stl"])));
+        assert_eq!(refusals, ["flange-dn40-lp-3310-02.stl"]);
+        let sent = committed
+            .iter()
+            .map(|path| {
+                let look = files[path];
+                (
+                    path.clone(),
+                    Known {
+                        size: look.size,
+                        modified_ms: stamp(&look),
+                        blake3: "c".repeat(64),
+                    },
+                )
+            })
+            .collect();
+        settle(&mut known, &mut refused, sent, &refusals, settled);
+        assert_eq!(
+            known.keys().collect::<Vec<_>>(),
+            ["idler-pulley-lp-4820-00.stl"],
+            "only the kept one"
+        );
+
+        let before = plan(
+            &known,
+            &files,
+            &mut watches,
+            &mut refused,
+            settled + RETRY - SETTLE,
+        );
+        assert!(before.hash.is_empty(), "not before RETRY: {before:?}");
+        let due = settled + RETRY;
+        assert!(
+            plan(&known, &files, &mut watches, &mut refused, due)
+                .hash
+                .is_empty(),
+            "settling again"
+        );
+        assert_eq!(
+            plan(&known, &files, &mut watches, &mut refused, due + SETTLE).hash,
+            ["flange-dn40-lp-3310-02.stl"]
+        );
+    }
+
+    #[test]
+    fn failures_that_cannot_all_be_matched_refuse_the_whole_upload() {
+        let committed = [
+            "flange-dn40-lp-3310-02.stl".to_owned(),
+            "vee-block-lp-3072-02.stl".to_owned(),
+        ];
+        assert!(
+            refusals(&committed, None).is_empty(),
+            "nothing committed, nothing refused"
+        );
+        assert!(refusals(&committed, Some(&batch(0, &[]))).is_empty());
+        assert_eq!(
+            refusals(
+                &committed,
+                Some(&batch(101, &["flange-dn40-lp-3310-02.stl"]))
+            ),
+            committed,
+            "more failures than the batch lists"
+        );
+        assert_eq!(
+            refusals(&committed, Some(&batch(1, &[""]))),
+            committed,
+            "a failure naming no path"
+        );
+    }
+
     #[test]
     fn a_file_changed_while_the_watch_was_stopped_is_hashed() {
         let known = BTreeMap::from([(
@@ -495,9 +694,20 @@ mod tests {
         )]);
         let files = listing(&[("flange-dn40-lp-3310-02.stl", seen(10_112, 40))]);
         let (mut watches, now) = (HashMap::new(), Instant::now());
-        assert!(plan(&known, &files, &mut watches, now).hash.is_empty());
+        assert!(
+            plan(&known, &files, &mut watches, &mut HashMap::new(), now)
+                .hash
+                .is_empty()
+        );
         assert_eq!(
-            plan(&known, &files, &mut watches, now + SETTLE).hash,
+            plan(
+                &known,
+                &files,
+                &mut watches,
+                &mut HashMap::new(),
+                now + SETTLE
+            )
+            .hash,
             ["flange-dn40-lp-3310-02.stl"]
         );
     }
