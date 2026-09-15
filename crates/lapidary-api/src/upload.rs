@@ -374,8 +374,11 @@ pub async fn commit(
     }
 
     let blobs = PgBlobs(state.db.clone());
-    let writer = SourceWriter::open(&state.blob_root);
     let mut jobs = Vec::with_capacity(manifest.files.len());
+    // Each set of bytes the store lacks, once: two files with the same bytes stage one file, and storing
+    // it twice at once would race over it.
+    let mut hashes = std::collections::HashSet::new();
+    let mut storing = Vec::new();
     for file in &manifest.files {
         match blobs.exists(&file.blake3).await {
             // Some library already holds these bytes. There is nothing to verify and
@@ -383,8 +386,8 @@ pub async fn commit(
             // hash are already the bytes this file names.
             Ok(true) => {}
             Ok(false) => {
-                if let Err(response) = store_staged(&state, &writer, &blobs, library, file).await {
-                    return response;
+                if hashes.insert(file.blake3.to_hex()) {
+                    storing.push(file.clone());
                 }
             }
             Err(err) => return internal_error(&err, "upload commit failed"),
@@ -395,7 +398,63 @@ pub async fn commit(
             lock: file.lock,
         });
     }
+    if let Err(response) = store_all(&state, library, storing).await {
+        return response;
+    }
     accept(state.db, library, &jobs).await
+}
+
+/// Every staged file the store lacks, verified and stored as many at a time as there are cores. Hashing
+/// and compressing are the commit's cost, and a drop's files are independent of each other.
+///
+/// The first refusal is the answer, and no file is started after it. Files already stored stay, as
+/// unreferenced blobs the reaper collects, as they did when a commit was refused partway.
+async fn store_all(
+    state: &AppState,
+    library: LibraryId,
+    files: Vec<UploadFile>,
+) -> Result<(), Response> {
+    let at_once = std::thread::available_parallelism().map_or(4, |cores| cores.get());
+    let mut running = tokio::task::JoinSet::new();
+    let mut refused = None;
+    for file in files {
+        while running.len() >= at_once {
+            if let Some(response) = running.join_next().await.and_then(refusal_of) {
+                refused.get_or_insert(response);
+            }
+        }
+        if refused.is_some() {
+            break;
+        }
+        let state = state.clone();
+        running.spawn(async move { store_staged(&state, library, &file).await });
+    }
+    while let Some(result) = running.join_next().await {
+        if let Some(response) = refusal_of(result) {
+            refused.get_or_insert(response);
+        }
+    }
+    refused.map_or(Ok(()), Err)
+}
+
+/// One store's refusal, if it made one, with a store that panicked answered as the server's own failure.
+fn refusal_of(result: Result<Result<(), Response>, tokio::task::JoinError>) -> Option<Response> {
+    match result {
+        Ok(Ok(())) => None,
+        Ok(Err(response)) => Some(response),
+        Err(error) => {
+            tracing::error!(%error, "storing an uploaded file stopped");
+            Some(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "message": "Storing an uploaded file stopped unexpectedly. Commit the upload again; the server log has the cause."
+                    })),
+                )
+                    .into_response(),
+            )
+        }
+    }
 }
 
 /// `POST /api/libraries/{id}/imports`'s body: a bundle already sent through the chunked upload.
@@ -428,8 +487,6 @@ pub async fn import_bundle(
             request.name
         ));
     }
-    let blobs = PgBlobs(state.db.clone());
-    let writer = SourceWriter::open(&state.blob_root);
     let file = UploadFile {
         path: request.name.clone(),
         blake3: request.blake3,
@@ -438,7 +495,7 @@ pub async fn import_bundle(
     // Always from this library's own staged upload, never from bytes the store already holds:
     // content addressing is not authorization, and a bundle's hash alone must not import another
     // library's export here.
-    if let Err(response) = store_staged(&state, &writer, &blobs, library, &file).await {
+    if let Err(response) = store_staged(&state, library, &file).await {
         return response;
     }
     accept(
@@ -467,8 +524,6 @@ pub async fn import_bundle(
 /// so the client can commit again rather than re-transfer.
 async fn store_staged(
     state: &AppState,
-    writer: &SourceWriter,
-    blobs: &PgBlobs,
     library: LibraryId,
     file: &UploadFile,
 ) -> Result<(), Response> {
@@ -488,7 +543,20 @@ async fn store_staged(
     }
 
     let compression = Compression::for_source_format(&source_format(&file.path));
-    let stored = match writer.put_file(&staged, &file.blake3, compression) {
+    // Hashing and compressing block, so they run on the blocking pool instead of holding one of the
+    // runtime's threads for the length of the file.
+    let (root, path, expect) = (state.blob_root.clone(), staged.clone(), file.blake3);
+    let put = tokio::task::spawn_blocking(move || {
+        SourceWriter::open(&root).put_file(&path, &expect, compression)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        Err(lapidary_storage::StorageError::Io {
+            path: staged.display().to_string(),
+            source: std::io::Error::other(error),
+        })
+    });
+    let stored = match put {
         Ok(stored) => stored,
         Err(err) => {
             // A hash mismatch is the client's problem and the client's message: the
@@ -511,7 +579,7 @@ async fn store_staged(
         }
     };
 
-    if let Err(err) = blobs
+    if let Err(err) = PgBlobs(state.db.clone())
         .record_unreferenced(&StoredBlobRow {
             hash: stored.hash,
             size_bytes: stored.size_bytes,
