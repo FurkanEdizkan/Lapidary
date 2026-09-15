@@ -263,6 +263,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   - Import built too: POST /api/libraries/{id}/imports.
     - The worker checks the whole bundle, then replays each part's revisions.
     - A controlled library gets its history, a hobby library the newest revision.
+    - A part the import creates arrives with its number, tags and sources, licence included; one
+      the library already holds keeps what was typed here.
     - Checked with 40 parts, lineage identical.
 -->
 | `lapidary://` URI scheme + agent launch | 4 |
