@@ -42,6 +42,41 @@ fn cylinder_radii(entities: &[Entity]) -> Vec<f64> {
 
 const CYLINDER_VOLUME: f64 = std::f64::consts::PI * 11.0 * 11.0 * 30.0;
 
+/// The ball knob's curved faces come back as the entities measurement snaps to: its ball as a sphere of
+/// radius 10, its tip as a cone opening at 45° to its axis, and its groove as a torus of 1.5 mm section.
+#[tokio::test]
+#[ignore = "needs occt-bridge and OCCT: run cargo xtask verify occt"]
+async fn a_ball_knob_reads_as_a_sphere_a_cone_and_a_torus() {
+    let out = kernel()
+        .process(
+            &fixture("ball-knob-d20-lp-9020-00.step"),
+            &params("step", &[]),
+        )
+        .await
+        .expect("converts");
+    let near = |a: f64, b: f64| (a - b).abs() <= 1e-9;
+    assert!(
+        out.entities.iter().any(|entity| matches!(entity,
+            lapidary_core::Entity::Sphere { radius, .. } if near(*radius, 10.0))),
+        "a sphere of radius 10: {:?}",
+        out.entities
+    );
+    assert!(
+        out.entities.iter().any(|entity| matches!(entity,
+            lapidary_core::Entity::Cone { semi_angle_rad, .. }
+                if near(semi_angle_rad.abs(), std::f64::consts::FRAC_PI_4))),
+        "a cone at 45° to its axis: {:?}",
+        out.entities
+    );
+    assert!(
+        out.entities.iter().any(|entity| matches!(entity,
+            lapidary_core::Entity::Torus { minor_radius, major_radius, .. }
+                if near(*minor_radius, 1.5) && near(*major_radius, 6.0))),
+        "a torus of 1.5 mm section on a 6 mm ring: {:?}",
+        out.entities
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs occt-bridge and OCCT: run cargo xtask verify occt"]
 async fn a_22_mm_cylinder_reads_as_an_exact_cylinder() {
