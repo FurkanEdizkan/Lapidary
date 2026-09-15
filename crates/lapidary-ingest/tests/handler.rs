@@ -3080,6 +3080,90 @@ async fn revision_rows(pool: &PgPool) -> Vec<(String, Option<String>, String, St
     .expect("revision rows")
 }
 
+/// The one part's materials, and whether a person typed them.
+async fn materials_of(pool: &PgPool) -> (Vec<String>, bool) {
+    sqlx::query_as("SELECT materials, materials_typed FROM part")
+        .fetch_one(pool)
+        .await
+        .expect("the part")
+}
+
+/// A material a person typed is kept when a revised CAD file states another, while what the revised
+/// file says about itself is still recorded; clearing the typed list hands the part back to the file.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_typed_material_outlasts_a_revision_whose_file_states_another(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
+    };
+    make_controlled(&pool, seeded()).await;
+    stage(ingest_dir.path(), FIXTURE_PLATE, BRACKET_FIXTURE);
+    assert_eq!(
+        handler
+            .handle(&job_for(FIXTURE_PLATE))
+            .await
+            .expect("ingests"),
+        Outcome::Ingested
+    );
+    assert_eq!(
+        materials_of(&pool).await,
+        (vec!["AISI 1045 steel".to_owned()], false),
+        "what the file states, and nobody typed it"
+    );
+    let part = lapidary_core::PartId::from_uuid(
+        sqlx::query_scalar("SELECT id FROM part")
+            .fetch_one(&pool)
+            .await
+            .expect("the part"),
+    );
+    lapidary_db::PgParts(pool.clone())
+        .set_materials(part, &["EN AW-6082 T6".to_owned()])
+        .await
+        .expect("a material is typed");
+    // As an older reading left it, so the revision is seen to read the file again.
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{cad,originating_system}', '\"CATIA V5\"')",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages the header");
+
+    stage(ingest_dir.path(), FIXTURE_PLATE, SPACER_FIXTURE);
+    assert_eq!(
+        handler
+            .handle(&job_for(FIXTURE_PLATE))
+            .await
+            .expect("revises"),
+        Outcome::Revised
+    );
+    assert_eq!(
+        materials_of(&pool).await,
+        (vec!["EN AW-6082 T6".to_owned()], true),
+        "the typed material, not the one the revised file states"
+    );
+    let system: serde_json::Value =
+        sqlx::query_scalar("SELECT metadata_json->'cad'->'originating_system' FROM part")
+            .fetch_one(&pool)
+            .await
+            .expect("the header");
+    assert_eq!(
+        system, "SOLIDWORKS 2025",
+        "while what the revised file says about itself is recorded"
+    );
+
+    lapidary_db::PgParts(pool.clone())
+        .set_materials(part, &[])
+        .await
+        .expect("the typed list is cleared");
+    assert_eq!(
+        materials_of(&pool).await,
+        (vec!["AISI 1045 steel".to_owned()], false),
+        "cleared, the part holds what its file states again"
+    );
+}
+
 /// The whole round trip the slice exists for, as a scan sees it: the owner edits a file in
 /// place, re-scans, and gets a second revision rather than "already here".
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

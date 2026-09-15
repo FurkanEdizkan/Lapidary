@@ -297,6 +297,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 // The tags a person gives a part, the whole list in one write.
                 .route("/api/parts/{id}/tags", axum::routing::put(tags::set))
+                // What a part is made of, typed over what its file states. See `tags.rs`.
+                .route(
+                    "/api/parts/{id}/materials",
+                    axum::routing::put(tags::set_materials),
+                )
                 // One part's value for one of its library's custom fields. See `fields.rs`.
                 .route(
                     "/api/parts/{id}/fields/{key}",

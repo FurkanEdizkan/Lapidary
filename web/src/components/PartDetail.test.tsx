@@ -56,6 +56,8 @@ const BRACKET: PartDetail = {
   name: 'angle-bracket-60x60x40-lp-9004-00',
   partNumber: null,
   tags: [],
+  materials: [],
+  materialsTyped: false,
   custom: {},
   pmi: null,
   sourcePath: 'cad/angle-bracket-60x60x40-lp-9004-00.igs',
@@ -167,6 +169,37 @@ test('tags are added and removed where the part is recordable, and only listed e
   expect(screen.getByText('welding jig')).toBeTruthy()
   expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
   expect(screen.queryByLabelText(strings.tags.field)).toBeNull()
+  vi.unstubAllGlobals()
+})
+
+/** Materials are edited as tags are, and a list nobody typed says it is what the file states. */
+test('materials are edited like tags, and a list nobody typed says it is the file’s', async () => {
+  const puts: { url: string; body: unknown }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'PUT') {
+        puts.push({ url, body: JSON.parse(init.body ?? 'null') })
+        return { ok: true, status: 204, json: async () => null }
+      }
+      return { ok: true, status: 200, json: async () => [] }
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...BRACKET, materials: ['AISI 1045 steel'], materialsTyped: false }} recordable />
+    </QueryClientProvider>,
+  )
+
+  expect(screen.getByText(strings.materials.fromFile)).toBeTruthy()
+  fireEvent.change(screen.getByLabelText(strings.materials.field), { target: { value: 'EN AW-6082 T6' } })
+  fireEvent.click(screen.getByRole('button', { name: strings.materials.add }))
+  await waitFor(() =>
+    expect(puts).toEqual([
+      { url: `/api/parts/${BRACKET.id}/materials`, body: { materials: ['AISI 1045 steel', 'EN AW-6082 T6'] } },
+    ]),
+  )
   vi.unstubAllGlobals()
 })
 

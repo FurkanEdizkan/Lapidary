@@ -753,6 +753,25 @@ impl WorkerHandler {
                 });
             }
 
+            // 9a for a revision: what the newer file says about itself replaces what the older one
+            // said, its materials too unless a person typed the part's. Before the manifest, which is
+            // written from the rows.
+            if let Some(cad) = &output.metadata
+                && let Err(error) = PgParts(self.db.clone())
+                    .set_metadata(
+                        existing.part,
+                        &serde_json::json!({ "cad": cad }),
+                        &cad.materials,
+                    )
+                    .await
+            {
+                tracing::warn!(
+                    source_path,
+                    %error,
+                    "could not record what the revised file says about itself; the part keeps what the previous revision's file said"
+                );
+            }
+
             // `metadata.json` from the rows, every revision listed. Warn-only, for step 10's
             // reason: the revision is committed, and failing the job would say it was not.
             if let Some((current, _)) = &moved

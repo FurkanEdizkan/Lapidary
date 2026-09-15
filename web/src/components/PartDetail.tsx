@@ -21,6 +21,7 @@ import {
   requestExport,
   setFieldValue,
   setImageFraming,
+  setPartMaterials,
   setPartTags,
   uploadPartImage,
 } from '../lib/api'
@@ -347,19 +348,34 @@ const SOURCE_FIELDS = [
  * `<dl>` would be one refactor away from dropping that.
  */
 /**
- * The tags a person gave the part. Listed wherever the part is shown, and edited only where
- * `recordable` is on, for the reason `Detail` gives: a tag half-typed into a dialog that closes on
- * Escape is a tag somebody loses.
+ * A list of words a person gives the part: its tags, or its materials. Listed wherever the part is
+ * shown, and edited only where `recordable` is on, for the reason `Detail` gives: a tag half-typed
+ * into a dialog that closes on Escape is a tag somebody loses.
  *
  * Every change sends the whole list, which is what the route takes, and the part is read again
  * afterwards, so the page shows what the server kept rather than what was typed.
  */
-function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean }) {
+function WordList({
+  part,
+  recordable,
+  values,
+  text,
+  save: send,
+  note = null,
+}: {
+  part: PartDetailData
+  recordable: boolean
+  values: readonly string[]
+  text: { title: string; field: string; add: string; saving: string; remove: (value: string) => string }
+  save: (part: PartDetailData['id'], values: readonly string[]) => Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }>
+  /** A line under the list, such as where its values came from. */
+  note?: string | null
+}) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
   const [refusal, setRefusal] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: (tags: readonly string[]) => setPartTags(part.id, tags),
+    mutationFn: (next: readonly string[]) => send(part.id, next),
     onMutate: () => setRefusal(null),
     onSuccess: (result) => {
       if (result.kind === 'refused') {
@@ -370,13 +386,12 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
       void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
     },
   })
-  // `?? []` for a server from before tags, which sends a part without them.
-  const tags = part.tags ?? []
+  const tags = values
   if (tags.length === 0 && !recordable) return null
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {strings.tags.title}
+        {text.title}
       </h3>
       {tags.length === 0 ? null : (
         <ul role="list" className="mb-2 flex list-none flex-wrap gap-1">
@@ -389,7 +404,7 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
               {recordable ? (
                 <button
                   type="button"
-                  aria-label={strings.tags.remove(tag)}
+                  aria-label={text.remove(tag)}
                   disabled={save.isPending}
                   onClick={() => save.mutate(tags.filter((kept) => kept !== tag))}
                   className="text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)] disabled:opacity-50"
@@ -410,7 +425,7 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
           }}
         >
           <label className="block flex-1 text-xs text-[var(--color-muted)]">
-            {strings.tags.field}
+            {text.field}
             <input
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -422,10 +437,11 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
             disabled={save.isPending}
             className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
           >
-            {save.isPending ? strings.tags.saving : strings.tags.add}
+            {save.isPending ? text.saving : text.add}
           </button>
         </form>
       ) : null}
+      {note === null ? null : <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{note}</p>}
       {refusal === null ? null : (
         <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
           {refusal}
@@ -867,7 +883,16 @@ export function Detail({
 
       <Gallery part={part.id} name={part.name} />
 
-      <Tags part={part} recordable={recordable} />
+      {/* `?? []` for a server from before tags or materials, which sends a part without them. */}
+      <WordList part={part} recordable={recordable} values={part.tags ?? []} text={strings.tags} save={setPartTags} />
+      <WordList
+        part={part}
+        recordable={recordable}
+        values={part.materials ?? []}
+        text={strings.materials}
+        save={setPartMaterials}
+        note={part.materialsTyped === false && (part.materials ?? []).length > 0 ? strings.materials.fromFile : null}
+      />
       <Fields part={part} recordable={recordable} />
 
       <Sources part={part.id} recordable={recordable} />

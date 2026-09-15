@@ -1395,6 +1395,80 @@ async fn tags_request(
     )
 }
 
+/// Materials are set as tags are and kept over what a file states: a typed list is marked typed,
+/// counted by the materials facet, and refused past 8 materials; an empty list hands the part back
+/// to its file.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn materials_typed_through_the_api_are_counted_and_an_empty_list_hands_back_the_files(
+    pool: sqlx::PgPool,
+) {
+    seed_part(
+        &pool,
+        library(),
+        0xe3,
+        "flange-dn40-lp-3310-02",
+        b"webp-flange",
+    )
+    .await;
+    let (_, page) = get_page_with(pool.clone(), "q=flange").await;
+    let id = page["parts"][0]["id"]
+        .as_str()
+        .expect("the flange's id")
+        .to_owned();
+    let uri = format!("/api/parts/{id}/materials");
+
+    let given = serde_json::json!({ "materials": [" EN AW-6082 T6 ", "", "EN AW-6082 T6"] });
+    let (status, _) = tags_request(pool.clone(), "PUT", uri.clone(), Some(given)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
+    assert_eq!(detail["materials"], serde_json::json!(["EN AW-6082 T6"]));
+    assert_eq!(detail["materialsTyped"], true);
+    let (_, facets) = tags_request(
+        pool.clone(),
+        "GET",
+        format!("/api/libraries/{}/facets", library()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        facets["materials"],
+        serde_json::json!([{ "value": "EN AW-6082 T6", "count": 1 }]),
+        "the facet counts a typed material"
+    );
+
+    let many: Vec<String> = (1..=9).map(|n| format!("EN AW-60{n}2")).collect();
+    let (status, refusal) = tags_request(
+        pool.clone(),
+        "PUT",
+        uri.clone(),
+        Some(serde_json::json!({ "materials": many })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("at most 8 materials")),
+        "{refusal}"
+    );
+
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        uri,
+        Some(serde_json::json!({ "materials": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
+    assert_eq!(
+        detail["materials"],
+        serde_json::json!([]),
+        "back to what the file states, and a mesh states none"
+    );
+    assert_eq!(detail["materialsTyped"], false);
+}
+
 /// Tags are set by request as the whole list: trimmed, blanks and repeats dropped, kept in order,
 /// and refused past 32 tags or 64 characters by a message that names the limit. A chosen tag
 /// narrows the grid, the facets count tags, and the part's page lists them.

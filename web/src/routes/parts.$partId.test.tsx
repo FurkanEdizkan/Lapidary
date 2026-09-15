@@ -37,6 +37,8 @@ const PART: PartDetail = {
   name: 'Bearing block, 608ZZ',
   partNumber: 'LP-1042-03',
   tags: [],
+  materials: [],
+  materialsTyped: false,
   custom: {},
   pmi: null,
   sourcePath: 'brackets/steel/LP-1042-03.stl',
