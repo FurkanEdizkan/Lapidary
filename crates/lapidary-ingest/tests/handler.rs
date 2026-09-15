@@ -2067,6 +2067,72 @@ fn manifest_in(dir: &Path) -> ModelManifest {
         .unwrap_or_else(|e| panic!("metadata.json in {} does not parse: {e}", dir.display()))
 }
 
+/// A custom field's value lives on the part's row, and `metadata.json` mirrors the rows: `describe_part`
+/// writes it again, so the model's directory holds the value re-adoption would otherwise lose.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn describing_a_part_writes_its_custom_values_into_metadata_json(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    let part: Uuid = sqlx::query_scalar("SELECT id FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("the part");
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{custom}', '{\"supplier\": \"Misumi\"}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("a value set");
+    let dir = blob_root
+        .path()
+        .join(LIBRARY_DIR)
+        .join("bracket-lp-1042-03");
+    assert_eq!(
+        manifest_in(&dir).part.metadata.get("custom"),
+        None,
+        "not yet"
+    );
+
+    let payload = JobPayload::DescribePart {
+        part: lapidary_core::PartId::from_uuid(part),
+    };
+    let job = JobRow {
+        id: JobId::new(),
+        batch_id: BatchId::new(),
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    };
+    assert_eq!(
+        handler.handle(&job).await.expect("describes"),
+        Outcome::Described
+    );
+    assert_eq!(
+        manifest_in(&dir).part.metadata["custom"],
+        serde_json::json!({ "supplier": "Misumi" })
+    );
+
+    let elsewhere = JobRow {
+        library_id: LibraryId::from_uuid(Uuid::now_v7()),
+        ..job
+    };
+    assert!(
+        matches!(
+            handler.handle(&elsewhere).await,
+            Err(HandlerError::Permanent { .. })
+        ),
+        "another library's job describes nothing of this one's"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
     // The shape the owner asked for: one directory per model, holding its file under its

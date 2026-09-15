@@ -25,4 +25,4 @@
  * failure: nothing broke, the new bytes are still where they came from, and a retry could
  * not change the answer — so it is counted here rather than listed as a failed job.
  */
-export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated" | "revised" | "unkept";
+export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated" | "revised" | "unkept" | "described";
