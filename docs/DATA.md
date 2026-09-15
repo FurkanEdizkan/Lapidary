@@ -544,8 +544,15 @@ Run both, union, and rank trigram similarity above text rank when the query look
 identifier (contains a digit and a separator). A user typing a part number wants an
 exact-ish hit at position one, always.
 
-Turkish: `tsvector` config is fixed at index time, so put a `language` column on
-`library` rather than using a global setting.
+Turkish: `tsvector` config is fixed at index time, so it is a `language` column on `library`
+(`simple` or `turkish`, chosen at creation), not a global setting.
+- Each part copies it into `part.search_config`, and `part.search` is built with that config.
+- A query reads the library's.
+- Stemming finds a softened root (*kapak* finds *kapağı*) and inflected tags and materials. The
+  `ILIKE` substring search already covers a word's prefix, so there is no prefix matching.
+- Under an `en_US.utf8` database, capital I lowercases as `i`, not `ı`, so a name written in capitals
+  is not found by a query typed with `ı`. Recorded, not fixed (`2026-09-15-local-product-design.md`
+  §2.1).
 
 ### 3.4 Facets
 
@@ -555,9 +562,18 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
 
 ### 3.5 Custom fields
 
-`custom_field(id, library_id, key, label, type, options_json, indexed bool)` with values
-in `part.metadata_json`. When `indexed`, create a matching expression index. **Cap
-indexed custom fields at 8** — each is a write cost on every ingest.
+`custom_field(id, library_id, key, label, type, options_json, indexed bool)`, with values in
+`part.metadata_json->'custom'`, beside `cad`.
+- **Types:** `text`, `number`, `choice`.
+- **Keys** are slugs, never renamed.
+
+**Amended 2026-09-15, on the owner's behalf** (`2026-09-15-local-product-design.md` §1):
+- **One index for every field:** a GIN index over `(metadata_json->'custom') jsonb_path_ops`, with
+  filters written as `@>`. This replaces an expression index per indexed field, which would be DDL
+  built from a key a user typed.
+- **`indexed` means "offered as a grid filter".** Still **capped at 8**, now as the grid's limit
+  rather than a write cost.
+- **Removing a field removes its definition only.** Its values stay.
 
 ### 3.6 Saved filters
 
@@ -569,9 +585,13 @@ there are no users yet.
 - **The API keeps only what the grid's URL carries,** trimmed. It refuses any other key, and refuses
   a category from another library.
 - **Removing one removes the name and nothing else.**
-- **A saved category does not follow a deletion.** A filter whose category was deleted still opens
-  to that category's id: an empty grid saying nothing is filed there yet, though the category is
-  gone from the tree.
+- **A saved category does not follow a deletion, and the grid says so.**
+  - The list marks a filter whose category is gone.
+  - The grid, opened on a category the live tree does not hold, says it was deleted and offers the
+    same filters without it (`2026-09-15-local-product-design.md` §3).
+- **Renamed and ordered by hand.** A name stays unique in its library, and a filter moves up or down
+  one place at a time.
+- **An indexed custom field** (§3.5) is one more thing a filter may carry: `field` and `fieldValue`.
 
 ---
 
@@ -729,6 +749,15 @@ This is why the watcher lives in the native agent binary and not in a container.
 - It needs no new dependency. OS events arrive with macOS, Windows, or a checkout of more than a
   handful of files.
 - Only the file handed out comes back: a tool that saves another name or format is not picked up.
+
+**A watched folder polls too:** `lapidary watch <folder> --library <id>`
+(`2026-09-15-local-product-design.md` §5).
+- **The ignore list** above applies whole, because every file under the folder is watched.
+- **Every 2 s** the tree is listed. A settled change is hashed, then uploaded with its path relative to
+  the folder.
+- **A local deletion** changes nothing in the library.
+- **Polling costs a listing per interval:** 12 ms warm over 2,778 files. `notify` replaces it once a
+  tree is large enough for that to matter.
 
 ### 6.3 Which tools round-trip — be honest in the UI
 
