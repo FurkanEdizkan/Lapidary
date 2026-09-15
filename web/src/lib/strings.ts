@@ -1541,7 +1541,7 @@ export const strings = {
       distance: 'Click two points on the part.',
       edge: 'Click the corner at each end of the edge.',
       diameter: 'Click a round face, or three points around a round edge.',
-      angle: 'Click two faces.',
+      angle: 'Click two faces, or a cone for its included angle.',
       wall: 'Click a wall. Its thickness is measured straight through it.',
     },
     /** Picks wait for the finest mesh, so no value is read off a coarser one than the part has. */

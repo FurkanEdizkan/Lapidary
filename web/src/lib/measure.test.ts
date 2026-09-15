@@ -161,3 +161,45 @@ test('a value not read from an entity is approximate, and says so', () => {
 test('an edge is measured between the triangle corners nearest the clicks', () => {
   expect(nearestCorner([0.9, 0.1, 0], [[0, 0, 0], [1, 0, 0], [0, 1, 0]])).toEqual([1, 0, 0])
 })
+
+/** A 12 mm ball, a 6 mm tube on a 40 mm ring, and a 90° countersink opening from ⌀10 mm, each as the bridge writes it. */
+const BALL: Entity = { type: 'sphere', prototype: '0:1:1:20', face: 1, radius: 6, center: [0, 0, 0] }
+const RING: Entity = { type: 'torus', prototype: '0:1:1:21', face: 1, major_radius: 20, minor_radius: 3, origin: [0, 0, 0], axis: [0, 0, 1] }
+const SINK: Entity = { type: 'cone', prototype: '0:1:1:22', face: 1, ref_radius: 5, semi_angle_rad: Math.PI / 4, origin: [0, 0, 0], axis: [0, 0, 1] }
+
+const onBall = (theta: number, phi: number): Vec3 => [6 * Math.cos(phi) * Math.cos(theta), 6 * Math.cos(phi) * Math.sin(theta), 6 * Math.sin(phi)]
+const onRing = (theta: number, phi: number): Vec3 => [
+  (20 + 3 * Math.cos(phi)) * Math.cos(theta),
+  (20 + 3 * Math.cos(phi)) * Math.sin(theta),
+  3 * Math.sin(phi),
+]
+const onSink = (theta: number, height: number): Vec3 => ring(5 + height, theta, height)
+
+test('a ball reads its diameter and a torus its tube, exact', () => {
+  const ball = facet(scale3(onBall(0.3, 0.25), 1 / 6), onBall(0.2, 0.2), onBall(0.4, 0.2), onBall(0.3, 0.3))
+  expect(measure('diameter', [ball], [BALL, RING, SINK])).toEqual({ value: 12, approximate: false })
+  // Out of the tube, at 0.1 rad around the ring and 0.5 rad around the tube.
+  const tubeNormal: Vec3 = [Math.cos(0.5) * Math.cos(0.1), Math.cos(0.5) * Math.sin(0.1), Math.sin(0.5)]
+  const tube = facet(tubeNormal, onRing(0.05, 0.4), onRing(0.15, 0.4), onRing(0.1, 0.6))
+  expect(measure('diameter', [tube], [BALL, RING, SINK])).toEqual({ value: 6, approximate: false })
+})
+
+test('a countersink reads its included angle exactly, and its diameter at the click only approximately', () => {
+  const outward: Vec3 = [Math.cos(0.3) * Math.SQRT1_2, Math.sin(0.3) * Math.SQRT1_2, -Math.SQRT1_2]
+  const side = facet(outward, onSink(0.2, 1), onSink(0.4, 1), onSink(0.3, 2))
+  expect(measure('angle', [side], [SINK])).toEqual({ value: 90, approximate: false })
+  const diameter = measure('diameter', [side], [SINK])
+  expect(diameter?.approximate).toBe(true)
+  // The click is at the triangle's middle, 4/3 mm up, where the cone is ⌀12.67 mm.
+  expect(diameter?.value).toBeCloseTo(2 * (5 + 4 / 3), 1)
+})
+
+test('a triangle off a curved surface does not snap to it', () => {
+  const off = facet(scale3(onBall(0.3, 0.25), 1 / 6), onBall(0.2, 0.2), onBall(0.4, 0.2), scale3(onBall(0.3, 0.3), 1.01))
+  expect(snap(off, [BALL], ['sphere'])).toBeNull()
+  expect(measure('angle', [off], [SINK])).toBeNull()
+})
+
+function scale3(v: Vec3, s: number): Vec3 {
+  return [v[0] * s, v[1] * s, v[2] * s]
+}
