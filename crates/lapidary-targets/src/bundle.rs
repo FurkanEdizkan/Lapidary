@@ -276,7 +276,19 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// Checked whole: every revision's bytes read and hashed against the manifest. What the job
+    /// that unpacks a bundle does, once.
     pub fn open(bytes: Vec<u8>) -> Result<Self, String> {
+        Self::load(bytes, true)
+    }
+
+    /// Checked in shape only: names, stored entries, the manifest, every revision's file present at
+    /// its size. What a part's job does, hashing only its own revisions as it reads them.
+    pub fn read(bytes: Vec<u8>) -> Result<Self, String> {
+        Self::load(bytes, false)
+    }
+
+    fn load(bytes: Vec<u8>, hash_every_file: bool) -> Result<Self, String> {
         let refuse = |detail: String| {
             format!(
                 "This is not a bundle Lapidary can import: {detail}. Export it again from Lapidary, then import it."
@@ -343,10 +355,23 @@ impl Bundle {
                         revision.rev_label, part.source_path, revision.origin
                     )));
                 }
-                let bytes = read_entry(&mut archive, &revision.path).map_err(refuse)?;
-                if bytes.len() as u64 != revision.size_bytes
-                    || blake3::hash(&bytes).to_hex().as_str() != revision.blake3
-                {
+                let matches = if hash_every_file {
+                    let bytes = read_entry(&mut archive, &revision.path).map_err(refuse)?;
+                    bytes.len() as u64 == revision.size_bytes
+                        && blake3::hash(&bytes).to_hex().as_str() == revision.blake3
+                } else {
+                    archive
+                        .by_name(&revision.path)
+                        .map_err(|_| {
+                            refuse(format!(
+                                "it has no file at {}, which its manifest names",
+                                revision.path
+                            ))
+                        })?
+                        .size()
+                        == revision.size_bytes
+                };
+                if !matches {
                     return Err(refuse(format!(
                         "the file at {} is not the one its manifest names: its size or hash differs",
                         revision.path

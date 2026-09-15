@@ -14,6 +14,13 @@ const MARKER: &str = "X-Lapidary-Handler=1";
 /// The desktop file. The server and workspace ride in `Exec`: a handler a browser starts does not
 /// see the shell's environment, and a link must never be able to choose either.
 fn entry(binary: &str, server: &str, workspace: &str) -> Result<String, String> {
+    // `env` reads any leading word holding `=` as a variable to set, so an install path with one
+    // would run whatever `open` is on the PATH instead of this binary.
+    if binary.contains('=') {
+        return Err(format!(
+            "{binary:?} holds `=`, which `env` would read as a variable rather than as this program. Move lapidary to a path without one, then register again."
+        ));
+    }
     let exec = [
         "env".to_owned(),
         argument(&format!("LAPIDARY_SERVER={server}"))?,
@@ -213,6 +220,15 @@ mod tests {
             )
             .is_err(),
             "a workspace with a space registers nothing"
+        );
+        assert!(
+            entry(
+                "/opt/tools=2026/lapidary",
+                "http://127.0.0.1:8080",
+                "/home/mira/Lapidary/workspace"
+            )
+            .is_err(),
+            "an install path `env` would take for an assignment registers nothing"
         );
     }
 

@@ -3294,3 +3294,101 @@ async fn a_bundle_that_is_not_whole_queues_nothing(pool: PgPool) {
     assert_eq!(queued, 0);
     assert!(revision_rows(&pool).await.is_empty());
 }
+
+async fn quarantined(pool: &PgPool, bytes: &[u8]) -> bool {
+    sqlx::query_scalar("SELECT quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1")
+        .bind(hash_hex(bytes))
+        .fetch_one(pool)
+        .await
+        .expect("the blob row")
+}
+
+/// Nothing ever points at a bundle's own bytes, since its parts are replayed into files of their
+/// own: whether it imports or is refused, its blob is released into the 30-day quarantine.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_imported_bundles_own_bytes_are_released_whether_or_not_it_imports(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let path = "brackets/bracket-lp-1042-03.stl";
+    let bundle = bundle_of(&[(path, &[BRACKET_FIXTURE])]);
+    import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports");
+    assert!(
+        quarantined(&pool, &bundle).await,
+        "released once its parts are queued"
+    );
+
+    let mut tampered = bundle_of(&[(path, &[SPACER_FIXTURE])]);
+    tampered[30 + path.len() + 200] ^= 0xff;
+    import(&handler, &pool, blob_root.path(), &tampered)
+        .await
+        .expect_err("refused");
+    assert!(quarantined(&pool, &tampered).await, "and a refused one too");
+}
+
+/// A revert is a revision, so a history can hold the same bytes twice: an import resumes by the whole
+/// sequence, and a second import of it finds every revision already there.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_history_with_a_revert_imports_once_and_a_second_import_skips_it(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    let bundle = bundle_of(&[(
+        "brackets/bracket-lp-1042-03.stl",
+        &[BRACKET_FIXTURE, SPACER_FIXTURE, BRACKET_FIXTURE],
+    )]);
+
+    assert_eq!(
+        import(&handler, &pool, blob_root.path(), &bundle)
+            .await
+            .expect("imports"),
+        [lapidary_core::Outcome::Ingested]
+    );
+    assert_eq!(revision_rows(&pool).await.len(), 3);
+    assert_eq!(
+        import(&handler, &pool, blob_root.path(), &bundle)
+            .await
+            .expect("imports again"),
+        [lapidary_core::Outcome::Skipped]
+    );
+    assert_eq!(
+        revision_rows(&pool).await.len(),
+        3,
+        "no revision recorded twice"
+    );
+}
+
+/// A part whose history began with other bytes is another part's, even when its newest revision is
+/// one the bundle holds.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_whose_history_began_elsewhere_is_refused_though_it_ends_on_a_bundle_revision(
+    pool: PgPool,
+) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    let path = "brackets/bracket-lp-1042-03.stl";
+    stage(ingest_dir.path(), path, CUBE_FIXTURE);
+    handler.handle(&job_for(path)).await.expect("scans");
+    stage(ingest_dir.path(), path, BRACKET_FIXTURE);
+    handler.handle(&job_for(path)).await.expect("revises");
+    assert_eq!(revision_rows(&pool).await.len(), 2);
+
+    let refused = import(
+        &handler,
+        &pool,
+        blob_root.path(),
+        &bundle_of(&[(path, &[BRACKET_FIXTURE, SPACER_FIXTURE])]),
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(&refused, HandlerError::Permanent { message } if message.contains("graft")),
+        "{refused:?}"
+    );
+    assert_eq!(revision_rows(&pool).await.len(), 2, "nothing grafted");
+}

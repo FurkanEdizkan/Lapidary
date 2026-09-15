@@ -208,16 +208,14 @@ export async function uploadFiles(
 }
 
 /**
- * A bundle (Phase 4 slice 2): hashed, sent through the same chunked upload as any file unless the
- * server already holds its bytes, then handed to the import route. Nothing is committed as a part:
- * the worker checks the whole archive before any part of it is written.
+ * A bundle (Phase 4 slice 2): hashed, always sent through the chunked upload, then handed to the
+ * import route. Always sent, even when the server holds those bytes: an import reads only this
+ * library's own upload of them, so a bundle's hash alone never imports another library's export.
+ * Nothing is committed as a part: the worker checks the whole archive before any of it is written.
  */
 export async function importBundle(library: LibraryId, file: File): Promise<ScanAccepted> {
   const blake3 = await hashFile(file)
-  const plan = await probeUpload(library, [{ path: file.name, blake3 }])
-  if (plan.needBytes.includes(file.name)) {
-    await transfer(library, blake3, file, () => {})
-  }
+  await transfer(library, blake3, file, () => {})
   return startImport(library, blake3, file.name)
 }
 

@@ -416,6 +416,13 @@ impl WorkerHandler {
         origin: RevisionOrigin,
         lock: Option<lapidary_core::LockId>,
     ) -> Result<Outcome, HandlerError> {
+        // Here as well as in the routes that read a file first: a scan, an upload and a bundle's
+        // part all name the path a part is filed under, and this is where all three pass.
+        lapidary_core::slug::reject_escaping_path(source_path).map_err(|e| {
+            HandlerError::Permanent {
+                message: e.to_string(),
+            }
+        })?;
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
         // First production use. No `WorkerRole` proof: derivatives are readable by both
         // roles, which is what lets `lapidary-api` serve a rung without ever being able

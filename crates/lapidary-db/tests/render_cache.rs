@@ -126,12 +126,15 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
     );
 
     let freed = parts.free_render_cache().await.expect("frees");
-    assert_eq!(freed.rungs, 2, "the bracket's L1 and L2 rows");
+    assert_eq!(
+        freed.rungs, 1,
+        "the bracket's L1 only: its L2 shares L0's blob, which the figure never counted, so it stays"
+    );
     assert_eq!(freed.quarantined_bytes, 48_210);
 
     assert_eq!(
         kinds(&pool, bracket).await,
-        ["tessellation_l0", "thumbnail"]
+        ["tessellation_l0", "tessellation_l2", "thumbnail"]
     );
     assert_eq!(
         kinds(&pool, spacer).await,
@@ -142,7 +145,11 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
         (0, true),
         "quarantined, not deleted"
     );
-    assert_eq!(blob(&pool, 0xa0).await, (1, false), "L0 still points at it");
+    assert_eq!(
+        blob(&pool, 0xa0).await,
+        (2, false),
+        "L0 and the L2 that shares its bytes both still point at it"
+    );
     assert_eq!(
         blob(&pool, 0xa9).await,
         (1, false),

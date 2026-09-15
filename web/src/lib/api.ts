@@ -718,26 +718,42 @@ export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStor
  * `POST /api/libraries/{id}/bundle/plan` — what exporting these parts would put in a bundle, or,
  * thrown, the server's own words for why it will not.
  */
-export async function planBundle(library: LibraryId, parts: PartId[]): Promise<BundlePlan> {
+export async function planBundle(
+  library: LibraryId,
+  parts: PartId[],
+): Promise<{ plan: BundlePlan } | { refused: string | null }> {
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/bundle/plan`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ parts }),
   })
   if (!response.ok) {
+    // The server's own words when it gave any, and nothing otherwise: a status code is not a
+    // sentence for the grid.
     const body = (await response.json().catch(() => null)) as { message?: string } | null
-    throw new Error(body?.message ?? `bundle plan returned ${response.status}`)
+    return { refused: body?.message ?? null }
   }
-  return (await response.json()) as BundlePlan
+  return { plan: (await response.json()) as BundlePlan }
 }
+
+/** The hidden frame a bundle downloads into, so a late refusal never replaces the grid. */
+const BUNDLE_FRAME = 'lapidary-bundle-download'
 
 /**
  * `POST /api/libraries/{id}/bundle`, as a form the browser posts itself: the bundle streams to
  * disk under the name the server gives it, where a `fetch` would hold the whole archive in memory.
  */
 export function downloadBundle(library: LibraryId, parts: PartId[]): void {
+  let frame = document.querySelector<HTMLIFrameElement>(`iframe[name="${BUNDLE_FRAME}"]`)
+  if (frame === null) {
+    frame = document.createElement('iframe')
+    frame.name = BUNDLE_FRAME
+    frame.hidden = true
+    document.body.append(frame)
+  }
   const form = document.createElement('form')
   form.method = 'post'
+  form.target = BUNDLE_FRAME
   form.action = `/api/libraries/${encodeURIComponent(library)}/bundle`
   const field = document.createElement('input')
   field.type = 'hidden'
