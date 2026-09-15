@@ -295,6 +295,13 @@ pub struct GridQuery<'a> {
     /// One custom field's value, as the JSON object `{"<key>": value}` its `@>` filter matches
     /// (`docs/DATA.md` §3.5). The API builds it only from an indexed field of this library.
     pub field: Option<&'a str>,
+    /// One number field's range, as the jsonpath `$."<key>" ? (@ >= min && @ <= max)` its `@?` filter
+    /// matches, either bound left out. The API builds it only from an indexed number field of this
+    /// library. A value that is not a number fails the comparison rather than the query: `@?` suppresses
+    /// a comparison between different types.
+    // ponytail: no index serves a range, so every part the other filters leave is compared. An expression
+    // index on one field's value is the upgrade, when a large library measures slow.
+    pub field_range: Option<&'a str>,
 }
 
 impl GridQuery<'_> {
@@ -310,6 +317,7 @@ impl GridQuery<'_> {
             material: None,
             tag: None,
             field: None,
+            field_range: None,
         }
     }
 }
@@ -1642,6 +1650,7 @@ impl PgParts {
         material: Option<&str>,
         tag: Option<&str>,
         field: Option<&str>,
+        field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         // The grid's own predicates, so a count never includes a part the grid would not show:
         // the library, the state, the category subtree, and `search`'s match when there is a
@@ -1668,6 +1677,7 @@ impl PgParts {
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
              GROUP BY s.format ORDER BY s.format",
         )
         .bind(library.as_uuid())
@@ -1678,6 +1688,7 @@ impl PgParts {
         .bind(material)
         .bind(tag)
         .bind(field)
+        .bind(field_range)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1700,6 +1711,7 @@ impl PgParts {
         format: Option<&str>,
         tag: Option<&str>,
         field: Option<&str>,
+        field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
@@ -1718,6 +1730,7 @@ impl PgParts {
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
              GROUP BY m.material ORDER BY m.material",
         )
         .bind(library.as_uuid())
@@ -1728,6 +1741,7 @@ impl PgParts {
         .bind(format)
         .bind(tag)
         .bind(field)
+        .bind(field_range)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1746,6 +1760,7 @@ impl PgParts {
         format: Option<&str>,
         material: Option<&str>,
         field: Option<&str>,
+        field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
@@ -1764,6 +1779,7 @@ impl PgParts {
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
                AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
              GROUP BY t.tag ORDER BY t.tag",
         )
         .bind(library.as_uuid())
@@ -1774,6 +1790,7 @@ impl PgParts {
         .bind(format)
         .bind(material)
         .bind(field)
+        .bind(field_range)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -3031,6 +3048,7 @@ impl PartRepository for PgParts {
             material,
             tag,
             field,
+            field_range,
         } = *grid;
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -3099,6 +3117,7 @@ impl PartRepository for PgParts {
                AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
                AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
                AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
+               AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
@@ -3121,6 +3140,7 @@ impl PartRepository for PgParts {
         .bind(material)
         .bind(tag)
         .bind(field)
+        .bind(field_range)
         .fetch_all(&self.0)
         .await?;
 
@@ -3146,6 +3166,7 @@ impl PartRepository for PgParts {
             material,
             tag,
             field,
+            field_range,
         } = *grid;
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
@@ -3242,6 +3263,7 @@ impl PartRepository for PgParts {
                   AND ($11::text IS NULL OR p.materials @> ARRAY[$11::text]) \
                   AND ($12::text IS NULL OR p.tags @> ARRAY[$12::text]) \
                   AND ($13::jsonb IS NULL OR p.metadata_json->'custom' @> $13::jsonb) \
+                  AND ($14::jsonpath IS NULL OR p.metadata_json->'custom' @? $14::jsonpath) \
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.source_path ILIKE $9 \
@@ -3273,6 +3295,7 @@ impl PartRepository for PgParts {
         .bind(material)
         .bind(tag)
         .bind(field)
+        .bind(field_range)
         .fetch_all(&self.0)
         .await?;
 
@@ -3327,7 +3350,8 @@ impl PgParts {
                        AND f.format = $8 AND f.revision_id = r.id)) \
                   AND ($10::text IS NULL OR p.materials @> ARRAY[$10::text]) \
                   AND ($11::text IS NULL OR p.tags @> ARRAY[$11::text]) \
-                  AND ($12::jsonb IS NULL OR p.metadata_json->'custom' @> $12::jsonb) ), \
+                  AND ($12::jsonb IS NULL OR p.metadata_json->'custom' @> $12::jsonb) \
+                  AND ($13::jsonpath IS NULL OR p.metadata_json->'custom' @? $13::jsonpath) ), \
              anchor AS (SELECT value, id FROM keyed WHERE id = $2), \
              top AS ( \
                SELECT id, value FROM keyed \
@@ -3351,6 +3375,7 @@ impl PgParts {
         .bind(grid.material)
         .bind(grid.tag)
         .bind(grid.field)
+        .bind(grid.field_range)
         .fetch_all(&self.0)
         .await?;
 

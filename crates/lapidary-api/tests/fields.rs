@@ -213,6 +213,110 @@ async fn a_choice_takes_only_its_options_and_narrows_the_grid_its_facets_and_a_s
     );
 }
 
+/// A number field filters by a range, either bound or both and each bound inclusive, through the grid, its
+/// facets and a saved filter. A range on a field that is not a number, beside a value, running backwards,
+/// or with a bound that is not a number is refused in words.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_number_field_filters_by_a_range_and_refuses_one_it_cannot_hold(pool: sqlx::PgPool) {
+    define(
+        &pool,
+        json!({ "key": "bore_mm", "label": "Bore", "kind": "number", "indexed": true }),
+    )
+    .await;
+    define(
+        &pool,
+        json!({ "key": "supplier", "label": "Supplier", "kind": "choice",
+                "options": ["Hoffmann", "Misumi"], "indexed": true }),
+    )
+    .await;
+    let bushing = part(&pool, "bushing-d8-lp-3008-00", 0x41).await;
+    let flange = part(&pool, "flange-d22-lp-3022-00", 0x42).await;
+    for (part, bore) in [(bushing, 8), (flange, 22)] {
+        let (status, body) = send(
+            &pool,
+            "PUT",
+            &format!("/api/parts/{part}/fields/bore_mm"),
+            Some(json!({ "value": bore })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    let parts = format!("/api/libraries/{SEEDED_LIBRARY}/parts");
+    for (range, holds) in [
+        ("fieldMin=10", flange),
+        ("fieldMax=8", bushing),
+        ("fieldMin=-2.5&fieldMax=8", bushing),
+        ("fieldMin=22&fieldMax=22", flange),
+    ] {
+        let (status, page) = send(
+            &pool,
+            "GET",
+            &format!("{parts}?field=bore_mm&{range}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{range}: {page}");
+        let ids: Vec<&str> = page["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .map(|card| card["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(ids, [holds.to_string()], "{range}");
+    }
+
+    let (status, facets) = send(
+        &pool,
+        "GET",
+        &format!("/api/libraries/{SEEDED_LIBRARY}/facets?field=bore_mm&fieldMin=22"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{facets}");
+    assert_eq!(facets["formats"], json!([{ "value": "stl", "count": 1 }]));
+
+    let (status, saved) = send(
+        &pool,
+        "POST",
+        &format!("/api/libraries/{SEEDED_LIBRARY}/filters"),
+        Some(json!({ "name": "Bores of 20 mm and over",
+                     "search": { "field": "bore_mm", "fieldMin": "20" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{saved}");
+    assert_eq!(
+        saved["search"],
+        json!({ "field": "bore_mm", "fieldMin": "20" })
+    );
+
+    for (range, reason) in [
+        ("field=supplier&fieldMin=1", "notARange"),
+        ("field=bore_mm&fieldValue=8&fieldMax=10", "valueAndRange"),
+        ("field=bore_mm&fieldMin=22&fieldMax=8", "emptyRange"),
+        ("field=bore_mm&fieldMax=wide", "wrongType"),
+    ] {
+        let (status, body) = send(&pool, "GET", &format!("{parts}?{range}"), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{range}: {body}");
+        assert_eq!(body["reason"], reason, "{range}");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|message| message.contains('“')),
+            "{range}: {body}"
+        );
+    }
+    let (status, body) = send(
+        &pool,
+        "POST",
+        &format!("/api/libraries/{SEEDED_LIBRARY}/filters"),
+        Some(json!({ "name": "Hoffmann up to 3", "search": { "field": "supplier", "fieldMax": "3" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["reason"], "notARange");
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_field_not_offered_as_a_filter_filters_nothing(pool: sqlx::PgPool) {
     define(

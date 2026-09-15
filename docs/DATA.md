@@ -578,6 +578,10 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
 - **One index for every field:** a GIN index over `(metadata_json->'custom') jsonb_path_ops`, with
   filters written as `@>`. This replaces an expression index per indexed field, which would be DDL
   built from a key a user typed.
+- **A number field also filters by a range** (`fieldMin`, `fieldMax`, either or both, each inclusive), written
+  as `@?` over the jsonpath `$."<key>" ? (@ >= min && @ <= max)`. The GIN index cannot serve a comparison, so a
+  range compares every part the other filters leave; an expression index on one field's value is the upgrade
+  when a large library measures slow. A value that is not a number is passed over, never an error.
 - **`indexed` means "offered as a grid filter".** Still **capped at 8**, now as the grid's limit
   rather than a write cost.
 - **Removing a field removes its definition only.** Its values stay.
@@ -601,7 +605,8 @@ there are no users yet.
     same filters without it (`2026-09-15-local-product-design.md` §3).
 - **Renamed and ordered by hand.** A name stays unique in its library, and a filter moves up or down
   one place at a time.
-- **An indexed custom field** (§3.5) is one more thing a filter may carry: `field` and `fieldValue`.
+- **An indexed custom field** (§3.5) is one more thing a filter may carry: `field` with `fieldValue`, or, for a
+  number field, with `fieldMin` and `fieldMax`, either or both.
 
 ### 3.7 Material densities
 

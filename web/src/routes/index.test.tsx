@@ -80,7 +80,9 @@ function renderIndex(
     onApplyFilter?: (search: FilterSearch) => void;
     field?: string;
     fieldValue?: string;
-    onSelectField?: (field: string | null, value: string | null) => void;
+    fieldMin?: string;
+    fieldMax?: string;
+    onSelectField?: (field: string | null, value: string | null, range?: { min?: string; max?: string }) => void;
     client?: QueryClient;
   } = {},
 ) {
@@ -106,6 +108,8 @@ function renderIndex(
         onApplyFilter={props.onApplyFilter}
         field={props.field}
         fieldValue={props.fieldValue}
+        fieldMin={props.fieldMin}
+        fieldMax={props.fieldMax}
         onSelectField={props.onSelectField}
       />
     ),
@@ -192,6 +196,8 @@ function stubFetch(routes: {
   libraries?: () => Promise<StubResponse>;
   libraryCreate?: () => Promise<StubResponse>;
   facets?: () => Promise<StubResponse>;
+  /** `GET /api/libraries/{id}/fields`: the library's custom fields. */
+  fields?: () => Promise<StubResponse>;
   retry?: () => Promise<StubResponse>;
   failures?: () => Promise<StubResponse>;
   partRemove?: (url?: string) => Promise<StubResponse>;
@@ -248,6 +254,8 @@ function stubFetch(routes: {
       return (routes.partDetail ?? pending)(url);
     if (url.startsWith("/api/folders/"))
       return (routes.folderDelete ?? pending)();
+    // The library's custom fields. Unstubbed it is none, which is what almost every test here means.
+    if (url.endsWith("/fields")) return (routes.fields ?? empty)();
     // Every method on it, above the settings rule below, which would claim the list as a library.
     // Unstubbed it is an empty list, which is what almost every test here means.
     if (url.includes("/filters"))
@@ -716,6 +724,39 @@ test("a grid opened on a field filter the library no longer offers says so and o
   expect(screen.queryByText(strings.parts.failed)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: strings.fieldGone.widen }));
   expect(onSelectField).toHaveBeenCalledWith(null, null);
+});
+
+/**
+ * A number field offered as a filter is two boxes, from and to, starting from the range the URL holds, and
+ * the grid asks for that range. Typed backwards, a range is written the other way round; emptied, it is gone.
+ */
+test("a number field's two boxes write a range, and the grid asks for the one it is given", async () => {
+  const fetchMock = stubFetch({
+    parts: ok(page([])),
+    folders: ok([]),
+    facets: ok({ formats: [], materials: [], tags: [] }),
+    fields: ok([{ key: "bore_mm", label: "Bore", kind: "number", options: [], indexed: true }]),
+  });
+  const onSelectField = vi.fn();
+  renderIndex({ field: "bore_mm", fieldMin: "8", onSelectField });
+
+  const from = await screen.findByRole("textbox", { name: strings.fields.filterFrom("Bore") });
+  const to = screen.getByRole("textbox", { name: strings.fields.filterTo("Bore") });
+  expect((from as HTMLInputElement).value).toBe("8");
+  expect((to as HTMLInputElement).value).toBe("");
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url).includes("/parts?") && String(url).includes("field=bore_mm&fieldMin=8")),
+  ).toBe(true);
+
+  fireEvent.change(from, { target: { value: "22" } });
+  fireEvent.change(to, { target: { value: "8" } });
+  fireEvent.click(screen.getByRole("button", { name: strings.fields.filterApply }));
+  expect(onSelectField).toHaveBeenLastCalledWith("bore_mm", null, { min: "8", max: "22" });
+
+  fireEvent.change(from, { target: { value: "" } });
+  fireEvent.change(to, { target: { value: " " } });
+  fireEvent.click(screen.getByRole("button", { name: strings.fields.filterApply }));
+  expect(onSelectField).toHaveBeenLastCalledWith(null, null, undefined);
 });
 
 test("with no filter set and none saved, the rail offers nothing to save", async () => {
@@ -3370,6 +3411,18 @@ test("a field whose key is all digits keeps its filter in the URL", () => {
   expect(validate({ field: 2024, fieldValue: "A" })).toEqual({ field: "2024", fieldValue: "A" });
   expect(validate({ field: "finish", fieldValue: 12 })).toEqual({ field: "finish", fieldValue: "12" });
   expect(validate({ field: 2024 })).toEqual({});
+});
+
+/** A range's bounds can be all digits, negative or decimal, and each rides with its field or not at all. */
+test("a number field's range keeps its bounds in the URL", () => {
+  const validate = Route.options.validateSearch as (
+    search: Record<string, unknown>,
+  ) => { field?: string; fieldMin?: string; fieldMax?: string };
+
+  expect(validate({ field: "bore_mm", fieldMin: 8, fieldMax: 22.5 })).toEqual({ field: "bore_mm", fieldMin: "8", fieldMax: "22.5" });
+  expect(validate({ field: "bore_mm", fieldMin: -2.5 })).toEqual({ field: "bore_mm", fieldMin: "-2.5" });
+  expect(validate({ field: 2024, fieldMax: 0 })).toEqual({ field: "2024", fieldMax: "0" });
+  expect(validate({ fieldMin: 8 })).toEqual({});
 });
 
 /**

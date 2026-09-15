@@ -446,6 +446,7 @@ async fn the_grid_filters_by_a_field_value(pool: sqlx::PgPool) {
             None,
             None,
             Some(&misumi),
+            None,
         )
         .await
         .expect("facets");
@@ -636,5 +637,79 @@ async fn removing_an_option_waits_for_a_value_being_written_and_then_counts_it(p
     assert!(
         matches!(&removed, Err(DbError::OptionInUse { parts: 1, .. })),
         "{removed:?}"
+    );
+}
+
+/// A range narrows the grid, a sort, a search and a facet to the parts whose number lies in it, each bound
+/// inclusive. A part holding words under the same key is passed over rather than failing the query.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_number_range_narrows_the_grid_and_passes_over_words(pool: sqlx::PgPool) {
+    let fields = PgCustomFields(pool.clone());
+    fields
+        .create(library(), &field("bore_mm", "Bore", "number", &[], true))
+        .await
+        .expect("defines");
+    let bushing = part(&pool, "bushing-d8-lp-3008-00", 0x41).await;
+    let flange = part(&pool, "flange-d22-lp-3022-00", 0x42).await;
+    let sleeve = part(&pool, "sleeve-lp-3030-00", 0x43).await;
+    for (part, bore) in [(bushing, 8), (flange, 22)] {
+        assert_eq!(
+            set(&fields, part, "bore_mm", Some(json!(bore))).await,
+            ValueSet::Set
+        );
+    }
+    // Words under the key, as a manifest written elsewhere could leave them: a cast would fail the query.
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{custom}', '{\"bore_mm\": \"about 12\"}') WHERE id = $1",
+    )
+    .bind(sleeve.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("words");
+
+    let parts = PgParts(pool.clone());
+    let ids = |rows: Vec<lapidary_db::PartRow>| {
+        rows.into_iter()
+            .map(|row| row.summary.id)
+            .collect::<Vec<_>>()
+    };
+    let grid = |range: &'static str| GridQuery {
+        field_range: Some(range),
+        ..GridQuery::new(library(), 50)
+    };
+    let within = grid(r#"$."bore_mm" ? (@ >= 8 && @ <= 20)"#);
+    assert_eq!(
+        ids(parts.page(&within, Sort::Newest).await.expect("pages")),
+        [bushing]
+    );
+    assert_eq!(
+        ids(parts.page(&within, Sort::Volume).await.expect("sorts")),
+        [bushing]
+    );
+    assert_eq!(
+        ids(parts.search(&within, "lp").await.expect("searches")),
+        [bushing]
+    );
+    let above = grid(r#"$."bore_mm" ? (@ >= 10)"#);
+    assert_eq!(
+        ids(parts.page(&above, Sort::Newest).await.expect("pages")),
+        [flange]
+    );
+    let formats = parts
+        .format_facet(
+            library(),
+            None,
+            None,
+            lapidary_db::Shows::Live,
+            None,
+            None,
+            None,
+            Some(r#"$."bore_mm" ? (@ <= 22)"#),
+        )
+        .await
+        .expect("facets");
+    assert_eq!(
+        formats.iter().filter_map(|value| value.count).sum::<u64>(),
+        2
     );
 }

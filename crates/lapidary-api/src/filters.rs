@@ -52,6 +52,13 @@ pub struct FilterSearch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub field_value: Option<String>,
+    /// With `field`, a number field's range in place of `fieldValue`: either bound, or both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub field_min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub field_max: Option<String>,
 }
 
 /// One saved filter.
@@ -167,6 +174,8 @@ pub async fn create(
         library,
         search.field.as_deref(),
         search.field_value.as_deref(),
+        search.field_min.as_deref(),
+        search.field_max.as_deref(),
     )
     .await
     {
@@ -313,12 +322,20 @@ fn tidy(search: FilterSearch) -> Result<FilterSearch, (&'static str, String)> {
         tag: keep(search.tag)?,
         field: keep(search.field)?,
         field_value: keep(search.field_value)?,
+        field_min: keep(search.field_min)?,
+        field_max: keep(search.field_max)?,
     };
-    // A field without its value, or a value without its field, filters nothing.
-    let tidied = if tidied.field.is_none() || tidied.field_value.is_none() {
+    // A field with neither a value nor a bound, or either without its field, filters nothing.
+    let tidied = if tidied.field.is_none()
+        || (tidied.field_value.is_none()
+            && tidied.field_min.is_none()
+            && tidied.field_max.is_none())
+    {
         FilterSearch {
             field: None,
             field_value: None,
+            field_min: None,
+            field_max: None,
             ..tidied
         }
     } else {

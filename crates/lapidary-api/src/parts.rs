@@ -249,6 +249,11 @@ pub struct PageQuery {
     field: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
     field_value: Option<String>,
+    /// With `field`, a number field's range in place of a value: either bound, or both.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_min: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_max: Option<String>,
     /// `volume`, `surface_area`, `longest_side` or `triangles`, largest first. Absent — or
     /// anything else, for the reason `state` gives — is newest first. A search ignores it:
     /// relevance is a search's order.
@@ -293,6 +298,8 @@ pub async fn page(
         tag,
         field,
         field_value,
+        field_min,
+        field_max,
         sort,
     } = match query {
         Ok(Query(query)) => query,
@@ -329,13 +336,19 @@ pub async fn page(
     let tag = tag
         .map(|tag| tag.trim().to_owned())
         .filter(|tag| !tag.is_empty());
-    let field =
-        match crate::fields::filter_of(&app.db, library, field.as_deref(), field_value.as_deref())
-            .await
-        {
-            Ok(field) => field,
-            Err(refusal) => return refusal,
-        };
+    let field = match crate::fields::filter_of(
+        &app.db,
+        library,
+        field.as_deref(),
+        field_value.as_deref(),
+        field_min.as_deref(),
+        field_max.as_deref(),
+    )
+    .await
+    {
+        Ok(field) => field,
+        Err(refusal) => return refusal,
+    };
     let grid = GridQuery {
         library,
         folder: folder_id,
@@ -345,7 +358,8 @@ pub async fn page(
         format: format.as_deref(),
         material: material.as_deref(),
         tag: tag.as_deref(),
-        field: field.as_deref(),
+        field: field.exact.as_deref(),
+        field_range: field.range.as_deref(),
     };
     let sort = sort
         .as_deref()
@@ -414,6 +428,11 @@ pub struct FacetQuery {
     field: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
     field_value: Option<String>,
+    /// With `field`, a number field's range in place of a value: either bound, or both.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_min: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_max: Option<String>,
 }
 
 /// `GET /api/libraries/{id}/facets` — the formats, materials and tags among the parts `page`
@@ -435,17 +454,25 @@ pub async fn facets(
         tag,
         field,
         field_value,
+        field_min,
+        field_max,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
     };
-    let field =
-        match crate::fields::filter_of(&app.db, library, field.as_deref(), field_value.as_deref())
-            .await
-        {
-            Ok(field) => field,
-            Err(refusal) => return refusal,
-        };
+    let field = match crate::fields::filter_of(
+        &app.db,
+        library,
+        field.as_deref(),
+        field_value.as_deref(),
+        field_min.as_deref(),
+        field_max.as_deref(),
+    )
+    .await
+    {
+        Ok(field) => field,
+        Err(refusal) => return refusal,
+    };
     let shows = if state.as_deref() == Some("removed") {
         Shows::Removed
     } else {
@@ -479,7 +506,8 @@ pub async fn facets(
             shows,
             material.as_deref(),
             tag.as_deref(),
-            field.as_deref(),
+            field.exact.as_deref(),
+            field.range.as_deref(),
         )
         .await
     {
@@ -494,7 +522,8 @@ pub async fn facets(
             shows,
             format.as_deref(),
             tag.as_deref(),
-            field.as_deref(),
+            field.exact.as_deref(),
+            field.range.as_deref(),
         )
         .await
     {
@@ -509,7 +538,8 @@ pub async fn facets(
             shows,
             format.as_deref(),
             material.as_deref(),
-            field.as_deref(),
+            field.exact.as_deref(),
+            field.range.as_deref(),
         )
         .await
     {
