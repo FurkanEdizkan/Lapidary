@@ -4059,3 +4059,38 @@ async fn a_file_meeting_a_purged_parts_bytes_takes_a_longer_name_rather_than_fai
         "the purged part's bytes are left for the sweep"
     );
 }
+
+/// A new part's first `metadata.json` is the manifest its rows give, written as the revision and custom-value
+/// writers write theirs: through `PgRevisions::write_manifest`, while the part's row is held.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_new_parts_first_metadata_json_is_the_manifest_its_rows_give(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let part = lapidary_core::PartId::from_uuid(
+        sqlx::query_scalar("SELECT id FROM part")
+            .fetch_one(&pool)
+            .await
+            .expect("the part"),
+    );
+    let rows = lapidary_db::PgRevisions(pool.clone())
+        .manifest(part)
+        .await
+        .expect("reads")
+        .expect("the part");
+    let written = manifest_in(
+        &blob_root
+            .path()
+            .join("libraries/default/bracket-lp-1042-03"),
+    );
+    assert_eq!(
+        serde_json::to_value(&written).expect("json"),
+        serde_json::to_value(&rows).expect("json")
+    );
+}
