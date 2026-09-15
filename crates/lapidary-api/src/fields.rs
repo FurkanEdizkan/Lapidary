@@ -241,10 +241,15 @@ pub async fn set_value(
     };
     match fields.set_value(part, &field, value.as_ref()).await {
         Ok(ValueSet::Set) => {
-            // `metadata.json` mirrors the rows, and the worker is what writes into a model's directory.
+            // `metadata.json` mirrors the rows, and the worker is what writes into a model's directory. A
+            // rewrite still waiting reads this value when it runs, so no second one is queued; one already
+            // running may have read the rows before it, so that one does not count.
             // Warn-only: the value is kept, and the file catches up on the part's next rewrite.
-            let describe = [JobPayload::DescribePart { part }];
-            if let Err(err) = PgJobs(state.db).enqueue(library, &describe).await {
+            let describe = JobPayload::DescribePart { part };
+            if let Err(err) = PgJobs(state.db)
+                .enqueue_if_absent(library, &describe, false)
+                .await
+            {
                 tracing::warn!(
                     error = %err,
                     %part,
