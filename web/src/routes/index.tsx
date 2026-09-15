@@ -3490,6 +3490,9 @@ function Facets({
     queryFn: () => fetchFacets(library, folderId, q, format, material, tag, field, fieldValue, fieldMin, fieldMax),
   })
   if (facets.isError) {
+    // A field filter the server refuses fails the facets with the grid, and the grid says why and offers the way
+    // out, where "reload to try again" would not help.
+    if (field !== undefined && facets.error instanceof RefusedError) return null
     return (
       <p role="alert" className="mb-6 text-xs text-[var(--color-muted)]">
         {strings.facets.failed}

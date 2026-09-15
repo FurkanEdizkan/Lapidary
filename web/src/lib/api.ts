@@ -172,7 +172,7 @@ export async function fetchFacets(
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
   if (!response.ok) {
-    throw new Error(`facets returned ${response.status}`)
+    throw new RefusedError(`facets returned ${response.status}`, await refusalReason(response))
   }
   return (await response.json()) as Facets
 }

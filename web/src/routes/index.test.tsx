@@ -706,22 +706,25 @@ test("a grid opened on a deleted category says so and offers the same filters wi
  * "check that the api service is running" would be untrue, and offers the same filters without the field.
  */
 test("a grid opened on a field filter the library no longer offers says so and offers the same filters without it", async () => {
-  stubFetch({
-    parts: async () => ({
-      ok: false,
-      status: 400,
-      json: async () => ({
-        reason: "notAFilter",
-        message: "`supplier` is not a field this library offers as a filter.",
-      }),
+  const refused = async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({
+      reason: "notAFilter",
+      message: "`supplier` is not a field this library offers as a filter.",
     }),
-    folders: ok([]),
   });
+  // The facets route refuses the same filter, and the rail stays quiet rather than saying to reload.
+  const facets = vi.fn(refused);
+  stubFetch({ parts: refused, facets, folders: ok([]) });
   const onSelectField = vi.fn();
   renderIndex({ field: "supplier", fieldValue: "Misumi", format: "stl", onSelectField });
 
   expect(await screen.findByText(strings.fieldGone.title)).toBeDefined();
   expect(screen.queryByText(strings.parts.failed)).toBeNull();
+  await waitFor(() => expect(facets).toHaveBeenCalled());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.queryByText(strings.facets.failed)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: strings.fieldGone.widen }));
   expect(onSelectField).toHaveBeenCalledWith(null, null);
 });
