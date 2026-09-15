@@ -1578,6 +1578,13 @@ export const strings = {
     /** Beside a cut through a mesh nobody measured: it might be open, so nothing is filled. */
     unknown: 'Whether this mesh is closed was not measured, so the cut shows no filled face.',
   },
+  /** Drawing an assembly's parts apart, under the section controls. */
+  explode: {
+    label: 'Explode',
+    /** In place of the measuring line while the parts are apart. */
+    measuringOff:
+      'Measuring is off while the parts are apart: a distance between moved parts is not one on the assembly. Slide back to measure.',
+  },
   quickLook: {
     /**
      * The card opens a panel rather than navigating, because scanning a library means

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { expect, test, vi } from 'vitest'
-import { MeasureBar, SectionBar } from './Measure'
+import { ExplodeBar, MeasureBar, SectionBar } from './Measure'
 import { strings } from '../lib/strings'
 
 test('a measured value carries ≈ exactly when it is approximate', () => {
@@ -57,3 +57,21 @@ test('a cut says it shows no filled face on a mesh measured open, or never measu
   expect(container.textContent).not.toContain(strings.section.open)
 })
 
+/** A distance between moved parts would describe no shape the assembly has, so the tools wait until it is back together. */
+test('measuring is off while the parts are apart, and the bar says why', () => {
+  const onTool = vi.fn()
+  render(<MeasureBar tool={null} onTool={onTool} reading={null} note={null} off={strings.explode.measuringOff} />)
+  expect(screen.getByText(strings.explode.measuringOff)).toBeTruthy()
+  const toolbar = screen.getByRole('toolbar', { name: strings.measure.label })
+  const diameter = within(toolbar).getByRole('button', { name: strings.measure.tools.diameter }) as HTMLButtonElement
+  expect(diameter.disabled).toBe(true)
+  fireEvent.click(diameter)
+  expect(onTool).not.toHaveBeenCalled()
+})
+
+test('the explode slider hands back how far apart the parts are drawn', () => {
+  const onAmount = vi.fn()
+  render(<ExplodeBar amount={0} onAmount={onAmount} />)
+  fireEvent.change(screen.getByLabelText(strings.explode.label), { target: { value: '500' } })
+  expect(onAmount).toHaveBeenLastCalledWith(0.5)
+})

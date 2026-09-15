@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { AXES, VIEW_DIR, capPlacement, frameBox, hasWebGL, kept, sectionPlane, visibleRanges } from './viewer-math'
+import { AXES, VIEW_DIR, capPlacement, explodeOffsets, frameBox, hasWebGL, kept, partCentres, sectionPlane, visibleRanges, type Vec3 } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -70,3 +70,26 @@ test('a cap lies on the cut, over the whole box, whichever side is kept', () => 
   expect(capPlacement(sectionPlane('x', 0.25, false, min, max), min, max).position).toEqual([-20, 0, 8])
 })
 
+test('a part’s centre is the middle of the box around the corners its own triangles use', () => {
+  // A triangle across x 0 to 2, then one across x 10 to 14 and y 0 to 4, at z 5.
+  const positions = [0, 0, 0, 2, 0, 0, 0, 2, 0, 10, 0, 5, 14, 0, 5, 10, 4, 5]
+  expect(partCentres(positions, [0, 1, 2, 3, 4, 5], [1, 1])).toEqual([
+    [1, 1, 0],
+    [12, 2, 5],
+  ])
+})
+
+test('drawn apart, each part moves out from the centre by as far again as it is, and not at all at none', () => {
+  const centres: Vec3[] = [
+    [10, 0, 0],
+    [0, 0, 0],
+    [-5, 5, 20],
+  ]
+  expect(explodeOffsets(centres, [0, 0, 0], 0).every((offset) => offset.every((v) => v === 0))).toBe(true)
+  expect(explodeOffsets(centres, [0, 0, 0], 1)).toEqual([
+    [10, 0, 0],
+    [0, 0, 0],
+    [-5, 5, 20],
+  ])
+  expect(explodeOffsets(centres, [0, 0, 10], 0.5)[2]).toEqual([-2.5, 2.5, 5])
+})

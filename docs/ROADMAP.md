@@ -1709,6 +1709,36 @@ checked against the code first. Each fix has a test that a mutation turned red, 
 - **Seen, not changed:** a label is drawn over the part whether or not its face is turned towards the viewer, as
   a measure mark is. So "Datum A", at the base face's origin, shows through the cylinder.
 
+**An assembly drawn apart** (`f128516`).
+- **A slider,** "Explode", under the section controls, offered only for a rung that counts its parts
+  (`extras.parts`). At full, each placed part moves straight out from the assembly's centre, by as far again as
+  it already is.
+- **How:** a mesh per placed part that shares the rung's buffers and draws only its own run of the index, so
+  nothing is copied. The pieces are built on a rung's first explode and dropped with the rung.
+- **While the parts are apart:**
+  - hidden parts stay hidden;
+  - measuring is off, and the bar says why: a distance between moved parts is not one on the assembly;
+  - a section's cap is not drawn, since it fills the assembly's section and not where the parts are. Decided
+    without the owner.
+- **Tests:** a part's centre from its own triangles; offsets at none, half and full; the tools off, with their
+  reason, while apart; and the slider's scale.
+- **Mutation-checked, all 4 caught:** every centre at the origin, the amount ignored, the tools left on while
+  apart, and the slider's scale.
+- **Checked in Chrome** on the native stack with the 200-part fixture assembly (SwiftShader, no page errors).
+  Pixels not in the view's background, of 122,500:
+
+| Slider | Drawn pixels | Measuring |
+|---|---|---|
+| 0, assembled | 34,456 | on |
+| 0.5 | 46,135 | off, with its note |
+| 1 | 47,806 | off, with its note |
+| Back to 0 | 34,456 | on |
+
+  - Put back, the view draws exactly as many pixels as assembled.
+  - The screenshots show the brackets, screws, dowels, V-blocks, pins and feet each moved out along its own line.
+- **Seen, not changed:** the camera keeps the assembled framing, so at full some parts leave the view until it is
+  zoomed out.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
