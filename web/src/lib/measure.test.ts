@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { measure, nearestCorner, placeEntities, snap, type Pick } from './measure'
+import { measure, nearestCorner, placeEntities, snap, withoutParts, type Pick } from './measure'
 import type { AssemblyNode, AssemblyTree, Entity } from './types'
 import type { Vec3 } from './viewer-math'
 
@@ -199,6 +199,39 @@ test('a click on a cone reads its included angle, whatever was clicked before it
   const side = facet(outward, onSink(0.2, 1), onSink(0.4, 1), onSink(0.3, 2))
   const top = facet([0, 0, 1], [0, 0, 30], [1, 0, 30], [0, 1, 30])
   expect(measure('angle', [top, side], [SINK, ...CYLINDER])).toEqual({ value: 90, approximate: false })
+})
+
+/** A ⌀10 mm knob on a neck, meeting it along a ⌀6 mm rim 4 mm below the knob's centre. Every corner below is exact. */
+const KNOB: Entity = { type: 'sphere', prototype: '0:1:1:30', face: 1, radius: 5, center: [0, 0, 0] }
+const NECK: Entity = { type: 'circle', prototype: '0:1:1:30', edge: 1, radius: 3, center: [0, 0, -4], normal: [0, 0, 1] }
+
+test('a triangle on a ball along its rim reads the ball, and a flat face beside the rim reads the rim', () => {
+  // Two corners on the rim and one on the ball above it, so on both exactly: the ball is what was clicked.
+  const middle: Vec3 = [7 / 3, 1, -11 / 3]
+  const onBoth = facet(scale3(middle, 1 / Math.hypot(...middle)), [3, 0, -4], [0, 3, -4], [4, 0, -3])
+  expect(measure('diameter', [onBoth], [KNOB, NECK])).toEqual({ value: 10, approximate: false })
+  // A flat shoulder around the rim is no round face, so there the rim reads.
+  const shoulder = facet([0, 0, -1], [3, 0, -4], [0, 3, -4], [4, 4, -4])
+  expect(measure('diameter', [shoulder], [KNOB, NECK])).toEqual({ value: 6, approximate: false })
+})
+
+test('an assembly without its hidden parts places nothing of theirs', () => {
+  const plate: AssemblyTree = {
+    roots: [
+      node('fixture-plate-assembly-lp-9000-00', '0:1:1:10', IDENTITY, [
+        node('stop-pin-lp-9004-00 (1)', '0:1:1:12', translate(40, 0, 0)),
+        node('stop-pin-lp-9004-00 (2)', '0:1:1:12', translate(80, 0, 0)),
+      ]),
+    ],
+    parts: 2,
+    prototypes: 2,
+  }
+  const second = withoutParts(plate, new Set([0]))
+  expect(second.parts).toBe(1)
+  const placed = placeEntities(PIN, second)
+  expect(placed).toHaveLength(PIN.length)
+  expectNear((placed[0] as { origin: Vec3 }).origin, [80, 0, 0])
+  expect(placeEntities(PIN, withoutParts(plate, new Set()))).toHaveLength(2 * PIN.length)
 })
 
 test('a triangle off a curved surface does not snap to it', () => {

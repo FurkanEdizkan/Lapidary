@@ -1087,8 +1087,9 @@ function Specified({
       .join(', ')
   const annotations = annotationsOf(pmi.data)
   // Which annotations the view can place: those on a face measurement reads as an entity. Asked of the
-  // entities unplaced, since which faces exist does not depend on where they were drawn.
-  const { undrawn } = labelsFor(annotations, entities.data ?? [])
+  // entities unplaced, since which faces exist does not depend on where they were drawn. Nothing is said
+  // until they arrive, and faces that could not be read are said once below rather than blamed on each.
+  const { undrawn } = entities.data === undefined ? { undrawn: new Set<number>() } : labelsFor(annotations, entities.data)
   // A view to draw in: a rung, WebGL, and entities to say where each face is.
   const drawable = part.tessellationL0 !== null && part.entities !== null && hasWebGL()
   const rows = annotations.map((annotation, index) => ({
@@ -1107,6 +1108,11 @@ function Specified({
           </button>
         ) : null}
       </p>
+      {annotated && drawable && entities.isError ? (
+        <p role="alert" className="mb-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {strings.pmi.facesUnread}
+        </p>
+      ) : null}
       <ul role="list" className="space-y-0.5 text-sm">
         {rows.map((row, index) => (
           <li key={index}>

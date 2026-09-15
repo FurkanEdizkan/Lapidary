@@ -70,6 +70,24 @@ export function placeEntities(entities: readonly Entity[], tree: AssemblyTree | 
 }
 
 /**
+ * `tree` without the placed parts `hidden` names by their depth-first place among its leaves, the order the view
+ * counts triangles in, so what is placed from it is only what the view still draws.
+ */
+export function withoutParts(tree: AssemblyTree, hidden: ReadonlySet<number>): AssemblyTree {
+  let leaf = 0
+  let removed = 0
+  const keep = (nodes: readonly AssemblyNode[]): AssemblyNode[] =>
+    nodes.flatMap((node) => {
+      if (node.children.length > 0) return [{ ...node, children: keep(node.children) }]
+      if (!hidden.has(leaf++)) return [node]
+      removed++
+      return []
+    })
+  const roots = keep(tree.roots)
+  return { ...tree, roots, parts: tree.parts - removed }
+}
+
+/**
  * The entity of one of `kinds` a picked triangle lies on, or `null` when it lies on none.
  *
  * On a plane or a cylinder, every corner is on the surface and the triangle faces the way the
@@ -106,7 +124,9 @@ export function measure(tool: Tool, picks: readonly Pick[], entities: readonly E
   if (a === undefined) return null
   switch (tool) {
     case 'diameter': {
-      const round = snap(a, entities, ['cylinder', 'circle', 'sphere', 'torus', 'cone'])
+      // A round face before a ring: a triangle along a face's rim lies on the rim's circle too, and the face is what
+      // was clicked. A ring reads only from a triangle on no round face, such as the flat face around a hole.
+      const round = snap(a, entities, ['cylinder', 'sphere', 'torus', 'cone']) ?? snap(a, entities, ['circle'])
       if (round?.type === 'cylinder' || round?.type === 'circle' || round?.type === 'sphere') return exact(2 * round.radius)
       // A torus's round face is its tube: the diameter a fillet or an O-ring groove is drawn with.
       if (round?.type === 'torus') return exact(2 * round.minor_radius)
