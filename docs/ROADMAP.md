@@ -492,7 +492,7 @@ example STLs, and headless Chrome.
 - **Goal:** `docs/superpowers/plans/2026-09-15-phase-4-slice-2-goal.md`.
 - Merged locally, not pushed. This record is the goal's ledger, and grows as each stage merges.
 
-**Overlay diff** (`88dd8cd`, `de6ee47`).
+**Overlay diff** (`88dd8cd`, `de6ee47`; merge `bbe33da`).
 - **What it draws.** Compare's From revision can be drawn in the 3D view as a translucent amber ghost:
   - drawn through the part;
   - cut by the same section;
@@ -524,6 +524,49 @@ example STLs, and headless Chrome.
   - The toggle, the coarse line and the no-mesh line: mutation-checked. A Compare that never hands the
     ghost up fails the test.
 - **Not shot:** the ghost with a section cut on, and an assembly with hidden parts.
+
+**`lapidary://` and launching a tool** (`84712df`).
+- **Commands:** `lapidary register`, `unregister` and `open`.
+  - `register` writes an XDG handler whose `Exec` carries the server and workspace, so a link chooses
+    a part and nothing else.
+  - `open` accepts only `lapidary://open?part=<uuid>`. It reuses this computer's checkout of the part,
+    or takes one, and hands the file to `xdg-open`.
+  - `unregister` removes only what `register` wrote.
+- **The part page** links to it in a controlled library, with DATA §6.3's line on which tools save
+  back.
+- **The `Target` trait is not built.** Download and open both hand out `variant=original`, and
+  neither negotiates a format, so the trait would have one caller. It arrives with the first target
+  that needs a format the source is not in, which needs OCCT exports.
+- **Found by the check:** quoted `Exec` arguments broke under `xdg-open`'s own launcher.
+  - The quoting followed the Desktop Entry spec, but that launcher splits on spaces and keeps the
+    quotes, so `env` was handed `"LAPIDARY_SERVER=…"` literally.
+  - Arguments are now written unquoted, and `register` refuses a server, workspace or install path that
+    would need quoting.
+
+**Checked** on the native stack.
+- **Setup:**
+  - throwaway `HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME` under `target/`;
+  - a stand-in editor registered for `model/stl` that saves the file 5% wider in X;
+  - `lapidary agent` running.
+
+| Step | Result |
+|---|---|
+| `lapidary register` | The handler was written, and `x-scheme-handler/lapidary=lapidary-url.desktop` set |
+| Five hostile links: `&server=`, `part=../../.ssh/id_ed25519`, a value that is not an id, `lapidary://download?`, a fragment | Each refused, naming what was wrong. No folder was made, and the part still had 3 revisions |
+| A part `jonas@laptop` has checked out | Refused, with the server's own message naming him and when |
+| `xdg-open 'lapidary://open?part=<flange>'` | The checkout folder appeared and the stand-in editor ran. Revision 4, origin `agent`, parent 3; bbox X 134.84 → 141.59 mm, 3.8 s after the click |
+| The same link again | The same folder was reused, with no second checkout |
+| `lapidary unregister` | The handler and its default were removed; the stand-in editor's file and default were untouched |
+
+- **Tests, mutation-checked** (every mutation was caught):
+  - link parsing;
+  - handler arguments;
+  - removing the line from `mimeapps.list`;
+  - reusing a checkout;
+  - the part page's link, shown in controlled libraries only.
+- **Not checked:**
+  - a real desktop session's launcher (GNOME's `gio`, KDE);
+  - a browser's own prompt before it hands a link over.
 
 ---
 

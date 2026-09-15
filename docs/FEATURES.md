@@ -204,7 +204,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
     - not yet: mass and centre of mass (nothing stores a density), and face and edge counts
       (STEP entities, checked with OCCT).
   - Locks: one per part, free-text holder, no auth; a forced release is recorded.
-  - Not yet: the visual overlay diff.
+  - Overlay diff (Phase 4 slice 2): the From revision is drawn as an amber ghost through the part,
+    its L1 or else its L0, and never picked.
 -->
 
 
@@ -229,7 +230,11 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
     before believing. A touch that changes no bytes, and files beside it, are not saves.
   - Only the file handed out comes back: a tool that saves another name or format is not picked
     up.
-  - Not yet: macOS and Windows watchers, the `lapidary://` scheme, and launching a tool.
+  - Phase 4 slice 2 adds `lapidary register`, `unregister` and `open`.
+    - A `lapidary://open?part=<uuid>` link from a controlled library's part page checks the part
+      out, or reuses this computer's checkout, and opens the file with `xdg-open`.
+    - The `Target` trait is not built yet: nothing negotiates a format.
+  - Not yet: macOS and Windows watchers.
 -->
 
 | Time-limited supplier share links | 9 |
