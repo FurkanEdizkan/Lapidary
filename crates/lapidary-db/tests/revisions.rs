@@ -3,7 +3,8 @@
 
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId, RevisionOrigin};
 use lapidary_db::{
-    DbError, IngestRequest, PgBlobs, PgIngest, PgParts, PgRevisions, RevisionRequest, StoredBlobRow,
+    DbError, GridQuery, IngestRequest, PartRepository, PgBlobs, PgIngest, PgParts, PgRevisions,
+    RevisionRequest, Sort, StoredBlobRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -134,6 +135,119 @@ async fn a_revisions_faces_and_edges_come_back_with_its_history(pool: sqlx::PgPo
     assert_eq!(
         (history[0].face_count, history[0].edge_count),
         (Some(38), Some(96))
+    );
+}
+
+/// Every part's name in volume order, a page of one at a time.
+async fn by_volume(parts: &PgParts) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut after = None;
+    loop {
+        let page = parts
+            .page(
+                &GridQuery {
+                    after,
+                    ..GridQuery::new(library(), 1)
+                },
+                Sort::Volume,
+            )
+            .await
+            .expect("sorted page");
+        let Some(last) = page.last() else {
+            return names;
+        };
+        after = Some(last.summary.id);
+        names.extend(page.iter().map(|row| row.summary.name.clone()));
+    }
+}
+
+/// The grid's order reads the part row's copy of its latest revision's figures (`0035`): a revision that
+/// changes them moves its part, the copy holds the new revision's, and paging still lists each part once.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_revision_moves_its_part_in_the_grids_order(pool: sqlx::PgPool) {
+    let vee = seed(&pool).await;
+    for (name, path, blob, volume_mm3) in [
+        (
+            "Linear rail, LP-1101-02",
+            "linear-rail-lp-1101-02.stl",
+            0x41,
+            90_000.0,
+        ),
+        ("Spacer, LP-1050-01", "spacer-lp-1050-01.stl", 0x42, 500.0),
+    ] {
+        PgIngest(pool.clone())
+            .record(IngestRequest {
+                origin: RevisionOrigin::Ingest,
+                library: library(),
+                name,
+                source_path: path,
+                folder: None,
+                storage_path: None,
+                blob: &blob_row(blob),
+                measurements: &MeshMeasurements {
+                    volume_mm3: Some(volume_mm3),
+                    ..measurements()
+                },
+                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+                thumbnail_webp: None,
+                kernel_version: "mesh stl-1+cpu-1",
+                format: "stl",
+                tessellations: &[],
+            })
+            .await
+            .expect("seeds the part");
+    }
+    let parts = PgParts(pool.clone());
+    assert_eq!(
+        by_volume(&parts).await,
+        [
+            "Linear rail, LP-1101-02",
+            "Vee block, LP-3072-02",
+            "Spacer, LP-1050-01"
+        ]
+    );
+
+    let revisions = PgRevisions(pool.clone());
+    let first = revisions
+        .current(library(), PATH)
+        .await
+        .expect("reads")
+        .expect("the seeded part");
+    let widened = MeshMeasurements {
+        bbox_mm: [140.0, 42.0, 18.5],
+        triangle_count: 61_204,
+        surface_area_mm2: 14_220.5,
+        volume_mm3: Some(120_000.0),
+        is_watertight: true,
+    };
+    revisions
+        .record_revision(
+            request(vee, first.revision, &blob_row(0x32), &widened),
+            |_, _| Ok(()),
+        )
+        .await
+        .expect("records the widened revision");
+
+    assert_eq!(
+        by_volume(&parts).await,
+        [
+            "Vee block, LP-3072-02",
+            "Linear rail, LP-1101-02",
+            "Spacer, LP-1050-01"
+        ]
+    );
+    let copy: (Option<f64>, Option<f64>, Option<f64>, Option<i32>) = sqlx::query_as(
+        "SELECT latest_volume, latest_surface_area, latest_longest_side, latest_triangle_count \
+         FROM part WHERE id = $1",
+    )
+    .bind(vee.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("reads the part row");
+    assert_eq!(
+        copy,
+        (Some(120_000.0), Some(14_220.5), Some(140.0), Some(61_204)),
+        "the widened revision's figures, the longest side its largest extent"
     );
 }
 
