@@ -2909,6 +2909,10 @@ async fn a_cad_read_an_older_kernel_wrote_is_read_again_with_its_pmi(pool: PgPoo
         .execute(&pool)
         .await
         .expect("drops the PMI");
+    sqlx::query("UPDATE revision SET face_count = NULL, edge_count = NULL")
+        .execute(&pool)
+        .await
+        .expect("and the counts, which that bridge did not read");
     sqlx::query(
         "UPDATE derivative SET kernel_version = 'occt bridge-5' WHERE kind IN ('structure', 'entities')",
     )
@@ -2961,6 +2965,16 @@ async fn a_cad_read_an_older_kernel_wrote_is_read_again_with_its_pmi(pool: PgPoo
     )
     .expect("the PMI parses");
     assert_eq!(pmi, fake_pmi());
+    let counts: (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT face_count, edge_count FROM revision")
+            .fetch_one(&pool)
+            .await
+            .expect("the revision");
+    assert_eq!(
+        counts,
+        (Some(38), Some(96)),
+        "the faces and edges, read again"
+    );
 
     handler.enqueue_stale_derivatives().await;
     assert!(

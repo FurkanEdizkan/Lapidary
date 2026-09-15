@@ -110,7 +110,7 @@ namespace {
 // Bumped whenever the bridge changes what it writes. Together with the OCCT version it is the
 // kernel version the worker fleet pins: two builds that tessellate differently must not
 // produce derivatives that are cached as the same.
-constexpr int BRIDGE_VERSION = 6;
+constexpr int BRIDGE_VERSION = 7;
 
 const double PI = std::acos(-1.0);
 

@@ -253,7 +253,7 @@ impl WorkerHandler {
 
     /// The faces and edges a CAD kernel counted, onto the revision just committed. Warn-only, as the header
     /// is: the revision is committed and measured, and a count it lacks leaves its diff without one.
-    async fn record_topology(
+    pub(crate) async fn record_topology(
         &self,
         revision: RevisionId,
         topology: Option<Topology>,
