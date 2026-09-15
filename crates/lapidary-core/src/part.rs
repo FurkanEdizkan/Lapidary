@@ -228,6 +228,19 @@ pub fn is_model_file(name: &str) -> bool {
         })
 }
 
+/// `docs/DATA.md` §6.2's ignore list, whole: hidden files and folders (`.git`, `.DS_Store`), an office lock
+/// file, and the backups, temporaries, locks and autosaves editors leave beside a model. A scan and
+/// `lapidary watch` both skip what it names, so a folder gives a library the same files whichever reads it.
+pub fn is_ignored(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    name.starts_with('.')
+        || name.starts_with("~$")
+        || lower == "thumbs.db"
+        || [".bak", ".tmp", ".lck", ".autosave"]
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::path_escapes;
@@ -278,6 +291,35 @@ mod format_tests {
             "README",
         ] {
             assert!(!is_model_file(name), "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ignore_tests {
+    use super::is_ignored;
+
+    #[test]
+    fn the_ignore_list_is_data_6_2s_whole() {
+        for name in [
+            ".DS_Store",
+            "Thumbs.db",
+            "~$flange-dn40-lp-3310-02.stl",
+            "flange-dn40-lp-3310-02.stl.bak",
+            "fixture-plate.3dm.bak",
+            "spur-gear-m2-20t.3mf.tmp",
+            "vee-block.stl.lck",
+            "bracket.FCStd.autosave",
+            ".git",
+        ] {
+            assert!(is_ignored(name), "{name} is ignored");
+        }
+        for name in [
+            "flange-dn40-lp-3310-02.stl",
+            "spur-gear-m2-20t.3mf",
+            "fixture-plate.STEP",
+        ] {
+            assert!(!is_ignored(name), "{name} is read");
         }
     }
 }

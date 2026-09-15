@@ -1767,9 +1767,10 @@ async fn a_scan_does_not_follow_a_symlinked_directory(pool: PgPool) {
 }
 
 /// A `.git` inside someone's parts folder is not part of their library, and walking one on
-/// a large corpus is pure waste.
+/// a large corpus is pure waste. Nor is the rest of what `docs/DATA.md` §6.2's ignore list names, which
+/// `lapidary watch` skips too.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_scan_skips_dot_entries(pool: PgPool) {
+async fn a_scan_skips_what_the_ignore_list_names(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
 
@@ -1786,11 +1787,18 @@ async fn a_scan_skips_dot_entries(pool: PgPool) {
         ".hidden-draft.stl",
         b"An export the operator did not mean to publish.\n",
     );
+    // An office lock file beside a model, and an editor's backup folder holding one.
+    stage(ingest_dir.path(), &format!("~${BRACKET}"), BRACKET_FIXTURE);
+    stage(
+        ingest_dir.path(),
+        &format!("drafts.bak/{BRACKET}"),
+        BRACKET_FIXTURE,
+    );
 
     assert_eq!(
         scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
         vec![BRACKET.to_owned()],
-        "dot-directories and dot-files are both skipped, at any depth"
+        "dot-directories, dot-files and the rest of the ignore list are skipped, at any depth"
     );
 }
 

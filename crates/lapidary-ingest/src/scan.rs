@@ -220,10 +220,11 @@ fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
                 }
             };
 
-            // A `.git`, `.Trash` or `.DS_Store` inside someone's parts folder is not part
-            // of their library, and walking a `.git` on a large corpus is pure waste.
-            // Skipped as silently as any other non-candidate.
-            if entry.file_name().to_string_lossy().starts_with('.') {
+            // `docs/DATA.md` §6.2's ignore list, the one `lapidary watch` skips: a `.git`, `.Trash` or
+            // `.DS_Store` inside someone's parts folder, an office lock file, an editor's backup. None is
+            // part of their library, and walking a `.git` on a large corpus is pure waste. Skipped as
+            // silently as any other non-candidate.
+            if lapidary_core::is_ignored(&entry.file_name().to_string_lossy()) {
                 continue;
             }
 

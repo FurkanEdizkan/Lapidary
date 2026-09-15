@@ -28,18 +28,6 @@ pub const RETRY: Duration = Duration::from_secs(5 * 60);
 /// in as many uploads as keep each under this; a file larger than it goes up by itself.
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// `docs/DATA.md` §6.2's ignore list, whole: hidden files and folders (`.DS_Store` among them), an
-/// office lock file, and the backups, temporaries, locks and autosaves editors leave beside a model.
-pub fn ignored(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    name.starts_with('.')
-        || name.starts_with("~$")
-        || lower == "thumbs.db"
-        || [".bak", ".tmp", ".lck", ".autosave"]
-            .iter()
-            .any(|suffix| lower.ends_with(suffix))
-}
-
 /// A file's source path in the library: its path under the folder, with `/` between the parts. `None`
 /// for anything not plainly under it.
 pub fn source_path(root: &Path, path: &Path) -> Option<String> {
@@ -190,7 +178,7 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if ignored(name) {
+            if lapidary_core::is_ignored(name) {
                 continue;
             }
             let Ok(kind) = entry.file_type() else {
@@ -427,30 +415,6 @@ mod tests {
             state_name(library, Path::new("/home/jbo/parts/flanges"))
         );
         assert!(flanges.starts_with(&format!("watch-{library}-")) && flanges.ends_with(".json"));
-    }
-
-    #[test]
-    fn the_ignore_list_is_data_6_2s_whole() {
-        for name in [
-            ".DS_Store",
-            "Thumbs.db",
-            "~$flange-dn40-lp-3310-02.stl",
-            "flange-dn40-lp-3310-02.stl.bak",
-            "fixture-plate.3dm.bak",
-            "spur-gear-m2-20t.3mf.tmp",
-            "vee-block.stl.lck",
-            "bracket.FCStd.autosave",
-            ".git",
-        ] {
-            assert!(ignored(name), "{name} is ignored");
-        }
-        for name in [
-            "flange-dn40-lp-3310-02.stl",
-            "spur-gear-m2-20t.3mf",
-            "fixture-plate.STEP",
-        ] {
-            assert!(!ignored(name), "{name} is watched");
-        }
     }
 
     #[test]
