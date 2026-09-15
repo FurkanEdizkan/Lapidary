@@ -45,6 +45,13 @@ pub struct FilterSearch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tag: Option<String>,
+    /// One custom field this library offers as a filter, with `fieldValue` (`docs/DATA.md` §3.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub field_value: Option<String>,
 }
 
 /// One saved filter.
@@ -137,6 +144,19 @@ pub async fn create(
         }
     }
 
+    // A field this library does not offer as a filter, or a value not of its kind, would save a filter
+    // that the grid then refuses.
+    if let Err(refusal) = crate::fields::filter_of(
+        &state.db,
+        library,
+        search.field.as_deref(),
+        search.field_value.as_deref(),
+    )
+    .await
+    {
+        return refusal;
+    }
+
     let stored = match serde_json::to_value(&search) {
         Ok(stored) => stored,
         Err(err) => {
@@ -207,11 +227,23 @@ fn tidy(search: FilterSearch) -> Result<FilterSearch, (&'static str, String)> {
         format: keep(search.format)?,
         material: keep(search.material)?,
         tag: keep(search.tag)?,
+        field: keep(search.field)?,
+        field_value: keep(search.field_value)?,
+    };
+    // A field without its value, or a value without its field, filters nothing.
+    let tidied = if tidied.field.is_none() || tidied.field_value.is_none() {
+        FilterSearch {
+            field: None,
+            field_value: None,
+            ..tidied
+        }
+    } else {
+        tidied
     };
     if tidied == FilterSearch::default() {
         return Err((
             "emptySearch",
-            "There is nothing to save yet. Set a search, a category, a format, a material or a tag on the grid, then save it."
+            "There is nothing to save yet. Set a search, a category, a format, a material, a tag or a field on the grid, then save it."
                 .to_owned(),
         ));
     }

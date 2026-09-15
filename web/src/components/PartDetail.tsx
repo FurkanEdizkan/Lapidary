@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   addPartSource,
   blobUrl,
   downloadUrl,
   fetchDiff,
   fetchEntities,
+  fetchFields,
   fetchLibraries,
   fetchPartImages,
   fetchPartSources,
@@ -14,6 +15,7 @@ import {
   fetchStructure,
   openLink,
   releaseLock,
+  setFieldValue,
   setImageFraming,
   setPartTags,
   uploadPartImage,
@@ -25,6 +27,7 @@ import { hasWebGL } from '../lib/viewer-math'
 import type {
   AssemblyNode,
   BlobHash,
+  CustomField,
   Delta,
   PartDetail as PartDetailData,
   PartId,
@@ -427,6 +430,160 @@ function Tags({ part, recordable }: { part: PartDetailData; recordable: boolean 
   )
 }
 
+/**
+ * The part's own values for its library's custom fields (`docs/DATA.md` §3.5). Edited where tags
+ * are, one value at a time. A value whose field the library has since removed is still the part's,
+ * and is listed read-only under its key.
+ */
+function Fields({ part, recordable }: { part: PartDetailData; recordable: boolean }) {
+  const fields = useQuery({
+    queryKey: ['fields', part.library],
+    queryFn: () => fetchFields(part.library),
+  })
+  // `?? {}` for a server from before custom fields, which sends a part without them.
+  const custom: Record<string, unknown> = part.custom ?? {}
+  if (fields.data === undefined) return null
+  const defined = new Set(fields.data.map((field) => field.key))
+  const orphaned = Object.entries(custom).filter(([key]) => !defined.has(key))
+  const shown = recordable
+    ? fields.data
+    : fields.data.filter((field) => custom[field.key] !== undefined)
+  if (shown.length === 0 && orphaned.length === 0) return null
+  return (
+    <section className="mb-6">
+      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
+        {strings.fields.title}
+      </h3>
+      {shown.length === 0 ? null : (
+        <dl className="grid max-w-sm grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-sm">
+          {shown.map((field) => (
+            <FieldValue
+              key={field.key}
+              part={part}
+              field={field}
+              value={custom[field.key]}
+              recordable={recordable}
+            />
+          ))}
+        </dl>
+      )}
+      {orphaned.length === 0 ? null : (
+        <>
+          <h4 className="mt-3 mb-1 text-xs text-[var(--color-muted)]">{strings.fields.orphaned}</h4>
+          <dl className="grid max-w-sm grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm text-[var(--color-muted)]">
+            {orphaned.map(([key, value]) => (
+              <Fragment key={key}>
+                <dt className="font-mono">{key}</dt>
+                <dd>{String(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </>
+      )}
+    </section>
+  )
+}
+
+/**
+ * One field's value. A number box sends what was typed when it is not a number, so the refusal is the
+ * server's own sentence naming the field rather than a second copy of its rule here.
+ */
+function FieldValue({
+  part,
+  field,
+  value,
+  recordable,
+}: {
+  part: PartDetailData
+  field: CustomField
+  value: unknown
+  recordable: boolean
+}) {
+  const queryClient = useQueryClient()
+  const stored = value === undefined || value === null ? '' : String(value)
+  const [draft, setDraft] = useState(stored)
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const save = useMutation({
+    mutationFn: (next: string | number | null) => setFieldValue(part.id, field.key, next),
+    onMutate: () => setRefusal(null),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setRefusal(result.message)
+        return
+      }
+      void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
+    },
+  })
+  const shown = stored === '' ? strings.fields.unset : stored
+  if (!recordable) {
+    return (
+      <>
+        <dt className="text-[var(--color-muted)]">{field.label}</dt>
+        <dd>{shown}</dd>
+      </>
+    )
+  }
+  const commit = (raw: string) => {
+    const trimmed = raw.trim()
+    if (trimmed === stored) return
+    if (trimmed === '') {
+      save.mutate(null)
+      return
+    }
+    const number = Number(trimmed)
+    save.mutate(field.kind === 'number' && Number.isFinite(number) ? number : trimmed)
+  }
+  const id = `field-${field.key}`
+  const choice = field.kind === 'choice'
+  return (
+    <>
+      <dt>
+        <label htmlFor={id} className="text-[var(--color-muted)]">
+          {field.label}
+        </label>
+      </dt>
+      <dd>
+        {choice ? (
+          <select
+            id={id}
+            value={draft}
+            disabled={save.isPending}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              commit(event.target.value)
+            }}
+            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm"
+          >
+            <option value="">{strings.fields.unset}</option>
+            {field.options.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            id={id}
+            value={draft}
+            disabled={save.isPending}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={() => commit(draft)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commit(draft)
+            }}
+            className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+          />
+        )}
+        {refusal === null ? null : (
+          <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+            {refusal}
+          </p>
+        )}
+      </dd>
+    </>
+  )
+}
+
 /** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
 const loadViewer = () => import('./Viewer')
 const Viewer = lazy(loadViewer)
@@ -618,6 +775,7 @@ export function Detail({
       <Gallery part={part.id} name={part.name} />
 
       <Tags part={part} recordable={recordable} />
+      <Fields part={part} recordable={recordable} />
 
       <Sources part={part.id} recordable={recordable} />
 

@@ -53,6 +53,7 @@ const BRACKET: PartDetail = {
   name: 'angle-bracket-60x60x40-lp-9004-00',
   partNumber: null,
   tags: [],
+  custom: {},
   pmi: null,
   sourcePath: 'cad/angle-bracket-60x60x40-lp-9004-00.igs',
   thumbnail: null,

@@ -289,6 +289,9 @@ pub struct GridQuery<'a> {
     pub material: Option<&'a str>,
     /// One tag, exactly as a person wrote it.
     pub tag: Option<&'a str>,
+    /// One custom field's value, as the JSON object `{"<key>": value}` its `@>` filter matches
+    /// (`docs/DATA.md` §3.5). The API builds it only from an indexed field of this library.
+    pub field: Option<&'a str>,
 }
 
 impl GridQuery<'_> {
@@ -303,6 +306,7 @@ impl GridQuery<'_> {
             format: None,
             material: None,
             tag: None,
+            field: None,
         }
     }
 }
@@ -1378,6 +1382,8 @@ pub struct PartDetailRow {
     pub part_number: Option<String>,
     /// The tags a person gave the part, in the order they gave them.
     pub tags: Vec<String>,
+    /// The part's custom field values as stored, `{}` when it has none (`docs/DATA.md` §3.5).
+    pub custom: serde_json::Value,
     /// The part's identity within its library since slice 6a, and the path a scanned or
     /// dropped folder reported for it.
     pub source_path: String,
@@ -1439,6 +1445,7 @@ struct DetailColumns {
     name: String,
     part_number: Option<String>,
     tags: Vec<String>,
+    custom_json: Option<String>,
     source_path: String,
     rev_label: String,
     thumb_bytes: Option<Vec<u8>>,
@@ -1575,6 +1582,8 @@ impl PgParts {
     /// The source formats among the parts the grid would show for the same library,
     /// category, query and state, per [`facet_values`]: narrowed by the grid's chosen material
     /// and tag, and never by its own chosen format.
+    // One argument per filter the grid can hold, each narrowing the same query.
+    #[allow(clippy::too_many_arguments)]
     pub async fn format_facet(
         &self,
         library: LibraryId,
@@ -1583,6 +1592,7 @@ impl PgParts {
         shows: Shows,
         material: Option<&str>,
         tag: Option<&str>,
+        field: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         // The grid's own predicates, so a count never includes a part the grid would not show:
         // the library, the state, the category subtree, and `search`'s match when there is a
@@ -1608,6 +1618,7 @@ impl PgParts {
                     OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
+               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
              GROUP BY s.format ORDER BY s.format",
         )
         .bind(library.as_uuid())
@@ -1617,6 +1628,7 @@ impl PgParts {
         .bind(query.map(like_pattern))
         .bind(material)
         .bind(tag)
+        .bind(field)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1628,6 +1640,8 @@ impl PgParts {
     /// grid is not showing. `format_facet` keeps the same rule the other way round.
     ///
     /// `count(DISTINCT p.id)`, because a file can name one material for several bodies.
+    // One argument per filter the grid can hold, each narrowing the same query.
+    #[allow(clippy::too_many_arguments)]
     pub async fn material_facet(
         &self,
         library: LibraryId,
@@ -1636,6 +1650,7 @@ impl PgParts {
         shows: Shows,
         format: Option<&str>,
         tag: Option<&str>,
+        field: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
@@ -1653,6 +1668,7 @@ impl PgParts {
                     AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
+               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
              GROUP BY m.material ORDER BY m.material",
         )
         .bind(library.as_uuid())
@@ -1662,6 +1678,7 @@ impl PgParts {
         .bind(query.map(like_pattern))
         .bind(format)
         .bind(tag)
+        .bind(field)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1669,6 +1686,8 @@ impl PgParts {
 
     /// The tags among the same parts, per [`facet_values`]: narrowed by the grid's chosen format
     /// and material, and never by its own chosen tag, for the reason `material_facet` gives.
+    // One argument per filter the grid can hold, each narrowing the same query.
+    #[allow(clippy::too_many_arguments)]
     pub async fn tag_facet(
         &self,
         library: LibraryId,
@@ -1677,6 +1696,7 @@ impl PgParts {
         shows: Shows,
         format: Option<&str>,
         material: Option<&str>,
+        field: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
@@ -1694,6 +1714,7 @@ impl PgParts {
                     AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
+               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
              GROUP BY t.tag ORDER BY t.tag",
         )
         .bind(library.as_uuid())
@@ -1703,6 +1724,7 @@ impl PgParts {
         .bind(query.map(like_pattern))
         .bind(format)
         .bind(material)
+        .bind(field)
         .fetch_all(&self.0)
         .await?;
         Ok(facet_values(rows, EXACT_FACET_ROWS))
@@ -1719,12 +1741,16 @@ impl PgParts {
         metadata: &serde_json::Value,
         materials: &[String],
     ) -> Result<(), DbError> {
-        sqlx::query("UPDATE part SET metadata_json = $2, materials = $3 WHERE id = $1")
-            .bind(part.as_uuid())
-            .bind(metadata)
-            .bind(materials)
-            .execute(&self.0)
-            .await?;
+        // `||`, not `=`: the file's own statement replaces the keys it carries (`cad`) and leaves a
+        // person's `custom` values alone.
+        sqlx::query(
+            "UPDATE part SET metadata_json = metadata_json || $2, materials = $3 WHERE id = $1",
+        )
+        .bind(part.as_uuid())
+        .bind(metadata)
+        .bind(materials)
+        .execute(&self.0)
+        .await?;
         Ok(())
     }
 
@@ -1747,7 +1773,8 @@ impl PgParts {
     pub async fn detail(&self, part: PartId) -> Result<Option<PartDetailRow>, DbError> {
         let row: Option<DetailColumns> = sqlx::query_as(
             "SELECT p.id AS part_id, p.library_id, r.id AS revision_id, p.name, \
-                    p.part_number, p.tags, p.source_path, r.rev_label, \
+                    p.part_number, p.tags, (p.metadata_json->'custom')::text AS custom_json, \
+                    p.source_path, r.rev_label, \
                     d.thumb_bytes, d.kernel_version, \
                     r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
@@ -1806,6 +1833,10 @@ impl PgParts {
             revision: RevisionId::from_uuid(c.revision_id),
             name: c.name,
             part_number: c.part_number,
+            custom: c
+                .custom_json
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_else(|| serde_json::json!({})),
             tags: c.tags,
             source_path: c.source_path,
             rev_label: c.rev_label,
@@ -2921,6 +2952,7 @@ impl PartRepository for PgParts {
             format,
             material,
             tag,
+            field,
         } = *grid;
         // One query: thumbnails travel inline as bytea rather than costing a round trip
         // per card. Keyset, not OFFSET — OFFSET degrades as the library grows.
@@ -2988,6 +3020,7 @@ impl PartRepository for PgParts {
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
                AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
+               AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
@@ -3009,6 +3042,7 @@ impl PartRepository for PgParts {
         .bind(format)
         .bind(material)
         .bind(tag)
+        .bind(field)
         .fetch_all(&self.0)
         .await?;
 
@@ -3033,6 +3067,7 @@ impl PartRepository for PgParts {
             format,
             material,
             tag,
+            field,
         } = *grid;
         // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
@@ -3128,6 +3163,7 @@ impl PartRepository for PgParts {
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
                   AND ($11::text IS NULL OR p.materials @> ARRAY[$11::text]) \
                   AND ($12::text IS NULL OR p.tags @> ARRAY[$12::text]) \
+                  AND ($13::jsonb IS NULL OR p.metadata_json->'custom' @> $13::jsonb) \
                   AND ( p.part_number ILIKE $9 \
                      OR p.name ILIKE $9 \
                      OR p.source_path ILIKE $9 \
@@ -3158,6 +3194,7 @@ impl PartRepository for PgParts {
         .bind(format)
         .bind(material)
         .bind(tag)
+        .bind(field)
         .fetch_all(&self.0)
         .await?;
 
@@ -3211,7 +3248,8 @@ impl PgParts {
                   AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
                        AND f.format = $8 AND f.revision_id = r.id)) \
                   AND ($10::text IS NULL OR p.materials @> ARRAY[$10::text]) \
-                  AND ($11::text IS NULL OR p.tags @> ARRAY[$11::text]) ), \
+                  AND ($11::text IS NULL OR p.tags @> ARRAY[$11::text]) \
+                  AND ($12::jsonb IS NULL OR p.metadata_json->'custom' @> $12::jsonb) ), \
              anchor AS (SELECT value, id FROM keyed WHERE id = $2), \
              top AS ( \
                SELECT id, value FROM keyed \
@@ -3234,6 +3272,7 @@ impl PgParts {
         .bind(sort.as_str())
         .bind(grid.material)
         .bind(grid.tag)
+        .bind(grid.field)
         .fetch_all(&self.0)
         .await?;
 

@@ -7,6 +7,7 @@ mod detail;
 mod download;
 mod error;
 mod fetch;
+mod fields;
 mod filters;
 mod folders;
 mod health;
@@ -254,6 +255,15 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{library}/filters/{filter}",
                     axum::routing::delete(filters::remove),
                 )
+                // Custom fields: a library's own named values on its parts. See `fields.rs`.
+                .route(
+                    "/api/libraries/{id}/fields",
+                    get(fields::list).post(fields::create),
+                )
+                .route(
+                    "/api/libraries/{library}/fields/{key}",
+                    axum::routing::patch(fields::update).delete(fields::remove),
+                )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
                 // crate allowed to hold that rename handle, enforced by `cargo xtask
@@ -278,6 +288,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 // The tags a person gives a part, the whole list in one write.
                 .route("/api/parts/{id}/tags", axum::routing::put(tags::set))
+                // One part's value for one of its library's custom fields. See `fields.rs`.
+                .route(
+                    "/api/parts/{id}/fields/{key}",
+                    axum::routing::put(fields::set_value),
+                )
                 // A part's gallery. The upload body is the file itself, capped at the same
                 // 10 MB `images::MAX_INPUT_BYTES` refuses past — set here as well because a
                 // limit checked after the body is buffered is a limit that has already cost

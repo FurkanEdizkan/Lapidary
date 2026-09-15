@@ -1411,6 +1411,37 @@ export const strings = {
     /** A refusal that arrived without a sentence of its own. */
     refusedWithoutReason: 'Could not save these tags. Reload the part and try again.',
   },
+  fields: {
+    /** A library's own named values on its parts: a supplier, a stock count. */
+    title: 'Fields',
+    menu: 'Fields…',
+    dialogTitle: 'Fields in this library',
+    none: 'No fields yet. Add one to give parts a supplier, a stock count or anything else of your own.',
+    label: 'Label',
+    key: 'Key',
+    keyDetail: 'Lowercase letters, digits and underscores. A key cannot be renamed later.',
+    kind: 'Holds',
+    text: 'Text',
+    number: 'A number',
+    choice: 'One of a list',
+    options: 'Options, one per line',
+    offered: 'Offer as a grid filter',
+    add: 'Add field',
+    save: 'Save',
+    saving: 'Saving…',
+    close: 'Close',
+    remove: (label: string) => `Remove the field ${label}`,
+    removeNote: 'Removing a field keeps the values parts already hold.',
+    /** Values a part holds for fields this library no longer defines. */
+    orphaned: 'No longer fields in this library',
+    unset: 'Not set',
+    refusedWithoutReason: 'Could not save this field. Reload and try again.',
+    loadFailed: 'Could not load this library’s fields. Reload to try again.',
+    /** A filter's value box, named for the field it filters. */
+    filterValue: (label: string) => `${label} is`,
+    filterApply: 'Filter',
+    filterClear: (label: string) => `Clear the ${label} filter`,
+  },
   sources: {
     /**
      * Where the model came from. The licence is the field this exists for: `docs/DATA.md`

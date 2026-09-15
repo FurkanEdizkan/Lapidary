@@ -41,6 +41,10 @@ import type {
   RungReady,
   SavedFilter,
   SavedFilterId,
+  CustomField,
+  CustomFieldChange,
+  NewCustomField,
+  SetFieldValue,
   ScanAccepted,
   SetFraming,
   SetTags,
@@ -95,6 +99,8 @@ export async function fetchParts(
   sort?: Sort,
   material?: string,
   tag?: string,
+  field?: string,
+  fieldValue?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -120,6 +126,7 @@ export async function fetchParts(
   if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
   if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
+  setField(query, field, fieldValue)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
@@ -140,6 +147,8 @@ export async function fetchFacets(
   format?: string,
   material?: string,
   tag?: string,
+  field?: string,
+  fieldValue?: string,
 ): Promise<Facets> {
   const query = new URLSearchParams()
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
@@ -149,12 +158,103 @@ export async function fetchFacets(
   if (typeof format === 'string' && format.length > 0) query.set('format', format)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
   if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
+  setField(query, field, fieldValue)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
   if (!response.ok) {
     throw new Error(`facets returned ${response.status}`)
   }
   return (await response.json()) as Facets
+}
+
+/**
+ * A custom field filter rides as a pair or not at all: the route reads either alone as no filter,
+ * and a URL carrying half of one reads as a filter nobody set.
+ */
+function setField(query: URLSearchParams, field?: string, fieldValue?: string): void {
+  if (typeof field === 'string' && field.length > 0 && typeof fieldValue === 'string' && fieldValue.length > 0) {
+    query.set('field', field)
+    query.set('fieldValue', fieldValue)
+  }
+}
+
+/** `GET /api/libraries/{id}/fields` — the library's custom fields, oldest first. */
+export async function fetchFields(library: LibraryId): Promise<CustomField[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/fields`)
+  if (!response.ok) {
+    throw new Error(`fields returned ${response.status}`)
+  }
+  return (await response.json()) as CustomField[]
+}
+
+/** A field write the route answered rather than failed: saved, or refused in its own words. */
+export type FieldWritten = { kind: 'saved' } | { kind: 'refused'; message: string }
+
+async function fieldWritten(response: Response): Promise<FieldWritten> {
+  if (response.ok) return { kind: 'saved' }
+  if (response.status === 400 || response.status === 404 || response.status === 409) {
+    const answer: unknown = await response.json().catch(() => null)
+    const message =
+      answer !== null && typeof answer === 'object'
+        ? (answer as { message?: unknown }).message
+        : undefined
+    return {
+      kind: 'refused',
+      message: typeof message === 'string' ? message : strings.fields.refusedWithoutReason,
+    }
+  }
+  throw new Error(`field write returned ${response.status}`)
+}
+
+/** `POST /api/libraries/{id}/fields` — define a field. */
+export async function createField(library: LibraryId, field: NewCustomField): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/fields`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(field),
+    }),
+  )
+}
+
+/** `PATCH /api/libraries/{library}/fields/{key}` — relabel a field, change its options or filter. */
+export async function updateField(
+  library: LibraryId,
+  key: string,
+  change: CustomFieldChange,
+): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(change),
+    }),
+  )
+}
+
+/** `DELETE /api/libraries/{library}/fields/{key}` — the definition only; every part keeps its value. */
+export async function removeField(library: LibraryId, key: string): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
+  )
+}
+
+/** `PUT /api/parts/{id}/fields/{key}` — one part's value, or `null` to clear it. */
+export async function setFieldValue(
+  part: PartId,
+  key: string,
+  value: string | number | null,
+): Promise<FieldWritten> {
+  const body: SetFieldValue = { value }
+  return fieldWritten(
+    await fetch(`/api/parts/${encodeURIComponent(part)}/fields/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
 }
 
 /**

@@ -243,6 +243,12 @@ pub struct PageQuery {
     /// One tag, exactly as a person wrote it. Absent is every tag.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     tag: Option<String>,
+    /// One custom field of this library, offered as a filter, and the value it must hold
+    /// (`docs/DATA.md` §3.5). Both or neither: either alone is no filter.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_value: Option<String>,
     /// `volume`, `surface_area`, `longest_side` or `triangles`, largest first. Absent — or
     /// anything else, for the reason `state` gives — is newest first. A search ignores it:
     /// relevance is a search's order.
@@ -285,6 +291,8 @@ pub async fn page(
         format,
         material,
         tag,
+        field,
+        field_value,
         sort,
     } = match query {
         Ok(Query(query)) => query,
@@ -321,6 +329,13 @@ pub async fn page(
     let tag = tag
         .map(|tag| tag.trim().to_owned())
         .filter(|tag| !tag.is_empty());
+    let field =
+        match crate::fields::filter_of(&app.db, library, field.as_deref(), field_value.as_deref())
+            .await
+        {
+            Ok(field) => field,
+            Err(refusal) => return refusal,
+        };
     let grid = GridQuery {
         library,
         folder: folder_id,
@@ -330,6 +345,7 @@ pub async fn page(
         format: format.as_deref(),
         material: material.as_deref(),
         tag: tag.as_deref(),
+        field: field.as_deref(),
     };
     let sort = sort
         .as_deref()
@@ -392,6 +408,12 @@ pub struct FacetQuery {
     material: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
     tag: Option<String>,
+    /// One custom field of this library, offered as a filter, and the value it must hold
+    /// (`docs/DATA.md` §3.5). Both or neither: either alone is no filter.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field: Option<String>,
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    field_value: Option<String>,
 }
 
 /// `GET /api/libraries/{id}/facets` — the formats, materials and tags among the parts `page`
@@ -411,10 +433,19 @@ pub async fn facets(
         format,
         material,
         tag,
+        field,
+        field_value,
     } = match query {
         Ok(Query(query)) => query,
         Err(rejection) => return bad_query(&rejection),
     };
+    let field =
+        match crate::fields::filter_of(&app.db, library, field.as_deref(), field_value.as_deref())
+            .await
+        {
+            Ok(field) => field,
+            Err(refusal) => return refusal,
+        };
     let shows = if state.as_deref() == Some("removed") {
         Shows::Removed
     } else {
@@ -448,6 +479,7 @@ pub async fn facets(
             shows,
             material.as_deref(),
             tag.as_deref(),
+            field.as_deref(),
         )
         .await
     {
@@ -462,6 +494,7 @@ pub async fn facets(
             shows,
             format.as_deref(),
             tag.as_deref(),
+            field.as_deref(),
         )
         .await
     {
@@ -476,6 +509,7 @@ pub async fn facets(
             shows,
             format.as_deref(),
             material.as_deref(),
+            field.as_deref(),
         )
         .await
     {
