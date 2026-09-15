@@ -105,6 +105,33 @@ pub enum JobPayload {
     /// and how much to do per run is the handler's policy rather than a number a caller
     /// gets to write into a row that outlives the build that wrote it.
     MigrateStorage,
+    /// Unpack a bundle the upload route stored (Phase 4 slice 2 spec §7): check the whole
+    /// archive, then queue one `ImportPart` per part into this job's own batch. `path` is the
+    /// bundle's file name, so a refused bundle is named in the batch's failure list.
+    ImportBundle {
+        blake3: BlobHash,
+        path: String,
+    },
+    /// One part of a checked bundle, its revisions replayed through ingest oldest first. `path`
+    /// is the part's source path, so a refused part is named in the failure list.
+    ImportPart {
+        bundle: BlobHash,
+        part: u32,
+        path: String,
+    },
+}
+
+#[derive(Deserialize)]
+struct ImportBundlePayload {
+    blake3: BlobHash,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ImportPartPayload {
+    bundle: BlobHash,
+    part: u32,
+    path: String,
 }
 
 /// The `ingest_blob` payload, deserialised whole for the same reason `DerivePayload` is:
@@ -133,6 +160,8 @@ impl JobPayload {
     pub const SCAN_DIRECTORY: &'static str = "scan_directory";
     pub const INGEST_BLOB: &'static str = "ingest_blob";
     pub const MIGRATE_STORAGE: &'static str = "migrate_storage";
+    pub const IMPORT_BUNDLE: &'static str = "import_bundle";
+    pub const IMPORT_PART: &'static str = "import_part";
 
     pub fn kind(&self) -> &'static str {
         match self {
@@ -141,6 +170,8 @@ impl JobPayload {
             JobPayload::ScanDirectory => Self::SCAN_DIRECTORY,
             JobPayload::IngestBlob { .. } => Self::INGEST_BLOB,
             JobPayload::MigrateStorage => Self::MIGRATE_STORAGE,
+            JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
+            JobPayload::ImportPart { .. } => Self::IMPORT_PART,
         }
     }
 
@@ -167,6 +198,12 @@ impl JobPayload {
                     payload["lock"] = serde_json::json!(lock);
                 }
                 payload
+            }
+            JobPayload::ImportBundle { blake3, path } => {
+                serde_json::json!({ "blake3": blake3, "path": path })
+            }
+            JobPayload::ImportPart { bundle, part, path } => {
+                serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
         }
     }
@@ -206,6 +243,25 @@ impl JobPayload {
                     blake3: p.blake3,
                     source_path: p.path,
                     lock: p.lock,
+                })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            Self::IMPORT_BUNDLE => serde_json::from_value::<ImportBundlePayload>(payload.clone())
+                .map(|p| JobPayload::ImportBundle {
+                    blake3: p.blake3,
+                    path: p.path,
+                })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            Self::IMPORT_PART => serde_json::from_value::<ImportPartPayload>(payload.clone())
+                .map(|p| JobPayload::ImportPart {
+                    bundle: p.bundle,
+                    part: p.part,
+                    path: p.path,
                 })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
@@ -592,5 +648,37 @@ mod tests {
             "a row an older Lapidary wrote is malformed AND written by Lapidary, \
              got: {message}"
         );
+    }
+}
+
+#[cfg(test)]
+mod import_payload_tests {
+    use super::*;
+
+    #[test]
+    fn an_import_job_round_trips_through_its_row_and_names_its_path() {
+        for (payload, path) in [
+            (
+                JobPayload::ImportBundle {
+                    blake3: BlobHash::from_bytes([7; 32]),
+                    path: "workshop-bundle.lapidary.zip".to_owned(),
+                },
+                "workshop-bundle.lapidary.zip",
+            ),
+            (
+                JobPayload::ImportPart {
+                    bundle: BlobHash::from_bytes([7; 32]),
+                    part: 3,
+                    path: "brackets/bracket-lp-1042-03.stl".to_owned(),
+                },
+                "brackets/bracket-lp-1042-03.stl",
+            ),
+        ] {
+            assert_eq!(
+                JobPayload::from_row(payload.kind(), &payload.to_json()).expect("parses"),
+                payload
+            );
+            assert_eq!(payload.to_json()["path"], path, "the failure list names it");
+        }
     }
 }

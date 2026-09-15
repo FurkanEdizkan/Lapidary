@@ -3024,3 +3024,267 @@ async fn a_new_parts_first_revision_says_whether_it_was_scanned_or_uploaded(pool
         ]
     );
 }
+
+const CUBE_FIXTURE: &[u8] = include_bytes!("../../../fixtures/cube.stl");
+
+fn hash_hex(bytes: &[u8]) -> String {
+    BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()).to_hex()
+}
+
+/// A bundle as `download.rs` writes one: each part's revisions oldest first, the current one at its
+/// source path and the earlier ones under `revisions/<label>/`, then the manifest.
+fn bundle_of(parts: &[(&str, &[&[u8]])]) -> Vec<u8> {
+    use lapidary_targets::bundle::{
+        self, Manifest, ManifestLibrary, ManifestPart, ManifestRevision, StoreZip,
+    };
+    let mut zip = StoreZip::new(Vec::new());
+    let mut manifest_parts = Vec::new();
+    for (source_path, versions) in parts {
+        let mut revisions = Vec::new();
+        for (index, bytes) in versions.iter().enumerate() {
+            let label = (index + 1).to_string();
+            let path = bundle::entry_path(source_path, &label, index + 1 == versions.len());
+            zip.add(&path, &mut &bytes[..]).expect("adds");
+            revisions.push(ManifestRevision {
+                rev_label: label,
+                parent_label: (index > 0).then(|| index.to_string()),
+                origin: if index == 0 { "ingest" } else { "agent" }.to_owned(),
+                created_at: "2026-09-15T08:00:00Z".to_owned(),
+                blake3: hash_hex(bytes),
+                size_bytes: bytes.len() as u64,
+                format: "stl".to_owned(),
+                path,
+            });
+        }
+        manifest_parts.push(ManifestPart {
+            name: (*source_path).to_owned(),
+            part_number: None,
+            source_path: (*source_path).to_owned(),
+            tags: vec![],
+            sources: vec![],
+            revisions,
+        });
+    }
+    let manifest = serde_json::to_vec(&Manifest {
+        format: bundle::FORMAT.to_owned(),
+        version: bundle::VERSION,
+        library: ManifestLibrary {
+            name: "Workshop".to_owned(),
+            mode: "controlled".to_owned(),
+        },
+        parts: manifest_parts,
+    })
+    .expect("serialises");
+    zip.add(bundle::MANIFEST, &mut manifest.as_slice())
+        .expect("adds");
+    zip.finish().expect("finishes")
+}
+
+fn import_job(payload: JobPayload, batch: BatchId) -> JobRow {
+    JobRow {
+        id: JobId::new(),
+        batch_id: batch,
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    }
+}
+
+/// The bundle stored as the upload route stores one, its `ImportBundle` run, and every `ImportPart`
+/// it queued run in turn. Each part's answer, in the bundle's order.
+async fn import(
+    handler: &WorkerHandler,
+    pool: &PgPool,
+    blob_root: &Path,
+    bundle: &[u8],
+) -> Result<Vec<lapidary_core::Outcome>, HandlerError> {
+    let hash = upload_into(pool, blob_root, bundle).await;
+    let batch = BatchId::new();
+    let unpacked = handler
+        .handle(&import_job(
+            JobPayload::ImportBundle {
+                blake3: hash,
+                path: "workshop-bundle.lapidary.zip".to_owned(),
+            },
+            batch,
+        ))
+        .await?;
+    assert_eq!(unpacked, lapidary_core::Outcome::Scanned);
+    let queued: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT payload FROM job WHERE batch_id = $1 AND kind = 'import_part' \
+         ORDER BY (payload->>'part')::int",
+    )
+    .bind(batch.as_uuid())
+    .fetch_all(pool)
+    .await
+    .expect("queued parts");
+    let mut outcomes = Vec::new();
+    for payload in queued {
+        let part = JobPayload::from_row("import_part", &payload).expect("parses");
+        outcomes.push(handler.handle(&import_job(part, batch)).await?);
+    }
+    Ok(outcomes)
+}
+
+/// Phase 4 slice 2 spec §7: a controlled library replays every revision, so labels, parents and
+/// origins survive; importing the same bundle again finds every part already there.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_bundle_imported_into_a_controlled_library_keeps_each_parts_labels_parents_and_origins(
+    pool: PgPool,
+) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    let bundle = bundle_of(&[
+        (
+            "brackets/bracket-lp-1042-03.stl",
+            &[BRACKET_FIXTURE, SPACER_FIXTURE],
+        ),
+        ("spacers/spacer-lp-2001-00.stl", &[SPACER_FIXTURE]),
+    ]);
+
+    let outcomes = import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports");
+    assert_eq!(
+        outcomes,
+        [
+            lapidary_core::Outcome::Ingested,
+            lapidary_core::Outcome::Ingested
+        ]
+    );
+    let lineage: Vec<(String, Option<String>, String, String)> = revision_rows(&pool)
+        .await
+        .into_iter()
+        .map(|(label, parent, origin, hash, _)| (label, parent, origin, hash))
+        .collect();
+    assert_eq!(
+        lineage,
+        [
+            (
+                "1".to_owned(),
+                None,
+                "ingest".to_owned(),
+                hash_hex(BRACKET_FIXTURE)
+            ),
+            (
+                "2".to_owned(),
+                Some("1".to_owned()),
+                "agent".to_owned(),
+                hash_hex(SPACER_FIXTURE)
+            ),
+            (
+                "1".to_owned(),
+                None,
+                "ingest".to_owned(),
+                hash_hex(SPACER_FIXTURE)
+            ),
+        ]
+    );
+
+    let again = import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports again");
+    assert_eq!(
+        again,
+        [
+            lapidary_core::Outcome::Skipped,
+            lapidary_core::Outcome::Skipped
+        ]
+    );
+    assert_eq!(revision_rows(&pool).await.len(), 3, "nothing twice");
+}
+
+/// A hobby library keeps no history, so a part arrives as its newest revision alone.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_hobby_library_imports_each_parts_newest_revision_only(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let bundle = bundle_of(&[(
+        "brackets/bracket-lp-1042-03.stl",
+        &[BRACKET_FIXTURE, SPACER_FIXTURE],
+    )]);
+
+    let outcomes = import(&handler, &pool, blob_root.path(), &bundle)
+        .await
+        .expect("imports");
+    assert_eq!(outcomes, [lapidary_core::Outcome::Ingested]);
+    let rows = revision_rows(&pool).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "1");
+    assert_eq!(rows[0].3, hash_hex(SPACER_FIXTURE));
+}
+
+/// A part already holding a file that is none of the bundle's revisions is another part's history.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_bundle_part_landing_on_another_parts_history_is_refused(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    make_controlled(&pool, seeded()).await;
+    stage(
+        ingest_dir.path(),
+        "brackets/bracket-lp-1042-03.stl",
+        CUBE_FIXTURE,
+    );
+    handler
+        .handle(&job_for("brackets/bracket-lp-1042-03.stl"))
+        .await
+        .expect("scans");
+
+    let refused = import(
+        &handler,
+        &pool,
+        blob_root.path(),
+        &bundle_of(&[(
+            "brackets/bracket-lp-1042-03.stl",
+            &[BRACKET_FIXTURE, SPACER_FIXTURE],
+        )]),
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(&refused, HandlerError::Permanent { message } if message.contains("graft")),
+        "{refused:?}"
+    );
+    assert_eq!(revision_rows(&pool).await.len(), 1, "only the scanned cube");
+}
+
+/// A bundle whose file was changed after export is refused whole, and not one part is queued.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_bundle_that_is_not_whole_queues_nothing(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let path = "brackets/bracket-lp-1042-03.stl";
+    let mut tampered = bundle_of(&[(path, &[BRACKET_FIXTURE])]);
+    tampered[30 + path.len() + 200] ^= 0xff;
+    let hash = upload_into(&pool, blob_root.path(), &tampered).await;
+    let batch = BatchId::new();
+
+    let refused = handler
+        .handle(&import_job(
+            JobPayload::ImportBundle {
+                blake3: hash,
+                path: "workshop-bundle.lapidary.zip".to_owned(),
+            },
+            batch,
+        ))
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(&refused, HandlerError::Permanent { message } if message.contains("not a bundle Lapidary can import")),
+        "{refused:?}"
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE batch_id = $1")
+        .bind(batch.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(queued, 0);
+    assert!(revision_rows(&pool).await.is_empty());
+}

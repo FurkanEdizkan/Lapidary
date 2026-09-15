@@ -1053,6 +1053,24 @@ export async function commitUpload(
 }
 
 /**
+ * `POST /api/libraries/{id}/imports` — a bundle already sent through the chunked upload, queued
+ * for the worker to check whole and unpack into parts (Phase 4 slice 2 spec §7).
+ */
+export async function startImport(
+  library: LibraryId,
+  blake3: BlobHash,
+  name: string,
+): Promise<ScanAccepted> {
+  return accepted(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/imports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blake3, name }),
+    }),
+  )
+}
+
+/**
  * `GET /api/parts/{id}` — one part, in full.
  *
  * The page a card links to. Its own request rather than a field on the grid's page: the

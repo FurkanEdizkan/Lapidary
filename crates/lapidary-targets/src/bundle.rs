@@ -8,7 +8,7 @@
 //! carries them again, which is where readers look.
 
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 
 /// `manifest.json`'s `format`, so an importer can tell a bundle from any other ZIP.
 pub const FORMAT: &str = "lapidary-bundle";
@@ -262,6 +262,131 @@ fn fits(value: u64) -> io::Result<u32> {
     })
 }
 
+/// The most files an import reads out of one bundle (`docs/DATA.md` §5.4).
+pub const MAX_IMPORT_ENTRIES: usize = 10_000;
+/// The most bytes an import reads out of one bundle: the upload route's own cap.
+pub const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// A bundle read back and checked whole before anything is written: every name inside it, every
+/// file stored as it is, the manifest's format and version, and every revision's file present at
+/// the size and BLAKE3 the manifest names, with an origin this build knows.
+pub struct Bundle {
+    pub manifest: Manifest,
+    archive: zip::ZipArchive<Cursor<Vec<u8>>>,
+}
+
+impl Bundle {
+    pub fn open(bytes: Vec<u8>) -> Result<Self, String> {
+        let refuse = |detail: String| {
+            format!(
+                "This is not a bundle Lapidary can import: {detail}. Export it again from Lapidary, then import it."
+            )
+        };
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+            .map_err(|err| refuse(format!("it does not open as a ZIP ({err})")))?;
+        if archive.len() > MAX_IMPORT_ENTRIES {
+            return Err(refuse(format!(
+                "it holds {} files, and an import reads at most {MAX_IMPORT_ENTRIES}",
+                archive.len()
+            )));
+        }
+        let mut total = 0u64;
+        for index in 0..archive.len() {
+            let entry = archive
+                .by_index_raw(index)
+                .map_err(|err| refuse(format!("file {index} cannot be read ({err})")))?;
+            let name = entry.name().to_owned();
+            if !safe_name(&name) {
+                return Err(refuse(format!("it names a file outside itself, {name}")));
+            }
+            if entry.compression() != zip::CompressionMethod::Stored {
+                return Err(refuse(format!(
+                    "{name} is compressed, where a bundle stores its files as they are"
+                )));
+            }
+            total = total.saturating_add(entry.size());
+            if total > MAX_IMPORT_BYTES {
+                return Err(refuse("its files come to more than 2 GiB".to_owned()));
+            }
+        }
+
+        let mut text = String::new();
+        archive
+            .by_name(MANIFEST)
+            .map_err(|_| refuse("it has no manifest.json".to_owned()))?
+            .read_to_string(&mut text)
+            .map_err(|err| refuse(format!("its manifest.json cannot be read ({err})")))?;
+        let manifest: Manifest = serde_json::from_str(&text)
+            .map_err(|err| refuse(format!("its manifest.json does not parse ({err})")))?;
+        if manifest.format != FORMAT || manifest.version != VERSION {
+            return Err(refuse(format!(
+                "its manifest is {} version {}, and this Lapidary reads {FORMAT} version {VERSION}",
+                manifest.format, manifest.version
+            )));
+        }
+
+        let mut source_paths = std::collections::HashSet::new();
+        for part in &manifest.parts {
+            if !safe_name(&part.source_path) || !source_paths.insert(part.source_path.as_str()) {
+                return Err(refuse(format!(
+                    "two parts claim {}, or it names a place outside the library",
+                    part.source_path
+                )));
+            }
+            if part.revisions.is_empty() {
+                return Err(refuse(format!("{} has no revisions", part.source_path)));
+            }
+            for revision in &part.revisions {
+                if lapidary_core::RevisionOrigin::parse(&revision.origin).is_none() {
+                    return Err(refuse(format!(
+                        "revision {} of {} came by {:?}, which this Lapidary does not know",
+                        revision.rev_label, part.source_path, revision.origin
+                    )));
+                }
+                let bytes = read_entry(&mut archive, &revision.path).map_err(refuse)?;
+                if bytes.len() as u64 != revision.size_bytes
+                    || blake3::hash(&bytes).to_hex().as_str() != revision.blake3
+                {
+                    return Err(refuse(format!(
+                        "the file at {} is not the one its manifest names: its size or hash differs",
+                        revision.path
+                    )));
+                }
+            }
+        }
+        Ok(Self { manifest, archive })
+    }
+
+    /// One revision's bytes, which [`Bundle::open`] has already checked.
+    pub fn bytes(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        read_entry(&mut self.archive, path)
+    }
+}
+
+fn read_entry(
+    archive: &mut zip::ZipArchive<Cursor<Vec<u8>>>,
+    path: &str,
+) -> Result<Vec<u8>, String> {
+    let mut entry = archive
+        .by_name(path)
+        .map_err(|_| format!("it has no file at {path}, which its manifest names"))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
+    entry
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("the file at {path} cannot be read ({err})"))?;
+    Ok(bytes)
+}
+
+/// A name that stays inside the archive, and inside a library once a part is filed under it: no
+/// absolute path, no drive, no backslash, no empty, `.` or `..` segment.
+fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['\\', ':'])
+        && name
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
 fn put16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -307,6 +432,108 @@ mod tests {
                 .expect("reads, its CRC checked at the end");
             assert_eq!(&back, bytes);
         }
+    }
+
+    fn manifest_for(parts: &[(&str, &[u8])]) -> Manifest {
+        Manifest {
+            format: FORMAT.to_owned(),
+            version: VERSION,
+            library: ManifestLibrary {
+                name: "Workshop".to_owned(),
+                mode: "controlled".to_owned(),
+            },
+            parts: parts
+                .iter()
+                .map(|(path, bytes)| ManifestPart {
+                    name: (*path).to_owned(),
+                    part_number: None,
+                    source_path: (*path).to_owned(),
+                    tags: vec![],
+                    sources: vec![],
+                    revisions: vec![ManifestRevision {
+                        rev_label: "1".to_owned(),
+                        parent_label: None,
+                        origin: "ingest".to_owned(),
+                        created_at: "2026-09-15T08:00:00Z".to_owned(),
+                        blake3: blake3::hash(bytes).to_hex().to_string(),
+                        size_bytes: bytes.len() as u64,
+                        format: "stl".to_owned(),
+                        path: (*path).to_owned(),
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    fn archive(files: &[(&str, &[u8])], manifest: Option<&Manifest>) -> Vec<u8> {
+        let mut zip = StoreZip::new(Vec::new());
+        for (name, bytes) in files {
+            zip.add(name, &mut &bytes[..]).expect("adds");
+        }
+        if let Some(manifest) = manifest {
+            let json = serde_json::to_vec(manifest).expect("serialises");
+            zip.add(MANIFEST, &mut json.as_slice()).expect("adds");
+        }
+        zip.finish().expect("finishes")
+    }
+
+    #[test]
+    fn a_bundle_opens_whole_and_hands_back_each_revisions_bytes() {
+        let flange: &[u8] = b"solid flange-dn40-lp-3310-02\nendsolid\n";
+        let manifest = manifest_for(&[("flanges/flange-dn40-lp-3310-02.stl", flange)]);
+        let mut bundle = Bundle::open(archive(
+            &[("flanges/flange-dn40-lp-3310-02.stl", flange)],
+            Some(&manifest),
+        ))
+        .expect("opens");
+        assert_eq!(bundle.manifest, manifest);
+        assert_eq!(
+            bundle
+                .bytes("flanges/flange-dn40-lp-3310-02.stl")
+                .expect("bytes"),
+            flange
+        );
+    }
+
+    #[test]
+    fn a_bundle_that_is_not_whole_is_refused_before_anything_is_read_into_a_library() {
+        let flange: &[u8] = b"solid flange-dn40-lp-3310-02\nendsolid\n";
+        let path = "flanges/flange-dn40-lp-3310-02.stl";
+        let good = manifest_for(&[(path, flange)]);
+
+        let escaping = Bundle::open(archive(
+            &[(path, flange), ("../../.ssh/id_ed25519", b"key")],
+            Some(&good),
+        ));
+        assert!(
+            escaping
+                .err()
+                .is_some_and(|message| message.contains("outside"))
+        );
+
+        assert!(
+            Bundle::open(archive(&[(path, flange)], None))
+                .err()
+                .is_some_and(|message| message.contains("manifest.json"))
+        );
+
+        let mut wrong_hash = good.clone();
+        wrong_hash.parts[0].revisions[0].blake3 = "00".repeat(32);
+        assert!(
+            Bundle::open(archive(&[(path, flange)], Some(&wrong_hash)))
+                .err()
+                .is_some_and(|message| message.contains("size or hash"))
+        );
+
+        let mut newer = good.clone();
+        newer.version = VERSION + 1;
+        assert!(Bundle::open(archive(&[(path, flange)], Some(&newer))).is_err());
+
+        let mut unknown_origin = good;
+        unknown_origin.parts[0].revisions[0].origin = "teleport".to_owned();
+        assert!(Bundle::open(archive(&[(path, flange)], Some(&unknown_origin))).is_err());
+
+        assert!(Bundle::open(b"not a zip at all".to_vec()).is_err());
     }
 
     #[test]

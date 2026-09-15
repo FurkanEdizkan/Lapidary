@@ -139,6 +139,9 @@ export const strings = {
     library: 'Library',
     layout: 'Layout',
     upload: 'Upload a folder',
+    /** A bundle exported from Lapidary, its parts and their history (Phase 4 slice 2). */
+    importBundle: 'Import a bundle',
+    importFailed: 'Could not import the bundle. Check that the api service is running, then try again.',
   },
   /**
    * Bulk selection on the grid. Off until the toolbar's Select is pressed, so a card keeps its

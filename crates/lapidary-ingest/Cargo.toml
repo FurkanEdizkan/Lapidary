@@ -16,6 +16,8 @@ lapidary-storage.workspace = true
 lapidary-cad.workspace = true
 # The seam handler.rs implements: JobHandler and HandlerError. L3 -> L2, allowed.
 lapidary-jobs.workspace = true
+# Reading a bundle back for import (Phase 4 slice 2). L3 -> L2, allowed.
+lapidary-targets.workspace = true
 axum.workspace = true
 # Hash first, always: handler.rs computes BLAKE3 over each file's bytes before doing
 # anything else with them.

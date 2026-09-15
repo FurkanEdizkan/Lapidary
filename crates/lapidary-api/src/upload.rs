@@ -398,6 +398,63 @@ pub async fn commit(
     accept(state.db, library, &jobs).await
 }
 
+/// `POST /api/libraries/{id}/imports`'s body: a bundle already sent through the chunked upload.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRequest {
+    pub blake3: BlobHash,
+    /// The file's own name, which the batch names a refused bundle by.
+    pub name: String,
+}
+
+/// `POST /api/libraries/{id}/imports` — store an uploaded bundle and queue the job that checks
+/// and unpacks it (Phase 4 slice 2 spec §7).
+///
+/// The api does not open the archive: reading stored source bytes is the worker's, and
+/// `download.rs` is this crate's one exception. So a file that is not a bundle is refused by its
+/// job, in the batch the browser follows, before any part of it is written.
+pub async fn import_bundle(
+    State(state): State<AppState>,
+    Path(library): Path<LibraryId>,
+    Json(request): Json<ImportRequest>,
+) -> Response {
+    if let Err(response) = library_exists(&state, library).await {
+        return response;
+    }
+    if request.name.is_empty() || request.name.contains('/') || path_escapes(&request.name) {
+        return bad_request(format!(
+            "Refused the bundle name {:?}: send the file's own name, with no folder in it.",
+            request.name
+        ));
+    }
+    let blobs = PgBlobs(state.db.clone());
+    let writer = SourceWriter::open(&state.blob_root);
+    let file = UploadFile {
+        path: request.name.clone(),
+        blake3: request.blake3,
+        lock: None,
+    };
+    match blobs.exists(&request.blake3).await {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(response) = store_staged(&state, &writer, &blobs, library, &file).await {
+                return response;
+            }
+        }
+        Err(err) => return internal_error(&err, "bundle import failed"),
+    }
+    accept(
+        state.db,
+        library,
+        &[JobPayload::ImportBundle {
+            blake3: request.blake3,
+            path: request.name,
+        }],
+    )
+    .await
+}
+
 /// Move one staged file into the blob store, and record it.
 ///
 /// The `blob` row is the point of the second half. Between this commit and the worker's

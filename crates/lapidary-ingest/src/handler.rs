@@ -179,6 +179,14 @@ impl JobHandler for WorkerHandler {
             // for the same one: a migration re-enqueues itself until the library drains,
             // and it has to land in the batch whoever started it is already polling.
             JobPayload::MigrateStorage => self.migrate_storage(job.batch_id, job.library_id).await,
+            // A bundle unpacks into its own batch, as a scan does; see `import.rs`.
+            JobPayload::ImportBundle { blake3, path } => {
+                self.import_bundle(job.batch_id, job.library_id, blake3, &path)
+                    .await
+            }
+            JobPayload::ImportPart { bundle, part, path } => {
+                self.import_part(job.library_id, bundle, part, &path).await
+            }
         }
     }
 }
@@ -399,7 +407,7 @@ impl WorkerHandler {
     /// is always yes, because the api inserted the row, and that is exactly the branch
     /// that links without writing and reaps no source blob. The right behaviour arrived
     /// at by the existing question rather than by a new flag.
-    async fn index(
+    pub(crate) async fn index(
         &self,
         library: LibraryId,
         source_path: &str,

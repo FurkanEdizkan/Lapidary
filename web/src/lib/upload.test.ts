@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, expect, test, vi } from 'vitest'
 import { DEFAULT_LIBRARY_ID } from './api'
-import { filesFromDrop, hashFile, uploadFiles } from './upload'
+import { filesFromDrop, hashFile, importBundle, uploadFiles } from './upload'
 import type { PickedFile } from './upload'
 
 /**
@@ -62,6 +62,12 @@ function stubApi(plan: { have?: string[]; needRows?: string[]; needBytes?: strin
         calls.push({ url, method, body })
         return new Response(
           JSON.stringify({ batchId: '01931b6e-0000-7000-8000-0000000000ff', queued: body.files.length }),
+        )
+      }
+      if (url.includes('/imports')) {
+        calls.push({ url, method, body: JSON.parse(String(init?.body)) })
+        return new Response(
+          JSON.stringify({ batchId: '01931b6e-0000-7000-8000-0000000000fe', queued: 1 }),
         )
       }
       // A chunk. The hash is the last path segment before the query.
@@ -213,4 +219,26 @@ test('a re-drop of a folder this library already holds sends and commits nothing
   expect((commits[0]!.body as { files: unknown[] }).files).toEqual([])
   expect(result.accepted.queued).toBe(0)
   expect(result.alreadyHere).toBe(2)
+})
+
+test('a bundle is sent only when the server lacks it, then handed to the import route by hash and name', async () => {
+  // Never committed as a part: the worker checks the whole archive before writing any of it.
+  const bundle = new File(['PK a bundle of flange revisions'], 'workshop-bundle.lapidary.zip')
+  let calls = stubApi({ needBytes: ['workshop-bundle.lapidary.zip'] })
+
+  const accepted = await importBundle(LIBRARY, bundle)
+
+  expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(1)
+  const imports = calls.filter((call) => call.url.includes('/imports'))
+  expect(imports).toHaveLength(1)
+  expect(imports[0]!.body).toEqual({
+    blake3: await hashFile(bundle),
+    name: 'workshop-bundle.lapidary.zip',
+  })
+  expect(accepted.queued).toBe(1)
+  expect(calls.some((call) => call.url.includes('/uploads/commit'))).toBe(false)
+
+  calls = stubApi({ needRows: ['workshop-bundle.lapidary.zip'] })
+  await importBundle(LIBRARY, bundle)
+  expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(0)
 })
