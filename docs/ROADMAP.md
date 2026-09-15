@@ -1086,6 +1086,51 @@ needed a `test/` branch.
   being sent. The traced run cannot answer it: `vite preview` held its part fetch for 230 ms, a
   stall no other run had, and its main thread was idle.
 
+**Review fixes** (`b8ef753`).
+- **What was reviewed.** A fresh reader went through the goal's four code changes. Phantom bytes and
+  the re-parenting refusal were clean. The other two had five findings, and four are fixed here.
+- **The race fix: an adopted file could be reaped.**
+  - **What happened.** A job that adopts identical bytes (step 8) could commit a row naming a file
+    that the job which wrote it then reaped, because that job's own insert had failed for another
+    reason.
+  - **The fix.** A job now reaps its own file only when no live part at its path names that file. If
+    that check's query fails, the file stays.
+  - **The other side.** The adopter also writes the file back if it is gone after its commit.
+  - **Both narrow the window without closing it,** marked `ponytail:`. A lock across both jobs would
+    close it.
+  - **No test.** The window sits between one job's write and another's commit, which no test can reach
+    without a hook.
+- **The race fix: an orphan copy.**
+  - **What happened.** A lost race with the same bytes, after writing under the disambiguated name,
+    settled `skipped` and left that copy behind.
+  - **The fix.** The copy now goes, by the same check.
+  - **Test:** a loser held in the kernel, with the same bytes, leaves no copy. Seen failing first, with
+    "the loser's copy … is left".
+- **Access tracking: reads lost at shutdown.**
+  - **What happened.** The last flush ran as soon as the signal arrived, while requests were still
+    draining. It did not run at all when `serve` returned an error.
+  - **The fix.** `main` now flushes after `serve` returns, however it returned.
+  - **No test:** this is the server binary's shutdown path.
+- **Access tracking: Free cache space.**
+  - **What happened.** It read `last_accessed_at` without the reads the api still held in memory, so a
+    part opened within the flush interval could lose its L1 and L2.
+  - **The fix.** It now flushes first, and refuses if that flush fails.
+  - **The storage figure flushes too, on a `GET`, deliberately.** A failure there only warns, because
+    the figure is still worth showing.
+  - **Test:** open an aged part, then free cache space with no explicit flush; the L1 stays. Seen
+    failing first, as `removed: 1`.
+- **Recorded, not fixed: a file that fails every attempt.**
+  - **The state.** A controlled part in a disambiguated directory is revised, then purged. Its newest
+    file then waits at that path, in quarantine, for 30 days.
+  - **Why it fails.** Dropping the part's first revision back at the same source path resolves to the
+    same directory and finds other bytes there. Every scan fails its three attempts until the sweep
+    removes those bytes.
+  - **Why that is better than before.** Before the race fix, the write replaced those quarantined bytes
+    without a word, so a visible failure is the better of the two.
+  - **What would fix it:** when the bytes differ and no part row exists at the path, take a longer
+    disambiguated name.
+- **No mutation runs.** Both new tests were seen failing first, which the goal accepts in their place.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

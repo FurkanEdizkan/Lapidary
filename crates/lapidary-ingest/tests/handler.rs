@@ -3110,6 +3110,56 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
     }
 }
 
+/// Two jobs, the same bytes, one new path. The loser's directory came second, so it wrote its own
+/// copy under the disambiguated name before its insert lost. That copy is no part's, and it goes;
+/// the winner's file stays.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let winner_dir = tempfile::tempdir().expect("temp dir");
+    let loser_dir = tempfile::tempdir().expect("temp dir");
+    stage(winner_dir.path(), FIXTURE_PLATE, BRACKET_FIXTURE);
+    stage(loser_dir.path(), FIXTURE_PLATE, BRACKET_FIXTURE);
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let winner = WorkerHandler {
+        cad: Some(Arc::new(FakeCad)),
+        ..handler_over(&pool, winner_dir.path(), blob_root.path())
+    };
+    let loser = WorkerHandler {
+        cad: Some(Arc::new(HeldCad {
+            reached: reached.clone(),
+            release: release.clone(),
+        })),
+        ..handler_over(&pool, loser_dir.path(), blob_root.path())
+    };
+    let job = job_for(FIXTURE_PLATE);
+
+    let (lost, ()) = tokio::join!(loser.handle(&job), async {
+        reached.notified().await;
+        assert_eq!(
+            winner.handle(&job).await.expect("the winner ingests"),
+            Outcome::Ingested
+        );
+        release.notify_one();
+    });
+    assert_eq!(lost.expect("the loser settles"), Outcome::Skipped);
+
+    let copy = blob_root.path().join(LIBRARY_DIR).join(format!(
+        "fixture-plate-lp-9000-00_{}",
+        &hex_of(BRACKET_FIXTURE)[..6]
+    ));
+    assert!(
+        !copy.exists(),
+        "the loser's copy at {} is left",
+        copy.display()
+    );
+    let rows = revision_rows(&pool).await;
+    assert_eq!(rows.len(), 1);
+    let bytes = std::fs::read(blob_root.path().join(&rows[0].4)).expect("the winner's file");
+    assert_eq!(hex_of(&bytes), rows[0].3);
+}
+
 /// Purge collects every revision's file, and the sweep leaves no directory behind whichever
 /// order it reaches them in: not `revisions/1`, not `revisions`, not the model directory.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

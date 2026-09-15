@@ -827,24 +827,39 @@ impl WorkerHandler {
                 // survives here as a condition rather than as two code paths.
                 let settled = classify_write(db_err);
                 if settled.is_err() {
-                    if ours {
+                    if ours
+                        && self
+                            .named_by_no_part(library, source_path, &storage_path)
+                            .await
+                    {
                         reap_source(&source, &storage_path, &model_dir);
                     }
                     reap(&derivatives, &reapable);
                     return settled;
                 }
-                // A lost race for this path. The same bytes are the winner's part, and this file
-                // is skipped. Other bytes are decided again on the next attempt, which reads the
-                // winner's part (spec §1: a revision, or unkept). This attempt's own file lies
-                // where no row points, since a new file never lands on another's, so it goes;
-                // the rungs stay, because the winner may serve the same ones.
+                // A lost race for this path. The rungs stay either way, because the winner may
+                // serve the same ones.
+                //
+                // The same bytes are the winner's part, and this file is skipped. A copy this
+                // attempt wrote under another name is no part's, so it goes; one the winner adopted
+                // is at the winner's path, so it stays.
                 if blobs
                     .library_holds(library, source_path, &hash)
                     .await
                     .map_err(classify_db)?
                 {
+                    if ours
+                        && self
+                            .named_by_no_part(library, source_path, &storage_path)
+                            .await
+                    {
+                        reap_source(&source, &storage_path, &model_dir);
+                    }
                     return settled;
                 }
+                // Other bytes are decided again on the next attempt, which reads the winner's part
+                // (spec §1: a revision, or unkept). This attempt's own file is no part's: a winner
+                // adopts only bytes equal to its own.
                 if ours {
                     reap_source(&source, &storage_path, &model_dir);
                 }
@@ -856,6 +871,21 @@ impl WorkerHandler {
                 });
             }
         };
+
+        // An adopted file may be gone: the job that wrote it can fail and reap it between this
+        // attempt's write and its commit. This part's row names it now, and these are its bytes, so
+        // they go back.
+        if !ours
+            && !FsPath::new(&self.blob_root).join(&storage_path).exists()
+            && let Err(error) = source.put_new_at(&storage_path, &bytes, Compression::AsIs)
+            && !matches!(error, lapidary_storage::StorageError::AlreadyExists { .. })
+        {
+            tracing::error!(
+                storage_path,
+                %error,
+                "a part's file was removed by a failed job racing it and could not be written back; upload the file again"
+            );
+        }
 
         // 9a. Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Its own
         // statement after the part's transaction, so a refusal leaves a part that is already
@@ -1044,6 +1074,41 @@ impl WorkerHandler {
             model_dir = disambiguate(&model_dir, hash);
         }
         Ok((parent, format!("{base}/{model_dir}")))
+    }
+
+    /// Whether no live part at `source_path` names the file at `storage_path`. A job racing this one
+    /// with the same bytes adopts a file already there instead of writing its own (step 8), and its
+    /// committed row may then name the file this attempt wrote.
+    ///
+    /// A query that fails answers no, so the file stays: an orphan is recoverable, and deleting the
+    /// bytes a committed row names is not.
+    ///
+    /// ponytail: a check, then a reap, so a racer that commits between the two still loses the file.
+    /// The adopter puts it back after its commit (step 9), which narrows the window from the other
+    /// side; a lock held across both jobs' inserts and reaps would close it.
+    async fn named_by_no_part(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        storage_path: &str,
+    ) -> bool {
+        match PgRevisions(self.db.clone())
+            .current(library, source_path)
+            .await
+        {
+            Ok(current) => {
+                current.and_then(|current| current.storage_path).as_deref() != Some(storage_path)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    source_path,
+                    storage_path,
+                    %error,
+                    "could not check whether another job's part names this file, so it is left in place"
+                );
+                false
+            }
+        }
     }
 }
 
