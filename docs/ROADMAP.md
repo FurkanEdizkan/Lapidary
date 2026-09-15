@@ -121,6 +121,10 @@ BLAKE3 that this run did not measure. And "interactive immediately" was observed
 timed: the grid answered throughout the ingest, which is what the job queue is for, but no
 number was taken for it.
 
+Timed on 2026-09-15, in the correctness goal's record: a stand-in 150-file drop took 31.5 s from
+handing over the folder to a finished batch. The grid's search answered in 18 ms at the median
+while it ran.
+
 ---
 
 ## Phase 2 — CAD ingest and search
@@ -378,6 +382,8 @@ fetch. Timed over the six example parts, medians of 18 opens each:
   the GPU.
 - **A link is over 400 ms on both.** That time runs from navigation start, so it includes loading
   the page and fetching the part. It is not the grid's open, and not the target's.
+  The correctness goal's record splits it. Rung transfer and decode are small, and the viewer's
+  shader warm-up is the largest block.
 - **A grid visitor who never opens a part now pays for the viewer anyway:** its 669 kB chunk
   (167 kB gzipped) and a WebGL context.
 - **Only before and after compare with each other.** The Phase 3 lines above were served through
@@ -985,6 +991,100 @@ needed a `test/` branch.
 | `a_hobby_library_and_a_missing_part_have_nothing_to_check_out` | the hobby refusal skipped | `Taken` in a hobby library |
 | `only_the_held_lock_checks_in_and_then_the_part_is_free` | check-in without `released_at IS NULL` | a second check-in succeeded |
 | `a_forced_release_is_recorded_as_forced_and_by_whom` | `forced = false` | `(false, "jonas@laptop")` |
+
+**Measurements** (no code change).
+- **The stack:** `lapidary-server` (`mock-kernel`, debug build) as `api` on 8080 and `worker` on
+  8081, with `vite preview` in front.
+- **Data:** a scratch database, and headless Chrome with a throwaway profile, driven over CDP.
+- **The scripts** stay out of the repository, in `target/goal2-check/`.
+
+*Phase 1's drop path.*
+- **The corpus.** The 150-file corpus the Phase 1 exit ran on (`/home/jbo/lapidary-ingest-real`) no
+  longer exists. The stand-in is the first 150 uniquely named STLs between 20 kB and 3 MB in the
+  owner's STL corpus, 270,719,950 bytes. These figures do not compare file for file with the 3.124 s
+  scan.
+- **How.** `DOM.setFileInputFiles` handed the folder to the grid's `webkitdirectory` input. Handed
+  a list of files instead, that input silently does nothing. Each phase is read from the page's
+  own requests, and the batch's `startedAt` and `finishedAt` from the API.
+
+| Phase | Time |
+|---|---|
+| BLAKE3 in the browser, 150 files | 826 ms |
+| Probe, to the first chunk sent | 82 ms |
+| Transfer, over loopback | 913 ms |
+| The commit route | 9,808 ms |
+| The batch, started to finished | 19,895 ms |
+| **Folder handed over, to the batch finished** | **31,519 ms**: 150 ingested, 0 failed |
+
+- **"Interactive immediately", timed.** While the batch ran, the grid's search was typed once a
+  second.
+  - 43 round trips: median 18 ms, p95 85 ms, max 117 ms, all 200.
+  - With the worker idle afterwards: median 51 ms, p95 101 ms. Slower, because the library by then
+    held 150 parts with their thumbnails inline.
+- **Found, not fixed:** the commit route verifies and stores each staged file in turn, inside the
+  request. That is `store_staged`, then `put_file`: BLAKE3, then zstd. It runs on the async runtime,
+  not in `spawn_blocking`. At 9.8 s it is nearly a third of the drop, and the largest phase before
+  the worker starts.
+
+*The folder tree's fan-out.*
+- **How.** Categories were created through `POST /api/libraries/{id}/folders` into fresh libraries,
+  flat and as a ten-way tree (depth 2 to 4).
+  - The tree fetch was timed from Node, median of 10.
+  - First render runs from navigation start to the frame where the sidebar holds a row for every
+    category, median of 3.
+
+| Categories | Shape | Tree fetch | Response | First render |
+|---|---|---|---|---|
+| 100 | flat | 2 ms | 12 kB | 53 ms |
+| 100 | ten-way | 2 ms | 15 kB | 60 ms |
+| 1,000 | flat | 11 ms | 122 kB | 127 ms |
+| 1,000 | ten-way | 13 ms | 156 kB | 131 ms |
+| 10,000 | flat | 111 ms | 1.2 MB | 1,389 ms |
+| 10,000 | ten-way | 119 ms | 1.6 MB | 1,676 ms |
+
+- **Where it degrades:** between 1,000 and 10,000 categories.
+  - The fetch grows with the count, and barely with depth, so the recursive CTE is not the ceiling
+    at these sizes.
+  - The sidebar puts every category's row in the page at once, and at 10,000 that first render
+    takes more than a second.
+- **Nothing changed.** A library with thousands of categories would want a lazily rendered tree
+  before it wants a closure table.
+
+*A link open.*
+- **How.**
+  - Nine runs per renderer. Each run is a fresh profile that opens one part cold, then the next
+    part warm.
+  - The split comes from Resource Timing and the viewer's `lapidary:viewer-first-frame` mark.
+  - One Chrome trace per renderer.
+  - `WEBGL_debug_renderer_info` confirmed both renderers: SwiftShader, and the RTX 3060 Ti through
+    ANGLE's OpenGL backend.
+- **Not comparable with the addendum.** These parts are small bases, not the six example parts.
+- **Every figure below is a median, measured from navigation start.**
+
+| Navigation start to | SwiftShader, cold | GPU, cold | SwiftShader, warm | GPU, warm |
+|---|---|---|---|---|
+| HTML received | 126 ms | 121 ms | 4 ms | 3 ms |
+| Part fetch sent (it takes 5 to 8 ms) | 165 ms | 158 ms | 28 ms | 23 ms |
+| Viewer chunk sent (1 to 13 ms) | 341 ms | 377 ms | 35 ms | 28 ms |
+| First rung sent (3 to 4 ms) | 611 ms | 678 ms | 83 ms | 67 ms |
+| **First frame** | **671 ms** | **706 ms** | **114 ms** | **76 ms** |
+
+- **A cold link stays over 400 ms on both renderers.** A warm one is well under.
+- **Rung transfer and decode do not dominate.**
+  - A rung takes 3 to 4 ms to arrive.
+  - From its arrival to the first frame takes 59 ms on SwiftShader and 26 ms on the GPU.
+  - So L0 and L1 stay unquantized.
+- **The largest block is the viewer's shader warm-up,** 270 to 300 ms between the chunk being sent
+  and the rung being asked for.
+  - The part page calls `warmViewer()` as it mounts.
+  - In the GPU trace that block is one task on a fully busy main thread. 225 ms of it is a
+    synchronous wait on the GPU process, inside `GLES2::GetGLError`.
+  - The log says this Chrome has no `KHR_parallel_shader_compile`.
+  - Nothing changed. That warm-up is what made a GPU link 374 ms faster in the addendum, and
+    compiling after the rung would spend the same time before the first frame.
+- **Not established:** the 170 to 210 ms between the part fetch returning and the viewer chunk
+  being sent. The traced run cannot answer it: `vite preview` held its part fetch for 230 ms, a
+  stall no other run had, and its main thread was idle.
 
 ---
 
