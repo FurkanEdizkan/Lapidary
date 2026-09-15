@@ -20,7 +20,7 @@ use jiff::Timestamp;
 use lapidary_core::{
     Approximate, BlobHash, PartId, Provenance, RevisionDiff, RevisionId, RevisionOrigin,
 };
-use lapidary_db::{DbError, PgParts, PgRevisions, RevisionRow};
+use lapidary_db::{DbError, PgDensities, PgParts, PgRevisions, RevisionRow};
 use lapidary_vcs::diff::{RevisionFigures, diff};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -45,6 +45,10 @@ pub struct PartRevision {
     pub bbox_mm: Option<Approximate<[f64; 3]>>,
     pub volume_mm3: Option<Approximate<f64>>,
     pub surface_area_mm2: Option<Approximate<f64>>,
+    /// This revision's volume times the density of the part's one material as it is today, worked out
+    /// when read and never stored. Always approximate: a density is typed, not measured. `None` without
+    /// a volume, or unless the part holds exactly one material and its library has a density for it.
+    pub mass_g: Option<Approximate<f64>>,
     pub source_hash: Option<BlobHash>,
     pub source_format: Option<String>,
     #[ts(type = "number | null")]
@@ -134,6 +138,17 @@ async fn history(state: &AppState, part: PartId) -> Result<Vec<PartRevision>, Bo
         .map(to_revision)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| Box::new(internal_error(&err, "revision history row refused")))?;
+    // One density for every revision: today's material and today's density, so two revisions differ in
+    // mass only as their volumes do.
+    let density = PgDensities(state.db.clone())
+        .of_part(part)
+        .await
+        .map_err(|err| Box::new(internal_error(&err, "part density lookup failed")))?;
+    for revision in &mut revisions {
+        revision.mass_g = density
+            .zip(revision.volume_mm3)
+            .map(|(density, volume)| Approximate::tessellated(volume.value() * density * 1e-6));
+    }
 
     let recorded: Vec<(RevisionId, RevisionFigures)> = revisions
         .iter()
@@ -155,6 +170,7 @@ fn figures(revision: &PartRevision) -> RevisionFigures {
         triangle_count: revision.triangle_count,
         face_count: revision.face_count,
         edge_count: revision.edge_count,
+        mass_g: revision.mass_g,
     }
 }
 
@@ -207,6 +223,8 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
         }),
         volume_mm3: pair(row.volume_mm3, volume_source),
         surface_area_mm2: pair(row.surface_area_mm2, surface_area_source),
+        // Filled in once the part's density is read, as the parent's delta is.
+        mass_g: None,
         source_hash: row.source_hash,
         source_format: row.format,
         source_bytes: row

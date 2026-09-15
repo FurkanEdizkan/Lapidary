@@ -359,3 +359,114 @@ async fn any_two_revisions_of_a_part_compare_and_no_others_do(pool: sqlx::PgPool
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
 }
+
+fn put(uri: String, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builds")
+}
+
+/// The newest revision's mass, as the history serves it.
+async fn mass_of(pool: &sqlx::PgPool, part: PartId) -> serde_json::Value {
+    let (status, history) = send(
+        pool.clone(),
+        request("GET", &format!("/api/parts/{part}/revisions")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    history[0]["massG"].clone()
+}
+
+/// Mass is worked out when read: a revision's volume times the density of the part's one material as
+/// it is today, and always approximate. Two materials, none, or a material with no density give none,
+/// and a change between two revisions is worked out from the same density on both sides.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn mass_is_volume_times_the_density_of_the_parts_one_material(pool: sqlx::PgPool) {
+    let bracket = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: RevisionOrigin::Ingest,
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            source_path: "bracket-lp-1042-03.stl",
+            folder: None,
+            storage_path: Some("libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl"),
+            blob: &blob_row(0x43),
+            measurements: &flange(21_478.5, 60.0),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            thumbnail_webp: None,
+            kernel_version: "mesh stl-1+cpu-1",
+            format: "stl",
+            tessellations: &[],
+        })
+        .await
+        .expect("the bracket");
+    assert!(
+        mass_of(&pool, bracket).await.is_null(),
+        "no material, no mass"
+    );
+
+    let steel = "S235JR steel";
+    let (status, _) = send(
+        pool.clone(),
+        put(
+            format!("/api/libraries/{SEEDED_LIBRARY}/densities/S235JR%20steel"),
+            serde_json::json!({ "densityKgM3": 7850 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let given = |part: PartId, materials: serde_json::Value| {
+        put(
+            format!("/api/parts/{part}/materials"),
+            serde_json::json!({ "materials": materials }),
+        )
+    };
+
+    send(pool.clone(), given(bracket, serde_json::json!([steel]))).await;
+    let mass = mass_of(&pool, bracket).await;
+    let grams = mass["value"].as_f64().expect("a mass");
+    assert!(
+        (grams - 168.6).abs() < 0.05,
+        "21,478.5 mm³ of a 7,850 kg/m³ steel is about 168.6 g: {grams}"
+    );
+    assert_eq!(
+        mass["approximate"], true,
+        "a typed density is not a measurement"
+    );
+
+    send(
+        pool.clone(),
+        given(bracket, serde_json::json!([steel, "EN AW-6082 T6"])),
+    )
+    .await;
+    assert!(
+        mass_of(&pool, bracket).await.is_null(),
+        "two materials, no mass"
+    );
+    send(
+        pool.clone(),
+        given(bracket, serde_json::json!(["EN AW-6082 T6"])),
+    )
+    .await;
+    assert!(
+        mass_of(&pool, bracket).await.is_null(),
+        "a material with no density, no mass"
+    );
+
+    let widened = two_revisions(&pool).await;
+    send(pool.clone(), given(widened, serde_json::json!([steel]))).await;
+    let (_, history) = send(
+        pool.clone(),
+        request("GET", &format!("/api/parts/{widened}/revisions")),
+    )
+    .await;
+    let change = &history[0]["deltaFromParent"]["massG"];
+    assert!(
+        (change["change"].as_f64().expect("a mass change") - 168.602_3).abs() < 0.001,
+        "21,478 mm³ more of the same steel: {change}"
+    );
+    assert_eq!(change["approximate"], true);
+}

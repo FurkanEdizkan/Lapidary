@@ -461,11 +461,17 @@ export const strings = {
     areaChange: (mm2: number, percent: number | null) => change(mm2 / 100, 'cm²', percent),
     lengthChange: (mm: number, percent: number | null) => change(mm, 'mm', percent),
     countChange: (count: number, percent: number | null) => change(count, '', percent),
+    massChange: (grams: number, percent: number | null) => change(grams, 'g', percent),
     compare: 'Compare',
     compareFrom: 'From',
     compareTo: 'To',
     compareFigure: 'Figure',
     compareChange: 'Change',
+    /** Volume times a typed density: never a measurement, so always shown with ≈. */
+    mass: 'Mass',
+    /** Under a comparison that has a mass row. */
+    massNote:
+      'Mass is each revision’s volume times the density of the part’s material as it is now, so both revisions use today’s material and density.',
     boundingBoxAxis: (axis: 0 | 1 | 2) => `Bounding box ${'XYZ'[axis]}`,
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',

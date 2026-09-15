@@ -20,7 +20,13 @@ thumbnail: string | null, triangleCount: number | null,
 /**
  * The B-rep's faces and edges, counted exactly by the CAD kernel. `None` for a mesh.
  */
-faceCount: number | null, edgeCount: number | null, bboxMm: Approximate<[number, number, number]> | null, volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
+faceCount: number | null, edgeCount: number | null, bboxMm: Approximate<[number, number, number]> | null, volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | null, 
+/**
+ * This revision's volume times the density of the part's one material as it is today, worked out
+ * when read and never stored. Always approximate: a density is typed, not measured. `None` without
+ * a volume, or unless the part holds exactly one material and its library has a density for it.
+ */
+massG: Approximate<number> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
 /**
  * What changed from the revision this one was recorded on top of. `None` for a part's
  * first revision.
