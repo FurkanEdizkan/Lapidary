@@ -399,9 +399,9 @@ fn spawn_worker(
 
     Ok(tokio::spawn(async move {
         // Before the loop takes its first job, and never a reason not to start: see
-        // `enqueue_stale_rungs`. Here rather than beside `enqueue_pending_migrations`, because
-        // it asks the kernel for its version and the api image must not link one.
-        handler.enqueue_stale_rungs().await;
+        // `enqueue_stale_derivatives`. Here rather than beside `enqueue_pending_migrations`,
+        // because it asks the kernel for its version and the api image must not link one.
+        handler.enqueue_stale_derivatives().await;
         if let Err(error) =
             lapidary_jobs::run(lapidary_db::PgJobs(db), handler, worker_config, shutdown).await
         {

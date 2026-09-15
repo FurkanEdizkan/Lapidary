@@ -38,14 +38,15 @@ use lapidary_jobs::HandlerError;
 use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
 
 impl WorkerHandler {
-    /// Queue a rebuild of every rung an older kernel wrote. A worker runs this as it starts.
+    /// Queue a rebuild of every rung, and every CAD read, an older kernel wrote. A worker runs this as
+    /// it starts.
     ///
     /// The version is asked per format exactly as [`derive_one`](Self::derive_one) asks it, so
     /// a rung is stale when rebuilding it here would record a different version. A CAD format on
     /// a worker without a CAD kernel is skipped, since this worker could not rebuild it. Never
     /// fails: a database that will not answer at startup costs a rebuild delayed to the next
     /// start, not a worker that never came up.
-    pub async fn enqueue_stale_rungs(&self) {
+    pub async fn enqueue_stale_derivatives(&self) {
         let jobs = PgJobs(self.db.clone());
         for format in MESH_EXTENSIONS.iter().chain(&CAD_FORMATS) {
             let Ok(kernel) = self.kernel_for(format) else {
@@ -58,19 +59,22 @@ impl WorkerHandler {
             };
             let version = kernel.version(&params);
             let kernel_version = format!("{} {}", version.implementation, version.version);
-            match jobs.enqueue_stale_rungs(format, &kernel_version).await {
+            match jobs
+                .enqueue_stale_derivatives(format, &kernel_version)
+                .await
+            {
                 Ok(0) => {}
                 Ok(queued) => tracing::info!(
                     format = %format,
                     queued,
                     kernel_version = %kernel_version,
-                    "queued rebuilds of rungs an older kernel wrote"
+                    "queued rebuilds of derivatives an older kernel wrote"
                 ),
                 Err(error) => tracing::warn!(
                     format = %format,
                     %error,
-                    "could not check for rungs an older kernel wrote; the next worker start \
-                     tries again"
+                    "could not check for derivatives an older kernel wrote; the next worker \
+                     start tries again"
                 ),
             }
         }
@@ -125,10 +129,20 @@ impl WorkerHandler {
             message: e.to_string(),
         })?;
 
+        // A CAD read is one bridge run that reads the tree, the entities and the PMI together, so
+        // asking for one of them is asking for all three.
+        let produce = match want {
+            DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => vec![
+                DerivativeKind::Structure,
+                DerivativeKind::Entities,
+                DerivativeKind::Pmi,
+            ],
+            other => vec![other],
+        };
         let params = KernelParams {
             linear_deflection_mm: None,
             format,
-            produce: vec![want],
+            produce,
         };
         let kernel = self.kernel_for(&params.format)?;
         let version = kernel.version(&params);
@@ -143,16 +157,41 @@ impl WorkerHandler {
         // was asked for exactly one thing, and a rung filed under a level nobody asked for
         // is a cache entry that can never be hit.
         match want {
-            // ponytail: written at ingest only; nothing enqueues these. Derive them here when
-            // eviction starts removing them.
+            // All three from the one read, and `structure` last: the stale sweep finds a CAD read by
+            // its `structure` row's version, so a job that stops partway is found again. A file with
+            // no analytic surface has no entities row, and one that specifies no PMI has no PMI row,
+            // exactly as ingest writes them.
             DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => {
-                return Err(HandlerError::Permanent {
+                let unserializable = |e: serde_json::Error| HandlerError::Permanent {
                     message: format!(
-                        "The {kind} of revision {revision} is written when its file is \
-                         ingested and is not derived on its own. Re-ingest the file to \
-                         write it again."
+                        "Could not store what the CAD kernel read for revision {revision} — {e}. \
+                         This is a bug in Lapidary; please report it with the part's file."
                     ),
-                });
+                };
+                let Some(structure) = output.structure.as_ref() else {
+                    return Err(missing(DerivativeKind::Structure.as_str(), revision));
+                };
+                let structure = serde_json::to_vec(structure).map_err(unserializable)?;
+                let entities = (!output.entities.is_empty())
+                    .then(|| serde_json::to_vec(&output.entities))
+                    .transpose()
+                    .map_err(unserializable)?;
+                let pmi = output
+                    .pmi
+                    .as_ref()
+                    .map(serde_json::to_vec)
+                    .transpose()
+                    .map_err(unserializable)?;
+                for (read, json) in [
+                    (DerivativeKind::Entities, entities),
+                    (DerivativeKind::Pmi, pmi),
+                    (DerivativeKind::Structure, Some(structure)),
+                ] {
+                    if let Some(json) = json {
+                        self.store_hashed(revision, read, &json, None, &kernel_version)
+                            .await?;
+                    }
+                }
             }
             DerivativeKind::Thumbnail => {
                 let Some(webp) = output.thumbnail_webp else {
@@ -174,49 +213,58 @@ impl WorkerHandler {
                 let Some(rung) = output.tessellations.first() else {
                     return Err(missing(kind, revision));
                 };
-                // The bytes go to disk before the row that points at them, exactly as
-                // ingest's ladder does: a filesystem write cannot be rolled back by
-                // Postgres.
-                let derivatives = DerivativeStore::open(&self.blob_root);
-                let stored = derivatives
-                    .put(&rung.glb)
-                    .map_err(|e| HandlerError::Transient {
-                        message: e.to_string(),
-                    })?;
-                // Only bytes this job introduced may be reaped. A rung whose bytes some
-                // revision already stores is bytes that revision is still serving, and
-                // removing them would be silent data loss -- the same rule, asked of the
-                // same authority, as `ingest_one`'s ladder.
-                let reapable = !PgBlobs(self.db.clone())
-                    .exists(&stored.hash)
-                    .await
-                    .map_err(classify_db)?;
-                let blob = StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                };
-                if let Err(db_err) = ingest
-                    .upsert_derivative(
-                        revision,
-                        want,
-                        DerivativeBytes::Hashed {
-                            blob: &blob,
-                            grid: rung.grid,
-                        },
-                        &kernel_version,
-                    )
-                    .await
-                {
-                    if reapable {
-                        reap(&derivatives, &[blob.hash]);
-                    }
-                    return Err(classify_db(db_err));
-                }
+                self.store_hashed(revision, want, &rung.glb, rung.grid, &kernel_version)
+                    .await?;
             }
         }
         Ok(Outcome::Rendered)
+    }
+
+    /// `bytes` into the derivative store, then the row for `kind` pointing at them.
+    async fn store_hashed(
+        &self,
+        revision: RevisionId,
+        kind: DerivativeKind,
+        bytes: &[u8],
+        grid: Option<u32>,
+        kernel_version: &str,
+    ) -> Result<(), HandlerError> {
+        // The bytes go to disk before the row that points at them, exactly as ingest's ladder
+        // does: a filesystem write cannot be rolled back by Postgres.
+        let derivatives = DerivativeStore::open(&self.blob_root);
+        let stored = derivatives
+            .put(bytes)
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })?;
+        // Only bytes this job introduced may be reaped. Bytes some revision already stores are
+        // bytes that revision is still serving, and removing them would be silent data loss --
+        // the same rule, asked of the same authority, as `ingest_one`'s ladder.
+        let reapable = !PgBlobs(self.db.clone())
+            .exists(&stored.hash)
+            .await
+            .map_err(classify_db)?;
+        let blob = StoredBlobRow {
+            hash: stored.hash,
+            size_bytes: stored.size_bytes,
+            stored_bytes: stored.stored_bytes,
+            zstd_level: stored.zstd_level,
+        };
+        if let Err(db_err) = PgIngest(self.db.clone())
+            .upsert_derivative(
+                revision,
+                kind,
+                DerivativeBytes::Hashed { blob: &blob, grid },
+                kernel_version,
+            )
+            .await
+        {
+            if reapable {
+                reap(&derivatives, &[blob.hash]);
+            }
+            return Err(classify_db(db_err));
+        }
+        Ok(())
     }
 }
 
