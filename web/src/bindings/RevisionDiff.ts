@@ -16,4 +16,9 @@ bboxMm: [Delta, Delta, Delta] | null, triangleCount: Delta | null,
  * A CAD revision's B-rep faces and edges, exact. `None` when either revision is a mesh, or was
  * read before the bridge counted them.
  */
-faceCount: Delta | null, edgeCount: Delta | null, };
+faceCount: Delta | null, edgeCount: Delta | null, 
+/**
+ * Volume times the density of the part's one material as it is today, on both sides: always
+ * approximate, since a density is typed. `None` when there is no such density or no volume.
+ */
+massG: Delta | null, };

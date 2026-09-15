@@ -4,7 +4,7 @@
 //! A density is typed by a person, never measured.
 
 use crate::DbError;
-use lapidary_core::LibraryId;
+use lapidary_core::{LibraryId, PartId};
 use sqlx::PgPool;
 
 /// One material's density in one library.
@@ -54,6 +54,20 @@ impl PgDensities {
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// The density a part's mass is worked out from: its library's density for the part's one material.
+    /// `None` when the part holds no material or more than one, or its material has no density.
+    pub async fn of_part(&self, part: PartId) -> Result<Option<f64>, DbError> {
+        let density: Option<f64> = sqlx::query_scalar(
+            "SELECT d.density_kg_m3::float8 FROM part p \
+             JOIN material_density d ON d.library_id = p.library_id AND d.material = p.materials[1] \
+             WHERE p.id = $1 AND cardinality(p.materials) = 1",
+        )
+        .bind(part.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(density)
     }
 
     /// Remove a material's density. `false` when it had none in that library.

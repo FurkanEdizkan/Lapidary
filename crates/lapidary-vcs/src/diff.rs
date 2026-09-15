@@ -15,6 +15,8 @@ pub struct RevisionFigures {
     /// The B-rep's faces and edges, counted exactly. `None` on a mesh.
     pub face_count: Option<u32>,
     pub edge_count: Option<u32>,
+    /// Worked out when read from the volume and a typed density, never recorded. Always approximate.
+    pub mass_g: Option<Approximate<f64>>,
 }
 
 /// `to` against `from`: a delta for every figure both revisions recorded, and none for the rest.
@@ -30,6 +32,7 @@ pub fn diff(from: &RevisionFigures, to: &RevisionFigures) -> RevisionDiff {
         triangle_count: count(from.triangle_count, to.triangle_count),
         face_count: count(from.face_count, to.face_count),
         edge_count: count(from.edge_count, to.edge_count),
+        mass_g: figure(from.mass_g, to.mass_g),
     }
 }
 
@@ -73,6 +76,7 @@ mod tests {
             triangle_count: Some(36_868),
             face_count: None,
             edge_count: None,
+            mass_g: None,
         }
     }
 

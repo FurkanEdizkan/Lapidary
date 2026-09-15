@@ -1392,6 +1392,9 @@ function History({ part, onGhost }: { part: PartId; onGhost: (hash: BlobHash | n
                 render={strings.detail.volumeChange}
               />
             ) : null}
+            {revision.deltaFromParent?.massG ? (
+              <Change delta={revision.deltaFromParent.massG} render={strings.detail.massChange} />
+            ) : null}
             <a
               href={downloadUrl(revision.id)}
               download
@@ -1548,6 +1551,9 @@ function Compare({
       ? []
       : [
           { label: strings.detail.volume, delta: diff.volumeMm3, render: strings.detail.volumeChange },
+          // Only where there is one: a part without one material and its density has no mass to compare,
+          // which is not a figure "not measured in both".
+          ...(diff.massG ? [{ label: strings.detail.mass, delta: diff.massG, render: strings.detail.massChange }] : []),
           {
             label: strings.detail.surfaceArea,
             delta: diff.surfaceAreaMm2,
@@ -1623,6 +1629,7 @@ function Compare({
           </tbody>
         </table>
       )}
+      {diff?.massG ? <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.detail.massNote}</p> : null}
     </div>
   )
 }

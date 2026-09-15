@@ -38,4 +38,7 @@ pub struct RevisionDiff {
     /// read before the bridge counted them.
     pub face_count: Option<Delta>,
     pub edge_count: Option<Delta>,
+    /// Volume times the density of the part's one material as it is today, on both sides: always
+    /// approximate, since a density is typed. `None` when there is no such density or no volume.
+    pub mass_g: Option<Delta>,
 }
