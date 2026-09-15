@@ -422,6 +422,9 @@ every link comes before the first frame, so it reads 2 before and after.
 **Exit:** open a STEP from Lapidary in FreeCAD, change it, save, and a new revision
 appears automatically with a correct volume delta — on Linux, macOS and Windows.
 
+Met on Linux in goal 4's stage 8 (2026-09-15, FreeCAD 0.21.2): revision 2 appeared 2.5 s after FreeCAD wrote
+the file, with an exact volume delta. macOS and Windows are still open.
+
 ### Slice 1 — revisions, geometric diff, check-out locks, the Linux agent (2026-09-14)
 
 Spec: `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md` (`e4d7f49`).
@@ -847,8 +850,7 @@ These were swept from this file's records, FEATURES and DATA, and checked agains
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
 **Goals, run in this order.** Each goal is one long `/goal` session with its own file under
-`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–4 are merged, goal 4 without its
-stage 8, which waits for FreeCAD. Goals 4–6 were planned after goal 3's code review, from the owner's answers
+`docs/superpowers/plans/`, and keeps its record below as it merges. Goals 1–4 are merged. Goals 4–6 were planned after goal 3's code review, from the owner's answers
 below.
 
 | Order | Goal file | Holds |
@@ -884,7 +886,7 @@ below.
 | Unblocked by | Items |
 |---|---|
 | Real-world STEP files on this machine; OCCT itself was **built in goal 4**, which did the rest of this row | Timing Phase 0 and Phase 2 on real STEP files and assemblies; datums no tolerance refers to (OCCT's reader creates only a datum a tolerance refers to) |
-| FreeCAD installed by the owner: goal 4's stage 8, **waiting** | Phase 4's exit on Linux (a STEP opened in FreeCAD, saved, and a revision appears); AP242 files written by other CAD tools |
+| Licence-clean AP242 files from other CAD tools. Phase 4's exit on Linux, which needed FreeCAD, was **met in goal 4's stage 8** | AP242 files written by other CAD tools |
 | A macOS or Windows machine | The FSEvents and `ReadDirectoryChangesW` watchers, the Windows overflow rescan, and the rest of Phase 4's exit |
 | Pulling a pgvector image | Checking pgvector against `postgres:18`, before Phase 6 (see Open items) |
 | Phase 8 | The lifecycle facet, per-user saved filters, auth on locks, `lapidary worker` |
@@ -1814,15 +1816,35 @@ checked against the code first. Each fix has a test that a mutation turned red, 
     owner.
 - **Still true:**
   - an app declaring STEP under a spelling not on that list is missed;
-  - `xdg-open` reads a `.step` file as `text/plain` here, whatever the agent decides.
-  - Stage 8, with FreeCAD, meets both first.
+  - `xdg-open` reads a `.step` file as `text/plain` here, whatever the agent decides. Stage 8 met this, and
+    `open` now starts the app it found by name (`57598c8`).
 
-**Phase 4's exit on Linux: waiting for FreeCAD** (stage 8, not run).
-- FreeCAD was not installed when stage 8 began, and still was not after stage 9: no binary on the `PATH`, and no
-  Flatpak, Snap or desktop file. By the owner's answer the goal went on to stage 9; stage 8 runs once FreeCAD is
-  installed.
-- What stage 9's check found that stage 8 will meet: this desktop's MIME database has no STEP type, so
-  `xdg-open` reads a `.step` file as `text/plain`, and `open` finds FreeCAD only under a STEP type it asks for.
+**Phase 4's exit on Linux, met** (stage 8; `57598c8`).
+- **When:** FreeCAD was not installed when stage 8 first came up, so the goal went on to stage 9 by the owner's
+  answer. The owner installed it at the end of the goal: FreeCAD 0.21.2 from the distribution, whose desktop file
+  declares `model/step`.
+- **Found, and fixed** (`57598c8`): the link's check-out would have opened in GNOME Text Editor.
+  - `xdg-open` picks an app by the type it detects in the file, and this desktop's MIME database has no STEP type,
+    so a `.step` file is `text/plain` whichever app declares STEP.
+  - `open` now starts the app it found for the format by its desktop file, with `gio launch`, and falls back to
+    `xdg-open` when it found none or `gio` cannot start it.
+- **The check:** on the native stack with the OCCT worker. The desktop side ran under throwaway XDG folders that
+  still see the system's apps (`target/goal4-check/stage8.sh`).
+
+| Step | Result |
+|---|---|
+| `lapidary register` | `lapidary://` links to `lapidary-url.desktop`, `model/step` to FreeCAD's desktop file; a `.step` file still reads as `text/plain` |
+| The part's `lapidary://open` link, handed to `xdg-open` as a browser hands it over | a check-out of `cylinder-d22-lp-9010-00.step` with its lock taken, and FreeCAD started on that file, in the same second: the lock at 15:41:44.561, the file at .608 |
+| FreeCAD's own STEP exporter bores a ⌀8 mm hole through and writes over the checked-out file | FreeCAD read 11,403.981 → 9,896.017 mm³, 3 → 4 faces, 3 → 6 edges |
+| `lapidary agent`, running | "was saved; sending it back". Revision 2, origin `agent`, parent revision 1, listed 2,503 ms after the write |
+| Revision 2 against 1 | volume −1,507.964 mm³ (−13.2%), surface area +653.451 mm², box unchanged, 3 → 4 faces, 3 → 6 edges; every figure exact |
+| `lapidary checkin` | lock released; the folder keeps its files |
+
+- The new volume is π·(11² − 4²)·30 mm³ to every digit shown.
+- **Not by hand:** the change was written by FreeCAD's exporter from its command line (`freecadcmd`), not in the
+  window the link opened, so the check could run unattended. Decided without the owner; the window's File → Export
+  does the same.
+- macOS and Windows are still open.
 
 **Decided without the owner, across the goal.**
 - The stale sweep queues a CAD part by its `structure` row's kernel version, not by a missing `pmi` row.
@@ -1832,6 +1854,9 @@ checked against the code first. Each fix has a test that a mutation turned red, 
 - Exports are written in Rust from the mesh the kernel read, with no bridge `export` command.
 - An export `lapidary open` hands out takes no lock.
 - Exports are render cache, freed with L1 and L2.
+- `lapidary open` starts the app it found for a format by name, with `gio launch`, rather than letting `xdg-open`
+  pick one by the file's detected type.
+- Stage 8's change was written by FreeCAD's exporter from its command line, not by hand in its window.
 
 **Recorded, not built.**
 - Datums no tolerance refers to: OCCT's STEP reader creates only a datum a tolerance refers to.
