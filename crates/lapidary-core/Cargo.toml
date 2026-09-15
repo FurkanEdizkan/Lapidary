@@ -16,6 +16,10 @@ thiserror.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
 jiff.workspace = true
+# A device id is the BLAKE3 of an installation's public key (`device.rs`), and the rule for
+# deriving one belongs beside the type rather than in the crate that opens the connection.
+# Already in the tree through lapidary-storage and lapidary-ingest, so nothing new is built.
+blake3.workspace = true
 
 [lints]
 workspace = true
