@@ -107,6 +107,8 @@ export async function fetchParts(
   tag?: string,
   field?: string,
   fieldValue?: string,
+  fieldMin?: string,
+  fieldMax?: string,
 ): Promise<PartsPage> {
   // Keyset, not offset: `after` is the previous page's last id, and the server orders by
   // id descending. Omitted entirely rather than sent empty — the route reads its absence
@@ -132,7 +134,7 @@ export async function fetchParts(
   if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
   if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
-  setField(query, field, fieldValue)
+  setField(query, field, fieldValue, fieldMin, fieldMax)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
   if (!response.ok) {
@@ -155,6 +157,8 @@ export async function fetchFacets(
   tag?: string,
   field?: string,
   fieldValue?: string,
+  fieldMin?: string,
+  fieldMax?: string,
 ): Promise<Facets> {
   const query = new URLSearchParams()
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
@@ -164,24 +168,32 @@ export async function fetchFacets(
   if (typeof format === 'string' && format.length > 0) query.set('format', format)
   if (typeof material === 'string' && material.length > 0) query.set('material', material)
   if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
-  setField(query, field, fieldValue)
+  setField(query, field, fieldValue, fieldMin, fieldMax)
   const suffix = query.size === 0 ? '' : `?${query}`
   const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
   if (!response.ok) {
-    throw new Error(`facets returned ${response.status}`)
+    throw new RefusedError(`facets returned ${response.status}`, await refusalReason(response))
   }
   return (await response.json()) as Facets
 }
 
 /**
- * A custom field filter rides as a pair or not at all: the route reads either alone as no filter,
- * and a URL carrying half of one reads as a filter nobody set.
+ * A custom field filter rides with its value or its range, or not at all: the route reads a key alone, or
+ * a value or a bound alone, as no filter, and a URL carrying half of one reads as a filter nobody set.
  */
-function setField(query: URLSearchParams, field?: string, fieldValue?: string): void {
-  if (typeof field === 'string' && field.length > 0 && typeof fieldValue === 'string' && fieldValue.length > 0) {
-    query.set('field', field)
-    query.set('fieldValue', fieldValue)
-  }
+function setField(
+  query: URLSearchParams,
+  field?: string,
+  fieldValue?: string,
+  fieldMin?: string,
+  fieldMax?: string,
+): void {
+  const given = Object.entries({ fieldValue, fieldMin, fieldMax }).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
+  )
+  if (typeof field !== 'string' || field.length === 0 || given.length === 0) return
+  query.set('field', field)
+  for (const [name, value] of given) query.set(name, value)
 }
 
 /** `GET /api/libraries/{id}/fields` — the library's custom fields, oldest first. */

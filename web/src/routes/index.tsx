@@ -110,7 +110,7 @@ export const Route = createFileRoute('/')({
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string; field?: string; fieldValue?: string } => {
+  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string; field?: string; fieldValue?: string; fieldMin?: string; fieldMax?: string } => {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
@@ -119,8 +119,10 @@ export const Route = createFileRoute('/')({
     const part = search.part
     const material = search.material
     const tag = search.tag
-    const field = search.field
-    const fieldValue = search.fieldValue
+    const field = searchText(search.field)
+    const fieldValue = searchText(search.fieldValue)
+    const fieldMin = searchText(search.fieldMin)
+    const fieldMax = searchText(search.fieldMax)
     return {
       ...(typeof batch === 'string' && batch.length > 0 ? { batch } : {}),
       // Absent, never empty. No category selected is the whole library, which the parts
@@ -158,15 +160,25 @@ export const Route = createFileRoute('/')({
         : typeof tag === 'number'
           ? { tag: String(tag) }
           : {}),
-      // A field offered as a filter and its value, both or neither, as the route reads them. A key and a
-      // value can each be all digits, which arrives as a number for the reason `q` gives.
-      ...(((typeof field === 'string' && field.length > 0) || typeof field === 'number') &&
-      ((typeof fieldValue === 'string' && fieldValue.length > 0) || typeof fieldValue === 'number')
-        ? { field: String(field), fieldValue: String(fieldValue) }
+      // A field offered as a filter with its value or its range, or none of them, as the route reads them. A
+      // key, a value and a bound can each be all digits, which arrives as a number for the reason `q` gives.
+      ...(field !== undefined && (fieldValue !== undefined || fieldMin !== undefined || fieldMax !== undefined)
+        ? {
+            field,
+            ...(fieldValue === undefined ? {} : { fieldValue }),
+            ...(fieldMin === undefined ? {} : { fieldMin }),
+            ...(fieldMax === undefined ? {} : { fieldMax }),
+          }
         : {}),
     }
   },
 })
+
+/** A search param as text: a string as it is, a number as its digits, and an empty string or anything else as absent. */
+function searchText(value: unknown): string | undefined {
+  if (typeof value === 'number') return String(value)
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
 
 /**
  * Reads the search params and hands them to `Index` as props. `Index` takes the batch and
@@ -177,7 +189,7 @@ export const Route = createFileRoute('/')({
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library, format, material, tag, part, field, fieldValue } = Route.useSearch()
+  const { batch, folderId, q, library, format, material, tag, part, field, fieldValue, fieldMin, fieldMax } = Route.useSearch()
   const navigate = Route.useNavigate()
   return (
     <Index
@@ -215,12 +227,16 @@ function RouteComponent() {
       }
       field={field}
       fieldValue={fieldValue}
-      onSelectField={(key, value) =>
+      fieldMin={fieldMin}
+      fieldMax={fieldMax}
+      onSelectField={(key, value, range) =>
         void navigate({
           search: (previous) => ({
             ...previous,
             field: key ?? undefined,
             fieldValue: value ?? undefined,
+            fieldMin: range?.min,
+            fieldMax: range?.max,
             part: undefined,
           }),
         })
@@ -363,6 +379,8 @@ export function Index({
   onSelectTag,
   field,
   fieldValue,
+  fieldMin,
+  fieldMax,
   onSelectField,
   part,
   onOpenPart,
@@ -387,11 +405,13 @@ export function Index({
   /** The tag the grid is narrowed to, as the URL carries it. Absent is every tag. */
   tag?: string
   onSelectTag?: (tag: string | null) => void
-  /** A custom field offered as a filter, and the value it must hold. */
+  /** A custom field offered as a filter, and the value it must hold or, for a number, the range it lies in. */
   field?: string
   fieldValue?: string
-  /** Writes a field filter to the URL; `null` clears it. */
-  onSelectField?: (field: string | null, value: string | null) => void
+  fieldMin?: string
+  fieldMax?: string
+  /** Writes a field filter to the URL, a value or a range; `null` clears it. */
+  onSelectField?: (field: string | null, value: string | null, range?: { min?: string; max?: string }) => void
   /** The part the quick look is open on, as the URL carries it. */
   part?: string
   /** Writes the open part to the URL; `null` closes it. */
@@ -488,9 +508,9 @@ export function Index({
     // `pageSize` is in the key: changing it changes what a page *is*, so the pages already
     // held describe a different question and re-using them would show 50-card pages under a
     // grid that says 250.
-    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null, order],
+    queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null, fieldMin ?? null, fieldMax ?? null, order],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag, field, fieldValue),
+      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag, field, fieldValue, fieldMin, fieldMax),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -499,7 +519,13 @@ export function Index({
   const fieldGone =
     field !== undefined &&
     parts.error instanceof RefusedError &&
-    (parts.error.reason === 'notAFilter' || parts.error.reason === 'wrongType')
+    (parts.error.reason === 'notAFilter' || parts.error.reason === 'wrongType' || parts.error.reason === 'notARange')
+  // A field filter no grid can take: a value beside a range, or a range that runs backwards. Only a link
+  // typed by hand holds one, since the filter's own boxes write neither.
+  const fieldUnreadable =
+    field !== undefined &&
+    parts.error instanceof RefusedError &&
+    (parts.error.reason === 'valueAndRange' || parts.error.reason === 'emptyRange')
   // Flattened once per render rather than at each use: three things read it (the grid,
   // the extent line and the empty state) and they must agree about how many parts there
   // are.
@@ -906,7 +932,7 @@ export function Index({
       <div className="w-56 shrink-0">
         <SavedFilters
           library={library}
-          current={filtersOf({ q, folderId, format, material, tag, field, fieldValue })}
+          current={filtersOf({ q, folderId, format, material, tag, field, fieldValue, fieldMin, fieldMax })}
           onApply={(search) => onApplyFilter?.(search)}
         />
         <Facets
@@ -918,10 +944,12 @@ export function Index({
           tag={tag}
           field={field}
           fieldValue={fieldValue}
+          fieldMin={fieldMin}
+          fieldMax={fieldMax}
           onSelectFormat={(value) => onSelectFormat?.(value)}
           onSelectMaterial={(value) => onSelectMaterial?.(value)}
           onSelectTag={(value) => onSelectTag?.(value)}
-          onSelectField={(key, value) => onSelectField?.(key, value)}
+          onSelectField={(key, value, range) => onSelectField?.(key, value, range)}
         />
         <FolderTree
           library={library}
@@ -1031,8 +1059,11 @@ export function Index({
         )}
         {parts.isPending ? (
           <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
-        ) : fieldGone ? (
-          <FilterGone text={strings.fieldGone} onWiden={() => onSelectField?.(null, null)} />
+        ) : fieldGone || fieldUnreadable ? (
+          <FilterGone
+            text={fieldGone ? strings.fieldGone : strings.fieldUnreadable}
+            onWiden={() => onSelectField?.(null, null)}
+          />
         ) : parts.isError ? (
           <p className="max-w-prose text-[var(--color-muted)]">{strings.parts.failed}</p>
         ) : loaded.length === 0 ? (
@@ -3397,7 +3428,7 @@ function FilterGone({
   )
 }
 
-const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag', 'field', 'fieldValue'] as const
+const FILTER_KEYS = ['q', 'folderId', 'format', 'material', 'tag', 'field', 'fieldValue', 'fieldMin', 'fieldMax'] as const
 
 /** The grid's filters as a saved filter holds them: only the ones that are set. */
 function filtersOf(filters: { [key in (typeof FILTER_KEYS)[number]]?: string }): FilterSearch {
@@ -3432,6 +3463,8 @@ function Facets({
   tag,
   field,
   fieldValue,
+  fieldMin,
+  fieldMax,
   onSelectFormat,
   onSelectMaterial,
   onSelectTag,
@@ -3445,16 +3478,21 @@ function Facets({
   tag?: string
   field?: string
   fieldValue?: string
+  fieldMin?: string
+  fieldMax?: string
   onSelectFormat: (format: string | null) => void
   onSelectMaterial: (material: string | null) => void
   onSelectTag: (tag: string | null) => void
-  onSelectField: (field: string | null, value: string | null) => void
+  onSelectField: (field: string | null, value: string | null, range?: { min?: string; max?: string }) => void
 }) {
   const facets = useQuery({
-    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null],
-    queryFn: () => fetchFacets(library, folderId, q, format, material, tag, field, fieldValue),
+    queryKey: ['facets', library, folderId ?? null, q ?? null, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null, fieldMin ?? null, fieldMax ?? null],
+    queryFn: () => fetchFacets(library, folderId, q, format, material, tag, field, fieldValue, fieldMin, fieldMax),
   })
   if (facets.isError) {
+    // A field filter the server refuses fails the facets with the grid, and the grid says why and offers the way
+    // out, where "reload to try again" would not help.
+    if (field !== undefined && facets.error instanceof RefusedError) return null
     return (
       <p role="alert" className="mb-6 text-xs text-[var(--color-muted)]">
         {strings.facets.failed}
@@ -3493,7 +3531,14 @@ function Facets({
         name={(value) => value}
         option={strings.facets.tagOption}
       />
-      <FieldFilters library={library} field={field} fieldValue={fieldValue} onSelect={onSelectField} />
+      <FieldFilters
+        library={library}
+        field={field}
+        fieldValue={fieldValue}
+        fieldMin={fieldMin}
+        fieldMax={fieldMax}
+        onSelect={onSelectField}
+      />
     </>
   )
 }

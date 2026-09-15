@@ -953,6 +953,12 @@ export const strings = {
     body: 'Since this filter or link was made, the field was removed, stopped being offered as a filter, or was defined again for a different kind of value. The rest of these filters still work without it.',
     widen: 'Show these filters without the field',
   },
+  /** A field filter no grid can take, which only a link typed by hand holds. */
+  fieldUnreadable: {
+    title: 'This field filter is not one the grid can use',
+    body: 'It gives the field a value and a range at once, or a range that starts above where it ends. The rest of these filters still work without it.',
+    widen: 'Show these filters without the field',
+  },
   /** The filters beside the grid. `docs/DATA.md` §3.4. */
   facets: {
     format: 'Format',
@@ -1509,6 +1515,11 @@ export const strings = {
     loadFailed: 'Could not load this library’s fields. Reload to try again.',
     /** A filter's value box, named for the field it filters. */
     filterValue: (label: string) => `${label} is`,
+    /** A number field's two range boxes, named for the field, each showing its end as a hint. */
+    filterFrom: (label: string) => `${label} from`,
+    filterTo: (label: string) => `${label} to`,
+    from: 'from',
+    to: 'to',
     filterApply: 'Filter',
     filterClear: (label: string) => `Clear the ${label} filter`,
   },

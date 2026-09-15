@@ -2000,6 +2000,52 @@ stage's own build.
   - The bracket, rescanned with the spacer's bytes: (44, 13.8, 6.3) then (0, 0, 0), tessellated. The rows read
     "−44 mm", "−13.8 mm" and "−6.3 mm", each ≈.
 
+**Number ranges for custom fields** (`870ac66`, `8978484`).
+- **The routes:** the grid, its facets and saved filters take `fieldMin` and `fieldMax` beside `field`, either or
+  both and each inclusive, carried in the URL. Refused in words:
+  - a value beside a range;
+  - a range that runs backwards;
+  - a range on a field that is not a number;
+  - a bound that is not a number.
+- **The query:** `@?` over the jsonpath `$."<key>" ? (@ >= min && @ <= max)`, one more parameter in each of the
+  six grid, sort, search and facet queries. The goal's default was a `::numeric` cast between the bounds, but a cast
+  behind a type check can still fail the query, since Postgres does not promise which side of an AND it evaluates
+  first; `@?` passes over a value that is not a number by definition. Decided without the owner. The GIN index
+  cannot serve a range, and the `ponytail:` note names an expression index per field as the upgrade.
+- **The grid:** a number field's filter is two boxes, from and to, in place of its one value box.
+  - A range typed backwards is written forwards.
+  - A value from an older link fills both boxes.
+  - A link holding a value beside a range, or a range that runs backwards, says the filter is not one the grid can
+    use and offers the filters without it.
+
+  Decided without the owner.
+- **Found on the stack:** a refused field filter also failed the facets rail, which said to reload, and reloading
+  could not help. It was already so for a field no longer offered. The rail now says nothing, and the grid says
+  what is wrong.
+- **Tests:**
+  - db: a range through the page, a sort, a search and the format facet, passing over words stored under the key;
+  - api: either bound or both, inclusive, a negative decimal, the facets, a saved filter, and the four refusals;
+  - web: bounds kept in the URL as digits, negative and decimal; the two boxes start from the URL, write a
+    backwards range forwards, and clear; the rail stays quiet on a refused filter.
+- **Mutation-checked, all 15 caught:**
+  - each bound made exclusive;
+  - the backwards, number-only and value-beside-range refusals dropped;
+  - a saved filter's range tidied away;
+  - the range dropped from the page, the search, the sort and the format facet;
+  - the page's range swapped for the goal's `::numeric` cast, which failed on the words ("invalid input syntax");
+  - the boxes' swap dropped;
+  - the bounds dropped from the request, and from the URL;
+  - the rail's quiet dropped.
+- **Recorded, not built:** the material and tag facets carry the range as the format facet does, and only the
+  format facet's is tested.
+- **Checked in Chrome** on the native stack, in a library whose three parts hold a hole diameter of 8.5, 10.5 and
+  20 mm (no page errors, none logged):
+  - 12 typed in From and 9 in To: the URL held 9 to 12, the boxes read 9 and 12, only the spacer (10.5) was left,
+    and the format facet counted 1;
+  - a link with `fieldMin=10` as bare digits: the boxes read 10 and nothing, and the spacer and the locating block
+    were left;
+  - a link from 22 to 8: the grid said the filter is not one it can use, and the rail said nothing.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

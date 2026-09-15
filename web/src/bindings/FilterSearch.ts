@@ -9,4 +9,8 @@ export type FilterSearch = { q?: string, folderId?: FolderId, format?: string, m
 /**
  * One custom field this library offers as a filter, with `fieldValue` (`docs/DATA.md` §3.5).
  */
-field?: string, fieldValue?: string, };
+field?: string, fieldValue?: string, 
+/**
+ * With `field`, a number field's range in place of `fieldValue`: either bound, or both.
+ */
+fieldMin?: string, fieldMax?: string, };

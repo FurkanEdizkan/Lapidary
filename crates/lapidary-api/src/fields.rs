@@ -271,20 +271,33 @@ pub async fn set_value(
     }
 }
 
-/// The grid's `field` and `fieldValue`, as the JSON object `{"<key>": value}` a `@>` filter matches.
-/// `None` when either is absent or blank. Refused, as the response to send, when the key is not a
-/// field this library offers as a filter or the value is not of that field's kind.
+/// A custom field filter as the grid's queries take it: a value, or a number field's range.
+#[derive(Debug, Default)]
+pub(crate) struct FieldFilter {
+    /// `{"<key>": value}`, the JSON object a `@>` filter matches.
+    pub exact: Option<String>,
+    /// `$."<key>" ? (@ >= min && @ <= max)`, the jsonpath a `@?` filter matches.
+    pub range: Option<String>,
+}
+
+/// The grid's `field` with its `fieldValue`, or with `fieldMin` and `fieldMax`, either or both. Nothing
+/// when the key is absent or blank or comes with neither. Refused, as the response to send, when the key
+/// is not a field this library offers as a filter, the value is not of that field's kind, or the range is
+/// not one a number field can hold.
 pub(crate) async fn filter_of(
     db: &PgPool,
     library: LibraryId,
     key: Option<&str>,
     value: Option<&str>,
-) -> Result<Option<String>, Response> {
-    let (Some(key), Some(value)) = (
-        key.map(str::trim).filter(|key| !key.is_empty()),
-        value.map(str::trim).filter(|value| !value.is_empty()),
-    ) else {
-        return Ok(None);
+    min: Option<&str>,
+    max: Option<&str>,
+) -> Result<FieldFilter, Response> {
+    fn given(text: Option<&str>) -> Option<&str> {
+        text.map(str::trim).filter(|text| !text.is_empty())
+    }
+    let (value, min, max) = (given(value), given(min), given(max));
+    let Some(key) = given(key).filter(|_| value.is_some() || min.is_some() || max.is_some()) else {
+        return Ok(FieldFilter::default());
     };
     let field = match PgCustomFields(db.clone()).field(library, key).await {
         Ok(Some(field)) if field.indexed => field,
@@ -299,6 +312,25 @@ pub(crate) async fn filter_of(
         }
         Err(err) => return Err(internal_error(&err, "custom field lookup failed")),
     };
+    let Some(value) = value else {
+        return range_of(&field, min, max)
+            .map(|range| FieldFilter {
+                exact: None,
+                range: Some(range),
+            })
+            .map_err(|(reason, message)| refused(StatusCode::BAD_REQUEST, reason, &message));
+    };
+    // Keeping either and dropping the other would show parts nobody asked for.
+    if min.is_some() || max.is_some() {
+        return Err(refused(
+            StatusCode::BAD_REQUEST,
+            "valueAndRange",
+            &format!(
+                "A filter on “{}” takes a value or a range, not both. Clear one and filter again.",
+                field.label
+            ),
+        ));
+    }
     let typed = if field.kind == "number" {
         match value
             .parse::<f64>()
@@ -322,7 +354,66 @@ pub(crate) async fn filter_of(
     };
     let mut object = serde_json::Map::new();
     object.insert(field.key, typed);
-    Ok(Some(serde_json::Value::Object(object).to_string()))
+    Ok(FieldFilter {
+        exact: Some(serde_json::Value::Object(object).to_string()),
+        range: None,
+    })
+}
+
+/// A number field's range, at least one bound given, as the jsonpath its `@?` filter matches. The key goes
+/// into the path as it is, which `custom_field`'s check (`^[a-z0-9_]{1,40}$`) makes safe, and a finite
+/// `f64` writes as plain digits. Refused when the field is not a number, a bound is not a number, or the
+/// range runs backwards, with the reason and the sentence to send.
+fn range_of(
+    field: &CustomFieldRow,
+    min: Option<&str>,
+    max: Option<&str>,
+) -> Result<String, (&'static str, String)> {
+    let label = &field.label;
+    if field.kind != "number" {
+        return Err((
+            "notARange",
+            format!(
+                "“{label}” is a {} field, and only a number field filters by a range. Filter it by a value instead.",
+                field.kind
+            ),
+        ));
+    }
+    let bound = |text: Option<&str>| {
+        text.map(|text| {
+            text.parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| {
+                    (
+                        "wrongType",
+                        format!("“{label}” is a number field, and “{text}” is not a number."),
+                    )
+                })
+        })
+        .transpose()
+    };
+    let (min, max) = (bound(min)?, bound(max)?);
+    if min.zip(max).is_some_and(|(from, to)| from > to) {
+        return Err((
+            "emptyRange",
+            format!(
+                "The range on “{label}” starts above where it ends, so no part could lie in it. Swap the two and filter again."
+            ),
+        ));
+    }
+    let conditions: Vec<String> = [
+        min.map(|min| format!("@ >= {min}")),
+        max.map(|max| format!("@ <= {max}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Ok(format!(
+        "$.\"{}\" ? ({})",
+        field.key,
+        conditions.join(" && ")
+    ))
 }
 
 /// A value checked against its field. `Ok(None)` clears the part's value; `Err` is the sentence to

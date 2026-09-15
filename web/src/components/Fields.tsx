@@ -294,32 +294,46 @@ function NewField({
   )
 }
 
+/** Writes a field filter: a value, or for a number a range with either bound or both. `null` clears it. */
+type FieldSelect = (field: string | null, value: string | null, range?: { min?: string; max?: string }) => void
+
+/** A filter's typed box, beside the facets. */
+const FILTER_BOX =
+  'min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-0.5 text-sm'
+
 /**
  * The grid's filters for the fields its library offers as filters, beside the facets. One field at a
- * time, as there is one material and one tag: a choice lists its options, and text or a number takes a
- * typed value.
+ * time, as there is one material and one tag: a choice lists its options, text takes a typed value, and a
+ * number a range from one box to the other.
  */
 export function FieldFilters({
   library,
   field,
   fieldValue,
+  fieldMin,
+  fieldMax,
   onSelect,
 }: {
   library: LibraryId
   field?: string
   fieldValue?: string
-  onSelect: (field: string | null, value: string | null) => void
+  fieldMin?: string
+  fieldMax?: string
+  onSelect: FieldSelect
 }) {
   const fields = useQuery({ queryKey: ['fields', library], queryFn: () => fetchFields(library) })
   const offered = (fields.data ?? []).filter((one) => one.indexed)
+  const ranged = fieldMin !== undefined || fieldMax !== undefined
   return (
     <>
       {offered.map((one) => (
         <FieldFilter
-          // Keyed by the value in force too, so the box starts again from it whenever the URL changes.
-          key={`${one.key}:${field === one.key ? (fieldValue ?? '') : ''}`}
+          // Keyed by the value and range in force too, so the boxes start again from them whenever the URL
+          // changes.
+          key={`${one.key}:${field === one.key ? `${fieldValue ?? ''}:${fieldMin ?? ''}:${fieldMax ?? ''}` : ''}`}
           field={one}
           active={field === one.key ? fieldValue : undefined}
+          range={field === one.key && ranged ? { min: fieldMin, max: fieldMax } : undefined}
           onSelect={onSelect}
         />
       ))}
@@ -330,15 +344,22 @@ export function FieldFilters({
 function FieldFilter({
   field,
   active,
+  range,
   onSelect,
 }: {
   field: CustomField
   active?: string
-  onSelect: (field: string | null, value: string | null) => void
+  /** The range in force on this number field, when one is. */
+  range?: { min?: string; max?: string }
+  onSelect: FieldSelect
 }) {
   const [draft, setDraft] = useState(active ?? '')
+  // A value from an older link starts both ends at it, which filters the same parts.
+  const [from, setFrom] = useState(range?.min ?? active ?? '')
+  const [to, setTo] = useState(range?.max ?? active ?? '')
   const id = `field-filter-${field.key}`
   const choice = field.kind === 'choice'
+  const numeric = field.kind === 'number'
   return (
     <section aria-labelledby={id} className="mb-6">
       <h2 id={id} className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -361,6 +382,40 @@ function FieldFilter({
             </li>
           ))}
         </ul>
+      ) : numeric ? (
+        <form
+          className="flex gap-1"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const typed = [from.trim(), to.trim()] as const
+            // Typed backwards, meant forwards: 22 to 8 is 8 to 22, and the boxes come back that way round.
+            const backwards =
+              typed.every((end) => end.length > 0 && Number.isFinite(Number(end))) && Number(typed[0]) > Number(typed[1])
+            const [min, max] = backwards ? [typed[1], typed[0]] : typed
+            if (min.length === 0 && max.length === 0) onSelect(null, null)
+            else onSelect(field.key, null, { min: min.length === 0 ? undefined : min, max: max.length === 0 ? undefined : max })
+          }}
+        >
+          <input
+            aria-label={strings.fields.filterFrom(field.label)}
+            placeholder={strings.fields.from}
+            inputMode="decimal"
+            value={from}
+            onChange={(event) => setFrom(event.target.value)}
+            className={FILTER_BOX}
+          />
+          <input
+            aria-label={strings.fields.filterTo(field.label)}
+            placeholder={strings.fields.to}
+            inputMode="decimal"
+            value={to}
+            onChange={(event) => setTo(event.target.value)}
+            className={FILTER_BOX}
+          />
+          <button type="submit" className={BUTTON}>
+            {strings.fields.filterApply}
+          </button>
+        </form>
       ) : (
         <form
           className="flex gap-1"
@@ -375,14 +430,14 @@ function FieldFilter({
             aria-label={strings.fields.filterValue(field.label)}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            className="min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-0.5 text-sm"
+            className={FILTER_BOX}
           />
           <button type="submit" className={BUTTON}>
             {strings.fields.filterApply}
           </button>
         </form>
       )}
-      {active === undefined ? null : (
+      {active === undefined && range === undefined ? null : (
         <button
           type="button"
           onClick={() => onSelect(null, null)}
