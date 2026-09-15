@@ -290,7 +290,7 @@ move, both on SwiftShader, and both are most likely the decoder's 26 kB: a sessi
   only runs when a file asks for it. `PgParts::derivative_hash` takes a kind's newest row whatever
   kernel wrote it, so when this was measured nothing rewrote them. A worker now queues a rebuild of
   every rung whose `kernel_version` differs from its own kernel's as it starts
-  (`WorkerHandler::enqueue_stale_rungs`), so a library ingested before `a591bf1` gets the smaller
+  (`WorkerHandler::enqueue_stale_derivatives`), so a library ingested before `a591bf1` gets the smaller
   rungs after its next worker restart.
 - **L0 and L1 could shrink further.** Nobody measures on them, so they could be quantized; they
   are not yet. `write_glb` does not know which rung it writes, so doing it means passing the
@@ -1549,6 +1549,48 @@ checked against the code first. Each fix has a test that a mutation turned red, 
   - **`detail()` reads custom values as text and falls back to `{}`.** Not changed: `jsonb` rendered as
     text is JSON by construction, so the fallback cannot be reached. `PgRevisions::manifest` reads
     `metadata_json::text` the same way, and says so.
+
+### Goal 4: OCCT, and what it unblocks (2026-09-15)
+
+- **Goal file:** `docs/superpowers/plans/2026-09-15-occt-goal.md`.
+- Merged locally, not pushed. This record is the goal's ledger.
+
+**Preflight.** The test database was up, `cargo deny check` was green on `main` (`19f2c3f`), and root had
+24 GB free.
+
+**The image, and a real kernel beside the native stack** (no code).
+- **`cargo xtask verify occt`** built OCCT 8.0.1 and the bridge from source, then ran the kernel tests in
+  `occt-test`. It took 849 s, of which OCCT's compile was 766 s, and all 7 tests passed.
+  - Root went from 24 GB to 20 GB free. The two pinned base images were pulled as part of the build.
+  - **The Phase 0 exit, again:** 113 ms for the 200-part fixture, against 111 ms on 2026-09-13. Kernel
+    `occt-8.0.1-bridge-6+deflection-0.1+glb-3+cpu-1`.
+- **Copied out, the kernel runs on this host.** `/opt/occt/lib` (74 MB, 148 files) and `occt-bridge` went to
+  `target/occt/`.
+  - The newest glibc symbol any of them needs is `GLIBC_2.38`, and the host has 2.39. The newest `GLIBCXX`
+    is 3.4.33, which the host's libstdc++ has.
+  - `occt-bridge version` and `selftest` pass natively with `LD_LIBRARY_PATH=target/occt/lib`.
+  - **So the goal's checks run a native worker**, not the compose fallback:
+    `lapidary-server --features mock-kernel,occt-kernel` as `LAPIDARY_ROLE=worker`, with `target/occt/bin`
+    first on its `PATH` and `LD_LIBRARY_PATH=target/occt/lib`. `target/goal4-check/stack.sh` starts it with
+    an api and `vite preview`.
+
+**CAD derivatives on demand** (`bc4f06e`).
+- **The sweep.** `enqueue_stale_rungs` is now `enqueue_stale_derivatives`. Besides the rungs, it queues a
+  CAD source's `structure` row when a different kernel version wrote it.
+- **The derive.** A derive of structure, entities or PMI asks the kernel for all three, since one bridge run
+  reads them together. It writes whichever came back, `structure` last, so a job that stops partway is found
+  again.
+- **Why `structure`, not a missing `pmi` row.** A STEP file that specifies no PMI has no PMI row, as ingest
+  writes it. So a sweep for missing rows would queue such a file at every start, and its job would fail as a
+  bug. The `structure` row carries the version of the bridge that read the file, and the stale-rung sweep
+  never rewrote it. Once it is rewritten at the current version, a file with no PMI is not queued again.
+- **Tests:**
+  - **db:** the sweep queues an old STEP read by its `structure` row, beside its old rung, and never an
+    entities row on its own.
+  - **ingest:** a part whose PMI row is gone and whose tree an older bridge wrote gets all three back from one
+    job, at this kernel's version, and is not queued again.
+  - **Mutation-checked, all 3 caught:** `structure` dropped from the sweep (both tests), and the derive
+    writing only the kind it was asked for.
 
 ---
 
