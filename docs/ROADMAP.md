@@ -1381,11 +1381,51 @@ needed a `test/` branch.
 
   - The state file named the six files still present, and the watched folder held only the files put
     there.
-- **Not checked:** an upload onto a part checked out to somebody, which the worker refuses. The agent
-  prints the refusal with its path, as it arrives.
+- **Found by the review, and fixed below:** a file the library refused, such as a change to a part
+  checked out to somebody, was recorded as sent, so neither the next poll nor a restart sent it again.
 
 **Bundles** (the goal's stage 7). Slice 2 shipped export (`da9ff39`) and import (`4d3e05c`), so this goal
 builds nothing for them.
+
+**The review.** A fresh reader went over `bc0a464..f737b6b`. It found five defects and one minor one, and
+each was checked against the code before anything changed.
+- **Fixed:**
+  - **A refused file was recorded as sent** (`3c3ce5f`). `lapidary watch` recorded every file of an accepted
+    upload, the ones the batch failed included.
+    - Now a refused file stays out of the state and is sent again after 5 minutes, sooner if it
+      changes, and on a restart.
+    - Refusals are matched by path. When the batch lists fewer failures than it has, or a failure names
+      a path not sent, the whole upload counts as refused, and the probe skips what the server holds.
+    - Tests: a refused file is not recorded, and is sent again only once the wait is over; failures
+      that cannot all be matched refuse the whole upload. Mutation-checked, all 4 caught.
+    - A test pins that a failed upload names its path, which the matching reads. It passed before any
+      change, because an upload's payload already writes `source_path` as `path`.
+    - **Check,** on the native stack. The flange was checked out, then changed in the watched folder.
+      The refusal was printed with its path, the state kept the old hash, and the part stayed at
+      revision 1. After check-in and a restart of the watch, the change went up: revised 1, revision 2.
+  - **A field filter the library no longer takes broke the grid** (`d9d3147`). A saved filter or link naming
+    a field no longer offered as a filter, or a value that no longer fits it, is refused by the server.
+    - The grid said "check that the api service is running", which was untrue. The facets failed with
+      it, and the facets are where the filter is cleared.
+    - Now the grid says the field no longer filters it, and offers the same filters without the field,
+      as it does for a deleted category. The server's refusal is unchanged.
+    - Test: the notice shows instead of the failure line, and its way out clears the field. With the
+      check disabled, the test fails.
+  - **An option only removed parts hold** (`2450275`). The refusal said to change those parts' values, which
+    a removed part does not allow. It now says how many are removed, and to restore them first.
+    - Removed parts still count, because a restored part brings its value back.
+    - Test: a removed part holding the option. With removed parts not counted, the test fails.
+  - **The minor** (`d9d3147`). A field's filter box kept old text after the filter was cleared or another
+    was applied. It is now keyed by the value in force.
+- **Recorded, not fixed:**
+  - **Setting a value races removing its option.** `update` counts the parts holding an option under
+    the library's row lock. `set_value` checks the definition and writes without that lock. Removing an
+    option while somebody saves that value can leave a part holding an option that is gone. The window
+    is one request wide, and closing it takes the library's lock on every value written.
+  - **A field defined again under a removed field's key adopts its values, whatever their kind.** A text
+    value under a key now defined as a choice shows as unset while the data holds it, and neither the
+    filter nor the option check counts it. Whether to refuse the key, convert the values, or adopt them
+    is the owner's call.
 
 ---
 

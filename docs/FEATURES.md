@@ -75,6 +75,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   - Uploads through the probe, chunks and commit that check-in uses, with no lock. The server
     decides ingested, skipped, revised or unkept.
   - A local deletion changes nothing in the library.
+  - A file the library refuses, such as a change to a part checked out to somebody, is sent again
+    after 5 minutes, or sooner when it changes.
   - Not yet: `notify` in place of the poll, macOS and Windows.
 -->
 | Auto-detect and offer duplicate merge on ingest | 6 |

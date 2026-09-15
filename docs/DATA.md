@@ -759,6 +759,8 @@ This is why the watcher lives in the native agent binary and not in a container.
 - **What was sent,** each path's size, mtime and BLAKE3, is kept in
   `$XDG_STATE_HOME/lapidary/watch-<library>.json`, never inside the folder. A restart sends nothing for
   a file that is unchanged.
+- **A file the library refuses** is not recorded as sent. It is sent again after 5 minutes, sooner if it
+  changes, and on a restart.
 - **Polling costs a listing per interval:** 12 ms warm over 2,778 files. `notify` replaces it once a
   tree is large enough for that to matter.
 
