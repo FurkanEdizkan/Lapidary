@@ -846,7 +846,9 @@ parts, exported and imported with its lineage identical; read as the exit met, w
 
 These were swept from this file's records, FEATURES and DATA, and checked against the code at
 `4aaef44`.
-- **Exits.** Phases 0–3 are met. Phase 4's and Phase 5's are not.
+- **Exits.** Phases 0–3 are met. Phase 4's and Phase 5's are not. *(Overtaken: Phase 4's was met on
+  Linux in goal 4's stage 8 and what remains of it needs a macOS or Windows machine; Phase 5's was
+  rewritten to what already works, and is met.)*
 - **Features.** Of the Phase 1–5 feature rows, 36 are done, 7 are partial and 8 are missing.
 
 **Goals, run in this order.** Each goal is one long `/goal` session with its own file under
@@ -879,7 +881,9 @@ below.
 - **The grid's idle warm-up loads the viewer's code only**; the renderer starts on hover.
 - **Custom fields get number ranges and counts per choice.**
 - **`lapidary up` stays a stub** until the managed-local or Tauri work.
-- **The local commits stay unpushed** (210 on 2026-09-15).
+- **The local commits stay unpushed** (210 on 2026-09-15). *(No longer true: goals 1–6 were pushed at
+  02:18 on 2026-09-16, leaving `origin/main` at `07b78fc`. A goal is pushed once it merges, when the
+  owner asks for it.)*
 
 **Blocked, and what unblocks each.**
 
@@ -897,7 +901,8 @@ below.
 - **`lapidary up`** stays a stub.
 - **A grid visitor who never opens a part** will load the viewer's code but no WebGL context: goal 6,
   stage 3.
-- **Unpushed commits** stay local, by the owner's answer.
+- **Unpushed commits** stay local, by the owner's answer. *(Reversed 2026-09-16: goals 1–6 are on
+  `origin/main`, and a goal is pushed once it merges, when the owner asks.)*
 - **Old housekeeping:** goal 6, stage 13, rechecks `storage/` (155 MB, now mode 755) and the
   `lapidary_lapidary-blobs` volume read-only, and asks before removing anything.
 
@@ -1884,7 +1889,8 @@ checked against the code first. Each fix has a test that a mutation turned red, 
     - **While a part's faces were loading, or could not be read,** the list said every annotation's face was not one
       the view draws. It now says nothing until they arrive, and says once when they could not be read.
 - **Images:** this goal's four dangling `occt-test` images, 2.92 GB each, were removed. `lapidary-occt:goal4`
-  (1.14 GB) is kept, since it holds the kernel copied out to `target/occt/`. Root has 18 GB free.
+  (1.14 GB) was kept for the kernel it carries, then removed on 2026-09-16 along with goal 5's: the copy
+  at `target/occt/` (74 MB, `bin/` and `lib/`) is what everything actually reads. Root has 18 GB free.
 
 ### Goal 5: materials, mass and field filters (2026-09-15)
 
@@ -2383,12 +2389,14 @@ debug `lapidary-server` as the api alone, over a scratch database inside `lapida
 - **`lapidary_lapidary-blobs`:** 80 MB, 312 files under `blobs/`, written on 2026-09-05 and 2026-09-07.
   `compose.yaml` no longer declares it; its note calls it the store of a deployment from before the folder layout,
   which nothing copies across.
-- **Waiting for the owner:**
-  - whether to remove `lapidary_lapidary-blobs`;
-  - whether the compose stack's store is still wanted. `storage/` and `lapidary_lapidary-db` go together or not
-    at all, since either without the other orphans the rest.
-  - From goal 5, whether to remove the tagged images `lapidary-occt:goal4` and `lapidary-occt:goal5`, about
-    1.14 GB between them.
+- **Answered, and carried out (2026-09-16).**
+  - `lapidary_lapidary-blobs` (80.7 MB) and an orphaned test-database volume (116.3 MB) are gone.
+  - The compose stack's store is kept: `storage/` (155 MB) and `lapidary_lapidary-db` stay together, with
+    `lapidary_lapidary-uploads` beside them.
+  - `lapidary-occt:goal4` and `lapidary-occt:goal5` are gone, about 1.14 GB between them. The kernel the
+    build needs is the copy at `target/occt/`.
+  - Left alone deliberately: another project's 15.2 GB builder image, the build cache, `postgres:18`, and the
+    running test database's own anonymous volume. Nothing was pruned — every removal named its object.
 
 **Recorded, not built.**
 - **From the goal file,** until a real library needs each:
