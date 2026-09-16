@@ -60,7 +60,10 @@ import type {
   UploadPlan,
   AddPeer,
   LicenceWarning,
+  MirroredPartsPage,
+  MirroredShare,
   Peer,
+  PeerShareId,
   SetSharingName,
   ShareCategory,
   ShareId,
@@ -1605,4 +1608,42 @@ export async function stopSharing(share: ShareId): Promise<FieldWritten> {
     await fetch(`/api/shares/${encodeURIComponent(share)}`, { method: 'DELETE' }),
     strings.sharing.shareFailed,
   )
+}
+
+/** `GET /api/sharing/peers/{device}/shares` — what somebody shares, as mirrored here. */
+export async function fetchPeerShares(deviceId: string): Promise<MirroredShare[]> {
+  const response = await fetch(`/api/sharing/peers/${encodeURIComponent(deviceId)}/shares`)
+  if (!response.ok) {
+    throw new Error(`peer shares returned ${response.status}`)
+  }
+  return (await response.json()) as MirroredShare[]
+}
+
+/** Why a shared library could not be read: gone, or anything else. */
+export class SharedLibraryGone extends Error {}
+
+/** `GET /api/sharing/shares/{id}` — one shared library. Throws `SharedLibraryGone` when it is not here any more. */
+export async function fetchMirroredShare(share: PeerShareId): Promise<MirroredShare> {
+  const response = await fetch(`/api/sharing/shares/${encodeURIComponent(share)}`)
+  if (response.status === 404) throw new SharedLibraryGone()
+  if (!response.ok) {
+    throw new Error(`shared library returned ${response.status}`)
+  }
+  return (await response.json()) as MirroredShare
+}
+
+/** `GET /api/sharing/shares/{id}/parts` — a page of a shared library's parts, after `after`. */
+export async function fetchMirroredParts(share: PeerShareId, after: string | null): Promise<MirroredPartsPage> {
+  const query = new URLSearchParams({ after: after ?? '' })
+  const response = await fetch(`/api/sharing/shares/${encodeURIComponent(share)}/parts?${query.toString()}`)
+  if (response.status === 404) throw new SharedLibraryGone()
+  if (!response.ok) {
+    throw new Error(`shared library parts returned ${response.status}`)
+  }
+  return (await response.json()) as MirroredPartsPage
+}
+
+/** A mirrored part's thumbnail, for an `<img>`. */
+export function mirroredThumbnailUrl(share: PeerShareId, sourcePath: string): string {
+  return `/api/sharing/shares/${encodeURIComponent(share)}/thumbnail?${new URLSearchParams({ path: sourcePath }).toString()}`
 }

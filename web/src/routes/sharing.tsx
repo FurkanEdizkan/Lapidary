@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   addPeer,
+  fetchPeerShares,
   fetchPeers,
   fetchShares,
   fetchSharingIdentity,
@@ -285,6 +286,7 @@ function PeerRow({ peer, onRemoved }: { peer: Peer; onRemoved: () => Promise<voi
       <p className="mt-1 font-mono text-xs break-all text-[var(--color-muted)]">
         {peer.deviceId} · {peer.address}
       </p>
+      <TheirShares deviceId={peer.deviceId} />
       {peer.online || peer.lastError === null ? null : (
         <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{peer.lastError}</p>
       )}
@@ -363,5 +365,36 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
         </p>
       )}
     </li>
+  )
+}
+
+/** What one person shares, each a link to the shared library — read from the mirror, so it lists while they are away. */
+function TheirShares({ deviceId }: { deviceId: string }) {
+  const shares = useQuery({
+    queryKey: ['sharing', 'peers', deviceId, 'shares'],
+    queryFn: () => fetchPeerShares(deviceId),
+    refetchInterval: REFRESH_MS,
+  })
+  if (!shares.isSuccess) return null
+  if (shares.data.length === 0) {
+    return <p className="mt-1 text-xs text-[var(--color-muted)]">{strings.sharing.theirSharesNone}</p>
+  }
+  return (
+    <div className="mt-2">
+      <p className="text-xs text-[var(--color-muted)]">{strings.sharing.theirShares}</p>
+      <ul role="list" className="mt-1 flex flex-wrap gap-2">
+        {shares.data.map((share) => (
+          <li key={share.id}>
+            <Link
+              to="/sharing/shares/$shareId"
+              params={{ shareId: share.id }}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
+            >
+              {strings.sharing.theirShareParts(share.name, share.partCount)}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
