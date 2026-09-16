@@ -236,3 +236,43 @@ async fn stopping_sharing_withdraws_it_everywhere(pool: sqlx::PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(refusal["reason"], "notShared");
 }
+
+/// A request under one library never previews or shares another library's category.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn another_librarys_category_is_neither_counted_nor_shared_here(pool: sqlx::PgPool) {
+    terrain(&pool).await;
+    let shop_floor = LibraryId::new();
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Shop floor', 'shop floor')")
+        .bind(shop_floor.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("a second library");
+    let fixtures = PgFolders(pool.clone())
+        .get_or_create(shop_floor, None, "Fixtures", "Fixtures")
+        .await
+        .expect("a category of the shop floor");
+
+    let (status, refusal) = send(
+        &pool,
+        "GET",
+        &format!("{}/preview?folderId={}", shares(), fixtures.as_uuid()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["reason"], "noSuchCategory");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &shares(),
+        Some(json!({ "folderId": fixtures.as_uuid() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["reason"], "noSuchCategory");
+    assert_eq!(
+        send(&pool, "GET", "/api/shares", None).await.1,
+        json!([]),
+        "nothing shared anywhere"
+    );
+}

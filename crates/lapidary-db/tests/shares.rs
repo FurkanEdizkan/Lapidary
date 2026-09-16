@@ -170,6 +170,10 @@ async fn a_category_of_another_library_or_a_deleted_one_cannot_be_shared(pool: s
         None,
         "not that library's category"
     );
+    assert!(
+        shares.list(library()).await.expect("lists").is_empty(),
+        "and nothing was shared in the library the category does belong to"
+    );
 
     sqlx::query("UPDATE folder SET deleted_at = now() WHERE id = $1")
         .bind(lib.bases.as_uuid())
