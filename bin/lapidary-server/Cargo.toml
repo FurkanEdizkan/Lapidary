@@ -70,10 +70,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-# Only for #[sqlx::test] against the merged worker router (main.rs's worker_router) and
-# the api role's router — see deny.toml's sqlx wrapper allow-list, which lists this crate
-# for exactly this reason. No real SQL lives here; lapidary-db still owns all of it.
+# Only for #[sqlx::test] against the merged worker router (main.rs's worker_router), the
+# api role's router, and the peer role's hello round (tests/peer_sync.rs) — see deny.toml's
+# sqlx wrapper allow-list, which lists this crate for exactly this reason. No real SQL lives
+# here; lapidary-db still owns all of it.
 sqlx.workspace = true
+# The device ids the hello round's tests pair with.
+lapidary-core.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 # Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed

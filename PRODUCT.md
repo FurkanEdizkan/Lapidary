@@ -59,10 +59,14 @@ Local free, Team, Enterprise, Cloud).
 ## Operating Context
 
 - **Container-first**, Podman and Docker. Three services split by port: web on 3000, api on
-  8080, worker on 8081. A route only the worker serves is a route no browser can reach.
-- **Air-gapped industrial deployments are a real target**, which is why the outbound image
-  fetch is the only route in the application that makes an outbound request, and why
-  uploading a picture always works without it.
+  8080, worker on 8081 — and peer on 8082, only with sharing switched on. A route only the
+  worker serves is a route no browser can reach.
+- **Air-gapped industrial deployments are a real target**, which is why the plain stack makes
+  one outbound request, the image fetch a person pastes a URL into, and why uploading a picture
+  always works without it. Sharing is the only other thing that reaches another machine, and it
+  is off until switched on: the `peer` service ships as an overlay
+  (`deploy/compose.sharing.yaml`), accepts only installations somebody paired by hand, and says
+  hello only to those (owner's decision, 2026-09-16).
 - **Parts arrive** either from a directory mounted into the worker or from a browser drop
   (client-side BLAKE3 first, then a probe, then resumable chunked upload).
 - **Parts leave** to Rhino, Fusion, FreeCAD, Blender and Orca. Those are the tools the user

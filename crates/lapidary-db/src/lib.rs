@@ -10,6 +10,7 @@ mod migrate;
 mod repo;
 mod revisions;
 mod saved_filters;
+mod sharing;
 mod touches;
 
 pub use custom_fields::{
@@ -30,6 +31,7 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
+pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing};
 pub use sqlx::PgPool;
 pub use touches::Touches;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
@@ -277,6 +279,13 @@ pub enum DbError {
         "This change carried a check-out this part never had, so it was not kept. Check the part out, then save again."
     )]
     UnknownLock,
+
+    /// A stored device id that is not a 32-byte digest, which the table's own check should make
+    /// impossible.
+    #[error(
+        "`{column}` holds {length} bytes where a device id's 32-byte digest belongs. Check what else has write access to this database, then remove that person and pair with them again."
+    )]
+    CorruptDeviceId { column: &'static str, length: usize },
 }
 
 impl DbError {
@@ -335,6 +344,7 @@ impl DbError {
             | DbError::PartCheckedOut { .. }
             | DbError::LockReleased { .. }
             | DbError::UnknownLock
+            | DbError::CorruptDeviceId { .. }
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),

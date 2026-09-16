@@ -21,6 +21,7 @@ mod part_number;
 mod parts;
 mod revisions;
 mod scan;
+mod sharing;
 mod sources;
 mod tags;
 mod upload;
@@ -287,6 +288,18 @@ pub fn router(state: AppState, role: Role) -> Router {
                 .route(
                     "/api/libraries/{library}/densities/{material}",
                     axum::routing::put(densities::set).delete(densities::remove),
+                )
+                // Sharing: this installation's id and name, and the people it shares with. The api
+                // only edits the list; the peer role says hello and records who answered. See
+                // `sharing.rs`.
+                .route(
+                    "/api/sharing/identity",
+                    get(sharing::identity).put(sharing::set_name),
+                )
+                .route("/api/sharing/peers", get(sharing::peers).post(sharing::add))
+                .route(
+                    "/api/sharing/peers/{device}",
+                    axum::routing::delete(sharing::remove),
                 )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this

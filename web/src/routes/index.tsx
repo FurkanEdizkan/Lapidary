@@ -1407,6 +1407,13 @@ function Toolbar({
           >
             {strings.removal.removedTitle}
           </Link>
+          {/* The whole installation's, not one library's, so it carries no library the way Removed does. */}
+          <Link
+            to="/sharing"
+            className="ease-mechanical flex min-h-6 items-center rounded-[5px] px-3 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+          >
+            {strings.sharing.title}
+          </Link>
         </nav>
         {search}
         <button

@@ -11,6 +11,9 @@
 # router holds the peer protocol and none of the api's routes, and both ends of every connection
 # prove a key whose digest the other side added by hand (`crates/lapidary-peer`). A machine nobody
 # paired with is refused during the handshake, before any route runs.
+#
+# What it sends is as narrow. Every 15 seconds it says hello to each installation its owner paired,
+# over the same pinned connection, to learn which of them are online; it contacts nobody else.
 services:
   peer:
     # The same ceiling as the api: this serves metadata and files to a handful of machines a

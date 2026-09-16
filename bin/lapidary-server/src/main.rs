@@ -692,15 +692,33 @@ async fn main() -> Result<()> {
                  holding this installation's identity key, whose digest is the device id everyone \
                  sharing with it added by hand.",
             )?;
-            let identity = lapidary_peer::PeerIdentity::load_or_generate(&peer_dir)?;
+            let identity =
+                std::sync::Arc::new(lapidary_peer::PeerIdentity::load_or_generate(&peer_dir)?);
             let device = identity.device_id()?;
-            // Nobody is paired yet: the list of installations this one accepts is added by hand,
-            // and the routes for adding them arrive with the next slice. Until then the listener
-            // stands, refuses every connection during the handshake, and says what it is called so
-            // its owner can give that id to somebody.
+            // Before the listener opens, so the api can show this id as soon as anything can reach
+            // this installation. The key stays on disk; only its digest goes to the database.
+            lapidary_db::PgSharing(db.clone())
+                .claim_identity(device)
+                .await
+                .context(
+                    "Could not start as peer: this installation's device id could not be recorded, \
+                     so the sharing page would have no id to show.",
+                )?;
             tracing::info!(device_id = %device, "this installation's device id");
-            peer_tls = Some(lapidary_peer::server_config(&identity, &[])?);
-            (lapidary_peer::router(device), None, None)
+            // One roster for the three readers: the handshake checks who is paired against it, the
+            // hello answers with the name in it, and each hello round refreshes it from what people
+            // added and removed through the api.
+            let roster = lapidary_peer::Roster::default();
+            peer_tls = Some(lapidary_peer::server_config(&identity, &roster)?);
+            // Not awaited by `main`, for the quarantine sweep's reason: it holds no lease, and a round
+            // cut off part-way leaves rows the next start's first round writes again.
+            tokio::spawn(lapidary_peer::sync::run(
+                db.clone(),
+                identity,
+                roster.clone(),
+                shutdown.clone(),
+            ));
+            (lapidary_peer::router(device, roster), None, None)
         }
     };
 

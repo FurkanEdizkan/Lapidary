@@ -379,6 +379,21 @@ The largest subsystem. Detailed spec below.
 | Cloud sync, per-GB, zero-egress storage | 9 |
 | Phone-home licence checks | **[—]** ever |
 
+## 10. Shared libraries
+
+Sharing models between people who know each other, installation to installation. Sequenced ahead of
+Phase 8; see `docs/ROADMAP.md` § Shared libraries.
+
+| Feature | Phase |
+|---|---|
+| This installation's device id and name, shown to give to people | S1b |
+| Pair by pasting a device id and address; see who is online, and why not | S1b |
+| Remove somebody softly: hidden and refused, the entry kept | S1b |
+| Share a category, and browse what somebody shares | S2 |
+| Pull shared parts, resumable, with their licences shown | S3 |
+| Ask me first, grant, deny, revoke | S4 |
+| A public directory, tracker, swarm, relay or hole punching | **[—]** people who know each other only |
+
 ---
 
 ## Build graph — detailed spec
