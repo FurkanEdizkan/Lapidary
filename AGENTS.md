@@ -50,6 +50,9 @@ area — these encode decisions that are expensive to reverse.
   to commit SHAs.
 - **`lapidary-api` is a library that builds a Router.** Never a binary. Never fork it per
   distribution.
+- **Only the `peer` role speaks to another installation, and it is off by default.** It ships as
+  `deploy/compose.sharing.yaml`, accepts only keys somebody paired by hand, and `lapidary-api`
+  may never depend on `lapidary-peer`.
 
 ## Style
 

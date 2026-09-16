@@ -86,13 +86,14 @@ same scan twice and the second batch settles every file as `skipped` rather than
 
 ### Why the ports are split, and why both of them scan
 
-Three services, and the port tells you which one you are talking to:
+Three services, four with sharing switched on, and the port tells you which one you are talking to:
 
 | Port | Service | What it is |
 |---|---|---|
 | 3000 | `web` | The SPA, with `/api/*` reverse-proxied to `api` |
 | 8080 | `api` | The grid, the open path, and the scan trigger the browser uses |
 | 8081 | `worker` | Ingest — the directory walk, and everything that touches a file |
+| 8082 | `peer` | Sharing, only with `deploy/compose.sharing.yaml`: installations paired by hand, and nobody else |
 
 Both ports accept `POST /api/libraries/{id}/scan`, and neither of them walks a directory
 in the request. The route writes one `scan_directory` job; the worker picks it up, walks

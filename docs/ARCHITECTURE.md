@@ -90,9 +90,14 @@ crates/
 │                                     a SourceStore — see its module doc for why this is a
 │                                     separate crate from lapidary-api rather than a role
 │                                     check inside it. A LIBRARY.
+├── lapidary-peer/        L3          the peer protocol: the raw-public-key TLS listener
+│                                     pinned to paired device ids, the hello, and the
+│                                     hello round that refreshes who is paired. The only
+│                                     crate that speaks to another installation, and
+│                                     lapidary-api may never depend on it. A LIBRARY.
 └── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
-├── lapidary-server/          container entrypoint: api + optionally in-process worker
+├── lapidary-server/          container entrypoint: api, worker, or peer when sharing is on
 └── lapidary/                 desktop binary: agent | worker | up
 sidecar/occt-bridge/          C++ OCCT → {mesh.stl, structure.json, entities.json, measurements.json}
 web/                          React SPA

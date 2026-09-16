@@ -873,3 +873,26 @@ The design is `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` ยง2โ
 - `lapidary open` reuses this machine's checkout of the part, or checks it out, then runs
   `xdg-open` on the file.
 - A lock somebody else holds is refused. Linux only.
+
+---
+
+## 7. Sharing
+
+### 7.1 Who this installation is, and who it shares with (S1b)
+
+`peer_identity` (`0037`) is one row: `device_id bytea`, the 32-byte BLAKE3 of the public key the peer role
+presents, and `name`, what this installation calls itself.
+- **The key never comes here.** The peer role keeps it at `$LAPIDARY_PEER_DIR/identity.pkcs8` and writes only
+  its digest as it starts. A key in the database is a key the api's own credentials can read.
+- **No row means sharing is off:** the peer role has never run here, and the page says how to switch it on.
+
+`peer` (`0037`) is one row per installation paired by hand: `device_id bytea` as primary key, `address`
+(`host:port`, no scheme), `name` as that installation's last hello gave it, `added_at`, `removed_at`,
+`last_seen_at` and `last_error`.
+- **Removal is soft.** `removed_at` hides the row and takes the device off the peer role's roster, so its next
+  handshake is refused. Pairing with the same id again clears it and brings the same row back.
+- **Online is decided in SQL, on the database's clock:** the last hello succeeded (`last_error IS NULL`) and
+  was within `ONLINE_WITHIN_SECS`, 45 s or three hello rounds. Neither the api nor the peer role compares a
+  timestamp of its own.
+- **Written by the peer role's hello round,** every 15 s. An answer sets `last_seen_at` and the name and clears
+  `last_error`; a failure sets `last_error`, in words, and keeps `last_seen_at`.

@@ -2550,6 +2550,61 @@ sequenced ahead of Phase 8. What the work is built on:
     rate and concurrency limits and are picked up there, so S4 inherits them instead of finding them
     again. Neither is exposed today: the role is off until an owner switches it on.
 
+**The list of people you share with** (`b6bab3c`, `eb21f24`, `4dd9e6f`, `0271ebc`, `2c2d3d1`, `0035756`).
+- **Tables** (`0037`): `peer_identity`, one row naming this installation, and `peer`, one row per installation
+  paired by hand. The key stays on disk and only its digest is stored. Removal is soft. See `DATA.md` §7.1.
+- **The hello round** (`crates/lapidary-peer/src/sync.rs`). Every 15 s the peer role reads who is paired and
+  what this installation is called, brings its roster up to date, then asks each paired installation what it
+  is and records the answer: seen, with the name it gave, or why not, in words. The TLS verifier reads that
+  same roster at every handshake, so a pairing or a removal made through the api takes effect within a round,
+  with no restart.
+- **The api** (`crates/lapidary-api/src/sharing.rs`): `GET` and `PUT /api/sharing/identity`, `GET` and
+  `POST /api/sharing/peers`, `DELETE /api/sharing/peers/{device}`. A mistyped id is refused in the id parser's
+  own words, an address is a host and a port with no scheme or path, and this installation's own id is refused.
+- **The page** (`web/src/routes/sharing.tsx`), linked as "Shared libraries" beside Removed. `LAPIDARY_API` now
+  points the dev and preview proxy at another api, so two stacks on one machine each get their own page.
+- **A bug the tests found.** A refusal from this end's own verifier reaches reqwest inside two nested
+  `io::Error`s, and an `io::Error`'s `source` skips the error it carries, so the wrong machine at an address
+  was first reported as nothing answering there. The walker now opens each `io::Error` it meets.
+- **Tests.** Seen failing first against stubs: 7 for the tables, 5 hello rounds against real loopback
+  listeners, 7 api routes and 7 page tests. The live-roster unit test and the name-cleaning test arrived with
+  their code; the mutations below are what cover them.
+- **The hello-round tests live in `bin/lapidary-server/tests/peer_sync.rs`,** not in the peer crate.
+  `cargo deny` refused them there: `deny.toml` lets only a fixed list of crates take `sqlx`, and says that a
+  longer list means SQL has leaked. `lapidary-peer` holds no SQL and now takes no `sqlx`; the binary that wires
+  the peer role is already on the list for exactly these tests' reason.
+- **Mutation-checked, 23 of 23 caught** across the four layers (`target/sharing-check/mutate-s1b.sh`), and
+  S1a's four re-run against the roster, all caught. The script's first run reported seven caught while testing
+  nothing: `timeout` cannot run a shell function, and its "No such file" exit read as a failure. It now counts
+  a mutation caught only when a test or the compiler is seen failing, and says so when the tests did not run.
+  One mutation, a host allowed to hold `/`, would have survived; `nas.local/lapidary:8082` is the test case
+  added for it.
+- **Measured, two stacks on one machine** (`target/sharing-check/two-stacks.sh`: one binary, two scratch
+  databases, no image build).
+  - Each pasted the other's id and address through its api. Both showed the other online **28 s** later —
+    two hello rounds, as the order of the rounds predicts: the first hello can arrive before the other side's
+    round has taken up the pairing.
+  - A removed B. A's list emptied, and A's `peer` table still held the row, marked removed.
+  - **15 s** later B showed A offline, with "turned this one away" as the reason, and A's peer log named B's
+    device id as refused.
+  - Screenshots of both pages, paired and after the removal, in `target/sharing-check/shots/`.
+- **Decided without the owner:**
+  - **The hello round runs in the peer role, not as a worker job.** The plan put outbound peer requests in the
+    worker, which would mean mounting the identity key into a second container. The round is a timer with no
+    row to lease, the quarantine sweep's reason for not being a job either.
+  - **`PUT /api/sharing/identity` sets this installation's name,** which its hello carries, so each list shows
+    what the other side calls itself rather than a bare id. The plan did not say what it set.
+  - **`last_error` beside `last_seen_at`:** "offline" alone cannot tell a machine that is switched off from one
+    that has not added this one.
+  - `PRODUCT.md`'s outbound-request line is rewritten here rather than later, because the hello is the first
+    outbound peer request.
+- **Left for later:**
+  - 28 s from pairing to online is two rounds. A `NOTIFY` when a row is added would start a round at once.
+  - **For S4:** a connection already open outlives a removal until it closes. Each hello builds its own client,
+    so it does not show today; a long pull would.
+  - Hellos go one at a time, each allowed 5 s. Past about six machines that do not answer, a round outlasts the
+    online window (`ponytail:` in `sync.rs`).
+
 ---
 
 ## Phase 6 — Dashboard and similarity
