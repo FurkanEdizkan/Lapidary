@@ -2585,9 +2585,13 @@ sequenced ahead of Phase 8. What the work is built on:
     two hello rounds, as the order of the rounds predicts: the first hello can arrive before the other side's
     round has taken up the pairing.
   - A removed B. A's list emptied, and A's `peer` table still held the row, marked removed.
-  - **15 s** later B showed A offline, with "turned this one away" as the reason, and A's peer log named B's
+  - **16 s** later B showed A offline, with "turned this one away" as the reason, and A's peer log named B's
     device id as refused.
-  - Screenshots of both pages, paired and after the removal, in `target/sharing-check/shots/`.
+  - A paired with B again. Both were back online **13 s** later — B included, which happens only once A's
+    listener stops refusing B — and A's `peer` table held the one row, no longer removed. So a removal both
+    takes effect in the listener and comes undone there, not only in the tables.
+  - All seven figures are one run from fresh databases. Screenshots of both pages, paired, after the
+    removal, and after pairing again, in `target/sharing-check/shots/`.
 - **Decided without the owner:**
   - **The hello round runs in the peer role, not as a worker job.** The plan put outbound peer requests in the
     worker, which would mean mounting the identity key into a second container. The round is a timer with no
