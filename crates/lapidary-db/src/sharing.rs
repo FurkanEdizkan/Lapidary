@@ -14,6 +14,11 @@ use sqlx::PgPool;
 /// and the peer role share.
 pub const ONLINE_WITHIN_SECS: i64 = 45;
 
+/// The channel that tells the peer role, at once, that somebody was paired or removed or a category was shared
+/// or stopped: its hello round starts then rather than at the next tick. The tick stays the floor that
+/// correctness rests on, as the job queue's does.
+pub const SHARING_CHANNEL: &str = "lapidary_sharing";
+
 /// This installation, as the people it shares with know it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityRow {
@@ -37,6 +42,15 @@ pub struct PeerRow {
 }
 
 pub struct PgSharing(pub PgPool);
+
+/// Wake the peer role's hello round (see [`SHARING_CHANNEL`]).
+pub(crate) async fn tell_the_peer_role(db: &PgPool) -> Result<(), DbError> {
+    sqlx::query("SELECT pg_notify($1, '')")
+        .bind(SHARING_CHANNEL)
+        .execute(db)
+        .await?;
+    Ok(())
+}
 
 impl PgSharing {
     /// This installation's identity. `None` when the peer role has never run here.
@@ -110,6 +124,7 @@ impl PgSharing {
         .bind(device.as_bytes().as_slice())
         .fetch_one(&self.0)
         .await?;
+        tell_the_peer_role(&self.0).await?;
         peer_row(row)
     }
 
@@ -122,6 +137,7 @@ impl PgSharing {
         .bind(device.as_bytes().as_slice())
         .execute(&self.0)
         .await?;
+        tell_the_peer_role(&self.0).await?;
         Ok(result.rows_affected() > 0)
     }
 

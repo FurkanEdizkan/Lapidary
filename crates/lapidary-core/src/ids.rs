@@ -86,6 +86,10 @@ uuid_newtype!(
      something that changes under it."
 );
 uuid_newtype!(
+    PeerShareId,
+    "Identifies somebody else's share as this installation mirrors it: a local id, never the sharer's own."
+);
+uuid_newtype!(
     ShareId,
     "Identifies one category this installation offers the people it is paired with, and everything under it."
 );

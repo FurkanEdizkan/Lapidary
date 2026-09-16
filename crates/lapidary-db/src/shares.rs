@@ -27,7 +27,8 @@ pub struct OfferedShare {
     pub name: String,
     pub part_count: i64,
     /// Changes whenever the catalogue does: its part count and newest change, so a puller re-reads only a
-    /// share whose digest moved.
+    /// share whose digest moved. The newest change counts a part's revisions as well as the part: recording a
+    /// revision leaves `part.updated_at` alone, and a digest that missed it would leave pullers with a stale hash.
     pub digest: String,
 }
 
@@ -129,6 +130,7 @@ impl PgShares {
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
+        crate::sharing::tell_the_peer_role(&self.0).await?;
         row.map(share_row).transpose()
     }
 
@@ -153,6 +155,7 @@ impl PgShares {
                 .bind(share.as_uuid())
                 .execute(&self.0)
                 .await?;
+        crate::sharing::tell_the_peer_role(&self.0).await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -165,11 +168,12 @@ impl PgShares {
              UNION ALL \
              SELECT d.share, f.id FROM folder f JOIN down d ON f.parent_id = d.id) \
              CYCLE id SET is_cycle USING seen \
-             SELECT s.id, f.name, count(p.id), \
-             coalesce((extract(epoch FROM max(p.updated_at)) * 1000000)::bigint, 0) \
+             SELECT s.id, f.name, count(DISTINCT p.id), \
+             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0) \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              LEFT JOIN down d ON d.share = s.id AND NOT d.is_cycle \
              LEFT JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL AND p.library_id = s.library_id \
+             LEFT JOIN revision r ON r.part_id = p.id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
              GROUP BY s.id, f.name, s.created_at ORDER BY s.created_at, s.id",
         )
