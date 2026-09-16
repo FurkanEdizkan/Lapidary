@@ -110,6 +110,12 @@ Line numbers are as of `f3afed6`.
 - **Every cargo command runs with `CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0`.** The 78 GB freed on 2026-09-17
   was the incremental cache, which cargo rebuilds; an unattended night gains nothing from it and would spend
   the disk guard's margin inside one build. Check `df` after stage 1's `verify slice` that free space held.
+- **Build in as few configurations as possible.** Measured in stage 1: a rebuild in a configuration that already
+  exists overwrites its artifacts (the merged-tree gates added 0.2 GB), but each *new* configuration — `-p` on one
+  package, a different feature set — compiles its own copy of the dependency tree (stage 1's first gate run added
+  13 GB). So targeted and mutation test runs use the gates' own `cargo test --workspace --all-features` with a test
+  filter, and the only other build is the pinned `lapidary-server --features mock-kernel` binary. The owner kept
+  `target/debug/deps`; do not delete it.
 - **Time budget: 2.5 hours a stage.** A stage not merged by then stops cleanly: left unmerged, its ROADMAP
   record written with where it stood and what blocked it, and the goal stops. Every later stage builds on the
   one before, so there is nothing to skip ahead to. The morning must find a readable ledger, not a hung
