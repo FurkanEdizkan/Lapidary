@@ -198,3 +198,11 @@ test('a stopped pull says why', async () => {
   renderPage()
   await screen.findByText(strings.sharing.pullStopped('Terrain is no longer shared with this installation.'))
 })
+
+test('a library already pulled offers the library it was pulled into', async () => {
+  stub({ pull: { ...QUEUED, state: 'done', filesTotal: 138 } })
+  renderPage()
+  await screen.findByText(strings.sharing.pullDone(138))
+  const into = screen.getByLabelText(strings.sharing.pullInto) as HTMLSelectElement
+  await waitFor(() => expect(into.value).toBe(LIBRARIES[1]!.id))
+})

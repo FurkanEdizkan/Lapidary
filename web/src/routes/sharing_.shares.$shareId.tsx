@@ -135,8 +135,9 @@ function PullPanel({ share }: { share: PeerShareId }) {
     mutationFn: (library: LibraryId) => startPull(share, library),
     onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
   })
-  const library = chosen ?? libraries.data?.[0]?.id ?? null
   const pull = latest.data ?? null
+  // The library this share was last pulled into, until somebody chooses another.
+  const library = chosen ?? pull?.libraryId ?? libraries.data?.[0]?.id ?? null
   const refusal = start.data?.kind === 'refused' ? start.data.message : null
   return (
     <div className="mt-4 flex flex-col gap-2">
