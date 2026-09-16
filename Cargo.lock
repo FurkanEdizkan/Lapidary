@@ -1496,15 +1496,18 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "lapidary-core",
+ "lapidary-db",
  "reqwest",
  "ring",
  "rustls",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tracing",
 ]
 

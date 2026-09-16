@@ -16,6 +16,8 @@ use lapidary_core::DeviceId;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod sync;
+
 /// What the identity key is called inside the peer directory.
 const KEY_FILE: &str = "identity.pkcs8";
 
@@ -179,11 +181,57 @@ const REFUSED_UNPAIRED: &str =
 const REFUSED_UNEXPECTED: &str =
     "refused: the installation answering at that address is not the one expected";
 
+/// Who this installation is paired with and what it calls itself, as the peer role last read them.
+///
+/// Refreshed from the database by each hello round ([`sync::round`]) and read on every connection, so
+/// somebody paired or removed through the api is accepted or refused within a round, without a restart.
+/// The handshake reads it once, and a handshake is not a path that needs anything faster than a lock.
+#[derive(Clone, Debug, Default)]
+pub struct Roster(Arc<std::sync::RwLock<Entries>>);
+
+#[derive(Debug, Default)]
+struct Entries {
+    paired: Vec<DeviceId>,
+    name: Option<String>,
+}
+
+impl Roster {
+    pub fn new(paired: Vec<DeviceId>, name: Option<String>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(Entries { paired, name })))
+    }
+
+    /// Take up what the database says now.
+    pub fn replace(&self, paired: Vec<DeviceId>, name: Option<String>) {
+        // A plain list with no invariant a panicking writer could have broken halfway, so a poisoned
+        // lock still holds a usable one.
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Entries { paired, name };
+    }
+
+    pub fn includes(&self, device: &DeviceId) -> bool {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .paired
+            .contains(device)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .name
+            .clone()
+    }
+}
+
 /// Refuses anyone whose key its owner did not write down.
 #[derive(Debug)]
 struct Pinned {
     /// Empty means nobody is paired yet, which refuses everyone rather than admitting everyone.
-    allowed: Vec<DeviceId>,
+    allowed: Roster,
     /// What a refusal here means. The two ends turn a connection down for different reasons, and
     /// whoever reads a log can see only their own end of it.
     refusal: &'static str,
@@ -192,9 +240,9 @@ struct Pinned {
 
 impl Pinned {
     /// The accepting end, which admits the installations its owner paired with and nobody else.
-    fn accepting(paired: &[DeviceId], provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+    fn accepting(roster: &Roster, provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
         Self {
-            allowed: paired.to_vec(),
+            allowed: roster.clone(),
             refusal: REFUSED_UNPAIRED,
             provider,
         }
@@ -203,7 +251,7 @@ impl Pinned {
     /// The connecting end, which expects exactly one installation to be answering over there.
     fn connecting(expect: DeviceId, provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
         Self {
-            allowed: vec![expect],
+            allowed: Roster::new(vec![expect], None),
             refusal: REFUSED_UNEXPECTED,
             provider,
         }
@@ -211,7 +259,7 @@ impl Pinned {
 
     fn allows(&self, spki: &rustls::pki_types::CertificateDer<'_>) -> Result<(), rustls::Error> {
         let presented = presented(spki)?;
-        if self.allowed.contains(&presented) {
+        if self.allowed.includes(&presented) {
             Ok(())
         } else {
             // The handshake ends here, so no route of ours ever sees this connection — which is
@@ -349,13 +397,13 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Accept connections from exactly these installations, and no others.
+/// Accept connections from the installations on `roster`, as it stands at each handshake, and no others.
 pub fn server_config(
     identity: &PeerIdentity,
-    paired: &[DeviceId],
+    roster: &Roster,
 ) -> Result<rustls::ServerConfig, PeerError> {
     let provider = provider();
-    let verifier = Arc::new(Pinned::accepting(paired, provider.clone()));
+    let verifier = Arc::new(Pinned::accepting(roster, provider.clone()));
     Ok(rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|err| PeerError::Tls {
@@ -395,20 +443,26 @@ pub fn client_config(
 pub struct Hello {
     pub device_id: String,
     pub protocol: u16,
+    /// What this installation calls itself, when its owner has named it.
+    pub name: Option<String>,
 }
 
 /// The peer protocol's version, answered at hello and carried in every route's path.
 pub const PROTOCOL: u16 = 1;
 
 /// What this installation answers. `/peer/v1/hello` and nothing else, so far.
-pub fn router(identity: DeviceId) -> axum::Router {
+pub fn router(identity: DeviceId, roster: Roster) -> axum::Router {
     axum::Router::new().route(
         "/peer/v1/hello",
-        axum::routing::get(move || async move {
-            axum::Json(Hello {
-                device_id: identity.to_string(),
-                protocol: PROTOCOL,
-            })
+        axum::routing::get(move || {
+            let name = roster.name();
+            async move {
+                axum::Json(Hello {
+                    device_id: identity.to_string(),
+                    protocol: PROTOCOL,
+                    name,
+                })
+            }
         }),
     )
 }
@@ -542,7 +596,8 @@ mod tests {
             .await
             .expect("a port on the loopback");
         let address = tcp.local_addr().expect("the port it took");
-        let server = server_config(&host, &[guest_id]).expect("the host's side");
+        let server =
+            server_config(&host, &Roster::new(vec![guest_id], None)).expect("the host's side");
         let accepting = tokio::spawn(async move {
             let (stream, _) = tcp.accept().await.expect("a connection to accept");
             tokio_rustls::TlsAcceptor::from(Arc::new(server))
@@ -581,8 +636,9 @@ mod tests {
             .await
             .expect("a port on the loopback");
         let address = tcp.local_addr().expect("the port it took");
-        let config = server_config(&host, &[guest_id]).expect("the host's side, pairing the guest");
-        tokio::spawn(serve(tcp, config, router(host_id)));
+        let config = server_config(&host, &Roster::new(vec![guest_id], None))
+            .expect("the host's side, pairing the guest");
+        tokio::spawn(serve(tcp, config, router(host_id, Roster::default())));
 
         let answer = client(&guest, host_id)
             .get(format!("https://{address}/peer/v1/hello"))
@@ -668,7 +724,7 @@ mod tests {
         {
             let _capturing = tracing::subscriber::set_default(Logged(logged.clone()));
             let ends = [
-                Pinned::accepting(&[], provider()),
+                Pinned::accepting(&Roster::default(), provider()),
                 Pinned::connecting(expected, provider()),
             ];
             for end in ends {
@@ -710,8 +766,9 @@ mod tests {
             .expect("a port on the loopback");
         let address = tcp.local_addr().expect("the port it took");
         // The host would have this guest: the refusal below is the guest's own, not the host's.
-        let config = server_config(&host, &[guest_id]).expect("the host's side, pairing the guest");
-        tokio::spawn(serve(tcp, config, router(host_id)));
+        let config = server_config(&host, &Roster::new(vec![guest_id], None))
+            .expect("the host's side, pairing the guest");
+        tokio::spawn(serve(tcp, config, router(host_id, Roster::default())));
 
         let expected = elsewhere
             .device_id()
@@ -725,6 +782,47 @@ mod tests {
             !refused.is_status(),
             "refused while connecting rather than by a route: {refused}"
         );
+    }
+
+    /// Pairing is a row somebody adds through the api while the listener is already running. The roster
+    /// the listener checks is the one each hello round refreshes, so somebody added is answered and
+    /// somebody removed is refused again, with no restart in between.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn somebody_paired_or_removed_while_the_listener_runs_is_answered_or_refused() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let roster = Roster::default();
+        let config = server_config(&host, &roster).expect("the host's side, nobody paired yet");
+        tokio::spawn(serve(tcp, config, router(host_id, roster.clone())));
+        // A new client each time: a pooled connection would skip the very handshake this is about.
+        let hello = || {
+            let request = client(&guest, host_id).get(format!("https://{address}/peer/v1/hello"));
+            async move { request.send().await }
+        };
+
+        assert!(hello().await.is_err(), "refused while nobody is paired");
+
+        roster.replace(vec![guest_id], Some("Ayşe's workshop".to_owned()));
+        let answer = hello()
+            .await
+            .expect("answered once paired")
+            .text()
+            .await
+            .expect("an answer to read");
+        assert!(
+            answer.contains("Ayşe's workshop"),
+            "and says the name it goes by: {answer}"
+        );
+
+        roster.replace(Vec::new(), None);
+        assert!(hello().await.is_err(), "refused again once removed");
     }
 
     /// The id is what other people wrote down, so a restart must not change it.
