@@ -551,8 +551,43 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
         Err(parse_violation) => return vec![parse_violation],
     };
 
+    let mut violations = per_service(&services);
+
+    // Rule 7: and somebody has to be the worker. Independent of the loop above, which is
+    // silent if KERNEL_LINKED_SERVICES is ever emptied — a compose file where no service
+    // runs ingest is a deployment where no part can enter a library.
+    if !services
+        .iter()
+        .any(|s| s.role.as_deref() == Some(WORKER_ROLE))
+    {
+        violations.push(Violation::NoWorkerService);
+    }
+
+    // The loop above only walks services the parser actually found, so a
+    // KERNEL_LINKED_SERVICES entry that never parsed at all — the service block was
+    // deleted, renamed, or hidden below a banner comment this parser used to choke on —
+    // raises nothing there. Check the reverse direction too: every name this module
+    // expects to exist must have been found among the parsed services.
+    for &expected in KERNEL_LINKED_SERVICES {
+        if !services.iter().any(|s| s.name == expected) {
+            violations.push(Violation::MissingKernelLink {
+                service: expected.to_owned(),
+            });
+        }
+    }
+
+    violations
+}
+
+/// The rules that are about one service, applied to each of them.
+///
+/// Split out so an overlay can be held to exactly these and no others. Everything here reads one
+/// `ServiceBlock`; the rules that read the file as a whole — somebody must be the worker, and
+/// every `KERNEL_LINKED_SERVICES` name must have parsed — stay in [`check_compose`], because they
+/// are false the moment a file is only part of a deployment.
+fn per_service(services: &[ServiceBlock]) -> Vec<Violation> {
     let mut violations = Vec::new();
-    for service in &services {
+    for service in services {
         let is_kernel_linked = KERNEL_LINKED_SERVICES.contains(&service.name.as_str());
         match (service.sets_features, is_kernel_linked) {
             (true, false) => violations.push(Violation::UnexpectedKernelLink {
@@ -614,31 +649,26 @@ pub fn check_compose(contents: &str) -> Vec<Violation> {
             });
         }
     }
-
-    // Rule 7: and somebody has to be the worker. Independent of the loop above, which is
-    // silent if KERNEL_LINKED_SERVICES is ever emptied — a compose file where no service
-    // runs ingest is a deployment where no part can enter a library.
-    if !services
-        .iter()
-        .any(|s| s.role.as_deref() == Some(WORKER_ROLE))
-    {
-        violations.push(Violation::NoWorkerService);
-    }
-
-    // The loop above only walks services the parser actually found, so a
-    // KERNEL_LINKED_SERVICES entry that never parsed at all — the service block was
-    // deleted, renamed, or hidden below a banner comment this parser used to choke on —
-    // raises nothing there. Check the reverse direction too: every name this module
-    // expects to exist must have been found among the parsed services.
-    for &expected in KERNEL_LINKED_SERVICES {
-        if !services.iter().any(|s| s.name == expected) {
-            violations.push(Violation::MissingKernelLink {
-                service: expected.to_owned(),
-            });
-        }
-    }
-
     violations
+}
+
+/// The same per-service rules, over a compose file that is layered onto `deploy/compose.yaml`
+/// rather than used alone — today `deploy/compose.sharing.yaml`, which adds the `peer` service.
+///
+/// Only the per-service rules. An overlay has no worker of its own and names no kernel-linked
+/// service, so [`check_compose`]'s two whole-file rules would fail it for being what it is. The
+/// two files are not checked as one either: [`parse_services`] takes the first `services:` key and
+/// stops at the next unindented one, so a concatenation would hide every service in whichever file
+/// came second.
+///
+/// What this does still catch is what matters about an overlay: a service that builds
+/// `deploy/Containerfile` without `LAPIDARY_ROLE`, one that builds the `worker` target and would
+/// therefore carry OCCT, and one that sets `SERVER_FEATURES` without being kernel-linked.
+pub fn check_overlay(contents: &str) -> Vec<Violation> {
+    match parse_services(contents) {
+        Ok(services) => per_service(&services),
+        Err(parse_violation) => vec![parse_violation],
+    }
 }
 
 /// Join backslash line-continuations into logical lines, so a `RUN` instruction wrapped
@@ -972,6 +1002,71 @@ pub fn check(compose_contents: &str, containerfile_contents: &str) -> Vec<Violat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Shaped like the real deploy/compose.sharing.yaml, trimmed to what these checks read: one
+    // service, no worker, and no kernel-linked service anywhere in the file.
+    const SHARING_OVERLAY: &str = "\
+services:
+  peer:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      target: api
+    environment:
+      LAPIDARY_BIND: 0.0.0.0:8082
+      LAPIDARY_ROLE: peer
+    ports:
+      - \"8082:8082\"
+
+volumes:
+  lapidary-peer:
+";
+
+    #[test]
+    fn an_overlay_holding_only_the_peer_service_is_accepted() {
+        assert!(
+            check_overlay(SHARING_OVERLAY).is_empty(),
+            "the overlay as it ships: {:?}",
+            check_overlay(SHARING_OVERLAY)
+        );
+    }
+
+    /// Why `check_overlay` exists at all. The overlay is layered onto `deploy/compose.yaml` rather
+    /// than used alone, so the whole-file rules would fail it for being what it is.
+    #[test]
+    fn the_whole_file_rules_would_refuse_an_overlay() {
+        assert!(
+            check_compose(SHARING_OVERLAY)
+                .iter()
+                .any(|v| matches!(v, Violation::NoWorkerService)),
+            "checked as a whole deployment, an overlay has no worker"
+        );
+    }
+
+    /// An overlay is still a file that starts `lapidary-server`, so the rules about one service
+    /// apply to it exactly as they do in the base file.
+    #[test]
+    fn an_overlay_service_without_a_role_is_refused() {
+        let no_role = SHARING_OVERLAY.replace("      LAPIDARY_ROLE: peer\n", "");
+        assert!(
+            check_overlay(&no_role)
+                .iter()
+                .any(|v| matches!(v, Violation::MissingRole { service } if service == "peer")),
+            "a service that runs lapidary-server must say which role"
+        );
+    }
+
+    #[test]
+    fn an_overlay_service_building_the_kernel_target_is_refused() {
+        let kernel_target =
+            SHARING_OVERLAY.replace("      target: api\n", "      target: worker\n");
+        assert!(
+            check_overlay(&kernel_target).iter().any(
+                |v| matches!(v, Violation::WrongBuildTarget { service, .. } if service == "peer")
+            ),
+            "the peer role links no CAD kernel, so it must not build the target that carries one"
+        );
+    }
 
     // Shaped like the real deploy/compose.yaml, trimmed to what these checks read.
     const CORRECT_COMPOSE: &str = "\

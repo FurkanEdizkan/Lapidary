@@ -36,6 +36,14 @@ struct Config {
     // `api` role reads it, and only when someone uploads, so it is `Option` for the
     // same reason and checked in the `Role::Api` arm below rather than here.
     upload_dir: Option<PathBuf>,
+    /// Where the peer role keeps this installation's identity key, and the only thing it keeps on
+    /// disk. `Option` for `upload_dir`'s reason: only the `peer` role reads it, so requiring it
+    /// unconditionally would make the api and worker services incomplete for no reason either
+    /// would ever hit. Checked in the `Role::Peer` arm below.
+    ///
+    /// The key's digest is this installation's device id — what everyone sharing with it added by
+    /// hand — so this directory is the one whose loss changes who this machine says it is.
+    peer_dir: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
     /// Nothing in this process reads a file through it, and nothing should: it exists to be
@@ -586,6 +594,11 @@ async fn main() -> Result<()> {
     tracing::info!(role = %role_str, "role");
     tracing::info!(kernel = %kernel_description(), "CAD kernel");
     let shutdown = tokio_util::sync::CancellationToken::new();
+    // Set by the `Role::Peer` arm alone, and read at the one `serve` below. A variable rather than
+    // a fourth element on the match's tuple: the api and worker arms have nothing to say about
+    // TLS, and widening what all three return to carry something two of them always leave empty
+    // would be a worse shape than this.
+    let mut peer_tls = None;
     let (app_router, worker, flusher) = match role {
         Role::Api => {
             // As required here as it is for the worker now that the api role serves
@@ -669,11 +682,47 @@ async fn main() -> Result<()> {
             let handle = spawn_worker(db, &config, shutdown.clone())?;
             (app, Some(handle), None)
         }
+        Role::Peer => {
+            // Required rather than defaulted, for `upload_dir`'s reason and one of its own: the
+            // identity key's digest is what everyone sharing with this installation wrote down, so
+            // a default path would put it somewhere a rebuild forgets, and this machine would come
+            // back as a stranger to all of them.
+            let peer_dir = config.peer_dir.clone().context(
+                "Could not start as peer: LAPIDARY_PEER_DIR is not set. It names the directory \
+                 holding this installation's identity key, whose digest is the device id everyone \
+                 sharing with it added by hand.",
+            )?;
+            let identity = lapidary_peer::PeerIdentity::load_or_generate(&peer_dir)?;
+            let device = identity.device_id()?;
+            // Nobody is paired yet: the list of installations this one accepts is added by hand,
+            // and the routes for adding them arrive with the next slice. Until then the listener
+            // stands, refuses every connection during the handshake, and says what it is called so
+            // its owner can give that id to somebody.
+            tracing::info!(device_id = %device, "this installation's device id");
+            peer_tls = Some(lapidary_peer::server_config(&identity, &[])?);
+            (lapidary_peer::router(device), None, None)
+        }
     };
 
-    let served = axum::serve(listener, app_router)
-        .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
-        .await;
+    // One `serve` for every role, and one shutdown token: the peer role differs only in what it
+    // accepts a connection over. Its listener refuses anyone whose key nobody wrote down, during
+    // the handshake, so nothing above this line ever sees such a connection.
+    let served = match peer_tls {
+        Some(tls) => {
+            lapidary_peer::serve_with_shutdown(
+                listener,
+                tls,
+                app_router,
+                shutdown_signal(shutdown.clone()),
+            )
+            .await
+        }
+        None => {
+            axum::serve(listener, app_router)
+                .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
+                .await
+        }
+    };
 
     // The listener is closed; the worker may still be finishing a file. Cancelling here
     // as well as in `shutdown_signal` covers the case where `serve` returned for some

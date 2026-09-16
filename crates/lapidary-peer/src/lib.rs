@@ -1,0 +1,602 @@
+//! The peer protocol: what one installation answers to another it has been paired with.
+//!
+//! This crate is the only thing in Lapidary that speaks to another installation, and the only
+//! process that serves it is `LAPIDARY_ROLE=peer`. It carries no route of the api's: someone the
+//! owner paired with can ask this crate what it is (`/peer/v1/hello`) and, later, what is shared
+//! and for its bytes — and nothing else. `lapidary-api` may never depend on it, which
+//! `xtask/src/layers.rs` enforces by name rather than by review.
+//!
+//! **Identity is a keypair, and the id is its digest.** Both ends present a raw public key
+//! (RFC 7250) rather than a certificate, so nothing here generates or parses X.509: the verifiers
+//! compare `DeviceId::from_public_key` of what the other end presented against the ids their owner
+//! paired with, and refuse during the handshake if it is not one of them. A connection that gets
+//! past that is from a key its owner wrote down; a connection that does not reaches no route.
+
+use lapidary_core::DeviceId;
+use std::path::Path;
+use std::sync::Arc;
+
+/// What the identity key is called inside the peer directory.
+const KEY_FILE: &str = "identity.pkcs8";
+
+/// Write the key so only its owner can read it.
+///
+/// It is the whole of this installation's identity: anyone who can read it can answer as this
+/// machine to everyone paired with it. The peer directory is a mounted volume that other things on
+/// the host can see, so the mode is set as the file is made rather than after, leaving no moment
+/// where the key sits there world-readable.
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+/// Every deployment that runs the peer role is a container on Linux (`docs/ARCHITECTURE.md`), so
+/// the mode above is the real path. This keeps the crate building anywhere else, and says plainly
+/// that the key is not protected there.
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+/// What a refusal here says. Every one of them names what to do about it, because the person
+/// reading it is setting up sharing between two machines and cannot see the other one.
+#[derive(Debug, thiserror::Error)]
+pub enum PeerError {
+    #[error(
+        "Could not make this installation's identity key: {detail}. Sharing needs one key per installation, kept in the peer directory."
+    )]
+    KeyGeneration { detail: String },
+
+    #[error(
+        "Could not read the identity key at {path}: {detail}. If it is gone, removing what is left there makes a new one — but this installation's device id changes with it, and everyone sharing with it has to add the new id."
+    )]
+    KeyUnreadable { path: String, detail: String },
+
+    #[error("Could not set up the peer connection: {detail}.")]
+    Tls { detail: String },
+}
+
+/// This installation's keypair, and the id every other installation knows it by.
+///
+/// Kept on disk rather than in Postgres, for the reason `upload_dir` is: only the peer role holds
+/// it, and a key in the database is a key the api's credentials can read.
+pub struct PeerIdentity {
+    /// The PKCS#8 document `ring` generated, which is the private key.
+    pkcs8: Vec<u8>,
+}
+
+impl PeerIdentity {
+    /// A fresh keypair. The caller writes it down; this does not touch the disk.
+    pub fn generate() -> Result<Self, PeerError> {
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).map_err(|_| {
+            PeerError::KeyGeneration {
+                detail: "the system's random number generator would not answer".to_owned(),
+            }
+        })?;
+        Ok(Self {
+            pkcs8: pkcs8.as_ref().to_vec(),
+        })
+    }
+
+    /// The identity in `dir`, made and written on the first start and read back on every one
+    /// after. The device id must not change between runs: it is what other people added by hand.
+    pub fn load_or_generate(dir: &Path) -> Result<Self, PeerError> {
+        let path = dir.join(KEY_FILE);
+        let unreadable = |detail: String| PeerError::KeyUnreadable {
+            path: path.display().to_string(),
+            detail,
+        };
+        match std::fs::read(&path) {
+            Ok(pkcs8) => {
+                let identity = Self { pkcs8 };
+                // Read it back through ring before trusting it: a truncated file would otherwise
+                // become a device id nobody paired with, discovered only at the first handshake.
+                identity.public_key()?;
+                Ok(identity)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let identity = Self::generate()?;
+                std::fs::create_dir_all(dir).map_err(|err| unreadable(err.to_string()))?;
+                write_private(&path, &identity.pkcs8).map_err(|err| unreadable(err.to_string()))?;
+                Ok(identity)
+            }
+            Err(err) => Err(unreadable(err.to_string())),
+        }
+    }
+
+    /// The public half, in exactly the form a peer connection presents it: an RFC 7250
+    /// `SubjectPublicKeyInfo`, which is the raw Ed25519 key inside a short DER wrapper.
+    ///
+    /// The wrapper is hashed along with the key, deliberately. Both ends hash the bytes rustls put
+    /// on the wire, so neither has to unwrap anything to know what it was shown — which is what
+    /// keeps an X.509 parser out of the trust path entirely.
+    pub fn public_key(&self) -> Result<Vec<u8>, PeerError> {
+        Ok(self.signing_key()?.1)
+    }
+
+    /// The key rustls signs with, and the public key it presents for it.
+    fn signing_key(&self) -> Result<(Arc<dyn rustls::sign::SigningKey>, Vec<u8>), PeerError> {
+        let pkcs8 = rustls::pki_types::PrivatePkcs8KeyDer::from(self.pkcs8.clone());
+        let signing = rustls::crypto::ring::sign::any_eddsa_type(&pkcs8).map_err(|err| {
+            PeerError::KeyGeneration {
+                detail: format!(
+                    "the identity key is not an Ed25519 key this build can read: {err}"
+                ),
+            }
+        })?;
+        let presented = signing
+            .public_key()
+            .ok_or_else(|| PeerError::Tls {
+                detail: "this installation's identity key does not offer a public key to present"
+                    .to_owned(),
+            })?
+            .to_vec();
+        Ok((signing, presented))
+    }
+
+    /// What everyone else calls this installation.
+    pub fn device_id(&self) -> Result<DeviceId, PeerError> {
+        Ok(DeviceId::from_public_key(&self.public_key()?))
+    }
+}
+
+/// The identity as rustls presents it: the public key itself, where a certificate would go.
+///
+/// RFC 7250 sends a bare `SubjectPublicKeyInfo` in the slot the certificate chain occupies, which
+/// is why this reads as a one-entry chain. Nothing here parses X.509, and nothing signs one.
+fn certified_key(identity: &PeerIdentity) -> Result<Arc<rustls::sign::CertifiedKey>, PeerError> {
+    let (signing, presented) = identity.signing_key()?;
+    Ok(Arc::new(rustls::sign::CertifiedKey::new(
+        vec![rustls::pki_types::CertificateDer::from(presented)],
+        signing,
+    )))
+}
+
+/// The digest of what the other end presented, or a refusal if it presented nothing usable.
+fn presented(spki: &rustls::pki_types::CertificateDer<'_>) -> Result<DeviceId, rustls::Error> {
+    Ok(DeviceId::from_public_key(spki.as_ref()))
+}
+
+/// Ed25519 and nothing else: both ends are Lapidary, and the key each presents is one this crate
+/// generated.
+fn schemes() -> Vec<rustls::SignatureScheme> {
+    vec![rustls::SignatureScheme::ED25519]
+}
+
+/// Refuses anyone whose key its owner did not write down.
+#[derive(Debug)]
+struct Pinned {
+    /// Empty means nobody is paired yet, which refuses everyone rather than admitting everyone.
+    allowed: Vec<DeviceId>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl Pinned {
+    fn allows(&self, spki: &rustls::pki_types::CertificateDer<'_>) -> Result<(), rustls::Error> {
+        let presented = presented(spki)?;
+        if self.allowed.contains(&presented) {
+            Ok(())
+        } else {
+            // The handshake ends here, so no route of ours ever sees this connection.
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
+            ))
+        }
+    }
+
+    /// The signature over the handshake, checked against the raw public key the other end
+    /// presented rather than against a certificate.
+    ///
+    /// `rustls::crypto::verify_tls13_signature` reads its `cert` argument as X.509 to find the key
+    /// in it, which is exactly wrong here: what was presented is a bare `SubjectPublicKeyInfo`, so
+    /// that helper fails as a DER parse rather than as a bad signature. This is the raw-key
+    /// variant, and the difference is invisible in a passing test — it shows only as
+    /// `BadEncoding` on every connection.
+    fn verify_raw_key(
+        &self,
+        message: &[u8],
+        presented: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature_with_raw_key(
+            message,
+            &rustls::pki_types::SubjectPublicKeyInfoDer::from(presented.as_ref()),
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    /// rustls has no raw-public-key signature check for TLS 1.2, and both peer configs offer
+    /// TLS 1.3 alone, so this cannot be reached. It refuses rather than falling back to the
+    /// certificate path: that fallback is what made every connection fail as a DER parse, and a
+    /// version downgrade must not quietly turn the pinning into something else.
+    fn refuse_tls12(
+        &self,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General(
+            "a peer connection speaks TLS 1.3 only: raw public keys have no TLS 1.2 signature check"
+                .to_owned(),
+        ))
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        self.allows(end_entity)?;
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.refuse_tls12()
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.verify_raw_key(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        schemes()
+    }
+
+    fn requires_raw_public_keys(&self) -> bool {
+        true
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for Pinned {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        self.allows(end_entity)?;
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.refuse_tls12()
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.verify_raw_key(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        schemes()
+    }
+
+    fn requires_raw_public_keys(&self) -> bool {
+        true
+    }
+}
+
+/// The provider this crate signs and verifies with: `ring`, the same one reqwest already pulls in,
+/// rather than a second implementation of the same primitives.
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
+/// Accept connections from exactly these installations, and no others.
+pub fn server_config(
+    identity: &PeerIdentity,
+    paired: &[DeviceId],
+) -> Result<rustls::ServerConfig, PeerError> {
+    let provider = provider();
+    let verifier = Arc::new(Pinned {
+        allowed: paired.to_vec(),
+        provider: provider.clone(),
+    });
+    Ok(rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|err| PeerError::Tls {
+            detail: err.to_string(),
+        })?
+        .with_client_cert_verifier(verifier)
+        .with_cert_resolver(Arc::new(
+            rustls::server::AlwaysResolvesServerRawPublicKeys::new(certified_key(identity)?),
+        )))
+}
+
+/// Connect to exactly this installation, and refuse any other answering at that address.
+pub fn client_config(
+    identity: &PeerIdentity,
+    expect: DeviceId,
+) -> Result<rustls::ClientConfig, PeerError> {
+    let provider = provider();
+    let verifier = Arc::new(Pinned {
+        allowed: vec![expect],
+        provider: provider.clone(),
+    });
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|err| PeerError::Tls {
+            detail: err.to_string(),
+        })?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_cert_resolver(Arc::new(
+            rustls::client::AlwaysResolvesClientRawPublicKeys::new(certified_key(identity)?),
+        )))
+}
+
+/// What this installation says when another asks what it is.
+///
+/// `protocol` is the peer protocol's own version, not the build's: two installations on different
+/// Lapidary versions still share these routes, and what they must agree on is the shape of them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hello {
+    pub device_id: String,
+    pub protocol: u16,
+}
+
+/// The peer protocol's version, answered at hello and carried in every route's path.
+pub const PROTOCOL: u16 = 1;
+
+/// What this installation answers. `/peer/v1/hello` and nothing else, so far.
+pub fn router(identity: DeviceId) -> axum::Router {
+    axum::Router::new().route(
+        "/peer/v1/hello",
+        axum::routing::get(move || async move {
+            axum::Json(Hello {
+                device_id: identity.to_string(),
+                protocol: PROTOCOL,
+            })
+        }),
+    )
+}
+
+/// Serve `router` on `listener`, to the installations `config` was built to accept.
+///
+/// The binary's `peer` role calls this, and so does the handshake test: one function, so what runs
+/// in a container is what the test exercised.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    config: rustls::ServerConfig,
+    router: axum::Router,
+) -> std::io::Result<()> {
+    serve_with_shutdown(listener, config, router, std::future::pending::<()>()).await
+}
+
+/// The same, stopping when `shutdown` completes.
+///
+/// `bin/lapidary-server` serves every role through one `axum::serve` with one shutdown token, and
+/// the peer role must not be the exception that ignores it: a container that will not stop on
+/// `SIGTERM` is one an operator learns to kill.
+pub async fn serve_with_shutdown(
+    listener: tokio::net::TcpListener,
+    config: rustls::ServerConfig,
+    router: axum::Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(
+        PeerListener {
+            acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),
+            tcp: listener,
+        },
+        router,
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
+/// A TCP listener that hands back connections already through the handshake.
+///
+/// Axum's own `Listener` is the seam for this, so the peer role serves through the same
+/// `axum::serve` the api does — the difference between them is this type, and nothing else.
+struct PeerListener {
+    acceptor: tokio_rustls::TlsAcceptor,
+    tcp: tokio::net::TcpListener,
+}
+
+impl axum::serve::Listener for PeerListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let Ok((stream, address)) = self.tcp.accept().await else {
+                // Axum's trait has nowhere to report this, and returning would end the listener.
+                // A failed accept is one connection, so wait for the next.
+                continue;
+            };
+            // A refused handshake is where a machine nobody paired with stops: it never becomes a
+            // connection, so no route of ours is reached, and nothing above here learns of it.
+            match self.acceptor.accept(stream).await {
+                Ok(tls) => return (tls, address),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.tcp.local_addr()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_identity_is_named_by_the_digest_of_what_it_presents() {
+        use ring::signature::KeyPair as _;
+        let identity = PeerIdentity::generate().expect("a keypair");
+        let presented = identity.public_key().expect("what it puts on the wire");
+        let raw = ring::signature::Ed25519KeyPair::from_pkcs8(&identity.pkcs8)
+            .expect("the key it just made")
+            .public_key()
+            .as_ref()
+            .to_vec();
+
+        assert_eq!(raw.len(), 32, "an Ed25519 public key is 32 bytes");
+        assert!(
+            presented.len() > raw.len() && presented.ends_with(&raw),
+            "presented as a SubjectPublicKeyInfo wrapped around that key"
+        );
+        assert_eq!(
+            identity.device_id().expect("its id"),
+            DeviceId::from_public_key(&presented),
+            "the id is the digest of exactly the bytes the other end is shown"
+        );
+    }
+
+    #[test]
+    fn two_installations_are_named_differently() {
+        let one = PeerIdentity::generate().expect("a keypair");
+        let other = PeerIdentity::generate().expect("another keypair");
+        assert_ne!(
+            one.device_id().expect("one id"),
+            other.device_id().expect("the other id")
+        );
+    }
+
+    /// The other end of a peer connection, set up to expect exactly one installation.
+    fn client(identity: &PeerIdentity, expect: DeviceId) -> reqwest::Client {
+        let tls = client_config(identity, expect).expect("the client's side of the connection");
+        reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
+            .build()
+            .expect("a client over that connection")
+    }
+
+    /// The handshake with no HTTP client in the way, and each end's answer read separately: a
+    /// refusal here is rustls's, and one only in the test below is the client library's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_handshake_alone_succeeds_between_paired_installations() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let server = server_config(&host, &[guest_id]).expect("the host's side");
+        let accepting = tokio::spawn(async move {
+            let (stream, _) = tcp.accept().await.expect("a connection to accept");
+            tokio_rustls::TlsAcceptor::from(Arc::new(server))
+                .accept(stream)
+                .await
+                .map(|_| ())
+        });
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(
+            client_config(&guest, host_id).expect("the guest's side"),
+        ));
+        let stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("the port answers");
+        // The name is not what either end trusts — the key is — but rustls needs one to ask for.
+        let name = rustls::pki_types::ServerName::try_from("peer.invalid").expect("a name to ask");
+        let connected = connector.connect(name, stream).await;
+        let accepted = accepting.await.expect("the accepting task finishes");
+
+        assert!(connected.is_ok(), "the guest's end: {:?}", connected.err());
+        assert!(accepted.is_ok(), "the host's end: {:?}", accepted.err());
+    }
+
+    /// What S1a is for: an installation its owner paired with gets an answer, and one nobody
+    /// paired with is refused while the connection is still being made — before any route runs, so
+    /// a stranger on the network learns nothing about what is here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_paired_installation_is_answered_and_a_stranger_never_reaches_a_route() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let stranger = PeerIdentity::generate().expect("somebody else's identity");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let config = server_config(&host, &[guest_id]).expect("the host's side, pairing the guest");
+        tokio::spawn(serve(tcp, config, router(host_id)));
+
+        let answer = client(&guest, host_id)
+            .get(format!("https://{address}/peer/v1/hello"))
+            .send()
+            .await
+            .expect("the host answers somebody it paired with")
+            .text()
+            .await
+            .expect("an answer to read");
+        assert!(
+            answer.contains(&host_id.to_string()),
+            "the host names itself: {answer}"
+        );
+        assert!(
+            answer.contains("\"protocol\":1"),
+            "and says which protocol it speaks: {answer}"
+        );
+
+        let refused = client(&stranger, host_id)
+            .get(format!("https://{address}/peer/v1/hello"))
+            .send()
+            .await
+            .expect_err("a machine nobody paired with gets no answer");
+        assert!(
+            !refused.is_status(),
+            "refused while connecting rather than by a route: {refused}"
+        );
+    }
+
+    /// The id is what other people wrote down, so a restart must not change it.
+    #[test]
+    fn an_installation_keeps_its_id_across_restarts() {
+        let dir = tempfile::tempdir().expect("a peer directory");
+        let first = PeerIdentity::load_or_generate(dir.path()).expect("made on the first start");
+        let again = PeerIdentity::load_or_generate(dir.path()).expect("read back on the next");
+        assert_eq!(
+            first.device_id().expect("the id it made"),
+            again.device_id().expect("the id it read back"),
+            "a restart must not change what everyone else added by hand"
+        );
+        assert!(
+            dir.path().join("identity.pkcs8").exists(),
+            "the key is written where the peer directory is mounted"
+        );
+    }
+}

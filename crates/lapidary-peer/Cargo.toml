@@ -1,0 +1,35 @@
+[package]
+name = "lapidary-peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+lapidary-core.workspace = true
+# The peer router. Axum 0.8's `Listener` trait is what lets a TLS listener go straight into
+# `axum::serve`, so this crate needs no server of its own.
+axum.workspace = true
+# RFC 7250 raw public keys, both ends. No X.509 is generated or parsed anywhere here: the
+# verifiers compare BLAKE3 of the presented key against the ids their owner paired with.
+rustls.workspace = true
+tokio-rustls.workspace = true
+# The Ed25519 keypair itself. rustls already signs with ring, so this is the same
+# implementation rather than a second one.
+ring.workspace = true
+tokio = { workspace = true, features = ["net"] }
+serde.workspace = true
+# What `axum::Json` writes the hello answer with.
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The other end of the handshake in tests: one process, two identities.
+reqwest.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -43,7 +43,11 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
         // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
         // exists as its own crate rather than a module inside lapidary-api.
-        "lapidary-api" | "lapidary-ingest" => Layer::L3,
+        // lapidary-peer is L3 rather than L2 because it reads and writes bundles, so it depends
+        // on lapidary-targets (L2) — and an L2 crate may not depend on another. It is its own
+        // crate rather than a module in lapidary-api for lapidary-ingest's reason: the api must
+        // not link what speaks to another installation, and FORBIDDEN_PAIRS below says so.
+        "lapidary-api" | "lapidary-ingest" | "lapidary-peer" => Layer::L3,
         "lapidary-enterprise" => Layer::Enterprise,
         "lapidary-server" | "lapidary" | "xtask" => Layer::Bin,
         _ => return None,
@@ -66,12 +70,20 @@ pub type Graph = BTreeMap<String, Vec<String>>;
 /// deps: an allow-list would need editing every time `lapidary-api` legitimately gains an
 /// L2 dependency, and a list you must edit to permit ordinary work gets widened carelessly.
 /// This list is edited only to add another prohibition.
-const FORBIDDEN_PAIRS: &[(&str, &str, &str)] = &[(
-    "lapidary-api",
-    "lapidary-cad",
-    "the open path lives in lapidary-api and must never invoke the CAD kernel — opening a \
-     part for viewing reads metadata and derivatives only, never a source file",
-)];
+const FORBIDDEN_PAIRS: &[(&str, &str, &str)] = &[
+    (
+        "lapidary-api",
+        "lapidary-cad",
+        "the open path lives in lapidary-api and must never invoke the CAD kernel — opening a \
+         part for viewing reads metadata and derivatives only, never a source file",
+    ),
+    (
+        "lapidary-api",
+        "lapidary-peer",
+        "the peer protocol is spoken by the peer role alone — the api serves the browser, and a \
+         route reachable from one must never be reachable from the other",
+    ),
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {

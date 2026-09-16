@@ -33,6 +33,11 @@ occt-kernel = ["mock-kernel", "lapidary-cad/occt-kernel"]
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
+# The peer role's router and its pinned-key TLS. Not optional and not behind `mock-kernel`,
+# unlike lapidary-cad and lapidary-ingest below: the peer role links no CAD kernel, so every
+# build can carry it, and a role the binary cannot serve would be a role compose could set and
+# nothing would answer.
+lapidary-peer.workspace = true
 # Optional, off by default: only the mock-kernel feature pulls this in. lapidary-api
 # never depends on lapidary-cad — the open path lives there and must never invoke the
 # kernel — so the worker reaches it directly, through this binary.
