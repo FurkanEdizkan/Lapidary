@@ -10,6 +10,7 @@ mod migrate;
 mod repo;
 mod revisions;
 mod saved_filters;
+mod shares;
 mod sharing;
 mod touches;
 
@@ -31,6 +32,7 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
+pub use shares::{CatalogueRow, LicenceCounts, OfferedShare, PgShares, ShareRow};
 pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing};
 pub use sqlx::PgPool;
 pub use touches::Touches;

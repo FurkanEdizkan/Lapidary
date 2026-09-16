@@ -86,6 +86,10 @@ uuid_newtype!(
      something that changes under it."
 );
 uuid_newtype!(
+    ShareId,
+    "Identifies one category this installation offers the people it is paired with, and everything under it."
+);
+uuid_newtype!(
     SavedFilterId,
     "Identifies one saved filter: a name for a set of the grid's filters in one library."
 );
