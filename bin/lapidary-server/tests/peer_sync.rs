@@ -25,8 +25,9 @@ async fn listening(paired: Vec<DeviceId>, name: Option<&str>) -> (DeviceId, Stri
 }
 
 /// This installation, its identity claimed in `pool` as the peer role claims it on starting.
-async fn this_installation(pool: &sqlx::PgPool) -> (PeerIdentity, DeviceId) {
-    let identity = PeerIdentity::generate().expect("this installation's identity");
+async fn this_installation(pool: &sqlx::PgPool) -> (std::sync::Arc<PeerIdentity>, DeviceId) {
+    let identity =
+        std::sync::Arc::new(PeerIdentity::generate().expect("this installation's identity"));
     let id = identity.device_id().expect("its id");
     PgSharing(pool.clone())
         .claim_identity(id)
