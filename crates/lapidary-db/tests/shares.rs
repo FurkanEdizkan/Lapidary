@@ -493,3 +493,42 @@ async fn heard(listener: &mut sqlx::postgres::PgListener) -> bool {
         Ok(Ok(_))
     )
 }
+
+/// A file is reachable through a share exactly when its part is offered: inside the category, live, and not merely
+/// sharing a shape with a part one category over.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_file_is_found_only_when_its_part_is_offered(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let shares = PgShares(pool.clone());
+    let shared = shares
+        .create(library(), lib.terrain)
+        .await
+        .expect("creates")
+        .expect("live");
+    let cliff = BlobHash::from_bytes([2; 32]).to_hex();
+    let round_base = BlobHash::from_bytes([3; 32]).to_hex();
+
+    let found = shares
+        .blob(shared.id, &cliff)
+        .await
+        .expect("reads")
+        .expect("the cliff face is offered");
+    assert_eq!(found.size_bytes, 204_802);
+    assert_eq!(found.zstd_level, Some(3));
+    assert_eq!(
+        shares.blob(shared.id, &round_base).await.expect("reads"),
+        None,
+        "Bases is not shared"
+    );
+
+    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
+        .bind(lib.cliff.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("removes the cliff face");
+    assert_eq!(
+        shares.blob(shared.id, &cliff).await.expect("reads"),
+        None,
+        "a removed part's file is not offered"
+    );
+}

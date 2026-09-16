@@ -36,8 +36,7 @@ struct Config {
     // `api` role reads it, and only when someone uploads, so it is `Option` for the
     // same reason and checked in the `Role::Api` arm below rather than here.
     upload_dir: Option<PathBuf>,
-    /// Where the peer role keeps this installation's identity key, and the only thing it keeps on
-    /// disk. `Option` for `upload_dir`'s reason: only the `peer` role reads it, so requiring it
+    /// Where the peer role keeps this installation's identity key. `Option` for `upload_dir`'s reason: only the `peer` role reads it, so requiring it
     /// unconditionally would make the api and worker services incomplete for no reason either
     /// would ever hit. Checked in the `Role::Peer` arm below.
     ///
@@ -720,8 +719,13 @@ async fn main() -> Result<()> {
             ));
             // The hello and the share routes, one router: each share route asks the connection which
             // installation it is before it reads anything.
+            let blob_root = config.blob_root.clone().context(
+                "Could not start as peer: LAPIDARY_BLOB_ROOT is not set. It names the store the files \
+                 you share are read from.",
+            )?;
             let peer = lapidary_peer::router(device, roster)
-                .merge(lapidary_peer::shares::shares_router(db.clone()));
+                .merge(lapidary_peer::shares::shares_router(db.clone()))
+                .merge(lapidary_peer::blob::blob_router(db.clone(), blob_root));
             (peer, None, None)
         }
     };

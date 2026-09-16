@@ -79,6 +79,10 @@ sqlx.workspace = true
 lapidary-core.workspace = true
 # Reads the share routes' answers in tests/peer_shares.rs.
 serde_json.workspace = true
+# Real stored bytes for the blob route's tests (tests/peer_blob.rs).
+lapidary-storage.workspace = true
+# The digest those bytes are filed under.
+blake3.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 # Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed

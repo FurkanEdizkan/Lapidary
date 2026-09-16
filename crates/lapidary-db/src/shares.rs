@@ -49,6 +49,17 @@ pub struct CatalogueRow {
     pub thumbnail: bool,
 }
 
+/// Where a shared file's bytes are, as the blob route reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobLocation {
+    /// The file's path under the store, or `None` while it is still at the old content-addressed path.
+    pub storage_path: Option<String>,
+    /// Passed to the reader as the file row records it, as the bundle export does.
+    pub zstd_level: Option<i16>,
+    /// The uncompressed length, which is what is sent.
+    pub size_bytes: i64,
+}
+
 /// What sharing a category would offer, counted before anybody confirms it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LicenceCounts {
@@ -286,6 +297,38 @@ impl PgShares {
         .bind(part.as_uuid())
         .fetch_optional(&self.0)
         .await?)
+    }
+
+    /// Where a file is, only when it is the source file of a revision of a live part inside the share. The walk and
+    /// the filters are the catalogue's own, so a file is reachable exactly when its part is offered: content
+    /// addressing is not authorization.
+    pub async fn blob(
+        &self,
+        share: ShareId,
+        blake3: &str,
+    ) -> Result<Option<BlobLocation>, DbError> {
+        // Any revision's file, not only the current one: a pull that began before the sharer recorded a revision
+        // finishes, and the next pull brings the new file.
+        let row: Option<(Option<String>, Option<i16>, i64)> = sqlx::query_as(concat!(
+            share_subtree!(),
+            " SELECT f.storage_path, f.zstd_level, f.size_bytes FROM part p JOIN share s ON s.id = $1 \
+             JOIN revision r ON r.part_id = p.id \
+             JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
+             WHERE f.blake3 = $2 AND p.library_id = s.library_id AND p.deleted_at IS NULL \
+             AND p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle) \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1"
+        ))
+        .bind(share.as_uuid())
+        .bind(blake3)
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(
+            row.map(|(storage_path, zstd_level, size_bytes)| BlobLocation {
+                storage_path,
+                zstd_level,
+                size_bytes,
+            }),
+        )
     }
 
     /// The licence warning for sharing `folder`, before anybody confirms it.

@@ -42,6 +42,9 @@ services:
       # add by hand, so losing this volume changes who this machine says it is and everyone
       # sharing with it has to add the new id.
       LAPIDARY_PEER_DIR: /var/lib/lapidary-peer
+      # The same store the api reads, at the same path, so a file a paired machine asks for is the
+      # file the part's page downloads.
+      LAPIDARY_BLOB_ROOT: /var/lib/lapidary
     depends_on:
       db:
         condition: service_healthy
@@ -51,9 +54,11 @@ services:
       # unless its key was written down first.
       - "8082:8082"
     volumes:
-      # The identity key, and nothing else. A named volume rather than part of the storage root:
-      # the store is the user's files, browsable on purpose, and a private key is neither.
+      # The identity key. A named volume rather than part of the storage root: the store is the
+      # user's files, browsable on purpose, and a private key is neither.
       - lapidary-peer:/var/lib/lapidary-peer:Z
+      # The store: read for a file someone you share with asks for.
+      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
 
 volumes:
   # Back this up, or accept that a rebuild makes this installation a different one to everybody
