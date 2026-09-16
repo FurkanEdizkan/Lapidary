@@ -16,6 +16,8 @@ use lapidary_core::DeviceId;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod blob;
+pub mod pull;
 pub mod shares;
 pub mod sync;
 
@@ -451,7 +453,7 @@ pub struct Hello {
 /// The peer protocol's version, answered at hello and carried in every route's path.
 pub const PROTOCOL: u16 = 1;
 
-/// What this installation answers. `/peer/v1/hello` and nothing else, so far.
+/// The hello route. `shares::shares_router` and `blob::blob_router` hold the rest of what this installation answers.
 pub fn router(identity: DeviceId, roster: Roster) -> axum::Router {
     axum::Router::new().route(
         "/peer/v1/hello",

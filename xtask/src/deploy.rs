@@ -171,6 +171,13 @@ pub enum Violation {
         handle: &'static str,
         allowed: &'static str,
     },
+    /// A file under `crates/lapidary-peer/src/` names a source-bytes handle outside the one file
+    /// [`PEER_SOURCE_HANDLES`] allows it in, or one the peer role may not name at all (`None`).
+    PeerNamesSourceHandle {
+        path: String,
+        handle: &'static str,
+        allowed: Option<&'static str>,
+    },
 }
 
 impl std::fmt::Display for Violation {
@@ -355,6 +362,28 @@ impl std::fmt::Display for Violation {
                  {allowed} — that path exactly, so splitting the route into a directory \
                  or naming a second module after it does not widen the exemption — or use \
                  DerivativeStore."
+            ),
+            Violation::PeerNamesSourceHandle {
+                path,
+                handle,
+                allowed: Some(allowed),
+            } => write!(
+                f,
+                "{path} names {handle}. The peer role reaches the store in two files only: \
+                 crates/lapidary-peer/src/blob.rs reads a file a paired machine asked for, and \
+                 crates/lapidary-peer/src/pull.rs keeps a file this machine pulled. Move the work \
+                 into {allowed}, that path exactly."
+            ),
+            Violation::PeerNamesSourceHandle {
+                path,
+                handle,
+                allowed: None,
+            } => write!(
+                f,
+                "{path} names {handle}. The peer role takes requests from other machines, so it \
+                 may read a shared file (crates/lapidary-peer/src/blob.rs) and keep a pulled one \
+                 (crates/lapidary-peer/src/pull.rs), and nothing more of the store. Rename, move \
+                 and derive through the api or the worker."
             ),
         }
     }
@@ -883,6 +912,38 @@ pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violati
     });
     names_source_store
         .chain(handle_outside_its_module)
+        .collect()
+}
+
+/// The source-bytes handles the peer role may name, each with the one file it may name it in, and
+/// `None` for a handle it may not name anywhere. A separate table from
+/// [`SOURCE_HANDLE_EXEMPTIONS`] because the reason differs: the peer role is not the open path, it is
+/// the one role other machines reach, so the store it can touch is the store a paired machine can
+/// make it touch.
+const PEER_SOURCE_HANDLES: &[(&str, Option<&str>)] = &[
+    ("SourceStore", None),
+    ("SourceReader", Some("crates/lapidary-peer/src/blob.rs")),
+    ("SourceWriter", Some("crates/lapidary-peer/src/pull.rs")),
+    ("SourceRelocator", None),
+];
+
+/// [`check_open_path_boundary`]'s grep, over `crates/lapidary-peer/src/**/*.rs` and
+/// [`PEER_SOURCE_HANDLES`]. Textual in the same way, so a lint against the mistake and not a seal.
+pub fn check_peer_boundary(peer_sources: &[(String, String)]) -> Vec<Violation> {
+    peer_sources
+        .iter()
+        .flat_map(|(path, body)| {
+            PEER_SOURCE_HANDLES
+                .iter()
+                .filter(move |(handle, allowed)| {
+                    body.contains(handle) && !allowed.is_some_and(|module| is_module(path, module))
+                })
+                .map(move |(handle, allowed)| Violation::PeerNamesSourceHandle {
+                    path: path.clone(),
+                    handle,
+                    allowed: *allowed,
+                })
+        })
         .collect()
 }
 
@@ -1890,5 +1951,54 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
             .replacen("FROM runtime AS api\n", "from runtime as api\n", 1)
             .replacen("FROM runtime AS worker\n", "from runtime as worker\n", 1);
         assert_eq!(check_targets(&lower), vec![]);
+    }
+
+    /// The peer role reads the store to serve a file and writes it to keep one it pulled, each in one
+    /// file; a table that only checked its first row, or a file allowed one handle passing with the
+    /// other, would pass a single-case test.
+    #[test]
+    fn the_peer_reads_the_store_only_in_blob_rs_and_writes_it_only_in_pull_rs() {
+        let sources = vec![
+            (
+                "/w/crates/lapidary-peer/src/blob.rs".to_owned(),
+                "use lapidary_storage::SourceReader;\n".to_owned(),
+            ),
+            (
+                "/w/crates/lapidary-peer/src/pull.rs".to_owned(),
+                "use lapidary_storage::SourceWriter;\n".to_owned(),
+            ),
+            (
+                "/w/crates/lapidary-peer/src/shares.rs".to_owned(),
+                "fn read(reader: &SourceReader) {}\n".to_owned(),
+            ),
+            (
+                "/w/crates/lapidary-peer/src/blob.rs".to_owned(),
+                "fn keep(writer: SourceWriter) {}\n".to_owned(),
+            ),
+            (
+                "/w/crates/lapidary-peer/src/sync.rs".to_owned(),
+                "use lapidary_storage::SourceStore;\n".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            check_peer_boundary(&sources),
+            vec![
+                Violation::PeerNamesSourceHandle {
+                    path: "/w/crates/lapidary-peer/src/shares.rs".to_owned(),
+                    handle: "SourceReader",
+                    allowed: Some("crates/lapidary-peer/src/blob.rs"),
+                },
+                Violation::PeerNamesSourceHandle {
+                    path: "/w/crates/lapidary-peer/src/blob.rs".to_owned(),
+                    handle: "SourceWriter",
+                    allowed: Some("crates/lapidary-peer/src/pull.rs"),
+                },
+                Violation::PeerNamesSourceHandle {
+                    path: "/w/crates/lapidary-peer/src/sync.rs".to_owned(),
+                    handle: "SourceStore",
+                    allowed: None,
+                },
+            ]
+        );
     }
 }

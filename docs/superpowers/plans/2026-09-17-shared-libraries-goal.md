@@ -65,7 +65,10 @@ Line numbers are as of `f3afed6`.
   (`crates/lapidary-targets/src/bundle.rs:58-66`) — **no category**. `StoreZip` writes an archive
   (`bundle.rs:126-203`); `Bundle::read` checks one (`bundle.rs:287`); imports cap at
   `MAX_IMPORT_BYTES` 2 GiB and `MAX_IMPORT_ENTRIES` 10,000 (`bundle.rs:266-268`).
-- `import.rs` places nothing in a category: **every imported part lands at the library root today.**
+- **Corrected in stage 4 (S3):** an imported part *is* placed in categories. `import_part` calls `index`, which calls
+  `model_dir_for` (`crates/lapidary-ingest/src/handler.rs:1163`), and that creates the category rows a `source_path`'s
+  directories imply, with `get_or_create`, on every ingest path. The first version of this file said imported parts
+  land at the library root; it had read `import.rs` alone.
 - The api's import route stores the bundle with `store_staged` and queues
   `JobPayload::ImportBundle { blake3, path }` (`crates/lapidary-api/src/upload.rs:486-521`); the worker
   reads the archive back out of the blob store by hash (`crates/lapidary-ingest/src/handler.rs:182`).
@@ -218,10 +221,11 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
   `lapidary-peer-staging`** (the key volume holds the key and nothing else), resumed from the staged length,
   whole-file BLAKE3 checked at the end; then bundles of at most 64 MiB assembled with `StoreZip`, written with
   `SourceWriter`, and queued as `ImportBundle` into one batch the page follows.
-- **Categories travel:** `ManifestPart` gains an optional `category: Vec<String>` (the path of category names
-  from the library root, `#[serde(default)]` so older bundles still read); export writes it; import places a
-  part along it with `get_or_create`. `ImportBundle` gains an optional destination folder, and a pull's is
-  `Shared/<sharer's name>`. Plain bundle import and export keep categories from here on — record it.
+- **Categories follow the source path** (so no manifest field and no destination-folder payload, as first planned):
+  the puller writes each part's source path as `Shared/<sharer's name> (<first group of their device id>)/<their
+  source path>`, and import files it there by its directories. The device id's group keeps two sharers with one
+  name apart; the sharer's segment is made safe for a path. Test that a name with a slash lands under one folder,
+  that two sharers with one name do not merge, and that pulling again revises rather than duplicates.
 - **Migration `0040`:** `part_provenance (part_id, device_id, sharer_name, pulled_at)`. The part page says
   "From <sharer>".
 - **The overlay** mounts the storage volume the api mounts, and the staging volume.

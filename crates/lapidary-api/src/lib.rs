@@ -317,6 +317,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/sharing/shares/{id}/thumbnail",
                     get(sharing::mirrored_thumbnail),
                 )
+                // Pulling it: recorded here, done by the peer role, followed from the share's page.
+                .route(
+                    "/api/sharing/shares/{id}/pulls",
+                    axum::routing::post(sharing::start_pull),
+                )
+                .route("/api/sharing/shares/{id}/pull", get(sharing::latest_pull))
                 // What this installation shares: a category and everything under it. The peer role
                 // serves it to the people paired; this is where it is decided. See `shares.rs`.
                 .route(

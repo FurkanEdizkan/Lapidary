@@ -8,6 +8,7 @@ mod jobs;
 mod locks;
 mod migrate;
 mod mirror;
+mod pulls;
 mod repo;
 mod revisions;
 mod saved_filters;
@@ -26,6 +27,7 @@ pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use mirror::{
     MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote, PgMirror, StaleShare,
 };
+pub use pulls::{PgPulls, PullRow};
 pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DerivativeBytes, DownloadSource,
     EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage,
@@ -36,7 +38,7 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
-pub use shares::{CatalogueRow, LicenceCounts, OfferedShare, PgShares, ShareRow};
+pub use shares::{BlobLocation, CatalogueRow, LicenceCounts, OfferedShare, PgShares, ShareRow};
 pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;
 pub use touches::Touches;

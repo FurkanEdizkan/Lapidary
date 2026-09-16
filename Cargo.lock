@@ -1495,8 +1495,11 @@ name = "lapidary-peer"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "lapidary-core",
  "lapidary-db",
+ "lapidary-storage",
+ "lapidary-targets",
  "reqwest",
  "ring",
  "rustls",
@@ -1506,6 +1509,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-util",
  "tracing",
 ]
@@ -1516,6 +1520,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blake3",
  "figment",
  "lapidary-api",
  "lapidary-cad",
@@ -1524,6 +1529,7 @@ dependencies = [
  "lapidary-ingest",
  "lapidary-jobs",
  "lapidary-peer",
+ "lapidary-storage",
  "serde",
  "serde_json",
  "sqlx",

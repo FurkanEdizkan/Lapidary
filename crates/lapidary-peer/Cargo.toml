@@ -11,6 +11,15 @@ publish = false
 lapidary-core.workspace = true
 # Who is paired and what this installation calls itself, read and written by each hello round.
 lapidary-db.workspace = true
+# The blob route's read of a shared file (`SourceReader`, in `blob.rs` alone), and the pull's write of the bundles it
+# assembles (`SourceWriter`, in `pull.rs` alone). `cargo xtask check-deploy` holds both to their one module.
+lapidary-storage.workspace = true
+# The bundles a pull assembles, and the import reads back.
+lapidary-targets.workspace = true
+# A pulled file's whole-file check, against the BLAKE3 its sharer's catalogue names.
+blake3.workspace = true
+# A shared file streamed from a blocking reader, as `lapidary-api`'s download streams one.
+tokio-stream.workspace = true
 # The peer router. Axum 0.8's `Listener` trait is what lets a TLS listener go straight into
 # `axum::serve`, so this crate needs no server of its own.
 axum.workspace = true
@@ -35,6 +44,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# A pull's fetch, tested against a plain loopback server.
+reqwest.workspace = true
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "io-util"] }
 tempfile.workspace = true
 

@@ -172,7 +172,11 @@ async fn paired(db: &PgPool, device: Option<DeviceId>) -> Result<bool, DbError> 
 
 /// The one question every route about a single share asks first. A stranger is told the same as somebody
 /// whose share was withdrawn, so nobody learns what is shared by asking.
-async fn may_read(db: &PgPool, device: Option<DeviceId>, share: ShareId) -> Result<(), Response> {
+pub(crate) async fn may_read(
+    db: &PgPool,
+    device: Option<DeviceId>,
+    share: ShareId,
+) -> Result<(), Response> {
     let Some(device) = device else {
         return Err(not_shared());
     };
@@ -198,7 +202,7 @@ fn catalogue_part(row: CatalogueRow) -> CataloguePart {
     }
 }
 
-fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response {
+pub(crate) fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response {
     (
         status,
         Json(serde_json::json!({ "message": message, "reason": reason })),
@@ -222,7 +226,7 @@ fn not_shared() -> Response {
     )
 }
 
-fn failed(err: &DbError) -> Response {
+pub(crate) fn failed(err: &DbError) -> Response {
     tracing::error!(error = %err, "a share route could not read the database");
     (
         StatusCode::INTERNAL_SERVER_ERROR,

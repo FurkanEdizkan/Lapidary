@@ -346,3 +346,34 @@ async fn a_part_page_names_its_finer_rungs_and_entities_once_they_exist(pool: sq
         lapidary_core::BlobHash::from_bytes([0x62; 32]).to_hex()
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_pulled_part_names_who_it_came_from_and_another_names_nobody(pool: sqlx::PgPool) {
+    let pulled = seed(&pool, true, Some(21478.5), Some("tessellated")).await;
+    let ayse = lapidary_core::DeviceId::from_public_key(
+        b"ed25519 public key of the workshop pc in Ayse's garage",
+    );
+    lapidary_db::PgPulls(pool.clone())
+        .record_provenance(
+            SEEDED_LIBRARY.parse().expect("seeded library id parses"),
+            ayse,
+            Some("Ayşe's workshop"),
+            &["brackets/steel/LP-1042-03.stl".to_owned()],
+        )
+        .await
+        .expect("names the sharer");
+
+    let (status, json) = get(pool.clone(), &pulled.to_string()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["sharedBy"],
+        serde_json::json!({ "deviceId": ayse.to_string(), "name": "Ayşe's workshop" })
+    );
+
+    sqlx::query("DELETE FROM part_provenance")
+        .execute(&pool)
+        .await
+        .expect("clears");
+    let (_, json) = get(pool, &pulled.to_string()).await;
+    assert_eq!(json["sharedBy"], serde_json::Value::Null);
+}

@@ -488,6 +488,8 @@ export const strings = {
       'The ghost is that revision’s coarse preview, so a small difference along its outline may be the preview rather than the part.',
     /** Who has the part checked out, and since when (Phase 4 slice 1). */
     checkedOut: 'Checked out',
+    /** A part pulled from somebody's shared library (sharing S3): who it came from. */
+    sharedBy: 'From',
     checkedOutBy: (holder: string, since: string) =>
       `${holder}, since ${new Date(since).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
     releaseLock: 'Release…',
@@ -1794,5 +1796,26 @@ export const strings = {
       [format?.toUpperCase(), size === null ? null : bytes(size)].filter((piece) => piece).join(' · '),
     showMore: 'Show more',
     showingMore: 'Loading…',
+    /** Pulling a shared library (S3) into one of this installation's. */
+    pullInto: 'Pull into',
+    pullAll: 'Pull all',
+    pullStarting: 'Starting…',
+    pullFailed: 'Could not start the pull. Reload and try again.',
+    pullNote:
+      'Pulled parts land under Shared, in a category named for who shares them, with their licences. Parts you already pulled are not fetched again.',
+    pullQueued: 'Waiting for the sharing service to start fetching…',
+    pullFetching: (done: number, total: number, bytesDone: number, bytesTotal: number) =>
+      `Fetching ${done} of ${total} files — ${bytes(bytesDone)} of ${bytes(bytesTotal)}`,
+    pullImporting: (settled: number, total: number) =>
+      total === 0 ? 'Importing what was fetched…' : `Importing — ${settled} of ${total} jobs finished`,
+    pullDone: (files: number) =>
+      files === 0
+        ? 'Pulled. This library already held every file, so nothing was fetched.'
+        : files === 1
+          ? 'Pulled 1 file.'
+          : `Pulled ${files} files.`,
+    pullStopped: (why: string) => `The pull stopped: ${why}`,
+    /** Unfinished, with the reason the last attempt stopped: it is tried again on its own. */
+    pullRetrying: (why: string) => `Trying again shortly. The last attempt stopped: ${why}`,
   },
 } as const

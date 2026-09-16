@@ -62,6 +62,8 @@ import type {
   LicenceWarning,
   MirroredPartsPage,
   MirroredShare,
+  Pull,
+  StartPull,
   Peer,
   PeerShareId,
   SetSharingName,
@@ -1617,6 +1619,28 @@ export async function fetchPeerShares(deviceId: string): Promise<MirroredShare[]
     throw new Error(`peer shares returned ${response.status}`)
   }
   return (await response.json()) as MirroredShare[]
+}
+
+/** `GET /api/sharing/shares/{id}/pull` — the shared library's newest pull, or `null` when it has never been pulled. */
+export async function fetchLatestPull(share: PeerShareId): Promise<Pull | null> {
+  const response = await fetch(`/api/sharing/shares/${encodeURIComponent(share)}/pull`)
+  if (!response.ok) {
+    throw new Error(`pull returned ${response.status}`)
+  }
+  return (await response.json()) as Pull | null
+}
+
+/** `POST /api/sharing/shares/{id}/pulls` — pull every part of a shared library into `library`. */
+export async function startPull(share: PeerShareId, library: LibraryId): Promise<FieldWritten> {
+  const body: StartPull = { libraryId: library }
+  return fieldWritten(
+    await fetch(`/api/sharing/shares/${encodeURIComponent(share)}/pulls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.sharing.pullFailed,
+  )
 }
 
 /** Why a shared library could not be read: gone, or anything else. */

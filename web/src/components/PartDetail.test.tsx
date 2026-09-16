@@ -69,6 +69,7 @@ const BRACKET: PartDetail = {
   surfaceAreaMm2: { value: 11392, approximate: false },
   kernelVersion: 'occt occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1',
   lock: null,
+  sharedBy: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'iges',
   sourceBytes: 18204,
@@ -809,4 +810,19 @@ test('a STEP part offers a 3MF for a slicer, watches it being written, then link
   const link = await screen.findByRole('link', { name: strings.download.forSlicerReady }, { timeout: 3000 })
   expect(link.getAttribute('href')).toBe(`/api/revisions/${BRACKET.revision}/download?variant=3mf`)
   vi.unstubAllGlobals()
+})
+
+test('a part pulled from somebody’s shared library says who it came from', () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
+  const pulled: PartDetail = {
+    ...BRACKET,
+    sharedBy: { deviceId: '7KQ2M-4XW9P-0HB3R', name: 'Ayşe’s workshop' },
+  }
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={pulled} recordable={false} />
+    </QueryClientProvider>,
+  )
+  expect(screen.getByText(strings.detail.sharedBy)).toBeTruthy()
+  expect(screen.getByText('Ayşe’s workshop')).toBeTruthy()
 })

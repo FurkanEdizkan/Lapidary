@@ -14,8 +14,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use lapidary_core::{DeviceId, PeerShareId};
-use lapidary_db::{MirroredPartRow, MirroredShareRow, PeerRow, PgMirror, PgSharing};
+use lapidary_core::{BatchId, DeviceId, LibraryId, PeerShareId, PullId};
+use lapidary_db::{
+    MirroredPartRow, MirroredShareRow, PeerRow, PgMirror, PgParts, PgPulls, PgSharing, PullRow,
+};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -331,6 +333,99 @@ pub async fn mirrored_thumbnail(
             "That part has no preview in this shared library.",
         ),
         Err(err) => internal_error(&err, "mirrored thumbnail failed"),
+    }
+}
+
+/// `POST /api/sharing/shares/{id}/pulls`'s body: the library the share's parts land in.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StartPull {
+    pub library_id: LibraryId,
+}
+
+/// A pull, as its share's page follows it: fetching, then importing in `batch_id`, then done or failed.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Pull {
+    pub id: PullId,
+    pub library_id: LibraryId,
+    /// `queued`, `fetching`, `importing`, `done` or `failed`.
+    pub state: String,
+    pub files_total: i32,
+    pub files_done: i32,
+    #[ts(type = "number")]
+    pub bytes_total: i64,
+    #[ts(type = "number")]
+    pub bytes_done: i64,
+    pub batch_id: Option<BatchId>,
+    /// Why it failed, or why it is waiting to try again.
+    pub error: Option<String>,
+}
+
+/// `POST /api/sharing/shares/{id}/pulls` — pull every part of a shared library into one of this installation's. The api
+/// records it; the peer role, which alone can reach the sharer, fetches and queues the import.
+pub async fn start_pull(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+    body: Result<Json<StartPull>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badPull",
+            "Say which library to pull into, as {\"libraryId\": \"…\"}.",
+        );
+    };
+    match PgParts(state.db.clone())
+        .auto_thumbnail(body.library_id)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return refused(
+                StatusCode::NOT_FOUND,
+                "noSuchLibrary",
+                "That library is not here any more. Choose another library to pull into.",
+            );
+        }
+        Err(err) => return internal_error(&err, "pull library lookup failed"),
+    }
+    let pulls = PgPulls(state.db);
+    match pulls.start(share, body.library_id).await {
+        Ok(Some(_)) => match pulls.latest(share).await {
+            Ok(Some(row)) => (StatusCode::ACCEPTED, Json(pull(row))).into_response(),
+            Ok(None) => no_such_share(),
+            Err(err) => internal_error(&err, "pull read failed"),
+        },
+        Ok(None) => no_such_share(),
+        Err(err) => internal_error(&err, "pull start failed"),
+    }
+}
+
+/// `GET /api/sharing/shares/{id}/pull` — the share's newest pull, or `null`.
+pub async fn latest_pull(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+) -> Response {
+    match PgPulls(state.db).latest(share).await {
+        Ok(row) => Json(row.map(pull)).into_response(),
+        Err(err) => internal_error(&err, "pull read failed"),
+    }
+}
+
+fn pull(row: PullRow) -> Pull {
+    Pull {
+        id: row.id,
+        library_id: row.library,
+        state: row.state,
+        files_total: row.files_total,
+        files_done: row.files_done,
+        bytes_total: row.bytes_total,
+        bytes_done: row.bytes_done,
+        batch_id: row.batch,
+        error: row.error,
     }
 }
 

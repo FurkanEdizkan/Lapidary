@@ -68,7 +68,7 @@ pub async fn run(
 }
 
 /// Listen for the api's notifications, or run on the tick alone when that is not possible.
-async fn listen(db: &PgPool) -> Option<PgListener> {
+pub(crate) async fn listen(db: &PgPool) -> Option<PgListener> {
     let connected = match PgListener::connect_with(db).await {
         Ok(mut listener) => listener.listen(SHARING_CHANNEL).await.map(|()| listener),
         Err(error) => Err(error),
@@ -83,7 +83,7 @@ async fn listen(db: &PgPool) -> Option<PgListener> {
 }
 
 /// Until the next round is due: the tick, or a notification. `false` when shutting down.
-async fn wait(listener: &mut Option<PgListener>, shutdown: &CancellationToken) -> bool {
+pub(crate) async fn wait(listener: &mut Option<PgListener>, shutdown: &CancellationToken) -> bool {
     let lost = match listener {
         Some(listening) => tokio::select! {
             () = shutdown.cancelled() => return false,

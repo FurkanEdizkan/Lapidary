@@ -414,3 +414,58 @@ async fn a_share_no_longer_offered_or_from_somebody_removed_is_not_found(pool: s
 fn unmirrored_share_id() -> String {
     lapidary_core::PeerShareId::new().as_uuid().to_string()
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_pull_is_recorded_for_the_peer_role_and_followed_from_its_share(pool: sqlx::PgPool) {
+    let id = mirrored_terrain(&pool).await;
+    let (status, none_yet) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!((status, none_yet), (StatusCode::OK, Value::Null));
+
+    let seeded = "01931b6e-0000-7000-8000-000000000001";
+    let (status, pull) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{id}/pulls"),
+        Some(json!({ "libraryId": seeded })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{pull}");
+    assert_eq!(pull["state"], "queued");
+    assert_eq!(pull["libraryId"], seeded);
+
+    let (status, followed) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(followed["id"], pull["id"]);
+
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{id}/pulls"),
+        Some(json!({ "libraryId": "01a07c41-5d22-7b03-9014-7e2f6dab0999" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{refusal}");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{}/pulls", unmirrored_share_id()),
+        Some(json!({ "libraryId": seeded })),
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::NOT_FOUND, &json!("noSuchShare"))
+    );
+}

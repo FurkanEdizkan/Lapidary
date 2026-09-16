@@ -1,8 +1,18 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { SharedLibraryGone, fetchMirroredParts, fetchMirroredShare, mirroredThumbnailUrl } from '../lib/api'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+  SharedLibraryGone,
+  fetchBatchStatus,
+  fetchLatestPull,
+  fetchLibraries,
+  fetchMirroredParts,
+  fetchMirroredShare,
+  mirroredThumbnailUrl,
+  startPull,
+} from '../lib/api'
 import { strings } from '../lib/strings'
-import type { MirroredPart, PeerShareId } from '../lib/types'
+import type { BatchId, LibraryId, MirroredPart, PeerShareId, Pull } from '../lib/types'
 
 const BUTTON =
   'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
@@ -12,6 +22,9 @@ const BUTTON =
  * database read and never a request to the other machine.
  */
 const REFRESH_MS = 15_000
+
+/** How often an unfinished pull is asked about. A database read; the peer role does the fetching. */
+const PULL_POLL_MS = 2_000
 
 /**
  * A shared library: a category somebody paired with this installation offers, read from the mirror the peer role
@@ -74,6 +87,7 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
               : strings.sharing.librarySynced(library.data.syncedAt)}
           </p>
           <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
+          <PullPanel share={share} />
           {parts.isPending ? (
             <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
           ) : parts.isError && !gone ? (
@@ -100,6 +114,95 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
         </>
       )}
     </section>
+  )
+}
+
+function unfinished(pull: Pull | null | undefined): boolean {
+  return pull !== null && pull !== undefined && ['queued', 'fetching', 'importing'].includes(pull.state)
+}
+
+/** Pull every part into a library of this installation's, and follow the pull while the peer role works it. */
+function PullPanel({ share }: { share: PeerShareId }) {
+  const client = useQueryClient()
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
+  const latest = useQuery({
+    queryKey: ['sharing', 'shares', share, 'pull'],
+    queryFn: () => fetchLatestPull(share),
+    refetchInterval: (query) => (unfinished(query.state.data) ? PULL_POLL_MS : false),
+  })
+  const [chosen, setChosen] = useState<LibraryId | null>(null)
+  const start = useMutation({
+    mutationFn: (library: LibraryId) => startPull(share, library),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
+  })
+  const pull = latest.data ?? null
+  // The library this share was last pulled into, until somebody chooses another.
+  const library = chosen ?? pull?.libraryId ?? libraries.data?.[0]?.id ?? null
+  const refusal = start.data?.kind === 'refused' ? start.data.message : null
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 text-sm">
+          {strings.sharing.pullInto}
+          <select
+            value={library ?? ''}
+            onChange={(event) => setChosen(event.target.value as LibraryId)}
+            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm"
+          >
+            {(libraries.data ?? []).map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => library !== null && start.mutate(library)}
+          disabled={library === null || start.isPending || unfinished(pull)}
+          className={BUTTON}
+        >
+          {start.isPending ? strings.sharing.pullStarting : strings.sharing.pullAll}
+        </button>
+      </div>
+      {refusal === null ? null : (
+        <p role="alert" className="text-sm">
+          {refusal}
+        </p>
+      )}
+      {pull === null ? null : <PullProgress pull={pull} />}
+      <p className="max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.pullNote}</p>
+    </div>
+  )
+}
+
+function PullProgress({ pull }: { pull: Pull }) {
+  const importing = pull.state === 'importing' && pull.batchId !== null
+  const batch = useQuery({
+    queryKey: ['batch', pull.batchId],
+    queryFn: () => fetchBatchStatus(pull.libraryId, pull.batchId as BatchId),
+    enabled: importing,
+    refetchInterval: PULL_POLL_MS,
+  })
+  const text =
+    pull.state === 'done'
+      ? strings.sharing.pullDone(pull.filesTotal)
+      : pull.state === 'failed'
+        ? strings.sharing.pullStopped(pull.error ?? '')
+        : pull.error !== null
+          ? strings.sharing.pullRetrying(pull.error)
+          : pull.state === 'queued'
+            ? strings.sharing.pullQueued
+            : pull.state === 'fetching'
+              ? strings.sharing.pullFetching(pull.filesDone, pull.filesTotal, pull.bytesDone, pull.bytesTotal)
+              : strings.sharing.pullImporting(
+                  batch.data === undefined ? 0 : batch.data.total - batch.data.pending - batch.data.running,
+                  batch.data?.total ?? 0,
+                )
+  return (
+    <p role="status" className="text-sm">
+      {text}
+    </p>
   )
 }
 

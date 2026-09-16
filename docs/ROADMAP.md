@@ -2722,6 +2722,86 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
     of the 19 s. Telling a paired installation at once needs a request from sharer to puller, and belongs with S3.
   - Part names are still derived from file names, so a corpus library reads as file stems.
 
+**Pull it** (goal 7 stage 4, S3: `4eb607d`, `f343622`, `4f28a6b`, `c569248`, `44b9574`, `31cef9d`, `0500139`).
+- **The sharer's file route** (`crates/lapidary-peer/src/blob.rs`): `GET /peer/v1/shares/{id}/blob/{blake3}` asks who is
+  asking first, then whether the hash is the source file of a live part inside the share, walked as the catalogue walks
+  it (`PgShares::blob`) — content addressing is not authorization. `Range: bytes=N-` resumes; stored bytes may be
+  compressed, so the route reads and throws away the first N and logs how many (`skipped_bytes`). A range past the end
+  is `416`.
+- **`check-deploy` learns the peer role:** it may name `SourceReader` only in `blob.rs`, `SourceWriter` only in
+  `pull.rs`, and never `SourceStore` or `SourceRelocator` (`check_peer_boundary`, tested the way the api's rules are).
+- **The puller** (`0040`, `crates/lapidary-db/src/pulls.rs`, `crates/lapidary-peer/src/pull.rs`): the api records a pull
+  and wakes the peer role. Each file the destination does not already hold at its place is staged as `<blake3>.part`,
+  resumed from the staged length, and checked against its BLAKE3 when whole; wrong bytes are dropped and fail the pull.
+  The files go into bundles of at most 64 MiB and 1,000 files, stored with `SourceWriter` and queued as `ImportBundle`
+  into one batch. Parts land at `Shared/<sharer's name> (<first group of their device id>)/<their source path>`, so
+  import files them in categories by their directories, and once the batch settles each part is named with its sharer
+  (`part_provenance`). A pull is a row, so a peer role stopped part-way picks the same pull up and fetches the rest.
+- **The overlay** mounts the store and a second named volume, `lapidary-peer-staging`; the key's volume still holds the
+  key alone.
+- **The page:** Pull all on a shared library, into a chosen library, with fetching progress, the import batch, and what
+  the pull moved or why it stopped; the picker offers the library the share was last pulled into. A pulled part's page
+  says who it came from (`sharedBy`).
+- **A bug found by the measurement, fixed:** B's peer role was killed after a file's last byte was staged and before its
+  check. The restart asked for a range starting at the end, A rightly answered `416`, and the file was dropped and
+  fetched whole a round later — 14,999,984 bytes more than the catalogue predicted. A staged file of the full length is
+  now checked without a request (`44b9574`); a test saw the `416` first. The screenshot of the first run also showed the
+  picker offering the wrong library after a pull (`31cef9d`).
+- **Found by the tests and gates:** `verify slice`'s catalogue test, that every table referencing the part chain is one
+  purge deletes from, caught `part_provenance` cascading instead (`0500139`); purge now deletes it by name. A type added
+  to the part detail needs every derive the detail has (`Clone`,
+  `Deserialize`); and the bare-strings lint reads `'refused'` in a JSX ternary as a rendered string, so the refusal is
+  worked out above the markup.
+- **Mutation-checked, 21 of 21 caught by tests** (`target/sharing-check/mutate-g7-s3.sh`, the gates' own build
+  configuration): reachability, the access check, the skipped bytes, the `416`, the peer's deploy rule; resuming from
+  zero, a `206` overwriting what was staged, the whole-staged-file check, the hash check, a mismatch kept, placement
+  without the device group, a slash kept, placement bypassed, held files fetched again, provenance unwritten, a
+  finished pull picked up again; the api's library check and `sharedBy`; the chosen library, the pulled library, and the
+  part page's line. One (`range-past-end-served`) is caught by the handler panicking on the subtraction the refusal
+  guards, not by a refusal.
+- **Measured, two stacks with a worker each** (`target/sharing-check/measure-s3.sh`, `measure-s3.log`; the run before
+  the fix is `measure-s3-first.log`):
+  - **A** scanned corpus-1g (138 STLs) into a controlled library in 74 s, gave three parts a licence, and shared
+    `STL Files`. **B's mirror predicted 138 files, 1,077,177,442 bytes.**
+  - **B pulled all of it cold** into a hobby library, and its peer role was killed with `kill -9` once the pull said half
+    its bytes were fetched: 81 files and 615,029,404 bytes reported, 630,029,388 bytes staged whole and 417,792 in one
+    part file. Started again, it fetched the other 446,730,262 bytes in 56 requests — **one resumed with
+    `skipped_bytes=417792`**, no stall, no refusal. **Moved in all: 630,029,388 + 417,792 + 446,730,262 = 1,077,177,442
+    bytes, the prediction to the byte.** The fetch took about 2 s over the loopback on each side of the kill; the pull
+    was done 147 s after it was asked for, almost all of it the worker importing 138 parts at concurrency 2
+    (155 jobs, 138 ingested, none failed). Staging was left empty.
+  - **Where they landed:** 138 parts, all under `Shared/Furkan’s workbench (4TQN0)/`, in 32 categories 7 deep, the three
+    licences on their parts, and every part named with its sharer; a licensed part's page answers `sharedBy` with the
+    sharer's name and device id.
+  - **A recorded one new revision** (a rescan with one file changed: 137 skipped, 1 revised) and **B's mirror took it up
+    1 s later. B pulled again: 1 file, 4,576,184 bytes, one request.** The import counted it unkept — B's library is a
+    hobby library, which keeps no revisions — and B still holds 138 parts at 138 paths, none duplicated.
+  - Screenshots: `target/sharing-check/shots/s3-b-library.png`, `s3-b-library-again.png`, `s3-b-part.png`. The part
+    page's "From" line is below the shot's fold; the api answer above is its check.
+- **Decided without the owner:**
+  - a pull is of a whole share; the api takes no selection yet;
+  - the destination for the measurement is a hobby library, where a changed file is counted unkept, as a rescan counts
+    one. A controlled destination refuses a changed file, because a bundle carries only the sharer's current revision
+    and import will not graft it onto a history it does not start with;
+  - a sharer's segment of the path replaces `/`, `\` and control characters with `-`, and is the device group alone when
+    they gave no name;
+  - bundles of at most 64 MiB and 1,000 files, compressed in the store as an uploaded bundle is; each part's one
+    revision is labelled `A`, came by `ingest`, and carries no date, which the catalogue does not have;
+  - a pulled part's sources carry only its licences; the mirror holds no url or vendor;
+  - one pull at a time, oldest first (`ponytail:` in `pull.rs`); a pull that stalls tries again on the hello tick, and
+    wrong bytes or a refusal fail it;
+  - staged files are deleted once the batch is recorded, so a restart between storing the bundles and recording the
+    batch bundles again, which import skips.
+- **Left for later:**
+  - Choosing which parts to pull, in the api and on the page.
+  - A controlled destination taking a sharer's new revision: the bundle would need the history the destination holds.
+  - A part the sharer moves to another category is pulled again at its new path as a new part, and a sharer who
+    renames themselves gets a new folder.
+  - A pull whose sharer is removed is left unfinished, since the peer role no longer picks it up; S4's taking it back
+    should fail it with a message.
+  - Progress moves a file at a time.
+  - Still from S2b: sharing a category wakes only the sharer's own peer role.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
