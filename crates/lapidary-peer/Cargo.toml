@@ -21,7 +21,7 @@ tokio-rustls.workspace = true
 # The Ed25519 keypair itself. rustls already signs with ring, so this is the same
 # implementation rather than a second one.
 ring.workspace = true
-tokio = { workspace = true, features = ["net", "time", "macros"] }
+tokio = { workspace = true, features = ["net", "time", "macros", "rt", "sync"] }
 # The hello round stops on the same token every role's serve does.
 tokio-util.workspace = true
 # The connecting end of a hello: the client every round builds, pinned to the one installation it asks.
@@ -35,7 +35,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "io-util"] }
 tempfile.workspace = true
 
 [lints]

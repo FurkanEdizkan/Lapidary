@@ -490,24 +490,115 @@ pub async fn serve_with_shutdown(
     router: axum::Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(
-        PeerListener {
-            acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),
-            tcp: listener,
-        },
-        router,
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
+    serve_for(listener, config, router, shutdown, HANDSHAKE_TIMEOUT).await
 }
+
+/// How long a connection may take over its TLS handshake before it is closed.
+///
+/// A handshake between two installations on a LAN or a VPN takes milliseconds; ten seconds is room for a
+/// slow link, and short enough that somebody opening the port and saying nothing costs a task for a few
+/// seconds rather than a connection held forever.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The first wait after the port fails to accept a connection. It doubles for each failure in a row, up
+/// to [`MOST_BACKOFF`], and goes back to this after a connection is accepted.
+const FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The longest wait between attempts while accepting keeps failing — out of file descriptors, say.
+const MOST_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The wait after the one just taken, when accepting has failed again.
+fn next_backoff(wait: std::time::Duration) -> std::time::Duration {
+    (wait * 2).min(MOST_BACKOFF)
+}
+
+/// [`serve_with_shutdown`], with the handshake's time allowed given rather than fixed, so a test can
+/// watch a silent connection closed without waiting the full ten seconds.
+async fn serve_for(
+    listener: tokio::net::TcpListener,
+    config: rustls::ServerConfig,
+    router: axum::Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    handshake: std::time::Duration,
+) -> std::io::Result<()> {
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    axum::serve(PeerListener::start(listener, acceptor, handshake)?, router)
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
+/// A connection through its handshake, and who it came from.
+type Handshaken = (
+    tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    std::net::SocketAddr,
+);
 
 /// A TCP listener that hands back connections already through the handshake.
 ///
 /// Axum's own `Listener` is the seam for this, so the peer role serves through the same
 /// `axum::serve` the api does — the difference between them is this type, and nothing else.
+///
+/// The handshakes happen in a task of their own, each in a task of its own, and only finished ones
+/// reach `accept`. Awaiting each one inline, as the first version did, let one connection that opened
+/// the port and said nothing hold up every connection after it, for as long as it stayed open.
 struct PeerListener {
-    acceptor: tokio_rustls::TlsAcceptor,
+    handshaken: tokio::sync::mpsc::Receiver<Handshaken>,
+    local: std::net::SocketAddr,
+}
+
+impl PeerListener {
+    fn start(
+        tcp: tokio::net::TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+        handshake: std::time::Duration,
+    ) -> std::io::Result<Self> {
+        let local = tcp.local_addr()?;
+        let (done, handshaken) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(accepting(tcp, acceptor, handshake, done));
+        Ok(Self { handshaken, local })
+    }
+}
+
+/// Accept connections and start each one's handshake, until the listener is dropped.
+async fn accepting(
     tcp: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    handshake: std::time::Duration,
+    done: tokio::sync::mpsc::Sender<Handshaken>,
+) {
+    let mut wait = FIRST_BACKOFF;
+    loop {
+        let accepted = tokio::select! {
+            () = done.closed() => return,
+            accepted = tcp.accept() => accepted,
+        };
+        let (stream, address) = match accepted {
+            Ok(accepted) => {
+                wait = FIRST_BACKOFF;
+                accepted
+            }
+            Err(error) => {
+                // Axum's trait has nowhere to report this, and returning would end the listener. A
+                // failure that persists — out of file descriptors — would otherwise spin a core.
+                tracing::warn!(%error, wait_ms = wait.as_millis(), "could not accept a connection on the peer port; waiting before trying again");
+                tokio::time::sleep(wait).await;
+                wait = next_backoff(wait);
+                continue;
+            }
+        };
+        let (acceptor, done) = (acceptor.clone(), done.clone());
+        let handshaking = async move {
+            // A refused handshake is where a machine nobody paired with stops: it never becomes a
+            // connection, so no route of ours is reached. For a *pinning* refusal the verifier has
+            // already named the device id in the log, and that line is the whole record of it. A
+            // handshake that fails or runs out of time before any key is presented — plain HTTP on this
+            // port, a port scan — leaves no record at all.
+            if let Ok(Ok(tls)) = tokio::time::timeout(handshake, acceptor.accept(stream)).await {
+                let _ = done.send((tls, address)).await;
+            }
+        };
+        tokio::spawn(handshaking);
+    }
 }
 
 impl axum::serve::Listener for PeerListener {
@@ -515,25 +606,16 @@ impl axum::serve::Listener for PeerListener {
     type Addr = std::net::SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            let Ok((stream, address)) = self.tcp.accept().await else {
-                // Axum's trait has nowhere to report this, and returning would end the listener.
-                // A failed accept is one connection, so wait for the next.
-                continue;
-            };
-            // A refused handshake is where a machine nobody paired with stops: it never becomes a
-            // connection, so no route of ours is reached. The verifier has already named it in the
-            // log by then, which is the whole record of it — axum's trait has nowhere to report a
-            // connection that was never made.
-            match self.acceptor.accept(stream).await {
-                Ok(tls) => return (tls, address),
-                Err(_) => continue,
-            }
+        match self.handshaken.recv().await {
+            Some(connection) => connection,
+            // Only if the accepting task is gone, which it never is while this listener lives: it
+            // returns only once this receiver has been dropped.
+            None => std::future::pending().await,
         }
     }
 
     fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        self.tcp.local_addr()
+        Ok(self.local)
     }
 }
 
@@ -823,6 +905,91 @@ mod tests {
 
         roster.replace(Vec::new(), None);
         assert!(hello().await.is_err(), "refused again once removed");
+    }
+
+    /// Somebody opens the peer port and says nothing: a port scan, or a client that never starts its
+    /// handshake. That must cost a paired installation nothing — its hello is answered while the silent
+    /// connection is still open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_connection_that_never_handshakes_does_not_hold_up_a_paired_one() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let config = server_config(&host, &Roster::new(vec![guest_id], None))
+            .expect("the host's side, pairing the guest");
+        tokio::spawn(serve(tcp, config, router(host_id, Roster::default())));
+
+        let _silent = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("the port answers the silent one");
+        // Its connection is accepted first, so a listener that waits on it would wait on it alone.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let answered = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client(&guest, host_id)
+                .get(format!("https://{address}/peer/v1/hello"))
+                .send(),
+        )
+        .await;
+        assert!(
+            matches!(answered, Ok(Ok(_))),
+            "the paired installation is answered while the silent connection waits: {answered:?}"
+        );
+    }
+
+    /// A silent connection is not held open forever: once its handshake's time is up, the listener hangs
+    /// up on it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_connection_that_never_handshakes_is_closed_once_its_time_is_up() {
+        use tokio::io::AsyncReadExt as _;
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let host_id = host.device_id().expect("the host's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let config = server_config(&host, &Roster::default()).expect("the host's side");
+        tokio::spawn(serve_for(
+            tcp,
+            config,
+            router(host_id, Roster::default()),
+            std::future::pending::<()>(),
+            std::time::Duration::from_millis(300),
+        ));
+
+        let mut silent = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("the port answers");
+        let mut byte = [0u8; 1];
+        let hung_up =
+            tokio::time::timeout(std::time::Duration::from_secs(3), silent.read(&mut byte)).await;
+        assert!(
+            matches!(hung_up, Ok(Ok(0)) | Ok(Err(_))),
+            "the listener closes it after 300 ms rather than waiting on it: {hung_up:?}"
+        );
+    }
+
+    /// While accepting keeps failing — out of file descriptors, say — the listener waits longer each time,
+    /// up to a second, rather than spinning a core.
+    #[test]
+    fn a_failing_accept_waits_longer_each_time_up_to_a_second() {
+        let mut wait = FIRST_BACKOFF;
+        let waits: Vec<u128> = (0..6)
+            .map(|_| {
+                let this = wait.as_millis();
+                wait = next_backoff(wait);
+                this
+            })
+            .collect();
+        assert_eq!(waits, [100, 200, 400, 800, 1000, 1000]);
     }
 
     /// The id is what other people wrote down, so a restart must not change it.
