@@ -171,21 +171,54 @@ fn schemes() -> Vec<rustls::SignatureScheme> {
     vec![rustls::SignatureScheme::ED25519]
 }
 
+/// What the accepting end says: somebody its owner has not paired with tried to connect.
+const REFUSED_UNPAIRED: &str =
+    "refused a connection: this installation is not paired with that device id";
+
+/// What the connecting end says: something answered at that address, but not the machine expected.
+const REFUSED_UNEXPECTED: &str =
+    "refused: the installation answering at that address is not the one expected";
+
 /// Refuses anyone whose key its owner did not write down.
 #[derive(Debug)]
 struct Pinned {
     /// Empty means nobody is paired yet, which refuses everyone rather than admitting everyone.
     allowed: Vec<DeviceId>,
+    /// What a refusal here means. The two ends turn a connection down for different reasons, and
+    /// whoever reads a log can see only their own end of it.
+    refusal: &'static str,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
 impl Pinned {
+    /// The accepting end, which admits the installations its owner paired with and nobody else.
+    fn accepting(paired: &[DeviceId], provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self {
+            allowed: paired.to_vec(),
+            refusal: REFUSED_UNPAIRED,
+            provider,
+        }
+    }
+
+    /// The connecting end, which expects exactly one installation to be answering over there.
+    fn connecting(expect: DeviceId, provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self {
+            allowed: vec![expect],
+            refusal: REFUSED_UNEXPECTED,
+            provider,
+        }
+    }
+
     fn allows(&self, spki: &rustls::pki_types::CertificateDer<'_>) -> Result<(), rustls::Error> {
         let presented = presented(spki)?;
         if self.allowed.contains(&presented) {
             Ok(())
         } else {
-            // The handshake ends here, so no route of ours ever sees this connection.
+            // The handshake ends here, so no route of ours ever sees this connection — which is
+            // also why this is the only place a refusal can be named. Somebody setting sharing up
+            // has two machines and one mistyped id between them, and without this line both ends
+            // are silent about it.
+            tracing::info!(device_id = %presented, "{}", self.refusal);
             Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::ApplicationVerificationFailure,
             ))
@@ -322,10 +355,7 @@ pub fn server_config(
     paired: &[DeviceId],
 ) -> Result<rustls::ServerConfig, PeerError> {
     let provider = provider();
-    let verifier = Arc::new(Pinned {
-        allowed: paired.to_vec(),
-        provider: provider.clone(),
-    });
+    let verifier = Arc::new(Pinned::accepting(paired, provider.clone()));
     Ok(rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|err| PeerError::Tls {
@@ -343,10 +373,7 @@ pub fn client_config(
     expect: DeviceId,
 ) -> Result<rustls::ClientConfig, PeerError> {
     let provider = provider();
-    let verifier = Arc::new(Pinned {
-        allowed: vec![expect],
-        provider: provider.clone(),
-    });
+    let verifier = Arc::new(Pinned::connecting(expect, provider.clone()));
     Ok(rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|err| PeerError::Tls {
@@ -441,7 +468,9 @@ impl axum::serve::Listener for PeerListener {
                 continue;
             };
             // A refused handshake is where a machine nobody paired with stops: it never becomes a
-            // connection, so no route of ours is reached, and nothing above here learns of it.
+            // connection, so no route of ours is reached. The verifier has already named it in the
+            // log by then, which is the whole record of it — axum's trait has nowhere to report a
+            // connection that was never made.
             match self.acceptor.accept(stream).await {
                 Ok(tls) => return (tls, address),
                 Err(_) => continue,
@@ -577,6 +606,121 @@ mod tests {
             .send()
             .await
             .expect_err("a machine nobody paired with gets no answer");
+        assert!(
+            !refused.is_status(),
+            "refused while connecting rather than by a route: {refused}"
+        );
+    }
+
+    /// Everything this crate logged on this thread, one string per event with its fields in it, so
+    /// a test can read a refusal the way the person setting sharing up reads it.
+    struct Logged(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Logged {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.target() == "lapidary_peer"
+        }
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::TRACE)
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut line = String::new();
+            event.record(&mut Fields(&mut line));
+            self.0.lock().expect("the log").push(line);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The message and the device id both reach the string, since both are fields of the event.
+    struct Fields<'a>(&'a mut String);
+
+    impl tracing::field::Visit for Fields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!("{}={value:?} ", field.name()));
+        }
+    }
+
+    /// A refusal that says nothing is the one failure its owner cannot work out: two machines, one
+    /// mistyped id, and silence at both ends. Each end names the id it turned away, once, and says
+    /// which end it is — the accepting side was never paired with it, the connecting side expected
+    /// somebody else at that address.
+    #[test]
+    fn a_refusal_names_the_device_id_it_turned_away() {
+        let stranger = PeerIdentity::generate().expect("somebody else's identity");
+        let presented = rustls::pki_types::CertificateDer::from(
+            stranger.public_key().expect("what it would present"),
+        );
+        let stranger_id = stranger.device_id().expect("the id it is refused under");
+
+        // Somebody else entirely, so the connecting end's expectation is genuinely not met.
+        let expected = PeerIdentity::generate()
+            .expect("the installation that should be there")
+            .device_id()
+            .expect("its id");
+
+        let logged = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let _capturing = tracing::subscriber::set_default(Logged(logged.clone()));
+            let ends = [
+                Pinned::accepting(&[], provider()),
+                Pinned::connecting(expected, provider()),
+            ];
+            for end in ends {
+                assert!(end.allows(&presented).is_err(), "neither end wanted this");
+            }
+        }
+
+        let lines = logged.lock().expect("the log").clone();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per refusal and no more: {lines:?}"
+        );
+        for (line, refusal) in lines.iter().zip([REFUSED_UNPAIRED, REFUSED_UNEXPECTED]) {
+            assert!(
+                line.contains(&stranger_id.to_string()),
+                "the id it turned away is in the line: {line}"
+            );
+            assert!(
+                line.contains(refusal),
+                "and so is which end turned it down: {line}"
+            );
+        }
+    }
+
+    /// The other direction, and the one a wrong address actually produces: the device id is one the
+    /// guest paired with, but something else is answering there. The connecting end refuses it
+    /// rather than talking to it — the pinning is not only about who may come in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_machine_that_is_not_the_one_expected_is_refused() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let elsewhere = PeerIdentity::generate().expect("the installation the guest meant");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        // The host would have this guest: the refusal below is the guest's own, not the host's.
+        let config = server_config(&host, &[guest_id]).expect("the host's side, pairing the guest");
+        tokio::spawn(serve(tcp, config, router(host_id)));
+
+        let expected = elsewhere
+            .device_id()
+            .expect("the id the guest expects there");
+        let refused = client(&guest, expected)
+            .get(format!("https://{address}/peer/v1/hello"))
+            .send()
+            .await
+            .expect_err("what answers there is not what the guest paired with");
         assert!(
             !refused.is_status(),
             "refused while connecting rather than by a route: {refused}"
