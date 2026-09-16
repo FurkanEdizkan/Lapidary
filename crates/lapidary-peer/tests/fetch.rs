@@ -45,6 +45,12 @@ async fn blob(State(sharer): State<Sharer>, headers: HeaderMap) -> Response {
             .parse::<usize>()
             .ok()
     }) {
+        // As the blob route answers: a range that starts at the end has nothing to send.
+        Some(start) if start >= size => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{size}"))],
+        )
+            .into_response(),
         Some(start) => (
             StatusCode::PARTIAL_CONTENT,
             [(
@@ -158,4 +164,37 @@ async fn bytes_that_are_not_the_catalogues_file_are_refused_and_dropped() {
         0,
         "nothing staged is kept"
     );
+}
+
+/// Found by the two-stack measurement: the peer role stopped after a file's last byte was staged and before it was
+/// checked, so the restart asked for a range starting at the end, the sharer rightly refused it, and the whole file
+/// crossed the network again.
+#[tokio::test]
+async fn a_staged_file_already_whole_is_checked_without_asking_again() {
+    let bytes = cliff_face();
+    let (url, asked) = serve(bytes.clone()).await;
+    let staging = tempfile::tempdir().expect("a staging directory");
+    let expect = hash(&bytes);
+    std::fs::write(
+        staging.path().join(format!("{}.part", expect.to_hex())),
+        &bytes,
+    )
+    .expect("stages all of it");
+
+    let fetched = fetch(
+        &reqwest::Client::new(),
+        &url,
+        staging.path(),
+        &expect,
+        bytes.len() as u64,
+    )
+    .await
+    .expect("checks what is staged");
+
+    assert_eq!(fetched.sent, 0);
+    assert!(
+        asked.lock().expect("not poisoned").is_empty(),
+        "the sharer was not asked"
+    );
+    assert_eq!(std::fs::read(&fetched.path).expect("staged whole"), bytes);
 }

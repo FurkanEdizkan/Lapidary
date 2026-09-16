@@ -115,7 +115,54 @@ pub async fn fetch(
         .unwrap_or(0);
     // More than the whole file is not the start of this one.
     let start = if staged > size { 0 } else { staged };
+    let staging_failed = |err: std::io::Error| {
+        FetchError::Stalled(format!(
+            "Could not stage {hex}: {err}. Check the staging volume has room."
+        ))
+    };
+    // A file staged to its last byte was stopped before its check: check it, rather than ask for a range that starts
+    // at the end, which the sharer rightly refuses.
+    let sent = if start > 0 && start == size {
+        0
+    } else {
+        transfer(client, url, &partial, start, &hex).await?
+    };
 
+    let have = tokio::fs::metadata(&partial)
+        .await
+        .map(|meta| meta.len())
+        .map_err(staging_failed)?;
+    if have < size {
+        return Err(FetchError::Stalled(format!(
+            "The transfer of {hex} stopped at {have} of {size} bytes. The next attempt resumes there."
+        )));
+    }
+    let checked = partial.clone();
+    let actual = tokio::task::spawn_blocking(move || hash_file(&checked))
+        .await
+        .map_err(|err| FetchError::Stalled(err.to_string()))?
+        .map_err(staging_failed)?;
+    if have > size || actual != *hash {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(FetchError::Refused(format!(
+            "The file sent for {hex} is not the file its sharer's catalogue names: its size or BLAKE3 differs. It was dropped. Pull again; if it happens again, the sharer's store needs checking."
+        )));
+    }
+    tokio::fs::rename(&partial, &whole)
+        .await
+        .map_err(staging_failed)?;
+    Ok(Fetched { path: whole, sent })
+}
+
+/// Fetch `url` into `partial` from byte `start`, adding to what is staged when the sharer resumes and replacing it when
+/// the sharer sends the whole file. Answers how many bytes arrived.
+async fn transfer(
+    client: &reqwest::Client,
+    url: &str,
+    partial: &Path,
+    start: u64,
+    hex: &str,
+) -> Result<u64, FetchError> {
     let mut request = client.get(url);
     if start > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={start}-"));
@@ -129,7 +176,7 @@ pub async fn fetch(
         reqwest::StatusCode::OK => false,
         _ => {
             if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-                let _ = tokio::fs::remove_file(&partial).await;
+                let _ = tokio::fs::remove_file(partial).await;
             }
             let message = response
                 .bytes()
@@ -159,7 +206,7 @@ pub async fn fetch(
         .write(true)
         .append(append)
         .truncate(!append)
-        .open(&partial)
+        .open(partial)
         .await
         .map_err(staging_failed)?;
     let mut sent = 0u64;
@@ -179,32 +226,7 @@ pub async fn fetch(
         }
     }
     file.flush().await.map_err(staging_failed)?;
-    drop(file);
-
-    let have = tokio::fs::metadata(&partial)
-        .await
-        .map(|meta| meta.len())
-        .map_err(staging_failed)?;
-    if have < size {
-        return Err(FetchError::Stalled(format!(
-            "The transfer of {hex} stopped at {have} of {size} bytes. The next attempt resumes there."
-        )));
-    }
-    let checked = partial.clone();
-    let actual = tokio::task::spawn_blocking(move || hash_file(&checked))
-        .await
-        .map_err(|err| FetchError::Stalled(err.to_string()))?
-        .map_err(staging_failed)?;
-    if have > size || actual != *hash {
-        let _ = tokio::fs::remove_file(&partial).await;
-        return Err(FetchError::Refused(format!(
-            "The file sent for {hex} is not the file its sharer's catalogue names: its size or BLAKE3 differs. It was dropped. Pull again; if it happens again, the sharer's store needs checking."
-        )));
-    }
-    tokio::fs::rename(&partial, &whole)
-        .await
-        .map_err(staging_failed)?;
-    Ok(Fetched { path: whole, sent })
+    Ok(sent)
 }
 
 fn hash_file(path: &Path) -> std::io::Result<BlobHash> {
