@@ -126,6 +126,7 @@ export const strings = {
      */
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
+    sharing: 'Shared libraries — Lapidary',
   },
   /**
    * The bar above the grid: where you are, what you are looking for, how it is laid out, and
@@ -1695,5 +1696,45 @@ export const strings = {
      */
     categoryBody: (name: string | null) =>
       `No models are in ${name ?? 'this category'} yet. Drag a card onto it in the sidebar, or use a card's "Move to…" button — the rest of the library is still under All models.`,
+  },
+  /**
+   * Sharing with people you know (S1b): this installation's device id and name, and the people it is paired
+   * with. "Shared libraries" is the owner's word for the area; the code says `peer`.
+   */
+  sharing: {
+    title: 'Shared libraries',
+    lead: 'Share with people you know. Each of you pastes the other’s device id and address here, and your machines talk to each other directly — nothing passes through anybody else’s server.',
+    loading: 'Loading…',
+    loadFailed: 'Could not load sharing on this installation. Reload to try again.',
+    thisInstallation: 'This installation',
+    /** No device id yet: the peer role has never run here. */
+    off: 'Sharing is switched off here. Start the sharing service with deploy/compose.sharing.yaml, and this installation’s device id appears here for you to give to people.',
+    deviceId: 'Device id',
+    copy: 'Copy',
+    copied: 'Copied',
+    nameField: 'The name people you share with see',
+    namePlaceholder: 'Furkan’s workbench',
+    saveName: 'Save name',
+    savingName: 'Saving…',
+    people: 'People you share with',
+    /** Removal is soft, and this is where a person learns that before they click. */
+    removeNote: 'Removing somebody stops sharing with them straight away. Their entry is kept, and pairing with them again brings it back.',
+    none: 'Nobody yet. Pair with somebody by pasting their device id and address.',
+    pairDeviceId: 'Their device id',
+    pairAddress: 'Where to reach them',
+    addressPlaceholder: '192.168.1.24:8082',
+    pair: 'Pair',
+    pairing: 'Pairing…',
+    refusedWithoutReason: 'Could not save that. Reload and try again.',
+    online: 'Online',
+    /** Paired, and no hello has been answered yet. */
+    notReached: 'Not reached yet',
+    lastSeen: (at: string) =>
+      `Offline — last seen ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    /** Shown in place of a name until their hello has given one. */
+    unnamed: 'No name given yet',
+    removeButton: 'Remove',
+    removeLabel: (who: string) => `Stop sharing with ${who}`,
+    removing: 'Removing…',
   },
 } as const

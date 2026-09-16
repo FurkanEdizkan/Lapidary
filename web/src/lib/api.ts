@@ -58,6 +58,10 @@ import type {
   UploadFile,
   UploadManifest,
   UploadPlan,
+  AddPeer,
+  Peer,
+  SetSharingName,
+  SharingIdentity,
 } from './types'
 import { strings } from './strings'
 
@@ -1491,4 +1495,59 @@ export async function fetchPmi(hash: BlobHash): Promise<Pmi> {
  */
 export function batchEventsUrl(library: LibraryId, batch: BatchId): string {
   return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`
+}
+
+/** `GET /api/sharing/identity` — this installation's device id, `null` while sharing is switched off, and its name. */
+export async function fetchSharingIdentity(): Promise<SharingIdentity> {
+  const response = await fetch('/api/sharing/identity')
+  if (!response.ok) {
+    throw new Error(`sharing identity returned ${response.status}`)
+  }
+  return (await response.json()) as SharingIdentity
+}
+
+/** `PUT /api/sharing/identity` — the name this installation goes by; `null` clears it. */
+export async function setSharingName(name: string | null): Promise<FieldWritten> {
+  const body: SetSharingName = { name }
+  return fieldWritten(
+    await fetch('/api/sharing/identity', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.sharing.refusedWithoutReason,
+  )
+}
+
+/** `GET /api/sharing/peers` — everybody paired and not removed, with whether their last hello was answered. */
+export async function fetchPeers(): Promise<Peer[]> {
+  const response = await fetch('/api/sharing/peers')
+  if (!response.ok) {
+    throw new Error(`peers returned ${response.status}`)
+  }
+  return (await response.json()) as Peer[]
+}
+
+/** A pairing the route answered: paired, with the entry it made, or refused in its own words. */
+export type PeerPaired = { kind: 'paired'; peer: Peer } | { kind: 'refused'; message: string; reason?: string }
+
+/** `POST /api/sharing/peers` — pair with an installation from the device id and address its owner gave. */
+export async function addPeer(deviceId: string, address: string): Promise<PeerPaired> {
+  const body: AddPeer = { deviceId, address }
+  const response = await fetch('/api/sharing/peers', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (response.ok) return { kind: 'paired', peer: (await response.json()) as Peer }
+  const written = await fieldWritten(response, strings.sharing.refusedWithoutReason)
+  return written.kind === 'refused' ? written : { kind: 'refused', message: strings.sharing.refusedWithoutReason }
+}
+
+/** `DELETE /api/sharing/peers/{device}` — stop sharing with somebody. Soft: pairing again brings their entry back. */
+export async function removePeer(deviceId: string): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/sharing/peers/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
+    strings.sharing.refusedWithoutReason,
+  )
 }
