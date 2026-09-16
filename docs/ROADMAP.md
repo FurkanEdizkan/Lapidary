@@ -2514,6 +2514,16 @@ sequenced ahead of Phase 8. What the work is built on:
   the wrong bytes, and raw-public-key negotiation switched off. Six more on the device id, all
   caught — one of which, a surviving mutation, is what found that a non-canonical last character let
   two different-looking ids name one machine.
+- **The refusal names the machine** (`3e335a3`). S1a's own exit asked for this and the first cut did
+  not do it: `PeerListener::accept` threw the error away and the test asserted only that the failure
+  was not a status, so two people who mistyped one device id between them got silence at both ends.
+  Each end now logs the id it turned away, once, and says which end it is — the accepting side was
+  never paired with it, the connecting side expected somebody else at that address. The wording
+  belongs to `Pinned::accepting` and `Pinned::connecting` rather than to each call site, so the test
+  builds the same two ends the configs build. A second test covers the connecting end refusing a
+  machine that answers at a right-looking address, which is what a wrong address actually produces
+  and which nothing exercised before. Mutation-checked, all 4 caught: the line removed, the id
+  dropped from it, and each end handed the other's wording.
 - **Measured, but statically.** `deploy/compose.yaml` publishes 8080, 8081 and 3000 and holds the
   string `peer` nowhere; the peer role, its bind on 8082 and its port exist only in the overlay. The
   live `ss -ltn` check the plan asked for needs `compose up`, which builds images, which needs the
@@ -2526,6 +2536,11 @@ sequenced ahead of Phase 8. What the work is built on:
     kernel, so it must not build the target that carries OCCT.
   - The identity key is on disk rather than in Postgres, for `upload_dir`'s reason — a key in the
     database is a key the api's own credentials can read.
+  - **Left for S4, recorded rather than fixed.** `PeerListener::accept` awaits the handshake inline,
+    so one connection that opens TCP and never finishes holds up every other; and a `tcp.accept()`
+    error that persists spins the loop rather than backing off. Both are the same subject as S4's
+    rate and concurrency limits and are picked up there, so S4 inherits them instead of finding them
+    again. Neither is exposed today: the role is off until an owner switches it on.
 
 ---
 
