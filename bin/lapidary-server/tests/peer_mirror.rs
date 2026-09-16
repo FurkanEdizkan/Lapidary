@@ -263,3 +263,32 @@ async fn hellos_to_silent_machines_do_not_hold_up_one_that_answers(pool: sqlx::P
         task.abort();
     }
 }
+
+/// S1b left an open connection outliving a removal: the listener refuses at the handshake, and a connection already past
+/// it kept going. Every share route asks the database who may read at every request, so the next request on that same
+/// connection is refused. The roster here is never refreshed, so a new connection would still be accepted: the refusal
+/// below can only come from the per-request check.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_connection_opened_before_a_removal_is_refused_at_its_next_request(pool: sqlx::PgPool) {
+    let pair = sharing_terrain(&pool).await;
+    let client = reqwest::Client::builder()
+        .use_preconfigured_tls(
+            lapidary_peer::client_config(&pair.here, pair.sharer).expect("pinned"),
+        )
+        .build()
+        .expect("a client");
+    let url = format!("https://{}/peer/v1/shares", pair.address);
+    let first = client.get(&url).send().await.expect("answers");
+    assert_eq!(first.status(), reqwest::StatusCode::OK);
+    first.bytes().await.expect("reads the list");
+
+    PgSharing(pool.clone())
+        .remove_peer(pair.here.device_id().expect("its id"))
+        .await
+        .expect("the sharer removes this installation");
+    let next = client.get(&url).send().await.expect("answers");
+    assert_eq!(next.status(), reqwest::StatusCode::FORBIDDEN);
+    let refusal: serde_json::Value =
+        serde_json::from_slice(&next.bytes().await.expect("reads")).expect("a refusal");
+    assert_eq!(refusal["reason"], "notPaired");
+}

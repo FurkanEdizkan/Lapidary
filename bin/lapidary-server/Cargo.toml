@@ -70,6 +70,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# A connection kept open across a removal, in `tests/peer_mirror.rs`.
+reqwest.workspace = true
 # Only for #[sqlx::test] against the merged worker router (main.rs's worker_router), the
 # api role's router, and the peer role's hello round (tests/peer_sync.rs) — see deny.toml's
 # sqlx wrapper allow-list, which lists this crate for exactly this reason. No real SQL lives

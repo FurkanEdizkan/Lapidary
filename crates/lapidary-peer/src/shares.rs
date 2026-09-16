@@ -77,6 +77,10 @@ pub fn shares_router(db: PgPool) -> axum::Router {
             "/peer/v1/shares/{share}/thumbnail",
             axum::routing::get(thumbnail),
         )
+        .route(
+            "/peer/v1/shares/{share}/request",
+            axum::routing::post(request),
+        )
         .with_state(db)
 }
 
@@ -172,6 +176,32 @@ async fn paired(db: &PgPool, device: Option<DeviceId>) -> Result<bool, DbError> 
 
 /// The one question every route about a single share asks first. A stranger is told the same as somebody
 /// whose share was withdrawn, so nobody learns what is shared by asking.
+/// `POST /peer/v1/shares/{share}/request` — ask for a share's files. Answers where the asker stands: `open` when the share
+/// does not ask first, else `asked`, `granted` or `denied`. Asking again changes nothing, so a puller asks before every
+/// attempt. Browsing never needs this: the catalogue stays readable to everyone paired, so a share that asks first can
+/// still be seen, and asked for.
+async fn request(
+    State(db): State<PgPool>,
+    ConnectInfo(PeerDevice(device)): ConnectInfo<PeerDevice>,
+    Path(share): Path<ShareId>,
+) -> Response {
+    if let Err(refusal) = may_read(&db, device, share).await {
+        return refusal;
+    }
+    let Some(device) = device else {
+        return not_shared();
+    };
+    match PgShares(db).ask(device, share).await {
+        Ok(Some(grant)) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "grant": grant.as_str() })),
+        )
+            .into_response(),
+        Ok(None) => not_shared(),
+        Err(err) => failed(&err),
+    }
+}
+
 pub(crate) async fn may_read(
     db: &PgPool,
     device: Option<DeviceId>,
