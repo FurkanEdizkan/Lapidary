@@ -28,8 +28,9 @@ CREATE TABLE pull (
 CREATE INDEX pull_unfinished ON pull (created_at) WHERE state IN ('queued', 'fetching', 'importing');
 
 -- Who a pulled part came from. Written once its import settles; a part pulled again keeps one row, with the newer date.
+-- No cascade: purge deletes it by name, as it deletes every child of a part (`PgParts::purge`).
 CREATE TABLE part_provenance (
-    part_id uuid PRIMARY KEY REFERENCES part (id) ON DELETE CASCADE,
+    part_id uuid PRIMARY KEY REFERENCES part (id),
     device_id bytea NOT NULL,
     sharer_name text,
     pulled_at timestamptz NOT NULL DEFAULT now()
