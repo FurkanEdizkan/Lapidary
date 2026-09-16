@@ -2722,7 +2722,7 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
     of the 19 s. Telling a paired installation at once needs a request from sharer to puller, and belongs with S3.
   - Part names are still derived from file names, so a corpus library reads as file stems.
 
-**Pull it** (goal 7 stage 4, S3: `4eb607d`, `f343622`, `4f28a6b`, `c569248`, `44b9574`, `31cef9d`).
+**Pull it** (goal 7 stage 4, S3: `4eb607d`, `f343622`, `4f28a6b`, `c569248`, `44b9574`, `31cef9d`, `0500139`).
 - **The sharer's file route** (`crates/lapidary-peer/src/blob.rs`): `GET /peer/v1/shares/{id}/blob/{blake3}` asks who is
   asking first, then whether the hash is the source file of a live part inside the share, walked as the catalogue walks
   it (`PgShares::blob`) — content addressing is not authorization. `Range: bytes=N-` resumes; stored bytes may be
@@ -2747,7 +2747,9 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
   fetched whole a round later — 14,999,984 bytes more than the catalogue predicted. A staged file of the full length is
   now checked without a request (`44b9574`); a test saw the `416` first. The screenshot of the first run also showed the
   picker offering the wrong library after a pull (`31cef9d`).
-- **Found by the tests and gates:** a type added to the part detail needs every derive the detail has (`Clone`,
+- **Found by the tests and gates:** `verify slice`'s catalogue test, that every table referencing the part chain is one
+  purge deletes from, caught `part_provenance` cascading instead (`0500139`); purge now deletes it by name. A type added
+  to the part detail needs every derive the detail has (`Clone`,
   `Deserialize`); and the bare-strings lint reads `'refused'` in a JSX ternary as a rendered string, so the refusal is
   worked out above the markup.
 - **Mutation-checked, 21 of 21 caught by tests** (`target/sharing-check/mutate-g7-s3.sh`, the gates' own build
