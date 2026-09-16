@@ -1,5 +1,10 @@
 //! The hello round (sharing S1b): each paired installation asked what it is, its answer recorded where
 //! the page reads it, and the listener's roster brought up to date.
+//!
+//! Here rather than in `crates/lapidary-peer/tests`, because these need `#[sqlx::test]` and `deny.toml`
+//! lets only a fixed list of crates take `sqlx` at all — a list whose own comment says that growing it means
+//! SQL has leaked. `lapidary-peer` holds no SQL; this binary, which wires the peer role, is already on the
+//! list for exactly these tests' reason.
 
 use lapidary_core::DeviceId;
 use lapidary_db::PgSharing;
@@ -50,7 +55,7 @@ async fn reason(pool: &sqlx::PgPool) -> String {
     peer.last_error.expect("a reason")
 }
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn an_installation_that_answers_is_online_under_the_name_it_gives(pool: sqlx::PgPool) {
     let (here, here_id) = this_installation(&pool).await;
     let (ayse, address) = listening(vec![here_id], Some("Ayşe's workshop")).await;
@@ -66,7 +71,7 @@ async fn an_installation_that_answers_is_online_under_the_name_it_gives(pool: sq
     assert_eq!(peer.name.as_deref(), Some("Ayşe's workshop"));
 }
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn an_installation_that_has_not_added_this_one_says_it_turned_this_one_away(
     pool: sqlx::PgPool,
 ) {
@@ -86,7 +91,7 @@ async fn an_installation_that_has_not_added_this_one_says_it_turned_this_one_awa
     assert!(reason.contains(&address), "and names where: {reason}");
 }
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn a_different_installation_at_the_address_is_not_taken_for_the_one_paired(
     pool: sqlx::PgPool,
 ) {
@@ -111,7 +116,7 @@ async fn a_different_installation_at_the_address_is_not_taken_for_the_one_paired
     );
 }
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn nothing_listening_at_the_address_says_nothing_answered(pool: sqlx::PgPool) {
     let (here, _) = this_installation(&pool).await;
     let address = nothing_listening();
@@ -131,7 +136,7 @@ async fn nothing_listening_at_the_address_says_nothing_answered(pool: sqlx::PgPo
 
 /// Pairing and removal happen through the api, in the database; the listener learns of both from a
 /// round, along with the name this installation's owner gave it.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn a_round_takes_up_who_is_paired_and_the_name_this_installation_goes_by(pool: sqlx::PgPool) {
     let (here, _) = this_installation(&pool).await;
     let sharing = PgSharing(pool.clone());

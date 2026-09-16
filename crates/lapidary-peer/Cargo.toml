@@ -35,8 +35,6 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# `#[sqlx::test]`, for the hello round's tests.
-sqlx.workspace = true
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread"] }
 tempfile.workspace = true
 
