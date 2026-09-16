@@ -16,6 +16,7 @@ use lapidary_core::DeviceId;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod shares;
 pub mod sync;
 
 /// What the identity key is called inside the peer directory.
@@ -522,9 +523,35 @@ async fn serve_for(
     handshake: std::time::Duration,
 ) -> std::io::Result<()> {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    axum::serve(PeerListener::start(listener, acceptor, handshake)?, router)
-        .with_graceful_shutdown(shutdown)
-        .await
+    axum::serve(
+        PeerListener::start(listener, acceptor, handshake)?,
+        router.into_make_service_with_connect_info::<PeerDevice>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
+/// The installation on the other end of a connection, as its handshake proved it.
+///
+/// Read off the key the TLS session verified, never off anything the request says, so a route that asks
+/// "who is this" gets the answer the pinning already checked. `None` only for a connection that presented no
+/// key, which the verifier refuses before any route runs; a route treats it as nobody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerDevice(pub Option<DeviceId>);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, PeerListener>>
+    for PeerDevice
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, PeerListener>) -> Self {
+        let (_, session) = stream.io().get_ref();
+        // The same bytes the verifier hashed, so the id a route sees is the id the pinning checked.
+        PeerDevice(
+            session
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|presented| DeviceId::from_public_key(presented.as_ref())),
+        )
+    }
 }
 
 /// A connection through its handshake, and who it came from.
@@ -541,7 +568,7 @@ type Handshaken = (
 /// The handshakes happen in a task of their own, each in a task of its own, and only finished ones
 /// reach `accept`. Awaiting each one inline, as the first version did, let one connection that opened
 /// the port and said nothing hold up every connection after it, for as long as it stayed open.
-struct PeerListener {
+pub struct PeerListener {
     handshaken: tokio::sync::mpsc::Receiver<Handshaken>,
     local: std::net::SocketAddr,
 }
@@ -905,6 +932,45 @@ mod tests {
 
         roster.replace(Vec::new(), None);
         assert!(hello().await.is_err(), "refused again once removed");
+    }
+
+    /// Every share route asks which installation is asking, and the answer is the key its handshake proved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_route_learns_the_device_its_handshake_proved() {
+        let host = PeerIdentity::generate().expect("the host's identity");
+        let guest = PeerIdentity::generate().expect("the guest's identity");
+        let host_id = host.device_id().expect("the host's id");
+        let guest_id = guest.device_id().expect("the guest's id");
+
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = tcp.local_addr().expect("the port it took");
+        let config = server_config(&host, &Roster::new(vec![guest_id], None))
+            .expect("the host's side, pairing the guest");
+        let whoami = axum::Router::new().route(
+            "/peer/v1/whoami",
+            axum::routing::get(
+                |axum::extract::ConnectInfo(PeerDevice(device)): axum::extract::ConnectInfo<
+                    PeerDevice,
+                >| async move { device.map(|id| id.to_string()).unwrap_or_default() },
+            ),
+        );
+        tokio::spawn(serve(tcp, config, whoami));
+
+        let answer = client(&guest, host_id)
+            .get(format!("https://{address}/peer/v1/whoami"))
+            .send()
+            .await
+            .expect("the host answers the guest")
+            .text()
+            .await
+            .expect("an answer to read");
+        assert_eq!(
+            answer,
+            guest_id.to_string(),
+            "the guest, as its key proved it"
+        );
     }
 
     /// Somebody opens the peer port and says nothing: a port scan, or a client that never starts its

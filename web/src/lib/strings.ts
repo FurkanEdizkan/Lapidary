@@ -996,6 +996,11 @@ export const strings = {
      * is a tree that lies about what it contains.
      */
     root: 'All models',
+    /** The category row's share action, beside Rename and Delete. */
+    shareAction: 'Share',
+    shareFor: (name: string) => `Share ${name} with the people you are paired with`,
+    /** Beside a category this installation shares. */
+    shared: 'Shared',
     /** A branch's disclosure, named for its category, since every row's control looks alike. */
     showSubcategories: (name: string) => `Show the categories inside ${name}`,
     hideSubcategories: (name: string) => `Hide the categories inside ${name}`,
@@ -1736,5 +1741,30 @@ export const strings = {
     removeButton: 'Remove',
     removeLabel: (who: string) => `Stop sharing with ${who}`,
     removing: 'Removing…',
+    /** Sharing a category (S2a): the dialog that shows what would be offered before anything is. */
+    shareTitle: (name: string) => `Share ${name}`,
+    shareBody: (parts: number) =>
+      parts === 1
+        ? '1 part in this category and everything under it will be offered to everyone you are paired with, and so will parts you file here later.'
+        : `${parts} parts in this category and everything under it will be offered to everyone you are paired with, and so will parts you file here later.`,
+    shareUnrecorded: (count: number) =>
+      count === 1 ? '1 part has no licence recorded.' : `${count} parts have no licence recorded.`,
+    shareNonCommercial: (count: number) =>
+      `${count === 1 ? '1 part is' : `${count} parts are`} licensed for non-commercial use only. The people you share with see each part's licence.`,
+    shareLicencesClear: 'Every part has a licence recorded, and none is licensed for non-commercial use only.',
+    shareCounting: 'Counting what this would offer…',
+    shareCountFailed: 'Could not count what this category holds. Close this and try again.',
+    shareConfirm: 'Share',
+    sharingNow: 'Sharing…',
+    shareCancel: 'Cancel',
+    shareFailed: 'Could not share this category. Close this and try again.',
+    /** The sharing page's list of what this installation offers. */
+    ownShares: 'What this installation shares',
+    ownSharesNone: 'Nothing yet. Share a category from the tree beside a library, and it appears here.',
+    ownShareParts: (count: number) => (count === 1 ? '1 part offered' : `${count} parts offered`),
+    stopNote: 'Stopping takes a category away from everyone you are paired with at once. Nothing in it is deleted.',
+    stopSharing: 'Stop sharing',
+    stopSharingLabel: (name: string) => `Stop sharing ${name}`,
+    stopping: 'Stopping…',
   },
 } as const

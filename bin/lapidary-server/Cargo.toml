@@ -77,6 +77,8 @@ tracing-subscriber.workspace = true
 sqlx.workspace = true
 # The device ids the hello round's tests pair with.
 lapidary-core.workspace = true
+# Reads the share routes' answers in tests/peer_shares.rs.
+serde_json.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 # Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed

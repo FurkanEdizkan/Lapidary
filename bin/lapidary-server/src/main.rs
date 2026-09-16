@@ -718,7 +718,11 @@ async fn main() -> Result<()> {
                 roster.clone(),
                 shutdown.clone(),
             ));
-            (lapidary_peer::router(device, roster), None, None)
+            // The hello and the share routes, one router: each share route asks the connection which
+            // installation it is before it reads anything.
+            let peer = lapidary_peer::router(device, roster)
+                .merge(lapidary_peer::shares::shares_router(db.clone()));
+            (peer, None, None)
         }
     };
 

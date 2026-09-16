@@ -1,9 +1,17 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { addPeer, fetchPeers, fetchSharingIdentity, removePeer, setSharingName } from '../lib/api'
+import {
+  addPeer,
+  fetchPeers,
+  fetchShares,
+  fetchSharingIdentity,
+  removePeer,
+  setSharingName,
+  stopSharing,
+} from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Peer } from '../lib/types'
+import type { Peer, ShareSummary } from '../lib/types'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -39,6 +47,7 @@ export function SharingPage() {
       <h2 className="mt-4 text-xl font-medium">{strings.sharing.title}</h2>
       <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
       <ThisInstallation />
+      <OwnShares />
       <People />
     </section>
   )
@@ -279,6 +288,75 @@ function PeerRow({ peer, onRemoved }: { peer: Peer; onRemoved: () => Promise<voi
       {peer.online || peer.lastError === null ? null : (
         <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{peer.lastError}</p>
       )}
+      {note === null ? null : (
+        <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </li>
+  )
+}
+
+/** What this installation offers the people it is paired with, and the way to stop offering each one. */
+function OwnShares() {
+  const queryClient = useQueryClient()
+  const shares = useQuery({ queryKey: ['shares', 'own'], queryFn: fetchShares, refetchInterval: REFRESH_MS })
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['shares'] })
+  return (
+    <div className="mt-8">
+      <h3 className="text-base font-medium">{strings.sharing.ownShares}</h3>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.stopNote}</p>
+      {shares.isPending ? (
+        <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
+      ) : shares.isError ? (
+        <p role="alert" className="mt-3 text-sm text-[var(--color-muted)]">
+          {strings.sharing.loadFailed}
+        </p>
+      ) : shares.data.length === 0 ? (
+        <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.sharing.ownSharesNone}</p>
+      ) : (
+        <ul role="list" className="mt-3 flex flex-col gap-2">
+          {shares.data.map((share) => (
+            <OwnShareRow key={share.id} share={share} onStopped={refresh} />
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () => Promise<void> }) {
+  const [note, setNote] = useState<string | null>(null)
+  const stop = useMutation({
+    mutationFn: () => stopSharing(share.id),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      void onStopped()
+    },
+    onError: () => setNote(strings.sharing.shareFailed),
+  })
+  return (
+    <li className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="grow">
+          <span className="text-sm">{share.name}</span>
+          <span className="ml-2 text-xs text-[var(--color-muted)]">
+            {strings.sharing.ownShareParts(share.partCount)}
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={() => stop.mutate()}
+          disabled={stop.isPending}
+          aria-label={strings.sharing.stopSharingLabel(share.name)}
+          className={`${BUTTON} text-[var(--color-muted)]`}
+        >
+          {stop.isPending ? strings.sharing.stopping : strings.sharing.stopSharing}
+        </button>
+      </div>
       {note === null ? null : (
         <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
           {note}

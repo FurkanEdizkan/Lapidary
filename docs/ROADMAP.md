@@ -2639,6 +2639,45 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
   deep before `accept` takes them.
 - **Closes** S1a's two items left for S4: the stalled handshake and the spinning accept.
 
+**Share a category** (goal 7 stage 2, S2a: `913c7ee`, `788ad55`, `62d3631`, `a1d05d0`, `5ec4f0c`).
+- **Tables** (`0038`): `share`, one live share per category, removed softly. Nothing lists parts: a share is the
+  category and everything under it, so the catalogue walks the folder tree at read time, with the grid's own
+  joins for a part's current file and thumbnail. Every read that follows a share requires the share and its
+  category to be live, so deleting a shared category withdraws it.
+- **The peer routes** (`crates/lapidary-peer/src/shares.rs`): `GET /peer/v1/shares`, a share's catalogue in pages
+  keyed by `source_path`, and a part's thumbnail. Each asks which installation is asking before it reads
+  anything, and the answer is the key the TLS handshake verified — `PeerDevice`, carried to the route through
+  axum's connect info (`into_make_service_with_connect_info`), never anything the request says. A test serves a
+  route through the real listener and checks it sees the guest's id.
+- **The api** (`crates/lapidary-api/src/shares.rs`): a library's shares, a preview counting parts with no licence
+  recorded and parts licensed non-commercially, sharing, everything shared, and stopping. The warning is shown
+  and never blocks.
+- **The page:** a Share action beside Rename and Delete, a "Shared" mark on the tree, a dialog that shows the
+  counts before anything is sent, and the sharing page's list of what this installation shares.
+- **Found by the tests and gates, not by reading:** a `use` of a `macro_rules!` macro is dead when the macro is
+  defined above its uses (textual scope); ts-rs types an `i64` as `bigint` unless it carries
+  `#[ts(type = "number")]`; the bare-strings lint keeps every strings.ts template segment of five characters or
+  more, so `` `${n} parts` `` made the grid's `['parts', library]` query keys read as copied strings; and two test
+  stubs that reject unknown requests needed a `/shares` arm.
+- **Two test holes found while writing the mutations, closed before running them** (`5ec4f0c`): sharing another
+  library's category was checked only by the value returned, not by what was written, and the preview's
+  library check had no test.
+- **Mutation-checked, 18 of 18 caught** (`target/sharing-check/mutate-g7-s2a.sh`, in the gates' own build
+  configuration): the subtree, removed parts, removed peers, stopped shares, thumbnails outside the share, `NC`
+  inside a word, the unrecorded count, a share across libraries, the device read from TLS, both route gates, the
+  catalogue's `next`, the preview's library, and five in the page. Four not mutated, with reasons in the script.
+- **Not measured live on its own:** S2b's exit browses a 1,000-part share on two stacks, which exercises these
+  routes over TLS end to end.
+- **Decided without the owner:**
+  - a stranger and somebody whose share was withdrawn get the same answer (`404 notShared`), so nobody learns
+    what is shared by asking;
+  - non-commercial is `NC` as a token of its own, or the words spelled out, never `nc` inside a word;
+  - sharing a category that is already shared answers with the same share;
+  - the dialog opens on Cancel, as the delete confirmation does;
+  - a catalogue page is 200 parts unless asked, and never more than 500;
+  - a share's digest is its part count and the newest `part.updated_at` under it. S2b relies on it and must
+    check that a new revision moves `updated_at`.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
