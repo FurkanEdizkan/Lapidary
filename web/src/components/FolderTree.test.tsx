@@ -113,10 +113,14 @@ function stubFetch(routes: {
   folderDelete?: () => Promise<StubResponse>
   folderCreate?: () => Promise<StubResponse>
   folderPatch?: () => Promise<StubResponse>
+  shares?: () => Promise<StubResponse>
+  sharePreview?: () => Promise<StubResponse>
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     // Before the bare `/folders` arm: a create is a POST to the same path the tree is a
     // GET of, so order is what tells them apart and not the URL.
+    if (url.includes('/shares/preview')) return (routes.sharePreview ?? pending)()
+    if (url.endsWith('/shares') && (init?.method ?? 'GET') === 'GET') return (routes.shares ?? pending)()
     if (url.endsWith('/folders') && init?.method === 'POST') return (routes.folderCreate ?? pending)()
     if (url.endsWith('/folders')) return (routes.folders ?? pending)()
     if (url.startsWith('/api/parts/') && init?.method === 'PATCH') return (routes.move ?? pending)()
@@ -952,4 +956,22 @@ test('a selected category missing from the first read is opened to once a later 
   fireEvent.click(screen.getByRole('button', { name: strings.folders.renameConfirm }))
   const rocks = await screen.findByRole('button', { name: 'Rocks' })
   expect(rocks.getAttribute('aria-current')).toBe('true')
+})
+
+test('a shared category says so, and Share opens the warning for the category it was pressed on', async () => {
+  stubFetch({
+    folders: ok([TERRAIN, FASTENERS]),
+    shares: ok([
+      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0001', folderId: TERRAIN.id, name: 'Terrain', createdAt: '2026-09-17T00:30:00Z' },
+    ]),
+  })
+  renderTree()
+
+  const terrain = (await screen.findByText('Terrain')).closest('div') as HTMLElement
+  await within(terrain).findByText(strings.folders.shared)
+  const fasteners = screen.getByText('Fasteners').closest('div') as HTMLElement
+  expect(within(fasteners).queryByText(strings.folders.shared)).toBeNull()
+
+  fireEvent.click(screen.getByRole('button', { name: strings.folders.shareFor('Fasteners') }))
+  await screen.findByRole('dialog', { name: strings.sharing.shareTitle('Fasteners') })
 })

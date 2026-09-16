@@ -59,8 +59,13 @@ import type {
   UploadManifest,
   UploadPlan,
   AddPeer,
+  LicenceWarning,
   Peer,
   SetSharingName,
+  ShareCategory,
+  ShareId,
+  ShareSummary,
+  SharedCategory,
   SharingIdentity,
 } from './types'
 import { strings } from './strings'
@@ -1549,5 +1554,55 @@ export async function removePeer(deviceId: string): Promise<FieldWritten> {
   return fieldWritten(
     await fetch(`/api/sharing/peers/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
     strings.sharing.refusedWithoutReason,
+  )
+}
+
+/** `GET /api/libraries/{id}/shares` — the library's categories this installation shares. */
+export async function fetchLibraryShares(library: LibraryId): Promise<SharedCategory[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/shares`)
+  if (!response.ok) {
+    throw new Error(`shares returned ${response.status}`)
+  }
+  return (await response.json()) as SharedCategory[]
+}
+
+/** `GET /api/libraries/{id}/shares/preview` — what sharing a category would offer, counted before anybody confirms. */
+export async function previewShare(library: LibraryId, folder: FolderId): Promise<LicenceWarning> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/shares/preview?folderId=${encodeURIComponent(folder)}`,
+  )
+  if (!response.ok) {
+    throw new Error(`share preview returned ${response.status}`)
+  }
+  return (await response.json()) as LicenceWarning
+}
+
+/** `POST /api/libraries/{id}/shares` — share a category and everything under it. */
+export async function shareCategory(library: LibraryId, folder: FolderId): Promise<FieldWritten> {
+  const body: ShareCategory = { folderId: folder }
+  return fieldWritten(
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/shares`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.sharing.shareFailed,
+  )
+}
+
+/** `GET /api/shares` — everything this installation shares. */
+export async function fetchShares(): Promise<ShareSummary[]> {
+  const response = await fetch('/api/shares')
+  if (!response.ok) {
+    throw new Error(`shares returned ${response.status}`)
+  }
+  return (await response.json()) as ShareSummary[]
+}
+
+/** `DELETE /api/shares/{id}` — stop sharing a category. Nothing in it is deleted. */
+export async function stopSharing(share: ShareId): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/shares/${encodeURIComponent(share)}`, { method: 'DELETE' }),
+    strings.sharing.shareFailed,
   )
 }

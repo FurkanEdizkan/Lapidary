@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Dialog } from './Dialog'
 import {
+  fetchLibraryShares,
   createFolder,
   deleteFolder,
   fetchFolders,
@@ -11,6 +12,7 @@ import {
   type MoveRefusalReason,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { ShareDialog } from './ShareDialog'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
 
 /**
@@ -208,6 +210,12 @@ export function FolderTree({
    */
   const [creating, setCreating] = useState(false)
   const [renaming, setRenaming] = useState<FolderNode | null>(null)
+  const [sharing, setSharing] = useState<FolderNode | null>(null)
+  const shares = useQuery({ queryKey: ['shares', library], queryFn: () => fetchLibraryShares(library) })
+  const shared = useMemo(
+    () => new Set((shares.data ?? []).map((share) => share.folderId)),
+    [shares.data],
+  )
   /** A refused create or rename, shown inside the dialog that caused it — see `note` below. */
   const [writeRefusal, setWriteRefusal] = useState<string | null>(null)
   /**
@@ -373,6 +381,8 @@ export function FolderTree({
           onDropPart={drop}
           onDelete={setPendingDelete}
           onRename={setRenaming}
+          onShare={setSharing}
+          shared={shared}
           noteFor={noteFor}
         />
       )}
@@ -400,6 +410,9 @@ export function FolderTree({
             setWriteRefusal(null)
           }}
         />
+      )}
+      {sharing === null ? null : (
+        <ShareDialog library={library} folder={sharing} onClose={() => setSharing(null)} />
       )}
       {renaming === null ? null : (
         <NameDialog
@@ -542,6 +555,8 @@ function FolderLevel({
   onDropPart,
   onDelete,
   onRename,
+  onShare,
+  shared,
   noteFor,
 }: {
   groups: ReadonlyMap<FolderId | null, readonly FolderNode[]>
@@ -554,6 +569,9 @@ function FolderLevel({
   onDropPart: (event: DragEvent<HTMLElement>, folder: FolderId) => void
   onDelete: (folder: FolderNode) => void
   onRename: (folder: FolderNode) => void
+  onShare: (folder: FolderNode) => void
+  /** The categories this installation shares, marked on their rows. */
+  shared: ReadonlySet<FolderId>
   noteFor: (folder: FolderId) => string | null
 }) {
   const children = groups.get(parentId) ?? []
@@ -597,6 +615,11 @@ function FolderLevel({
                 onSelect={() => onSelect(folder.id)}
                 onDrop={(event) => onDropPart(event, folder.id)}
               />
+              {shared.has(folder.id) ? (
+                <span className="shrink-0 text-[10px] font-medium text-[var(--color-accent)]">
+                  {strings.folders.shared}
+                </span>
+              ) : null}
               {/*
                 Present for every category and quiet until it is wanted: opacity only, so it
                 costs no layout, and it comes back on keyboard focus as well as on hover —
@@ -609,6 +632,14 @@ function FolderLevel({
                 way to reveal it at all, so `pointer-coarse` shows it outright rather than
                 leaving the row's only destructive action unreachable there.
               */}
+              <button
+                type="button"
+                onClick={() => onShare(folder)}
+                aria-label={strings.folders.shareFor(folder.name)}
+                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+              >
+                {strings.folders.shareAction}
+              </button>
               <button
                 type="button"
                 onClick={() => onRename(folder)}
@@ -639,6 +670,8 @@ function FolderLevel({
                 onDropPart={onDropPart}
                 onDelete={onDelete}
                 onRename={onRename}
+                onShare={onShare}
+                shared={shared}
                 noteFor={noteFor}
               />
             ) : null}

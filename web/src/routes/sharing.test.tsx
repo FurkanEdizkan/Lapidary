@@ -9,7 +9,7 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
-import type { Peer, SharingIdentity } from '../lib/types'
+import type { Peer, ShareSummary, SharingIdentity } from '../lib/types'
 
 /**
  * The sharing page, which is where two people who know each other pair their installations. What it
@@ -55,7 +55,13 @@ function stub({
   identity = HERE,
   peers = [AYSE, MAKERSPACE],
   pair = { status: 200, body: AYSE as unknown },
-}: { identity?: SharingIdentity; peers?: Peer[]; pair?: { status: number; body: unknown } } = {}) {
+  shares = [],
+}: {
+  identity?: SharingIdentity
+  peers?: Peer[]
+  pair?: { status: number; body: unknown }
+  shares?: ShareSummary[]
+} = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
     'fetch',
@@ -70,6 +76,7 @@ function stub({
       if (url === '/api/sharing/identity') return method === 'GET' ? answer(200, identity) : answer(204, {})
       if (url === '/api/sharing/peers' && method === 'POST') return answer(pair.status, pair.body)
       if (url === '/api/sharing/peers') return answer(200, peers)
+      if (url === '/api/shares') return answer(200, shares)
       if (method === 'DELETE') return answer(204, {})
       return answer(404, {})
     }),
@@ -174,4 +181,23 @@ test('the tab says which page this is', async () => {
   stub()
   renderPage()
   await waitFor(() => expect(document.title).toBe(strings.titles.sharing))
+})
+
+test('what this installation shares is listed, and stopping one withdraws only that one', async () => {
+  const calls = stub({
+    shares: [
+      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0001', name: 'Terrain', partCount: 34 },
+      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0002', name: 'Fasteners', partCount: 1 },
+    ],
+  })
+  renderPage()
+
+  await screen.findByText(strings.sharing.ownShareParts(34))
+  expect(screen.getByText(strings.sharing.ownShareParts(1))).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.stopSharingLabel('Fasteners') }))
+
+  await waitFor(() =>
+    expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/shares/01a07c41-5d22-7b03-9014-7e2f6dab0002')).toBe(true),
+  )
+  expect(calls.some((call) => call.method === 'DELETE' && call.url.endsWith('0001'))).toBe(false)
 })

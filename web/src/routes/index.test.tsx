@@ -279,6 +279,8 @@ function stubFetch(routes: {
     if (url.endsWith("/scan")) return (routes.scan ?? pending)();
     // Before the bare-library rule, which every library route is a prefix of.
     if (url.endsWith("/folders")) return (routes.folders ?? pending)();
+    // The categories this library shares, which mark the tree. Unstubbed it is none.
+    if (url.endsWith("/shares")) return empty();
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith("/storage")) return (routes.storage ?? pending)();
     if (url.includes("/jobs/")) return (routes.batch ?? pending)();

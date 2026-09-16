@@ -3,12 +3,12 @@
 /**
  * What sharing a category would offer, counted before anybody confirms.
  */
-export type LicenceWarning = { parts: bigint, 
+export type LicenceWarning = { parts: number, 
 /**
  * Parts with no licence recorded.
  */
-unrecorded: bigint, 
+unrecorded: number, 
 /**
  * Parts whose licence says non-commercial.
  */
-nonCommercial: bigint, };
+nonCommercial: number, };

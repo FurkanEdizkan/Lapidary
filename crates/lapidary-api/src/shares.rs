@@ -42,10 +42,13 @@ pub struct ShareCategory {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct LicenceWarning {
+    #[ts(type = "number")]
     pub parts: i64,
     /// Parts with no licence recorded.
+    #[ts(type = "number")]
     pub unrecorded: i64,
     /// Parts whose licence says non-commercial.
+    #[ts(type = "number")]
     pub non_commercial: i64,
 }
 
@@ -56,6 +59,7 @@ pub struct LicenceWarning {
 pub struct ShareSummary {
     pub id: ShareId,
     pub name: String,
+    #[ts(type = "number")]
     pub part_count: i64,
 }
 
