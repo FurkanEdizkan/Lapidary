@@ -21,6 +21,7 @@ mod part_number;
 mod parts;
 mod revisions;
 mod scan;
+mod shares;
 mod sharing;
 mod sources;
 mod tags;
@@ -301,6 +302,15 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/sharing/peers/{device}",
                     axum::routing::delete(sharing::remove),
                 )
+                // What this installation shares: a category and everything under it. The peer role
+                // serves it to the people paired; this is where it is decided. See `shares.rs`.
+                .route(
+                    "/api/libraries/{id}/shares",
+                    get(shares::list).post(shares::share),
+                )
+                .route("/api/libraries/{id}/shares/preview", get(shares::preview))
+                .route("/api/shares", get(shares::all))
+                .route("/api/shares/{id}", axum::routing::delete(shares::stop))
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
                 // crate allowed to hold that rename handle, enforced by `cargo xtask
