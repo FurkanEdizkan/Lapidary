@@ -170,6 +170,8 @@ async fn a_mistyped_id_or_an_address_nothing_could_reach_is_refused_in_words(poo
         "192.168.1.24:99999",
         "work shop:8082",
         "fd7a:115c:a1e0::3:8082",
+        // A path pasted with no scheme: only the refusal of `/` in a host catches this one.
+        "nas.local/lapidary:8082",
     ] {
         let (status, refusal) = send(
             &pool,
