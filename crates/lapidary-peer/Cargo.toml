@@ -24,6 +24,9 @@ serde.workspace = true
 # What `axum::Json` writes the hello answer with.
 serde_json.workspace = true
 thiserror.workspace = true
+# A refused handshake reaches no route and returns nothing anyone can read, so the log line the
+# verifier writes is the only record that somebody was turned away.
+tracing.workspace = true
 
 [dev-dependencies]
 # The other end of the handshake in tests: one process, two identities.
