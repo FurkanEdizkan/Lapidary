@@ -45,6 +45,9 @@ services:
       # The same store the api reads, at the same path, so a file a paired machine asks for is the
       # file the part's page downloads.
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
+      # Where a pull's files wait, whole or in part, until they are bundled into the store. Its own
+      # volume: a pull stopped half way resumes from what is here, and the key's volume holds the key.
+      LAPIDARY_PEER_STAGING: /var/lib/lapidary-peer-staging
     depends_on:
       db:
         condition: service_healthy
@@ -57,10 +60,14 @@ services:
       # The identity key. A named volume rather than part of the storage root: the store is the
       # user's files, browsable on purpose, and a private key is neither.
       - lapidary-peer:/var/lib/lapidary-peer:Z
-      # The store: read for a file someone you share with asks for.
+      # The store: read for a file someone you share with asks for, and written with the bundles
+      # you pull.
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
+      - lapidary-peer-staging:/var/lib/lapidary-peer-staging:Z
 
 volumes:
   # Back this up, or accept that a rebuild makes this installation a different one to everybody
   # it shares with.
   lapidary-peer:
+  # Pulled files not yet imported. Losing it costs a pull's fetch starting again, nothing more.
+  lapidary-peer-staging:

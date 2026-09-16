@@ -36,13 +36,17 @@ struct Config {
     // `api` role reads it, and only when someone uploads, so it is `Option` for the
     // same reason and checked in the `Role::Api` arm below rather than here.
     upload_dir: Option<PathBuf>,
-    /// Where the peer role keeps this installation's identity key. `Option` for `upload_dir`'s reason: only the `peer` role reads it, so requiring it
-    /// unconditionally would make the api and worker services incomplete for no reason either
-    /// would ever hit. Checked in the `Role::Peer` arm below.
+    /// Where the peer role keeps this installation's identity key. `Option` for `upload_dir`'s
+    /// reason: only the `peer` role reads it, so requiring it unconditionally would make the api
+    /// and worker services incomplete for no reason either would ever hit. Checked in the
+    /// `Role::Peer` arm below.
     ///
     /// The key's digest is this installation's device id — what everyone sharing with it added by
     /// hand — so this directory is the one whose loss changes who this machine says it is.
     peer_dir: Option<PathBuf>,
+    /// Where the peer role stages the files it pulls until they are bundled into the store.
+    /// Checked in the `Role::Peer` arm, for `peer_dir`'s reason.
+    peer_staging: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
     /// Nothing in this process reads a file through it, and nothing should: it exists to be
@@ -713,7 +717,7 @@ async fn main() -> Result<()> {
             // cut off part-way leaves rows the next start's first round writes again.
             tokio::spawn(lapidary_peer::sync::run(
                 db.clone(),
-                identity,
+                identity.clone(),
                 roster.clone(),
                 shutdown.clone(),
             ));
@@ -723,6 +727,19 @@ async fn main() -> Result<()> {
                 "Could not start as peer: LAPIDARY_BLOB_ROOT is not set. It names the store the files \
                  you share are read from.",
             )?;
+            let staging = config.peer_staging.clone().context(
+                "Could not start as peer: LAPIDARY_PEER_STAGING is not set. It names the directory the \
+                 files you pull wait in until they are imported.",
+            )?;
+            // Not awaited by `main`, for the hello round's reason: a pull stopped part-way is a row the
+            // next start picks up, and its staged files are where the fetch resumes.
+            tokio::spawn(lapidary_peer::pull::run(
+                db.clone(),
+                identity.clone(),
+                staging,
+                blob_root.clone(),
+                shutdown.clone(),
+            ));
             let peer = lapidary_peer::router(device, roster)
                 .merge(lapidary_peer::shares::shares_router(db.clone()))
                 .merge(lapidary_peer::blob::blob_router(db.clone(), blob_root));

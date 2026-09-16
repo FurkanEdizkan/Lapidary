@@ -1495,9 +1495,11 @@ name = "lapidary-peer"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "lapidary-core",
  "lapidary-db",
  "lapidary-storage",
+ "lapidary-targets",
  "reqwest",
  "ring",
  "rustls",

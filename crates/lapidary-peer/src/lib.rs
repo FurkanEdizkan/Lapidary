@@ -17,6 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub mod blob;
+pub mod pull;
 pub mod shares;
 pub mod sync;
 
