@@ -1029,6 +1029,11 @@ export function Detail({
           <code className="text-xs">{part.sourcePath}</code>
         </Row>
         <Row label={strings.detail.revision}>{part.revLabel}</Row>
+        {part.sharedBy === null ? null : (
+          <Row label={strings.detail.sharedBy}>
+            {part.sharedBy.name ?? <code className="text-xs">{part.sharedBy.deviceId}</code>}
+          </Row>
+        )}
         {part.lock === null ? null : (
           <Row label={strings.detail.checkedOut}>
             <LockLine part={part.id} lock={part.lock} recordable={recordable} />
