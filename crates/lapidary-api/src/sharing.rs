@@ -10,12 +10,12 @@ use crate::AppState;
 use crate::folders::{internal_error, refused};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
-use lapidary_core::DeviceId;
-use lapidary_db::{PeerRow, PgSharing};
+use lapidary_core::{DeviceId, PeerShareId};
+use lapidary_db::{MirroredPartRow, MirroredShareRow, PeerRow, PgMirror, PgSharing};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -203,4 +203,165 @@ fn reachable_at(raw: &str) -> Option<&str> {
         && (bracketed || !host.contains(':'))
         && !host.contains(|c: char| c.is_whitespace() || c == '/' || c == '@');
     (port_ok && host_ok && address.len() <= ADDRESS_MAX).then_some(address)
+}
+
+/// Somebody else's share, as mirrored here.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MirroredShare {
+    pub id: PeerShareId,
+    pub device_id: String,
+    /// What the sharer calls themselves, as their last hello said.
+    pub sharer: Option<String>,
+    pub name: String,
+    #[ts(type = "number")]
+    pub part_count: i64,
+    /// When its whole catalogue was last read. `None` until it has been.
+    pub synced_at: Option<Timestamp>,
+}
+
+/// A page of a mirrored share's parts. `next` is the `after` for the page that follows.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MirroredPartsPage {
+    pub parts: Vec<MirroredPart>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MirroredPart {
+    pub source_path: String,
+    pub name: String,
+    pub part_number: Option<String>,
+    pub tags: Vec<String>,
+    pub licences: Vec<String>,
+    #[ts(type = "number | null")]
+    pub size_bytes: Option<i64>,
+    pub format: Option<String>,
+    pub thumbnail: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MirroredPartsQuery {
+    after: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MirroredThumbnailQuery {
+    path: String,
+}
+
+/// The most parts one page of a shared library carries.
+const MIRRORED_PAGE_MAX: i64 = 500;
+const MIRRORED_PAGE_DEFAULT: i64 = 100;
+
+pub async fn peer_shares(State(state): State<AppState>, Path(device): Path<String>) -> Response {
+    let device = match device.parse::<DeviceId>() {
+        Ok(device) => device,
+        Err(err) => return bad_device_id(err),
+    };
+    match PgMirror(state.db).shares_of(device).await {
+        Ok(rows) => Json(rows.into_iter().map(mirrored).collect::<Vec<_>>()).into_response(),
+        Err(err) => internal_error(&err, "mirrored shares failed"),
+    }
+}
+
+pub async fn mirrored_share(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+) -> Response {
+    match PgMirror(state.db).share(share).await {
+        Ok(Some(row)) => Json(mirrored(row)).into_response(),
+        Ok(None) => no_such_share(),
+        Err(err) => internal_error(&err, "mirrored share failed"),
+    }
+}
+
+pub async fn mirrored_parts(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+    Query(query): Query<MirroredPartsQuery>,
+) -> Response {
+    let mirror = PgMirror(state.db);
+    // The share first, so a library whose sharer was removed is not found rather than an empty page that looks
+    // like a share with nothing in it.
+    match mirror.share(share).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return no_such_share(),
+        Err(err) => return internal_error(&err, "mirrored parts failed"),
+    }
+    let limit = query
+        .limit
+        .unwrap_or(MIRRORED_PAGE_DEFAULT)
+        .clamp(1, MIRRORED_PAGE_MAX);
+    let after = query.after.as_deref().filter(|after| !after.is_empty());
+    match mirror.parts(share, after, limit).await {
+        Ok(rows) => {
+            let full = usize::try_from(limit).is_ok_and(|limit| rows.len() == limit);
+            let next = if full {
+                rows.last().map(|row| row.source_path.clone())
+            } else {
+                None
+            };
+            Json(MirroredPartsPage {
+                parts: rows.into_iter().map(mirrored_part).collect(),
+                next,
+            })
+            .into_response()
+        }
+        Err(err) => internal_error(&err, "mirrored parts failed"),
+    }
+}
+
+pub async fn mirrored_thumbnail(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+    Query(query): Query<MirroredThumbnailQuery>,
+) -> Response {
+    match PgMirror(state.db).thumbnail(share, &query.path).await {
+        Ok(Some(bytes)) => ([(header::CONTENT_TYPE, "image/webp")], bytes).into_response(),
+        Ok(None) => refused(
+            StatusCode::NOT_FOUND,
+            "noThumbnail",
+            "That part has no preview in this shared library.",
+        ),
+        Err(err) => internal_error(&err, "mirrored thumbnail failed"),
+    }
+}
+
+fn no_such_share() -> Response {
+    refused(
+        StatusCode::NOT_FOUND,
+        "noSuchShare",
+        "That shared library is not here any more: its sharer stopped offering it, or you removed them. Reload the list of people you share with.",
+    )
+}
+
+fn mirrored(row: MirroredShareRow) -> MirroredShare {
+    MirroredShare {
+        id: row.id,
+        device_id: row.device.to_string(),
+        sharer: row.sharer,
+        name: row.name,
+        part_count: row.part_count,
+        synced_at: row.synced_at,
+    }
+}
+
+fn mirrored_part(row: MirroredPartRow) -> MirroredPart {
+    MirroredPart {
+        source_path: row.source_path,
+        name: row.name,
+        part_number: row.part_number,
+        tags: row.tags,
+        licences: row.licences,
+        size_bytes: row.size_bytes,
+        format: row.format,
+        thumbnail: row.thumbnail,
+    }
 }

@@ -9,7 +9,7 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
-import type { Peer, ShareSummary, SharingIdentity } from '../lib/types'
+import type { MirroredShare, Peer, ShareSummary, SharingIdentity } from '../lib/types'
 
 /**
  * The sharing page, which is where two people who know each other pair their installations. What it
@@ -56,11 +56,13 @@ function stub({
   peers = [AYSE, MAKERSPACE],
   pair = { status: 200, body: AYSE as unknown },
   shares = [],
+  theirs = [],
 }: {
   identity?: SharingIdentity
   peers?: Peer[]
   pair?: { status: number; body: unknown }
   shares?: ShareSummary[]
+  theirs?: MirroredShare[]
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -77,6 +79,7 @@ function stub({
       if (url === '/api/sharing/peers' && method === 'POST') return answer(pair.status, pair.body)
       if (url === '/api/sharing/peers') return answer(200, peers)
       if (url === '/api/shares') return answer(200, shares)
+      if (url.startsWith('/api/sharing/peers/') && url.endsWith('/shares')) return answer(200, theirs)
       if (method === 'DELETE') return answer(204, {})
       return answer(404, {})
     }),
@@ -200,4 +203,23 @@ test('what this installation shares is listed, and stopping one withdraws only t
     expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/shares/01a07c41-5d22-7b03-9014-7e2f6dab0002')).toBe(true),
   )
   expect(calls.some((call) => call.method === 'DELETE' && call.url.endsWith('0001'))).toBe(false)
+})
+
+test('what somebody shares is listed under them, each linking to it', async () => {
+  stub({
+    theirs: [
+      {
+        id: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0001',
+        deviceId: AYSE.deviceId,
+        sharer: 'Ayşe’s workshop',
+        name: 'Terrain',
+        partCount: 998,
+        syncedAt: '2026-09-17T01:40:00Z',
+      },
+    ],
+  })
+  renderPage()
+
+  const links = await screen.findAllByRole('link', { name: strings.sharing.theirShareParts('Terrain', 998) })
+  expect(links[0]?.getAttribute('href')).toBe('/sharing/shares/01a0c7e2-4d11-7b20-9a31-7c2e5dab0001')
 })

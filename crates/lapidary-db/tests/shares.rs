@@ -2,7 +2,8 @@
 
 use lapidary_core::{BlobHash, DeviceId, FolderId, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{
-    IngestRequest, NewPartSource, PgFolders, PgIngest, PgParts, PgShares, PgSharing, StoredBlobRow,
+    IngestRequest, NewPartSource, PgFolders, PgIngest, PgParts, PgShares, PgSharing,
+    SHARING_CHANNEL, StoredBlobRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -423,4 +424,72 @@ async fn the_licence_warning_counts_unrecorded_and_non_commercial_parts(pool: sq
         counts.non_commercial, 3,
         "the cliff face, the dolmen and the menhir"
     );
+}
+
+/// A puller re-reads a catalogue only when its digest moves, so a part revised under the share must move it —
+/// even though a new revision leaves `part.updated_at` alone.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_newer_revision_under_the_share_moves_the_digest(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let shares = PgShares(pool.clone());
+    shares
+        .create(library(), lib.terrain)
+        .await
+        .expect("creates")
+        .expect("live");
+    let before = shares.offered().await.expect("offers").remove(0);
+
+    sqlx::query("UPDATE revision SET created_at = now() + interval '1 minute' WHERE part_id = $1")
+        .bind(lib.cliff.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("stands in for a revision recorded later");
+    let after = shares.offered().await.expect("offers").remove(0);
+    assert_eq!(after.part_count, before.part_count, "no part was added");
+    assert_ne!(after.digest, before.digest, "and the digest still moved");
+}
+
+/// Pairing, removing, sharing and stopping each tell the peer role at once, so its round starts then rather
+/// than at the next tick.
+#[sqlx::test(migrations = "./migrations")]
+async fn pairing_and_sharing_tell_the_peer_role_at_once(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let mut listener = sqlx::postgres::PgListener::connect_with(&pool)
+        .await
+        .expect("listens");
+    listener
+        .listen(SHARING_CHANNEL)
+        .await
+        .expect("on the sharing channel");
+
+    let ayse = DeviceId::from_public_key(b"ed25519 public key of the workshop pc in Ayse's garage");
+    PgSharing(pool.clone())
+        .add_peer(ayse, "192.168.1.24:8082")
+        .await
+        .expect("pairs");
+    assert!(heard(&mut listener).await, "pairing");
+    let shared = PgShares(pool.clone())
+        .create(library(), lib.terrain)
+        .await
+        .expect("shares")
+        .expect("live");
+    assert!(heard(&mut listener).await, "sharing");
+    PgShares(pool.clone())
+        .remove(shared.id)
+        .await
+        .expect("stops");
+    assert!(heard(&mut listener).await, "stopping");
+    PgSharing(pool.clone())
+        .remove_peer(ayse)
+        .await
+        .expect("removes");
+    assert!(heard(&mut listener).await, "removing");
+}
+
+/// Whether a notification arrives on the listener within two seconds.
+async fn heard(listener: &mut sqlx::postgres::PgListener) -> bool {
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), listener.recv()).await,
+        Ok(Ok(_))
+    )
 }

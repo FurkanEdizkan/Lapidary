@@ -7,6 +7,7 @@ mod folders;
 mod jobs;
 mod locks;
 mod migrate;
+mod mirror;
 mod repo;
 mod revisions;
 mod saved_filters;
@@ -22,6 +23,9 @@ pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
+pub use mirror::{
+    MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote, PgMirror, StaleShare,
+};
 pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DerivativeBytes, DownloadSource,
     EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage,
@@ -33,7 +37,7 @@ pub use repo::{
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use shares::{CatalogueRow, LicenceCounts, OfferedShare, PgShares, ShareRow};
-pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing};
+pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;
 pub use touches::Touches;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as

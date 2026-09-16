@@ -2678,6 +2678,50 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
   - a share's digest is its part count and the newest `part.updated_at` under it. S2b relies on it and must
     check that a new revision moves `updated_at`.
 
+**Browse what somebody shares** (goal 7 stage 3, S2b: `17ac18b`, `2261583`, `ac8c4fd`, `b89ca31`, `0a5486e`).
+- **The mirror** (`0039`): `peer_share` and `peer_share_part`, a cache of another installation's list and never this
+  installation's data. Taking up an offer adds shares, keeps names and counts current, deletes with their parts the
+  shares no longer offered, and answers only the shares never read or read under another digest. A catalogue is
+  replaced whole in one transaction, so a read that fails part-way leaves the mirror as it was.
+- **The hello round** (`sync.rs`): hellos go out eight at a time — three machines that accept and never answer cost a
+  round 6 s rather than 15 s — and every installation that answered is then mirrored, beside the rounds rather than
+  inside one, never twice at once. The round wakes on the sharing channel as well as the tick.
+- **Browsing** (`crates/lapidary-api/src/sharing.rs`, `web/src/routes/sharing_.shares.$shareId.tsx`): under each person,
+  what they share; a shared library's page with who shares it, when it was last read, and its parts in pages — each
+  with a preview, its licence or that none is recorded, and its format and size. All read from the mirror.
+- **A bug in S2a, confirmed and fixed:** recording a revision leaves `part.updated_at` alone, so S2a's digest never
+  moved for a revised part and a puller would have kept a stale hash. The digest now counts revisions; a test saw it
+  not move first.
+- **Mutation-checked, 14 of 14 caught by tests** (`target/sharing-check/mutate-g7-s2b.sh`). One first counted only as
+  "caught by the compiler" — pushing `None` for every thumbnail broke type inference, which proves nothing about the
+  tests — and was rewritten to store empty thumbnails instead, which a test catches. Not mutated: reading every
+  catalogue page rather than the first, which a unit test would need 500 parts for; the measurement below read 998
+  across 2 pages.
+- **Measured, two stacks** (`target/sharing-check/seed-a.sh`, `measure-s2b.sh`, `measure-s2b.log`):
+  - **The sharer's library:** the 1,000 smallest loose STLs of the corpus (6.09 GB), scanned by a worker at concurrency
+    2 in 435 s. **998 ingested**: two files were refused, rightly, for non-finite vertex coordinates
+    (`BWB1_10_SUP.stl`, `GotNML3_1_SUP.stl`). Store 5.7 GB; all 998 with thumbnails.
+  - **Pairing to both online: 15 s** with the notification, against S1b's 28 s.
+  - **The licence preview** for sharing `STL Files`: 998 parts, 998 with no licence recorded, none non-commercial —
+    a scan records no licences.
+  - **A shared it; B had mirrored all of it 19 s later.** B's read: 2 catalogue pages, 391,764 bytes (about 196 KB a
+    page of 500), 998 parts, 38,522,502 bytes of thumbnails, none skipped. The largest thumbnail was 65,532 bytes,
+    just under the 64 KB cap.
+  - **B browses all 998** through its api in 2 pages of 500 (270,008 bytes of JSON); a thumbnail answers
+    `200 image/webp`, 30,626 bytes.
+  - **An unchanged share is not read again:** 45 s later B had still read the catalogue once.
+  - Screenshots: `target/sharing-check/shots/s2b-b-sharing.png`, `s2b-b-library.png`.
+- **Decided without the owner:**
+  - the mirror deletes what a sharer stops offering, as a cache may; the page says the sharer stopped offering it;
+  - a thumbnail is kept only below 64 KB, the inline limit a sharer stores it under;
+  - eight hellos at once; one mirror a device at a time; 30 s a mirror request;
+  - a shared library's page is 100 parts unless asked, never more than 500;
+  - one insert a part while replacing a catalogue (`ponytail:` in `mirror.rs`), about a second for 1,000.
+- **Left for later:**
+  - Sharing a category wakes only the sharer's own peer role; the other side reads it on its next tick, which is most
+    of the 19 s. Telling a paired installation at once needs a request from sharer to puller, and belongs with S3.
+  - Part names are still derived from file names, so a corpus library reads as file stems.
+
 ---
 
 ## Phase 6 — Dashboard and similarity

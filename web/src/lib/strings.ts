@@ -1766,5 +1766,33 @@ export const strings = {
     stopSharing: 'Stop sharing',
     stopSharingLabel: (name: string) => `Stop sharing ${name}`,
     stopping: 'Stopping…',
+    /** Under each person on the sharing page: what they share, each a link to it. */
+    theirShares: 'What they share',
+    theirSharesNone: 'Nothing shared with you yet.',
+    theirShareParts: (name: string, count: number) =>
+      count === 1 ? `${name}, 1 part` : `${name}, ${count} parts offered`,
+    /** A shared library: somebody else's category, read from the mirror, so it browses while they are away. */
+    libraryTitle: (name: string) => `${name} — Shared libraries — Lapidary`,
+    backToSharing: 'Back to shared libraries',
+    librarySharedBy: (sharer: string, count: number) =>
+      count === 1 ? `Shared by ${sharer}, 1 part` : `Shared by ${sharer}, ${count} parts offered`,
+    unnamedSharer: 'somebody who has not given a name',
+    librarySynced: (at: string) =>
+      `Last read ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    libraryNotReadYet:
+      'Not read yet. It is read the next time their machine answers, and appears here once it has been.',
+    /** Parts leave this list when the sharer stops offering them; nothing of this installation's goes with them. */
+    libraryLead:
+      'This is what they offer. A part they stop offering leaves this list; nothing of yours goes with it.',
+    libraryGone:
+      'This shared library is not here any more: its sharer stopped offering it, or you removed them.',
+    libraryLoadFailed: 'Could not load this shared library. Reload to try again.',
+    libraryEmpty: 'Nothing in it at the moment.',
+    noLicence: 'No licence recorded',
+    licences: (list: string) => `Licence: ${list}`,
+    partKind: (format: string | null, size: number | null) =>
+      [format?.toUpperCase(), size === null ? null : bytes(size)].filter((piece) => piece).join(' · '),
+    showMore: 'Show more',
+    showingMore: 'Loading…',
   },
 } as const
