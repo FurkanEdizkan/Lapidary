@@ -186,6 +186,8 @@ pub struct MirrorReport {
     /// Shares whose catalogue was read, because it was new or its digest moved.
     pub read: usize,
     pub pages: usize,
+    /// The catalogue pages' bodies, as they came over the wire.
+    pub catalogue_bytes: usize,
     pub parts: usize,
     pub thumbnail_bytes: usize,
     /// Thumbnails larger than [`THUMBNAIL_MAX`], left out of the mirror.
@@ -214,7 +216,7 @@ pub async fn mirror(
         .map_err(|err| format!("Could not set up a connection to {address}: {err}."))?;
     let base = format!("https://{address}/peer/v1/shares");
 
-    let offered: Vec<Share> = read_json(client.get(&base), address).await?;
+    let (offered, _): (Vec<Share>, usize) = read_json(client.get(&base), address).await?;
     let offers: Vec<OfferedRemote<'_>> = offered
         .iter()
         .map(|share| OfferedRemote {
@@ -243,8 +245,9 @@ pub async fn mirror(
                 ("after", after.as_str()),
                 ("limit", &CATALOGUE_MAX.to_string()),
             ]);
-            let page: CataloguePage = read_json(request, address).await?;
+            let (page, page_bytes): (CataloguePage, usize) = read_json(request, address).await?;
             report.pages += 1;
+            report.catalogue_bytes += page_bytes;
             parts.extend(page.parts);
             match page.next {
                 Some(next) => after = next,
@@ -301,11 +304,11 @@ pub async fn mirror(
     Ok(report)
 }
 
-/// A JSON answer from the sharer, or why there was none, in words.
+/// A JSON answer from the sharer and how many bytes it took, or why there was none, in words.
 async fn read_json<T: serde::de::DeserializeOwned>(
     request: reqwest::RequestBuilder,
     address: &str,
-) -> Result<T, String> {
+) -> Result<(T, usize), String> {
     let response = request.send().await.map_err(|err| why(address, &err))?;
     if !response.status().is_success() {
         return Err(format!(
@@ -314,7 +317,8 @@ async fn read_json<T: serde::de::DeserializeOwned>(
         ));
     }
     let body = response.bytes().await.map_err(|err| why(address, &err))?;
-    serde_json::from_slice(&body).map_err(|_| {
+    let bytes = body.len();
+    serde_json::from_slice(&body).map(|answer| (answer, bytes)).map_err(|_| {
         format!("The installation at {address} answered with a list this installation cannot read. Check that both run the same Lapidary version.")
     })
 }
