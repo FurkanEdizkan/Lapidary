@@ -94,6 +94,13 @@ pub struct AppState {
 pub enum Role {
     Api,
     Worker,
+    /// Serves the peer protocol to the installations their owner paired with, and nothing else.
+    ///
+    /// The router this crate builds for it is empty: the peer routes live in `lapidary-peer`,
+    /// which `lapidary-api` may never depend on (`xtask/src/layers.rs` forbids the edge by name).
+    /// The variant is here because `LAPIDARY_ROLE` is parsed here, and a role this parser does not
+    /// know is a startup failure rather than a silent fallback.
+    Peer,
 }
 
 impl Role {
@@ -104,6 +111,7 @@ impl Role {
         match s {
             "api" => Ok(Role::Api),
             "worker" => Ok(Role::Worker),
+            "peer" => Ok(Role::Peer),
             other => Err(ApiError::UnknownRole {
                 got: other.to_owned(),
             }),
@@ -356,6 +364,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // user clicks.
                 .route("/api/revisions/{id}/download", get(download::original)),
             Role::Worker => Router::new(),
+            // Empty for `Role::Worker`'s reason, and one of its own: the peer protocol is
+            // `lapidary-peer`'s router, which `bin/lapidary-server` serves instead of this one,
+            // and this crate may never depend on that one (`xtask/src/layers.rs` forbids the edge
+            // by name). A peer-facing process must carry no route of the browser's, so the
+            // honest answer here is nothing at all — only `/api/healthz` from `shared` remains.
+            Role::Peer => Router::new(),
         };
     shared.merge(by_role).with_state(state)
 }

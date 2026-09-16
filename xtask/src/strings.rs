@@ -139,6 +139,11 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
+        content: "e0980ae3da57905f",
+        reason: "the deploy/compose.sharing.yaml overlay fixture check_overlay's tests parse; the indentation is YAML's own and is exactly what those rules read -- a service name at two spaces, its build: and environment: keys below it -- so collapsing it would leave nothing to check",
+    },
+    Exemption {
+        file: "xtask/src/deploy.rs",
         content: "0a67009f512772bf",
         reason: "CORRECT_COMPOSE: a deliberate compose.yaml fixture; YAML indentation is meaningful",
     },

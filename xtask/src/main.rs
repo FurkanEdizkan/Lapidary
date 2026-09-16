@@ -493,12 +493,21 @@ fn check_deploy() -> Result<()> {
     let compose_path = root.join("deploy/compose.yaml");
     let containerfile_path = root.join("deploy/Containerfile");
 
+    // Sharing's own service lives in an overlay, so that bringing the plain stack up opens no
+    // listener to the network. It is still a file that builds `deploy/Containerfile` and sets a
+    // role, so it is held to the same per-service rules — see `deploy::check_overlay` for why it
+    // cannot simply be concatenated onto the file above.
+    let overlay_path = root.join("deploy/compose.sharing.yaml");
+
     let compose = std::fs::read_to_string(&compose_path)
         .with_context(|| format!("Could not read {}", compose_path.display()))?;
     let containerfile = std::fs::read_to_string(&containerfile_path)
         .with_context(|| format!("Could not read {}", containerfile_path.display()))?;
+    let overlay = std::fs::read_to_string(&overlay_path)
+        .with_context(|| format!("Could not read {}", overlay_path.display()))?;
 
     let mut violations = deploy::check(&compose, &containerfile);
+    violations.extend(deploy::check_overlay(&overlay));
 
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));

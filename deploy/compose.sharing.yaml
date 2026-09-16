@@ -1,0 +1,58 @@
+# Sharing with people you have paired with, off unless you ask for it.
+#
+#   podman compose -f compose.yaml -f compose.sharing.yaml up
+#
+# An overlay rather than a fourth service in `compose.yaml`, because bringing the stack up must
+# not open a listener to the network. `PRODUCT.md` says air-gapped deployments are a real target,
+# and the plain stack stays exactly that: nothing in it accepts a connection from another machine,
+# and nothing in it makes one except the image fetch a person pastes a URL into.
+#
+# What this service does accept is narrow by construction. It runs `LAPIDARY_ROLE=peer`, whose
+# router holds the peer protocol and none of the api's routes, and both ends of every connection
+# prove a key whose digest the other side added by hand (`crates/lapidary-peer`). A machine nobody
+# paired with is refused during the handshake, before any route runs.
+services:
+  peer:
+    # The same ceiling as the api: this serves metadata and files to a handful of machines a
+    # person knows, not a fleet.
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      # The `api` target, deliberately: the peer role links no CAD kernel, so it must not build
+      # the `worker` target that carries OCCT. `cargo xtask check-deploy` requires exactly this
+      # of every lapidary-server service that is not kernel-linked.
+      target: api
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
+      LAPIDARY_BIND: 0.0.0.0:8082
+      LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Serves the peer protocol alone. Never the grid, never the open path, never ingest: a
+      # route only the api serves is a route no paired machine can reach, which is the same
+      # split that keeps the scan route off the browser's port.
+      LAPIDARY_ROLE: peer
+      # Where this installation's identity key lives. Its digest is the device id other people
+      # add by hand, so losing this volume changes who this machine says it is and everyone
+      # sharing with it has to add the new id.
+      LAPIDARY_PEER_DIR: /var/lib/lapidary-peer
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # 8082, beside api on 8080 and worker on 8081. The only port in this project meant to be
+      # reachable from another machine, and the only one whose every connection is refused
+      # unless its key was written down first.
+      - "8082:8082"
+    volumes:
+      # The identity key, and nothing else. A named volume rather than part of the storage root:
+      # the store is the user's files, browsable on purpose, and a private key is neither.
+      - lapidary-peer:/var/lib/lapidary-peer:Z
+
+volumes:
+  # Back this up, or accept that a rebuild makes this installation a different one to everybody
+  # it shares with.
+  lapidary-peer:

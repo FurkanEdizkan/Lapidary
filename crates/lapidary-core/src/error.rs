@@ -19,6 +19,21 @@ pub enum CoreError {
     IdParse { got: String },
 
     #[error(
+        "A device id is {expected} characters of Crockford base32, shown in groups of five; this one has {got}. Copy it from the sharing page of the machine it names rather than retyping it."
+    )]
+    DeviceIdLength { got: usize, expected: usize },
+
+    #[error(
+        "A device id uses only the characters Crockford base32 has — the digits and the letters except I, L, O and U, which are read as the digits they look like. {got:?} is not one of them. Copy it from the sharing page of the machine it names rather than retyping it."
+    )]
+    DeviceIdCharacter { got: char },
+
+    #[error(
+        "A device id's last character carries one bit of the digest and four that only pad it out, and {got:?} sets those four — so this is not an id any Lapidary printed. Copy it again from the sharing page of the machine it names."
+    )]
+    DeviceIdPadding { got: char },
+
+    #[error(
         "`{got}` is not a measurement provenance. Expected `analytic` (read from a B-rep entity) or `tessellated` (derived from mesh geometry). A row written outside lapidary-db may have used a different vocabulary."
     )]
     ProvenanceUnknown { got: String },

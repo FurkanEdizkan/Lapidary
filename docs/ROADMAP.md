@@ -2470,6 +2470,63 @@ sequenced ahead of Phase 8. What the work is built on:
   - A part's *name* is still not taken from the manifest. `part_name()` derives it from the file name
     on every path into ingest, and changing that reaches scans and uploads too.
 
+**Two installations that can tell each other apart** (`a62d133`, `3237f5c`).
+- **The device id** (`crates/lapidary-core/src/device.rs`): the BLAKE3 of the public key an
+  installation presents, in Crockford base32, in groups of five. It is what two people paste to each
+  other, and it is the whole of the credential — an identifier, never a secret, exactly as a blob
+  hash is.
+- **The listener** (`crates/lapidary-peer`): an Ed25519 keypair per installation at
+  `$LAPIDARY_PEER_DIR/identity.pkcs8`, written `0600` as it is created; RFC 7250 raw public keys on
+  both ends, so no certificate is generated and no X.509 is parsed anywhere in the trust path; and a
+  `GET /peer/v1/hello` that answers what this installation is called. A machine nobody paired with is
+  refused *during the handshake*, so it reaches no route and learns nothing beyond this one's id.
+- **No new dependency.** `rustls`, `tokio-rustls` and `ring` were already in the tree through
+  reqwest's `rustls-tls-native-roots`, and are now named directly in `[workspace.dependencies]`.
+  axum 0.8's `Listener` trait takes the TLS listener, so the peer role serves through the same
+  `axum::serve` and the same shutdown token as the api and the worker. No `rcgen`, no
+  `ed25519-dalek`, no `axum-server`. `cargo deny check licenses` is green with `ring` direct.
+- **Two bugs, both in the trust path, both found by the tests rather than by reading.**
+  - The id hashed `ring`'s raw 32-byte key while rustls presents a `SubjectPublicKeyInfo`, so the
+    digests were of different bytes and *every* connection was refused. Both ends now hash exactly
+    what goes on the wire, which is also why no DER has to be unwrapped to check it.
+  - The signature check then delegated to `rustls::crypto::verify_tls13_signature`, which parses its
+    argument as an X.509 certificate: handing it a bare key failed as `BadEncoding` on every
+    connection. It now calls `verify_tls13_signature_with_raw_key`. There is no TLS 1.2 equivalent
+    in rustls, so that arm refuses rather than falling back to the certificate path — both configs
+    pin TLS 1.3, so it is unreachable, and a later version change must not quietly turn the pinning
+    into something else.
+- **`LAPIDARY_ROLE=peer`** serves the peer protocol and nothing else: the router `lapidary-api`
+  builds for it is empty, and `lapidary-api` may never depend on `lapidary-peer`
+  (`xtask/src/layers.rs`'s `FORBIDDEN_PAIRS`, by name). `lapidary-peer` is L3 rather than L2 because
+  it reaches `lapidary-targets`, and an L2 crate may not depend on another.
+- **Off unless asked for.** The service is in `deploy/compose.sharing.yaml`, an overlay, so the
+  plain stack still opens no listener. `check-deploy` learned to read it: the per-service rules are
+  split into `per_service`, and `check_overlay` applies those without the two whole-file rules that
+  would fail an overlay for having no worker of its own. The two files cannot simply be concatenated
+  — `parse_services` stops at the second `services:` key.
+- **Tests, each seen failing first against `todo!()` bodies:** an identity is named by the digest of
+  what it presents, two installations differ, an installation keeps its id across a restart, the
+  handshake alone succeeds between paired installations with each end's answer read separately, and
+  a paired installation is answered while a stranger never reaches a route. Four `check_overlay`
+  tests, including one asserting that `check_compose` *would* refuse the overlay — which is why that
+  function exists.
+- **Mutation-checked, all 4 caught:** any key allowed, the paired list emptied, the digest taken over
+  the wrong bytes, and raw-public-key negotiation switched off. Six more on the device id, all
+  caught — one of which, a surviving mutation, is what found that a non-canonical last character let
+  two different-looking ids name one machine.
+- **Measured, but statically.** `deploy/compose.yaml` publishes 8080, 8081 and 3000 and holds the
+  string `peer` nowhere; the peer role, its bind on 8082 and its port exist only in the overlay. The
+  live `ss -ltn` check the plan asked for needs `compose up`, which builds images, which needs the
+  owner's word — so it is recorded as not done rather than reported as done.
+- **Decided without the owner:**
+  - **Migration `0037` is deferred to S1b.** The plan put `peer_identity` and `peer` here, but the
+    identity lives on disk by design and nothing reads those tables until S1b adds the routes. A
+    table with no reader is what the ladder says to skip.
+  - The peer service builds the `api` target of `deploy/Containerfile`: the peer role links no CAD
+    kernel, so it must not build the target that carries OCCT.
+  - The identity key is on disk rather than in Postgres, for `upload_dir`'s reason — a key in the
+    database is a key the api's own credentials can read.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
