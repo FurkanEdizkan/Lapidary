@@ -302,6 +302,21 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/sharing/peers/{device}",
                     axum::routing::delete(sharing::remove),
                 )
+                // What somebody shares, read from the mirror the peer role keeps, so a shared library
+                // browses while the other machine is asleep.
+                .route(
+                    "/api/sharing/peers/{device}/shares",
+                    get(sharing::peer_shares),
+                )
+                .route("/api/sharing/shares/{id}", get(sharing::mirrored_share))
+                .route(
+                    "/api/sharing/shares/{id}/parts",
+                    get(sharing::mirrored_parts),
+                )
+                .route(
+                    "/api/sharing/shares/{id}/thumbnail",
+                    get(sharing::mirrored_thumbnail),
+                )
                 // What this installation shares: a category and everything under it. The peer role
                 // serves it to the people paired; this is where it is decided. See `shares.rs`.
                 .route(
