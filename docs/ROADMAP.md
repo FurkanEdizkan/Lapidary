@@ -2609,6 +2609,36 @@ sequenced ahead of Phase 8. What the work is built on:
   - Hellos go one at a time, each allowed 5 s. Past about six machines that do not answer, a round outlasts the
     online window (`ponytail:` in `sync.rs`).
 
+**The listener, hardened** (goal 7 stage 1, `5be7d13`). What S1a recorded for S4, done first so everything after it
+measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libraries-goal.md`).
+- **The bug, confirmed:** `PeerListener::accept` awaited each TLS handshake where it accepted the connection, so one
+  connection that opened the peer port and said nothing held up every connection after it for as long as it stayed
+  open. Each handshake now runs in a task of its own, allowed 10 s, and only finished connections reach axum.
+- **A failing `accept()`** backs off, 100 ms doubling to 1 s and back to 100 ms after a success, instead of retrying at
+  once for ever. The refusal comment is narrowed: the verifier's log line records a *pinning* refusal; a handshake
+  that dies before any key is presented leaves no record.
+- **Tests, each seen failing first for its own reason:** a paired hello behind a silent connection timed out
+  (`Err(Elapsed)`); a silent connection was never closed (`Err(Elapsed)`); the backoff was a `todo!()`.
+- **Mutation-checked, 4 of 4 caught** (`target/sharing-check/mutate-g7-s1.sh`): handshakes awaited inline, a handshake
+  allowed a day, a backoff that never grows, a backoff with no ceiling. Not mutated, and said so in the script: the
+  backoff's reset after a success and the accepting task's exit when the listener is dropped — no test can make
+  `accept()` fail persistently or watch the task end.
+- **Measured, two stacks, four TCP connections held open against A's peer port and re-opened every 12 s**
+  (`target/sharing-check/silent.py`), the S1b binary against this one:
+
+  | | S1b listener | hardened listener | S1b, no silent connections |
+  |---|---|---|---|
+  | pairing to both online | 36 s | 27 s | 28 s |
+  | a removal seen by B | 34 s | 15 s | 16 s |
+  | pairing again to online | 35 s | 13 s | 13 s |
+
+  The live run shows a slowdown rather than a hang, because each silent connection closes every 12 s and the old
+  listener's stuck handshake then fails and moves on. A silent connection that stays open indefinitely does hang the
+  old listener; the first test above is that case.
+- **Decided without the owner:** 10 s for a handshake; the backoff's 100 ms and 1 s; finished connections queued 64
+  deep before `accept` takes them.
+- **Closes** S1a's two items left for S4: the stalled handshake and the spinning accept.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
