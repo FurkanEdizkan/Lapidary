@@ -29,80 +29,80 @@ pub struct PullRow {
     pub bytes_done: i64,
     pub batch: Option<BatchId>,
     pub error: Option<String>,
+    /// The one part this pull is for, by its path in the folder it came from. `None` is the whole folder,
+    /// which is every pull before S9 and every "Pull all" since.
+    pub source_path: Option<String>,
+    /// How many unfinished pulls were started before this one. One pull runs at a time, so a part opened
+    /// while another pull is fetching waits its turn, and a page can say how long the queue is.
+    pub queued_behind: i64,
 }
 
 macro_rules! pull_columns {
     () => {
-        "SELECT pu.id, pu.peer_share_id, ps.remote_id, pu.device_id, pe.name, pe.address, pe.removed_at IS NOT NULL, pu.share_name, pu.library_id, pu.state, \
-         pu.files_total, pu.files_done, pu.bytes_total, pu.bytes_done, pu.batch_id, pu.error \
+        "SELECT pu.id AS id, pu.peer_share_id AS share, ps.remote_id AS remote, \
+         pu.device_id AS device, pe.name AS sharer, pe.address AS address, \
+         (pe.removed_at IS NOT NULL) AS removed, pu.share_name AS share_name, \
+         pu.library_id AS library, pu.state AS state, pu.files_total AS files_total, \
+         pu.files_done AS files_done, pu.bytes_total AS bytes_total, pu.bytes_done AS bytes_done, \
+         pu.batch_id AS batch, pu.error AS error, pu.source_path AS source_path, \
+         (SELECT count(*) FROM pull q WHERE q.state IN ('queued', 'fetching', 'waiting', 'importing') \
+           AND (q.created_at, q.id) < (pu.created_at, pu.id)) AS queued_behind \
          FROM pull pu JOIN peer pe ON pe.device_id = pu.device_id \
          LEFT JOIN peer_share ps ON ps.id = pu.peer_share_id"
     };
 }
 
-type PullTuple = (
-    uuid::Uuid,
-    Option<uuid::Uuid>,
-    Option<uuid::Uuid>,
-    Vec<u8>,
-    Option<String>,
-    String,
-    bool,
-    String,
-    uuid::Uuid,
-    String,
-    i32,
-    i32,
-    i64,
-    i64,
-    Option<uuid::Uuid>,
-    Option<String>,
-);
+// A named row rather than a tuple: seventeen columns is past what sqlx implements `FromRow` for on tuples, and
+// every column is aliased above to the field it fills, so adding one is a column, a field and nothing else.
+#[derive(sqlx::FromRow)]
+struct PullTuple {
+    id: uuid::Uuid,
+    share: Option<uuid::Uuid>,
+    remote: Option<uuid::Uuid>,
+    device: Vec<u8>,
+    sharer: Option<String>,
+    address: String,
+    removed: bool,
+    share_name: String,
+    library: uuid::Uuid,
+    state: String,
+    files_total: i32,
+    files_done: i32,
+    bytes_total: i64,
+    bytes_done: i64,
+    batch: Option<uuid::Uuid>,
+    error: Option<String>,
+    source_path: Option<String>,
+    queued_behind: i64,
+}
 
-fn pull_row(
-    (
-        id,
-        share,
-        remote,
-        device,
-        sharer,
-        address,
-        removed,
-        share_name,
-        library,
-        state,
-        files_total,
-        files_done,
-        bytes_total,
-        bytes_done,
-        batch,
-        error,
-    ): PullTuple,
-) -> Result<PullRow, DbError> {
-    let length = device.len();
-    let device = <[u8; 32]>::try_from(device)
+fn pull_row(row: PullTuple) -> Result<PullRow, DbError> {
+    let length = row.device.len();
+    let device = <[u8; 32]>::try_from(row.device)
         .map(DeviceId::from_bytes)
         .map_err(|_| DbError::CorruptDeviceId {
             column: "pull.device_id",
             length,
         })?;
     Ok(PullRow {
-        id: PullId::from_uuid(id),
-        share: share.map(PeerShareId::from_uuid),
-        remote: remote.map(ShareId::from_uuid),
+        id: PullId::from_uuid(row.id),
+        share: row.share.map(PeerShareId::from_uuid),
+        remote: row.remote.map(ShareId::from_uuid),
         device,
-        sharer,
-        address,
-        removed,
-        share_name,
-        library: LibraryId::from_uuid(library),
-        state,
-        files_total,
-        files_done,
-        bytes_total,
-        bytes_done,
-        batch: batch.map(BatchId::from_uuid),
-        error,
+        sharer: row.sharer,
+        address: row.address,
+        removed: row.removed,
+        share_name: row.share_name,
+        library: LibraryId::from_uuid(row.library),
+        state: row.state,
+        files_total: row.files_total,
+        files_done: row.files_done,
+        bytes_total: row.bytes_total,
+        bytes_done: row.bytes_done,
+        batch: row.batch.map(BatchId::from_uuid),
+        error: row.error,
+        source_path: row.source_path,
+        queued_behind: row.queued_behind,
     })
 }
 
@@ -115,16 +115,18 @@ impl PgPulls {
         &self,
         share: PeerShareId,
         library: LibraryId,
+        source_path: Option<&str>,
     ) -> Result<Option<PullId>, DbError> {
         let id = PullId::new();
         let inserted = sqlx::query(
-            "INSERT INTO pull (id, peer_share_id, device_id, share_name, library_id) \
-             SELECT $1, ps.id, ps.device_id, ps.name, $2 FROM peer_share ps \
+            "INSERT INTO pull (id, peer_share_id, device_id, share_name, library_id, source_path) \
+             SELECT $1, ps.id, ps.device_id, ps.name, $2, $4 FROM peer_share ps \
              JOIN peer pe ON pe.device_id = ps.device_id WHERE ps.id = $3 AND pe.removed_at IS NULL",
         )
         .bind(id.as_uuid())
         .bind(library.as_uuid())
         .bind(share.as_uuid())
+        .bind(source_path)
         .execute(&self.0)
         .await?
         .rows_affected();

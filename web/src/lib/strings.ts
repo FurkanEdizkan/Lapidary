@@ -1833,6 +1833,14 @@ export const strings = {
     pullNote:
       'Pulled parts land under Shared, in a category named for who shares them, with their licences. Parts you already pulled are not fetched again.',
     pullQueued: 'Waiting for the sharing service to start fetching…',
+    /** One pull runs at a time, so a part opened while another is fetching waits its turn (S9). */
+    pullQueuedBehind: (ahead: number) =>
+      ahead === 1
+        ? 'Waiting for one pull ahead of this one to finish…'
+        : `Waiting for ${ahead.toLocaleString('en-US')} pulls ahead of this one to finish…`,
+    partDownload: 'Download',
+    partDownloadLabel: (name: string) => `Download ${name}`,
+    partHeld: 'In your library',
     pullFetching: (done: number, total: number, bytesDone: number, bytesTotal: number) =>
       `Fetching ${done} of ${total} files — ${bytes(bytesDone)} of ${bytes(bytesTotal)}`,
     pullImporting: (settled: number, total: number) =>

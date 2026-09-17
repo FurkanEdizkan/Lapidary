@@ -7,7 +7,7 @@
 use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{
     Grant, IngestRequest, NewPartSource, PgFolders, PgIngest, PgJobs, PgMirror, PgParts, PgPulls,
-    PgRevisions, PgShares, PgSharing, StoredBlobRow,
+    PgRevisions, PgShares, PgSharing, RemoteMember, StoredBlobRow,
 };
 use lapidary_peer::{PeerIdentity, Roster, pull, router, serve, server_config, sync};
 use lapidary_storage::{Compression, SourceWriter};
@@ -239,7 +239,7 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
     let parts = PgParts(pool.clone());
     let pulls = PgPulls(pool.clone());
     let first = pulls
-        .start(share, ours)
+        .start(share, ours, None)
         .await
         .expect("records")
         .expect("the share is mirrored");
@@ -296,7 +296,7 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
 
     // Again: the library holds that file at that place, so nothing is fetched and no part is added.
     pulls
-        .start(share, ours)
+        .start(share, ours, None)
         .await
         .expect("records")
         .expect("still mirrored");
@@ -354,7 +354,7 @@ async fn a_pull_waits_for_a_grant_pauses_and_resumes_and_a_share_stopped_fails_i
         .expect("the sharer asks first");
 
     let first = pulls
-        .start(terrain.share, terrain.ours)
+        .start(terrain.share, terrain.ours, None)
         .await
         .expect("records")
         .expect("mirrored");
@@ -424,7 +424,7 @@ async fn a_pull_waits_for_a_grant_pauses_and_resumes_and_a_share_stopped_fails_i
         .await
         .expect("a second library");
     pulls
-        .start(terrain.share, second)
+        .start(terrain.share, second, None)
         .await
         .expect("records")
         .expect("still mirrored here");
@@ -479,7 +479,7 @@ async fn a_denied_request_and_a_sharer_removed_here_each_fail_the_pull_saying_so
         .expect("the sharer denies it");
 
     pulls
-        .start(terrain.share, terrain.ours)
+        .start(terrain.share, terrain.ours, None)
         .await
         .expect("records")
         .expect("mirrored");
@@ -509,7 +509,7 @@ async fn a_denied_request_and_a_sharer_removed_here_each_fail_the_pull_saying_so
     );
 
     pulls
-        .start(terrain.share, terrain.ours)
+        .start(terrain.share, terrain.ours, None)
         .await
         .expect("records")
         .expect("mirrored");
@@ -544,4 +544,237 @@ async fn a_denied_request_and_a_sharer_removed_here_each_fail_the_pull_saying_so
 
     terrain.shutdown.cancel();
     let _ = terrain.worker.await;
+}
+
+/// Sharing S9: opening one part of a folder fetches that one part, and a path the folder does not have
+/// fetches nothing and says so rather than waiting for something that will never come.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_pull_of_one_part_brings_that_part_alone(pool: sqlx::PgPool) {
+    let Terrain {
+        here,
+        sharer,
+        share,
+        ours,
+        staging,
+        our_store,
+        shutdown,
+        worker,
+        _sharer_store,
+        _ingest,
+        ..
+    } = terrain(&pool).await;
+    let pulls = PgPulls(pool.clone());
+
+    let one = pulls
+        .start(share, ours, Some("Terrain/Rocks/cliff-face-lp-tr-0112.stl"))
+        .await
+        .expect("records")
+        .expect("the folder is mirrored");
+    let queued = pulls.next().await.expect("reads").expect("queued");
+    assert_eq!(queued.id, one);
+    assert_eq!(
+        queued.source_path.as_deref(),
+        Some("Terrain/Rocks/cliff-face-lp-tr-0112.stl")
+    );
+    assert_eq!(queued.queued_behind, 0, "nothing is ahead of it");
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        pull::work(&pool, &here, staging.path(), our_store.path(), &queued),
+    )
+    .await
+    .expect("settles within a minute")
+    .expect("finishes");
+
+    let done = pulls.latest(share).await.expect("reads").expect("the pull");
+    assert_eq!(
+        (done.state.as_str(), done.files_total),
+        ("done", 1),
+        "one part asked for, one file fetched: {done:?}"
+    );
+    let group = &sharer.to_string()[..5];
+    let place = format!("Shared/Ayşe-Workshop ({group})/Terrain/Rocks/cliff-face-lp-tr-0112.stl");
+    assert!(
+        PgRevisions(pool.clone())
+            .current(ours, &place)
+            .await
+            .expect("reads")
+            .is_some(),
+        "the part opened landed under its sharer"
+    );
+
+    // A path the folder does not have: nothing to fetch, and the pull finishes rather than waiting.
+    let missing = pulls
+        .start(share, ours, Some("Terrain/Rocks/nothing.stl"))
+        .await
+        .expect("records")
+        .expect("the folder is mirrored");
+    let queued = pulls.next().await.expect("reads").expect("queued");
+    assert_eq!(queued.id, missing);
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        pull::work(&pool, &here, staging.path(), our_store.path(), &queued),
+    )
+    .await
+    .expect("settles within a minute")
+    .expect("finishes");
+    let done = pulls.get(missing).await.expect("reads").expect("the pull");
+    assert_eq!((done.state.as_str(), done.files_total), ("done", 0));
+
+    shutdown.cancel();
+    let _ = worker.await;
+}
+
+/// Sharing S9: a folder whose owner is away is pulled from somebody else who holds it.
+///
+/// Ayşe owns Terrain and is not answering. Mira is in that folder and holds its files, so this installation
+/// asks her — `/have`, then the file itself under `?owner=` — and the part lands as it would have from Ayşe.
+/// Ayşe's address here reaches nothing, so a part that arrives can only have come from Mira.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_folder_whose_owner_is_away_is_pulled_from_another_holder(pool: sqlx::PgPool) {
+    let Terrain {
+        here,
+        sharer,
+        sharer_share,
+        share,
+        ours,
+        staging,
+        our_store,
+        shutdown,
+        worker,
+        _sharer_store,
+        _ingest,
+        ..
+    } = terrain(&pool).await;
+    let here_id = here.device_id().expect("its id");
+    let sharing = PgSharing(pool.clone());
+
+    // Mira: another of Terrain's people, holding what Ayşe holds, answering on her own port.
+    let mira_identity = PeerIdentity::generate().expect("Mira's identity");
+    let mira = mira_identity.device_id().expect("Mira's id");
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a port on the loopback");
+    let mira_address = tcp.local_addr().expect("the port it took").to_string();
+    let roster = Roster::new(vec![here_id], Some("Mira’s studio".to_owned()));
+    let config = server_config(&mira_identity, &roster).expect("Mira's side");
+    let routes = router(mira, roster)
+        .merge(lapidary_peer::shares::shares_router(pool.clone()))
+        .merge(lapidary_peer::blob::blob_router(
+            pool.clone(),
+            _sharer_store.path().to_path_buf(),
+        ));
+    tokio::spawn(serve(tcp, config, routes));
+    sharing
+        .add_peer(mira, &mira_address)
+        .await
+        .expect("this installation pairs with Mira");
+
+    // Terrain's roster, as Ayşe published it: this installation and Mira.
+    PgMirror(pool.clone())
+        .take_roster(
+            sharer,
+            sharer_share,
+            &[
+                RemoteMember {
+                    device: here_id,
+                    name: None,
+                    address: "127.0.0.1:9",
+                    may_fetch: true,
+                },
+                RemoteMember {
+                    device: mira,
+                    name: Some("Mira’s studio"),
+                    address: &mira_address,
+                    may_fetch: true,
+                },
+            ],
+        )
+        .await
+        .expect("takes Terrain's roster");
+
+    // Ayşe stops answering: her address here reaches nothing. Until a hello round finds that out she counts
+    // as online, and a pull waits for her rather than going around her — one failed request is not an owner
+    // being away, and only she can answer whether her folder asks first.
+    sharing
+        .add_peer(sharer, "127.0.0.1:9")
+        .await
+        .expect("Ayşe is away");
+    let pulls = PgPulls(pool.clone());
+    let early = pulls
+        .start(share, ours, None)
+        .await
+        .expect("records")
+        .expect("the folder is mirrored");
+    let queued = pulls.next().await.expect("reads").expect("queued");
+    assert_eq!(queued.id, early);
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        pull::work(&pool, &here, staging.path(), our_store.path(), &queued),
+    )
+    .await
+    .expect("settles within a minute")
+    .expect_err("waits for an owner that is still answering hellos");
+    assert!(
+        PgRevisions(pool.clone())
+            .current(
+                ours,
+                &format!(
+                    "Shared/Ayşe-Workshop ({})/Terrain/Rocks/cliff-face-lp-tr-0112.stl",
+                    &sharer.to_string()[..5]
+                )
+            )
+            .await
+            .expect("reads")
+            .is_none(),
+        "nothing was fetched around her"
+    );
+
+    // The next hello round finds her gone, and then her folder's other people are asked.
+    sync::round(&pool, &here, &Roster::default())
+        .await
+        .expect("says hello to both");
+
+    // The same pull, carrying on now that she is known to be away.
+    let queued = pulls.next().await.expect("reads").expect("still queued");
+    assert_eq!(
+        queued.id, early,
+        "the pull that waited is the pull that carries on"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        pull::work(&pool, &here, staging.path(), our_store.path(), &queued),
+    )
+    .await
+    .expect("settles within a minute")
+    .expect("finishes");
+
+    let done = pulls.latest(share).await.expect("reads").expect("the pull");
+    assert_eq!(
+        (done.state.as_str(), done.files_total, done.error.as_deref()),
+        ("done", 1, None),
+        "{done:?}"
+    );
+    let group = &sharer.to_string()[..5];
+    let place = format!("Shared/Ayşe-Workshop ({group})/Terrain/Rocks/cliff-face-lp-tr-0112.stl");
+    assert!(
+        PgRevisions(pool.clone())
+            .current(ours, &place)
+            .await
+            .expect("reads")
+            .is_some(),
+        "the file came from Mira, and is filed under the folder's owner all the same"
+    );
+    let landed = PgRevisions(pool.clone())
+        .current(ours, &place)
+        .await
+        .expect("reads")
+        .expect("a part");
+    assert_eq!(
+        pulls.provenance(landed.part).await.expect("reads"),
+        Some((sharer, Some("Ayşe/Workshop".to_owned()))),
+        "provenance names the folder's owner, whoever the bytes came from"
+    );
+
+    shutdown.cancel();
+    let _ = worker.await;
 }

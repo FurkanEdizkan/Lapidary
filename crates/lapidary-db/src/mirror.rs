@@ -85,6 +85,17 @@ pub enum Serving {
     NotSeeding,
 }
 
+/// An installation that may be asked for a mirrored folder's files (S9).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Holder {
+    pub device: DeviceId,
+    pub address: String,
+    /// Whether this is the folder's owner, who is asked first while they are answering.
+    pub owner: bool,
+    /// Whether their last hello answered, within the online window.
+    pub online: bool,
+}
+
 /// A folder mirrored here, as it is passed on to another of its people (S7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelayedShare {
@@ -133,6 +144,9 @@ pub struct MirroredPartRow {
     pub size_bytes: Option<i64>,
     pub format: Option<String>,
     pub thumbnail: bool,
+    /// Whether this installation already holds that file, so a page can offer to fetch the ones it does not
+    /// and say so of the ones it does (S9).
+    pub held: bool,
 }
 
 /// A mirrored share's columns, in [`ShareTuple`]'s order, from `peer_share ps` joined to its sharer `pe`.
@@ -182,6 +196,7 @@ type PartTuple = (
     Option<String>,
     Option<i64>,
     Option<String>,
+    bool,
     bool,
 );
 
@@ -706,18 +721,34 @@ impl PgMirror {
         after: Option<&str>,
         limit: i64,
     ) -> Result<Vec<MirroredPartRow>, DbError> {
+        self.parts_at(share, None, after, limit).await
+    }
+
+    /// A page of a mirrored folder's parts, or the one at `at` (S9).
+    async fn parts_at(
+        &self,
+        share: PeerShareId,
+        at: Option<&str>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<MirroredPartRow>, DbError> {
         let rows: Vec<PartTuple> = sqlx::query_as(
             "SELECT psp.source_path, psp.remote_part, psp.name, psp.part_number, psp.tags, psp.licences, \
-             psp.blake3, psp.size_bytes, psp.format, psp.thumbnail IS NOT NULL \
+             psp.blake3, psp.size_bytes, psp.format, psp.thumbnail IS NOT NULL, \
+             EXISTS (SELECT 1 FROM file f JOIN revision r ON r.id = f.revision_id \
+               JOIN part mine ON mine.id = r.part_id AND mine.deleted_at IS NULL \
+               WHERE f.blake3 = psp.blake3 AND f.role = 'source') \
              FROM peer_share_part psp JOIN peer_share ps ON ps.id = psp.peer_share_id \
              JOIN peer pe ON pe.device_id = ps.device_id \
              WHERE psp.peer_share_id = $1 AND pe.removed_at IS NULL \
+             AND ($4::text IS NULL OR psp.source_path = $4) \
              AND ($2::text IS NULL OR psp.source_path > $2) \
              ORDER BY psp.source_path LIMIT $3",
         )
         .bind(share.as_uuid())
         .bind(after)
         .bind(limit)
+        .bind(at)
         .fetch_all(&self.0)
         .await?;
         Ok(rows
@@ -734,6 +765,7 @@ impl PgMirror {
                     size_bytes,
                     format,
                     thumbnail,
+                    held,
                 )| {
                     MirroredPartRow {
                         source_path,
@@ -746,10 +778,58 @@ impl PgMirror {
                         size_bytes,
                         format,
                         thumbnail,
+                        held,
                     }
                 },
             )
             .collect())
+    }
+
+    /// One part of a mirrored folder, by its path in that folder.
+    pub async fn part(
+        &self,
+        share: PeerShareId,
+        source_path: &str,
+    ) -> Result<Option<MirroredPartRow>, DbError> {
+        Ok(self
+            .parts_at(share, Some(source_path), None, 1)
+            .await?
+            .pop())
+    }
+
+    /// Who this installation may ask for a folder's files: its owner, and the people on the roster its owner
+    /// published that this installation is paired with (S9).
+    ///
+    /// Ordered by who answered most recently, the folder's owner first when they are online. Nobody else can
+    /// be asked: a roster names machines, and a machine this installation has not paired with refuses its
+    /// handshake, which is the pairing rule holding rather than a list to be filtered.
+    pub async fn holders(&self, share: PeerShareId) -> Result<Vec<Holder>, DbError> {
+        let rows: Vec<(Vec<u8>, String, bool, bool)> = sqlx::query_as(
+            "SELECT pe.device_id, pe.address, (ps.device_id = pe.device_id), \
+             (pe.last_error IS NULL AND pe.last_seen_at > now() - make_interval(secs => $2::float8)) IS TRUE \
+             FROM peer_share ps \
+             JOIN peer pe ON pe.removed_at IS NULL AND (pe.device_id = ps.device_id OR EXISTS ( \
+               SELECT 1 FROM peer_share_member m \
+               WHERE m.peer_share_id = ps.id AND m.device_id = pe.device_id)) \
+             WHERE ps.id = $1 \
+             ORDER BY (ps.device_id = pe.device_id AND \
+               (pe.last_error IS NULL AND pe.last_seen_at > now() - make_interval(secs => $2::float8)) IS TRUE) DESC, \
+             pe.last_seen_at DESC NULLS LAST, pe.device_id",
+        )
+        .bind(share.as_uuid())
+        .bind(crate::sharing::ONLINE_WITHIN_SECS)
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(device, address, owner, online)| {
+                Ok(Holder {
+                    device: stored_device("peer.device_id", device)?,
+                    address,
+                    owner,
+                    online,
+                })
+            })
+            .collect()
     }
 
     /// A mirrored part's thumbnail, by the owner's id for the part — which is how another installation asks

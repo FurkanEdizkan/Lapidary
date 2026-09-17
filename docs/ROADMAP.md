@@ -3262,6 +3262,36 @@ rule — people who know each other only, no tracker, no public directory. Plan:
 - **Left for later:** a pull still asks the folder's owner for every file. Choosing a holder, and doing it one
   part at a time, is S9.
 
+**Open one part, and find who has it** (stage S9).
+- **`pull.source_path`** (`0046`): null is the whole folder, which is every pull before this and every "Pull
+  all" since; set is one part. A pull of one part is the same pull — same queue, same staging, same import —
+  with one file in it, so nothing downstream of the fetch changed.
+- **`GET /peer/v1/shares/{share}/have?owner=&blake3=`**, behind the very gates the blob route is behind, so it
+  tells nobody anything the catalogue does not. A folder that asks first and has not answered yet says `false`
+  rather than refusing, which saves the asker a fetch it would only be refused.
+- **Whoever has it.** The folder's owner and the people on the roster its owner published that this
+  installation is paired with, ordered by who answered a hello most recently, the owner first while they are
+  online. Each is asked `/have` in turn and the first yes is fetched from; a holder that is busy, refuses or
+  does not answer is passed over, and this one is asked again on the next attempt. Nobody reachable leaves the
+  pull to say so — "Nobody reachable has *Cliff face, LP-TR-0112* yet" — and it is tried again shortly.
+- **Only the owner answers asking first**, so an owner who is **away** — silent for three hello rounds, as the
+  People list means by offline — is no longer a refusal when somebody else in the folder holds the files: the
+  other holders were told the owner's answer with the roster, and enforce it themselves (S8's `may_fetch`). An
+  owner who is still answering hellos and misses one request is waited for instead, because the roster's answer
+  about fetching is a snapshot, and an owner who has just closed a folder's files would otherwise be gone
+  around. Tested both ways in one run: the pull waits, the hello round finds her away, and it carries on.
+- **The page.** Download on a part this installation does not hold, "In your library" on one it does, and the
+  library the whole-folder pull is set to is the one a part lands in. One pull runs at a time, so a part opened
+  while another is fetching says how many are ahead of it.
+- **Decided without the owner:** one part at a time from one holder, never two halves from two — the ordering
+  is by who was seen last, and at these sizes a second connection buys less than it costs. `pull.device_id`
+  stays the folder's owner whatever machine the bytes came from, so provenance names the folder, as decided.
+  Downloading the same part twice queues a second pull, which finds the file already held and finishes having
+  fetched nothing: a queue is a list of what somebody asked for, and two asks are two answers.
+- **Tests:** a one-part pull brings that part alone; a path the folder does not list finishes rather than
+  waiting; and, with the owner's address answering nothing, a pull completes from another holder — the file
+  could have come from nowhere else.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

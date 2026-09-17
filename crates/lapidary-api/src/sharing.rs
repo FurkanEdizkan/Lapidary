@@ -370,6 +370,9 @@ pub struct MirroredPart {
     pub size_bytes: Option<i64>,
     pub format: Option<String>,
     pub thumbnail: bool,
+    /// Whether this installation already holds that file: the page offers the ones it does not, and says so of
+    /// the ones it does (S9).
+    pub held: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -501,9 +504,14 @@ pub async fn mirrored_thumbnail(
 #[ts(export)]
 pub struct StartPull {
     pub library_id: LibraryId,
+    /// The one part to pull, by its path in the folder. Left out pulls the whole folder, as this always did.
+    #[ts(optional)]
+    pub source_path: Option<String>,
 }
 
 /// A pull, as its share's page follows it: fetching, then importing in `batch_id`, then done or failed.
+///
+/// `sourcePath` names the one part it is for (S9); a pull of the whole folder leaves it out.
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -527,6 +535,12 @@ pub struct Pull {
     pub batch_id: Option<BatchId>,
     /// Why it failed, or why it is waiting to try again.
     pub error: Option<String>,
+    /// The one part it is for (S9), by its path in the folder. `None` is the whole folder.
+    pub source_path: Option<String>,
+    /// How many unfinished pulls are ahead of this one. One pull runs at a time, so a part opened while
+    /// another pull is fetching waits, and the page says how long the queue is rather than looking stuck.
+    #[ts(type = "number")]
+    pub queued_behind: i64,
 }
 
 /// `POST /api/sharing/shares/{id}/pulls` — pull every part of a shared library into one of this installation's. The api
@@ -558,7 +572,10 @@ pub async fn start_pull(
         Err(err) => return internal_error(&err, "pull library lookup failed"),
     }
     let pulls = PgPulls(state.db);
-    match pulls.start(share, body.library_id).await {
+    match pulls
+        .start(share, body.library_id, body.source_path.as_deref())
+        .await
+    {
         Ok(Some(_)) => match pulls.latest(share).await {
             Ok(Some(row)) => (StatusCode::ACCEPTED, Json(pull(row))).into_response(),
             Ok(None) => no_such_share(),
@@ -632,6 +649,8 @@ fn pull(row: PullRow) -> Pull {
         bytes_done: row.bytes_done,
         batch_id: row.batch,
         error: row.error,
+        source_path: row.source_path,
+        queued_behind: row.queued_behind,
     }
 }
 
@@ -670,5 +689,6 @@ fn mirrored_part(row: MirroredPartRow) -> MirroredPart {
         size_bytes: row.size_bytes,
         format: row.format,
         thumbnail: row.thumbnail,
+        held: row.held,
     }
 }

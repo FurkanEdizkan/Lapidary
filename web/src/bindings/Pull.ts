@@ -6,6 +6,8 @@ import type { PullId } from "./PullId";
 
 /**
  * A pull, as its share's page follows it: fetching, then importing in `batch_id`, then done or failed.
+ *
+ * `sourcePath` names the one part it is for (S9); a pull of the whole folder leaves it out.
  */
 export type Pull = { id: PullId, 
 /**
@@ -27,4 +29,13 @@ state: string, filesTotal: number, filesDone: number, bytesTotal: number, bytesD
 /**
  * Why it failed, or why it is waiting to try again.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * The one part it is for (S9), by its path in the folder. `None` is the whole folder.
+ */
+sourcePath: string | null, 
+/**
+ * How many unfinished pulls are ahead of this one. One pull runs at a time, so a part opened while
+ * another pull is fetching waits, and the page says how long the queue is rather than looking stuck.
+ */
+queuedBehind: number, };

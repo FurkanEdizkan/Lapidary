@@ -21,7 +21,8 @@ use crate::sync::{listen, wait};
 use crate::{PeerIdentity, client_config};
 use lapidary_core::{BlobHash, JobPayload, RevisionOrigin};
 use lapidary_db::{
-    DbError, MirroredPartRow, PgBlobs, PgJobs, PgMirror, PgPool, PgPulls, PullRow, StoredBlobRow,
+    DbError, Holder, MirroredPartRow, PgBlobs, PgJobs, PgMirror, PgPool, PgPulls, PullRow,
+    StoredBlobRow,
 };
 use lapidary_storage::{Compression, SourceWriter};
 use lapidary_targets::bundle::{
@@ -329,12 +330,22 @@ pub async fn work(
     let (Some(share), Some(remote)) = (pull.share, pull.remote) else {
         return stopped_sharing(&pulls, pull).await;
     };
+    let mirror = PgMirror(db.clone());
+    // One part when the pull names one (S9), the whole folder when it does not.
+    let catalogue = match pull.source_path.as_deref() {
+        Some(path) => mirror
+            .part(share, path)
+            .await
+            .map_err(db_error)?
+            .into_iter()
+            .collect(),
+        None => mirror
+            .parts(share, None, i64::MAX)
+            .await
+            .map_err(db_error)?,
+    };
     let mut files = Vec::new();
-    for part in PgMirror(db.clone())
-        .parts(share, None, i64::MAX)
-        .await
-        .map_err(db_error)?
-    {
+    for part in catalogue {
         let (Some(hex), Some(size)) = (part.blake3.as_deref(), part.size_bytes) else {
             continue;
         };
@@ -383,13 +394,26 @@ pub async fn work(
         return settled(db, pull, &places).await;
     }
 
-    let tls = client_config(identity, pull.device).map_err(|err| err.to_string())?;
-    let client = reqwest::Client::builder()
-        .use_preconfigured_tls(tls)
-        .connect_timeout(PATIENCE)
-        .read_timeout(PATIENCE)
-        .build()
-        .map_err(|err| format!("Could not set up a connection to {}: {err}.", pull.address))?;
+    // Everybody who may be asked for this folder's files: its owner, and the people on the roster its owner
+    // published that this installation is paired with (S9). The owner comes first while they are answering.
+    let holders = mirror.holders(share).await.map_err(db_error)?;
+    let mut clients: Vec<(Holder, reqwest::Client)> = Vec::with_capacity(holders.len());
+    for holder in holders {
+        let tls = client_config(identity, holder.device).map_err(|err| err.to_string())?;
+        let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
+            .connect_timeout(PATIENCE)
+            .read_timeout(PATIENCE)
+            .build()
+            .map_err(|err| {
+                format!(
+                    "Could not set up a connection to {}: {err}.",
+                    holder.address
+                )
+            })?;
+        clients.push((holder, client));
+    }
+    let owner = clients.iter().position(|(holder, _)| holder.owner);
     let shared = format!(
         "https://{}/peer/v1/shares/{}",
         pull.address,
@@ -397,25 +421,39 @@ pub async fn work(
     );
     // Asked before every attempt, since asking again changes nothing: a share that asks first answers where this
     // installation stands, and nothing is fetched until it is granted.
-    match ask(&client, &format!("{shared}/request")).await {
-        Ok(Standing::MayFetch) => {}
-        Ok(Standing::Waiting) => {
-            pulls.waiting(pull.id).await.map_err(db_error)?;
-            return Err(format!(
-                "Waiting for {who} to let you pull {}.",
-                pull.share_name
-            ));
+    //
+    // Only its owner can answer it, so an owner that cannot be reached is not a refusal when somebody else in the
+    // folder holds the files: the other holders were told the owner's answer with the roster, and enforce it.
+    let mut ask_owner = owner;
+    if let Some(index) = owner {
+        match ask(&clients[index].1, &format!("{shared}/request")).await {
+            Ok(Standing::MayFetch) => {}
+            Ok(Standing::Waiting) => {
+                pulls.waiting(pull.id).await.map_err(db_error)?;
+                return Err(format!(
+                    "Waiting for {who} to let you pull {}.",
+                    pull.share_name
+                ));
+            }
+            Ok(Standing::Denied) => {
+                let why = format!(
+                    "{who} declined your request to pull {}. Parts already pulled stay.",
+                    pull.share_name
+                );
+                pulls.finish(pull.id, Some(&why)).await.map_err(db_error)?;
+                return Ok(());
+            }
+            Ok(Standing::NotShared) => return stopped_sharing(&pulls, pull).await,
+            // One failed request is not an owner being away, and the roster's answer about fetching is a
+            // snapshot: an owner who is answering hellos and did not answer this must be asked again, or an
+            // owner who has just closed a folder's files would be fetched from through its other people.
+            Err(why) if clients.len() == 1 || clients[index].0.online => return Err(why),
+            // Silent for three hello rounds: away, and somebody else in the folder may hold what it holds.
+            Err(why) => {
+                tracing::info!(pull = %pull.id.as_uuid(), %why, "a folder's owner is away; asking its other people");
+                ask_owner = None;
+            }
         }
-        Ok(Standing::Denied) => {
-            let why = format!(
-                "{who} declined your request to pull {}. Parts already pulled stay.",
-                pull.share_name
-            );
-            pulls.finish(pull.id, Some(&why)).await.map_err(db_error)?;
-            return Ok(());
-        }
-        Ok(Standing::NotShared) => return stopped_sharing(&pulls, pull).await,
-        Err(why) => return Err(why),
     }
     if !pulls
         .fetching(
@@ -428,12 +466,33 @@ pub async fn work(
     {
         return Ok(());
     }
-    let base = format!("{shared}/blob");
     let (mut files_done, mut bytes_done, mut sent) = (0i32, 0i64, 0u64);
     let mut staged = Vec::with_capacity(wanted.len());
     for file in &wanted {
-        let url = format!("{base}/{}", file.hash.to_hex());
-        match fetch(&client, &url, staging, &file.hash, file.size).await {
+        // Asked one at a time, in the order the holders came in, and the first yes is the one fetched from. A
+        // holder that stalls or is busy is passed over for the next; nobody reachable leaves the pull to say so.
+        let Some((holder, client)) =
+            holder_for(&clients, ask_owner, file, remote, pull.device).await
+        else {
+            let why = format!(
+                "Nobody reachable has {} yet. It is tried again shortly.",
+                file.part.name
+            );
+            tracing::info!(pull = %pull.id.as_uuid(), files_done, "no holder answered for a file");
+            return Err(why);
+        };
+        let url = format!(
+            "https://{}/peer/v1/shares/{}/blob/{}{}",
+            holder.address,
+            remote.as_uuid(),
+            file.hash.to_hex(),
+            if holder.owner {
+                String::new()
+            } else {
+                format!("?owner={}", pull.device)
+            }
+        );
+        match fetch(client, &url, staging, &file.hash, file.size).await {
             Ok(fetched) => {
                 sent += fetched.sent;
                 files_done += 1;
@@ -536,6 +595,51 @@ async fn stopped_sharing(pulls: &PgPulls, pull: &PullRow) -> Result<(), String> 
         pull.share_name
     );
     pulls.finish(pull.id, Some(&why)).await.map_err(db_error)
+}
+
+/// Who to fetch one file from: the first holder that answers that it has it (S9).
+///
+/// One request a holder, in the order they came: the folder's owner while they are answering, then whoever
+/// answered a hello most recently. Asking is cheap and a refused fetch is not, which is what `/have` is for.
+async fn holder_for<'a>(
+    clients: &'a [(Holder, reqwest::Client)],
+    ask_owner: Option<usize>,
+    file: &Wanted,
+    remote: lapidary_core::ShareId,
+    owner: lapidary_core::DeviceId,
+) -> Option<(&'a Holder, &'a reqwest::Client)> {
+    for (index, (holder, client)) in clients.iter().enumerate() {
+        if holder.owner && ask_owner != Some(index) {
+            continue;
+        }
+        let request = client
+            .get(format!(
+                "https://{}/peer/v1/shares/{}/have",
+                holder.address,
+                remote.as_uuid()
+            ))
+            .query(&[("blake3", file.hash.to_hex().as_str())]);
+        let request = if holder.owner {
+            request
+        } else {
+            request.query(&[("owner", owner.to_string())])
+        };
+        match request.send().await {
+            Ok(response) if response.status().is_success() => {
+                let body = match response.bytes().await {
+                    Ok(body) => body,
+                    Err(_) => continue,
+                };
+                match serde_json::from_slice::<serde_json::Value>(&body) {
+                    Ok(answer) if answer["have"] == true => return Some((holder, client)),
+                    _ => continue,
+                }
+            }
+            // Busy, refused or unreachable: the next holder is asked, and this one on the next attempt.
+            _ => continue,
+        }
+    }
+    None
 }
 
 /// Where this installation stands with a share's files.

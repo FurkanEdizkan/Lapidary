@@ -25,8 +25,8 @@ pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use mirror::{
-    IntroductionRow, MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote, PgMirror,
-    RelayedShare, RemoteMember, Serving, StaleShare,
+    Holder, IntroductionRow, MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote,
+    PgMirror, RelayedShare, RemoteMember, Serving, StaleShare,
 };
 pub use pulls::{PgPulls, PullRow};
 pub use repo::{
