@@ -187,6 +187,15 @@ test("each removed part says when it was removed", async () => {
   expect(within(spares).getByText("Removed Sep 14, 2026")).toBeDefined();
 });
 
+/** A server from before `removedAt` sends no such field; the row says nothing rather than "Invalid Date". */
+test("a row from a server that sends no removal time shows no date", async () => {
+  const { removedAt: _, ...older } = MOUNTING;
+  stub([older as unknown as PartCard]);
+  renderPage();
+  const row = await rowFor("mounting/LP-1042-03.stl");
+  expect(within(row).queryByText(/^Removed /)).toBeNull();
+});
+
 test("restore calls the route for the row it was clicked on", async () => {
   const calls = stub([MOUNTING, SPARES]);
   renderPage();
