@@ -109,7 +109,7 @@ async fn an_answered_hello_is_online_and_a_failed_one_says_why(pool: sqlx::PgPoo
     );
 
     sharing
-        .seen(ayse(), Some("Ayşe's workshop"))
+        .seen(ayse(), Some("Ayşe's workshop"), &[])
         .await
         .expect("records");
     let seen = &sharing.peers().await.expect("lists")[0];
@@ -141,7 +141,7 @@ async fn somebody_silent_for_three_rounds_is_no_longer_online(pool: sqlx::PgPool
         .add_peer(ayse(), "192.168.1.24:8082")
         .await
         .expect("adds");
-    sharing.seen(ayse(), None).await.expect("records");
+    sharing.seen(ayse(), None, &[]).await.expect("records");
     sqlx::query("UPDATE peer SET last_seen_at = now() - make_interval(secs => $1::float8 + 1)")
         .bind(lapidary_db::ONLINE_WITHIN_SECS)
         .execute(&pool)

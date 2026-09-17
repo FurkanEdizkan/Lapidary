@@ -10,6 +10,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
 import type {
+  Introduction,
   LibraryId,
   MirroredShare,
   Peer,
@@ -70,6 +71,7 @@ function stub({
   requests = [],
   pulls = [],
   members = [],
+  introductions = [],
 }: {
   identity?: SharingIdentity
   peers?: Peer[]
@@ -79,6 +81,7 @@ function stub({
   requests?: ShareRequest[]
   pulls?: Pull[]
   members?: ShareMember[]
+  introductions?: Introduction[]
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -96,6 +99,8 @@ function stub({
       if (url === '/api/sharing/peers') return answer(200, peers)
       if (url === '/api/shares') return answer(200, shares)
       if (url === '/api/shares/requests') return answer(200, requests)
+      if (url === '/api/sharing/introductions') return answer(200, introductions)
+      if (url.startsWith('/api/sharing/introductions/')) return answer(200, {})
       if (url === '/api/sharing/pulls') return answer(200, pulls)
       if (method === 'PUT' && url.includes('/grants/')) return answer(204, {})
       if (url.startsWith('/api/shares/') && url.endsWith('/members')) {
@@ -373,4 +378,51 @@ test('a folder picked for says who it goes to, and one picked for nobody says so
   })
   renderPage()
   await screen.findByText(strings.sharing.membersNone)
+})
+
+/**
+ * Sharing S6: the owner of a folder says who else has it, and each person is one answer.
+ *
+ * Accepting pairs with a machine whose owner may never have met this one, so the card says who introduced
+ * them and what accepting lets them reach before either button is pressed.
+ */
+test('somebody introduced is named with who introduced them, and accepting pairs', async () => {
+  const calls = stub({
+    introductions: [
+      {
+        shareId: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0001',
+        shareName: 'Terrain',
+        deviceId: 'c4e1a9b2d3f405162738495a6b7c8d9ec4e1a9b2d3f405162738495a6b7c8d9e',
+        name: 'Mira’s studio',
+        address: '192.168.1.31:8082',
+        introducedBy: AYSE.deviceId,
+        introducerName: 'Ayşe’s workshop',
+      },
+    ],
+  })
+  renderPage()
+
+  await screen.findByText(strings.sharing.introducedBy('Mira’s studio', 'Terrain', 'Ayşe’s workshop'))
+  expect(screen.getByText(strings.sharing.introductionReaches('Terrain'))).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.introductionAccept }))
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (call) =>
+          call.method === 'POST' &&
+          call.url ===
+            '/api/sharing/introductions/01a0c7e2-4d11-7b20-9a31-7c2e5dab0001/c4e1a9b2d3f405162738495a6b7c8d9ec4e1a9b2d3f405162738495a6b7c8d9e',
+      ),
+    ).toBe(true),
+  )
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({ accept: true })
+})
+
+/** Nobody introduced is not a section saying so: the page says nothing about people it has not been told of. */
+test('with nobody introduced the page says nothing about introductions', async () => {
+  stub()
+  renderPage()
+  await screen.findByText(strings.sharing.people)
+  expect(screen.queryByText(strings.sharing.introductionsTitle)).toBeNull()
 })

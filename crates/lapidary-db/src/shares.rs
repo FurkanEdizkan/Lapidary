@@ -88,6 +88,18 @@ pub struct MemberRow {
     pub added_at: Timestamp,
 }
 
+/// One person a share goes to, as its owner publishes the folder's roster to the others in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterRow {
+    pub device: DeviceId,
+    /// What they call themselves, as their last hello said.
+    pub name: Option<String>,
+    pub address: String,
+    /// Whether the folder's owner lets them fetch its files: it does not ask first, or it asked and they were
+    /// granted. What another holder reads before serving them anything.
+    pub may_fetch: bool,
+}
+
 /// A share as another installation sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfferedShare {
@@ -295,6 +307,51 @@ impl PgShares {
                     address,
                     online,
                     added_at: detail_stamp("share_member.added_at", added_us)?,
+                })
+            })
+            .collect()
+    }
+
+    /// A share's roster, as its owner publishes it to the people it goes to: who else is in the folder, where
+    /// to reach them, and whether its owner lets them fetch its files.
+    ///
+    /// Not the same list as [`PgShares::members`], which is the owner's own page: this one leaves out when
+    /// somebody joined and whether they are online — neither is anybody else's business — and carries the
+    /// ask-first answer instead, which is what another holder needs before it serves them a file.
+    ///
+    /// A share nobody has picked people for publishes nobody, though it reaches everyone paired. Those two are
+    /// the same set and not the same statement: this is the one thing in Lapidary that hands one installation
+    /// another's address, and an owner who never named anybody never said to tell their people about each
+    /// other. Picking is what says it, as it is what moves a folder off "everyone" everywhere else.
+    pub async fn roster(&self, share: ShareId) -> Result<Vec<RosterRow>, DbError> {
+        let rows: Vec<(Vec<u8>, Option<String>, String, bool)> = sqlx::query_as(
+            // `IS TRUE`, because a share that asks first and a person who never asked leave `g.state` null,
+            // and `false OR null` is null — which is not an answer to "may they fetch".
+            "SELECT pe.device_id, pe.name, pe.address, (s.mode = 'open' OR g.state = 'granted') IS TRUE \
+             FROM share s JOIN folder f ON f.id = s.folder_id \
+             JOIN share_member m ON m.share_id = s.id AND m.removed_at IS NULL \
+             JOIN peer pe ON pe.device_id = m.device_id AND pe.removed_at IS NULL \
+             LEFT JOIN share_grant g ON g.share_id = s.id AND g.device_id = pe.device_id \
+             WHERE s.id = $1 AND s.removed_at IS NULL AND f.deleted_at IS NULL \
+             AND s.audience = 'members' \
+             ORDER BY pe.name NULLS LAST, pe.device_id",
+        )
+        .bind(share.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(device, name, address, may_fetch)| {
+                let length = device.len();
+                Ok(RosterRow {
+                    device: <[u8; 32]>::try_from(device)
+                        .map(DeviceId::from_bytes)
+                        .map_err(|_| DbError::CorruptDeviceId {
+                            column: "peer.device_id",
+                            length,
+                        })?,
+                    name,
+                    address,
+                    may_fetch,
                 })
             })
             .collect()

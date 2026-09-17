@@ -3174,6 +3174,38 @@ rule — people who know each other only, no tracker, no public directory. Plan:
 - **Left for later:** taking somebody off a folder does not touch what they already pulled — that is S10's subject,
   and their copies stay by decision.
 
+**The folder's people know each other** (stage S6).
+- **Table and columns** (`0043`): `peer_share_member`, a mirrored folder's roster as its owner published it —
+  device, name, address, whether its owner lets them fetch — with no foreign key to `peer`, since the whole point
+  of a row there is a machine nobody has paired with yet. `peer.introduced_by` records who published the roster
+  somebody arrived on, and `peer.features` what their last hello said they answer.
+- **The protocol number does not move.** `Hello` gains `features` with `#[serde(default)]`: an installation from
+  before rosters sends none and is never asked for one — not once, and not once a round for ever — and reads this
+  hello with a field it ignores. Bumping `PROTOCOL` would instead make every older installation mark this one
+  permanently unreachable, which `sync.rs`'s equality check is the reason for.
+- **`GET /peer/v1/shares/{share}/members`** answers the folder's roster behind the same question the catalogue
+  asks, so somebody the folder does not reach is told it is not shared with them and learns nothing about who is
+  in it. It is not the owner's own member list: it leaves out when somebody joined and whether they are online,
+  and carries `mayFetch` instead — the ask-first answer, which is what another holder needs before serving a file.
+- **Mirrored beside the catalogue**, for every folder rather than only the ones whose digest moved: who a folder
+  goes to changes without a part changing. Somebody the roster stops naming leaves it.
+- **Answered once, on the sharing page.** `GET /api/sharing/introductions` and
+  `POST /api/sharing/introductions/{share}/{device}`. Accepting is the pairing pasting an id by hand makes, at
+  the address the folder's owner published — never one the page could have been told — with the introducer kept.
+  Turning it down keeps the answer rather than offering it again next round. The card says who introduced them
+  and that accepting lets them reach what you share with them and nothing else.
+- **A folder nobody has picked people for publishes nobody**, though it reaches everyone paired. Those are the
+  same set of machines and not the same statement: a roster is the one thing in Lapidary that hands one
+  installation another's name and address, and an owner who never named anybody never said to tell their people
+  about each other. Picking is what says it, as it is what moves a folder off "everyone" everywhere else.
+- **Decided without the owner:** an introduction is one answer a person a folder, since accepting is about the
+  folder they were introduced in; somebody already paired with, and this installation itself, are never offered;
+  an introduction already answered is refused both ways (`noIntroduction`), so a stale page cannot decline
+  somebody it just paired with; and somebody removed later is offered again, because removing is a person's own
+  act and re-offering is what the roster still saying their name means.
+- **Left for later:** `peer.introduced_by` is written and not yet read — S10's People list is what says where
+  somebody came from. A roster is read from its owner only; reading one from another member is S7's relay.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   addPeer,
+  answerIntroduction,
   decideGrant,
+  fetchIntroductions,
   fetchPeerShares,
   fetchPeers,
   fetchPulls,
@@ -21,7 +23,7 @@ import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import { Dialog } from '../components/Dialog'
 import { breakable } from '../components/Card'
-import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
+import type { Introduction, Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -54,6 +56,7 @@ export function SharingPage() {
         <ThisInstallation />
         <OwnShares />
         <Requests />
+        <Introductions />
         <Pulls />
         <People />
       </section>
@@ -489,6 +492,102 @@ function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () =>
 }
 
 /** Who asked to pull a share that asks first, with this installation's answer and the way to give or change it. */
+/**
+ * Who the owners of the folders here have introduced (S6).
+ *
+ * Shown only when there is somebody to answer about: a section saying nobody has introduced anybody is a
+ * section about nothing. Each person is one answer, and the card says what accepting lets them reach, because
+ * accepting pairs with a machine whose owner this person may never have met.
+ */
+function Introductions() {
+  const queryClient = useQueryClient()
+  const introductions = useQuery({
+    queryKey: ['sharing', 'introductions'],
+    queryFn: fetchIntroductions,
+    refetchInterval: REFRESH_MS,
+  })
+  if (!introductions.isSuccess || introductions.data.length === 0) return null
+  return (
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.introductionsTitle}</h3>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+        {strings.sharing.introductionsNote}
+      </p>
+      <ul role="list" className="mt-3 flex flex-col gap-2">
+        {introductions.data.map((introduction) => (
+          <IntroductionRow
+            key={`${introduction.shareId} ${introduction.deviceId}`}
+            introduction={introduction}
+            onAnswered={() =>
+              queryClient.invalidateQueries({ queryKey: ['sharing'] }).then(() => undefined)
+            }
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function IntroductionRow({
+  introduction,
+  onAnswered,
+}: {
+  introduction: Introduction
+  onAnswered: () => Promise<void>
+}) {
+  const [note, setNote] = useState<string | null>(null)
+  const answer = useMutation({
+    mutationFn: (accept: boolean) =>
+      answerIntroduction(introduction.shareId, introduction.deviceId, accept),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      void onAnswered()
+    },
+    onError: () => setNote(strings.sharing.introductionFailed),
+  })
+  const who = introduction.name ?? introduction.deviceId
+  const introducer = introduction.introducerName ?? introduction.introducedBy
+  return (
+    <li className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="grow">
+          <span className="text-sm">
+            {strings.sharing.introducedBy(who, introduction.shareName, introducer)}
+          </span>
+          <span className="ml-2 text-xs text-[var(--color-muted)]">{introduction.address}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => answer.mutate(true)}
+          disabled={answer.isPending}
+          className={BUTTON}
+        >
+          {answer.isPending ? strings.sharing.introductionAnswering : strings.sharing.introductionAccept}
+        </button>
+        <button
+          type="button"
+          onClick={() => answer.mutate(false)}
+          disabled={answer.isPending}
+          className={`${BUTTON} text-[var(--color-muted)]`}
+        >
+          {strings.sharing.introductionDecline}
+        </button>
+      </div>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+        {strings.sharing.introductionReaches(introduction.shareName)}
+      </p>
+      {note === null ? null : (
+        <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </li>
+  )
+}
+
 function Requests() {
   const queryClient = useQueryClient()
   const requests = useQuery({

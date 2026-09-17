@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{DeviceId, PartId, ShareId};
-use lapidary_db::{MirroredPartIn, OfferedRemote, PgMirror, PgSharing};
+use lapidary_db::{MirroredPartIn, OfferedRemote, PgMirror, PgSharing, RemoteMember};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -242,7 +242,7 @@ async fn mirrored_terrain(pool: &sqlx::PgPool) -> String {
         .await
         .expect("pairs");
     PgSharing(pool.clone())
-        .seen(ayse(), Some("Ayşe's workshop"))
+        .seen(ayse(), Some("Ayşe's workshop"), &[])
         .await
         .expect("has said hello");
     let mirror = PgMirror(pool.clone());
@@ -570,4 +570,66 @@ async fn pulls_are_listed_by_share_name_after_the_mirror_forgets_their_share(poo
             .as_str()
             .is_some_and(|error| error.contains("Terrain"))
     );
+}
+
+/// Sharing S6: the owner of a folder introduces its people, and each one is answered once.
+///
+/// Accepting is pairing — the row pasting an id by hand makes — at the address the folder's owner published,
+/// never one the page could have been told. Turning it down keeps the answer.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_introduction_is_accepted_at_the_address_its_folders_owner_gave(pool: sqlx::PgPool) {
+    let share = mirrored_terrain(&pool).await;
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    PgMirror(pool.clone())
+        .take_roster(
+            ayse(),
+            ShareId::from_uuid(
+                "01a07c41-5d22-7b03-9014-7e2f6dab0001"
+                    .parse()
+                    .expect("uuid"),
+            ),
+            &[RemoteMember {
+                device: mira,
+                name: Some("Mira’s studio"),
+                address: "192.168.1.31:8082",
+                may_fetch: true,
+            }],
+        )
+        .await
+        .expect("takes Terrain's roster");
+
+    let (status, offered) = send(&pool, "GET", "/api/sharing/introductions", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(offered.as_array().map(Vec::len), Some(1), "{offered}");
+    assert_eq!(offered[0]["deviceId"], mira.to_string());
+    assert_eq!(offered[0]["name"], "Mira’s studio");
+    assert_eq!(offered[0]["shareName"], "Terrain");
+    assert_eq!(offered[0]["introducedBy"], ayse().to_string());
+    assert_eq!(offered[0]["introducerName"], "Ayşe's workshop");
+    assert_eq!(offered[0]["shareId"], share);
+
+    let answer = format!("/api/sharing/introductions/{share}/{mira}");
+    let (status, paired) = send(&pool, "POST", &answer, Some(json!({ "accept": true }))).await;
+    assert_eq!(status, StatusCode::OK, "{paired}");
+    assert_eq!(paired["address"], "192.168.1.31:8082");
+
+    let (_, people) = send(&pool, "GET", "/api/sharing/peers", None).await;
+    assert_eq!(people.as_array().map(Vec::len), Some(2), "{people}");
+    let (_, offered) = send(&pool, "GET", "/api/sharing/introductions", None).await;
+    assert_eq!(offered, json!([]), "somebody paired with is nobody to meet");
+
+    // Answered twice is answered once: there is nothing left there to accept or decline.
+    let (status, refusal) = send(&pool, "POST", &answer, Some(json!({ "accept": false }))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["reason"], "noIntroduction");
+
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/introductions/{share}/not-a-device-id"),
+        Some(json!({ "accept": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refusal["reason"], "badDeviceId");
 }

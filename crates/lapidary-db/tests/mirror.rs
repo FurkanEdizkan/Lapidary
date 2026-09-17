@@ -1,7 +1,7 @@
 //! Sharing S2b: other installations' shares, mirrored here so a shared library browses while they are asleep.
 
 use lapidary_core::{DeviceId, PartId, ShareId};
-use lapidary_db::{MirroredPartIn, OfferedRemote, PgMirror, PgSharing};
+use lapidary_db::{MirroredPartIn, OfferedRemote, PgMirror, PgSharing, RemoteMember};
 
 /// Ayşe's workshop PC, on the same LAN.
 fn ayse() -> DeviceId {
@@ -271,5 +271,100 @@ async fn nothing_mirrored_from_somebody_removed_is_shown(pool: sqlx::PgPool) {
     assert_eq!(
         mirror.thumbnail(id, "cliff-face.stl").await.expect("reads"),
         None
+    );
+}
+
+/// Mira's studio PC, whom Ayşe knows and this installation does not — yet.
+fn mira() -> DeviceId {
+    DeviceId::from_public_key(b"ed25519 public key of mira's studio pc")
+}
+
+/// Sharing S6: the roster of a mirrored folder, and the introductions it offers.
+///
+/// An introduction is offered once a person a folder goes to is somebody this installation has no row for.
+/// Answering it is what stops it being offered: accepted, they are paired, which is the same row pairing by
+/// hand makes; declined, the answer is kept, so the next round does not ask again.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_mirrored_folders_roster_offers_the_people_in_it_once_each(pool: sqlx::PgPool) {
+    let mirror = paired(&pool).await;
+    let sharing = PgSharing(pool.clone());
+    let here = DeviceId::from_public_key(b"ed25519 public key of this installation");
+    sharing.claim_identity(here).await.expect("an identity");
+    mirror
+        .take_offer(ayse(), &[offer(terrain(), "Terrain", 402, "402-1")])
+        .await
+        .expect("takes the offer");
+
+    let roster = [
+        RemoteMember {
+            device: mira(),
+            name: Some("Mira’s studio"),
+            address: "192.168.1.31:8082",
+            may_fetch: true,
+        },
+        RemoteMember {
+            device: here,
+            name: None,
+            address: "192.168.1.12:8082",
+            may_fetch: true,
+        },
+    ];
+    assert!(
+        mirror
+            .take_roster(ayse(), terrain(), &roster)
+            .await
+            .expect("takes the roster")
+    );
+
+    let offered = mirror.introductions().await.expect("lists");
+    assert_eq!(
+        offered
+            .iter()
+            .map(|row| (row.device, row.name.as_deref(), row.share_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(mira(), Some("Mira’s studio"), "Terrain")],
+        "this installation is on the roster and is never somebody to meet; Ayşe is already paired with"
+    );
+    assert_eq!(offered[0].introducer, ayse());
+
+    // Accepting is the ordinary pairing, with who introduced them kept.
+    let (address, introducer) = mirror
+        .introduction(offered[0].share, mira())
+        .await
+        .expect("reads")
+        .expect("one to answer");
+    assert_eq!(address, "192.168.1.31:8082");
+    let row = sharing
+        .accept_introduction(mira(), &address, introducer)
+        .await
+        .expect("pairs");
+    assert_eq!(row.address, "192.168.1.31:8082");
+    assert!(
+        mirror.introductions().await.expect("lists").is_empty(),
+        "somebody paired with is not somebody to meet"
+    );
+
+    // Removed again, they are offered again — and declining keeps them from being offered a third time.
+    assert!(sharing.remove_peer(mira()).await.expect("removes"));
+    assert_eq!(mirror.introductions().await.expect("lists").len(), 1);
+    assert!(
+        mirror
+            .decline(offered[0].share, mira())
+            .await
+            .expect("declines")
+    );
+    assert!(mirror.introductions().await.expect("lists").is_empty());
+
+    // Taken off the folder, the row goes with the roster: there is nobody to introduce any more.
+    mirror
+        .take_roster(ayse(), terrain(), &roster[1..])
+        .await
+        .expect("takes the roster again");
+    assert!(
+        !mirror
+            .decline(offered[0].share, mira())
+            .await
+            .expect("answers"),
+        "the roster no longer names them"
     );
 }
