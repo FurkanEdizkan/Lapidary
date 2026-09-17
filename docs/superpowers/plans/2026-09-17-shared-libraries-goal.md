@@ -1,5 +1,18 @@
 # Goal 7: shared libraries, finished — share, browse, pull, ask first
 
+> **Status: done, 2026-09-17.** Every stage below is merged `--no-ff` into `main` with `cargo xtask verify slice` green
+> (14 gates) on the merged tree, mutation-checked, and its exit measured on two stacks and recorded in `docs/ROADMAP.md`
+> § "Shared libraries (2026-09-16)", which ends with "Goal 7 closed". Nothing was pushed.
+>
+> | Stage | Merge | Mutations caught | Measured exit |
+> |---|---|---|---|
+> | 1. Listener hardening | `36efd9a` | 4 of 4 | a silent TCP connection no longer delays pairing (36/34/35 s before, 27/15/13 s after) |
+> | 2. S2a, share a category | `26967ab` | 18 of 18 | exercised end to end by S2b's measurement |
+> | 3. S2b, browse | `fac28c8` | 14 of 14 | 998 parts mirrored with thumbnails 19 s after sharing; pairing to online 15 s |
+> | 4. S3, pull | `2f145fd` | 21 of 21 | 1,077,177,442 bytes moved against a prediction of 1,077,177,442 across a `kill -9` at half way; a re-pull after one revision moved that file alone |
+> | 5. S4, ask first and take it back | `2ef9f1e` | 24 of 24 | a pull waited with nothing moved until granted; a pause at half way resumed with nothing twice; a share stopped mid-pull failed it in 1 s, naming it, and pulled parts stayed |
+> | 6. Close | `2ef9f1e`, `b800858` | — | `DATA.md` §7, `FEATURES.md` §10, `ARCHITECTURE.md`, `PRODUCT.md`, the jaunty plan's S2–S4 marked done |
+
 Written 2026-09-17. **This file is the goal's source of truth.** After any context summary, re-read it
 together with `docs/ROADMAP.md` § "Shared libraries (2026-09-16)", whose records are the progress ledger,
 and the approved design in `/home/jbo/.claude/plans/jaunty-churning-aho.md`.
@@ -130,7 +143,7 @@ Line numbers are as of `f3afed6`.
 
 ## Stages
 
-### 0. Preflight (no branch)
+### 0. Preflight (no branch) — done
 
 - `main` is at `f3afed6` or later with a clean tree (`.codex/` is not ours); `lapidary-test-db` is up;
   the disk guard passes; `touch xtask/src/*.rs`.
@@ -140,7 +153,7 @@ Line numbers are as of `f3afed6`.
   loose STLs, in their category directories) and `target/sharing-check/corpus-1g/` (about 1 GB of models in
   one category, around 80–200 parts). Record their counts and total bytes.
 
-### 1. The listener, hardened: `feat/peer-listener-hardening`
+### 1. The listener, hardened: `feat/peer-listener-hardening` — done, merged `36efd9a`
 
 What S1a recorded for S4, done first: it depends on nothing below, it is already written into ROADMAP as
 debt, and S4's measurements (and S3's kill-at-50%) should run on the listener that ships.
@@ -154,7 +167,7 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
 - **Exit:** gates green, merged. Measure on two stacks that a silent TCP connection to A's peer port leaves B's
   pairing-to-online time unchanged.
 
-### 2. S2a — Share a category: `feat/sharing-shares`
+### 2. S2a — Share a category: `feat/sharing-shares` — done, merged `26967ab`
 
 - **Migration `0038`:** `share (id, library_id, folder_id, created_at, removed_at)`. `folder_id` null means
   the whole library is not offered: a share is always a category (owner's decision); refuse a null.
@@ -181,7 +194,7 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
   thumbnail route; a removed share and a removed person are refused; a part added under the category after
   sharing appears; the licence counts. Mutation-check the subtree, the guard and the counts.
 
-### 3. S2b — Browse what somebody shares: `feat/sharing-browse`
+### 3. S2b — Browse what somebody shares: `feat/sharing-browse` — done, merged `fac28c8`
 
 - **Migration `0039`:** `peer_share (id, device_id, remote_id, name, part_count, digest, synced_at)` and
   `peer_share_part (peer_share_id, source_path, name, part_number, tags, licences, blake3, size_bytes,
@@ -207,7 +220,7 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
 - **Tests:** the mirror follows a changed digest and leaves an unchanged share alone; a part gone from the
   share leaves the mirror; `NOTIFY` starts a round. Mutation-check the digest comparison and the deletion.
 
-### 4. S3 — Pull it: `feat/sharing-pull`
+### 4. S3 — Pull it: `feat/sharing-pull` — done, merged `2f145fd`
 
 - **Sharer:** `GET /peer/v1/shares/{id}/blob/{blake3}` with `Range: bytes=N-`. `access` first, then
   **reachability**: the hash must be a revision's file of a live part inside the share's subtree — content
@@ -239,7 +252,7 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
   bad BLAKE3 is refused and the staged file dropped; categories round-trip through a bundle; a re-pull
   duplicates nothing. Mutation-check reachability, the resume offset, the hash check and category placement.
 
-### 5. S4 — Ask me first, and taking it back: `feat/sharing-consent`
+### 5. S4 — Ask me first, and taking it back: `feat/sharing-consent` — done, merged `2ef9f1e`
 
 - **Migration `0041`:** `share.mode` (`open` default, `ask`), and `share_grant (share_id, device_id, state,
   decided_at, decided_by)` with `decided_by` nullable — the seam Phase 8 fills.
@@ -258,14 +271,14 @@ debt, and S4's measurements (and S3's kill-at-50%) should run on the listener th
 - **Tests:** each of those, plus the limits. Mutation-check the grant states, the per-request guard and the
   limits.
 
-### 6. Close (on the last stage's branch, before its merge)
+### 6. Close (on the last stage's branch, before its merge) — done, in `2ef9f1e` and `b800858`
 
 - `DATA.md` §7 for every new table; `FEATURES.md` §10 rows marked done; `ARCHITECTURE.md` for the staging
   volume and the peer's source handles; the jaunty plan's S2–S4 marked done with the merge hashes.
 - One ROADMAP record per stage, as S1a and S1b have: what was built, bugs the tests found, mutation counts,
   the measured exit, decisions taken without the owner, what is left.
 
-## Done when
+## Done when — met
 
 The listener hardening, S2a, S2b, S3 and S4 are each merged `--no-ff` into `main` with `cargo xtask verify
 slice` green on the merged tree, mutation-checked, and their exits measured on two stacks and recorded in
