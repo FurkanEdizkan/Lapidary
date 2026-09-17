@@ -367,6 +367,7 @@ const MOTOR_MOUNT: PartCard = {
   storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
   createdAt: "2026-08-14T09:12:44Z",
   updatedAt: "2026-08-14T09:12:44Z",
+  removedAt: null,
 };
 
 const HEX_NUT: PartCard = {
@@ -389,6 +390,7 @@ const HEX_NUT: PartCard = {
   storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
   createdAt: "2026-08-14T09:12:51Z",
   updatedAt: "2026-08-14T09:12:51Z",
+  removedAt: null,
 };
 
 /**
@@ -418,6 +420,7 @@ const SHAFT_COUPLER: PartCard = {
   storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
   createdAt: "2026-08-14T09:13:02Z",
   updatedAt: "2026-08-14T09:13:02Z",
+  removedAt: null,
 };
 
 const page = (parts: PartCard[]): PartsPage => ({ parts, next: null });
@@ -2737,6 +2740,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   compressed: true,
   createdAt: "2026-08-30T11:04:19Z",
   updatedAt: "2026-08-30T11:04:19Z",
+  removedAt: null,
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
   storagePath: "libraries/default/Terrain/Rocks/basalt_cliff_face/basalt_cliff_face.stl",
 };
@@ -2760,6 +2764,7 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   compressed: true,
   createdAt: "2026-05-02T08:41:07Z",
   updatedAt: "2026-05-02T08:41:07Z",
+  removedAt: null,
   directory: null,
   storagePath: null,
 };

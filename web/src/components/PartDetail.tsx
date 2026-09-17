@@ -1,6 +1,6 @@
 import { annotationsOf, labelsFor } from '../lib/annotations'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   addPartSource,
   blobUrl,
@@ -823,6 +823,7 @@ export function Detail({
   // The info column's blocks arrive in turn when a part's page opens (`arrive`), once per part.
   const head = useRef<HTMLDivElement>(null)
   const info = useRef<HTMLDivElement>(null)
+  const lower = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     const blocks = [head.current, ...Array.from(info.current?.children ?? [])]
     arrive(blocks.filter((block): block is HTMLElement => block instanceof HTMLElement))
@@ -1010,7 +1011,7 @@ export function Detail({
 
       <Specified part={part} annotated={annotated} onAnnotate={setAnnotated} />
 
-      <Section title={strings.detail.file}>
+      <Section id="part-file" title={strings.detail.file}>
         <Row label={strings.detail.format}>
           {part.sourceFormat === null ? strings.detail.unknown : part.sourceFormat}
         </Row>
@@ -1060,7 +1061,7 @@ export function Detail({
         </Row>
       </Section>
 
-      <Section title={strings.detail.identity}>
+      <Section id="part-identity" title={strings.detail.identity}>
         <Row label={strings.detail.sourcePath}>
           <code className="text-xs">{part.sourcePath}</code>
         </Row>
@@ -1127,10 +1128,66 @@ export function Detail({
         <div>{geometry}</div>
         <div>{about}</div>
       </div>
-      <div className="min-w-0 border-t border-[var(--color-border)] pt-6 lg:col-span-2 lg:columns-2 lg:gap-10 [&>*]:break-inside-avoid">
-        {rest}
+      <div className="min-w-0 border-t border-[var(--color-border)] pt-5 lg:col-span-2">
+        <SectionIndex within={lower} />
+        <div ref={lower} className="mt-5 lg:columns-2 lg:gap-10 [&>*]:break-inside-avoid">
+          {rest}
+        </div>
       </div>
     </article>
+  )
+}
+
+/**
+ * The part page's index of the sections under the studio: a row of links, not tabs, so every
+ * section stays in the page and in a find-in-page.
+ *
+ * Built from the sections that rendered rather than from a list, because three of them render
+ * only for some parts, and two only once their data has arrived: an assembly tree, a file's PMI,
+ * a history of more than one revision. A link to a section that is not there is a link that
+ * does nothing. It watches its zone for sections arriving and leaving, and takes each one's own
+ * heading as its label, so the index cannot name a section differently from the page.
+ */
+function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) {
+  const [links, setLinks] = useState<{ id: string; label: string }[]>([])
+  useEffect(() => {
+    const zone = within.current
+    if (zone === null) return
+    const read = () => {
+      const next = Array.from(zone.querySelectorAll<HTMLElement>(':scope > section[id]')).map((section) => ({
+        id: section.id,
+        // The heading's words; its capitals are CSS, so the link reads in sentence case.
+        label: section.querySelector('h3')?.textContent ?? section.id,
+      }))
+      setLinks((current) =>
+        current.length === next.length && current.every((link, i) => link.id === next[i]?.id && link.label === next[i]?.label)
+          ? current
+          : next,
+      )
+    }
+    read()
+    const observer = new MutationObserver(read)
+    observer.observe(zone, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [within])
+  if (links.length < 2) return null
+  return (
+    <nav aria-label={strings.detail.sections}>
+      <ul role="list" className="flex flex-wrap gap-x-5 gap-y-1">
+        {links.map((link) => (
+          <li key={link.id}>
+            <a
+              href={`#${link.id}`}
+              // Underlined, in sentence case: the sections below open on uppercase labels, and links
+              // styled like them read as more labels rather than as a way to jump.
+              className="ease-mechanical text-sm text-[var(--color-dim)] underline decoration-[var(--color-edge)] underline-offset-4 duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+            >
+              {link.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
   )
 }
 
@@ -1188,7 +1245,7 @@ function Specified({
   )
   if (pmi.isError) {
     return (
-      <section className="mb-6">
+      <section id="part-specified" className="mb-6 scroll-mt-20">
         {heading}
         <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
           {strings.pmi.failed}
@@ -1220,7 +1277,7 @@ function Specified({
     undrawn: undrawn.has(index) ? strings.pmi.notDrawn(annotation.faces.every((face) => face.face === null)) : null,
   }))
   return (
-    <section className="mb-6">
+    <section id="part-specified" className="mb-6 scroll-mt-20">
       {heading}
       <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]">
         {strings.pmi.note}
@@ -1310,7 +1367,7 @@ function Assembly({
   )
   if (tree.isError) {
     return (
-      <section className="mb-6">
+      <section id="part-assembly" className="mb-6 scroll-mt-20">
         {heading}
         <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
           {strings.detail.assemblyFailed}
@@ -1324,7 +1381,7 @@ function Assembly({
   const visibility = drawn === parts ? { hidden, parts, onHide } : null
   const firsts = firstLeaves(roots)
   return (
-    <section className="mb-6">
+    <section id="part-assembly" className="mb-6 scroll-mt-20">
       {heading}
       <p className="mb-2 flex items-center gap-2 text-xs text-[var(--color-muted)]">
         {strings.detail.assemblyCounts(parts, prototypes)}
@@ -1464,7 +1521,7 @@ function History({ part, onGhost }: { part: PartId; onGhost: (hash: BlobHash | n
   const all = revisions.data ?? []
   if (all.length < 2) return null
   return (
-    <section className="mb-6">
+    <section id="part-history" className="mb-6 scroll-mt-20">
       <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
         {strings.detail.history}
       </h3>
@@ -1740,16 +1797,19 @@ function Compare({
 }
 
 function Section({
+  id,
   title,
   note,
   children,
 }: {
+  /** The anchor the page's section index links to. */
+  id?: string
   title: string
   note?: ReactNode
   children: ReactNode
 }) {
   return (
-    <section className="mb-6">
+    <section id={id} className="mb-6 scroll-mt-20">
       <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
         {title}
       </h3>

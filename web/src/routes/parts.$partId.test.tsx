@@ -737,6 +737,26 @@ test('an assembly shows its tree, each branch a disclosure the keyboard can open
   fireEvent(branch, new Event('toggle'))
   const screw = await within(section).findByText('m6-screw-lp-9005-00')
   expect(screw.closest('details')).toBe(branch)
+
+  // The tree arrived after the page did, and the section index took it in when it rendered.
+  const index = screen.getByRole('navigation', { name: strings.detail.sections })
+  expect(within(index).getByRole('link', { name: strings.detail.assembly }).getAttribute('href')).toBe('#part-assembly')
+})
+
+/**
+ * The index under the studio links only sections that rendered, each to its own heading's words:
+ * a mesh with one revision and no PMI has a file and an identity and nothing else to link.
+ */
+test('the section index links the sections that are on the page, and only those', async () => {
+  stub(PART)
+  renderPage()
+  const index = await screen.findByRole('navigation', { name: strings.detail.sections })
+  const links = within(index).getAllByRole('link')
+  expect(links.map((link) => link.textContent)).toEqual([strings.detail.file, strings.detail.identity])
+  for (const link of links) {
+    const target = document.getElementById((link.getAttribute('href') ?? '').slice(1))
+    expect(target?.querySelector('h3')?.textContent).toBe(link.textContent)
+  }
 })
 
 test('a mesh has no assembly section and never asks for one', async () => {

@@ -3087,14 +3087,25 @@ ledger.
 9. **Verification and docs** (this section, the finish review's fix round, DESIGN.md, and the anime.js rule in
    CLAUDE.md and AGENTS.md).
 
-**Left out of the plan, and why:**
-- **An anchor bar on the part page.** Assembly, PMI and history can render nothing, and two columns keep every section
-  in view without links to a section that is not there.
-- **New studio lights for the part view.** Its marks, ghost and cap are sRGB colours a linear output would shift. The
-  turntable, which must match the thumbnail, has the raster's own shading instead.
-- **A removal date on removed rows.** No removal time reaches the page, and `updatedAt` is not one.
-- **The finish review's call to round callout readings.** Readings are formatted to the thousandth by the Phase 3 exit,
-  and ≈ marks them approximate in the same line.
+**Left out at first, then done** (the owner asked for all three on 2026-09-17; branch `feat/ui-leftovers`):
+- **A removal date on removed rows** (`d4ea8ec`). The time had to reach the page first: `PartSummary` and `PartCard`
+  carry `removed_at` from `part.deleted_at`, `None` for a live part and cleared by a restore. That was the grid select's
+  seventeenth column, past sqlx's sixteen-tuple `FromRow` ceiling, so `GridRow` became a named struct with every column
+  aliased, as its own ponytail note said to. Rows read "Removed Sep 10, 2026". `updatedAt` was never that time: a rename
+  moves it too, which the new `lapidary-db` test pins.
+- **An anchor bar on the part page** (`42b7f75`). The worry was links to sections that render nothing (assembly, PMI
+  and history do for some parts, two only once their data arrives). The index is built from the sections that rendered,
+  watched with a `MutationObserver`, and labelled with each section's own heading. It is hidden when there are fewer
+  than two.
+- **Studio lights for the part view** (this branch's third commit). The earlier worry applied only to the raster shading
+  with its linear output; lights under sRGB output leave the unlit marks, ghost and cap alone. A hemisphere fill, the
+  key along `LIGHT_DIR` and a faint rim from behind now light the view. The top face samples (173, 178, 188) against
+  the thumbnail's (169, 172, 181), with the sides darker than before. The poster fades out over the first frame instead
+  of cutting. Opens, 3 rounds over the dev stack: first 385 ms, round-0 median 35.5 ms, later median 16.7 ms, and no
+  shader linked during any open.
+
+**Not taken:** the finish review's call to round callout readings. Readings are formatted to the thousandth by the
+Phase 3 exit, and ≈ marks them approximate in the same line.
 
 **Measured** (2026-09-17, `vite preview` of the build over the dev stack from binaries: six example parts, one empty
 library, one part soft-removed for the removed page's captures and restored after; headless Chrome with SwiftShader;

@@ -48,6 +48,7 @@ const MOUNTING: PartCard = {
   compressed: true,
   createdAt: "2026-09-06T10:00:00Z",
   updatedAt: "2026-09-06T10:00:00Z",
+  removedAt: "2026-09-10T08:30:00Z",
   // Removed, and still where it was: a soft delete moves no file, so the removed list
   // shows the same directory the grid did.
   directory: "libraries/default/mounting/lp-1042-03",
@@ -59,6 +60,7 @@ const SPARES: PartCard = {
   id: "01931b6e-0000-7000-8000-0000000a0002",
   revision: "01931b6e-0000-7000-8000-0000000b0002",
   sourcePath: "spares/LP-1042-03.stl",
+  removedAt: "2026-09-14T17:05:00Z",
 };
 
 beforeEach(() => {
@@ -172,6 +174,26 @@ test("confirming purge calls the route and reports what is kept, never what is f
   // the day it runs, and the bytes it names are waiting, not gone.
   const note = await screen.findByText(/kept for 30 days/);
   expect(note.textContent).not.toMatch(/freed/i);
+});
+
+/** Each row says when its part was removed, so the 30-day countdown the lead describes has a start. */
+test("each removed part says when it was removed", async () => {
+  stub([MOUNTING, SPARES]);
+  renderPage();
+
+  const mounting = await rowFor("mounting/LP-1042-03.stl");
+  const spares = await rowFor("spares/LP-1042-03.stl");
+  expect(within(mounting).getByText("Removed Sep 10, 2026").getAttribute("datetime")).toBe("2026-09-10T08:30:00Z");
+  expect(within(spares).getByText("Removed Sep 14, 2026")).toBeDefined();
+});
+
+/** A server from before `removedAt` sends no such field; the row says nothing rather than "Invalid Date". */
+test("a row from a server that sends no removal time shows no date", async () => {
+  const { removedAt: _, ...older } = MOUNTING;
+  stub([older as unknown as PartCard]);
+  renderPage();
+  const row = await rowFor("mounting/LP-1042-03.stl");
+  expect(within(row).queryByText(/^Removed /)).toBeNull();
 });
 
 test("restore calls the route for the row it was clicked on", async () => {

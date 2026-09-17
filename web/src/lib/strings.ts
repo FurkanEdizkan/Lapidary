@@ -352,6 +352,8 @@ export const strings = {
   detail: {
     /** The ⋯ button on a part's page: Render, Move, the storage path and Remove. */
     more: 'More actions',
+    /** The part page's index of the sections under the studio. */
+    sections: 'On this page',
     loading: 'Loading this part…',
     /**
      * Both a 404 and a network failure land here. They are one message because the
@@ -549,6 +551,12 @@ export const strings = {
      * stated as a deadline rather than a promise of recovery — there is no restore button
      * after this, only a hash and an operator.
      */
+    /**
+     * When a removed part was removed: purge starts a 30-day countdown the page describes, and
+     * a row that cannot say how long a part has sat here leaves somebody guessing. A date, not a
+     * time, since that is the grain the countdown is counted in.
+     */
+    removedOn: (iso: string) => `Removed ${new Date(iso).toLocaleDateString('en-US', { dateStyle: 'medium' })}`,
     purgeTitle: 'Purge this part?',
     purgeConfirmAction: 'Purge permanently',
     purgeConfirm: (sourcePath: string) =>

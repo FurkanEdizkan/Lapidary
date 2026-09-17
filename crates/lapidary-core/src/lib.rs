@@ -81,6 +81,7 @@ mod tests {
             compressed: Some(true),
             created_at: now,
             updated_at: now,
+            removed_at: None,
         };
         let json = serde_json::to_value(&summary).expect("serialises");
         assert!(json.get("partNumber").is_some(), "expected camelCase keys");

@@ -99,4 +99,9 @@ directory: string | null,
  *
  * `None` alongside `directory`, and for the same reason.
  */
-storagePath: string | null, createdAt: string, updatedAt: string, };
+storagePath: string | null, createdAt: string, updatedAt: string, 
+/**
+ * When the part was removed, `None` for a live one; carried verbatim from
+ * `PartSummary.removed_at`, which says why the removed list needs it.
+ */
+removedAt: string | null, };

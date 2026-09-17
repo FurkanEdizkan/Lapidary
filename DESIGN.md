@@ -518,7 +518,13 @@ shadow) with a Machined Slate dock of measuring and section tools under it; the 
 Headline, the part number in mono Ash, Download standing beside a quiet ⋯ menu; then Geometry
 as label-over-rule with every figure in mono and every mesh-derived one marked approximate.
 A measurement draws a Layout Blue line between its picks and a mono label edged in Layout
-Blue, drawn in with `tween`.
+Blue, drawn in with `tween`. The thumbnail poster fades out over the first frame rather than
+cutting, since the studio is lit differently from the picture.
+
+Under both zones, an "On this page" index: 14px Ash links underlined in Edge, lifting to Quicklime,
+one per section that actually rendered (assembly, PMI, file, identity, history), each labelled
+with its section's own heading, over the sections in two balanced columns. Links, never tabs:
+every section stays in the page.
 
 ### The First-Run Bench
 
@@ -537,8 +543,10 @@ check they opened what they meant to.
 stage and the first-run bench, and nowhere else. Every light and material is defined once in
 `studio.ts`, in two pairs: the turntable and the bench use the raster pair, which matches
 `raster.rs`'s thumbnail shading to the byte, so the crossfade from picture to model is unseen;
-the studio viewer keeps the studio pair, because its marks, ghost and section cap are colours
-chosen in sRGB and a linear output would shift them.
+the studio viewer uses the studio trio (a cool-neutral hemisphere fill over a bench-coloured
+ground, the key along the thumbnail's light direction, a faint rim from behind) under sRGB
+output, because it is turned and a front-lit part goes flat, and because its marks, ghost and
+section cap are unlit colours chosen in sRGB that a linear output would shift.
 
 ## Do's and Don'ts
 

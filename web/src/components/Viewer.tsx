@@ -290,6 +290,12 @@ export default function Viewer({
   const view = useRef<View | null>(null)
   const pressed = useRef<{ x: number; y: number } | null>(null)
   const [painted, setPainted] = useState(false)
+  const [posterGone, setPosterGone] = useState(false)
+  useEffect(() => {
+    if (!painted) return
+    const timer = setTimeout(() => setPosterGone(true), 220)
+    return () => clearTimeout(timer)
+  }, [painted])
   const [failed, setFailed] = useState(false)
   const [shown, setShown] = useState<BlobHash | null>(null)
   const [batch, setBatch] = useState<BatchId | null>(null)
@@ -538,7 +544,14 @@ export default function Viewer({
             }
           }}
         />
-        {painted && !failed ? null : <div className="absolute inset-0">{poster}</div>}
+        {/*
+          The poster stays until the canvas has faded in under it: it goes to opacity 0 on the first
+          frame, over the stylesheet's own opacity transition, and leaves once that has run. The view
+          is lit as a studio and the poster as the thumbnail, so a cut between them would jump.
+        */}
+        {painted && posterGone && !failed ? null : (
+          <div className={painted && !failed ? 'absolute inset-0 opacity-0' : 'absolute inset-0'}>{poster}</div>
+        )}
         {failed ? (
           <p className="absolute inset-x-2 bottom-2 text-xs text-[var(--color-muted)]">
             {strings.viewer.failed}

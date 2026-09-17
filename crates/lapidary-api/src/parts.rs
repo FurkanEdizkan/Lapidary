@@ -136,6 +136,9 @@ pub struct PartCard {
     pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// When the part was removed, `None` for a live one; carried verbatim from
+    /// `PartSummary.removed_at`, which says why the removed list needs it.
+    pub removed_at: Option<Timestamp>,
 }
 
 /// A keyset page of the grid.
@@ -889,5 +892,6 @@ fn to_card(row: PartRow) -> PartCard {
         storage_path: row.storage_path,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
+        removed_at: summary.removed_at,
     }
 }
