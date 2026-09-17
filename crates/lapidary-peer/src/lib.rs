@@ -60,9 +60,14 @@ pub enum PeerError {
     KeyGeneration { detail: String },
 
     #[error(
-        "Could not read the identity key at {path}: {detail}. If it is gone, removing what is left there makes a new one — but this installation's device id changes with it, and everyone sharing with it has to add the new id."
+        "Could not read the identity key at {path}: {detail}. First check that the directory and the key belong to the user the peer role runs as: in the container image that is `lapidary` (uid 10001). Only if the key itself is gone does removing what is left there make a new one — and this installation's device id changes with it, so everyone sharing with it has to add the new id."
     )]
     KeyUnreadable { path: String, detail: String },
+
+    #[error(
+        "Could not write this installation's identity key into {dir}: {detail}. No key was there to lose. The directory has to be writable by the user the peer role runs as: in the container image that is `lapidary` (uid 10001), and a named volume keeps the owner it was created with, so one created by an image that did not make this directory is owned by root. Give it to that user, then start the peer role again."
+    )]
+    KeyUnwritable { dir: String, detail: String },
 
     #[error("Could not set up the peer connection: {detail}.")]
     Tls { detail: String },
@@ -109,8 +114,12 @@ impl PeerIdentity {
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 let identity = Self::generate()?;
-                std::fs::create_dir_all(dir).map_err(|err| unreadable(err.to_string()))?;
-                write_private(&path, &identity.pkcs8).map_err(|err| unreadable(err.to_string()))?;
+                let unwritable = |err: std::io::Error| PeerError::KeyUnwritable {
+                    dir: dir.display().to_string(),
+                    detail: err.to_string(),
+                };
+                std::fs::create_dir_all(dir).map_err(unwritable)?;
+                write_private(&path, &identity.pkcs8).map_err(unwritable)?;
                 Ok(identity)
             }
             Err(err) => Err(unreadable(err.to_string())),
@@ -651,6 +660,34 @@ impl axum::serve::Listener for PeerListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory the peer role cannot write, such as a named volume that came up owned by root, is not a key that went
+    /// missing: nothing was there to lose, and the answer is the directory's ownership, never removing anything.
+    #[test]
+    fn a_directory_it_cannot_write_is_named_as_such_and_not_as_a_lost_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
+            .expect("read-only");
+        if std::fs::write(dir.path().join("probe"), b"").is_ok() {
+            // Running as root, which ignores the mode: nothing to test here.
+            return;
+        }
+        let refused = PeerIdentity::load_or_generate(dir.path())
+            .err()
+            .expect("refused");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("writable again");
+        assert!(
+            matches!(refused, PeerError::KeyUnwritable { .. }),
+            "{refused}"
+        );
+        let message = refused.to_string();
+        assert!(
+            message.contains("writable") && !message.contains("removing"),
+            "{message}"
+        );
+    }
 
     #[test]
     fn an_identity_is_named_by_the_digest_of_what_it_presents() {

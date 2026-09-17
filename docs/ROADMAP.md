@@ -2931,6 +2931,47 @@ upgrade from the code before goal 7, and the Containers workflow. Goal file:
 - **Harness slips, not product bugs:** the bundle export takes the form field `parts` (comma-separated), not JSON, and a
   re-run met its own library name, rightly refused `409 nameTaken`. Both are fixed in the scripts.
 
+**Stage 3: sharing between two compose projects** (`48f77e0`, `69486e2`; projects `lapidary-share-a` and `lapidary-share-b`
+with the sharing overlay and a ports-only override each; `target/docker-check/share/measure-share.sh`,
+`measure-share.log`, the first attempt in `measure-share-first.log`).
+- **A bug no native run could find, fixed.** The overlay mounts the named volumes `lapidary-peer` and
+  `lapidary-peer-staging` over paths the image never created, so both came up owned by root, and each peer container —
+  running as `lapidary`, uid 10001 — exited writing its identity key. Its message read "Could not read the identity key …
+  If it is gone, removing what is left there makes a new one", which is the wrong remedy for a directory it cannot write.
+  - The runtime stage now creates both directories owned by `lapidary` (the key's 0700).
+  - `check-deploy` holds every named volume a `lapidary-server` service mounts to a directory the Containerfile creates
+    owned by `lapidary`; its test over the real deploy files saw both missing first.
+  - A key the peer cannot write has its own error naming the directory's ownership, and an unreadable one says to check
+    ownership before it mentions removing anything; its test saw the old message first.
+  - **Mutation-checked, 6 of 6 caught** (`target/docker-check/mutate-g8-peer-volumes.sh`): counting a bind mount,
+    holding every service, any owner counting, a volumes block that never closes, the real key directory made for root,
+    and the unwritable key read as unreadable. Two YAML fixtures joined `check-strings`' exemptions.
+  - `api`, `peer` and `worker` were rebuilt from the fix in 166 s (OCCT from cache); the three superseded images were
+    removed by id.
+- **Addressing between two projects on one machine:** each peer's override adds `host.docker.internal:host-gateway`, and
+  each pastes the other as `host.docker.internal:<its peer port>`. This is the one-machine harness; installations on a LAN
+  paste each other's address as they are.
+- **Measured, beside goal 7's native runs:**
+
+  | | Containers | Native (goal 7) |
+  |---|---|---|
+  | Both online after pasting | 16 s | 15 s |
+  | A's scan of corpus-1g, 138 parts | 12 s (release images) | 74 s (debug) |
+  | B's mirror after A shared | 3 s | — |
+  | Ask first: B's pull | waiting, 0 bytes staged, 0 requests to A after 20 s | the same |
+  | Fetching after A granted | 10 s | 10 s |
+  | **Moved across a kill at half way** | **583,555,942 staged + 493,621,500 after = 1,077,177,442, the prediction** | the prediction |
+  | Re-pull after one revision on A | 1 file, 4,576,184 bytes, 1 request; 138 parts at 138 paths | the same |
+  | A stops sharing while B's pull is paused | failed 1 s after resuming, naming STL Files; B's 138 parts stay | 1 s |
+  | Peer memory, peak sampled | A 4.75 MiB, B 27.2 MiB, of 512 MiB | — |
+
+  - **The kill was `docker kill` of B's peer container**, and `docker compose start peer` resumed it: the staging volume
+    held 79 files at the kill, the one partly fetched resumed with `skipped_bytes=5898240`, and 60 more requests brought the
+    rest. Staging was empty after the import.
+  - Parts landed under `Shared/Furkan’s workbench (1YV8Z)/` with their three licences, all 138 named with their sharer.
+  - **Down and up, both projects:** each kept its device id (the `lapidary-peer` volume) and its pairing; both online again
+    9 s after `up`, and B's 144 parts (6 examples, 138 pulled) there.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
