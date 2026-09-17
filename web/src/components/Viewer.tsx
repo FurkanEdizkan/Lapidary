@@ -248,6 +248,7 @@ export default function Viewer({
   onParts,
   ghost = null,
   annotated = false,
+  stage = false,
 }: {
   part: PartDetail
   poster: ReactNode
@@ -257,6 +258,8 @@ export default function Viewer({
   ghost?: BlobHash | null
   /** Whether the file's PMI is drawn beside the faces it names. */
   annotated?: boolean
+  /** Fill the parent on the lamp's ground, as the quick look's stage does, rather than a 22rem square. */
+  stage?: boolean
 }) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<View | null>(null)
@@ -474,8 +477,14 @@ export default function Viewer({
   }
 
   return (
-    <div className="w-full max-w-[22rem]">
-      <div className="relative aspect-square w-full overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+    <div className={stage ? 'flex h-full min-h-0 w-full flex-col' : 'w-full max-w-[22rem]'}>
+      <div
+        className={
+          stage
+            ? 'stage-lamp relative min-h-[16rem] w-full flex-1 overflow-hidden rounded-md'
+            : 'relative aspect-square w-full overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'
+        }
+      >
         <div
           ref={host}
           role="img"

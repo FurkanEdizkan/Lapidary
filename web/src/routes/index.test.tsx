@@ -4122,6 +4122,50 @@ test("a part in the URL opens once its card loads, and closing takes it out", as
 });
 
 /**
+ * Space on a card's name puts the part on the stage: a dialog named after it, the arrow keys
+ * stepping to the next card, and Escape handing focus to the card now on screen — not to the one
+ * the stage was opened from, which a person who stepped ten parts along has long left behind.
+ */
+test("Space on a card's name opens the stage, the arrows step, and Escape returns to the card on screen", async () => {
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT, SHAFT_COUPLER])),
+    partDetail: detailByPart(MOTOR_MOUNT, HEX_NUT, SHAFT_COUPLER),
+  });
+  renderIndex();
+  const link = await screen.findByRole("link", { name: MOTOR_MOUNT.name });
+  link.focus();
+  fireEvent.keyDown(link, { key: " " });
+
+  expect(await screen.findByRole("dialog", { name: MOTOR_MOUNT.name })).toBeDefined();
+  expect(screen.getByText(strings.quickLook.position(1, 3))).toBeDefined();
+
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(await screen.findByRole("dialog", { name: HEX_NUT.name })).toBeDefined();
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(await screen.findByRole("dialog", { name: SHAFT_COUPLER.name })).toBeDefined();
+  // The last card: a further step stays put rather than wrapping or closing.
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(screen.getByRole("dialog", { name: SHAFT_COUPLER.name })).toBeDefined();
+  fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+  expect(await screen.findByRole("dialog", { name: HEX_NUT.name })).toBeDefined();
+
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(document.activeElement).toBe(screen.getByRole("link", { name: HEX_NUT.name }));
+});
+
+/** Space on a selection checkbox ticks it, as a checkbox does; it is not a way onto the stage. */
+test("Space on a selection checkbox does not open the stage", async () => {
+  stubFetch({ healthz: ok(HEALTHY), parts: ok(page([MOTOR_MOUNT, HEX_NUT])) });
+  renderIndex();
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  const checkbox = screen.getByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) });
+  fireEvent.keyDown(checkbox, { key: " " });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+/**
  * At 1280px and up the look is a pane beside the grid rather than a dialog over it: the grid
  * stays usable, focus goes to the pane's Close, and Escape hands it back to the card's name.
  */

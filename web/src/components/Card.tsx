@@ -113,6 +113,7 @@ export function Card({
   onOpen,
   onHover,
   spins = false,
+  onLook,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
@@ -126,6 +127,8 @@ export function Card({
   onHover: (part: PartCard) => void
   /** Whether resting on this card turns its part. Off while a quick look is open or parts are being picked. */
   spins?: boolean
+  /** Space on the name: the part on the quick look's stage, from where its render sits. */
+  onLook?: (part: PartCard, from: DOMRect) => void
 }) {
   const nameId = `part-name-${part.id}`
   const well = useRef<HTMLDivElement>(null)
@@ -285,6 +288,14 @@ export function Card({
               title={clampedName}
               onFocus={() => intend(false)}
               onBlur={halt}
+              onKeyDown={(event) => {
+                // Space, which on a link would only scroll the page. Enter still follows the link.
+                if (event.key !== ' ' || onLook === undefined) return
+                event.preventDefault()
+                halt()
+                const render = well.current?.querySelector('img')
+                onLook(part, render == null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
+              }}
               className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
             >
               {breakable(part.name)}

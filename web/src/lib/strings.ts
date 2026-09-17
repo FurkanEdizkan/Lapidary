@@ -1677,6 +1677,10 @@ export const strings = {
      * change something live, and it is a URL that can be shared and bookmarked.
      */
     fullPage: 'Open the full page',
+    /** Where the stage is in the parts on screen: `3 of 40`. */
+    position: (at: number, of: number) => `${at.toLocaleString('en-US')} of ${of.toLocaleString('en-US')}`,
+    /** Under the stage's figures, once: the keys are the fastest way through a library and nothing else says so. */
+    steps: 'Left and right arrows step through the parts.',
     loading: 'Loading…',
     failed:
       'Could not open this part. Check that the api service is running, then try again.',

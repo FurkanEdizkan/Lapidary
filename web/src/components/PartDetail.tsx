@@ -661,19 +661,23 @@ const FRAME =
  * drawn. The thumbnail is the first thing on screen either way, which is what the quick look's
  * flight moves (`flipFrom` finds the image).
  */
-function Preview({
+export function Preview({
   part,
   hidden,
   onParts,
   ghost,
   annotated,
+  stage = false,
 }: {
   part: PartDetailData
   hidden?: ReadonlySet<number>
   onParts?: (parts: number | null) => void
   ghost?: BlobHash | null
   annotated?: boolean
+  /** The quick look's stage: the view fills its parent instead of a 10rem frame. */
+  stage?: boolean
 }) {
+  const frame = stage ? 'stage-lamp relative h-full min-h-[16rem] w-full overflow-hidden rounded-md' : FRAME
   const poster =
     part.thumbnail === null ? null : (
       <img
@@ -683,12 +687,12 @@ function Preview({
       />
     )
   if (part.tessellationL0 === null) {
-    return poster === null ? null : <div className={FRAME}>{poster}</div>
+    return poster === null ? null : <div className={frame}>{poster}</div>
   }
   if (!hasWebGL()) {
     return (
       <figure>
-        {poster === null ? null : <div className={FRAME}>{poster}</div>}
+        {poster === null ? null : <div className={frame}>{poster}</div>}
         <figcaption className="mt-1 max-w-40 text-xs text-[var(--color-muted)]">
           {strings.viewer.noWebGL}
         </figcaption>
@@ -696,7 +700,7 @@ function Preview({
     )
   }
   return (
-    <Suspense fallback={<div className={FRAME}>{poster}</div>}>
+    <Suspense fallback={<div className={frame}>{poster}</div>}>
       {/*
         Keyed by part: the quick look and the part page both hand the same Preview a different
         part without unmounting it, and a view kept across parts keeps the last part's framing,
@@ -711,6 +715,7 @@ function Preview({
         onParts={onParts}
         ghost={ghost}
         annotated={annotated}
+        stage={stage}
       />
     </Suspense>
   )
