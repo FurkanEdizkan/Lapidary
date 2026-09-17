@@ -3324,13 +3324,31 @@ rule — people who know each other only, no tracker, no public directory. Plan:
   roster its owner published, and that roster can only be read from its owner. An owner who takes somebody off
   a folder and then goes offline leaves the other holders serving them until the owner answers again. Bounding
   it wants a staleness window on `peer_share_member.seen_at`, and is not built.
-- **Not done: the containerised run.** The plan asked for two compose projects and a native peer, as goal 8's
-  harness did. Goal 8's Docker permission ended with it, so this goal proves itself in-process instead, on real
-  TLS connections between real peer services with separate databases and stores. What the containers would add
-  is the deployment, not the protocol.
+- **And in containers** (owner asked on 2026-09-18), three compose projects — `lapidary-group-a`, `-b`, `-c`,
+  each with its own database, store, ingest directory and ports — from `deploy/`'s own images rebuilt from this
+  goal's code (db 3 s, web 9 s, api 119 s, peer 4 s, worker 125 s; root 14 → 11 GB free). Harness:
+  `target/docker-check/group/run-group.sh`, log `run-relay.log`:
+  - A scanned three parts into Terrain and shared it with B and C by device id. **B read it in 2 s, C at once**,
+    and each was offered an introduction to the other — "Burak's bench is in Terrain, introduced by Ayşe's
+    workshop" — and accepted.
+  - **B pulled Terrain whole in 4 s**: 3 files, 51,275 bytes; its page then said it could serve 3 of 3.
+  - C's peer was stopped, A added a fourth part, and **B read the change in 10 s**. A's peer was stopped and
+    C's started.
+  - **C read Terrain through B in 2 s** — "as Burak's bench read it, 2026-09-17T23:23:45Z" — four parts, from
+    an installation that does not own the folder.
+  - **C downloaded one part in 4 s** while A was stopped: `Terrain/bracket-lp-1042-03.stl`, landing as
+    `Shared/Ayşe’s workshop (4JVST)/Terrain/bracket-lp-1042-03.stl`. B's peer log says **one file served** in
+    the whole run — the only one anybody asked it for, and the one that could have come from nowhere else.
+  - A came back and took C off Terrain. **The folder left C's list 49 s later** (a hello round and a mirror),
+    his pulled part stayed, his folder page answered 404, and **Burak's roster stopped naming him**, so Burak
+    refuses his next file. Both people stay on C's list with no folder in common, Burak marked as introduced.
+  - One harness bug, fixed in the script and not in the code: the assertion after C's download read `total`
+    from a parts page, which answers `parts` and `next`. The part had landed; the last phase of that run was
+    driven by hand, and the log says which lines those are.
 
 **Goal 9 closed** (2026-09-18). S5–S10 are each merged `--no-ff` with `cargo xtask verify slice` green on the
-merged tree. `docs/DATA.md` §7 describes the tables and the rules they carry, `docs/FEATURES.md`'s sharing table
+merged tree, and the whole run is proved twice: in-process with three databases, and in containers with three
+compose projects. `docs/DATA.md` §7 describes the tables and the rules they carry, `docs/FEATURES.md`'s sharing table
 gains the six built rows and narrows the non-goal to a public directory and to relaying between machines that
 cannot reach each other, and `PRODUCT.md` says what the peer role now sends and to whom. Nothing was pushed.
 
