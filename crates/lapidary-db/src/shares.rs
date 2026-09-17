@@ -76,6 +76,18 @@ pub struct GrantRow {
     pub asked_at: Timestamp,
 }
 
+/// One person a share goes to, as its owner's page lists them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberRow {
+    pub device: DeviceId,
+    /// What they call themselves, as their last hello said.
+    pub name: Option<String>,
+    pub address: String,
+    /// Answered on the database's clock, as `PgSharing::peers` answers it.
+    pub online: bool,
+    pub added_at: Timestamp,
+}
+
 /// A share as another installation sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfferedShare {
@@ -134,6 +146,23 @@ pub struct LicenceCounts {
 /// ignore it.
 const NON_COMMERCIAL: &str = "(^|[^[:alnum:]])nc([^[:alnum:]]|$)|non[- ]?commercial";
 
+/// Whether the share aliased `s` reaches the device bound at `$device`: everyone it is paired with, for a share
+/// made before members existed and never given a list, or a live row in its list.
+///
+/// One definition because four reads ask it — the list a peer is offered, whether it may read a share, where it
+/// stands with the files, and which requests its owner still sees — and a membership check missing from any one
+/// of them is a folder reaching somebody it was taken off.
+macro_rules! reaches {
+    ($device:literal) => {
+        concat!(
+            "(s.audience = 'everyone' OR EXISTS (SELECT 1 FROM share_member m \
+              WHERE m.share_id = s.id AND m.device_id = ",
+            $device,
+            " AND m.removed_at IS NULL))"
+        )
+    };
+}
+
 /// The share's category and every category under it, as `down`, for a query whose `$1` is the share. Empty
 /// when the share or its category is not live, which is how every read below refuses a withdrawn share.
 macro_rules! share_subtree {
@@ -148,6 +177,8 @@ macro_rules! share_subtree {
 type ShareTuple = (uuid::Uuid, uuid::Uuid, String, i64, String);
 
 type GrantTuple = (uuid::Uuid, String, Vec<u8>, Option<String>, String, i64);
+
+type MemberTuple = (Vec<u8>, Option<String>, String, bool, i64);
 
 type CatalogueTuple = (
     uuid::Uuid,
@@ -231,6 +262,87 @@ impl PgShares {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Who a share goes to, by name: the people its list names, whether or not it is using that list yet.
+    pub async fn members(&self, share: ShareId) -> Result<Vec<MemberRow>, DbError> {
+        // Online on the database's clock, the same predicate and the same window `PgSharing::peers` answers with.
+        let rows: Vec<MemberTuple> = sqlx::query_as(
+            "SELECT m.device_id, pe.name, pe.address, \
+             (pe.last_error IS NULL AND pe.last_seen_at > now() - make_interval(secs => $2::float8)) IS TRUE, \
+             (extract(epoch FROM m.added_at) * 1000000)::bigint \
+             FROM share_member m JOIN peer pe ON pe.device_id = m.device_id \
+             WHERE m.share_id = $1 AND m.removed_at IS NULL AND pe.removed_at IS NULL \
+             ORDER BY pe.name NULLS LAST, m.device_id",
+        )
+        .bind(share.as_uuid())
+        .bind(crate::sharing::ONLINE_WITHIN_SECS)
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(device, name, address, online, added_us)| {
+                let length = device.len();
+                Ok(MemberRow {
+                    device: <[u8; 32]>::try_from(device)
+                        .map(DeviceId::from_bytes)
+                        .map_err(|_| DbError::CorruptDeviceId {
+                            column: "share_member.device_id",
+                            length,
+                        })?,
+                    name,
+                    address,
+                    online,
+                    added_at: detail_stamp("share_member.added_at", added_us)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Say who a live share goes to. `false` when the share is not live.
+    ///
+    /// The list replaces whatever was there: people not named are taken off softly, so the row remembers that they
+    /// were once in it and the parts they pulled stay theirs. Saying who it goes to is also what moves a share off
+    /// "everyone paired" for good — including to nobody, when the list is empty.
+    pub async fn set_members(&self, share: ShareId, members: &[DeviceId]) -> Result<bool, DbError> {
+        let devices: Vec<Vec<u8>> = members
+            .iter()
+            .map(|device| device.as_bytes().to_vec())
+            .collect();
+        let mut tx = self.0.begin().await?;
+        let live = sqlx::query(
+            "UPDATE share SET audience = 'members' WHERE id = $1 AND removed_at IS NULL",
+        )
+        .bind(share.as_uuid())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if live == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        // Only people this installation is paired with: an id nobody paired with names no machine this one can
+        // reach, and `share_member.device_id` references `peer` besides.
+        sqlx::query(
+            "INSERT INTO share_member (share_id, device_id) \
+             SELECT $1, pe.device_id FROM peer pe \
+             WHERE pe.device_id = ANY($2) AND pe.removed_at IS NULL \
+             ON CONFLICT (share_id, device_id) DO UPDATE SET removed_at = NULL",
+        )
+        .bind(share.as_uuid())
+        .bind(&devices)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE share_member SET removed_at = now() \
+             WHERE share_id = $1 AND removed_at IS NULL AND NOT (device_id = ANY($2))",
+        )
+        .bind(share.as_uuid())
+        .bind(&devices)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        crate::sharing::tell_the_peer_role(&self.0).await?;
+        Ok(true)
+    }
+
     /// Ask first, or stop asking. `false` when the share is not live. Nothing already granted or denied changes.
     pub async fn set_asks_first(&self, share: ShareId, asks_first: bool) -> Result<bool, DbError> {
         let result = sqlx::query("UPDATE share SET mode = $2 WHERE id = $1 AND removed_at IS NULL")
@@ -243,12 +355,13 @@ impl PgShares {
 
     /// Where `device` stands with `share`'s files.
     pub async fn grant(&self, device: DeviceId, share: ShareId) -> Result<Grant, DbError> {
-        let row: Option<(String, Option<String>)> = sqlx::query_as(
+        let row: Option<(String, Option<String>)> = sqlx::query_as(concat!(
             "SELECT s.mode, g.state FROM peer pe, share s JOIN folder f ON f.id = s.folder_id \
              LEFT JOIN share_grant g ON g.share_id = s.id AND g.device_id = $1 \
              WHERE pe.device_id = $1 AND pe.removed_at IS NULL \
-             AND s.id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL",
-        )
+             AND s.id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL AND ",
+            reaches!("$1")
+        ))
         .bind(device.as_bytes().as_slice())
         .bind(share.as_uuid())
         .fetch_optional(&self.0)
@@ -277,15 +390,19 @@ impl PgShares {
         Ok((standing != Grant::NotShared).then_some(standing))
     }
 
-    /// Everybody who asked for a live share's files, newest first, whatever was decided.
+    /// Everybody who asked for a live share's files and is still offered it, newest first, whatever was decided.
+    ///
+    /// A person taken off a folder's list drops out: their ask is about a folder that no longer reaches them, and an
+    /// owner asked to decide it would be deciding nothing.
     pub async fn requests(&self) -> Result<Vec<GrantRow>, DbError> {
-        let rows: Vec<GrantTuple> = sqlx::query_as(
+        let rows: Vec<GrantTuple> = sqlx::query_as(concat!(
             "SELECT s.id, f.name, g.device_id, pe.name, g.state, (extract(epoch FROM g.asked_at) * 1000000)::bigint \
              FROM share_grant g JOIN share s ON s.id = g.share_id JOIN folder f ON f.id = s.folder_id \
              JOIN peer pe ON pe.device_id = g.device_id \
-             WHERE s.removed_at IS NULL AND f.deleted_at IS NULL AND pe.removed_at IS NULL \
-             ORDER BY g.asked_at DESC, s.id, g.device_id",
-        )
+             WHERE s.removed_at IS NULL AND f.deleted_at IS NULL AND pe.removed_at IS NULL AND ",
+            reaches!("g.device_id"),
+            " ORDER BY g.asked_at DESC, s.id, g.device_id"
+        ))
         .fetch_all(&self.0)
         .await?;
         rows.into_iter()
@@ -327,9 +444,18 @@ impl PgShares {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Every live share, as the people paired with this installation see them.
+    /// Every live share of this installation, whoever it goes to: the owner's own list.
     pub async fn offered(&self) -> Result<Vec<OfferedShare>, DbError> {
-        let rows: Vec<(uuid::Uuid, String, i64, i64, String)> = sqlx::query_as(
+        self.offer_rows(None).await
+    }
+
+    /// The live shares `device` is offered: the ones with no member list, and the ones its list names.
+    pub async fn offered_to(&self, device: DeviceId) -> Result<Vec<OfferedShare>, DbError> {
+        self.offer_rows(Some(device)).await
+    }
+
+    async fn offer_rows(&self, device: Option<DeviceId>) -> Result<Vec<OfferedShare>, DbError> {
+        let rows: Vec<(uuid::Uuid, String, i64, i64, String)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT s.id AS share, f.id FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
@@ -343,8 +469,11 @@ impl PgShares {
              LEFT JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL AND p.library_id = s.library_id \
              LEFT JOIN revision r ON r.part_id = p.id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
-             GROUP BY s.id, f.name, s.created_at, s.mode ORDER BY s.created_at, s.id",
-        )
+             AND ($1::bytea IS NULL OR ",
+            reaches!("$1"),
+            ") GROUP BY s.id, f.name, s.created_at, s.mode ORDER BY s.created_at, s.id"
+        ))
+        .bind(device.map(|device| device.as_bytes().to_vec()))
         .fetch_all(&self.0)
         .await?;
         Ok(rows
@@ -359,13 +488,16 @@ impl PgShares {
             .collect())
     }
 
-    /// Whether `device` may read `share`: paired and not removed, and the share and its category live.
+    /// Whether `device` may read `share`: paired and not removed, the share and its category live, and the
+    /// share reaching them.
     pub async fn access(&self, device: DeviceId, share: ShareId) -> Result<bool, DbError> {
-        Ok(sqlx::query_scalar(
+        Ok(sqlx::query_scalar(concat!(
             "SELECT EXISTS (SELECT 1 FROM peer pe, share s JOIN folder f ON f.id = s.folder_id \
              WHERE pe.device_id = $1 AND pe.removed_at IS NULL \
-             AND s.id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL)",
-        )
+             AND s.id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL AND ",
+            reaches!("$1"),
+            ")"
+        ))
         .bind(device.as_bytes().as_slice())
         .bind(share.as_uuid())
         .fetch_one(&self.0)

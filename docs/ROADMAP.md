@@ -3139,6 +3139,38 @@ library, one part soft-removed for the removed page's captures and restored afte
   the callout capture's clicks missed the part, and three captures predated the Off fix. On the retaken packet it
   returned `fix` with eight material fixes. `26551e8` takes seven, the removed rows' fix without its date; the callout rounding is declined above.
 
+---
+
+## Shared folders with several holders (2026-09-17)
+
+The owner asked for the torrent-shaped version of sharing: a folder offered to chosen people, everyone in it seeing
+its contents without holding the bytes, one holder enough for the content to be there, several allowed to hold the
+same content, and opening a part you do not hold downloading it from whoever has it. It stays inside the product's
+rule — people who know each other only, no tracker, no public directory. Plan:
+`/home/jbo/.claude/plans/shimmying-cooking-yeti.md` (approved, with the owner's ten decisions in it). Six stages
+(S5–S10), each a branch merged `--no-ff` with `cargo xtask verify slice` green. This section is their ledger.
+
+**Who a folder goes to** (stage S5).
+- **Table** (`0042`): `share_member`, one row a person a folder, soft-removed like everything else, and
+  `share.audience` (`everyone` or `members`). Every folder shared before this migration comes out `everyone`, which
+  keeps the owner's decision that they go on reaching whoever is paired — people paired later included — until their
+  owner picks. Saying who a folder goes to is what moves it off `everyone`, for good.
+- **One rule, four reads.** `reaches!` in `lapidary-db::shares` is the membership condition, and the list a peer is
+  offered (`offered_to`), whether it may read a folder (`access`), where it stands with the files (`grant`, which the
+  blob route calls) and the requests its owner still sees (`requests`) all carry it. A folder taken off somebody
+  answers them the `notShared` a stranger gets, on the catalogue, the thumbnails, the files and the ask alike.
+- **No wire change.** The peer role's `GET /peer/v1/shares` answers the asking device its own shorter list; older
+  installations need nothing.
+- **Api and pages.** `GET`/`PUT /api/shares/{id}/members`, and `ShareCategory.memberDeviceIds`, so the share dialog
+  offers a folder and names its people in one call. The dialog ticks everybody paired to begin with; the sharing page
+  says who each folder goes to and changes it.
+- **Decided without the owner:** a list sent with nobody in it reaches nobody, and says so on the page rather than
+  falling back to everyone; a dialog confirmed before the people arrived, or with nobody paired yet, sends no list and
+  the folder reaches whoever is paired, as it always did; an id nobody is paired with is refused (`badMember`) rather
+  than stored.
+- **Left for later:** taking somebody off a folder does not touch what they already pulled — that is S10's subject,
+  and their copies stay by decision.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

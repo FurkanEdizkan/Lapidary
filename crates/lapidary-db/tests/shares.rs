@@ -653,3 +653,140 @@ async fn a_share_that_asks_first_gives_files_only_to_whom_its_owner_granted(pool
             .expect("decides nothing")
     );
 }
+
+/// A share reaches the people its list names, and nobody else: the whole of S5.
+///
+/// Every read is asserted, not only the list, because each one is a way in: `offered_to` is what a peer's
+/// `GET /peer/v1/shares` answers, `access` gates the catalogue and the thumbnails, and `grant` is what the file
+/// route asks. A membership check missing from any one of them is a folder reaching somebody taken off it.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_share_with_a_member_list_reaches_its_members_and_nobody_else(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(ayse(), "192.168.1.24:8082")
+        .await
+        .expect("pairs");
+    sharing
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs");
+    let shares = PgShares(pool.clone());
+    let terrain = shares
+        .create(library(), lib.terrain)
+        .await
+        .expect("creates")
+        .expect("live");
+
+    // Shared with everybody until somebody says otherwise.
+    assert_eq!(shares.offered_to(ayse()).await.expect("offers").len(), 1);
+    assert_eq!(shares.offered_to(mira()).await.expect("offers").len(), 1);
+    assert!(shares.members(terrain.id).await.expect("lists").is_empty());
+
+    assert!(
+        shares
+            .set_members(terrain.id, &[ayse()])
+            .await
+            .expect("says who it goes to")
+    );
+    assert_eq!(
+        shares
+            .members(terrain.id)
+            .await
+            .expect("lists")
+            .into_iter()
+            .map(|member| (member.device, member.address))
+            .collect::<Vec<_>>(),
+        vec![(ayse(), "192.168.1.24:8082".to_owned())]
+    );
+
+    assert_eq!(shares.offered_to(ayse()).await.expect("offers").len(), 1);
+    assert!(
+        shares.offered_to(mira()).await.expect("offers").is_empty(),
+        "not on the list"
+    );
+    assert!(shares.access(ayse(), terrain.id).await.expect("answers"));
+    assert!(!shares.access(mira(), terrain.id).await.expect("answers"));
+    assert_eq!(
+        shares.grant(ayse(), terrain.id).await.expect("reads"),
+        Grant::Open
+    );
+    assert_eq!(
+        shares.grant(mira(), terrain.id).await.expect("reads"),
+        Grant::NotShared,
+        "the refusal a stranger gets, so nobody learns what is shared by asking"
+    );
+
+    // The owner's own page still lists it whoever it goes to.
+    assert_eq!(shares.offered().await.expect("offers").len(), 1);
+
+    // Taking somebody off is soft, and takes their ask with it.
+    assert!(
+        shares
+            .set_members(terrain.id, &[ayse(), mira()])
+            .await
+            .expect("adds")
+    );
+    assert!(
+        shares
+            .set_asks_first(terrain.id, true)
+            .await
+            .expect("switches")
+    );
+    assert_eq!(
+        shares.ask(mira(), terrain.id).await.expect("asks"),
+        Some(Grant::Asked)
+    );
+    assert_eq!(shares.requests().await.expect("lists").len(), 1);
+    assert!(
+        shares
+            .set_members(terrain.id, &[ayse()])
+            .await
+            .expect("removes")
+    );
+    assert!(
+        shares.requests().await.expect("lists").is_empty(),
+        "an ask about a folder that no longer reaches them is nothing left to decide"
+    );
+    assert!(
+        shares.members(terrain.id).await.expect("lists").len() == 1,
+        "the removed row is kept, not listed"
+    );
+}
+
+/// An id nobody paired with is not a member, and a share that is not live has nobody to name.
+#[sqlx::test(migrations = "./migrations")]
+async fn only_people_paired_with_go_on_a_list_and_a_stopped_share_takes_none(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let shares = PgShares(pool.clone());
+    let terrain = shares
+        .create(library(), lib.terrain)
+        .await
+        .expect("creates")
+        .expect("live");
+
+    assert!(
+        shares
+            .set_members(terrain.id, &[ayse()])
+            .await
+            .expect("answers"),
+        "the share is live, so the list is set"
+    );
+    assert!(
+        shares.members(terrain.id).await.expect("lists").is_empty(),
+        "nobody paired with ayse, so she is on no list"
+    );
+    assert!(
+        shares.offered_to(ayse()).await.expect("offers").is_empty(),
+        "and the folder reaches nobody now that it has a list"
+    );
+
+    shares.remove(terrain.id).await.expect("stops sharing");
+    assert!(
+        !shares
+            .set_members(terrain.id, &[ayse()])
+            .await
+            .expect("answers"),
+        "a stopped share is not one to say who it goes to"
+    );
+}

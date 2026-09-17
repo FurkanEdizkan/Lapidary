@@ -348,6 +348,10 @@ pub fn router(state: AppState, role: Role) -> Router {
                     axum::routing::put(shares::decide),
                 )
                 .route("/api/shares/{id}", axum::routing::delete(shares::stop))
+                .route(
+                    "/api/shares/{id}/members",
+                    get(shares::members).put(shares::set_members),
+                )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
                 // crate allowed to hold that rename handle, enforced by `cargo xtask

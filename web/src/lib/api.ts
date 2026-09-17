@@ -70,8 +70,10 @@ import type {
   Peer,
   PeerShareId,
   SetSharingName,
+  SetMembers,
   ShareCategory,
   ShareId,
+  ShareMember,
   ShareSummary,
   SharedCategory,
   SharingIdentity,
@@ -1586,9 +1588,19 @@ export async function previewShare(library: LibraryId, folder: FolderId): Promis
 }
 
 /** `POST /api/libraries/{id}/shares` — share a category and everything under it. */
-export async function shareCategory(library: LibraryId, folder: FolderId, asksFirst = false): Promise<FieldWritten> {
-  // Only said when asked for: left out, a new share is open and one already shared keeps what it had.
-  const body: ShareCategory = asksFirst ? { folderId: folder, asksFirst } : { folderId: folder }
+export async function shareCategory(
+  library: LibraryId,
+  folder: FolderId,
+  asksFirst = false,
+  memberDeviceIds?: string[],
+): Promise<FieldWritten> {
+  // Only said when asked for: left out, a new share is open, reaches everyone paired, and one already shared
+  // keeps what it had.
+  const body: ShareCategory = {
+    folderId: folder,
+    ...(asksFirst ? { asksFirst } : {}),
+    ...(memberDeviceIds === undefined ? {} : { memberDeviceIds }),
+  }
   return fieldWritten(
     await fetch(`/api/libraries/${encodeURIComponent(library)}/shares`, {
       method: 'POST',
@@ -1596,6 +1608,29 @@ export async function shareCategory(library: LibraryId, folder: FolderId, asksFi
       body: JSON.stringify(body),
     }),
     strings.sharing.shareFailed,
+  )
+}
+
+/** `GET /api/shares/{id}/members` — who a share goes to, as this installation's page lists them. */
+export async function fetchShareMembers(share: ShareId): Promise<ShareMember[]> {
+  const response = await fetch(`/api/shares/${encodeURIComponent(share)}/members`)
+  if (!response.ok) throw new Error(strings.sharing.loadFailed)
+  return (await response.json()) as ShareMember[]
+}
+
+/**
+ * `PUT /api/shares/{id}/members` — say who a share goes to. The list replaces whatever was there, and saying
+ * it at all is what moves a folder off "everyone paired"; an empty list reaches nobody, which is not stopping.
+ */
+export async function setShareMembers(share: ShareId, deviceIds: string[]): Promise<FieldWritten> {
+  const body: SetMembers = { deviceIds }
+  return fieldWritten(
+    await fetch(`/api/shares/${encodeURIComponent(share)}/members`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.sharing.membersFailed,
   )
 }
 

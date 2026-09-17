@@ -8,4 +8,9 @@ export type ShareCategory = { folderId: FolderId,
 /**
  * Ask before anyone fetches its files. Left out, a new share is open and an existing one keeps what it had.
  */
-asksFirst?: boolean, };
+asksFirst?: boolean, 
+/**
+ * Who it goes to. Left out, a new share reaches everyone paired and an existing one keeps its list, so
+ * sharing a folder the way it has always been shared stays one call with one field.
+ */
+memberDeviceIds?: Array<string>, };
