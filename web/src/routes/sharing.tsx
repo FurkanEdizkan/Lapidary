@@ -6,6 +6,7 @@ import {
   decideGrant,
   fetchPeerShares,
   fetchPeers,
+  fetchPulls,
   fetchShareRequests,
   fetchShares,
   fetchSharingIdentity,
@@ -14,7 +15,7 @@ import {
   stopSharing,
 } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Peer, ShareRequest, ShareSummary } from '../lib/types'
+import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -52,6 +53,7 @@ export function SharingPage() {
       <ThisInstallation />
       <OwnShares />
       <Requests />
+      <Pulls />
       <People />
     </section>
   )
@@ -457,6 +459,54 @@ function RequestRow({ request, onDecided }: { request: ShareRequest; onDecided: 
       )}
     </li>
   )
+}
+
+/**
+ * The newest pulls, whichever share they were of. A share's own page follows its pull; this is where a pull whose share
+ * was withdrawn is still found, saying so, after the mirror has let the share go.
+ */
+function Pulls() {
+  const pulls = useQuery({ queryKey: ['sharing', 'pulls'], queryFn: fetchPulls, refetchInterval: REFRESH_MS })
+  if (!pulls.isSuccess || pulls.data.length === 0) return null
+  return (
+    <div className="mt-8">
+      <h3 className="text-base font-medium">{strings.sharing.pulls}</h3>
+      <ul role="list" className="mt-3 flex flex-col gap-2">
+        {pulls.data.map((pull) => (
+          <li
+            key={pull.id}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+          >
+            <p>
+              {pull.sharer === null
+                ? strings.sharing.pullFrom(pull.shareName)
+                : strings.sharing.pullLine(pull.shareName, pull.sharer)}
+            </p>
+            <p className="text-xs text-[var(--color-muted)]">{pullStanding(pull)}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function pullStanding(pull: Pull): string {
+  switch (pull.state) {
+    case 'done':
+      return strings.sharing.pullDone(pull.filesTotal)
+    case 'failed':
+      return strings.sharing.pullStopped(pull.error ?? '')
+    case 'paused':
+      return strings.sharing.pullPaused
+    case 'waiting':
+      return pull.error ?? strings.sharing.pullWaiting
+    case 'fetching':
+      return strings.sharing.pullFetching(pull.filesDone, pull.filesTotal, pull.bytesDone, pull.bytesTotal)
+    case 'importing':
+      return strings.sharing.pullImportingPlain
+    default:
+      return strings.sharing.pullQueued
+  }
 }
 
 /** What one person shares, each a link to the shared library — read from the mirror, so it lists while they are away. */

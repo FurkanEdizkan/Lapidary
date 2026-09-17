@@ -197,6 +197,18 @@ impl PgPulls {
         Ok(true)
     }
 
+    /// The newest pulls, whichever share they were of.
+    pub async fn recent(&self, limit: i64) -> Result<Vec<PullRow>, DbError> {
+        let rows: Vec<PullTuple> = sqlx::query_as(concat!(
+            pull_columns!(),
+            " ORDER BY pu.created_at DESC, pu.id DESC LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter().map(pull_row).collect()
+    }
+
     /// A share's newest pull, for its page.
     pub async fn latest(&self, share: PeerShareId) -> Result<Option<PullRow>, DbError> {
         let row: Option<PullTuple> = sqlx::query_as(concat!(

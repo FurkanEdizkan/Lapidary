@@ -323,6 +323,7 @@ pub fn router(state: AppState, role: Role) -> Router {
                     axum::routing::post(sharing::start_pull),
                 )
                 .route("/api/sharing/shares/{id}/pull", get(sharing::latest_pull))
+                .route("/api/sharing/pulls", get(sharing::pulls))
                 .route(
                     "/api/sharing/pulls/{id}/pause",
                     axum::routing::post(sharing::pause_pull),

@@ -9,7 +9,7 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
-import type { MirroredShare, Peer, ShareRequest, ShareSummary, SharingIdentity } from '../lib/types'
+import type { LibraryId, MirroredShare, Peer, Pull, PullId, ShareRequest, ShareSummary, SharingIdentity } from '../lib/types'
 
 /**
  * The sharing page, which is where two people who know each other pair their installations. What it
@@ -58,6 +58,7 @@ function stub({
   shares = [],
   theirs = [],
   requests = [],
+  pulls = [],
 }: {
   identity?: SharingIdentity
   peers?: Peer[]
@@ -65,6 +66,7 @@ function stub({
   shares?: ShareSummary[]
   theirs?: MirroredShare[]
   requests?: ShareRequest[]
+  pulls?: Pull[]
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -82,6 +84,7 @@ function stub({
       if (url === '/api/sharing/peers') return answer(200, peers)
       if (url === '/api/shares') return answer(200, shares)
       if (url === '/api/shares/requests') return answer(200, requests)
+      if (url === '/api/sharing/pulls') return answer(200, pulls)
       if (method === 'PUT' && url.includes('/grants/')) return answer(204, {})
       if (url.startsWith('/api/sharing/peers/') && url.endsWith('/shares')) return answer(200, theirs)
       if (method === 'DELETE') return answer(204, {})
@@ -269,4 +272,32 @@ test('who asked to pull is listed with the answer given, and letting them pull s
       body: { granted: true },
     }),
   )
+})
+
+test('pulls are listed by the share they were of, and one whose sharer stopped sharing says so', async () => {
+  stub({
+    pulls: [
+      {
+        id: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0900' as PullId,
+        shareId: null,
+        shareName: 'Terrain',
+        sharer: 'Ayşe’s workshop',
+        libraryId: '01931b6e-0000-7000-8000-000000000001' as LibraryId,
+        state: 'failed',
+        filesTotal: 138,
+        filesDone: 49,
+        bytesTotal: 1_077_177_442,
+        bytesDone: 370_925_966,
+        batchId: null,
+        error: 'Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.',
+      },
+    ],
+  })
+  renderPage()
+  await screen.findByText(strings.sharing.pullLine('Terrain', 'Ayşe’s workshop'))
+  expect(
+    screen.getByText(
+      strings.sharing.pullStopped('Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.'),
+    ),
+  ).toBeDefined()
 })

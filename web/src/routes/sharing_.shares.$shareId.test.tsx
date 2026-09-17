@@ -54,6 +54,9 @@ const LIBRARIES = [
 
 const QUEUED: Pull = {
   id: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0900' as PullId,
+  shareId: SHARE,
+  shareName: 'Terrain',
+  sharer: 'Ayşe’s workshop',
   libraryId: LIBRARIES[1]!.id as LibraryId,
   state: 'queued',
   filesTotal: 0,

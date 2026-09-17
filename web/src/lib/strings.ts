@@ -1838,5 +1838,9 @@ export const strings = {
     grantLabel: (who: string, share: string) => `Let ${who} pull ${share}`,
     denyLabel: (who: string, share: string) => `Decline ${who}’s request to pull ${share}`,
     requestFailed: 'Could not save your answer. Reload and try again.',
+    pulls: 'Your pulls',
+    pullLine: (share: string, sharer: string) => `${share}, from ${sharer}`,
+    pullFrom: (share: string) => `${share}, from somebody you removed or who gave no name`,
+    pullImportingPlain: 'Importing what was fetched…',
   },
 } as const

@@ -350,8 +350,14 @@ pub struct StartPull {
 #[ts(export)]
 pub struct Pull {
     pub id: PullId,
+    /// The mirrored share, while this installation still mirrors it.
+    pub share_id: Option<PeerShareId>,
+    /// The share's name, kept with the pull, so a pull whose share was withdrawn still says which it was.
+    pub share_name: String,
+    /// What its sharer calls themselves, as their last hello said.
+    pub sharer: Option<String>,
     pub library_id: LibraryId,
-    /// `queued`, `fetching`, `importing`, `done` or `failed`.
+    /// `queued`, `fetching`, `waiting`, `paused`, `importing`, `done` or `failed`.
     pub state: String,
     pub files_total: i32,
     pub files_done: i32,
@@ -441,9 +447,24 @@ pub async fn resume_pull(State(state): State<AppState>, Path(pull): Path<PullId>
     }
 }
 
+/// `GET /api/sharing/pulls` — the newest pulls, whichever share they were of: where a pull whose share was withdrawn is
+/// still found, and says so.
+pub async fn pulls(State(state): State<AppState>) -> Response {
+    match PgPulls(state.db).recent(PULLS_LISTED).await {
+        Ok(rows) => Json(rows.into_iter().map(pull).collect::<Vec<_>>()).into_response(),
+        Err(err) => internal_error(&err, "pull list failed"),
+    }
+}
+
+/// How many pulls the sharing page lists.
+const PULLS_LISTED: i64 = 20;
+
 fn pull(row: PullRow) -> Pull {
     Pull {
         id: row.id,
+        share_id: row.share,
+        share_name: row.share_name,
+        sharer: row.sharer,
         library_id: row.library,
         state: row.state,
         files_total: row.files_total,

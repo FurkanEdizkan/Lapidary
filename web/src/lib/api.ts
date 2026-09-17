@@ -1621,6 +1621,15 @@ export async function decideGrant(share: ShareId, deviceId: string, granted: boo
   )
 }
 
+/** `GET /api/sharing/pulls` — the newest pulls, whichever share they were of. */
+export async function fetchPulls(): Promise<Pull[]> {
+  const response = await fetch('/api/sharing/pulls')
+  if (!response.ok) {
+    throw new Error(`pulls returned ${response.status}`)
+  }
+  return (await response.json()) as Pull[]
+}
+
 /** `POST /api/sharing/pulls/{id}/pause` or `…/resume`. */
 export async function controlPull(pull: PullId, action: 'pause' | 'resume'): Promise<FieldWritten> {
   return fieldWritten(
