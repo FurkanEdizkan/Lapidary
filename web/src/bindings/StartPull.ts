@@ -4,4 +4,8 @@ import type { LibraryId } from "./LibraryId";
 /**
  * `POST /api/sharing/shares/{id}/pulls`'s body: the library the share's parts land in.
  */
-export type StartPull = { libraryId: LibraryId, };
+export type StartPull = { libraryId: LibraryId, 
+/**
+ * The one part to pull, by its path in the folder. Left out pulls the whole folder, as this always did.
+ */
+sourcePath?: string, };

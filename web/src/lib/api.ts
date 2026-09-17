@@ -1759,8 +1759,13 @@ export async function fetchLatestPull(share: PeerShareId): Promise<Pull | null> 
 }
 
 /** `POST /api/sharing/shares/{id}/pulls` — pull every part of a shared library into `library`. */
-export async function startPull(share: PeerShareId, library: LibraryId): Promise<FieldWritten> {
-  const body: StartPull = { libraryId: library }
+export async function startPull(
+  share: PeerShareId,
+  library: LibraryId,
+  sourcePath?: string,
+): Promise<FieldWritten> {
+  // Said only for one part (S9); left out, the whole folder is pulled, as this always did.
+  const body: StartPull = { libraryId: library, ...(sourcePath === undefined ? {} : { sourcePath }) }
   return fieldWritten(
     await fetch(`/api/sharing/shares/${encodeURIComponent(share)}/pulls`, {
       method: 'POST',

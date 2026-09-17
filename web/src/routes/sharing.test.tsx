@@ -326,6 +326,8 @@ test('pulls are listed by the share they were of, and one whose sharer stopped s
         bytesDone: 370_925_966,
         batchId: null,
         error: 'Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.',
+        sourcePath: null,
+        queuedBehind: 0,
       },
     ],
   })

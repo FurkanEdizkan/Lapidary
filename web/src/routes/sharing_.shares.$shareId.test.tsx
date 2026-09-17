@@ -38,6 +38,7 @@ const CLIFF: MirroredPart = {
   sizeBytes: 4_812_000,
   format: 'stl',
   thumbnail: true,
+  held: false,
 }
 
 const STONE: MirroredPart = {
@@ -47,6 +48,7 @@ const STONE: MirroredPart = {
   partNumber: 'LP-TR-0140',
   licences: [],
   thumbnail: false,
+  held: true,
 }
 
 beforeEach(() => {
@@ -71,6 +73,8 @@ const QUEUED: Pull = {
   bytesDone: 0,
   batchId: null,
   error: null,
+  sourcePath: null,
+  queuedBehind: 0,
 }
 
 let posted: Array<{ url: string; body: unknown }> = []
@@ -291,4 +295,40 @@ test('a folder not being served says the folder and what was pulled stay', async
 
   await screen.findByText(strings.sharing.seedingOffNote)
   expect(screen.queryByText(strings.sharing.seedingHeld(1, 2))).toBeNull()
+})
+
+/**
+ * Sharing S9: everyone in a folder sees all of it without holding any of it, so the ordinary way to get
+ * something is to open the one part and ask for that one.
+ *
+ * A part already here says so instead of offering a second Download that would fetch nothing.
+ */
+test('a part not held here can be downloaded on its own, and one held says so', async () => {
+  stub()
+  renderPage()
+
+  await screen.findByRole('button', { name: strings.sharing.partDownloadLabel('Cliff face, LP-TR-0112') })
+  expect(screen.getByText(strings.sharing.partHeld)).toBeDefined()
+  expect(
+    screen.queryByRole('button', {
+      name: strings.sharing.partDownloadLabel('Standing stone, LP-TR-0140'),
+    }),
+  ).toBeNull()
+
+  fireEvent.click(
+    screen.getByRole('button', { name: strings.sharing.partDownloadLabel('Cliff face, LP-TR-0112') }),
+  )
+  await waitFor(() => expect(posted.some((call) => call.url.endsWith('/pulls'))).toBe(true))
+  expect(posted.find((call) => call.url.endsWith('/pulls'))?.body).toEqual({
+    libraryId: LIBRARIES[0]?.id,
+    sourcePath: 'rocks/cliff-face-lp-tr-0112.stl',
+  })
+})
+
+/** One pull at a time, so a part opened while another is fetching says how long the queue is. */
+test('a pull waiting its turn says how many are ahead of it', async () => {
+  stub({ pull: { ...QUEUED, state: 'queued', queuedBehind: 2 } })
+  renderPage()
+
+  await screen.findByText(strings.sharing.pullQueuedBehind(2))
 })

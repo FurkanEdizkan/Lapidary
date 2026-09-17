@@ -8,6 +8,7 @@
 
 use crate::PeerDevice;
 use crate::shares::{asked_owner, failed, may_read, refused};
+use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -79,6 +80,13 @@ pub struct BlobQuery {
     owner: Option<String>,
 }
 
+/// Which file of which folder is being asked about (S9).
+#[derive(Debug, Deserialize)]
+pub struct HaveQuery {
+    owner: Option<String>,
+    blake3: String,
+}
+
 /// What the blob route reads: the database, for access and reachability, and the store the bytes are in.
 #[derive(Clone)]
 pub struct BlobState {
@@ -99,11 +107,60 @@ pub fn blob_router_with(db: PgPool, blob_root: PathBuf, streams: Streams) -> axu
             "/peer/v1/shares/{share}/blob/{blake3}",
             axum::routing::get(blob),
         )
+        .route("/peer/v1/shares/{share}/have", axum::routing::get(have))
         .with_state(BlobState {
             db,
             blob_root,
             streams,
         })
+}
+
+/// `GET /peer/v1/shares/{share}/have?owner=&blake3=` — whether this installation can serve that file of that
+/// folder right now (S9).
+///
+/// Behind the very gates the blob route is behind, so it tells nobody anything the catalogue does not: a
+/// folder they are not in, or one this installation does not serve, answers exactly as it does there. What it
+/// saves is a fetch that would have been refused, which is what makes asking several holders cheap.
+async fn have(
+    State(state): State<BlobState>,
+    ConnectInfo(PeerDevice(device)): ConnectInfo<PeerDevice>,
+    Path(share): Path<ShareId>,
+    Query(query): Query<HaveQuery>,
+) -> Response {
+    let Ok(owner) = asked_owner(query.owner.as_deref()) else {
+        return not_in_share();
+    };
+    let Some(device) = device else {
+        return not_in_share();
+    };
+    let held = match relayed(&state, device, owner, share).await {
+        Ok(held) => held,
+        Err(refusal) => return refusal,
+    };
+    if held.is_none() {
+        if let Err(refusal) = may_read(&state.db, Some(device), share).await {
+            return refusal;
+        }
+        match PgShares(state.db.clone()).grant(device, share).await {
+            Ok(grant) if grant.allows_files() => {}
+            Ok(Grant::NotShared) => return not_in_share(),
+            // A folder that asks first and has not answered yet is not a folder to fetch from, and saying so
+            // here saves the asker a request they would only be refused.
+            Ok(_) => return Json(serde_json::json!({ "have": false })).into_response(),
+            Err(err) => return failed(&err),
+        }
+    }
+    let Ok(hash) = BlobHash::parse_hex(&query.blake3) else {
+        return not_in_share();
+    };
+    let found = match held {
+        Some(held) => PgMirror(state.db.clone()).held(held, &hash.to_hex()).await,
+        None => PgShares(state.db.clone()).blob(share, &hash.to_hex()).await,
+    };
+    match found {
+        Ok(location) => Json(serde_json::json!({ "have": location.is_some() })).into_response(),
+        Err(err) => failed(&err),
+    }
 }
 
 async fn blob(

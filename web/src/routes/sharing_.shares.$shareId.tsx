@@ -96,6 +96,11 @@ function RouteComponent() {
 }
 
 export function SharedLibraryPage({ share }: { share: PeerShareId }) {
+  // Chosen once for the page: "Pull all" and a part's own Download put things in the same place, and until
+  // somebody chooses, both mean the first library — the one the select shows.
+  const [chosen, setChosen] = useState<LibraryId | null>(null)
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
+  const into = chosen ?? libraries.data?.[0]?.id ?? null
   const library = useQuery({
     queryKey: ['sharing', 'shares', share],
     queryFn: () => fetchMirroredShare(share),
@@ -148,7 +153,7 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
             </p>
             <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
             <Seeding share={share} folder={library.data} />
-            <PullPanel share={share} />
+            <PullPanel share={share} chosen={chosen} onChoose={setChosen} />
             {parts.isPending ? (
               <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
             ) : parts.isError && !gone ? (
@@ -160,6 +165,7 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
                 share={share}
                 parts={parts.data?.pages.flatMap((page) => page.parts) ?? []}
                 read={library.data.syncedAt !== null}
+                library={into}
               />
             )}
             {parts.hasNextPage ? (
@@ -190,7 +196,15 @@ function pausable(pull: Pull | null): boolean {
 }
 
 /** Pull every part into a library of this installation's, and follow the pull while the peer role works it. */
-function PullPanel({ share }: { share: PeerShareId }) {
+function PullPanel({
+  share,
+  chosen,
+  onChoose,
+}: {
+  share: PeerShareId
+  chosen: LibraryId | null
+  onChoose: (library: LibraryId) => void
+}) {
   const client = useQueryClient()
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
   const latest = useQuery({
@@ -198,7 +212,6 @@ function PullPanel({ share }: { share: PeerShareId }) {
     queryFn: () => fetchLatestPull(share),
     refetchInterval: (query) => (unfinished(query.state.data) ? PULL_POLL_MS : false),
   })
-  const [chosen, setChosen] = useState<LibraryId | null>(null)
   const start = useMutation({
     mutationFn: (library: LibraryId) => startPull(share, library),
     onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
@@ -224,7 +237,7 @@ function PullPanel({ share }: { share: PeerShareId }) {
           {strings.sharing.pullInto}
           <select
             value={library ?? ''}
-            onChange={(event) => setChosen(event.target.value as LibraryId)}
+            onChange={(event) => onChoose(event.target.value as LibraryId)}
             className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm"
           >
             {(libraries.data ?? []).map((option) => (
@@ -284,7 +297,9 @@ function PullProgress({ pull }: { pull: Pull }) {
         : pull.error !== null
           ? strings.sharing.pullRetrying(pull.error)
           : pull.state === 'queued'
-            ? strings.sharing.pullQueued
+            ? pull.queuedBehind > 0
+              ? strings.sharing.pullQueuedBehind(pull.queuedBehind)
+              : strings.sharing.pullQueued
             : pull.state === 'fetching'
               ? strings.sharing.pullFetching(pull.filesDone, pull.filesTotal, pull.bytesDone, pull.bytesTotal)
               : strings.sharing.pullImporting(
@@ -316,7 +331,54 @@ function PullProgress({ pull }: { pull: Pull }) {
   )
 }
 
-function SharedParts({ share, parts, read }: { share: PeerShareId; parts: MirroredPart[]; read: boolean }) {
+/**
+ * One part, fetched on its own (S9).
+ *
+ * Everyone in a folder sees all of it without holding any of it, so opening one part and asking for that one
+ * is the ordinary way to get something — the whole-folder pull stays for when somebody wants all of it. The
+ * part that is already here says so instead, because a second Download would fetch nothing.
+ */
+function PartDownload({
+  share,
+  part,
+  library,
+}: {
+  share: PeerShareId
+  part: MirroredPart
+  library: LibraryId | null
+}) {
+  const client = useQueryClient()
+  const start = useMutation({
+    mutationFn: (into: LibraryId) => startPull(share, into, part.sourcePath),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
+  })
+  if (part.held) {
+    return <p className="pt-1 text-[11px] text-[var(--color-muted)]">{strings.sharing.partHeld}</p>
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => library !== null && start.mutate(library)}
+      disabled={library === null || start.isPending}
+      aria-label={strings.sharing.partDownloadLabel(part.name)}
+      className={`${BUTTON} mt-1 py-1 text-xs`}
+    >
+      {start.isPending ? strings.sharing.pullStarting : strings.sharing.partDownload}
+    </button>
+  )
+}
+
+function SharedParts({
+  share,
+  parts,
+  read,
+  library,
+}: {
+  share: PeerShareId
+  parts: MirroredPart[]
+  read: boolean
+  library: LibraryId | null
+}) {
   if (parts.length === 0) {
     // Not read yet is already said above; only a catalogue that has been read and holds nothing is empty.
     return read ? <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.libraryEmpty}</p> : null
@@ -350,6 +412,7 @@ function SharedParts({ share, parts, read }: { share: PeerShareId; parts: Mirror
                 : strings.sharing.licences(part.licences.join(', '))}
             </p>
             <p className="tabular text-[11px] text-[var(--color-muted)]">{strings.sharing.partKind(part.format, part.sizeBytes)}</p>
+            <PartDownload share={share} part={part} library={library} />
           </div>
         </li>
       ))}
