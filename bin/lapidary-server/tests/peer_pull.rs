@@ -386,11 +386,26 @@ async fn a_pull_waits_for_a_grant_pauses_and_resumes_and_a_share_stopped_fails_i
     assert!(pulls.resume(first).await.expect("resumes"));
     let resumed = pulls.next().await.expect("reads").expect("picked up again");
     assert_eq!(resumed.id, first);
-
+    // Paused again after the peer role read the row: its work starts nothing.
+    assert!(pulls.pause(first).await.expect("pauses"));
     shares
         .decide(terrain.sharer_share, here_id, true)
         .await
         .expect("the sharer grants it");
+    work(resumed.clone()).await.expect("stops at once");
+    let still = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    assert_eq!(
+        (still.state.as_str(), still.files_done),
+        ("paused", 0),
+        "{still:?}"
+    );
+    assert!(pulls.resume(first).await.expect("resumes"));
+    let resumed = pulls.next().await.expect("reads").expect("picked up again");
+
     work(resumed).await.expect("finishes");
     let done = pulls
         .latest(terrain.share)

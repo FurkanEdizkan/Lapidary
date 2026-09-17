@@ -381,6 +381,37 @@ async fn past_two_files_to_one_installation_or_eight_in_all_the_next_is_told_to_
         .collect();
     drop(again);
 
+    // A file still being sent keeps its count: its body is not read yet, so the sending task is still at work.
+    let unread = lapidary_peer::blob::blob_router_with(
+        pool.clone(),
+        shared.root.path().to_path_buf(),
+        streams.clone(),
+    )
+    .layer(MockConnectInfo(PeerDevice(Some(ayse()))))
+    .oneshot(
+        Request::builder()
+            .uri(uri.clone())
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("router responds");
+    assert_eq!(unread.status(), StatusCode::OK);
+    let one = streams.take(ayse()).expect("one of two is free");
+    assert!(
+        streams.take(ayse()).is_none(),
+        "the file being sent holds the other"
+    );
+    drop((one, unread));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Both at once: one alone was free all along.
+        while (streams.take(ayse()), streams.take(ayse())).1.is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a dropped body gives its count back");
+
     let others: Vec<_> = (0u8..8)
         .map(|n| {
             streams
