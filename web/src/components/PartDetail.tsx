@@ -1156,6 +1156,7 @@ function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) 
     const read = () => {
       const next = Array.from(zone.querySelectorAll<HTMLElement>(':scope > section[id]')).map((section) => ({
         id: section.id,
+        // The heading's words; its capitals are CSS, so the link reads in sentence case.
         label: section.querySelector('h3')?.textContent ?? section.id,
       }))
       setLinks((current) =>
@@ -1177,7 +1178,9 @@ function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) 
           <li key={link.id}>
             <a
               href={`#${link.id}`}
-              className="ease-mechanical text-xs tracking-wider text-[var(--color-muted)] uppercase duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+              // Underlined, in sentence case: the sections below open on uppercase labels, and links
+              // styled like them read as more labels rather than as a way to jump.
+              className="ease-mechanical text-sm text-[var(--color-dim)] underline decoration-[var(--color-edge)] underline-offset-4 duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
             >
               {link.label}
             </a>

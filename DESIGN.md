@@ -521,7 +521,7 @@ A measurement draws a Layout Blue line between its picks and a mono label edged 
 Blue, drawn in with `tween`. The thumbnail poster fades out over the first frame rather than
 cutting, since the studio is lit differently from the picture.
 
-Under both zones, an "On this page" index: uppercase Label links, Graphite lifting to Chalk,
+Under both zones, an "On this page" index: 14px Ash links underlined in Edge, lifting to Quicklime,
 one per section that actually rendered (assembly, PMI, file, identity, history), each labelled
 with its section's own heading, over the sections in two balanced columns. Links, never tabs:
 every section stays in the page.
