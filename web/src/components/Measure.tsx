@@ -64,10 +64,12 @@ export function MeasureBar({
           ) : (
             <>
               <span className="mr-2 text-[var(--color-muted)]">{strings.measure.tools[tool]}</span>
-              <Figure
-                figure={reading}
-                render={tool === 'angle' ? strings.measure.degrees : strings.measure.millimetres}
-              />
+              <span className="tabular">
+                <Figure
+                  figure={reading}
+                  render={tool === 'angle' ? strings.measure.degrees : strings.measure.millimetres}
+                />
+              </span>
             </>
           )}
         </p>
