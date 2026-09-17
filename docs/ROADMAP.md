@@ -2605,7 +2605,8 @@ sequenced ahead of Phase 8. What the work is built on:
 - **Left for later:**
   - 28 s from pairing to online is two rounds. A `NOTIFY` when a row is added would start a round at once.
   - **For S4:** a connection already open outlives a removal until it closes. Each hello builds its own client,
-    so it does not show today; a long pull would.
+    so it does not show today; a long pull would. *Closed in S4:* every share and file route asks the database at
+    every request, and a test keeps one connection open across a removal and sees its next request refused.
   - Hellos go one at a time, each allowed 5 s. Past about six machines that do not answer, a round outlasts the
     online window (`ponytail:` in `sync.rs`).
 
@@ -2798,9 +2799,73 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
   - A part the sharer moves to another category is pulled again at its new path as a new part, and a sharer who
     renames themselves gets a new folder.
   - A pull whose sharer is removed is left unfinished, since the peer role no longer picks it up; S4's taking it back
-    should fail it with a message.
+    should fail it with a message. *Closed in S4:* it is picked up and fails, saying so.
   - Progress moves a file at a time.
   - Still from S2b: sharing a category wakes only the sharer's own peer role.
+
+**Ask me first, and taking it back** (goal 7 stage 5, S4: `9f379fe`, `ad6d60e`, `31e6f37`, `35bf13e`, `6b37546`,
+`46c6b10`).
+- **Tables** (`0041`): `share.mode` (`open` or `ask`) and `share_grant`, one row a person a share, `asked`, `granted` or
+  `denied`, with `decided_by` null — the seam Phase 8's users fill. `pull` gains `waiting` and `paused`.
+- **Asking first, end to end.** A share that asks first stays browsable to everyone paired; only its files need a grant.
+  `POST /peer/v1/shares/{id}/request` records a request once and answers where the asker stands. The puller asks before
+  every attempt, so a pull waits — saying whose permission it waits for — until the owner lets them pull, then carries
+  on; a decline fails it saying so. The owner sees who asked on the sharing page, with Let them pull and Decline, and can
+  change an answer later. The blob route checks the grant on every file request (`askFirst`, `denied`).
+- **Taking it back.** Stopping a share, or removing somebody, refuses the next request, on a connection already open
+  too — which closes S1b's open connection outliving a removal. The sharer's refusal stays undistinguished, as S2a
+  decided; the puller names the share it was pulling from its own copy of the name. A pull whose sharer was removed here
+  fails, saying so. Parts already pulled stay.
+- **Pause** on the puller's side: the peer role stops after the file it is fetching, and resuming carries on from what is
+  staged. A pause that arrives after the peer role read the pull still stops it.
+- **Limits:** at most two files at once to one installation and eight in all; past either, `429 busy` and try again,
+  which a pull treats as a stall. A file's count is held until its body is sent or dropped.
+- **Your pulls** on the sharing page: the newest pulls by the share they were of — added when the measurement showed that
+  once the mirror lets a stopped share go, the share's page can no longer find its pull, and the message naming the
+  share was shown nowhere (`6b37546`).
+- **Found while writing the mutations, closed first** (`35bf13e`): nothing tested a stream released when its handler
+  returned rather than when its body was sent, or a pause the peer role had not yet read.
+- **Mutation-checked, 24 of 24 caught by tests** (`target/sharing-check/mutate-g7-s4.sh`): the grant states (open,
+  asked, granted, denied; a removed person's grant; answering on a stopped share; files for a denial; the blob route
+  skipping the grant), the per-request guard on an open connection, both limits, releasing a stream early and never;
+  a waiting pull fetching, a denial waiting, a removed sharer unsaid, a stopped share unnamed, a pause overwritten, a
+  paused pull picked up; the api's unknown request, ask-first dropped, the pulls list losing a withdrawn share's pull;
+  and four in the pages. Not mutated: the page polling a waiting pull, and asking again after a denial.
+- **Measured, two stacks with a worker each** (`target/sharing-check/measure-s4.sh`, `measure-s4.log`; the run before the
+  pulls list is `measure-s4-first.log`):
+  - **A shared corpus-1g (138 parts, 1,077,177,442 bytes) asking first.** B's pull was waiting at once — "Waiting for
+    Furkan’s workbench to let you pull STL Files." — and 20 s later was still waiting with **0 bytes staged and 0 file
+    requests to A**; A's page listed Ayşe’s workshop asking for STL Files.
+  - **A granted; 10 s later B was fetching** — the hello tick, since a grant wakes only A.
+  - **Paused at half way:** 75 files and 555,158,100 bytes reported, 76 files and 562,657,884 bytes staged (the file in
+    flight finished), none partial; 5 s later nothing more had moved. **Resumed:** 514,519,558 bytes in 62 more
+    requests. **76 + 62 = 138 requests, 562,657,884 + 514,519,558 = 1,077,177,442 bytes — nothing moved twice.**
+  - **A stopped sharing mid-pull:** B pulled into a second library, paused at 49 of 138 files, A stopped sharing, and B
+    resumed. **1 s later the pull had failed: "Furkan’s workbench no longer shares STL Files with you. Parts already
+    pulled stay."** B still holds its 138 parts; the sharing page lists the stopped pull above the finished one.
+  - Screenshots: `target/sharing-check/shots/s4-a-sharing.png`, `s4-b-stopped.png`.
+- **Decided without the owner:**
+  - asking first closes the files, not the catalogue, so a share that asks first can be seen and asked for;
+  - asking again changes nothing, a denial included; only the owner changes an answer;
+  - the share is named by the puller, not by the sharer's refusal, which stays the same for everyone;
+  - two files at once a person and eight in all, counted in memory: a restart forgets the counts, which are only in
+    flight anyway;
+  - a pull is paused between files, not mid-file;
+  - the sharing page lists the newest twenty pulls.
+- **Left for later:**
+  - A grant wakes only the sharer; the puller notices on its next tick, which is the 10 s above.
+  - A failed pull's staged files stay (50 files, 378,474,850 bytes after the stop above) until a pull of the same files
+    uses them; nothing clears staging on its own.
+  - A waiting pull at the head of the queue holds the pulls behind it, as any stalled pull does (`ponytail:` in
+    `pull.rs`).
+  - Switching an existing share to ask first is the api's (sharing it again with `asksFirst`); the page offers it only
+    when sharing.
+  - The puller's page does not yet say, before pulling, that a share asks first.
+
+**Goal 7 closed** (2026-09-17). The listener hardening, S2a, S2b, S3 and S4 are each merged `--no-ff` with `cargo xtask
+verify slice` green on the merged tree, mutation-checked (4, 18, 14, 21 and 24 caught), and measured on two stacks as
+recorded above. `docs/DATA.md` §7, `docs/FEATURES.md` §10 and `docs/ARCHITECTURE.md` describe what was built. Nothing was
+pushed.
 
 ---
 
