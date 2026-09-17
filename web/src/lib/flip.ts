@@ -1,3 +1,5 @@
+import { reduced, tokens } from './motion'
+
 /**
  * Move an element from where another one was, once.
  *
@@ -10,21 +12,6 @@
  * and a panel that simply appears makes them find the render again to confirm they opened
  * what they meant to. Carrying the render across says it without a word.
  */
-
-/** The animation's timing, read from the tokens rather than restated here. */
-function motion(): { duration: number; easing: string } {
-  const root = getComputedStyle(document.documentElement)
-  // `--duration-slow` is 280ms and had no caller until this one. A view opening is not a
-  // state change, which is what DESIGN.md caps at 180ms; it is the longest move the system
-  // makes, and this is the move it was declared for.
-  const ms = Number.parseFloat(root.getPropertyValue('--duration-slow')) || 280
-  // A value written `280ms` parses to 280; one written `0.28s` parses to 0.28.
-  const duration = ms < 20 ? ms * 1000 : ms
-  return {
-    duration,
-    easing: root.getPropertyValue('--ease-mechanical').trim() || 'cubic-bezier(0.2, 0, 0, 1)',
-  }
-}
 
 /**
  * Animate `el` as though it had started at `from`.
@@ -42,9 +29,7 @@ export function flipFrom(el: HTMLElement, from: DOMRect): Animation | null {
   // thing here a runtime can lack, and a decorative flight is never worth throwing inside a
   // layout effect that a panel's render depends on.
   if (typeof el.animate !== 'function') return null
-  if (typeof window.matchMedia === 'function') {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null
-  }
+  if (reduced()) return null
 
   const to = el.getBoundingClientRect()
   if (from.width === 0 || from.height === 0 || to.width === 0 || to.height === 0) return null
@@ -59,12 +44,15 @@ export function flipFrom(el: HTMLElement, from: DOMRect): Animation | null {
     return null
   }
 
-  const { duration, easing } = motion()
+  // `--duration-slow` is 280ms and had no caller until this one. A view opening is not a
+  // state change, which is what DESIGN.md caps at 180ms; it is the longest move the system
+  // makes, and this is the move it was declared for.
+  const { slow, ease } = tokens()
   return el.animate(
     [
       { transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
       { transformOrigin: 'top left', transform: 'none' },
     ],
-    { duration, easing },
+    { duration: slow, easing: ease },
   )
 }

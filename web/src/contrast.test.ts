@@ -46,6 +46,12 @@ async function stylesheet(): Promise<string> {
 /** The three grounds text and controls sit on. Every pairing is checked against all three. */
 const GROUNDS = ['bg', 'surface', 'raised'] as const
 
+/**
+ * The stage's lamp carries text — a live reading over a model — but never a control, so it is
+ * a ground for the text check and not for the edge check (`styles.css` says why).
+ */
+const TEXT_GROUNDS = [...GROUNDS, 'lamp'] as const
+
 /** Text-bearing tokens, held to SC 1.4.3's 4.5:1 — they carry 9–14px text, so no exemption. */
 const TEXT = ['text', 'bright', 'dim', 'muted', 'accent', 'warn', 'good', 'info', 'bad'] as const
 
@@ -89,13 +95,13 @@ function contrastFailures(source: string): string[] {
   // foreground when both were absent, so an unreadable stylesheet — an empty map — listed
   // nine text tokens as undefined and never mentioned that the grounds were gone too, which
   // pointed at the palette when the fault was in reading the file.
-  for (const name of [...GROUNDS, ...TEXT, ...EDGES]) {
+  for (const name of [...TEXT_GROUNDS, ...TEXT, ...EDGES]) {
     if (!colors.has(name)) failures.push(`--color-${name} is not defined in @theme`)
   }
-  const check = (names: readonly string[], minimum: number) => {
+  const check = (names: readonly string[], grounds: readonly string[], minimum: number) => {
     for (const name of names) {
       const fg = colors.get(name)
-      for (const ground of GROUNDS) {
+      for (const ground of grounds) {
         const bg = colors.get(ground)
         if (fg === undefined || bg === undefined) continue
         const measured = ratio(fg, bg)
@@ -107,8 +113,8 @@ function contrastFailures(source: string): string[] {
       }
     }
   }
-  check(TEXT, 4.5)
-  check(EDGES, 3)
+  check(TEXT, TEXT_GROUNDS, 4.5)
+  check(EDGES, GROUNDS, 3)
   return [...new Set(failures)]
 }
 
@@ -126,6 +132,7 @@ test('the gate catches the two contrast failures it was written for', () => {
   --color-bg: #121214;
   --color-surface: #1a1a1d;
   --color-raised: #17171b;
+  --color-lamp: #202024;
   --color-text: #e6e6e9;
   --color-bright: #f0f0f2;
   --color-dim: #c8c8ce;
@@ -140,6 +147,7 @@ test('the gate catches the two contrast failures it was written for', () => {
     '--color-muted #6a6a72 on --color-bg #121214 is 3.49:1, needs 4.5:1',
     '--color-muted #6a6a72 on --color-surface #1a1a1d is 3.24:1, needs 4.5:1',
     '--color-muted #6a6a72 on --color-raised #17171b is 3.33:1, needs 4.5:1',
+    '--color-muted #6a6a72 on --color-lamp #202024 is 3.03:1, needs 4.5:1',
   ])
   // Both lifted grounds, not only the card surface — the adoption was measured against the
   // surface alone and missed that the rail's ground fails too, which is the point of

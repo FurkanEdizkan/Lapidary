@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { strings } from '../lib/strings'
+import { Icon } from './Icon'
 
 /** Everything inside the box that a Tab can land on. `:not([disabled])` is the point. */
 const FOCUSABLE =
@@ -157,7 +158,7 @@ export function Dialog({
             current.focus()
           }
         }}
-        className="panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.6)]"
+        className="panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id={titleId} className="text-sm font-medium">
@@ -174,10 +175,7 @@ export function Dialog({
             aria-label={strings.dialog.close}
             className="ease-mechanical -m-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
           >
-            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none"
-                 stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M4 4l8 8M12 4l-8 8" />
-            </svg>
+            <Icon name="close" />
           </button>
         </div>
         {children}
