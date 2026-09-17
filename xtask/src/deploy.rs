@@ -164,6 +164,15 @@ pub enum Violation {
     /// A service that runs `lapidary-server` mounts a named volume at a path `deploy/Containerfile` does not create
     /// owned by `lapidary`, so the volume comes up owned by root and the service cannot write to it.
     NamedVolumeNotOwned { service: String, target: String },
+    /// A `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` names no `--target`, so it builds
+    /// the file's last stage around whatever binary its arguments give.
+    WorkflowBuildWithoutTarget { line: String },
+    /// A workflow build of the `worker` target without both kernel features.
+    WorkflowWorkerWithoutKernels { line: String },
+    /// A workflow build of the `api` target that passes `SERVER_FEATURES`.
+    WorkflowApiWithKernel { line: String },
+    /// A workflow build of a target that is not an image compose runs.
+    WorkflowBuildTarget { line: String, target: String },
     /// A file under `crates/lapidary-api/src/` names one of the narrow source-bytes
     /// handles somewhere other than the single route that handle exists for. Handing a
     /// user the exact bytes they asked for is a download, storing bytes a user just
@@ -344,6 +353,28 @@ impl std::fmt::Display for Violation {
                  recognizes. This check's parsing is stale, not the config — update \
                  check_containerfile in xtask/src/deploy.rs to find it, whatever form it now \
                  takes."
+            ),
+            Violation::WorkflowBuildWithoutTarget { line } => write!(
+                f,
+                ".github/workflows/containers.yml builds deploy/Containerfile with no --target: `{line}`. That takes \
+                 the file's last stage, the worker, around a binary built with whatever SERVER_FEATURES the line \
+                 passes, and with none it refuses to start as a worker. Build `--target api`, and `--target worker \
+                 --build-arg SERVER_FEATURES=mock-kernel,occt-kernel`, as deploy/compose.yaml does."
+            ),
+            Violation::WorkflowWorkerWithoutKernels { line } => write!(
+                f,
+                ".github/workflows/containers.yml builds the worker target without both kernels: `{line}`. Pass \
+                 `--build-arg SERVER_FEATURES=mock-kernel,occt-kernel`, as deploy/compose.yaml's worker does."
+            ),
+            Violation::WorkflowApiWithKernel { line } => write!(
+                f,
+                ".github/workflows/containers.yml builds the api target with SERVER_FEATURES: `{line}`. The api image \
+                 serves the open path and never links the CAD kernel; drop the build argument."
+            ),
+            Violation::WorkflowBuildTarget { line, target } => write!(
+                f,
+                ".github/workflows/containers.yml builds the `{target}` target: `{line}`. The images compose runs are \
+                 `api` and `worker`; build those, or say in xtask/src/deploy.rs why another belongs in the workflow."
             ),
             Violation::NamedVolumeNotOwned { service, target } => write!(
                 f,
@@ -1117,6 +1148,55 @@ pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Ve
                     target: target.clone(),
                 })
                 .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Every `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` builds what compose builds: `--target
+/// api` with no `SERVER_FEATURES`, or `--target worker` with both kernels. Line-wise, with `\`-continued lines joined.
+pub fn check_workflow(contents: &str) -> Vec<Violation> {
+    logical_lines(contents)
+        .iter()
+        .map(|line| {
+            line.trim_start()
+                .trim_start_matches("- ")
+                .trim_start_matches("run:")
+                .trim()
+                .to_owned()
+        })
+        .filter(|line| line.contains("docker build") && line.contains(LAPIDARY_SERVER_DOCKERFILE))
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let target = words
+                .windows(2)
+                .find(|pair| pair[0] == "--target")
+                .map(|pair| pair[1].to_owned())
+                .or_else(|| {
+                    words
+                        .iter()
+                        .find_map(|word| word.strip_prefix("--target=").map(str::to_owned))
+                });
+            let features = words
+                .iter()
+                .find_map(|word| word.strip_prefix("SERVER_FEATURES="))
+                .unwrap_or_default();
+            match target.as_deref() {
+                None => Some(Violation::WorkflowBuildWithoutTarget { line }),
+                Some("worker")
+                    if !(features.split(',').any(|f| f == "mock-kernel")
+                        && features.split(',').any(|f| f == "occt-kernel")) =>
+                {
+                    Some(Violation::WorkflowWorkerWithoutKernels { line })
+                }
+                Some("api") if !features.is_empty() => {
+                    Some(Violation::WorkflowApiWithKernel { line })
+                }
+                Some("api" | "worker") => None,
+                Some(other) => Some(Violation::WorkflowBuildTarget {
+                    target: other.to_owned(),
+                    line,
+                }),
+            }
         })
         .collect()
 }
@@ -2139,6 +2219,65 @@ RUN install -d -m 0755 /var/lib/lapidary-peer-staging
                 ],
                 include_str!("../../deploy/Containerfile"),
             ),
+            vec![]
+        );
+    }
+
+    fn workflow(builds: &[&str]) -> String {
+        // Indented by two at most: the rule reads each `run:` line, not the YAML around it.
+        let mut text = String::from("jobs:\n  build:\n  steps:\n");
+        for build in builds {
+            text.push_str(&format!("      - run: {build}\n"));
+        }
+        text
+    }
+
+    /// What `.github/workflows/containers.yml` built until goal 8: no target, so the file's last stage, around a binary
+    /// with neither kernel, which refuses to start as a worker.
+    #[test]
+    fn a_workflow_build_of_the_server_image_names_its_target_and_its_kernels() {
+        let old = workflow(&[
+            "docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .",
+        ]);
+        assert_eq!(
+            check_workflow(&old),
+            vec![Violation::WorkflowBuildWithoutTarget {
+                line: "docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} ."
+                    .to_owned()
+            }]
+        );
+
+        let right = workflow(&[
+            "docker build -f deploy/Containerfile --target api -t lapidary-api:1 .",
+            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel,occt-kernel -t lapidary-worker:1 .",
+            "docker build -f deploy/web/Containerfile -t lapidary-web:1 .",
+        ]);
+        assert_eq!(check_workflow(&right), vec![]);
+
+        let kernel_less_worker = "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel -t w .";
+        let kernel_api = "docker build -f deploy/Containerfile --target api --build-arg SERVER_FEATURES=mock-kernel -t a .";
+        let test_stage = "docker build -f deploy/Containerfile --target occt-test -t t .";
+        assert_eq!(
+            check_workflow(&workflow(&[kernel_less_worker, kernel_api, test_stage])),
+            vec![
+                Violation::WorkflowWorkerWithoutKernels {
+                    line: kernel_less_worker.to_owned()
+                },
+                Violation::WorkflowApiWithKernel {
+                    line: kernel_api.to_owned()
+                },
+                Violation::WorkflowBuildTarget {
+                    line: test_stage.to_owned(),
+                    target: "occt-test".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_real_containers_workflow_builds_what_compose_builds() {
+        assert_eq!(
+            check_workflow(include_str!("../../.github/workflows/containers.yml")),
             vec![]
         );
     }

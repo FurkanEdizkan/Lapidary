@@ -512,6 +512,11 @@ fn check_deploy() -> Result<()> {
         &[&compose, &overlay],
         &containerfile,
     ));
+    // The workflow that builds the images for a release builds what compose builds.
+    let workflow_path = root.join(".github/workflows/containers.yml");
+    let workflow = std::fs::read_to_string(&workflow_path)
+        .with_context(|| format!("Could not read {}", workflow_path.display()))?;
+    violations.extend(deploy::check_workflow(&workflow));
 
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));
@@ -528,7 +533,9 @@ fn check_deploy() -> Result<()> {
              and only the worker target carries OCCT, and lapidary-api never names \
              SourceStore, names SourceReader only in crates/lapidary-api/src/download.rs, and \
              names SourceRelocator only in crates/lapidary-api/src/moves.rs, and lapidary-peer \
-             reads the store only in blob.rs and writes it only in pull.rs \
+             reads the store only in blob.rs and writes it only in pull.rs, every named volume is a \
+             directory the image makes for lapidary, and the Containers workflow builds the api and worker \
+             targets as compose does \
              ({} source file(s) checked)",
             api_sources.len() + peer_sources.len()
         );
