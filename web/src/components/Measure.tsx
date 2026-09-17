@@ -8,6 +8,13 @@ const CONTROL =
   'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)] disabled:opacity-50'
 
 /**
+ * "Off", pressed. It is the resting state of the section bar, and Layout Blue is for what is live
+ * (DESIGN.md), so the pressed mark here is a filled ground rather than the accent edge a cut gets.
+ */
+const RESTING =
+  'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:bg-[var(--color-border)] aria-pressed:text-[var(--color-bright)] disabled:opacity-50'
+
+/**
  * The measuring tools under the 3D view, and the line saying what to click or what was measured.
  *
  * A component of its own, outside the three.js chunk, so `Measure.test.tsx` can render the value
@@ -89,7 +96,7 @@ export function SectionBar({
   return (
     <>
     <div role="toolbar" aria-label={strings.section.label} className="mt-2 flex flex-wrap items-center gap-1">
-      <button type="button" aria-pressed={section === null} onClick={() => onSection(null)} className={CONTROL}>
+      <button type="button" aria-pressed={section === null} onClick={() => onSection(null)} className={RESTING}>
         {strings.section.off}
       </button>
       {AXES.map((axis) => (
