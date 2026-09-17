@@ -13,6 +13,7 @@ import { Detail, warmViewer } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { strings } from '../lib/strings'
+import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
 
 /**
@@ -54,68 +55,70 @@ export function PartPage({ partId }: { partId: string }) {
   useEffect(() => void warmViewer(), [])
 
   return (
-    <section>
-      {/*
-        The part's own name, once the fetch has it. Rendered rather than assigned: React 19
-        hoists a `<title>` from wherever it is written and removes it on unmount, so this
-        needs neither a router head option nor a loader — which is what it would have taken
-        to get the name into the title, since this page fetches inside the component.
+    <AppFrame>
+      <section>
+        {/*
+          The part's own name, once the fetch has it. Rendered rather than assigned: React 19
+          hoists a `<title>` from wherever it is written and removes it on unmount, so this
+          needs neither a router head option nor a loader — which is what it would have taken
+          to get the name into the title, since this page fetches inside the component.
 
-        SC 2.4.2, Level A. `null` while it loads, because a title is not a place to guess:
-        a tab that says `LP-1042-03` before the page knows the name would be lying on the
-        one part page that turns out to 404.
-      */}
-      <title>{strings.titles.part(part.data?.name ?? null)}</title>
-      <Link
-        to="/"
-        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-      >
-        {strings.detail.back}
-      </Link>
-      {part.isPending ? (
-        <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
-      ) : part.isError ? (
-        <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
-      ) : (
-        <Detail
-          part={part.data}
-          // The page, not the dialog, is where a form that takes typing belongs — the same
-          // line `actions` draws below.
-          recordable
-          actions={
-            <>
-              {/*
-                Render and Move live here as well as in the grid's panel, and that is not
-                duplication for its own sake.
+          SC 2.4.2, Level A. `null` while it loads, because a title is not a place to guess:
+          a tab that says `LP-1042-03` before the page knows the name would be lying on the
+          one part page that turns out to 404.
+        */}
+        <title>{strings.titles.part(part.data?.name ?? null)}</title>
+        <Link
+          to="/"
+          className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+        >
+          {strings.detail.back}
+        </Link>
+        {part.isPending ? (
+          <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
+        ) : part.isError ? (
+          <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
+        ) : (
+          <Detail
+            part={part.data}
+            // The page, not the dialog, is where a form that takes typing belongs — the same
+            // line `actions` draws below.
+            recordable
+            actions={
+              <>
+                {/*
+                  Render and Move live here as well as in the grid's panel, and that is not
+                  duplication for its own sake.
 
-                The panel opens on a click of the tile and the tile has no keyboard path to
-                it, so for a while these two controls — and the storage path below — existed
-                nowhere a keyboard could reach. That is WCAG 2.2 SC 2.1.1, Level A, and it is
-                about whether a *function* is available at all, not about which surface
-                offers it. This page is the surface a keyboard reaches: the card's name is a
-                real link, and it comes here.
-              */}
-              <PartTools part={part.data} />
-              <Remove part={part.data} />
-              {/*
-                The reassurance sits beside the button rather than behind a confirmation
-                dialog. Removing is reversible and touches nothing on disk, so a modal would
-                spend on this action the alarm that purge is going to need — and purge is one
-                deliberate step further away, on the removed list this sends you to.
+                  The panel opens on a click of the tile and the tile has no keyboard path to
+                  it, so for a while these two controls — and the storage path below — existed
+                  nowhere a keyboard could reach. That is WCAG 2.2 SC 2.1.1, Level A, and it is
+                  about whether a *function* is available at all, not about which surface
+                  offers it. This page is the surface a keyboard reaches: the card's name is a
+                  real link, and it comes here.
+                */}
+                <PartTools part={part.data} />
+                <Remove part={part.data} />
+                {/*
+                  The reassurance sits beside the button rather than behind a confirmation
+                  dialog. Removing is reversible and touches nothing on disk, so a modal would
+                  spend on this action the alarm that purge is going to need — and purge is one
+                  deliberate step further away, on the removed list this sends you to.
 
-                Inside `actions` and not inside `Detail`, because it is a sentence about a
-                control: the grid's quick-look shows the same article without the remove
-                button, and it was telling people they could restore something from a panel
-                that offers no way to remove it.
-              */}
-              <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
-                {strings.removal.removeHint}
-              </p>
-            </>
-          }
-        />
-      )}
-    </section>
+                  Inside `actions` and not inside `Detail`, because it is a sentence about a
+                  control: the grid's quick-look shows the same article without the remove
+                  button, and it was telling people they could restore something from a panel
+                  that offers no way to remove it.
+                */}
+                <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+                  {strings.removal.removeHint}
+                </p>
+              </>
+            }
+          />
+        )}
+      </section>
+    </AppFrame>
   )
 }
 

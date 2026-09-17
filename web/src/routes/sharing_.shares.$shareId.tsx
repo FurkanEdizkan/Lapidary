@@ -13,6 +13,7 @@ import {
   startPull,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { AppFrame } from '../components/AppFrame'
 import type { BatchId, LibraryId, MirroredPart, PeerShareId, Pull } from '../lib/types'
 
 const BUTTON =
@@ -57,64 +58,66 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
   })
   const gone = library.error instanceof SharedLibraryGone || parts.error instanceof SharedLibraryGone
   return (
-    <section>
-      {library.isSuccess ? <title>{strings.sharing.libraryTitle(library.data.name)}</title> : null}
-      <Link
-        to="/sharing"
-        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-      >
-        {strings.sharing.backToSharing}
-      </Link>
-      {library.isPending ? (
-        <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
-      ) : gone ? (
-        <p className="mt-6 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.libraryGone}</p>
-      ) : library.isError ? (
-        <p role="alert" className="mt-6 text-sm text-[var(--color-muted)]">
-          {strings.sharing.libraryLoadFailed}
-        </p>
-      ) : (
-        <>
-          <h2 className="mt-4 text-xl font-medium">{library.data.name}</h2>
-          <p className="mt-1 text-sm text-[var(--color-muted)]">
-            {strings.sharing.librarySharedBy(
-              library.data.sharer ?? strings.sharing.unnamedSharer,
-              library.data.partCount,
-            )}
+    <AppFrame>
+      <section>
+        {library.isSuccess ? <title>{strings.sharing.libraryTitle(library.data.name)}</title> : null}
+        <Link
+          to="/sharing"
+          className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
+        >
+          {strings.sharing.backToSharing}
+        </Link>
+        {library.isPending ? (
+          <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
+        ) : gone ? (
+          <p className="mt-6 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.libraryGone}</p>
+        ) : library.isError ? (
+          <p role="alert" className="mt-6 text-sm text-[var(--color-muted)]">
+            {strings.sharing.libraryLoadFailed}
           </p>
-          <p className="mt-1 text-xs text-[var(--color-muted)]">
-            {library.data.syncedAt === null
-              ? strings.sharing.libraryNotReadYet
-              : strings.sharing.librarySynced(library.data.syncedAt)}
-          </p>
-          <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
-          <PullPanel share={share} />
-          {parts.isPending ? (
-            <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
-          ) : parts.isError && !gone ? (
-            <p role="alert" className="mt-6 text-sm text-[var(--color-muted)]">
-              {strings.sharing.libraryLoadFailed}
+        ) : (
+          <>
+            <h2 className="mt-4 text-xl font-medium">{library.data.name}</h2>
+            <p className="mt-1 text-sm text-[var(--color-muted)]">
+              {strings.sharing.librarySharedBy(
+                library.data.sharer ?? strings.sharing.unnamedSharer,
+                library.data.partCount,
+              )}
             </p>
-          ) : (
-            <SharedParts
-              share={share}
-              parts={parts.data?.pages.flatMap((page) => page.parts) ?? []}
-              read={library.data.syncedAt !== null}
-            />
-          )}
-          {parts.hasNextPage ? (
-            <button
-              type="button"
-              onClick={() => void parts.fetchNextPage()}
-              disabled={parts.isFetchingNextPage}
-              className={`${BUTTON} mt-4`}
-            >
-              {parts.isFetchingNextPage ? strings.sharing.showingMore : strings.sharing.showMore}
-            </button>
-          ) : null}
-        </>
-      )}
-    </section>
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              {library.data.syncedAt === null
+                ? strings.sharing.libraryNotReadYet
+                : strings.sharing.librarySynced(library.data.syncedAt)}
+            </p>
+            <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
+            <PullPanel share={share} />
+            {parts.isPending ? (
+              <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
+            ) : parts.isError && !gone ? (
+              <p role="alert" className="mt-6 text-sm text-[var(--color-muted)]">
+                {strings.sharing.libraryLoadFailed}
+              </p>
+            ) : (
+              <SharedParts
+                share={share}
+                parts={parts.data?.pages.flatMap((page) => page.parts) ?? []}
+                read={library.data.syncedAt !== null}
+              />
+            )}
+            {parts.hasNextPage ? (
+              <button
+                type="button"
+                onClick={() => void parts.fetchNextPage()}
+                disabled={parts.isFetchingNextPage}
+                className={`${BUTTON} mt-4`}
+              >
+                {parts.isFetchingNextPage ? strings.sharing.showingMore : strings.sharing.showMore}
+              </button>
+            ) : null}
+          </>
+        )}
+      </section>
+    </AppFrame>
   )
 }
 

@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { fetchFailures, retryFailed } from '../lib/api'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import type { BatchId, BatchStatus, JobFailure, JobId, LibraryId } from '../lib/types'
+import { Icon } from './Icon'
 
 /**
  * Jobs the worker is finished with, however it finished with them.
@@ -94,7 +95,7 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
 }
 
 /**
- * Where a folder goes in.
+ * Where a folder goes in: anywhere on the page, while a drag carries files.
  *
  * Both gestures, because they are not interchangeable. `<input webkitdirectory>` opens
  * the picker and reports `webkitRelativePath` for free; a *drag* of a folder gives
@@ -102,77 +103,89 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
  * contents — so the drop path goes through `webkitGetAsEntry` and a recursive walk. See
  * `filesFromDrop`, which is also where the `readEntries` 100-entry limit is handled.
  *
- * `dragover` must call `preventDefault` on every event or the browser navigates to the
- * dropped file instead of handing it here, which is the default and looks exactly like a
- * broken page. The counter, rather than a boolean: `dragenter`/`dragleave` fire for every
- * child element the pointer crosses, so a boolean flickers off the moment the drag passes
- * over the label inside the target.
+ * **The whole window is the target, and nothing marks it at rest.** A dashed strip above the
+ * grid spent a row of every visit on a gesture used on a few. The overlay appears only once a
+ * drag carrying `Files` enters the window; a card dragged onto a category carries the part's
+ * own type and no files, so moving a part never raises it.
+ *
+ * `dragover` must call `preventDefault` or the browser navigates to the dropped file instead of
+ * handing it here, which looks exactly like a broken page. The counter, rather than a boolean:
+ * `dragenter`/`dragleave` fire for every element the pointer crosses, so a boolean flickers off
+ * the moment the drag passes over anything.
  */
-export function DropTarget({
+export function DropOverlay({
   onFiles,
-  busy,
-  progress,
   picker,
 }: {
   onFiles: (picked: PickedFile[]) => void
-  busy: boolean
-  progress: UploadProgress | undefined
-  /** The hidden folder input, shared with the toolbar's Upload button. */
+  /** The hidden folder input, opened by the header's Upload button. */
   picker: RefObject<HTMLInputElement | null>
 }) {
   const [depth, setDepth] = useState(0)
-  const input = picker
-  const over = depth > 0
+  // The latest handler without re-subscribing four window listeners on every render.
+  const handler = useRef(onFiles)
+  useEffect(() => {
+    handler.current = onFiles
+  })
+
+  useEffect(() => {
+    const carriesFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files') ?? false
+    const enter = (event: DragEvent) => {
+      if (!carriesFiles(event)) return
+      event.preventDefault()
+      setDepth((d) => d + 1)
+    }
+    const over = (event: DragEvent) => {
+      if (carriesFiles(event)) event.preventDefault()
+    }
+    const leave = (event: DragEvent) => {
+      if (carriesFiles(event)) setDepth((d) => Math.max(0, d - 1))
+    }
+    const drop = (event: DragEvent) => {
+      if (!carriesFiles(event) || event.dataTransfer === null) return
+      event.preventDefault()
+      setDepth(0)
+      void filesFromDrop(event.dataTransfer.items).then((picked) => handler.current(picked))
+    }
+    window.addEventListener('dragenter', enter)
+    window.addEventListener('dragover', over)
+    window.addEventListener('dragleave', leave)
+    window.addEventListener('drop', drop)
+    return () => {
+      window.removeEventListener('dragenter', enter)
+      window.removeEventListener('dragover', over)
+      window.removeEventListener('dragleave', leave)
+      window.removeEventListener('drop', drop)
+    }
+  }, [])
 
   return (
-    <div
-      onDragEnter={(event) => {
-        event.preventDefault()
-        setDepth((d) => d + 1)
-      }}
-      onDragOver={(event) => event.preventDefault()}
-      onDragLeave={() => setDepth((d) => Math.max(0, d - 1))}
-      onDrop={(event) => {
-        event.preventDefault()
-        setDepth(0)
-        void filesFromDrop(event.dataTransfer.items).then(onFiles)
-      }}
-      className={`ease-mechanical mb-4 rounded-[var(--radius-ctl)] border border-dashed px-4 py-2.5 text-center text-xs duration-[var(--duration-fast)] ${
-        over
-          ? 'border-[var(--color-accent)] bg-[var(--color-surface)]'
-          : // The dashed rectangle *is* the affordance — there is no label, no icon and no
-            // fill saying "drop here", only this line. SC 1.4.11 wants 3:1 for exactly that.
-            'border-[var(--color-edge)]'
-      }`}
-    >
-      {busy && progress !== undefined ? (
-        <span className="text-[var(--color-muted)]">{progressLine(progress)}</span>
-      ) : (
-        <span className="text-[var(--color-muted)]">
-          {over ? (
-            strings.upload.dropNow
-          ) : (
-            <>
-              {strings.upload.dropHere}{' '}
-              <button
-                type="button"
-                onClick={() => input.current?.click()}
-                className="underline hover:text-[var(--color-text)]"
-              >
-                {strings.upload.choose}
-              </button>
-            </>
-          )}
-        </span>
+    <>
+      {depth === 0 ? null : (
+        /*
+          Layout Blue, because this is the one moment the page is live for a drop. The frame is
+          inset from the window edge so it reads as a target and not as a border on the browser.
+        */
+        <div
+          data-drop-overlay
+          className="scrim-in fixed inset-0 z-[var(--z-overlay)] bg-[var(--color-bg)]/95 p-4"
+        >
+          <div className="grid size-full place-items-center rounded-md border-2 border-dashed border-[var(--color-accent)]">
+            <p className="flex items-center gap-2 rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-base font-medium text-[var(--color-bright)]">
+              <Icon name="upload" size={20} />
+              {strings.upload.dropNow}
+            </p>
+          </div>
+        </div>
       )}
       {/*
         `webkitdirectory` is not in React's typed attribute set — it is a non-standard
         attribute every browser that matters implements — so it is spelled lowercase as a
-        DOM attribute rather than camelCased. Hidden rather than styled: the button above
-        is the control, and a bare file input cannot be made to look like anything.
+        DOM attribute rather than camelCased. Hidden rather than styled: the Upload button is
+        the control, and a bare file input cannot be made to look like anything.
       */}
       <input
-        ref={input}
+        ref={picker}
         type="file"
         multiple
         {...{ webkitdirectory: '' }}
@@ -181,17 +194,74 @@ export function DropTarget({
           if (event.target.files !== null) {
             onFiles(filesFromInput(event.target.files))
           }
-          // So dropping the same folder twice in a row fires a second change event.
+          // So picking the same folder twice in a row fires a second change event.
           event.target.value = ''
         }}
       />
-    </div>
+    </>
+  )
+}
+
+/** How far through its current phase an upload is, 0 to 1. */
+export function uploadFraction(progress: UploadProgress): number {
+  switch (progress.phase) {
+    case 'hashing':
+      return progress.filesTotal === 0 ? 0 : progress.filesDone / progress.filesTotal
+    case 'probing':
+      return 0
+    case 'transferring':
+      return progress.bytesToSend === 0 ? 1 : progress.bytesSent / progress.bytesToSend
+    case 'committing':
+      return 1
+  }
+}
+
+/**
+ * The header's one standing button.
+ *
+ * Quiet at rest: an edge and no accent. Layout Blue marks what is live (DESIGN.md), and an
+ * Upload button waiting for a click is not; an upload running is, so the accent arrives as the
+ * bar along its foot and a mono percentage for the phase in hand. The sentence saying which
+ * phase stays in the page's status line, because a percentage alone cannot say "hashing".
+ */
+export function UploadButton({
+  onUpload,
+  busy,
+  progress,
+}: {
+  onUpload: () => void
+  busy: boolean
+  progress: UploadProgress | undefined
+}) {
+  const fraction = busy && progress !== undefined ? uploadFraction(progress) : null
+  return (
+    <button
+      type="button"
+      onClick={onUpload}
+      disabled={busy}
+      className="ease-mechanical relative flex min-h-8 flex-none items-center gap-2 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:hover:translate-y-0"
+    >
+      <Icon name="upload" />
+      <span className="max-sm:sr-only">{strings.toolbar.upload}</span>
+      {fraction === null ? null : (
+        <>
+          <span aria-hidden="true" className="tabular text-[11px] font-normal text-[var(--color-muted)]">
+            {Math.round(fraction * 100)}%
+          </span>
+          <span
+            aria-hidden="true"
+            style={{ transform: `scaleX(${fraction})` }}
+            className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-[var(--color-accent)]"
+          />
+        </>
+      )}
+    </button>
   )
 }
 
 /** One line for whichever phase the upload is in. Each phase has a different number
  *  worth showing, which is why this is a switch and not one string with holes in it. */
-function progressLine(progress: UploadProgress): string {
+export function progressLine(progress: UploadProgress): string {
   switch (progress.phase) {
     case 'hashing':
       return strings.upload.hashing(progress.filesDone, progress.filesTotal)

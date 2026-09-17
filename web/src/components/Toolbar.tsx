@@ -1,7 +1,6 @@
-import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { createLibrary, DEFAULT_LIBRARY_ID, fetchLibraries, makeControlled } from '../lib/api'
+import { useState } from 'react'
+import { createLibrary, fetchLibraries, makeControlled } from '../lib/api'
 import { Dialog, closeMenu } from './Dialog'
 import { FieldsMenuItem } from './Fields'
 import { DensitiesMenuItem } from './Densities'
@@ -20,20 +19,12 @@ import type { LibraryId, NewLibrary } from '../lib/types'
 import { Menu } from './Menu'
 
 /**
- * Everything above the grid, in one row.
+ * The library's own menu, in the header: which library, and everything that acts on all of it.
  *
- * `v2` puts navigation, search, view options and upload in a single bar. This used to be four
- * stacked rows — the action bar, the library switcher, the grid settings and the search field
- * — which put 387px of chrome between the page's top and its first render. The controls are
- * the same controls; what changed is that the ones you set once and leave (card size, page
- * size, which library, whether previews render) went into two menus, and the ones you touch
- * every visit (search, upload, switching to the removed list) stayed on the bar.
- *
- * **Two bars, not one, and that is a deliberate difference from the design.** The brand sits
- * in the root route's header and this row sits under it. Hoisting search into the root would
- * move its debounce and its `q` navigation out of the route that owns that search param, and
- * `index.test.tsx` drives this route's own `SearchBox` through a synthetic root — so the
- * refactor would rewrite a large share of that file to save one 38px row.
+ * Switching, making a new one, the preview setting, a scan, a preview sweep, the field and
+ * density definitions, and importing a bundle. These are set once and left, or done now and
+ * then, so they sit behind one button rather than across the bar; what a person touches every
+ * visit (search, Upload, the places) stays on it.
  *
  * Menus are native popovers (`styles.css` has why). Every control inside one stays in the
  * document while the menu is closed, which is what keeps a test that finds the auto-thumbnail
@@ -41,18 +32,101 @@ import { Menu } from './Menu'
  * never be opened at all, so `index.test.tsx` asserts the trigger is wired to its menu, and
  * the keyboard pass in the browser is the check that it opens.
  */
-export function Toolbar({
+export function LibraryMenu({
   autoThumbnail,
   onAutoThumbnail,
   settingsBusy,
-  settingsNote,
   onScan,
   scanBusy,
   onSweep,
   sweepBusy,
-  note,
   library,
   onSelectLibrary,
+  onImport,
+  importBusy,
+}: {
+  autoThumbnail: boolean | undefined
+  onAutoThumbnail: (on: boolean) => void
+  settingsBusy: boolean
+  onScan: () => void
+  scanBusy: boolean
+  onSweep: () => void
+  sweepBusy: boolean
+  library: LibraryId
+  onSelectLibrary?: (library: LibraryId) => void
+  /** Opens the picker for a bundle exported from Lapidary. */
+  onImport: () => void
+  importBusy: boolean
+}) {
+  return (
+    <Menu id="library-menu" label={strings.toolbar.library}>
+        <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
+      <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
+        {/*
+          `undefined` is "not known yet", and the checkbox says so in the way a checkbox
+          says it: mixed, and not clickable until there is a state to click away from.
+          Painting a confident "on" for the tick before the read lands is the same lie in a
+          shorter window, and a box that flips under the cursor is worse than one that
+          waits. It stays mixed if the read fails outright — `settingsNote` says why and
+          says to reload — because there is nothing honest to put there.
+
+          `indeterminate` is a DOM property with no attribute, so it is set through the ref
+          rather than rendered. Block body: a React 19 ref callback that returns a value is
+          read as a cleanup function.
+        */}
+        <input
+          type="checkbox"
+          checked={autoThumbnail ?? false}
+          ref={(el) => {
+            if (el !== null) {
+              el.indeterminate = autoThumbnail === undefined
+            }
+          }}
+          disabled={settingsBusy || autoThumbnail === undefined}
+          onChange={(event) => onAutoThumbnail(event.target.checked)}
+          className="accent-[var(--color-accent)]"
+        />
+        {strings.library.autoThumbnail}
+      </label>
+        <button
+          type="button"
+          onClick={onScan}
+          disabled={scanBusy}
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {strings.scan.start}
+        </button>
+        <button
+          type="button"
+          onClick={onSweep}
+          disabled={sweepBusy}
+          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {strings.render.sweep}
+        </button>
+        <FieldsMenuItem library={library} />
+        <DensitiesMenuItem library={library} />
+      <button
+        type="button"
+        onClick={onImport}
+        disabled={importBusy}
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {strings.toolbar.importBundle}
+      </button>
+    </Menu>
+  )
+}
+
+/**
+ * The row over the grid: selection and the view menu, and the notes the header's menus leave.
+ *
+ * The places, search, the library menu and Upload moved to the header (`AppFrame`). What stays
+ * is what is about *this grid*: whether you are selecting, and how the cards are laid out.
+ */
+export function Toolbar({
+  settingsNote,
+  note,
   pageSize,
   onPageSize,
   density,
@@ -64,23 +138,9 @@ export function Toolbar({
   searching,
   selecting,
   onSelecting,
-  onUpload,
-  uploadBusy,
-  onImport,
-  importBusy,
-  search,
 }: {
-  autoThumbnail: boolean | undefined
-  onAutoThumbnail: (on: boolean) => void
-  settingsBusy: boolean
   settingsNote: string | null
-  onScan: () => void
-  scanBusy: boolean
-  onSweep: () => void
-  sweepBusy: boolean
   note: string | null
-  library: LibraryId
-  onSelectLibrary?: (library: LibraryId) => void
   pageSize: PageSize
   onPageSize: (size: PageSize) => void
   density: Density
@@ -93,49 +153,10 @@ export function Toolbar({
   searching: boolean
   selecting: boolean
   onSelecting: (on: boolean) => void
-  onUpload: () => void
-  uploadBusy: boolean
-  /** Opens the picker for a bundle exported from Lapidary. */
-  onImport: () => void
-  importBusy: boolean
-  /** The search field, built by the route that owns its query. */
-  search: ReactNode
 }) {
   return (
     <>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {/*
-          Grid is where you are, so it is marked and not linked: a link to `/` from `/` would
-          drop the category and the search you are in the middle of. Removed is a place, not
-          an action, and the only route back to a part somebody removed — so it stays a link,
-          carrying the library, as it was.
-        */}
-        <nav
-          aria-label={strings.toolbar.views}
-          className="flex flex-none items-center gap-0.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-raised)] p-[3px]"
-        >
-          <span
-            aria-current="page"
-            className="flex min-h-6 items-center rounded-[5px] bg-[var(--color-surface)] px-3 text-xs font-semibold text-[var(--color-bright)]"
-          >
-            {strings.toolbar.grid}
-          </span>
-          <Link
-            to="/removed"
-            search={library === DEFAULT_LIBRARY_ID ? undefined : { library }}
-            className="ease-mechanical flex min-h-6 items-center rounded-[5px] px-3 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-          >
-            {strings.removal.removedTitle}
-          </Link>
-          {/* The whole installation's, not one library's, so it carries no library the way Removed does. */}
-          <Link
-            to="/sharing"
-            className="ease-mechanical flex min-h-6 items-center rounded-[5px] px-3 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-          >
-            {strings.sharing.title}
-          </Link>
-        </nav>
-        {search}
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <button
           type="button"
           aria-pressed={selecting}
@@ -213,70 +234,6 @@ export function Toolbar({
             </select>
           </label>
         </Menu>
-        <Menu id="library-menu" label={strings.toolbar.library}>
-          <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
-        <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
-          {/*
-            `undefined` is "not known yet", and the checkbox says so in the way a checkbox
-            says it: mixed, and not clickable until there is a state to click away from.
-            Painting a confident "on" for the tick before the read lands is the same lie in a
-            shorter window, and a box that flips under the cursor is worse than one that
-            waits. It stays mixed if the read fails outright — `settingsNote` says why and
-            says to reload — because there is nothing honest to put there.
-
-            `indeterminate` is a DOM property with no attribute, so it is set through the ref
-            rather than rendered. Block body: a React 19 ref callback that returns a value is
-            read as a cleanup function.
-          */}
-          <input
-            type="checkbox"
-            checked={autoThumbnail ?? false}
-            ref={(el) => {
-              if (el !== null) {
-                el.indeterminate = autoThumbnail === undefined
-              }
-            }}
-            disabled={settingsBusy || autoThumbnail === undefined}
-            onChange={(event) => onAutoThumbnail(event.target.checked)}
-            className="accent-[var(--color-accent)]"
-          />
-          {strings.library.autoThumbnail}
-        </label>
-          <button
-            type="button"
-            onClick={onScan}
-            disabled={scanBusy}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-          >
-            {strings.scan.start}
-          </button>
-          <button
-            type="button"
-            onClick={onSweep}
-            disabled={sweepBusy}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-          >
-            {strings.render.sweep}
-          </button>
-          <FieldsMenuItem library={library} />
-          <DensitiesMenuItem library={library} />
-        </Menu>
-        <button
-          type="button"
-          onClick={onUpload}
-          disabled={uploadBusy}
-          className="ease-mechanical flex min-h-6 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {strings.toolbar.upload}
-        </button>
-        <button
-          type="button"
-          onClick={onImport}
-          disabled={importBusy}
-          className="ease-mechanical flex min-h-6 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {strings.toolbar.importBundle}
-        </button>
       </div>
       {/*
         Outside the menus, always. A note that says the scan failed or that previews could not
@@ -539,158 +496,4 @@ const LAYOUT_LABEL: Record<Layout, string> = {
 const DENSITY_LABEL: Record<Density, string> = {
   comfortable: strings.grid.comfortable,
   compact: strings.grid.compact,
-}
-
-/**
- * The key that moves focus into search from anywhere on the grid, shown inside the field and
- * declared as its `aria-keyshortcuts`. `/` because the tools this audience already lives in
- * spend it on search, so it is a key people try before they read anything.
- *
- * A constant here and not a `strings.ts` entry: it is a key, not copy — nothing translates it,
- * and `KeyboardEvent.key` reports `/` on a Turkish layout too, where it sits on Shift+7.
- */
-const SEARCH_SHORTCUT = '/'
-
-/**
- * The search box, and the chip that says what it is searching.
- *
- * A `<input type="search">`, so the clear affordance, Escape-to-clear and the right mobile
- * keyboard come from the browser rather than from code here.
- *
- * **Local state, debounced navigation.** The field responds to every keystroke and the URL
- * does not: `navigate` on each one would render the route per character and — without
- * `replace` — put every character in the back button's history. 250 ms is the pause after
- * typing, not a delay before feedback.
- *
- * **Two characters minimum, and it is not arbitrary.** A trigram is three characters, so
- * under that `gin_trgm_ops` cannot be used at all and the query is a sequential scan by
- * construction. The box accepts the keystroke and says it is waiting.
- *
- * ponytail: two characters because of the index, not because of the product. If a
- * one-character search is ever wanted, the fix is a prefix index, not removing this.
- */
-export function SearchBox({
-  q,
-  categoryName,
-  filtered,
-  onSearch,
-  onWiden,
-}: {
-  q: string
-  categoryName: string | null
-  filtered: boolean
-  onSearch?: (query: string) => void
-  onWiden: () => void
-}) {
-  const [typed, setTyped] = useState(q)
-  // The URL is the source of truth: a back navigation or a shared link has to move the box,
-  // and without this the field would keep whatever was last typed into it.
-  const [lastFromUrl, setLastFromUrl] = useState(q)
-  if (q !== lastFromUrl) {
-    setLastFromUrl(q)
-    setTyped(q)
-  }
-
-  useEffect(() => {
-    const trimmed = typed.trim()
-    // Below the minimum the query is not run — but an empty box *is* a change, because it
-    // means "show me the library again".
-    if (trimmed.length === 1) return
-    if (trimmed === q) return
-    const timer = setTimeout(() => onSearch?.(trimmed), 250)
-    return () => clearTimeout(timer)
-  }, [typed, q, onSearch])
-
-  // `/` from anywhere on the grid. Not while a person is typing into a field — a slash is
-  // half of every file path — and not under a modal dialog, whose own keys own the page.
-  const field = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== SEARCH_SHORTCUT || event.defaultPrevented) return
-      if (event.ctrlKey || event.metaKey || event.altKey) return
-      const target = event.target
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable || target.closest('input, textarea, select') !== null)
-      ) {
-        return
-      }
-      if (document.querySelector('[aria-modal="true"]') !== null) return
-      event.preventDefault()
-      field.current?.focus()
-      field.current?.select()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [])
-
-  const waiting = typed.trim().length === 1
-  return (
-    <div className="flex min-w-64 flex-1 flex-wrap items-center gap-2">
-      {/*
-        The field sits *below* the ground rather than on it — `--color-raised` against the
-        page, which is how `v2` draws every input. A control you type into reads as a well;
-        one you press reads as a surface.
-      */}
-      <div className="relative flex min-w-64 flex-1 items-center">
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute left-[11px] text-sm text-[var(--color-muted)]"
-        >
-          ⌕
-        </span>
-        <input
-          ref={field}
-          type="search"
-          value={typed}
-          onChange={(event) => setTyped(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape') return
-            // Back to the grid, keeping the query. Chrome's own Escape clears a search field,
-            // which would throw away what was typed on the way out.
-            event.preventDefault()
-            document.getElementById('parts')?.focus()
-          }}
-          aria-label={strings.search.label}
-          aria-keyshortcuts={SEARCH_SHORTCUT}
-          placeholder={strings.search.placeholder}
-          className="peer w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-9 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
-        />
-        {/*
-          The key, shown where it is used. Only while the field is empty and unfocused: once
-          you are in it the hint has done its job, and over typed text it would be noise.
-        */}
-        {typed === '' ? (
-          <kbd
-            aria-hidden="true"
-            className="ease-mechanical pointer-events-none absolute right-2.5 rounded border border-[var(--color-edge)] px-1.5 font-mono text-[11px] leading-4 text-[var(--color-muted)] duration-[var(--duration-fast)] peer-focus:opacity-0"
-          >
-            {SEARCH_SHORTCUT}
-          </kbd>
-        ) : null}
-      </div>
-      {/*
-        The disclosure, not a control that narrows. The sidebar has already narrowed the
-        grid; a search that quietly kept that narrowing without saying so is how somebody
-        concludes a part is missing from the library. Dismissing it widens and keeps the
-        query.
-      */}
-      {!filtered || q === '' ? null : (
-        <button
-          type="button"
-          onClick={onWiden}
-          title={strings.search.widen}
-          className="ease-mechanical rounded-full border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-1 text-xs text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          {categoryName === null
-            ? strings.search.inThisCategory
-            : strings.search.inCategory(categoryName)}{' '}
-          {strings.glyphs.remove}
-        </button>
-      )}
-      {!waiting ? null : (
-        <p className="text-xs text-[var(--color-muted)]">{strings.search.keepTyping}</p>
-      )}
-    </div>
-  )
 }

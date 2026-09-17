@@ -67,8 +67,10 @@ import { BULK_CONCURRENCY, Grid, MorePages, SelectionBar } from '../components/G
 import type { BulkProgress } from '../components/Grid'
 import { QuickLook, useWide } from '../components/QuickLook'
 import { InstanceStorage, StorageTotals } from '../components/Storage'
-import { SearchBox, Toolbar } from '../components/Toolbar'
-import { DropTarget, ScanProgress, jobsSettled } from '../components/Upload'
+import { LibraryMenu, Toolbar } from '../components/Toolbar'
+import { SearchBox } from '../components/Search'
+import { AppFrame } from '../components/AppFrame'
+import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -788,7 +790,87 @@ export function Index({
     )
 
   return (
-    <section className="flex items-start gap-6">
+    <AppFrame
+      current="parts"
+      library={library}
+      skipTo={{ href: '#parts', label: strings.skipToParts }}
+      search={
+        <SearchBox
+          q={q ?? ''}
+          categoryName={selectedFolderName}
+          filtered={folderId !== undefined}
+          onSearch={onSearch}
+          onWiden={() => onSelectFolder?.(null)}
+        />
+      }
+      actions={
+        <>
+          <LibraryMenu
+            library={library}
+            // Three sources, most authoritative first, and `undefined` when none of them has
+            // an answer. The server's echo is the truth once it lands; `variables` is what this
+            // click asked for and covers the round trip, since react-query clears `data` the
+            // moment a mutation goes pending — without it the box springs back to its old
+            // position and sits there, disabled, for as long as the request takes, which reads
+            // as the click having been ignored. A click the server refused is dropped, because
+            // a value it rejected is not a position this library is in and there is now
+            // something true to fall back to: the `GET`, which is the starting position and
+            // the reason design §3.2's default is not. The default is what a library is set to
+            // until someone changes it, not what this one is set to.
+            autoThumbnail={
+              settings.data?.autoThumbnail ??
+              (settings.isError ? undefined : settings.variables) ??
+              librarySettings.data?.autoThumbnail
+            }
+            onAutoThumbnail={(on) => settings.mutate(on)}
+            settingsBusy={settings.isPending}
+            onScan={() => scanNow.mutate()}
+            scanBusy={scanNow.isPending}
+            onSweep={() => sweep.mutate()}
+            sweepBusy={sweep.isPending}
+            onSelectLibrary={onSelectLibrary}
+            onImport={() => bundlePicker.current?.click()}
+            importBusy={importing.isPending}
+          />
+          <UploadButton onUpload={() => picker.current?.click()} busy={upload.isPending} progress={uploading} />
+        </>
+      }
+      rail={
+        <>
+          {/*
+            The tree and the grid are siblings, and the drag between them needs nothing
+            shared: a card writes its identity into the drag payload and a category row
+            reads it back on drop, so neither holds state for the other.
+          */}
+          <SavedFilters
+            library={library}
+            current={filtersOf({ q, folderId, format, material, tag, field, fieldValue, fieldMin, fieldMax })}
+            onApply={(search) => onApplyFilter?.(search)}
+          />
+          <Facets
+            library={library}
+            folderId={folderId}
+            q={q}
+            format={format}
+            material={material}
+            tag={tag}
+            field={field}
+            fieldValue={fieldValue}
+            fieldMin={fieldMin}
+            fieldMax={fieldMax}
+            onSelectFormat={(value) => onSelectFormat?.(value)}
+            onSelectMaterial={(value) => onSelectMaterial?.(value)}
+            onSelectTag={(value) => onSelectTag?.(value)}
+            onSelectField={(key, value, range) => onSelectField?.(key, value, range)}
+          />
+          <FolderTree
+            library={library}
+            selected={folderId ?? null}
+            onSelect={(folder) => onSelectFolder?.(folder)}
+          />
+        </>
+      }
+    >
       {/*
         Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
         is written and removes it again on unmount, so the route that owns the page owns
@@ -796,78 +878,8 @@ export function Index({
         SC 2.4.2, Level A — one title for the whole application titles none of its pages.
       */}
       <title>{strings.titles.library}</title>
-      {/*
-        The first tab stop on the page, and off-screen until it is one.
-
-        SC 2.4.1, Level A. The category tree below is dozens of tab stops that repeat on
-        every visit and it comes first in the source order, so without this the keyboard
-        route to the first part runs through every category in the library.
-
-        Moved by `translate` rather than hidden: `display: none` and `visibility: hidden`
-        both remove it from the tab order, which is the one thing it must stay in. The
-        target takes `tabIndex={-1}` because a `<div>` is not focusable, and a fragment
-        link that moves the viewport without moving focus leaves a keyboard user exactly
-        where they were.
-      */}
-      <a
-        href="#parts"
-        className="ease-mechanical fixed top-4 left-4 z-30 -translate-y-20 rounded-sm border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-2 text-sm duration-[var(--duration-fast)] focus:translate-y-0"
-      >
-        {strings.skipToParts}
-      </a>
-      {/*
-        The tree and the grid are siblings, and the drag between them needs nothing
-        shared: a card writes its identity into the drag payload and a category row
-        reads it back on drop, so neither holds state for the other.
-      */}
-      <div className="w-56 shrink-0">
-        <SavedFilters
-          library={library}
-          current={filtersOf({ q, folderId, format, material, tag, field, fieldValue, fieldMin, fieldMax })}
-          onApply={(search) => onApplyFilter?.(search)}
-        />
-        <Facets
-          library={library}
-          folderId={folderId}
-          q={q}
-          format={format}
-          material={material}
-          tag={tag}
-          field={field}
-          fieldValue={fieldValue}
-          fieldMin={fieldMin}
-          fieldMax={fieldMax}
-          onSelectFormat={(value) => onSelectFormat?.(value)}
-          onSelectMaterial={(value) => onSelectMaterial?.(value)}
-          onSelectTag={(value) => onSelectTag?.(value)}
-          onSelectField={(key, value, range) => onSelectField?.(key, value, range)}
-        />
-        <FolderTree
-          library={library}
-          selected={folderId ?? null}
-          onSelect={(folder) => onSelectFolder?.(folder)}
-        />
-      </div>
       <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
         <Toolbar
-          library={library}
-          // Three sources, most authoritative first, and `undefined` when none of them has
-          // an answer. The server's echo is the truth once it lands; `variables` is what this
-          // click asked for and covers the round trip, since react-query clears `data` the
-          // moment a mutation goes pending — without it the box springs back to its old
-          // position and sits there, disabled, for as long as the request takes, which reads
-          // as the click having been ignored. A click the server refused is dropped, because
-          // a value it rejected is not a position this library is in and there is now
-          // something true to fall back to: the `GET`, which is the starting position and
-          // the reason design §3.2's default is not. The default is what a library is set to
-          // until someone changes it, not what this one is set to.
-          autoThumbnail={
-            settings.data?.autoThumbnail ??
-            (settings.isError ? undefined : settings.variables) ??
-            librarySettings.data?.autoThumbnail
-          }
-          onAutoThumbnail={(on) => settings.mutate(on)}
-          settingsBusy={settings.isPending}
           settingsNote={
             settings.isError
               ? strings.library.autoThumbnailFailed
@@ -875,12 +887,7 @@ export function Index({
                 ? strings.library.autoThumbnailUnknown
                 : null
           }
-          onScan={() => scanNow.mutate()}
-          scanBusy={scanNow.isPending}
-          onSweep={() => sweep.mutate()}
-          sweepBusy={sweep.isPending}
           note={note}
-          onSelectLibrary={onSelectLibrary}
           pageSize={pageSize}
           onPageSize={(size) => {
             setPageSizeState(size)
@@ -909,21 +916,13 @@ export function Index({
             setAnchor(null)
             setBulk(null)
           }}
-          onUpload={() => picker.current?.click()}
-          uploadBusy={upload.isPending}
-          onImport={() => bundlePicker.current?.click()}
-          importBusy={importing.isPending}
-          search={
-            <SearchBox
-              q={q ?? ''}
-              categoryName={selectedFolderName}
-              filtered={folderId !== undefined}
-              onSearch={onSearch}
-              onWiden={() => onSelectFolder?.(null)}
-            />
-          }
         />
-        <DropTarget onFiles={startUpload} busy={upload.isPending} progress={uploading} picker={picker} />
+        <DropOverlay onFiles={startUpload} picker={picker} />
+        {upload.isPending && uploading !== undefined ? (
+          <p role="status" className="mb-4 text-sm text-[var(--color-muted)]">
+            {progressLine(uploading)}
+          </p>
+        ) : null}
         <input
           ref={bundlePicker}
           type="file"
@@ -1070,7 +1069,7 @@ export function Index({
         stays clickable and the next card swaps what it shows.
       */}
       {wide ? look : null}
-    </section>
+    </AppFrame>
   )
 }
 

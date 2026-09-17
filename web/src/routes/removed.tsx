@@ -1,4 +1,4 @@
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   DEFAULT_LIBRARY_ID,
@@ -7,6 +7,7 @@ import {
   restorePart,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { AppFrame } from '../components/AppFrame'
 import type { LibraryId, PartCard } from '../lib/types'
 
 /**
@@ -50,43 +51,39 @@ export function RemovedPage({ library }: { library: LibraryId }) {
   })
 
   return (
-    <section>
-      {/*
-        Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
-        is written and removes it on unmount, so the route that owns the page owns its
-        title — and `index.html`'s static one stays as the pre-hydration fallback. SC 2.4.2.
-      */}
-      <title>{strings.titles.removed}</title>
-      <Link
-        to="/"
-        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-      >
-        {strings.removal.backToLibrary}
-      </Link>
-      <h2 className="mt-4 text-xl font-medium">{strings.removal.removedTitle}</h2>
-      <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
-        {strings.removal.removedLead}
-      </p>
+    <AppFrame current="removed" library={library}>
+      <section>
+        {/*
+          Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
+          is written and removes it on unmount, so the route that owns the page owns its
+          title — and `index.html`'s static one stays as the pre-hydration fallback. SC 2.4.2.
+        */}
+        <title>{strings.titles.removed}</title>
+        <h2 className="text-xl font-medium">{strings.removal.removedTitle}</h2>
+        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
+          {strings.removal.removedLead}
+        </p>
 
-      {removed.isPending ? (
-        <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
-      ) : removed.isError ? (
-        <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
-      ) : removed.data.parts.length === 0 ? (
-        <p className="mt-6 text-[var(--color-muted)]">{strings.removal.removedEmpty}</p>
-      ) : (
-        <>
-          <p className="mt-6 text-sm text-[var(--color-muted)]">
-            {strings.removal.removedCount(removed.data.parts.length)}
-          </p>
-          <ul role="list" className="mt-3 flex flex-col gap-2">
-            {removed.data.parts.map((card) => (
-              <RemovedRow key={card.id} card={card} />
-            ))}
-          </ul>
-        </>
-      )}
-    </section>
+        {removed.isPending ? (
+          <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
+        ) : removed.isError ? (
+          <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
+        ) : removed.data.parts.length === 0 ? (
+          <p className="mt-6 text-[var(--color-muted)]">{strings.removal.removedEmpty}</p>
+        ) : (
+          <>
+            <p className="mt-6 text-sm text-[var(--color-muted)]">
+              {strings.removal.removedCount(removed.data.parts.length)}
+            </p>
+            <ul role="list" className="mt-3 flex flex-col gap-2">
+              {removed.data.parts.map((card) => (
+                <RemovedRow key={card.id} card={card} />
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+    </AppFrame>
   )
 }
 

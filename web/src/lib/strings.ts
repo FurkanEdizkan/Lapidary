@@ -134,10 +134,17 @@ export const strings = {
    * it fit, and every control inside them is the same control it was when it had a row of
    * its own.
    */
+  /** The header every page shares. */
+  frame: {
+    /** The accessible name of the header's nav — "navigation" alone says nothing. */
+    places: 'Places',
+    /** The grid of a library's parts, as a place beside Removed and Sharing. */
+    parts: 'Parts',
+    /** The narrow-screen button that slides the places, and a grid's categories and filters, in over the page. */
+    openDrawer: 'Menu',
+    closeDrawer: 'Close menu',
+  },
   toolbar: {
-    /** The accessible name of the segmented nav — "navigation" alone says nothing. */
-    views: 'Library views',
-    grid: 'Grid',
     view: 'View',
     library: 'Library',
     layout: 'Layout',
@@ -275,14 +282,6 @@ export const strings = {
     loadingMore: 'Loading…',
   },
   upload: {
-    /**
-     * The drop target's own label. Names the two ways in, because they are genuinely
-     * different gestures and a target that mentions only one reads as though the other
-     * will not work — dragging a *folder* is the case most people will try first and the
-     * one a plain file input cannot do.
-     */
-    dropHere: 'Drop a folder here, or',
-    choose: 'choose a folder',
     /** Shown while the drag is over the target, so the page says the drop will land. */
     dropNow: 'Release to add these files',
     /**
@@ -537,7 +536,6 @@ export const strings = {
     removedEmpty: 'Nothing has been removed from this library.',
     removedLead:
       'These are hidden from the library and still on disk. Restore one at any time, or purge it to start the 30-day countdown before its bytes are removed.',
-    backToLibrary: 'Back to the library',
     removedCount: (count: number) =>
       count === 1 ? '1 removed part' : `${count.toLocaleString('en-US')} removed parts`,
     purge: 'Purge permanently',
