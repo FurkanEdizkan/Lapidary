@@ -1,0 +1,521 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-17T16:55:51.608728+00:00",
+  "title": "Design System: Lapidary",
+  "extensions": {
+    "colorMeta": {
+      "anodised-black": {
+        "role": "neutral",
+        "displayName": "Anodised Black",
+        "canonical": "#121214",
+        "tonalRamp": [
+          "#242428",
+          "#404047",
+          "#5b5b66",
+          "#777784",
+          "#9696a0",
+          "#b4b4bc",
+          "#d3d3d7",
+          "#f2f2f3"
+        ]
+      },
+      "machined-slate": {
+        "role": "neutral",
+        "displayName": "Machined Slate",
+        "canonical": "#1a1a1d",
+        "tonalRamp": [
+          "#242428",
+          "#404047",
+          "#5b5b66",
+          "#777785",
+          "#9595a0",
+          "#b4b4bc",
+          "#d3d3d7",
+          "#f2f2f3"
+        ]
+      },
+      "bench-grey": {
+        "role": "neutral",
+        "displayName": "Bench Grey",
+        "canonical": "#17171b",
+        "tonalRamp": [
+          "#232329",
+          "#3e3e49",
+          "#595968",
+          "#747488",
+          "#9393a3",
+          "#b2b2be",
+          "#d2d2d8",
+          "#f1f1f3"
+        ]
+      },
+      "lamp": {
+        "role": "neutral",
+        "displayName": "Lamp",
+        "canonical": "#202024",
+        "tonalRamp": [
+          "#242428",
+          "#3f3f47",
+          "#5b5b66",
+          "#767685",
+          "#9595a1",
+          "#b4b4bc",
+          "#d3d3d8",
+          "#f2f2f3"
+        ]
+      },
+      "scribe-line": {
+        "role": "neutral",
+        "displayName": "Scribe Line",
+        "canonical": "#26262b",
+        "tonalRamp": [
+          "#242429",
+          "#3f3f48",
+          "#5b5b66",
+          "#767685",
+          "#9595a1",
+          "#b4b4bc",
+          "#d3d3d8",
+          "#f1f1f3"
+        ]
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Edge",
+        "canonical": "#65656d",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979f",
+          "#b5b5bb",
+          "#d4d4d7",
+          "#f2f2f3"
+        ]
+      },
+      "chalk": {
+        "role": "neutral",
+        "displayName": "Chalk",
+        "canonical": "#e6e6e9",
+        "tonalRamp": [
+          "#242429",
+          "#3f3f48",
+          "#5a5a67",
+          "#767686",
+          "#9494a1",
+          "#b3b3bc",
+          "#d2d2d8",
+          "#f1f1f3"
+        ]
+      },
+      "quicklime": {
+        "role": "neutral",
+        "displayName": "Quicklime",
+        "canonical": "#f0f0f2",
+        "tonalRamp": [
+          "#242429",
+          "#3f3f48",
+          "#5a5a67",
+          "#757587",
+          "#9494a2",
+          "#b3b3bd",
+          "#d2d2d8",
+          "#f1f1f3"
+        ]
+      },
+      "ash": {
+        "role": "neutral",
+        "displayName": "Ash",
+        "canonical": "#c8c8ce",
+        "tonalRamp": [
+          "#242428",
+          "#404047",
+          "#5b5b66",
+          "#767685",
+          "#9595a1",
+          "#b4b4bc",
+          "#d3d3d8",
+          "#f2f2f3"
+        ]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#8a8a92",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979e",
+          "#b5b5ba",
+          "#d4d4d7",
+          "#f2f2f3"
+        ]
+      },
+      "layout-blue": {
+        "role": "primary",
+        "displayName": "Layout Blue",
+        "canonical": "#2cb4f5",
+        "tonalRamp": [
+          "#033349",
+          "#065981",
+          "#0980b8",
+          "#0ba6f0",
+          "#40bbf6",
+          "#77cff9",
+          "#afe3fb",
+          "#e7f6fe"
+        ]
+      },
+      "brass": {
+        "role": "semantic",
+        "displayName": "Brass",
+        "canonical": "#e8b06a",
+        "tonalRamp": [
+          "#42290a",
+          "#754912",
+          "#a7681a",
+          "#da8822",
+          "#e4a351",
+          "#ecbe84",
+          "#f4d9b6",
+          "#fcf3e9"
+        ]
+      },
+      "patina": {
+        "role": "semantic",
+        "displayName": "Patina",
+        "canonical": "#4f9e94",
+        "tonalRamp": [
+          "#1a3330",
+          "#2d5a54",
+          "#408179",
+          "#54a89d",
+          "#79bcb4",
+          "#a0d0ca",
+          "#c7e3e0",
+          "#eef7f5"
+        ]
+      },
+      "verdigris": {
+        "role": "semantic",
+        "displayName": "Verdigris",
+        "canonical": "#8fd7d0",
+        "tonalRamp": [
+          "#143835",
+          "#23635d",
+          "#338e85",
+          "#42b9ae",
+          "#6bcac1",
+          "#96dad3",
+          "#c1e9e5",
+          "#ecf8f7"
+        ]
+      },
+      "oxide": {
+        "role": "semantic",
+        "displayName": "Oxide",
+        "canonical": "#e88a8a",
+        "tonalRamp": [
+          "#400d0d",
+          "#711616",
+          "#a12020",
+          "#d22929",
+          "#de5858",
+          "#e88888",
+          "#f1b9b9",
+          "#fbeaea"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "First-run bench heading only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The one headline of a page past the grid (Page.ts), including a part's name on its studio page."
+      },
+      "scope": {
+        "displayName": "Scope",
+        "purpose": "The line above the grid naming what is on screen; empty-grid state titles."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card names: two lines broken at separators in the detail layout, one truncated line in the gallery overlay."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Prose, leads, helper text, refusals; 70ch."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Section labels over a scribe line, rail headings, metadata keys; uppercase."
+      },
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "Lapidary in the header, uppercased in CSS."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Every figure and identifier, tabular."
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "0 16px 48px rgba(0, 0, 0, 0.6)",
+        "purpose": "Dialogs, menus and the floating selection bar only."
+      },
+      {
+        "name": "contact",
+        "value": "three.js plane, black radial falloff at 60% opacity, 1.5x footprint",
+        "purpose": "Under a part on a lamp stage; never a CSS shadow."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-mechanical",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "The one curve, CSS and script."
+      },
+      {
+        "name": "duration-fast",
+        "value": "120ms",
+        "purpose": "Hover, scrim fade, one arrival."
+      },
+      {
+        "name": "duration-base",
+        "value": "180ms",
+        "purpose": "State changes, panel rise, turntable crossfade, tween default."
+      },
+      {
+        "name": "duration-slow",
+        "value": "280ms",
+        "purpose": "The quick-look flight, the turntable step back, a whole staggered arrival run."
+      },
+      {
+        "name": "arrive-stagger",
+        "value": "min(24ms, (slow - fast) / (n - 1)), first 12",
+        "purpose": "arrive() in lib/motion.ts."
+      },
+      {
+        "name": "turntable-turn",
+        "value": "8000ms per turn",
+        "purpose": "Card turntable."
+      },
+      {
+        "name": "bench-sweep",
+        "value": "12000ms, ±25°",
+        "purpose": "First-run key light."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "xs",
+        "value": "35rem"
+      },
+      {
+        "name": "sm",
+        "value": "40rem"
+      },
+      {
+        "name": "md",
+        "value": "48rem"
+      },
+      {
+        "name": "lg",
+        "value": "64rem"
+      }
+    ],
+    "zIndex": [
+      {
+        "name": "header",
+        "value": 20
+      },
+      {
+        "name": "drawer",
+        "value": 30
+      },
+      {
+        "name": "overlay",
+        "value": 40
+      },
+      {
+        "name": "skip",
+        "value": 50
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Standing Button",
+      "kind": "button",
+      "refersTo": "button-standing",
+      "description": "The one action a region is about: Download, Upload. Never blue at rest.",
+      "html": "<button class=\"ds-btn-standing\">Download</button>",
+      "css": ".ds-btn-standing{background:#121214;color:#f0f0f2;border:1px solid #65656d;border-radius:7px;padding:8px 16px;font:600 14px/1.25 Archivo,sans-serif;transition:translate 120ms cubic-bezier(0.2,0,0,1)}.ds-btn-standing:hover{translate:0 -1px}.ds-btn-standing:focus-visible{outline:2px solid #2cb4f5;outline-offset:2px}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Every secondary action; pressed takes the accent edge.",
+      "html": "<button class=\"ds-btn-quiet\">Edge length</button> <button class=\"ds-btn-quiet\" aria-pressed=\"true\">Point to point</button>",
+      "css": ".ds-btn-quiet{background:transparent;color:#8a8a92;border:1px solid #65656d;border-radius:7px;min-height:24px;padding:0 8px;font:400 12px Archivo,sans-serif;transition:color 120ms cubic-bezier(0.2,0,0,1)}.ds-btn-quiet:hover{color:#e6e6e9}.ds-btn-quiet[aria-pressed=true]{border-color:#2cb4f5;color:#f0f0f2}.ds-btn-quiet:focus-visible{outline:2px solid #2cb4f5;outline-offset:2px}"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input-text",
+      "description": "Bench Grey well bounded by Edge; accent border on focus.",
+      "html": "<input class=\"ds-input\" placeholder=\"Search by name, part number or file path\">",
+      "css": ".ds-input{background:#17171b;color:#e6e6e9;border:1px solid #65656d;border-radius:7px;padding:8px 12px;font:400 13px Archivo,sans-serif;width:320px;caret-color:#2cb4f5}.ds-input::placeholder{color:#8a8a92}.ds-input:focus{border-color:#2cb4f5;outline:2px solid #2cb4f5;outline-offset:2px}"
+    },
+    {
+      "name": "Active Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip-filter-active",
+      "description": "The one chip: a live narrowing, dismissed to widen the search.",
+      "html": "<button class=\"ds-chip\">In Fasteners <svg viewBox=\"0 0 256 256\" width=\"12\" height=\"12\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z\"/></svg></button>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:6px;background:#1a1a1d;color:#e6e6e9;border:1px solid #2cb4f5;border-radius:9999px;padding:4px 12px;font:400 12px Archivo,sans-serif;transition:translate 120ms cubic-bezier(0.2,0,0,1)}.ds-chip:hover{translate:0 -1px}.ds-chip:focus-visible{outline:2px solid #2cb4f5;outline-offset:2px}"
+    },
+    {
+      "name": "Header",
+      "kind": "nav",
+      "refersTo": "header",
+      "description": "The one header: mark, places, search, library menu, Upload. The places tray's 8px corner is an off-ladder one-off.",
+      "html": "<header class=\"ds-header\"><span class=\"ds-mark\"></span><b class=\"ds-wordmark\">Lapidary</b><nav class=\"ds-places\"><span class=\"ds-here\">Parts</span><a>Removed parts</a><a>Shared libraries</a></nav></header>",
+      "css": ".ds-header{display:flex;align-items:center;gap:12px;background:#1a1a1d;border-bottom:1px solid #26262b;padding:9px 13px;color:#e6e6e9;font-family:Archivo,sans-serif}.ds-mark{width:12px;height:12px;border:1.5px solid #2cb4f5;rotate:45deg;border-radius:3px}.ds-wordmark{font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase}.ds-places{display:flex;gap:2px;background:#17171b;border:1px solid #26262b;border-radius:8px;padding:3px;font-size:13px}.ds-places a,.ds-here{padding:4px 12px;border-radius:7px;color:#8a8a92}.ds-here{background:#1a1a1d;color:#f0f0f2;font-weight:600}.ds-places a:hover{color:#e6e6e9}"
+    },
+    {
+      "name": "Part Card",
+      "kind": "card",
+      "refersTo": "card-part",
+      "description": "Inset render in a Bench Grey well, two-line name, one mono figures line with the approximate label at rest.",
+      "html": "<article class=\"ds-card\"><div class=\"ds-well\"><div class=\"ds-render\"></div></div><div class=\"ds-foot\"><h3 class=\"ds-name\">flange-dn40-lp-3310-02</h3><p class=\"ds-figs\"><span>784 triangles</span> <span class=\"ds-approx\">approximate</span></p></div></article>",
+      "css": ".ds-card{width:180px;background:#1a1a1d;border:1px solid #26262b;border-radius:10px;overflow:hidden;transition:translate 180ms cubic-bezier(0.2,0,0,1)}.ds-card:hover{border-color:#65656d;translate:0 -1px}.ds-well{aspect-ratio:1;background:#17171b;padding:7%;display:grid}.ds-render{border-radius:50%;background:#b8bcc4}.ds-foot{padding:12px}.ds-name{margin:0;font:600 13px/1.375 Archivo,sans-serif;color:#f0f0f2}.ds-figs{margin:6px 0 0;font:400 11px 'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#8a8a92}.ds-approx{text-decoration:underline dotted #65656d;text-underline-offset:2px}"
+    },
+    {
+      "name": "Lamp Stage with Callout",
+      "kind": "custom",
+      "refersTo": "stage",
+      "description": "The lamp's radial pool under a part, with a measurement callout in the marking dye.",
+      "html": "<div class=\"ds-stage\"><span class=\"ds-line\"></span><span class=\"ds-callout\">70.269 mm ≈</span></div>",
+      "css": ".ds-stage{position:relative;width:360px;height:220px;border-radius:10px;background:#121214 radial-gradient(ellipse closest-side at 50% 42%,#202024,#121214)}.ds-line{position:absolute;left:25%;right:25%;top:50%;height:1px;background:#2cb4f5}.ds-callout{position:absolute;left:50%;top:50%;translate:-50% -50%;border:1px solid #2cb4f5;border-radius:4px;background:#1a1a1d;color:#f0f0f2;padding:2px 6px;font:400 11px/1.25 'JetBrains Mono',monospace;white-space:pre}"
+    },
+    {
+      "name": "Menu",
+      "kind": "custom",
+      "refersTo": "dialog-surface",
+      "description": "Popover menu: slate, scribe border, the overlay shadow.",
+      "html": "<div class=\"ds-menu\"><button>Render again</button><button>Move to…</button></div>",
+      "css": ".ds-menu{display:flex;flex-direction:column;gap:4px;width:16rem;background:#1a1a1d;border:1px solid #26262b;border-radius:10px;padding:12px;box-shadow:0 16px 48px rgba(0,0,0,.6)}.ds-menu button{text-align:left;background:none;border:0;color:#8a8a92;font:400 14px Archivo,sans-serif;padding:4px}.ds-menu button:hover{color:#e6e6e9}.ds-menu button:focus-visible{outline:2px solid #2cb4f5;outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lit Bench",
+    "overview": "A machinist's bench under a single task lamp. The parts are lit; the bench is not. Every surface in this interface exists to be the unlit surround for a rendered object — the ground is near-black, the chrome is grey on grey, and the only saturated colour in the room appears when you are doing something. The user's pinned reference is ArtStation's community browse page, and what it gets right is exactly this: a dark room, a dense wall of work, and chrome so quiet you stop seeing it after four seconds.\n\nThe register is quiet, precise and unhurried. Nothing raises its voice. Trust is earned by being exact rather than by being emphatic, which is why secondary text outnumbers primary text and why the interface has no decorative colour at all. This is a tool a person opens forty times a day for six seconds each time; it must be legible at a glance and invisible in memory.\n\nWhere the lamp actually falls is now built. A part is shown in one of four lit places — the part page's studio viewer, the card's turntable under the pointer, the Space stage, and an empty library's first-run bench — each drawn under the same light as the thumbnails, and every one but the turntable (which stays inside its card's well) on the one non-flat ground in the system, the lamp's pool, with the part set down on a soft contact shadow. Everything outside those places is flat, tonal and silent.",
+    "keyCharacteristics": [
+      "Near-black ground; the part on its lamp-lit stage is the only lit thing on the page",
+      "Archivo for every word, JetBrains Mono for every figure; headings share one weight (600) and part by size and colour",
+      "One saturated colour, reserved for live interaction and for marks drawn over a part",
+      "Flat by tonal layering; a shadow only under something that floats over the page",
+      "Renders inset 7% in a Bench Grey well on a bordered card, lifting to Edge under the pointer",
+      "Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware"
+    ],
+    "rules": [
+      {
+        "name": "The Marking Dye Rule",
+        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, pressed, uploading. If a screenshot taken at rest contains Layout Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without a legend.",
+        "section": "colors"
+      },
+      {
+        "name": "The Marked Part Rule",
+        "body": "The image well is exempt from The Marking Dye Rule (owner decision, 2026-09-08), and the licence is now spent: a measurement callout is a Layout Blue line between its picks with a mono figure label edged in Layout Blue, drawn in with `tween`. The exemption covers marks *on the part* and nothing else in the well.",
+        "section": "colors"
+      },
+      {
+        "name": "The Fixed Greys Rule",
+        "body": "Text is Quicklime, Chalk, Ash or Graphite and nothing between. A fifth text grey is how a hierarchy becomes a gradient nobody can parse; when something needs to recede further, it leaves the screen rather than fading.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Step Up Rule",
+        "body": "A surface may sit exactly one tonal step above its parent (ground → slate). Two stacked panels do not get two stacked lightnesses; they get a scribe line between them.",
+        "section": "colors"
+      },
+      {
+        "name": "The Copyable Mono Rule",
+        "body": "Anything a user might paste into another program or compare against another value — a path, a hash, a part number, a measured dimension — is set in mono and is selectable. Mono is a promise that the string is exact and complete, never elided in the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo.",
+        "section": "typography"
+      },
+      {
+        "name": "The Self-Hosted Font Rule",
+        "body": "Lapidary ships into air-gapped deployments. Archivo (400–700) and JetBrains Mono (400–600) are self-hosted from `web/public/fonts/` as variable fonts, two subsets each (`latin`, `latin-ext`), so Turkish renders without a mid-word fallback.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Headline Rule",
+        "body": "A page has one Headline, and the wordmark is not competing with it. Sections below it open on a Label, never on a second Headline.",
+        "section": "typography"
+      },
+      {
+        "name": "The Unlit Bench Rule",
+        "body": "Surfaces do not cast shadows, because the light is on the parts, not on the furniture. The only shadows are the one an overlay throws by being in front of the page, and the one a part throws on the lamp's ground.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Lamp Rule",
+        "body": "The lamp's pool (Lamp at 50% 42% fading to Anodised Black at the box's closest side) is the one gradient in the system and belongs only under a part: the studio viewer, the Space stage, the first-run bench. `closest-side`, so no rectangle shows where it stops.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Inset Picture Rule",
+        "body": "A render sits *inset* in its card — 7% on every side of a square Bench Grey well, with a transparent background of its own — so a wall of parts reads as objects on shelves rather than as a mosaic, and the card's hairline border gives it an edge. The turntable canvas matches the same inset so the swap from picture to 3D is unseen.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Operable Edge Rule",
+        "body": "If a person can click, type into or drop onto it, its boundary is Edge, not Scribe Line. A divider gets the hairline.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Carried Picture Rule",
+        "body": "When a surface opens *about* something on screen, the thing itself moves into it. A stage that merely appears makes a person look back at the grid to check they opened what they meant to.",
+        "section": "components"
+      },
+      {
+        "name": "The Four Lit Places Rule",
+        "body": "three.js draws in the studio viewer, the turntable, the Space stage and the first-run bench, and nowhere else. Every light and material is defined once in `studio.ts`, in two pairs: the turntable and the bench use the raster pair, which matches `raster.rs`'s thumbnail shading to the byte, so the crossfade from picture to model is unseen; the studio viewer keeps the studio pair, because its marks, ghost and section cap are colours chosen in sRGB and a linear output would shift them.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do keep Layout Blue (`#2cb4f5`) for live interaction and for marks drawn on a part. A resting screenshot containing it anywhere but the brand mark is a defect.",
+      "Do set every pasteable or comparable figure — path, hash, part number, dimension, count — in mono with tabular figures, selectable, never middle-elided.",
+      "Do show a card's name, figures and approximate label at rest, and reach every per-part action from the part page, so nothing exists only behind a pointer.",
+      "Do give a page one Headline (600, 1.5rem), a 70ch lead, label-over-rule sections and one standing control, from `Page.ts`.",
+      "Do label every mesh-derived measurement as approximate wherever it appears, including the stage, the studio, dialogs and tooltips.",
+      "Do put a part on the lamp's ground with its contact shadow whenever three.js draws it.",
+      "Do sequence script motion only through `web/src/lib/motion.ts`, inside 280 ms end to end.",
+      "Do use the z scale (20 / 30 / 40 / 50) for anything layering over the page; a local `z-10` inside a card or the grid (a select checkbox, the sticky selection bar) is not a layer.",
+      "Do self-host Archivo and JetBrains Mono, `latin` + `latin-ext`.",
+      "Do route every user-facing string through `web/src/lib/strings.ts`."
+    ],
+    "donts": [
+      "Don't set a card's render edge to edge or drop the card's hairline; the render is inset and the border is the card's only edge.",
+      "Don't add a box-shadow to anything that is not a dialog, a menu or the floating selection bar.",
+      "Don't introduce a fifth text grey, a second accent hue, or a fourth radius.",
+      "Don't use a weight outside 400–700; the self-hosted Archivo file stops at 700. Headings and names are 600, labels 500, the wordmark alone 700.",
+      "Don't fill a standing control with Layout Blue; Upload and Download stand in Quicklime.",
+      "Don't put a stage's controls directly on the lamp; Edge does not clear 3:1 there, so they sit on a Machined Slate dock.",
+      "Don't let colour alone carry a state. Every state has a second cue: a label, an outline, a position, an icon.",
+      "Don't word an eviction so it reads as deletion, or a removal so it reads as a saving.",
+      "Don't animate anything but `transform`, `translate` and `opacity`, or past 180 ms for a state change; 280 ms is for the flight, the turntable's step back and a whole arrival run."
+    ]
+  }
+}

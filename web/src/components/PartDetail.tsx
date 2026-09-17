@@ -821,10 +821,11 @@ export function Detail({
   layout?: 'panel' | 'page'
 }) {
   // The info column's blocks arrive in turn when a part's page opens (`arrive`), once per part.
+  const head = useRef<HTMLDivElement>(null)
   const info = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
-    const blocks = info.current?.children
-    if (blocks !== undefined) arrive(Array.from(blocks) as HTMLElement[])
+    const blocks = [head.current, ...Array.from(info.current?.children ?? [])]
+    arrive(blocks.filter((block): block is HTMLElement => block instanceof HTMLElement))
   }, [part.id])
   // Which parts are out of the view, and how many the view drew. Both belong to one part, so a
   // choice made on one assembly never carries to the next one shown in the same place.
@@ -953,12 +954,12 @@ export function Detail({
           ) : undefined
         }
       >
-        <Row label={strings.detail.triangles}>
+        <Row label={strings.detail.triangles} figure>
           {part.triangleCount === null
             ? strings.detail.unknown
             : strings.detail.trianglesValue(part.triangleCount)}
         </Row>
-        <Row label={strings.detail.boundingBox}>
+        <Row label={strings.detail.boundingBox} figure>
           {part.bboxMm === null ? (
             strings.detail.unknown
           ) : (
@@ -968,7 +969,7 @@ export function Detail({
             />
           )}
         </Row>
-        <Row label={strings.detail.volume}>
+        <Row label={strings.detail.volume} figure>
           {/*
             An open mesh has no volume, and the reason is worth a sentence rather than a
             blank a reader would take for zero. `isWatertight === false` is the reason;
@@ -985,7 +986,7 @@ export function Detail({
             <Figure figure={part.volumeMm3} render={strings.detail.volumeValue} />
           )}
         </Row>
-        <Row label={strings.detail.surfaceArea}>
+        <Row label={strings.detail.surfaceArea} figure>
           {part.surfaceAreaMm2 === null ? (
             strings.detail.unknown
           ) : (
@@ -1086,7 +1087,7 @@ export function Detail({
   if (!page) {
     return (
       <article className="mt-4">
-        <header className="mb-6 flex flex-wrap items-start gap-6">
+        <header className="mb-6 flex flex-wrap items-start gap-x-6 gap-y-3">
           {preview}
           <div>
             {heading}
@@ -1109,16 +1110,20 @@ export function Detail({
     columns, so it is all still on the page and findable, never behind a tab.
   */
   return (
-    <article className="mt-2 grid items-start gap-x-8 gap-y-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
-      <div className="scrim-in min-w-0 lg:sticky lg:top-[4.5rem]">
+    <article className="mt-2 grid items-start gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      {/*
+        Source order is reading order on a phone: the part's name and Download, then the stage, then
+        the rest. At lg the name moves to the right column beside the stage, which spans both rows.
+      */}
+      <div ref={head} className="min-w-0 lg:col-start-2 lg:row-start-1">
+        {heading}
+        {tools}
+      </div>
+      <div className="scrim-in min-w-0 lg:sticky lg:top-[4.5rem] lg:col-start-1 lg:row-span-2 lg:row-start-1">
         <div className="h-[min(60vh,26rem)] lg:h-[min(72vh,52rem)] lg:min-h-[20rem]">{preview}</div>
         <div className="mt-4">{gallery}</div>
       </div>
-      <div ref={info} className="min-w-0">
-        <div className="mb-6">
-          {heading}
-          {tools}
-        </div>
+      <div ref={info} className="min-w-0 lg:col-start-2 lg:row-start-2">
         <div>{geometry}</div>
         <div>{about}</div>
       </div>
@@ -1758,11 +1763,12 @@ function Section({
   )
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+/** `figure` sets the value in the mono face, as every measurement and count in the interface is. */
+function Row({ label, children, figure = false }: { label: string; children: ReactNode; figure?: boolean }) {
   return (
     <>
       <dt className="text-[var(--color-muted)]">{label}</dt>
-      <dd>{children}</dd>
+      <dd className={figure ? 'tabular' : undefined}>{children}</dd>
     </>
   )
 }

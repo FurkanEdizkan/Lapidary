@@ -266,8 +266,12 @@
 */
 .stage-lamp {
   background-color: var(--color-bg);
+  /*
+    `closest-side`: the pool has faded to the page ground by the box's nearest edges, so a stage set
+    on the page shows no rectangle where the gradient stops. A fixed radius overran the box.
+  */
   background-image: radial-gradient(
-    ellipse 65% 60% at 50% 42%,
+    ellipse closest-side at 50% 42%,
     var(--color-lamp),
     var(--color-bg)
   );

@@ -17,6 +17,7 @@ import {
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
+import { breakable } from '../components/Card'
 import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
 const CONTROL =
@@ -95,8 +96,9 @@ function DeviceId({ id }: { id: string }) {
     <div className="mt-2">
       <p className="text-xs text-[var(--color-muted)]">{strings.sharing.deviceId}</p>
       <div className="mt-1 flex flex-wrap items-center gap-2">
-        <code className="rounded-[var(--radius-ctl)] bg-[var(--color-raised)] px-2 py-1 font-mono text-sm break-all select-all">
-          {id}
+        {/* `<wbr>` after each hyphen, so a narrow screen breaks the id between its groups, never inside one. */}
+        <code className="rounded-[var(--radius-ctl)] bg-[var(--color-raised)] px-2 py-1 font-mono text-sm break-words select-all">
+          {breakable(id)}
         </code>
         {clipboard === undefined ? null : (
           <button

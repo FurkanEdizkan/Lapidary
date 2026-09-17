@@ -331,6 +331,18 @@ export function StageLook({
               </dd>
             </dl>
           )}
+          {/*
+            The key, in words, whenever a figure here carries the mark: CLAUDE.md labels a mesh-derived
+            measurement approximate, always, and a lone ≈ is a symbol a reader has to already know.
+          */}
+          {data !== undefined && [data.bboxMm, data.volumeMm3].some((figure) => figure?.approximate === true) ? (
+            <p className="text-xs text-[var(--color-muted)]">
+              <span aria-hidden="true" className="mr-1">
+                {strings.detail.approximate}
+              </span>
+              {strings.detail.approximateKey}
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             {data === undefined || data.sourceHash === null ? null : (
               <a

@@ -60,6 +60,9 @@ area — these encode decisions that are expensive to reverse.
 - Frontend: dark only, no light mode. Motion is mechanical — 120/180/280ms,
   `cubic-bezier(0.2, 0, 0, 1)`, transform and opacity only. Respect
   `prefers-reduced-motion`.
+- anime.js (pinned) is the only engine for sequenced or staggered motion; only
+  `web/src/lib/motion.ts` imports it, and the durations, curve and reduced-motion rules above
+  still apply.
 - No bare user-facing strings in components. English only, but every string goes through
   `src/lib/strings.ts`. Turkish is the planned second locale.
 - Real content in all examples and fixtures. Plausible part numbers, real dimensions.
