@@ -21,4 +21,14 @@ readFrom: string | null, readFromName: string | null,
 /**
  * When the copy shown here was read from the folder's owner, by whoever read it.
  */
-asOf: string | null, };
+asOf: string | null, 
+/**
+ * Whether this installation passes the folder's files on to its other people (S8).
+ */
+seeding: boolean, 
+/**
+ * How many of the folder's files this installation holds, and how many the folder lists — what the
+ * folder's own page says can be served from here. Left out of a list of folders, which does not count
+ * them: a list of ten folders is not worth ten counting queries.
+ */
+heldFiles?: number, listedFiles?: number, };

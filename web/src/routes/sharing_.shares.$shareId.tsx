@@ -10,13 +10,63 @@ import {
   fetchMirroredParts,
   fetchMirroredShare,
   mirroredThumbnailUrl,
+  setSeeding,
   startPull,
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import { HEADLINE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import { breakable } from '../components/Card'
-import type { BatchId, LibraryId, MirroredPart, PeerShareId, Pull } from '../lib/types'
+import type { BatchId, LibraryId, MirroredPart, MirroredShare, PeerShareId, Pull } from '../lib/types'
+
+/**
+ * Whether this installation passes a held folder's files on to its other people (S8).
+ *
+ * One holder is enough for a folder's content to be there, and this is how this installation becomes one of
+ * them. Switching it off is not leaving the folder — it stays, and what was pulled stays — so the line under
+ * the switch says that rather than leaving somebody to guess what they just gave up.
+ */
+function Seeding({ share, folder }: { share: PeerShareId; folder: MirroredShare }) {
+  const queryClient = useQueryClient()
+  const [note, setNote] = useState<string | null>(null)
+  const set = useMutation({
+    mutationFn: (seeding: boolean) => setSeeding(share, seeding),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      setNote(null)
+      void queryClient.invalidateQueries({ queryKey: ['sharing', 'shares', share] })
+    },
+    onError: () => setNote(strings.sharing.seedingFailed),
+  })
+  return (
+    <div className="mt-4">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={folder.seeding}
+          disabled={set.isPending}
+          onChange={(event) => set.mutate(event.target.checked)}
+        />
+        {strings.sharing.seedingLabel}
+      </label>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+        {folder.seeding
+          ? folder.heldFiles === undefined || folder.listedFiles === undefined
+            ? strings.sharing.loading
+            : strings.sharing.seedingHeld(folder.heldFiles, folder.listedFiles)
+          : strings.sharing.seedingOffNote}
+      </p>
+      {note === null ? null : (
+        <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </div>
+  )
+}
 
 const BUTTON =
   'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
@@ -97,6 +147,7 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
                   : strings.sharing.librarySynced(library.data.syncedAt)}
             </p>
             <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
+            <Seeding share={share} folder={library.data} />
             <PullPanel share={share} />
             {parts.isPending ? (
               <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>

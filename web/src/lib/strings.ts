@@ -1803,6 +1803,13 @@ export const strings = {
     /** A folder read from one of its other people while its owner was away (S7). */
     libraryRelayed: (relay: string, at: string) =>
       `As ${relay} read it, ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    /** Passing a held folder's files on to its other people (S8). */
+    seedingLabel: 'Serve this folder’s files to the people in it',
+    seedingHeld: (held: number, listed: number) =>
+      `${held.toLocaleString('en-US')} of ${listed.toLocaleString('en-US')} files here can be served from this installation`,
+    seedingOffNote:
+      'Off: the folder stays, and what you pulled stays. Its people fetch its files from its owner, or from somebody else who holds them.',
+    seedingFailed: 'Could not change that. Reload the page and try again.',
     libraryNotReadYet:
       'Not read yet. It is read the next time their machine answers, and appears here once it has been.',
     /** Parts leave this list when the sharer stops offering them; nothing of this installation's goes with them. */

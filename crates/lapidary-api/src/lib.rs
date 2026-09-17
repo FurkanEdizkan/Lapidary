@@ -315,6 +315,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                     get(sharing::peer_shares),
                 )
                 .route("/api/sharing/shares/{id}", get(sharing::mirrored_share))
+                // Whether this installation passes a held folder's files on to its other people (S8).
+                .route(
+                    "/api/sharing/shares/{id}/seeding",
+                    put(sharing::set_seeding),
+                )
                 .route(
                     "/api/sharing/shares/{id}/parts",
                     get(sharing::mirrored_parts),

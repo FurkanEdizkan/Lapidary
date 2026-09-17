@@ -7,14 +7,15 @@
 //! log, since that is what a resume costs this machine's disk.
 
 use crate::PeerDevice;
-use crate::shares::{failed, may_read, refused};
+use crate::shares::{asked_owner, failed, may_read, refused};
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, DeviceId, ShareId};
-use lapidary_db::{Grant, PgPool, PgShares};
+use lapidary_core::{BlobHash, DeviceId, PeerShareId, ShareId};
+use lapidary_db::{Grant, PgMirror, PgPool, PgShares, PgSharing, Serving};
 use lapidary_storage::SourceReader;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -72,6 +73,12 @@ impl Drop for Stream {
     }
 }
 
+/// Whose folder a file is being asked for, when it is not this installation's (S8).
+#[derive(Debug, Deserialize)]
+pub struct BlobQuery {
+    owner: Option<String>,
+}
+
 /// What the blob route reads: the database, for access and reachability, and the store the bytes are in.
 #[derive(Clone)]
 pub struct BlobState {
@@ -103,33 +110,46 @@ async fn blob(
     State(state): State<BlobState>,
     ConnectInfo(PeerDevice(device)): ConnectInfo<PeerDevice>,
     Path((share, blake3)): Path<(ShareId, String)>,
+    Query(query): Query<BlobQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refusal) = may_read(&state.db, device, share).await {
-        return refusal;
-    }
+    let Ok(owner) = asked_owner(query.owner.as_deref()) else {
+        return not_in_share();
+    };
     let Some(device) = device else {
         return not_in_share();
     };
-    // Browsing needs no grant; a file of a share that asks first does.
-    match PgShares(state.db.clone()).grant(device, share).await {
-        Ok(grant) if grant.allows_files() => {}
-        Ok(Grant::Denied) => {
-            return refused(
-                StatusCode::FORBIDDEN,
-                "denied",
-                "The owner of this share declined your request to pull it.",
-            );
+    // Whose folder this file belongs to decides which of two ways it may be served, and there is **no fallback
+    // between them** (S8). A file of a folder held here but not listed by it would otherwise be served for
+    // knowing its hash, which is exactly what content addressing must never mean.
+    let held = match relayed(&state, device, owner, share).await {
+        Ok(held) => held,
+        Err(refusal) => return refusal,
+    };
+    if held.is_none() {
+        if let Err(refusal) = may_read(&state.db, Some(device), share).await {
+            return refusal;
         }
-        Ok(Grant::NotShared) => return not_in_share(),
-        Ok(_) => {
-            return refused(
-                StatusCode::FORBIDDEN,
-                "askFirst",
-                "The owner of this share asks to be asked before anyone pulls it. Ask, then wait for them to grant it.",
-            );
+        // Browsing needs no grant; a file of a share that asks first does.
+        match PgShares(state.db.clone()).grant(device, share).await {
+            Ok(grant) if grant.allows_files() => {}
+            Ok(Grant::Denied) => {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    "denied",
+                    "The owner of this share declined your request to pull it.",
+                );
+            }
+            Ok(Grant::NotShared) => return not_in_share(),
+            Ok(_) => {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    "askFirst",
+                    "The owner of this share asks to be asked before anyone pulls it. Ask, then wait for them to grant it.",
+                );
+            }
+            Err(err) => return failed(&err),
         }
-        Err(err) => return failed(&err),
     }
     let Some(stream) = state.streams.take(device) else {
         return refused(
@@ -141,7 +161,11 @@ async fn blob(
     let Ok(hash) = BlobHash::parse_hex(&blake3) else {
         return not_in_share();
     };
-    let location = match PgShares(state.db.clone()).blob(share, &hash.to_hex()).await {
+    let found = match held {
+        Some(held) => PgMirror(state.db.clone()).held(held, &hash.to_hex()).await,
+        None => PgShares(state.db.clone()).blob(share, &hash.to_hex()).await,
+    };
+    let location = match found {
         Ok(Some(location)) => location,
         Ok(None) => return not_in_share(),
         Err(err) => return failed(&err),
@@ -186,6 +210,43 @@ async fn blob(
             format!("bytes {start}-{}/{size}", size - 1),
         );
         (StatusCode::PARTIAL_CONTENT, [kind, length, range], body).into_response()
+    }
+}
+
+/// The folder held here whose file this request is about, when it named an owner other than this installation
+/// (S8). `Ok(None)` is a folder of this installation's own, which the ordinary path answers.
+///
+/// Whatever this answers is final. A folder held here that this installation does not serve is refused here
+/// and never tried the other way, and neither is one whose roster does not name the caller.
+async fn relayed(
+    state: &BlobState,
+    device: DeviceId,
+    owner: Option<DeviceId>,
+    share: ShareId,
+) -> Result<Option<PeerShareId>, Response> {
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    if PgSharing(state.db.clone())
+        .identity()
+        .await
+        .map_err(|err| failed(&err))?
+        .is_some_and(|identity| identity.device_id == owner)
+    {
+        return Ok(None);
+    }
+    match PgMirror(state.db.clone())
+        .serves(owner, share, device)
+        .await
+    {
+        Ok(Serving::Yes(held)) => Ok(Some(held)),
+        Ok(Serving::NotShared) => Err(not_in_share()),
+        Ok(Serving::NotSeeding) => Err(refused(
+            StatusCode::FORBIDDEN,
+            "notSeeding",
+            "This installation holds that folder and has been set not to pass its files on. Ask its owner, or another of the people it goes to.",
+        )),
+        Err(err) => Err(failed(&err)),
     }
 }
 

@@ -635,3 +635,56 @@ async fn an_introduction_is_accepted_at_the_address_its_folders_owner_gave(pool:
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(refusal["reason"], "badDeviceId");
 }
+
+/// Sharing S8: a folder pulled here is served to its other people, unless its holder says otherwise.
+///
+/// The page needs three things from the api: whether this installation is passing that folder's files on, how
+/// many of them it actually holds, and a way to stop. Stopping is not leaving: what was pulled stays.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_held_folder_says_what_can_be_served_from_here_and_can_be_stopped(pool: sqlx::PgPool) {
+    let share = mirrored_terrain(&pool).await;
+    let uri = format!("/api/sharing/shares/{share}");
+
+    let (status, folder) = send(&pool, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        folder["seeding"], true,
+        "a folder held here is passed on by default"
+    );
+    assert_eq!(
+        folder["listedFiles"], 2,
+        "both of Terrain's parts name a file"
+    );
+    assert_eq!(
+        folder["heldFiles"], 0,
+        "and this installation holds none of them until it pulls"
+    );
+
+    let (status, _) = send(
+        &pool,
+        "PUT",
+        &format!("{uri}/seeding"),
+        Some(json!({ "seeding": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, folder) = send(&pool, "GET", &uri, None).await;
+    assert_eq!(folder["seeding"], false);
+    assert_eq!(
+        folder["partCount"], 2,
+        "and the folder is still there, whole"
+    );
+
+    let (status, refusal) = send(
+        &pool,
+        "PUT",
+        &format!(
+            "/api/sharing/shares/{}/seeding",
+            lapidary_core::PeerShareId::new().as_uuid()
+        ),
+        Some(json!({ "seeding": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["reason"], "noSuchShare");
+}

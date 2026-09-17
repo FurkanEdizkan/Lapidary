@@ -24,6 +24,9 @@ const TERRAIN: MirroredShare = {
   readFrom: null,
   readFromName: null,
   asOf: '2026-09-17T01:40:00Z',
+  seeding: true,
+  heldFiles: 1,
+  listedFiles: 2,
 }
 
 const CLIFF: MirroredPart = {
@@ -92,6 +95,10 @@ function stub({
       if (init?.method === 'POST') {
         posted.push({ url, body: JSON.parse(init.body ?? 'null') })
         return { ok: true, status: 202, json: async () => pulled }
+      }
+      if (url.endsWith('/seeding')) {
+        posted.push({ url, body: JSON.parse(init?.body ?? 'null') })
+        return { ok: true, status: 204, json: async () => null }
       }
       if (url.endsWith('/pause') || url.endsWith('/resume')) {
         posted.push({ url, body: null })
@@ -256,4 +263,32 @@ test('a folder read through somebody else says whose reading it is', async () =>
 
   await screen.findByText(strings.sharing.libraryRelayed('Mira’s studio', '2026-09-17T09:12:00Z'))
   expect(screen.queryByText(strings.sharing.librarySynced('2026-09-17T01:40:00Z'))).toBeNull()
+})
+
+/**
+ * Sharing S8: this installation is one of the machines a folder's files can come from, and says so.
+ *
+ * Switching it off is not leaving the folder, so the line under the switch says what actually changes rather
+ * than leaving somebody to guess what they just gave up.
+ */
+test('a held folder says what can be served from here, and the switch stops it', async () => {
+  stub()
+  renderPage()
+
+  await screen.findByText(strings.sharing.seedingHeld(1, 2))
+  const seeding = screen.getByLabelText(strings.sharing.seedingLabel)
+  fireEvent.click(seeding)
+
+  await waitFor(() =>
+    expect(posted.some((call) => call.url.endsWith(`/api/sharing/shares/${SHARE}/seeding`))).toBe(true),
+  )
+  expect(posted.find((call) => call.url.endsWith('/seeding'))?.body).toEqual({ seeding: false })
+})
+
+test('a folder not being served says the folder and what was pulled stay', async () => {
+  stub({ share: { status: 200, body: { ...TERRAIN, seeding: false } } })
+  renderPage()
+
+  await screen.findByText(strings.sharing.seedingOffNote)
+  expect(screen.queryByText(strings.sharing.seedingHeld(1, 2))).toBeNull()
 })
