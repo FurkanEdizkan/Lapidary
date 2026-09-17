@@ -42,6 +42,8 @@ const AYSE: Peer = {
   lastSeenAt: '2026-09-16T11:40:05Z',
   lastError: null,
   online: true,
+  introducedBy: null,
+  foldersInCommon: 1,
 }
 
 const MAKERSPACE: Peer = {
@@ -53,6 +55,8 @@ const MAKERSPACE: Peer = {
   lastError:
     'The installation at 100.101.12.7:8082 turned this one away: it has not added this installation’s device id, or has removed it.',
   online: false,
+  introducedBy: null,
+  foldersInCommon: 1,
 }
 
 beforeEach(() => {
@@ -431,4 +435,37 @@ test('with nobody introduced the page says nothing about introductions', async (
   renderPage()
   await screen.findByText(strings.sharing.people)
   expect(screen.queryByText(strings.sharing.introductionsTitle)).toBeNull()
+})
+
+/**
+ * Sharing S10: taking it back. Somebody a folder's owner introduced stays on this list when the folder that
+ * brought them goes — removing people is a person's own act — and the row says where they came from and that
+ * there is nothing between the two installations any more.
+ */
+test('somebody introduced whose folders are gone says so, and can be removed', async () => {
+  const calls = stub({
+    peers: [
+      AYSE,
+      {
+        ...MAKERSPACE,
+        name: 'Mira’s studio',
+        introducedBy: AYSE.deviceId,
+        foldersInCommon: 0,
+        lastError: null,
+      },
+    ],
+  })
+  renderPage()
+
+  const mira = (await screen.findByText('Mira’s studio')).closest('li') as HTMLElement
+  expect(within(mira).getByText(strings.sharing.introducedBySomebody('Ayşe’s workshop'))).toBeDefined()
+  expect(within(mira).getByText(strings.sharing.noFoldersInCommon)).toBeDefined()
+
+  const ayse = (await screen.findByText('Ayşe’s workshop')).closest('li') as HTMLElement
+  expect(within(ayse).queryByText(strings.sharing.noFoldersInCommon)).toBeNull()
+
+  fireEvent.click(within(mira).getByRole('button', { name: strings.sharing.removeLabel('Mira’s studio') }))
+  await waitFor(() =>
+    expect(calls.some((call) => call.method === 'DELETE' && call.url.includes(MAKERSPACE.deviceId))).toBe(true),
+  )
 })

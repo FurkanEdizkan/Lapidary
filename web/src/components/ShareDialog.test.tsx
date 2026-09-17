@@ -35,6 +35,8 @@ const WORKSHOP: Peer = {
   lastSeenAt: '2026-09-17T08:03:00Z',
   lastError: null,
   online: true,
+  introducedBy: null,
+  foldersInCommon: 1,
 }
 const BENCH: Peer = {
   deviceId: 'b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6',
@@ -44,6 +46,8 @@ const BENCH: Peer = {
   lastSeenAt: null,
   lastError: null,
   online: false,
+  introducedBy: null,
+  foldersInCommon: 1,
 }
 
 function stub(

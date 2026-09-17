@@ -3292,6 +3292,48 @@ rule — people who know each other only, no tracker, no public directory. Plan:
   waiting; and, with the owner's address answering nothing, a pull completes from another holder — the file
   could have come from nowhere else.
 
+**Taking it back** (stage S10).
+- **Nothing new is needed to take a folder back.** Removing somebody from it (S5) stops their list carrying it,
+  and on their side the next round deletes the folder, its parts and its roster — a cache catching up, which
+  the page has said since S2b. Serving stops with it, because what may be served is decided by the roster, and
+  discovery stops asking, because holders are read from the same rows. **What they pulled stays**, filed under
+  the folder's owner with its provenance, as the owner decided.
+- **A pairing with nothing left in it.** `peer.folders_in_common` counts the folders this installation offers
+  somebody and the mirrored folders whose owner's roster names them. Zero says so on the People list — "No
+  folder in common any more. They stay on this list until you remove them, and removing them keeps everything
+  you pulled." — and `introduced_by` finally has its reader: the row says who introduced them. Removing anybody
+  stays a person's own act; nothing here removes anybody.
+- **The three-installation proof** (`bin/lapidary-server/tests/peer_group.rs`), the plan's run, as a test rather
+  than as three containers — each installation has **its own database**, made beside the test's and dropped
+  afterwards, because the whole subject is what one installation knows about another's folder and when it stops
+  knowing it:
+  - Ayşe owns Terrain (two parts) and picks Burak and Cem. Both read it; each is offered an introduction to the
+    other, published by Ayşe, and accepts it. Cem is offered Burak and nobody else.
+  - Burak pulls Terrain whole: `done`, 2 files.
+  - Ayşe adds a third part, Burak reads it, and Ayşe stops answering Cem. **The round that fails to reach her
+    takes Terrain from Burak instead** — three parts, `read_from` Burak, with the as-of of Burak's reading.
+  - Cem opens one part he does not hold. With Ayşe's address answering nothing, it can only come from Burak: it
+    lands as `Shared/Ayşe’s workshop (<group>)/Terrain/cliff-face.stl`, under the folder's owner.
+  - Ayşe comes back and takes Cem off Terrain. Burak reads her roster, Cem reads her list: the folder leaves
+    Cem's list with its parts, **the part he pulled stays**, Burak's `serves` answers Cem `notShared` — the gate
+    the blob route's second branch reads, whose refusal `peer_blob.rs` covers — and Burak is still on Cem's
+    People list with nothing in common.
+  - The three databases are named for their roles and dropped-then-made as the test starts, so a run that fails
+    part-way is cleared by the next run rather than by hand.
+- **Known ceiling, recorded twice** (here and in `0044`): who a folder may be passed on to is decided by the
+  roster its owner published, and that roster can only be read from its owner. An owner who takes somebody off
+  a folder and then goes offline leaves the other holders serving them until the owner answers again. Bounding
+  it wants a staleness window on `peer_share_member.seen_at`, and is not built.
+- **Not done: the containerised run.** The plan asked for two compose projects and a native peer, as goal 8's
+  harness did. Goal 8's Docker permission ended with it, so this goal proves itself in-process instead, on real
+  TLS connections between real peer services with separate databases and stores. What the containers would add
+  is the deployment, not the protocol.
+
+**Goal 9 closed** (2026-09-18). S5–S10 are each merged `--no-ff` with `cargo xtask verify slice` green on the
+merged tree. `docs/DATA.md` §7 describes the tables and the rules they carry, `docs/FEATURES.md`'s sharing table
+gains the six built rows and narrows the non-goal to a public directory and to relaying between machines that
+cannot reach each other, and `PRODUCT.md` says what the peer role now sends and to whom. Nothing was pushed.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

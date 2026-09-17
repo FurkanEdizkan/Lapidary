@@ -392,10 +392,17 @@ Phase 8; see `docs/ROADMAP.md` § Shared libraries.
 | Share a category, with a licence warning shown before it is offered | S2, built |
 | Browse what somebody shares, with previews and licences, while they are away | S2, built |
 | Pull a shared library into a chosen library, resumable, under `Shared/<sharer>`, naming who it came from | S3, built |
-| Choose which parts of a shared library to pull | S3, later |
+| Open one part of a shared folder and download that one; the whole-folder pull stays | S9, built |
 | Ask me first: grant, decline, change the answer; stopping a share or removing somebody refuses their next request | S4, built |
 | Pause and resume a pull; at most two files at once to one installation and eight in all | S4, built |
-| A public directory, tracker, swarm, relay or hole punching | **[—]** people who know each other only |
+| Say who a folder goes to: pick people per folder, and change it later | S5, built |
+| The folder's owner introduces its people to each other; each accepts or declines once | S6, built |
+| A folder stays browsable while its owner is away, through another of its people, marked with whose reading it is | S7, built |
+| Everyone who holds a folder can serve its files, with a switch per folder to stop | S8, built |
+| Fetch a file from whoever has it: the owner first while online, then whoever answered most recently | S9, built |
+| Take it back: remove somebody from a folder, and their copies stay and stop being served | S10, built |
+| A public directory, tracker, or discovery of machines nobody has paired with | **[—]** people who know each other only |
+| A relay or hole punching between installations that cannot reach each other | **[—]** reachable addresses only |
 
 ---
 

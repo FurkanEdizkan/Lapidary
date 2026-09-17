@@ -886,26 +886,42 @@ presents, and `name`, what this installation calls itself.
   its digest as it starts. A key in the database is a key the api's own credentials can read.
 - **No row means sharing is off:** the peer role has never run here, and the page says how to switch it on.
 
-`peer` (`0037`) is one row per installation paired by hand: `device_id bytea` as primary key, `address`
-(`host:port`, no scheme), `name` as that installation's last hello gave it, `added_at`, `removed_at`,
-`last_seen_at` and `last_error`.
+`peer` (`0037`) is one row per installation paired by hand or by an accepted introduction: `device_id bytea` as
+primary key, `address` (`host:port`, no scheme), `name` as that installation's last hello gave it, `added_at`,
+`removed_at`, `last_seen_at`, `last_error`, and since `0043` `introduced_by` and `features`.
 - **Removal is soft.** `removed_at` hides the row and takes the device off the peer role's roster, so its next
   handshake is refused. Pairing with the same id again clears it and brings the same row back.
 - **Online is decided in SQL, on the database's clock:** the last hello succeeded (`last_error IS NULL`) and
   was within `ONLINE_WITHIN_SECS`, 45 s or three hello rounds. Neither the api nor the peer role compares a
   timestamp of its own.
-- **Written by the peer role's hello round,** every 15 s. An answer sets `last_seen_at` and the name and clears
-  `last_error`; a failure sets `last_error`, in words, and keeps `last_seen_at`.
+- **Written by the peer role's hello round,** every 15 s. An answer sets `last_seen_at`, the name and `features` and
+  clears `last_error`; a failure sets `last_error`, in words, and keeps `last_seen_at`.
+- **`features`** is what that installation said it answers beyond protocol 1's routes (`0043`). It is how the protocol
+  grows without its number moving: `PROTOCOL` stays `1` for ever, because `sync::hello` refuses anything else and an
+  older installation would mark this one permanently unreachable. Nothing new is asked of an installation until its
+  hello lists it, and one this installation has not said hello to lists nothing — which errs the same way.
+- **`introduced_by`** records who published the roster somebody arrived on (S6). It is their own row afterwards:
+  removing the introducer never removes them, and the People list says where they came from.
 
 ### 7.2 What this installation shares (S2a, S4)
 
-`share` (`0038`) is a category offered to everyone paired: `id`, `library_id`, `folder_id`, `created_at`, `removed_at`,
-and since `0041` `mode`, `open` or `ask`.
+`share` (`0038`) is a category this installation offers: `id`, `library_id`, `folder_id`, `created_at`,
+`removed_at`, since `0041` `mode` (`open` or `ask`), and since `0042` `audience` (`everyone` or `members`).
 - **A share is the category and everything under it,** parts filed there later included. Nothing lists parts: the
   catalogue walks the folder tree when it is read, and every read requires the share and its category to be live.
 - **One live share a category** (`share_one_live_per_folder`). Stopping is soft.
-- **`ask` keeps the catalogue open and the files closed:** everyone paired still sees what it holds, and fetching a
-  file needs a grant.
+- **`ask` keeps the catalogue open and the files closed:** everyone the folder reaches still sees what it holds, and
+  fetching a file needs a grant.
+- **Who it goes to** (`0042`): `audience = 'everyone'` is a folder nobody has picked people for — every folder shared
+  before S5, and every one since whose owner has not picked — and it reaches whoever is paired, people paired later
+  included. Saying who it goes to sets `members`, for good: from then on `share_member` is the whole of who sees it, an
+  empty list included, which reaches nobody. Stopping is still `removed_at`, and still the thing that withdraws a folder.
+
+`share_member` (`0042`) is one row a person a folder: `share_id`, `device_id`, `added_at`, `removed_at`.
+- **One condition, four reads.** `reaches!` in `lapidary-db::shares` is the membership rule, and the list a peer is
+  offered, whether it may read a folder, where it stands with the files and the requests its owner sees all carry it. A
+  folder taken off somebody answers them the `notShared` a stranger gets.
+- **Removal is soft**, as everywhere in sharing: what they pulled is theirs, and the row records that they were in it.
 
 `share_grant` (`0041`) is one row a person a share: `share_id`, `device_id`, `state` (`asked`, `granted`, `denied`),
 `asked_at`, `decided_at`, and `decided_by`, null until Phase 8 has users to name.
@@ -913,7 +929,7 @@ and since `0041` `mode`, `open` or `ask`.
 - **Checked at every file request,** with the pairing and the share, so a grant taken back, a share stopped or a person
   removed refuses the next request on a connection already open.
 
-### 7.3 What other installations share, mirrored (S2b)
+### 7.3 What other installations share, mirrored (S2b, S6–S8)
 
 `peer_share` and `peer_share_part` (`0039`) are **a cache of another installation's list, not this installation's
 data.** `peer_share` holds each share somebody offers — their id for it, its name, part count, the `digest` it was last
@@ -923,18 +939,43 @@ BLAKE3, size, format and a thumbnail kept only under 64 KB.
   transaction.
 - **What a sharer stops offering is deleted from the mirror.** That is a cache catching up; the page says the sharer
   stopped offering it, never that something here was removed.
+- **A folder is keyed by its owner** (`0044`), not by who mentioned it: `peer_share.device_id` is whose folder it is,
+  and `catalogue_from` is who this copy was read from — null is the owner. `catalogue_as_of` is when the copy was read
+  **from the owner**, by whoever read it, which is not `synced_at` ("when this installation last wrote this row").
+- **Freshness alone decides between two copies.** A relayed catalogue is taken only when its as-of beats the one held.
+  There is no round barrier, so a direct read wins by being newer rather than by being direct. A list from a member can
+  never withdraw a folder: the delete that takes up a list is scoped to the folders that installation owns, so relayed
+  knowledge only ever adds.
+- **`peer_share.seeding`** (`0045`), on by default, is whether this installation passes that folder's files on to its
+  other people. Off keeps the folder and what was pulled; it says only that those files do not come from here.
 
-### 7.4 Pulls, and where a pulled part came from (S3, S4)
+`peer_share_member` (`0043`) is a mirrored folder's roster **as its owner published it**: `peer_share_id`, `device_id`,
+`name`, `address`, `may_fetch`, `seen_at`, `declined_at`.
+- **No foreign key to `peer`**, deliberately: the point of a row here is a machine nobody has paired with yet.
+- **"Accepted" is not a column.** An accepted introduction is a live `peer` row for that device — the same row pairing
+  by hand makes. `declined_at` is the only answer kept, so a declined introduction is not offered again every round.
+- **It is the authorization for everything relayed.** Whether a folder may be passed on to somebody, and whether its
+  files may be, is decided by the roster its owner published, never by holding the bytes.
+
+### 7.4 Pulls, and where a pulled part came from (S3, S4, S9)
 
 `pull` (`0040`, states widened in `0041`) is one request to fetch a mirrored share into a library: `peer_share_id` (set
 null when the mirror forgets the share, so the row outlives it), `device_id`, a copy of `share_name`, `library_id`,
 `state` (`queued`, `fetching`, `waiting`, `paused`, `importing`, `done`, `failed`), file and byte counts, `batch_id`
-once its bundles are queued, and `error` in words.
+once its bundles are queued, `error` in words, and since `0046` `source_path` — null is the whole folder, set is one
+part opened and asked for.
 - **The row is the resume.** The peer role picks unfinished pulls up oldest first, paused ones aside, and a restart
   picks up the same pull. The files themselves wait in the staging volume as `<blake3>.part`, then `<blake3>` once
   their hash checks, until the batch is recorded.
 - **Nothing a pull stages is this installation's data** until import writes the parts; a failed pull's staged files are
   reused by the next pull of the same files.
+- **A file comes from whoever has it** (S9): the folder's owner and the people on the roster its owner published that
+  this installation is paired with, ordered by who answered a hello most recently, the owner first while online. Each
+  is asked `/have` in turn; the first yes is fetched from, and one that is busy or silent is passed over. Only the
+  owner can answer asking first, so an owner **away** — silent for three hello rounds — is not a refusal, while one
+  still answering hellos is waited for.
+- **`device_id` stays the folder's owner** whatever machine the bytes came from, so `part_provenance` names the folder
+  rather than the connection it arrived over.
 
 `part_provenance` (`0040`) names who a pulled part came from: `part_id`, `device_id`, `sharer_name`, `pulled_at`. One row
 a part, refreshed by a later pull; purge deletes it with the part.

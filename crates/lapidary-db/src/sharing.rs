@@ -39,6 +39,13 @@ pub struct PeerRow {
     pub last_error: Option<String>,
     /// The last hello succeeded, within [`ONLINE_WITHIN_SECS`].
     pub online: bool,
+    /// Who introduced them, when they arrived on a folder's roster rather than by somebody pasting their id
+    /// (S6). Their own row afterwards: removing the introducer never removes them.
+    pub introduced_by: Option<DeviceId>,
+    /// How many folders this installation still has in common with them: the ones it offers them, and the
+    /// ones it holds whose owner's roster names them. Zero is somebody who is paired and reaches nothing,
+    /// which the People list says rather than leaving them looking like anybody else (S10).
+    pub folders_in_common: i64,
 }
 
 pub struct PgSharing(pub PgPool);
@@ -96,7 +103,7 @@ impl PgSharing {
         let rows: Vec<PeerTuple> = sqlx::query_as(concat!(
             "SELECT ",
             peer_columns!(),
-            " FROM peer WHERE removed_at IS NULL ORDER BY added_at, device_id"
+            " FROM peer pe WHERE pe.removed_at IS NULL ORDER BY pe.added_at, pe.device_id"
         ))
         .bind(ONLINE_WITHIN_SECS)
         .fetch_all(&self.0)
@@ -118,7 +125,7 @@ impl PgSharing {
         let row: PeerTuple = sqlx::query_as(concat!(
             "SELECT ",
             peer_columns!(),
-            " FROM peer WHERE device_id = $2"
+            " FROM peer pe WHERE pe.device_id = $2"
         ))
         .bind(ONLINE_WITHIN_SECS)
         .bind(device.as_bytes().as_slice())
@@ -154,7 +161,7 @@ impl PgSharing {
         let row: PeerTuple = sqlx::query_as(concat!(
             "SELECT ",
             peer_columns!(),
-            " FROM peer WHERE device_id = $2"
+            " FROM peer pe WHERE pe.device_id = $2"
         ))
         .bind(ONLINE_WITHIN_SECS)
         .bind(device.as_bytes().as_slice())
@@ -241,11 +248,18 @@ impl PgSharing {
 /// database's clock, never by comparing a timestamp in whichever process happens to read it.
 macro_rules! peer_columns {
     () => {
-        "device_id, address, name, \
-         (extract(epoch FROM added_at) * 1000000)::bigint, \
-         (extract(epoch FROM last_seen_at) * 1000000)::bigint, \
-         last_error, \
-         (last_error IS NULL AND last_seen_at > now() - make_interval(secs => $1::float8)) IS TRUE"
+        "pe.device_id, pe.address, pe.name, \
+         (extract(epoch FROM pe.added_at) * 1000000)::bigint, \
+         (extract(epoch FROM pe.last_seen_at) * 1000000)::bigint, \
+         pe.last_error, \
+         (pe.last_error IS NULL AND pe.last_seen_at > now() - make_interval(secs => $1::float8)) IS TRUE, \
+         pe.introduced_by, \
+         (SELECT count(*) FROM share s JOIN folder f ON f.id = s.folder_id \
+           WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
+           AND (s.audience = 'everyone' OR EXISTS (SELECT 1 FROM share_member m \
+             WHERE m.share_id = s.id AND m.device_id = pe.device_id AND m.removed_at IS NULL))) \
+         + (SELECT count(*) FROM peer_share_member psm JOIN peer_share ps ON ps.id = psm.peer_share_id \
+           WHERE psm.device_id = pe.device_id)"
     };
 }
 use peer_columns;
@@ -258,10 +272,12 @@ type PeerTuple = (
     Option<i64>,
     Option<String>,
     bool,
+    Option<Vec<u8>>,
+    i64,
 );
 
 fn peer_row(
-    (device_id, address, name, added_us, seen_us, last_error, online): PeerTuple,
+    (device_id, address, name, added_us, seen_us, last_error, online, introduced_by, in_common): PeerTuple,
 ) -> Result<PeerRow, DbError> {
     Ok(PeerRow {
         device_id: stored_device("peer.device_id", device_id)?,
@@ -273,6 +289,10 @@ fn peer_row(
             .transpose()?,
         last_error,
         online,
+        introduced_by: introduced_by
+            .map(|bytes| stored_device("peer.introduced_by", bytes))
+            .transpose()?,
+        folders_in_common: in_common,
     })
 }
 
