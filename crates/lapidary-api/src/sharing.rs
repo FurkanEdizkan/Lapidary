@@ -329,6 +329,23 @@ pub struct MirroredShare {
     pub read_from_name: Option<String>,
     /// When the copy shown here was read from the folder's owner, by whoever read it.
     pub as_of: Option<Timestamp>,
+    /// Whether this installation passes the folder's files on to its other people (S8).
+    pub seeding: bool,
+    /// How many of the folder's files this installation holds, and how many the folder lists — what the
+    /// folder's own page says can be served from here. Left out of a list of folders, which does not count
+    /// them: a list of ten folders is not worth ten counting queries.
+    #[ts(optional, type = "number")]
+    pub held_files: Option<i64>,
+    #[ts(optional, type = "number")]
+    pub listed_files: Option<i64>,
+}
+
+/// `PUT /api/sharing/shares/{id}/seeding`'s body.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetSeeding {
+    pub seeding: bool,
 }
 
 /// A page of a mirrored share's parts. `next` is the `after` for the page that follows.
@@ -376,7 +393,12 @@ pub async fn peer_shares(State(state): State<AppState>, Path(device): Path<Strin
         Err(err) => return bad_device_id(err),
     };
     match PgMirror(state.db).shares_of(device).await {
-        Ok(rows) => Json(rows.into_iter().map(mirrored).collect::<Vec<_>>()).into_response(),
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| mirrored(row, None))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Err(err) => internal_error(&err, "mirrored shares failed"),
     }
 }
@@ -385,10 +407,39 @@ pub async fn mirrored_share(
     State(state): State<AppState>,
     Path(share): Path<PeerShareId>,
 ) -> Response {
-    match PgMirror(state.db).share(share).await {
-        Ok(Some(row)) => Json(mirrored(row)).into_response(),
-        Ok(None) => no_such_share(),
-        Err(err) => internal_error(&err, "mirrored share failed"),
+    let mirror = PgMirror(state.db);
+    let row = match mirror.share(share).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return no_such_share(),
+        Err(err) => return internal_error(&err, "mirrored share failed"),
+    };
+    // Counted beside the folder rather than with every page of it: the page says it once, under the header.
+    match mirror.held_count(share).await {
+        Ok((held, listed)) => Json(mirrored(row, Some((held, listed)))).into_response(),
+        Err(err) => internal_error(&err, "mirrored share held count failed"),
+    }
+}
+
+/// `PUT /api/sharing/shares/{id}/seeding` — pass a held folder's files on to its other people, or stop.
+///
+/// Stopping is not leaving the folder: what was pulled stays, and the folder stays browsable. It is this
+/// installation saying it will not be one of the machines those files come from.
+pub async fn set_seeding(
+    State(state): State<AppState>,
+    Path(share): Path<PeerShareId>,
+    body: Result<Json<SetSeeding>, JsonRejection>,
+) -> Response {
+    let Ok(Json(SetSeeding { seeding })) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badSeeding",
+            "Say whether to pass this folder's files on, as {\"seeding\": true} or {\"seeding\": false}. Reload the page and try again.",
+        );
+    };
+    match PgMirror(state.db).set_seeding(share, seeding).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_such_share(),
+        Err(err) => internal_error(&err, "seeding set failed"),
     }
 }
 
@@ -592,7 +643,7 @@ fn no_such_share() -> Response {
     )
 }
 
-fn mirrored(row: MirroredShareRow) -> MirroredShare {
+fn mirrored(row: MirroredShareRow, counted: Option<(i64, i64)>) -> MirroredShare {
     MirroredShare {
         id: row.id,
         device_id: row.device.to_string(),
@@ -603,6 +654,9 @@ fn mirrored(row: MirroredShareRow) -> MirroredShare {
         read_from: row.read_from.map(|device| device.to_string()),
         read_from_name: row.read_from_name,
         as_of: row.as_of,
+        seeding: row.seeding,
+        held_files: counted.map(|(held, _)| held),
+        listed_files: counted.map(|(_, listed)| listed),
     }
 }
 

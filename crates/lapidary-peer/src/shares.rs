@@ -179,7 +179,7 @@ async fn relays(db: &PgPool, device: DeviceId) -> Result<Vec<Share>, DbError> {
 
 /// Whose folder a request is about, when it says. `Err(())` is an id that is not one, which every caller
 /// answers with the refusal a stranger gets: a request naming a machine that cannot exist learns nothing.
-fn asked_owner(owner: Option<&str>) -> Result<Option<DeviceId>, ()> {
+pub(crate) fn asked_owner(owner: Option<&str>) -> Result<Option<DeviceId>, ()> {
     match owner {
         None | Some("") => Ok(None),
         Some(owner) => owner.parse().map(Some).map_err(|_| ()),

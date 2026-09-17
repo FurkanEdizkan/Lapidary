@@ -6,6 +6,7 @@
 
 use crate::DbError;
 use crate::repo::detail_stamp;
+use crate::shares::BlobLocation;
 use crate::sharing::stored_device;
 use jiff::Timestamp;
 use lapidary_core::{DeviceId, PartId, PeerShareId, ShareId};
@@ -74,6 +75,16 @@ pub struct IntroductionRow {
     pub introducer_name: Option<String>,
 }
 
+/// Whether this installation may serve another of a folder's people its files (S8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Serving {
+    Yes(PeerShareId),
+    /// Not mirrored here, or the caller is not on the folder's roster, or is on it without leave to fetch.
+    NotShared,
+    /// Mirrored here, and this installation has been told to stop passing that folder's files on.
+    NotSeeding,
+}
+
 /// A folder mirrored here, as it is passed on to another of its people (S7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelayedShare {
@@ -105,6 +116,8 @@ pub struct MirroredShareRow {
     pub read_from_name: Option<String>,
     /// When the copy held here was read from the folder's owner, by whoever read it.
     pub as_of: Option<Timestamp>,
+    /// Whether this installation passes the folder's files on to its other people (S8).
+    pub seeding: bool,
 }
 
 /// A mirrored part, as a page shows it.
@@ -128,7 +141,7 @@ macro_rules! share_columns {
         "ps.id, ps.device_id, pe.name, ps.name, ps.part_count, \
          (extract(epoch FROM ps.synced_at) * 1000000)::bigint, \
          ps.catalogue_from, relay.name, \
-         (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint \
+         (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint, ps.seeding \
          FROM peer_share ps JOIN peer pe ON pe.device_id = ps.device_id \
          LEFT JOIN peer relay ON relay.device_id = ps.catalogue_from"
     };
@@ -144,6 +157,7 @@ type ShareTuple = (
     Option<Vec<u8>>,
     Option<String>,
     Option<i64>,
+    bool,
 );
 
 type IntroductionTuple = (
@@ -172,7 +186,7 @@ type PartTuple = (
 );
 
 fn share_row(
-    (id, device, sharer, name, part_count, synced_us, read_from, read_from_name, as_of_us): ShareTuple,
+    (id, device, sharer, name, part_count, synced_us, read_from, read_from_name, as_of_us, seeding): ShareTuple,
 ) -> Result<MirroredShareRow, DbError> {
     Ok(MirroredShareRow {
         id: PeerShareId::from_uuid(id),
@@ -190,6 +204,7 @@ fn share_row(
         as_of: as_of_us
             .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
             .transpose()?,
+        seeding,
     })
 }
 
@@ -534,6 +549,102 @@ impl PgMirror {
                 })
             })
             .collect()
+    }
+
+    /// Whether this installation may serve `caller` a file of the folder `owner` owns as `remote` (S8).
+    ///
+    /// Four things, and all four: this installation mirrors that folder, its owner is somebody it is still
+    /// paired with, it is seeding that folder, and the caller is on the roster the folder's owner published
+    /// **with the owner's leave to fetch**. The roster is the authorization, exactly as it is for the
+    /// catalogue: holding a file is not what entitles anybody to it.
+    pub async fn serves(
+        &self,
+        owner: DeviceId,
+        remote: ShareId,
+        caller: DeviceId,
+    ) -> Result<Serving, DbError> {
+        let row: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
+            "SELECT ps.id, ps.seeding, (m.may_fetch IS TRUE) \
+             FROM peer_share ps \
+             JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
+             LEFT JOIN peer_share_member m ON m.peer_share_id = ps.id AND m.device_id = $3 \
+             WHERE ps.device_id = $1 AND ps.remote_id = $2 AND ps.synced_at IS NOT NULL",
+        )
+        .bind(owner.as_bytes().as_slice())
+        .bind(remote.as_uuid())
+        .bind(caller.as_bytes().as_slice())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(match row {
+            // Not on the folder's roster, or on it without leave to fetch, reads the same as never having
+            // heard of the folder: an answer that distinguished them would say who else is in it.
+            None => Serving::NotShared,
+            Some((_, _, false)) => Serving::NotShared,
+            Some((_, false, _)) => Serving::NotSeeding,
+            Some((id, true, true)) => Serving::Yes(PeerShareId::from_uuid(id)),
+        })
+    }
+
+    /// Where a file of a mirrored folder is, when this installation holds it: the hash is in **that folder's**
+    /// catalogue, and a live part here has it as a source file.
+    ///
+    /// Both halves, never either alone. Holding a hash that the folder does not list would make knowing a hash
+    /// enough to be given the bytes, which is the one thing content addressing must never mean.
+    ///
+    /// **Any** live part here holding those bytes satisfies the second half, not only the one pulled from that
+    /// folder: the file is the same file, and the folder listing it is what says this caller may have it. So a
+    /// part pulled from the folder and then removed is still served while some other part here holds the same
+    /// bytes — which is what a content-addressed store means by holding a file at all.
+    pub async fn held(
+        &self,
+        share: PeerShareId,
+        blake3: &str,
+    ) -> Result<Option<BlobLocation>, DbError> {
+        let row: Option<(Option<String>, Option<i16>, i64)> = sqlx::query_as(
+            "SELECT f.storage_path, f.zstd_level, f.size_bytes FROM peer_share_part psp \
+             JOIN file f ON f.blake3 = psp.blake3 AND f.role = 'source' \
+             JOIN revision r ON r.id = f.revision_id \
+             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+             WHERE psp.peer_share_id = $1 AND psp.blake3 = $2 \
+             ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
+        )
+        .bind(share.as_uuid())
+        .bind(blake3)
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(
+            row.map(|(storage_path, zstd_level, size_bytes)| BlobLocation {
+                storage_path,
+                zstd_level,
+                size_bytes,
+            }),
+        )
+    }
+
+    /// How many of a mirrored folder's files this installation holds, and how many it lists — the page's
+    /// "137 of 402 files here can be served from this installation".
+    pub async fn held_count(&self, share: PeerShareId) -> Result<(i64, i64), DbError> {
+        let row: (i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE EXISTS ( \
+               SELECT 1 FROM file f JOIN revision r ON r.id = f.revision_id \
+               JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+               WHERE f.blake3 = psp.blake3 AND f.role = 'source')), count(*) \
+             FROM peer_share_part psp WHERE psp.peer_share_id = $1 AND psp.blake3 IS NOT NULL",
+        )
+        .bind(share.as_uuid())
+        .fetch_one(&self.0)
+        .await?;
+        Ok(row)
+    }
+
+    /// Seed a mirrored folder, or stop. `false` when there is no such folder mirrored here.
+    pub async fn set_seeding(&self, share: PeerShareId, seeding: bool) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE peer_share SET seeding = $2 WHERE id = $1")
+            .bind(share.as_uuid())
+            .bind(seeding)
+            .execute(&self.0)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// The mirrored folder `owner` owns as `remote`, when `caller` is on the roster its owner published for it

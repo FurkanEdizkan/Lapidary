@@ -3236,6 +3236,32 @@ rule — people who know each other only, no tracker, no public directory. Plan:
   Bounding it belongs with S10, where taking a folder back is the subject.
 - **Left for later:** fetching a file from whoever holds it is S8's seeding switch and S9's discovery.
 
+**Seeding what you pulled** (stage S8).
+- **`peer_share.seeding`** (`0045`), on by default: pulling a folder and then refusing to pass it on is not what
+  anybody means by joining one. Per folder, because a machine on a metered link may want to hold one without
+  serving it.
+- **The blob route's second branch, and no fallback between them.** `GET /peer/v1/shares/{share}/blob/{blake3}`
+  takes `?owner=`; naming somebody else's folder commits the request to the mirror path and it is never tried
+  the other way. Four things, all four: the folder is mirrored here, its owner is still paired with, seeding is
+  on, and the caller is on the roster its owner published **with leave to fetch** — then the hash must be in
+  **that folder's** catalogue and a live part here must hold it. `Range`, `416` and the in-flight limits are
+  shared by both branches, so a relayed file resumes exactly as an owned one does.
+- **The refusal that matters** is the last: serving a hash this installation holds but that folder does not list
+  would make knowing a hash enough to be given the bytes. Mutation-checked — widening `held` to any hash held
+  here fails that test and nothing else.
+- **`PUT /api/sharing/shares/{id}/seeding`**, and the folder's page carries the switch and "1 of 2 files here
+  can be served from this installation". Off says what actually changes: the folder stays, what was pulled
+  stays, and its people fetch from its owner or from somebody else who holds them.
+- **Decided without the owner:** a list of folders does not count what is held of each — a list of ten folders
+  is not worth ten counting queries — so the count is the folder's own page's, answered beside it. And any live
+  part here holding a file satisfies "held", not only the one pulled from that folder: the file is the same
+  file, and the folder listing it is what says the caller may have it.
+- **What the tests cover, and what they do not.** The four refusals and the count are unit-tested, against a
+  file this installation ingested itself. Pulling a folder and then serving it — the same bytes arriving by a
+  pull and leaving by the blob route — is proved end to end in S10's three-installation run.
+- **Left for later:** a pull still asks the folder's owner for every file. Choosing a holder, and doing it one
+  part at a time, is S9.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

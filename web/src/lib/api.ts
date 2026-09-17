@@ -66,6 +66,7 @@ import type {
   MirroredShare,
   Pull,
   PullId,
+  SetSeeding,
   DecideGrant,
   ShareRequest,
   StartPull,
@@ -1595,6 +1596,23 @@ export async function answerIntroduction(
       `/api/sharing/introductions/${encodeURIComponent(share)}/${encodeURIComponent(deviceId)}`,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
     ),
+    strings.sharing.refusedWithoutReason,
+  )
+}
+
+/**
+ * `PUT /api/sharing/shares/{id}/seeding` — pass a held folder's files on to its other people, or stop.
+ *
+ * Stopping is not leaving the folder: what was pulled stays, and the folder stays browsable.
+ */
+export async function setSeeding(share: PeerShareId, seeding: boolean): Promise<FieldWritten> {
+  const body: SetSeeding = { seeding }
+  return fieldWritten(
+    await fetch(`/api/sharing/shares/${encodeURIComponent(share)}/seeding`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
     strings.sharing.refusedWithoutReason,
   )
 }

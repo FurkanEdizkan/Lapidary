@@ -430,22 +430,19 @@ async fn past_two_files_to_one_installation_or_eight_in_all_the_next_is_told_to_
     drop(others);
 }
 
-/// Sharing S7: a folder held here but owned by somebody else is browsable through this installation, and its
-/// **files** are not served from here — not yet.
-///
-/// Serving them is S8, behind a switch and its own gate. Until then the blob route answers only about folders
-/// this installation shares itself, so a relayed folder's file is the refusal a stranger gets. This test is
-/// what keeps that true while S8 is written: the one way a relayed file may ever be served is S8's own branch.
-#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-async fn a_file_of_a_folder_only_held_here_is_not_served_yet(pool: sqlx::PgPool) {
-    let shared = shared(&pool).await;
+/// A refusal's body, as every route here answers one.
+fn refusal(body: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(body).unwrap_or(serde_json::Value::Null)
+}
+
+/// A folder of Mira's, mirrored here with Ayşe on the roster Mira published for it, holding the file this
+/// installation already has on disk. Answers Mira's id and her id for the folder.
+async fn mira_holds(pool: &sqlx::PgPool, hash: &str) -> (DeviceId, ShareId) {
     let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
     PgSharing(pool.clone())
         .add_peer(mira, "192.168.1.31:8082")
         .await
         .expect("pairs with Mira");
-
-    // Mira's Rockery, mirrored here, with Ayşe on the roster Mira published for it — and the same file in it.
     let mirror = PgMirror(pool.clone());
     let rockery = ShareId::from_uuid(
         "01a0c7e2-4d11-7b20-9a31-7c2e5dab0009"
@@ -466,7 +463,6 @@ async fn a_file_of_a_folder_only_held_here_is_not_served_yet(pool: sqlx::PgPool)
         )
         .await
         .expect("takes Mira's offer");
-    let hash = shared.inside.0.clone();
     mirror
         .replace_catalogue(
             stale[0].id,
@@ -478,7 +474,7 @@ async fn a_file_of_a_folder_only_held_here_is_not_served_yet(pool: sqlx::PgPool)
                 part_number: None,
                 tags: &[],
                 licences: &[],
-                blake3: Some(&hash),
+                blake3: Some(hash),
                 size_bytes: Some(204_800),
                 format: Some("stl"),
                 thumbnail: None,
@@ -499,18 +495,87 @@ async fn a_file_of_a_folder_only_held_here_is_not_served_yet(pool: sqlx::PgPool)
         )
         .await
         .expect("takes Rockery's roster");
+    (mira, rockery)
+}
 
-    let (status, _, _) = get(
-        &pool,
-        shared.root.path(),
-        ayse(),
-        &format!("/peer/v1/shares/{}/blob/{hash}", rockery.as_uuid()),
-        None,
-    )
-    .await;
+/// Sharing S8: one holder is enough for a folder's content to be there.
+///
+/// Mira's Rockery is held here, and Ayşe is one of its people. So this installation serves her its files —
+/// the same bytes, from whoever is awake — and refuses in each of the four ways it can: a folder it does not
+/// hold, somebody not on the folder's roster, a folder it has been told not to pass on, and a file whose hash
+/// it holds but that folder does not list. The last is the one that matters: knowing a hash must never be
+/// enough to be given the bytes.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_folder_held_here_is_served_to_its_people_and_refused_four_ways(pool: sqlx::PgPool) {
+    let shared = shared(&pool).await;
+    let hash = shared.inside.0.clone();
+    let (mira, rockery) = mira_holds(&pool, &hash).await;
+    let file = format!(
+        "/peer/v1/shares/{}/blob/{hash}?owner={mira}",
+        rockery.as_uuid()
+    );
+
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &file, None).await;
     assert_eq!(
         status,
-        StatusCode::NOT_FOUND,
-        "the bytes are here and this installation does not share that folder"
+        StatusCode::OK,
+        "Ayşe is in Mira's folder, and the file is here"
+    );
+    assert_eq!(body, shared.inside.1, "and the bytes are the file's own");
+
+    // A file whose hash this installation holds, and Rockery does not list: the refusal that keeps content
+    // addressing from being authorization.
+    let elsewhere = format!(
+        "/peer/v1/shares/{}/blob/{}?owner={mira}",
+        rockery.as_uuid(),
+        shared.outside
+    );
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &elsewhere, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal(&body)["reason"], "notInShare");
+
+    // Somebody paired with this installation who is not on Rockery's roster.
+    let nazli = DeviceId::from_public_key(b"ed25519 public key of nazli's laptop");
+    PgSharing(pool.clone())
+        .add_peer(nazli, "192.168.1.44:8082")
+        .await
+        .expect("pairs");
+    let (status, _, body) = get(&pool, shared.root.path(), nazli, &file, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal(&body)["reason"], "notInShare");
+
+    // A folder this installation does not hold at all reads the same to the asker.
+    let unheld = format!(
+        "/peer/v1/shares/{}/blob/{hash}?owner={mira}",
+        ShareId::new().as_uuid()
+    );
+    let (status, _, _) = get(&pool, shared.root.path(), ayse(), &unheld, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Told to stop passing that folder on.
+    let mirror = PgMirror(pool.clone());
+    let held = mirror
+        .relayed_to(mira, rockery, ayse())
+        .await
+        .expect("answers")
+        .expect("held here");
+    assert!(
+        mirror
+            .set_seeding(held, false)
+            .await
+            .expect("stops seeding")
+    );
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &file, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(refusal(&body)["reason"], "notSeeding");
+
+    // And seeding again serves it again, with the count the page shows.
+    assert!(mirror.set_seeding(held, true).await.expect("seeds again"));
+    let (status, _, _) = get(&pool, shared.root.path(), ayse(), &file, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        mirror.held_count(held).await.expect("counts"),
+        (1, 1),
+        "one file listed, and this installation holds it"
     );
 }
