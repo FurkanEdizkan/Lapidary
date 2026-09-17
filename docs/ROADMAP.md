@@ -2891,6 +2891,26 @@ upgrade from the code before goal 7, and the Containers workflow. Goal file:
   mount of the local `postgres:18` image to take their size, which the goal file's "never mount, otherwise" did not
   allow for; nothing was written.
 
+**Stage 1: the images** (no code; `target/docker-check/build.sh`, `build-summary.txt`, `build-<service>.log`).
+- Built one service at a time from `main`, project `lapidary-check`, with the disk guard before each:
+
+  | Image | Build | Size | Root free after | Build cache after |
+  |---|---|---|---|---|
+  | `db` | 7 s | 647 MB | 24 GB | 15.4 GB |
+  | `web` | 18 s | 90 MB | 22 GB | 17.5 GB |
+  | `api` | 119 s (its release `cargo build` 104 s) | 158 MB | 18 GB | 21.1 GB |
+  | `peer` | 2 s, from `api`'s layers | 158 MB | 18 GB | 21.1 GB |
+  | `worker` | 916 s: OCCT's compile 861 s (goal 4: 766 s), `cargo build` with both kernels 142 s | 268 MB | 16 GB | 23.3 GB |
+
+- No prune was needed during the build; root never went under 16 GB.
+- **What each image is:**
+  - `api` and `peer` run as `lapidary` and hold no `/opt/occt` and no `occt-bridge`.
+  - `worker` holds the bridge: `occt-bridge version` answers `occt 8.0.1 bridge 8`, and `selftest` writes and reads back
+    a solid at the expected volume.
+  - Run with `LAPIDARY_ROLE=worker` against a scratch database, the `api` image refuses — "this binary was built without
+    ingest support" — and the `worker` image starts its job worker. The first is what the Containers workflow's untargeted
+    build produces (stage 5).
+
 ---
 
 ## Phase 6 — Dashboard and similarity
