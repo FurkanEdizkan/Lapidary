@@ -6,7 +6,7 @@
 >
 > | Stage | Merge | Mutations caught | Measured exit |
 > |---|---|---|---|
-> | 1. Listener hardening | `36efd9a` | 4 of 4 | a silent TCP connection no longer delays pairing (36/34/35 s before, 27/15/13 s after) |
+> | 1. Listener hardening | `36efd9a` | 4 of 4 | with silent TCP connections open, pairing, a removal seen and pairing again took 36, 34 and 35 s on the old listener and 27, 15 and 13 s on this one (28, 16 and 13 s with none) |
 > | 2. S2a, share a category | `26967ab` | 18 of 18 | exercised end to end by S2b's measurement |
 > | 3. S2b, browse | `fac28c8` | 14 of 14 | 998 parts mirrored with thumbnails 19 s after sharing; pairing to online 15 s |
 > | 4. S3, pull | `2f145fd` | 21 of 21 | 1,077,177,442 bytes moved against a prediction of 1,077,177,442 across a `kill -9` at half way; a re-pull after one revision moved that file alone |
