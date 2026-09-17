@@ -53,7 +53,7 @@ import {
   type Section,
   type Vec3, explodeOffsets, partCentres } from '../lib/viewer-math'
 import { MeasureBar, SectionBar, ExplodeBar } from './Measure'
-import { disposeModel, partMaterial, studioLights } from './studio'
+import { contactShadow, disposeModel, partMaterial, shadowMaterial, studioLights } from './studio'
 import { tween } from '../lib/motion'
 
 type View = {
@@ -121,6 +121,8 @@ type Kit = {
   markMaterial: PointsMaterial
   /** A reading's callout: an accent line between its picks, drawn over the part like the marks. */
   calloutMaterial: LineBasicMaterial
+  /** The contact shadow under the part (`studio.ts`). */
+  shadowMaterial: MeshBasicMaterial
   ghostMaterial: MeshBasicMaterial
   capMaterial: MeshBasicMaterial
   capBack: MeshBasicMaterial
@@ -140,6 +142,7 @@ function kit(): Kit {
     material: partMaterial(),
     markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
     calloutMaterial: new LineBasicMaterial({ color: MARK, depthTest: false }),
+    shadowMaterial: shadowMaterial(),
     // Drawn through the part rather than hidden behind it: a smaller earlier revision sits inside
     // the current one, and a ghost only visible where it sticks out would read as no change there.
     // Amber, `--color-warn`, not grey: a grey ghost over a grey part on a near-black ground showed
@@ -218,6 +221,7 @@ export function prepare(): Promise<void> {
       'position',
       new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3),
     )
+    const plane = new PlaneGeometry(1, 1)
     const scene = new Scene()
     scene.add(
       ...studioLights(),
@@ -225,9 +229,12 @@ export function prepare(): Promise<void> {
       new Points(noMarks(), session.markMaterial),
       // The callout's line, so the first reading does not link a shader as it draws in.
       new Line(triangle, session.calloutMaterial),
+      // The contact shadow, on a plane with texture coordinates as the real one has.
+      new Mesh(plane, session.shadowMaterial),
     )
     await session.renderer.compileAsync(scene, new OrthographicCamera())
     triangle.dispose()
+    plane.dispose()
   })()
   return prepared
 }
@@ -555,7 +562,7 @@ export default function Viewer({
           className={
             stage
               ? 'mt-2 flex flex-none flex-wrap items-start gap-x-6 gap-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 [&>*]:mt-0'
-              : undefined
+              : 'mt-2 flex flex-wrap items-start gap-x-4 gap-y-2 rounded-md border border-[var(--color-border)] px-2 py-2 [&>*]:mt-0'
           }
         >
           <MeasureBar
@@ -583,7 +590,7 @@ export default function Viewer({
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const own = sessionInUse
-  const { renderer, material, markMaterial, calloutMaterial, ghostMaterial, capMaterial, capBack, capFront } = own
+  const { renderer, material, markMaterial, calloutMaterial, shadowMaterial: shadowSurface, ghostMaterial, capMaterial, capBack, capFront } = own
     ? kit()
     : (session ??= kit())
   sessionInUse = true
@@ -641,6 +648,8 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   calloutLabel.visible = false
   scene.add(calloutLabel)
   let calloutCancel = () => {}
+  // Set down once the first rung gives the part its box; never picked, never cut.
+  let shadow: Mesh | null = null
   // A section's cap: a square on the cut, placed by `capPlacement` and drawn after the stencil passes and
   // before the part. Not inside `model`, so no pick or wall ray ever meets it.
   const cap = new Mesh(new PlaneGeometry(1, 1), capMaterial)
@@ -804,6 +813,8 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       if (framing) {
         const box = new Box3().setFromObject(next)
         bounds = { min: box.min.toArray() as Vec3, max: box.max.toArray() as Vec3 }
+        shadow = contactShadow(bounds.min, bounds.max, shadowSurface)
+        scene.add(shadow)
         applyCut()
         const frame = frameBox(bounds.min, bounds.max)
         camera.position.set(...frame.position)
@@ -933,6 +944,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       render()
     },
     dispose() {
+      shadow?.geometry.dispose()
       calloutCancel()
       scene.remove(calloutLabel)
       calloutLine.geometry.dispose()

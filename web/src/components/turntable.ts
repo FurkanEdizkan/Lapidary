@@ -1,6 +1,7 @@
 import {
   AmbientLight,
   Box3,
+  MeshBasicMaterial,
   DirectionalLight,
   Group,
   LinearSRGBColorSpace,
@@ -17,7 +18,7 @@ import { blobUrl } from '../lib/api'
 import type { BlobHash } from '../lib/types'
 import { curve, reduced, tokens } from '../lib/motion'
 import { LIGHT_DIR, Lru, VIEW_DIR, frameBox, thumbnailFrame, turningFrame, type Vec3, type ViewFrame } from '../lib/viewer-math'
-import { disposeModel, rasterLights, rasterMaterial } from './studio'
+import { SHADOW_OPACITY, contactShadow, disposeModel, placeShadow, rasterLights, rasterMaterial, shadowMaterial } from './studio'
 
 /**
  * The grid's turntable: the card under the pointer turns its part, in the card, in place of the
@@ -55,6 +56,8 @@ type Stage = {
   scene: Scene
   camera: OrthographicCamera
   pivot: Group
+  /** Its own material, because the turntable fades it in and the bench does not. */
+  shadow: Mesh
 }
 
 let stage: Stage | null = null
@@ -80,7 +83,9 @@ function build(): Stage {
   scene.add(pivot)
   const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
-  return { renderer, scene, camera, pivot }
+  const shadow = contactShadow([0, 0, 0], [1, 1, 0], shadowMaterial())
+  scene.add(shadow)
+  return { renderer, scene, camera, pivot, shadow }
 }
 
 async function load(hash: BlobHash): Promise<Parsed> {
@@ -135,9 +140,10 @@ function place(canvas: HTMLCanvasElement, inset: number) {
 export function spin(well: HTMLElement, hash: BlobHash): () => void {
   if (lost) return () => {}
   current?.()
-  const { renderer, scene, camera, pivot } = (stage ??= build())
+  const { renderer, scene, camera, pivot, shadow } = (stage ??= build())
   const canvas = renderer.domElement
   const image = well.querySelector('img')
+  const shade = shadow.material as MeshBasicMaterial
   let frame = 0
   let stopped = false
 
@@ -170,6 +176,9 @@ export function spin(well: HTMLElement, hash: BlobHash): () => void {
       pivot.position.set(...framing.target)
       model.position.set(-framing.target[0], -framing.target[1], -framing.target[2])
       pivot.add(model)
+      // The thumbnail has no shadow, so the shadow waits for the crossfade and fades in with the step back.
+      placeShadow(shadow, min, max)
+      shade.opacity = 0
       // `frameBox`'s distance and depth range, which hold the part whole at any angle; the centre and
       // the size on screen come from the two framings, eased from one to the other.
       const distance = Math.hypot(
@@ -207,6 +216,7 @@ export function spin(well: HTMLElement, hash: BlobHash): () => void {
         } else if (elapsed <= base + slow) {
           // Then the step back, before any turn, so nothing turns out of a frame too tight to hold it.
           const k = ease((elapsed - base) / slow)
+          shade.opacity = k * SHADOW_OPACITY
           look({
             center: [
               lerp(still.center[0], turning.center[0], k),
@@ -217,6 +227,7 @@ export function spin(well: HTMLElement, hash: BlobHash): () => void {
           })
         } else {
           look(turning)
+          shade.opacity = SHADOW_OPACITY
           pivot.rotation.z = (((elapsed - base - slow) % TURN_MS) / TURN_MS) * Math.PI * 2
         }
         renderer.render(scene, camera)
@@ -264,6 +275,8 @@ export function bench(host: HTMLElement, urls: readonly string[]): () => void {
   const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
   const loaded: Object3D[] = []
+  const benchShadow = shadowMaterial()
+  const shadows: Mesh[] = []
   let frame = 0
   let stopped = false
   let visible = true
@@ -276,6 +289,8 @@ export function bench(host: HTMLElement, urls: readonly string[]): () => void {
     observer.disconnect()
     resize.disconnect()
     for (const model of loaded) disposeModel(model)
+    for (const floor of shadows) floor.geometry.dispose()
+    benchShadow.dispose()
     if (canvas.parentElement === host) canvas.remove()
   }
   current = stop
@@ -340,6 +355,14 @@ export function bench(host: HTMLElement, urls: readonly string[]): () => void {
         model.position.set(-centre.x, -centre.y, -box.min.z)
         const slot = new Group()
         slot.add(model)
+        const footprint = new Box3().setFromObject(model)
+        const floor = contactShadow(
+          [footprint.min.x, footprint.min.y, footprint.min.z],
+          [footprint.max.x, footprint.max.y, footprint.max.z],
+          benchShadow,
+        )
+        slot.add(floor)
+        shadows.push(floor)
         slot.position.copy(right.clone().multiplyScalar(along + width / 2))
         along += width * 1.15
         shelf.add(slot)
@@ -347,14 +370,16 @@ export function bench(host: HTMLElement, urls: readonly string[]): () => void {
       }
       scene.add(shelf)
       shelf.updateMatrixWorld(true)
-      const box = new Box3().setFromObject(shelf)
+      // Framed on the parts alone: the shadows are wider than the parts and would loosen the view.
+      const box = new Box3()
+      for (const model of loaded) box.expandByObject(model)
       const min = box.min.toArray() as Vec3
       const max = box.max.toArray() as Vec3
       const framing = frameBox(min, max)
       const positions: number[] = []
       const point = new Vector3()
       shelf.traverse((object) => {
-        if (!(object instanceof Mesh)) return
+        if (!(object instanceof Mesh) || shadows.includes(object)) return
         const attribute = object.geometry.getAttribute('position')
         for (let i = 0; i < attribute.count; i++) {
           point.fromBufferAttribute(attribute, i).applyMatrix4(object.matrixWorld)

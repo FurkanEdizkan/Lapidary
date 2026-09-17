@@ -56,7 +56,7 @@ export function RemovedPage({ library }: { library: LibraryId }) {
 
   return (
     <AppFrame current="removed" library={library}>
-      <section>
+      <section className="max-w-3xl">
         {/*
           Rendered, not assigned. React 19 hoists a `<title>` into the head from wherever it
           is written and removes it on unmount, so the route that owns the page owns its
