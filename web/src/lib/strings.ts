@@ -549,6 +549,8 @@ export const strings = {
      * stated as a deadline rather than a promise of recovery — there is no restore button
      * after this, only a hash and an operator.
      */
+    purgeTitle: 'Purge this part?',
+    purgeConfirmAction: 'Purge permanently',
     purgeConfirm: (sourcePath: string) =>
       `Purge “${sourcePath}” permanently? Its part, revision and file records are removed now. Bytes nothing else uses are kept for 30 days, then deleted.`,
     purging: 'Purging…',
@@ -1690,7 +1692,9 @@ export const strings = {
   emptyLibrary: {
     title: 'Nothing here yet',
     body:
-      'This library is empty. Drop a folder of models above to add them, or scan the directory mounted on the server — either way, every model found appears here.',
+      'This library is empty. Upload a folder of models, drop one anywhere on this page, or scan the directory mounted on the server — every model found appears here.',
+    /** Under the first run's Upload: the gesture with no button of its own, said once where it matters. */
+    dropHint: 'Or drag a folder from your file manager and drop it anywhere.',
     /**
      * An empty *category* is not an empty library, and saying so was a lie the grid could
      * always tell — a scan that found an empty directory made one — but which only became

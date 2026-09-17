@@ -70,6 +70,7 @@ import { InstanceStorage, StorageDetails, StorageTotals } from '../components/St
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
+import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import type { BatchKind } from '../components/Upload'
 
@@ -1025,6 +1026,7 @@ export function Index({
               query={q ?? null}
               onWiden={() => onSelectFolder?.(null)}
               onClearSearch={() => onSearch?.('')}
+              onUpload={() => picker.current?.click()}
             />
           )
         ) : (
@@ -1127,6 +1129,7 @@ function EmptyLibrary({
   query,
   onWiden,
   onClearSearch,
+  onUpload,
 }: {
   filtered: boolean
   categoryName: string | null
@@ -1135,6 +1138,8 @@ function EmptyLibrary({
   onWiden: () => void
   /** Drops the query and keeps the category, for the case the sidebar was not the reason. */
   onClearSearch: () => void
+  /** Opens the folder picker: the first run's one standing control. */
+  onUpload: () => void
 }) {
   // A search that found nothing is not an empty library, and saying so is worse than
   // useless: the user did not empty anything, they typed something, and "drop a folder of
@@ -1169,14 +1174,11 @@ function EmptyLibrary({
       </div>
     )
   }
+  if (!filtered) return <FirstRun onUpload={onUpload} />
   return (
     <div className="max-w-prose">
-      <h2 className="text-lg">
-        {filtered ? strings.emptyLibrary.categoryTitle : strings.emptyLibrary.title}
-      </h2>
-      <p className="mt-2 text-[var(--color-muted)]">
-        {filtered ? strings.emptyLibrary.categoryBody(categoryName) : strings.emptyLibrary.body}
-      </p>
+      <h2 className="text-lg">{strings.emptyLibrary.categoryTitle}</h2>
+      <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.categoryBody(categoryName)}</p>
     </div>
   )
 }

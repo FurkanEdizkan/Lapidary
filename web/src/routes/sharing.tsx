@@ -15,6 +15,7 @@ import {
   stopSharing,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
@@ -44,8 +45,8 @@ export function SharingPage() {
     <AppFrame current="sharing">
       <section className="max-w-3xl">
         <title>{strings.titles.sharing}</title>
-        <h2 className="text-xl font-medium">{strings.sharing.title}</h2>
-        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
+        <h2 className={HEADLINE}>{strings.sharing.title}</h2>
+        <p className={LEAD}>{strings.sharing.lead}</p>
         <ThisInstallation />
         <OwnShares />
         <Requests />
@@ -64,8 +65,8 @@ function ThisInstallation() {
     refetchInterval: REFRESH_MS,
   })
   return (
-    <div className="mt-6 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
-      <h3 className="text-base font-medium">{strings.sharing.thisInstallation}</h3>
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.thisInstallation}</h3>
       {identity.isPending ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
       ) : identity.isError ? (
@@ -163,8 +164,8 @@ function People() {
   const peers = useQuery({ queryKey: ['sharing', 'peers'], queryFn: fetchPeers, refetchInterval: REFRESH_MS })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['sharing', 'peers'] })
   return (
-    <div className="mt-8">
-      <h3 className="text-base font-medium">{strings.sharing.people}</h3>
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.people}</h3>
       <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.removeNote}</p>
       <PairForm onPaired={refresh} />
       {peers.isPending ? (
@@ -307,8 +308,8 @@ function OwnShares() {
   const shares = useQuery({ queryKey: ['shares', 'own'], queryFn: fetchShares, refetchInterval: REFRESH_MS })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['shares'] })
   return (
-    <div className="mt-8">
-      <h3 className="text-base font-medium">{strings.sharing.ownShares}</h3>
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.ownShares}</h3>
       <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.stopNote}</p>
       {shares.isPending ? (
         <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
@@ -383,8 +384,8 @@ function Requests() {
   })
   if (!requests.isSuccess) return null
   return (
-    <div className="mt-8">
-      <h3 className="text-base font-medium">{strings.sharing.requests}</h3>
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.requests}</h3>
       <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.requestsNote}</p>
       {requests.data.length === 0 ? (
         <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.sharing.requestsNone}</p>
@@ -466,8 +467,8 @@ function Pulls() {
   const pulls = useQuery({ queryKey: ['sharing', 'pulls'], queryFn: fetchPulls, refetchInterval: REFRESH_MS })
   if (!pulls.isSuccess || pulls.data.length === 0) return null
   return (
-    <div className="mt-8">
-      <h3 className="text-base font-medium">{strings.sharing.pulls}</h3>
+    <div className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.sharing.pulls}</h3>
       <ul role="list" className="mt-3 flex flex-col gap-2">
         {pulls.data.map((pull) => (
           <li

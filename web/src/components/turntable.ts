@@ -1,10 +1,22 @@
-import { Box3, Group, LinearSRGBColorSpace, Mesh, OrthographicCamera, Scene, Vector3, WebGLRenderer, type Object3D } from 'three'
+import {
+  AmbientLight,
+  Box3,
+  DirectionalLight,
+  Group,
+  LinearSRGBColorSpace,
+  Mesh,
+  OrthographicCamera,
+  Scene,
+  Vector3,
+  WebGLRenderer,
+  type Object3D,
+} from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { blobUrl } from '../lib/api'
 import type { BlobHash } from '../lib/types'
-import { curve, tokens } from '../lib/motion'
-import { Lru, VIEW_DIR, frameBox, thumbnailFrame, turningFrame, type Vec3, type ViewFrame } from '../lib/viewer-math'
+import { curve, reduced, tokens } from '../lib/motion'
+import { LIGHT_DIR, Lru, VIEW_DIR, frameBox, thumbnailFrame, turningFrame, type Vec3, type ViewFrame } from '../lib/viewer-math'
 import { disposeModel, rasterLights, rasterMaterial } from './studio'
 
 /**
@@ -58,15 +70,6 @@ function build(): Stage {
   renderer.outputColorSpace = LinearSRGBColorSpace
   const canvas = renderer.domElement
   canvas.setAttribute('aria-hidden', 'true')
-  Object.assign(canvas.style, {
-    position: 'absolute',
-    left: `${INSET * 100}%`,
-    top: `${INSET * 100}%`,
-    width: `${(1 - 2 * INSET) * 100}%`,
-    height: `${(1 - 2 * INSET) * 100}%`,
-    opacity: '0',
-    pointerEvents: 'none',
-  })
   canvas.addEventListener('webglcontextlost', () => {
     lost = true
     current?.()
@@ -115,6 +118,19 @@ async function load(hash: BlobHash): Promise<Parsed> {
   return parsed
 }
 
+/** Where the one canvas sits in whatever host has it now: inset like a card's render, or filling the host. */
+function place(canvas: HTMLCanvasElement, inset: number) {
+  Object.assign(canvas.style, {
+    position: 'absolute',
+    left: `${inset * 100}%`,
+    top: `${inset * 100}%`,
+    width: `${(1 - 2 * inset) * 100}%`,
+    height: `${(1 - 2 * inset) * 100}%`,
+    opacity: '0',
+    pointerEvents: 'none',
+  })
+}
+
 /** Turn the part `hash` in `well` until the returned function is called. */
 export function spin(well: HTMLElement, hash: BlobHash): () => void {
   if (lost) return () => {}
@@ -144,6 +160,7 @@ export function spin(well: HTMLElement, hash: BlobHash): () => void {
       if (stopped) return
       const side = Math.max(1, Math.round(well.clientWidth * (1 - 2 * INSET)))
       renderer.setSize(side, side, false)
+      place(canvas, INSET)
       well.appendChild(canvas)
 
       // The part turns about its own centre: the pivot sits there and the model is offset back.
@@ -210,6 +227,173 @@ export function spin(well: HTMLElement, hash: BlobHash): () => void {
         frame = requestAnimationFrame(tick)
       }
       frame = requestAnimationFrame(tick)
+    })
+    .catch(stop)
+
+  return stop
+}
+
+/** One full sweep of the bench's key light, there and back. Slow enough to read as daylight moving. */
+const SWEEP_MS = 12_000
+
+/** How far the bench's key light swings either side of the thumbnail's own direction. */
+const SWEEP_DEGREES = 25
+
+/**
+ * An empty library's first-run scene: three example parts side by side on the lamp's ground, with
+ * the key light slowly swinging across them.
+ *
+ * It is the first thing a new library shows, so it shows what the product is for — real parts,
+ * lit the way every thumbnail in the grid will be — rather than an illustration of an empty box.
+ * The models are the worker's own L0 rungs of three example parts (`web/public/first-run/`).
+ *
+ * It borrows the turntable's renderer, so an empty library holds the same one context a full
+ * one does (no card is on screen to turn). It draws only while on screen, one frame under reduced
+ * motion, and the caller shows text alone where there is no WebGL. Returns what stops it.
+ */
+export function bench(host: HTMLElement, urls: readonly string[]): () => void {
+  if (lost) return () => {}
+  current?.()
+  const { renderer } = (stage ??= build())
+  const canvas = renderer.domElement
+  const scene = new Scene()
+  const sun = new DirectionalLight(0xffffff, 0)
+  const [ambient, raster] = rasterLights() as [AmbientLight, DirectionalLight]
+  sun.intensity = raster.intensity
+  scene.add(ambient, sun)
+  const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
+  camera.up.set(0, 0, 1)
+  const loaded: Object3D[] = []
+  let frame = 0
+  let stopped = false
+  let visible = true
+
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    cancelAnimationFrame(frame)
+    if (current === stop) current = null
+    observer.disconnect()
+    resize.disconnect()
+    for (const model of loaded) disposeModel(model)
+    if (canvas.parentElement === host) canvas.remove()
+  }
+  current = stop
+
+  const size = () => {
+    renderer.setSize(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight), false)
+    return host.clientWidth / Math.max(1, host.clientHeight)
+  }
+  // The shelf's outline on screen, in world units, measured once the models are placed.
+  let outline = { width: 1, height: 1 }
+  const fit = () => {
+    const aspect = size()
+    // Wide enough for the row and tall enough for the tallest part, with a little air: the three are
+    // a scene, not a thumbnail cropped to its outline.
+    const half = Math.max(outline.height / 2, outline.width / (2 * aspect)) * 1.18
+    camera.left = -half * aspect
+    camera.right = half * aspect
+    camera.top = half
+    camera.bottom = -half
+    camera.updateProjectionMatrix()
+  }
+  const draw = (now: number) => {
+    const swing = (Math.sin((now / SWEEP_MS) * Math.PI * 2) * SWEEP_DEGREES * Math.PI) / 180
+    const [c, s] = [Math.cos(swing), Math.sin(swing)]
+    sun.position.set(LIGHT_DIR[0] * c - LIGHT_DIR[1] * s, LIGHT_DIR[0] * s + LIGHT_DIR[1] * c, LIGHT_DIR[2])
+    renderer.render(scene, camera)
+    canvas.style.opacity = '1'
+  }
+  const loop = (now: number) => {
+    if (visible) draw(now)
+    frame = requestAnimationFrame(loop)
+  }
+  const observer = new IntersectionObserver((entries) => {
+    visible = entries.some((entry) => entry.isIntersecting)
+  })
+  const resize = new ResizeObserver(() => {
+    if (stopped || loaded.length === 0) return
+    fit()
+    draw(performance.now())
+  })
+
+  Promise.all(urls.map((url) => new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(url)))
+    .then(async (gltfs) => {
+      if (stopped) return
+      // Side by side along the view's right, each resting on the same floor, a part's width apart.
+      const right = new Vector3(-VIEW_DIR[1], VIEW_DIR[0], 0).normalize()
+      const shelf = new Group()
+      let along = 0
+      for (const gltf of gltfs) {
+        const model = gltf.scene
+        model.traverse((object) => {
+          if (object instanceof Mesh) object.material = material
+        })
+        // Each at the same size, so a 44 mm gear stands beside a 150 mm flange as an equal: the scene
+        // is about what parts look like here, not how they compare.
+        const raw = new Box3().setFromObject(model)
+        const scale = 1 / Math.max(raw.max.x - raw.min.x, raw.max.y - raw.min.y, raw.max.z - raw.min.z, 1e-6)
+        model.scale.setScalar(scale)
+        const box = new Box3().setFromObject(model)
+        const width = box.max.x - box.min.x + (box.max.y - box.min.y)
+        const centre = box.getCenter(new Vector3())
+        model.position.set(-centre.x, -centre.y, -box.min.z)
+        const slot = new Group()
+        slot.add(model)
+        slot.position.copy(right.clone().multiplyScalar(along + width / 2))
+        along += width * 1.15
+        shelf.add(slot)
+        loaded.push(model)
+      }
+      scene.add(shelf)
+      shelf.updateMatrixWorld(true)
+      const box = new Box3().setFromObject(shelf)
+      const min = box.min.toArray() as Vec3
+      const max = box.max.toArray() as Vec3
+      const framing = frameBox(min, max)
+      const positions: number[] = []
+      const point = new Vector3()
+      shelf.traverse((object) => {
+        if (!(object instanceof Mesh)) return
+        const attribute = object.geometry.getAttribute('position')
+        for (let i = 0; i < attribute.count; i++) {
+          point.fromBufferAttribute(attribute, i).applyMatrix4(object.matrixWorld)
+          positions.push(point.x, point.y, point.z)
+        }
+      })
+      const view = thumbnailFrame(positions, framing.target)
+      const up = new Vector3().crossVectors(new Vector3(...VIEW_DIR), right).normalize()
+      let [loR, hiR, loU, hiU] = [Infinity, -Infinity, Infinity, -Infinity]
+      for (let i = 0; i < positions.length; i += 3) {
+        point.set(positions[i]!, positions[i + 1]!, positions[i + 2]!)
+        loR = Math.min(loR, point.dot(right))
+        hiR = Math.max(hiR, point.dot(right))
+        loU = Math.min(loU, point.dot(up))
+        hiU = Math.max(hiU, point.dot(up))
+      }
+      outline = { width: hiR - loR, height: hiU - loU }
+      const distance = Math.hypot(...framing.position.map((value, axis) => value - framing.target[axis]!))
+      camera.position.set(
+        view.center[0] + VIEW_DIR[0] * distance,
+        view.center[1] + VIEW_DIR[1] * distance,
+        view.center[2] + VIEW_DIR[2] * distance,
+      )
+      camera.lookAt(...view.center)
+      camera.near = framing.near
+      camera.far = framing.far
+
+      place(canvas, 0)
+      host.appendChild(canvas)
+      fit()
+      await renderer.compileAsync(scene, camera)
+      if (stopped) return
+      observer.observe(host)
+      resize.observe(host)
+      if (reduced()) {
+        draw(0)
+        return
+      }
+      frame = requestAnimationFrame(loop)
     })
     .catch(stop)
 
