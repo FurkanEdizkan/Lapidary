@@ -130,7 +130,7 @@ export function Dialog({
 
   return createPortal(
     <div
-      className="scrim-in fixed inset-0 z-10 flex items-center justify-center bg-black/60 p-6"
+      className="scrim-in fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center bg-black/60 p-6"
       /*
         The scrim dismisses. `event.target === event.currentTarget` so only the scrim itself
         counts — a click that started inside the box and released out here is a drag, not a

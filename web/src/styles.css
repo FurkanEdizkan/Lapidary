@@ -168,6 +168,17 @@
 
 /* Dark only. No light mode, no toggle. */
 :root {
+  /*
+    Four layers and no others. The header stays over the page it scrolls; the narrow-screen
+    drawer over the header; a dialog or the drop overlay over both, because a dialog opened
+    from inside the drawer must not open behind it; the skip link over everything, because it
+    is the first thing a keyboard reaches. Tailwind has no theme namespace for z-index, so
+    these are plain properties read as `z-[var(--z-header)]`.
+  */
+  --z-header: 20;
+  --z-drawer: 30;
+  --z-overlay: 40;
+  --z-skip: 50;
   color-scheme: dark;
   background-color: var(--color-bg);
   color: var(--color-text);

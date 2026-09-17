@@ -15,6 +15,7 @@ import {
   stopSharing,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { AppFrame } from '../components/AppFrame'
 import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
 const CONTROL =
@@ -40,22 +41,18 @@ export const Route = createFileRoute('/sharing')({ component: SharingPage })
 
 export function SharingPage() {
   return (
-    <section className="max-w-3xl">
-      <title>{strings.titles.sharing}</title>
-      <Link
-        to="/"
-        className="ease-mechanical text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]"
-      >
-        {strings.removal.backToLibrary}
-      </Link>
-      <h2 className="mt-4 text-xl font-medium">{strings.sharing.title}</h2>
-      <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
-      <ThisInstallation />
-      <OwnShares />
-      <Requests />
-      <Pulls />
-      <People />
-    </section>
+    <AppFrame current="sharing">
+      <section className="max-w-3xl">
+        <title>{strings.titles.sharing}</title>
+        <h2 className="text-xl font-medium">{strings.sharing.title}</h2>
+        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
+        <ThisInstallation />
+        <OwnShares />
+        <Requests />
+        <Pulls />
+        <People />
+      </section>
+    </AppFrame>
   )
 }
 

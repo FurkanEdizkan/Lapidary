@@ -1,4 +1,5 @@
 import { type CSSProperties, type ReactNode } from 'react'
+import { Icon } from './Icon'
 
 /** A button and the popover it opens. See `styles.css` for why it is native. */
 export function Menu({ id, label, children }: { id: string; label: string; children: ReactNode }) {
@@ -14,8 +15,8 @@ export function Menu({ id, label, children }: { id: string; label: string; child
         className="menu-anchor ease-mechanical flex min-h-6 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
       >
         {label}
-        <span aria-hidden="true" className="text-[9px] opacity-75">
-          ▾
+        <span className="opacity-75">
+          <Icon name="caretDown" size={12} />
         </span>
       </button>
       <div
