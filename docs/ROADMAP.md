@@ -2972,6 +2972,28 @@ with the sharing overlay and a ports-only override each; `target/docker-check/sh
   - **Down and up, both projects:** each kept its device id (the `lapidary-peer` volume) and its pairing; both online again
     9 s after `up`, and B's 144 parts (6 examples, 138 pulled) there.
 
+**Stage 4: upgrading an install made before sharing** (no code; `target/docker-check/upgrade/old-install.sh`,
+`upgrade-check.sh` and their logs).
+- **The old install:** `5724553`'s own debug `lapidary-server --features mock-kernel`, built from a detached worktree
+  (its binary holds 0036's job index and neither `peer_identity` nor `share_grant`), ran natively against a scratch
+  database `lapidary_upgrade` and a store of its own. It seeded the example parts into its hobby library, scanned the repo's
+  STL, OBJ and 3MF fixtures into a controlled library in a category tree, took a second revision of the spacer (1 revised,
+  3 skipped), and gave the bracket tags, a part number and a licensed source. Then it stopped: 36 migrations, 17 tables,
+  2 libraries, 10 parts, 11 revisions.
+- **The goal file was wrong about one thing:** `0037_sharing` came with S1b (`b6bab3c`), not goal 7. Both reached
+  `origin` only on 2026-09-17, so `5724553` stops at `0036` and the upgrade covers `0037`–`0041` as planned.
+- **The new images over it** (project `lapidary-upgrade`, `api`, `worker`, `web` and `peer` started with `--no-deps`, their
+  `DATABASE_URL` pointed at `lapidary-test-db` through `host.docker.internal`; no `db` service ran):
+  - the api answered 1 s after `up`; `0037`–`0041` applied in 7.5, 4.4, 7.1, 6.5 and 6.5 ms;
+  - **no row changed in any of the 17 tables that existed**, besides `_sqlx_migrations` going from 36 to 41; the 8 new
+    tables arrived empty but for this installation's `peer_identity`;
+  - each of the 10 parts' current source hash unchanged, and all 10 part pages answer 200;
+  - the bracket kept its number `LP-1042-03`, its tags and its `CC BY 4.0` source, and its original downloads
+    byte-identical; the spacer keeps revisions 2 and 1;
+  - no failed job, and a rescan by the new worker skipped all 4 files.
+- **Sharing from the upgraded data:** its peer claimed a device id, paired with stage 3's project B (both online 16 s after
+  pasting), shared the `Brackets` category, and B pulled it in 3 s: both parts under `Shared/Upgraded workshop (BNRNG)/Brackets/`.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
