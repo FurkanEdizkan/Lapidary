@@ -2873,6 +2873,26 @@ recorded above. `docs/DATA.md` §7, `docs/FEATURES.md` §10 and `docs/ARCHITECTU
 
 ---
 
+## Containers (2026-09-17)
+
+Goal 8 builds `deploy/`'s images from `main` and runs them: the plain stack, sharing between two compose projects, an
+upgrade from the code before goal 7, and the Containers workflow. Goal file:
+`docs/superpowers/plans/2026-09-17-container-images-goal.md`. This section is its ledger.
+
+**Preflight** (2026-09-17, 11:59; `main` at `41afd3e`, two plan commits ahead of `origin/main` at `d353d70`).
+- `lapidary-test-db` and another project's `trench-bot` running; nothing on 3000, 8080–8082, 13000 or 18080–18082.
+- **Disk:** root 18 GB free and `/mnt/Storage` 50 GB. Docker held 16.0 GB of images (15.2 GB another project's), 21.2 GB
+  of build cache (6 GB reclaimable) and 4 volumes.
+- **`docker builder prune -f`** (unused cache only, by the owner's answer) freed 5.96 GB: build cache 15.2 GB after, and
+  root **24 GB free**.
+- **The old install, recorded to compare at teardown** (`target/docker-check/old-install-before.txt`):
+  `lapidary_lapidary-db` 185,823,724 bytes, newest file `pg_wal/…0A`; `lapidary_lapidary-uploads` empty; repo `storage/`
+  158,835,582 bytes in 484 files, newest a `metadata.json` of 2026-09-07. The two volumes were read through a read-only
+  mount of the local `postgres:18` image to take their size, which the goal file's "never mount, otherwise" did not
+  allow for; nothing was written.
+
+---
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups
