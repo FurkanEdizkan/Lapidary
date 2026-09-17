@@ -33,6 +33,86 @@ export function frameBox(min: Vec3, max: Vec3): Framing {
   return { target, position, halfHeight: radius * 1.05, near: radius, far: distance + radius * 3 }
 }
 
+/**
+ * How a view of a part is framed on screen: the world point at the centre of the view, and half the
+ * view's height in world units. Orthographic, looking along `VIEW_DIR` with Z up.
+ */
+export type ViewFrame = { center: Vec3; halfHeight: number }
+
+/** `raster.rs`'s `MARGIN`: the fraction of the thumbnail the part's outline fills. */
+const THUMBNAIL_MARGIN = 0.92
+
+/** `raster.rs`'s `basis()`: the screen's right and up, as world directions. */
+function screenBasis(): { right: Vec3; up: Vec3 } {
+  const v = VIEW_DIR
+  const rightRaw: Vec3 = [-v[1], v[0], 0]
+  const r = Math.hypot(...rightRaw)
+  const right: Vec3 = [rightRaw[0] / r, rightRaw[1] / r, 0]
+  const upRaw: Vec3 = [v[1] * right[2] - v[2] * right[1], v[2] * right[0] - v[0] * right[2], v[0] * right[1] - v[1] * right[0]]
+  const u = Math.hypot(...upRaw)
+  return { right, up: [upRaw[0] / u, upRaw[1] / u, upRaw[2] / u] }
+}
+
+/**
+ * The thumbnail's own framing of a part, so a canvas can start exactly where the picture is.
+ *
+ * `raster.rs` projects every vertex onto the screen, takes the outline's bounding square and fills
+ * 92% of the image with it, centred. A bounding-sphere framing (`frameBox`) draws the part smaller
+ * than that, which reads as the part shrinking the moment a canvas replaces its thumbnail.
+ *
+ * `positions` are world coordinates, three to a vertex. `pivot` only sets the depth of the centre
+ * along the view, which an orthographic view ignores, so the camera can sit where `frameBox` puts it.
+ */
+export function thumbnailFrame(positions: ArrayLike<number>, pivot: Vec3): ViewFrame {
+  const { right, up } = screenBasis()
+  let [loR, hiR, loU, hiU] = [Infinity, -Infinity, Infinity, -Infinity]
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const x = positions[i]!
+    const y = positions[i + 1]!
+    const z = positions[i + 2]!
+    const pr = x * right[0] + y * right[1] + z * right[2]
+    const pu = x * up[0] + y * up[1] + z * up[2]
+    loR = Math.min(loR, pr)
+    hiR = Math.max(hiR, pr)
+    loU = Math.min(loU, pu)
+    hiU = Math.max(hiU, pu)
+  }
+  const extent = Math.max(hiR - loR, hiU - loU, 1e-6)
+  const cr = (loR + hiR) / 2 - (pivot[0] * right[0] + pivot[1] * right[1] + pivot[2] * right[2])
+  const cu = (loU + hiU) / 2 - (pivot[0] * up[0] + pivot[1] * up[1] + pivot[2] * up[2])
+  return {
+    center: [pivot[0] + cr * right[0] + cu * up[0], pivot[1] + cr * right[1] + cu * up[1], pivot[2] + cr * right[2] + cu * up[2]],
+    halfHeight: extent / (2 * THUMBNAIL_MARGIN),
+  }
+}
+
+/**
+ * A framing that holds the part at every angle as it turns about the vertical through `pivot`,
+ * with the thumbnail's margin.
+ *
+ * The screen's right is horizontal, so a vertex at horizontal distance ρ from the axis sweeps ±ρ
+ * across it; the screen's up leans back, so the same vertex sweeps its height's share of up plus or
+ * minus ρ times up's horizontal part. The view is centred on the axis and tall enough for both.
+ */
+export function turningFrame(positions: ArrayLike<number>, pivot: Vec3): ViewFrame {
+  const { up } = screenBasis()
+  const across = Math.hypot(up[0], up[1])
+  let [reach, low, high] = [0, Infinity, -Infinity]
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const rho = Math.hypot(positions[i]! - pivot[0], positions[i + 1]! - pivot[1])
+    const height = (positions[i + 2]! - pivot[2]) * up[2]
+    reach = Math.max(reach, rho)
+    low = Math.min(low, height - rho * across)
+    high = Math.max(high, height + rho * across)
+  }
+  const extent = Math.max(2 * reach, high - low, 1e-6)
+  const mid = (low + high) / 2
+  return {
+    center: [pivot[0] + mid * up[0], pivot[1] + mid * up[1], pivot[2] + mid * up[2]],
+    halfHeight: extent / (2 * THUMBNAIL_MARGIN),
+  }
+}
+
 let webgl: boolean | undefined
 
 /**
@@ -159,4 +239,42 @@ export function capPlacement(
 export function kept(plane: PlaneLike, point: Vec3): boolean {
   const [x, y, z] = plane.normal
   return x * point[0] + y * point[1] + z * point[2] + plane.constant >= -1e-3
+}
+
+/**
+ * The most recently used `capacity` values, oldest let go through `evict`.
+ *
+ * For the turntable's parsed models: a pointer sweeping a grid meets the same few parts again and
+ * again, and parsing a rung each time would stall every return. Each model holds GPU buffers, so a
+ * value leaving the cache is handed to `evict` to free them rather than left for a collector that
+ * cannot see the GPU. A `Map` keeps insertion order, so re-inserting on use is the whole policy.
+ */
+export class Lru<K, V> {
+  private readonly values = new Map<K, V>()
+
+  constructor(
+    private readonly capacity: number,
+    private readonly evict: (value: V) => void,
+  ) {}
+
+  get(key: K): V | undefined {
+    const value = this.values.get(key)
+    if (value !== undefined) {
+      this.values.delete(key)
+      this.values.set(key, value)
+    }
+    return value
+  }
+
+  set(key: K, value: V): void {
+    const previous = this.values.get(key)
+    this.values.delete(key)
+    if (previous !== undefined && previous !== value) this.evict(previous)
+    this.values.set(key, value)
+    while (this.values.size > this.capacity) {
+      const [oldest, dropped] = this.values.entries().next().value as [K, V]
+      this.values.delete(oldest)
+      this.evict(dropped)
+    }
+  }
 }

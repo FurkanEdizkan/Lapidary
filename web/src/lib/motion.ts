@@ -101,6 +101,15 @@ export function arrive(elements: readonly HTMLElement[]): () => void {
 }
 
 /**
+ * The system's one curve as a function of progress, for a script that draws its own frames (the
+ * turntable's step back). Same parsing as `tween`, so the curve still has one definition.
+ */
+export function curve(t: Tokens = tokens()): (progress: number) => number {
+  const [x1, y1, x2, y2] = (t.ease.match(/-?[\d.]+/g) ?? []).map(Number)
+  return cubicBezier(x1 ?? 0.2, y1 ?? 0, x2 ?? 0, y2 ?? 1)
+}
+
+/**
  * Numbers on an object that is not an element: a callout's draw-in, a light's intensity.
  *
  * Runs on anime's own engine, which is right here because nothing it writes is a style.
@@ -119,11 +128,10 @@ export function tween<T extends object>(
     return noop
   }
   const t = tokens()
-  const [x1, y1, x2, y2] = (t.ease.match(/-?[\d.]+/g) ?? []).map(Number)
   const animation = animate(target, {
     ...to,
     duration: t[duration],
-    ease: cubicBezier(x1 ?? 0.2, y1 ?? 0, x2 ?? 0, y2 ?? 1),
+    ease: curve(t),
     onUpdate,
   })
   return () => {
