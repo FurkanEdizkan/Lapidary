@@ -3206,6 +3206,36 @@ rule — people who know each other only, no tracker, no public directory. Plan:
 - **Left for later:** `peer.introduced_by` is written and not yet read — S10's People list is what says where
   somebody came from. A roster is read from its owner only; reading one from another member is S7's relay.
 
+**The folder stays browsable when its owner is away** (stage S7).
+- **What `peer_share.device_id` means** (`0044`): it was "who told us about this folder" and is now "whose folder
+  it is", which is what makes one folder one row however many of its people pass it on. `catalogue_from` is who
+  this copy was read from — null is the owner — and `catalogue_as_of` is when it was read **from the owner**, by
+  whoever read it. `synced_at` keeps its own meaning: when this installation last wrote the row.
+- **Freshness alone decides.** A relayed copy is taken only when its as-of beats the one held here. There is no
+  round barrier — a mirror of the owner and a mirror of a member are separate tasks and finish in either order —
+  so a direct read does not win by being direct. It wins by being newer, which it nearly always is.
+- **Relayed knowledge only ever adds.** A list from a member says what that member holds, never what somebody
+  else still shares, so the delete that takes up a list is scoped to the folders that installation owns. A
+  folder goes when its own owner stops offering it, which is the one installation entitled to say so.
+- **`GET /peer/v1/shares`** also carries the folders held here whose roster names the caller, each marked with
+  its owner and when it was read; `catalogue` and `thumbnail` take `?owner=` and answer from the copy held here.
+  A relayed part keeps the owner's id for it, so a reader cannot tell the copies apart. The gate is the mirrored
+  roster: holding a folder's bytes entitles nobody to them, being on its owner's list does.
+- **`relay` in `Hello.features`**, so an installation from before this is never sent a relayed folder — it would
+  record one as this installation's own and then ask this installation for its files. A reader this installation
+  has never said hello to is sent none either, which errs the same way.
+- **The page says whose reading it is showing** — "As *Mira's studio* read it, 17 Sep 2026, 09:12" — rather than
+  letting a relayed copy pass for a reading of this installation's own.
+- **Files still come from the folder's owner.** The blob route answers only about folders this installation
+  shares itself, so a file of a folder merely held here is the refusal a stranger gets — with a test holding
+  that, because S8's safety property is that its own branch is the only way a relayed file is ever served.
+- **Known ceiling, recorded now:** who a folder may be passed on to is decided by the roster its owner
+  published, and that roster can only be read from its owner. An owner who takes somebody off a folder and then
+  goes offline leaves the other holders passing that folder on to them, and serving its catalogue, until the
+  owner answers again. `peer_share_member.seen_at` says how old the answer is; nothing refuses an old one yet.
+  Bounding it belongs with S10, where taking a folder back is the subject.
+- **Left for later:** fetching a file from whoever holds it is S8's seeding switch and S9's discovery.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups

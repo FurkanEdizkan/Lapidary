@@ -213,6 +213,19 @@ impl PgSharing {
         Ok(())
     }
 
+    /// What an installation said it can do, as its last hello listed it. Empty for one that has not said
+    /// hello here yet, or is not paired at all: nothing new is asked of an installation until it says it
+    /// answers, and never asking is the safe direction.
+    pub async fn features(&self, device: DeviceId) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT features FROM peer WHERE device_id = $1 AND removed_at IS NULL",
+        )
+        .bind(device.as_bytes().as_slice())
+        .fetch_optional(&self.0)
+        .await?
+        .unwrap_or_default())
+    }
+
     /// A hello that failed, and why.
     pub async fn unreachable(&self, device: DeviceId, reason: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE peer SET last_error = $2 WHERE device_id = $1")

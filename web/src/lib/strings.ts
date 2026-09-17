@@ -1800,6 +1800,9 @@ export const strings = {
     unnamedSharer: 'somebody who has not given a name',
     librarySynced: (at: string) =>
       `Last read ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
+    /** A folder read from one of its other people while its owner was away (S7). */
+    libraryRelayed: (relay: string, at: string) =>
+      `As ${relay} read it, ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
     libraryNotReadYet:
       'Not read yet. It is read the next time their machine answers, and appears here once it has been.',
     /** Parts leave this list when the sharer stops offering them; nothing of this installation's goes with them. */

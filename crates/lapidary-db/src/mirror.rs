@@ -18,6 +18,12 @@ pub struct OfferedRemote<'a> {
     pub name: &'a str,
     pub part_count: i64,
     pub digest: &'a str,
+    /// Whose folder it is, when the installation offering it is not its owner — a member passing on a folder
+    /// it holds (S7). `None` is the ordinary case: the installation answering owns what it offers.
+    pub owner: Option<DeviceId>,
+    /// When the offering installation read this catalogue from its owner, for a folder it does not own. What
+    /// decides between two copies of the same folder; `None` is a relay that cannot say, and is never taken.
+    pub as_of: Option<Timestamp>,
 }
 
 /// A mirrored share whose catalogue must be read again, and the digest to record once it has been.
@@ -26,6 +32,8 @@ pub struct StaleShare {
     pub id: PeerShareId,
     pub remote: ShareId,
     pub digest: String,
+    /// Whose folder it is. The same as the installation being read, except for a folder relayed by a member.
+    pub owner: DeviceId,
 }
 
 /// One part of a catalogue, as the hello round writes it.
@@ -66,6 +74,20 @@ pub struct IntroductionRow {
     pub introducer_name: Option<String>,
 }
 
+/// A folder mirrored here, as it is passed on to another of its people (S7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayedShare {
+    pub owner: DeviceId,
+    /// Its owner's id for it, which is what every installation holding it keys it by.
+    pub remote: ShareId,
+    pub name: String,
+    pub part_count: i64,
+    /// The owner's digest, as it was when this copy was read, so the reader compares like with like.
+    pub digest: String,
+    /// When this copy was read from the folder's owner.
+    pub as_of: Option<Timestamp>,
+}
+
 /// A mirrored share, as a page lists it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirroredShareRow {
@@ -77,6 +99,12 @@ pub struct MirroredShareRow {
     pub part_count: i64,
     /// When a whole catalogue was last read. `None` until one has been.
     pub synced_at: Option<Timestamp>,
+    /// The member this copy of the catalogue was read from, when it was not read from the folder's owner, and
+    /// what they call themselves. `None` is the ordinary case: read from the owner (S7).
+    pub read_from: Option<DeviceId>,
+    pub read_from_name: Option<String>,
+    /// When the copy held here was read from the folder's owner, by whoever read it.
+    pub as_of: Option<Timestamp>,
 }
 
 /// A mirrored part, as a page shows it.
@@ -98,8 +126,11 @@ pub struct MirroredPartRow {
 macro_rules! share_columns {
     () => {
         "ps.id, ps.device_id, pe.name, ps.name, ps.part_count, \
-         (extract(epoch FROM ps.synced_at) * 1000000)::bigint \
-         FROM peer_share ps JOIN peer pe ON pe.device_id = ps.device_id"
+         (extract(epoch FROM ps.synced_at) * 1000000)::bigint, \
+         ps.catalogue_from, relay.name, \
+         (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint \
+         FROM peer_share ps JOIN peer pe ON pe.device_id = ps.device_id \
+         LEFT JOIN peer relay ON relay.device_id = ps.catalogue_from"
     };
 }
 
@@ -109,6 +140,9 @@ type ShareTuple = (
     Option<String>,
     String,
     i64,
+    Option<i64>,
+    Option<Vec<u8>>,
+    Option<String>,
     Option<i64>,
 );
 
@@ -121,6 +155,8 @@ type IntroductionTuple = (
     Vec<u8>,
     Option<String>,
 );
+
+type RelayedTuple = (Vec<u8>, uuid::Uuid, String, i64, String, Option<i64>);
 
 type PartTuple = (
     String,
@@ -136,23 +172,23 @@ type PartTuple = (
 );
 
 fn share_row(
-    (id, device, sharer, name, part_count, synced_us): ShareTuple,
+    (id, device, sharer, name, part_count, synced_us, read_from, read_from_name, as_of_us): ShareTuple,
 ) -> Result<MirroredShareRow, DbError> {
-    let length = device.len();
-    let device = <[u8; 32]>::try_from(device)
-        .map(DeviceId::from_bytes)
-        .map_err(|_| DbError::CorruptDeviceId {
-            column: "peer_share.device_id",
-            length,
-        })?;
     Ok(MirroredShareRow {
         id: PeerShareId::from_uuid(id),
-        device,
+        device: stored_device("peer_share.device_id", device)?,
         sharer,
         name,
         part_count,
         synced_at: synced_us
             .map(|us| detail_stamp("peer_share.synced_at", us))
+            .transpose()?,
+        read_from: read_from
+            .map(|bytes| stored_device("peer_share.catalogue_from", bytes))
+            .transpose()?,
+        read_from_name,
+        as_of: as_of_us
+            .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
             .transpose()?,
     })
 }
@@ -160,9 +196,19 @@ fn share_row(
 pub struct PgMirror(pub PgPool);
 
 impl PgMirror {
-    /// Take up the list `device` offers now: add the shares it newly offers, keep each one's name and part count
-    /// current, and delete, with their parts, the shares it no longer offers. Answers the shares whose catalogue
-    /// was never read or was read under another digest.
+    /// Take up the list `device` offers now: add the folders it newly offers, keep each one's name and part
+    /// count current, and delete, with their parts, the folders **it owns** and no longer offers. Answers the
+    /// folders whose catalogue must be read again.
+    ///
+    /// A folder is keyed by its owner, not by who mentioned it (S7), so what a member passes on lands beside
+    /// what its owner says rather than as a second copy. That is also why the delete is scoped to the folders
+    /// `device` owns: a list from a member says what that member still holds, never what somebody else still
+    /// shares, so relayed knowledge only ever adds. A folder its owner stops offering goes when that owner is
+    /// next read, which is the one installation entitled to say so.
+    ///
+    /// A folder is read again when its digest has moved — and, for a relayed one, only when the relay read it
+    /// from its owner later than the copy held here was read. Freshness alone decides, in both directions: a
+    /// relayed copy that is newer wins, and a relay that is behind is left alone.
     pub async fn take_offer(
         &self,
         device: DeviceId,
@@ -176,16 +222,31 @@ impl PgMirror {
         let names: Vec<&str> = offered.iter().map(|o| o.name).collect();
         let counts: Vec<i64> = offered.iter().map(|o| o.part_count).collect();
         let digests: Vec<&str> = offered.iter().map(|o| o.digest).collect();
+        let owners: Vec<Vec<u8>> = offered
+            .iter()
+            .map(|o| o.owner.unwrap_or(device).as_bytes().to_vec())
+            .collect();
+        // Microseconds, as every timestamp crosses this crate's edge, and null for a copy read from its owner.
+        let as_of: Vec<Option<i64>> = offered
+            .iter()
+            .map(|o| o.as_of.map(|at| at.as_microsecond()))
+            .collect();
+        let own: Vec<uuid::Uuid> = offered
+            .iter()
+            .filter(|o| o.owner.is_none_or(|owner| owner == device))
+            .map(|o| o.remote.as_uuid())
+            .collect();
         let device_bytes = device.as_bytes().as_slice();
         let mut tx = self.0.begin().await?;
         sqlx::query(
             "INSERT INTO peer_share (id, device_id, remote_id, name, part_count) \
-             SELECT o.id, $1, o.remote, o.name, o.part_count \
-             FROM UNNEST($2::uuid[], $3::uuid[], $4::text[], $5::int8[]) AS o(id, remote, name, part_count) \
+             SELECT o.id, o.owner, o.remote, o.name, o.part_count \
+             FROM UNNEST($1::uuid[], $2::bytea[], $3::uuid[], $4::text[], $5::int8[]) \
+             AS o(id, owner, remote, name, part_count) \
              ON CONFLICT (device_id, remote_id) DO UPDATE SET name = EXCLUDED.name, part_count = EXCLUDED.part_count",
         )
-        .bind(device_bytes)
         .bind(&ids)
+        .bind(&owners)
         .bind(&remotes)
         .bind(&names)
         .bind(&counts)
@@ -193,39 +254,73 @@ impl PgMirror {
         .await?;
         sqlx::query("DELETE FROM peer_share WHERE device_id = $1 AND NOT (remote_id = ANY($2))")
             .bind(device_bytes)
-            .bind(&remotes)
+            .bind(&own)
             .execute(&mut *tx)
             .await?;
-        let stale: Vec<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
-            "SELECT ps.id, ps.remote_id, o.digest \
-             FROM UNNEST($2::uuid[], $3::text[]) AS o(remote, digest) \
-             JOIN peer_share ps ON ps.device_id = $1 AND ps.remote_id = o.remote \
-             WHERE ps.synced_at IS NULL OR ps.digest IS DISTINCT FROM o.digest \
+        let stale: Vec<(uuid::Uuid, uuid::Uuid, String, Vec<u8>)> = sqlx::query_as(
+            "SELECT ps.id, ps.remote_id, o.digest, ps.device_id \
+             FROM UNNEST($1::bytea[], $2::uuid[], $3::text[], $4::int8[]) \
+             AS o(owner, remote, digest, as_of) \
+             JOIN peer_share ps ON ps.device_id = o.owner AND ps.remote_id = o.remote \
+             WHERE (ps.synced_at IS NULL OR ps.digest IS DISTINCT FROM o.digest) \
+             AND (o.owner = $5 OR (o.as_of IS NOT NULL AND (ps.catalogue_as_of IS NULL \
+               OR to_timestamp(o.as_of / 1000000.0) > ps.catalogue_as_of))) \
              ORDER BY ps.name, ps.id",
         )
-        .bind(device_bytes)
+        .bind(&owners)
         .bind(&remotes)
         .bind(&digests)
+        .bind(&as_of)
+        .bind(device_bytes)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(stale
+        stale
             .into_iter()
-            .map(|(id, remote, digest)| StaleShare {
-                id: PeerShareId::from_uuid(id),
-                remote: ShareId::from_uuid(remote),
-                digest,
+            .map(|(id, remote, digest, owner)| {
+                Ok(StaleShare {
+                    id: PeerShareId::from_uuid(id),
+                    remote: ShareId::from_uuid(remote),
+                    digest,
+                    owner: stored_device("peer_share.device_id", owner)?,
+                })
             })
-            .collect())
+            .collect()
     }
 
-    /// Replace a share's parts with a whole catalogue, read under `digest`, in one transaction: a read that fails
-    /// part-way leaves the mirror as it was.
+    /// Replace a share's parts with a whole catalogue read from its owner, in one transaction: a read that
+    /// fails part-way leaves the mirror as it was.
     pub async fn replace_catalogue(
         &self,
         share: PeerShareId,
         digest: &str,
         parts: &[MirroredPartIn<'_>],
+    ) -> Result<(), DbError> {
+        self.write_catalogue(share, digest, parts, None, None).await
+    }
+
+    /// The same, for a catalogue read from a member of the folder rather than from its owner (S7): what is
+    /// written is that installation's reading, under the owner's digest and the owner's as-of, so the next
+    /// round compares like with like — and a page can say whose reading it is showing.
+    pub async fn relay_catalogue(
+        &self,
+        share: PeerShareId,
+        digest: &str,
+        parts: &[MirroredPartIn<'_>],
+        from: DeviceId,
+        as_of: Timestamp,
+    ) -> Result<(), DbError> {
+        self.write_catalogue(share, digest, parts, Some(from), Some(as_of))
+            .await
+    }
+
+    async fn write_catalogue(
+        &self,
+        share: PeerShareId,
+        digest: &str,
+        parts: &[MirroredPartIn<'_>],
+        from: Option<DeviceId>,
+        as_of: Option<Timestamp>,
     ) -> Result<(), DbError> {
         let mut tx = self.0.begin().await?;
         sqlx::query("DELETE FROM peer_share_part WHERE peer_share_id = $1")
@@ -254,11 +349,18 @@ impl PgMirror {
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("UPDATE peer_share SET digest = $2, synced_at = now() WHERE id = $1")
-            .bind(share.as_uuid())
-            .bind(digest)
-            .execute(&mut *tx)
-            .await?;
+        // `synced_at` is when this installation wrote the row; `catalogue_as_of` is when the copy was read
+        // from the folder's owner, by whoever read it. For a direct read those are the same moment.
+        sqlx::query(
+            "UPDATE peer_share SET digest = $2, synced_at = now(), catalogue_from = $3, \
+             catalogue_as_of = coalesce(to_timestamp($4 / 1000000.0), now()) WHERE id = $1",
+        )
+        .bind(share.as_uuid())
+        .bind(digest)
+        .bind(from.map(|device| device.as_bytes().to_vec()))
+        .bind(as_of.map(|at| at.as_microsecond()))
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -400,6 +502,66 @@ impl PgMirror {
         .transpose()
     }
 
+    /// The folders mirrored here that may be passed on to `caller`: the ones whose roster, as their owner
+    /// published it, names them (S7). Their own folders are not among them — those are read from their owner.
+    ///
+    /// This is what lets a folder stay browsable while its owner is away. It says nothing a member could not
+    /// read from the owner: the roster the owner published is what decides, and this installation is only
+    /// repeating a catalogue it was given.
+    pub async fn relayable_to(&self, caller: DeviceId) -> Result<Vec<RelayedShare>, DbError> {
+        let rows: Vec<RelayedTuple> = sqlx::query_as(
+            "SELECT ps.device_id, ps.remote_id, ps.name, ps.part_count, ps.digest, \
+             (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint \
+             FROM peer_share ps JOIN peer_share_member m ON m.peer_share_id = ps.id \
+             JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
+             WHERE m.device_id = $1 AND ps.device_id <> $1 AND ps.synced_at IS NOT NULL \
+             ORDER BY ps.name, ps.id",
+        )
+        .bind(caller.as_bytes().as_slice())
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(owner, remote, name, part_count, digest, as_of_us)| {
+                Ok(RelayedShare {
+                    owner: stored_device("peer_share.device_id", owner)?,
+                    remote: ShareId::from_uuid(remote),
+                    name,
+                    part_count,
+                    digest,
+                    as_of: as_of_us
+                        .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
+                        .transpose()?,
+                })
+            })
+            .collect()
+    }
+
+    /// The mirrored folder `owner` owns as `remote`, when `caller` is on the roster its owner published for it
+    /// — the one question every relayed read asks first (S7).
+    ///
+    /// `None` is the refusal a stranger gets: this installation does not mirror that folder, or the folder's
+    /// owner never said it goes to them. Holding a folder's bytes is not what entitles anybody to them; being
+    /// on its owner's list is.
+    pub async fn relayed_to(
+        &self,
+        owner: DeviceId,
+        remote: ShareId,
+        caller: DeviceId,
+    ) -> Result<Option<PeerShareId>, DbError> {
+        let row: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT ps.id FROM peer_share ps JOIN peer_share_member m ON m.peer_share_id = ps.id \
+             JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
+             WHERE ps.device_id = $1 AND ps.remote_id = $2 AND m.device_id = $3 \
+             AND ps.synced_at IS NOT NULL",
+        )
+        .bind(owner.as_bytes().as_slice())
+        .bind(remote.as_uuid())
+        .bind(caller.as_bytes().as_slice())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(row.map(PeerShareId::from_uuid))
+    }
+
     /// What `device` shares, while it is paired and not removed.
     pub async fn shares_of(&self, device: DeviceId) -> Result<Vec<MirroredShareRow>, DbError> {
         let rows: Vec<ShareTuple> = sqlx::query_as(concat!(
@@ -477,6 +639,26 @@ impl PgMirror {
                 },
             )
             .collect())
+    }
+
+    /// A mirrored part's thumbnail, by the owner's id for the part — which is how another installation asks
+    /// for it, since that is the id the folder's own catalogue gave them (S7).
+    pub async fn thumbnail_of(
+        &self,
+        share: PeerShareId,
+        remote_part: PartId,
+    ) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT psp.thumbnail FROM peer_share_part psp JOIN peer_share ps ON ps.id = psp.peer_share_id \
+             JOIN peer pe ON pe.device_id = ps.device_id \
+             WHERE psp.peer_share_id = $1 AND psp.remote_part = $2 AND pe.removed_at IS NULL \
+             AND psp.thumbnail IS NOT NULL",
+        )
+        .bind(share.as_uuid())
+        .bind(remote_part.as_uuid())
+        .fetch_optional(&self.0)
+        .await?
+        .flatten())
     }
 
     /// A mirrored part's thumbnail.

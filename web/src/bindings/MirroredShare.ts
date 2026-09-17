@@ -12,4 +12,13 @@ sharer: string | null, name: string, partCount: number,
 /**
  * When its whole catalogue was last read. `None` until it has been.
  */
-syncedAt: string | null, };
+syncedAt: string | null, 
+/**
+ * The member this copy was read from, when it was not read from the folder's owner, and what they call
+ * themselves. `None` is the ordinary case: read from its owner (S7).
+ */
+readFrom: string | null, readFromName: string | null, 
+/**
+ * When the copy shown here was read from the folder's owner, by whoever read it.
+ */
+asOf: string | null, };

@@ -474,11 +474,19 @@ pub const PROTOCOL: u16 = 1;
 ///
 /// [`ROSTERS`]: `GET /peer/v1/shares/{share}/members`, the roster of a folder, which is how the people a folder
 /// goes to learn about each other (sharing S6).
-pub const FEATURES: &[&str] = &[ROSTERS];
+///
+/// [`RELAY`]: folders held here but owned by somebody else, listed to the people that folder goes to and served
+/// under `?owner=`, so a folder stays browsable while its owner is away (sharing S7).
+pub const FEATURES: &[&str] = &[ROSTERS, RELAY];
 
 /// The feature string for a folder's roster: answered by the installation that serves it, and asked for only of
 /// an installation whose hello listed it.
 pub const ROSTERS: &str = "members";
+
+/// The feature string for a folder passed on by one of its people rather than by its owner. An installation
+/// that does not list it is never sent one: it would record the folder as this installation's own and then ask
+/// this installation for files it does not share.
+pub const RELAY: &str = "relay";
 
 /// The hello route. `shares::shares_router` and `blob::blob_router` hold the rest of what this installation answers.
 pub fn router(identity: DeviceId, roster: Roster) -> axum::Router {

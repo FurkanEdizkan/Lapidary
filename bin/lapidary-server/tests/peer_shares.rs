@@ -7,7 +7,10 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use lapidary_core::{BlobHash, DeviceId, FolderId, LibraryId, MeshMeasurements, PartId, ShareId};
-use lapidary_db::{IngestRequest, PgFolders, PgIngest, PgShares, PgSharing, StoredBlobRow};
+use lapidary_db::{
+    IngestRequest, MirroredPartIn, OfferedRemote, PgFolders, PgIngest, PgMirror, PgShares,
+    PgSharing, RemoteMember, StoredBlobRow,
+};
 use lapidary_peer::PeerDevice;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -319,4 +322,156 @@ async fn a_folders_roster_goes_to_its_people_and_says_who_may_fetch(pool: sqlx::
         .expect("granted");
     let (_, _, body) = get(&pool, Some(ayse()), &roster).await;
     assert_eq!(json(&body)[0]["mayFetch"], true, "granted");
+}
+
+/// Sharing S7: a folder held here but owned by somebody else is passed on to the people that folder goes to,
+/// so it stays browsable while its owner is away.
+///
+/// Mira owns Rockery and this installation holds it; Ayşe is on the roster Mira published for it. Ayşe may
+/// therefore read it here, under `?owner=`, and nobody else may — holding the bytes is not what entitles
+/// anybody to them.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_folder_held_here_is_passed_on_to_the_people_its_owner_named(pool: sqlx::PgPool) {
+    let shared = shared_terrain(&pool).await;
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(mira, "192.168.1.31:8082")
+        .await
+        .expect("pairs with Mira");
+    sharing
+        .seen(
+            ayse(),
+            Some("Ayşe's workshop"),
+            &[lapidary_peer::RELAY.to_owned()],
+        )
+        .await
+        .expect("Ayşe reads relayed folders");
+
+    // Mira's Rockery, mirrored here, with Ayşe on the roster Mira published for it.
+    let mirror = PgMirror(pool.clone());
+    let rockery = ShareId::from_uuid(
+        "01a0c7e2-4d11-7b20-9a31-7c2e5dab0009"
+            .parse()
+            .expect("uuid"),
+    );
+    let stale = mirror
+        .take_offer(
+            mira,
+            &[OfferedRemote {
+                remote: rockery,
+                name: "Rockery",
+                part_count: 1,
+                digest: "1-1",
+                owner: None,
+                as_of: None,
+            }],
+        )
+        .await
+        .expect("takes Mira's offer");
+    let moss = PartId::new();
+    mirror
+        .replace_catalogue(
+            stale[0].id,
+            "1-1",
+            &[MirroredPartIn {
+                source_path: "moss-rock.stl",
+                remote_part: moss,
+                name: "Moss rock, LP-RK-0021",
+                part_number: None,
+                tags: &[],
+                licences: &[],
+                blake3: Some("5c0f8d3e9a1b2c4d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5"),
+                size_bytes: Some(204_800),
+                format: Some("stl"),
+                thumbnail: Some(b"RIFF\x24\0\0\0WEBPVP8 moss".as_slice()),
+            }],
+        )
+        .await
+        .expect("reads Mira's catalogue");
+    mirror
+        .take_roster(
+            mira,
+            rockery,
+            &[RemoteMember {
+                device: ayse(),
+                name: Some("Ayşe's workshop"),
+                address: "192.168.1.24:8082",
+                may_fetch: true,
+            }],
+        )
+        .await
+        .expect("takes Rockery's roster");
+
+    // The list Ayşe gets carries this installation's own folder and Mira's, the second marked as Mira's.
+    let (status, _, body) = get(&pool, Some(ayse()), "/peer/v1/shares").await;
+    assert_eq!(status, StatusCode::OK);
+    let shares = json(&body);
+    assert_eq!(shares.as_array().map(Vec::len), Some(2), "{shares}");
+    assert_eq!(shares[0]["id"], shared.share.as_uuid().to_string());
+    assert_eq!(
+        shares[0]["owner"],
+        serde_json::Value::Null,
+        "this one is ours"
+    );
+    assert_eq!(shares[1]["id"], rockery.as_uuid().to_string());
+    assert_eq!(shares[1]["owner"], mira.to_string());
+    assert!(
+        shares[1]["asOf"].is_string(),
+        "and says when it was read: {shares}"
+    );
+
+    // And the catalogue and thumbnails come from the copy held here.
+    let page = format!(
+        "/peer/v1/shares/{}/catalogue?owner={}",
+        rockery.as_uuid(),
+        mira
+    );
+    let (status, _, body) = get(&pool, Some(ayse()), &page).await;
+    assert_eq!(status, StatusCode::OK);
+    let catalogue = json(&body);
+    assert_eq!(catalogue["parts"][0]["sourcePath"], "moss-rock.stl");
+    assert_eq!(
+        catalogue["parts"][0]["part"],
+        moss.as_uuid().to_string(),
+        "the owner's id for the part, so a reader cannot tell the copies apart"
+    );
+    let preview = format!(
+        "/peer/v1/shares/{}/thumbnail?part={}&owner={}",
+        rockery.as_uuid(),
+        moss.as_uuid(),
+        mira
+    );
+    let (status, content_type, body) = get(&pool, Some(ayse()), &preview).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/webp"));
+    assert_eq!(body, b"RIFF\x24\0\0\0WEBPVP8 moss");
+
+    // Nazlı is paired with this installation and is not in Mira's folder.
+    let nazli = DeviceId::from_public_key(b"ed25519 public key of nazli's laptop");
+    sharing
+        .add_peer(nazli, "192.168.1.44:8082")
+        .await
+        .expect("pairs");
+    sharing
+        .seen(nazli, None, &[lapidary_peer::RELAY.to_owned()])
+        .await
+        .expect("reads relayed folders");
+    let (status, _, body) = get(&pool, Some(nazli), &page).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["reason"], "notShared");
+    let (_, _, body) = get(&pool, Some(nazli), "/peer/v1/shares").await;
+    assert_eq!(
+        json(&body).as_array().map(Vec::len),
+        Some(1),
+        "only what this installation shares itself"
+    );
+
+    // An installation from before relayed folders is never sent one: it would record it as this one's own.
+    sharing
+        .seen(ayse(), Some("Ayşe's workshop"), &[])
+        .await
+        .expect("an older hello");
+    let (_, _, body) = get(&pool, Some(ayse()), "/peer/v1/shares").await;
+    assert_eq!(json(&body).as_array().map(Vec::len), Some(1));
 }

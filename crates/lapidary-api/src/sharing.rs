@@ -323,6 +323,12 @@ pub struct MirroredShare {
     pub part_count: i64,
     /// When its whole catalogue was last read. `None` until it has been.
     pub synced_at: Option<Timestamp>,
+    /// The member this copy was read from, when it was not read from the folder's owner, and what they call
+    /// themselves. `None` is the ordinary case: read from its owner (S7).
+    pub read_from: Option<String>,
+    pub read_from_name: Option<String>,
+    /// When the copy shown here was read from the folder's owner, by whoever read it.
+    pub as_of: Option<Timestamp>,
 }
 
 /// A page of a mirrored share's parts. `next` is the `after` for the page that follows.
@@ -594,6 +600,9 @@ fn mirrored(row: MirroredShareRow) -> MirroredShare {
         name: row.name,
         part_count: row.part_count,
         synced_at: row.synced_at,
+        read_from: row.read_from.map(|device| device.to_string()),
+        read_from_name: row.read_from_name,
+        as_of: row.as_of,
     }
 }
 
