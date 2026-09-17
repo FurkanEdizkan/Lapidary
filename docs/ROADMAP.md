@@ -3039,6 +3039,95 @@ mutation-checked (6 and 6 caught), and merged with `verify slice` green; `main` 
 
 ---
 
+## Web UI refinement (2026-09-17)
+
+The owner asked for an industry-standard UI, analysed with the impeccable and taste skills, with anime.js and three.js
+doing meaningful work. They chose to refine "The Lit Bench" rather than replace it, with anime.js kept inside the
+mechanical motion rule, three.js in four places, and every surface in scope. Plan: `/home/jbo/.claude/plans/shimmying-cooking-yeti.md`
+(approved). Nine stages, each a branch merged `--no-ff` with `cargo xtask verify slice` green. This section is their
+ledger.
+
+**Stages** (merge commits):
+1. **`85abe7b`, split `routes/index.tsx`** (3,623 lines) into Card, Grid, QuickLook, Storage, Toolbar, Menu and Upload,
+   with no behaviour change. `web/package.json` declares CSS as the only side-effect import. Without it, the route file
+   the router leaves in the entry hoisted the new modules into the entry chunk (322 KB rather than 266 KB).
+2. **`e66a4f6`, foundations.**
+   - anime.js 4.5.0, pinned exact. `lib/motion.ts` is its only importer, and a test holds that.
+   - Tokens: `--color-lamp`, `.stage-lamp`, `--shadow-overlay`.
+   - `Icon.tsx`, vendored Phosphor glyphs.
+3. **`907fec9`, one header on every page** (`AppFrame`):
+   - Places, search, the library menu, and Upload with no accent at rest.
+   - A drawer under `md`.
+   - A full-window drop overlay in place of the dashed strip.
+   - A z scale.
+4. **`6c9cd02`, the grid.**
+   - A scope row; cards with no hover shadow, names that break at separators, and one mono figures line with a quiet
+     "approximate".
+   - Twelve card-shaped skeletons.
+   - Storage and server state in a closed rail disclosure.
+   - `arrive()` on a card's first appearance only.
+   - `contain-intrinsic-size` re-measured in Chrome: 18.5 rem comfortable, 15 rem compact.
+5. **`115dd96`, the turntable.** A card turns its part after 150 ms of mouse rest or on focus, with one renderer and
+   canvas for the page.
+   - It starts on the thumbnail exactly: `thumbnailFrame` and `rasterLights` reproduce `raster.rs`'s framing and
+     shading.
+   - It holds still for the 180 ms crossfade, steps back over 280 ms, then turns once per 8 s.
+6. **`351770c`, the stage.** Space on a card's name opens the live view at most of the window. The arrows step through
+   the cards, and Escape returns to the card now on screen.
+7. **`8a03d3a`, the part page as a studio.**
+   - Two zones at `lg`, with the stage sticky and its tools docked.
+   - Download is the one standing control; the rest sit in a ⋯ menu.
+   - Measurement callouts are drawn in the view with `tween()`.
+   - The view fits the part across its shorter side.
+8. **`432f626`, the first run and the remaining surfaces.**
+   - An empty library opens on a lit bench of three example parts (the worker's own L0 rungs, 11 KB,
+     `web/scripts/first-run-assets.mjs`).
+   - Removed, sharing, a shared library and the crash page share one anatomy (`Page.ts`).
+   - Purge confirms in a `Dialog` with Cancel focused, not `window.confirm`.
+9. **Verification and docs** (this section, the finish review's fix round, DESIGN.md, and the anime.js rule in
+   CLAUDE.md and AGENTS.md).
+
+**Left out of the plan, and why:**
+- **An anchor bar on the part page.** Assembly, PMI and history can render nothing, and two columns keep every section
+  in view without links to a section that is not there.
+- **New studio lights for the part view.** Its marks, ghost and cap are sRGB colours a linear output would shift. The
+  turntable, which must match the thumbnail, has the raster's own shading instead.
+- **A removal date on removed rows.** No removal time reaches the page, and `updatedAt` is not one.
+- **The finish review's call to round callout readings.** Readings are formatted to the thousandth by the Phase 3 exit,
+  and ≈ marks them approximate in the same line.
+
+**Measured** (2026-09-17, `vite preview` of the build over the dev stack from binaries: six example parts, one empty
+library, one part soft-removed for the removed page's captures and restored after; headless Chrome with SwiftShader;
+`target/ui-verify/verify.mjs`, `report.json`, captures at 1440 and 390 px):
+- **Bundle.** The entry chunk is 252 KB (266 KB before the redesign).
+  - JavaScript loaded at start (the entry and its static imports) is 379 KB in 4 chunks, against 438 KB in 5.
+  - three.js is in exactly one lazy chunk (641 KB, shared by the viewer and the turntable).
+  - anime.js is in a lazy chunk, not the entry.
+- **Contexts and memory.**
+  - One canvas while a card turns, and none once the pointer leaves; one with the stage open.
+  - JS heap 6.0 MB → 6.5 MB after 50 hovers across the cards, with a ceiling: the turntable caches at most 16 parsed
+    models and frees their geometry on eviction.
+  - The plan's sweep over the 1,000-part corpus and GPU frame times were not run: this stack has six parts and draws
+    in software.
+- **Opens** (`node web/scripts/open-timing.mjs --gl swiftshader --rounds 3`, the same stack, against a build of
+  `67e758f`, dwell 250 ms):
+
+  | | Before | After |
+  |---|---|---|
+  | First open in the session | 401 ms | 346 ms |
+  | Round 0, other parts' first opens (median, n=5) | 33.7 ms | 31.1 ms |
+  | Later rounds (median, n=12) | 15.5 ms | 15.6 ms |
+  | Shaders linked during an open | 0 | 0 |
+
+  Headless Chrome reports a screen that cannot hover, so the turntable does not run during these opens.
+- **Reduced motion** (emulated): no turntable, the first-run bench draws one frame, and no flight.
+- **Layout Blue at rest.** A pixel scan for `#2cb4f5` outside the brand mark found it on one control: the section bar's
+  Off button, pressed by default (fixed in `debaf96`). After that, the at-rest captures carry none. The stage capture
+  carries it only as the close button's focus ring.
+- **Impeccable.** The detector found nothing on any changed component. The finish reviewer first returned `recapture`:
+  the callout capture's clicks missed the part, and three captures predated the Off fix. On the retaken packet it
+  returned `fix` with eight material fixes. `26551e8` takes seven, the removed rows' fix without its date; the callout rounding is declined above.
+
 ## Phase 6 — Dashboard and similarity
 
 - Widget registry, drag-resize layout, named groups
