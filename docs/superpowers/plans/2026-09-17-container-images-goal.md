@@ -1,5 +1,17 @@
 # Goal 8: the images, built and run — the stack, sharing, an upgrade, and the workflow
 
+> **Status: done, 2026-09-17.** Recorded in `docs/ROADMAP.md` § "Containers (2026-09-17)", which ends with "Goal 8 closed".
+>
+> | Stage | Result | Merge |
+> |---|---|---|
+> | 0. Preflight | one build-cache prune freed 5.96 GB; the old install recorded | `10afbf7` |
+> | 1. The images | all five built; OCCT 861 s; `api` refuses to run as a worker, `worker` runs | `296eb81` |
+> | 2. The plain stack | healthy, pgvector 0.8.6, STEP through the OCCT worker, upload, bundle, restart | `a40dc36` |
+> | 3. Sharing, two projects | **bug found and fixed:** the peer's volumes owned by root; then every exit, 1,077,177,442 bytes as predicted across a `docker kill` | `db1206d` |
+> | 4. The upgrade from `5724553` | 0037–0041 applied, no existing row changed, all parts open, a share pulled | `50d325a` |
+> | 5. The workflow | **bug fixed:** its untargeted build; `check-deploy` holds it; dispatched run succeeded in 44 min | `a19a503` |
+> | 6. Close | deploy docs corrected, teardown, the old install unchanged, pushed | `a19a503` and this record |
+
 Written 2026-09-17. **This file is the goal's source of truth.** After any context summary, re-read it together with
 `docs/ROADMAP.md` § "Containers (2026-09-17)", which stage 0 opens and every stage after it records into.
 
@@ -114,7 +126,7 @@ base images, before two release Rust builds.
 
 ## Stages
 
-### 0. Preflight (no branch)
+### 0. Preflight (no branch) — done
 
 - `main` clean at `d353d70` or later, and `origin/main` equal to it; `lapidary-test-db` up; nothing listening on 3000,
   8080–8082, 13000, 18080–18082.
@@ -123,7 +135,7 @@ base images, before two release Rust builds.
   mtime), to compare against at teardown.
 - Open `docs/ROADMAP.md` § "Containers (2026-09-17)" with the preflight's figures.
 
-### 1. Build the images (no branch unless a build fails on our files)
+### 1. Build the images (no branch unless a build fails on our files) — done
 
 - `docker compose -p lapidary-check -f deploy/compose.yaml -f deploy/compose.sharing.yaml --env-file
   target/docker-check/lapidary-check/check.env build`, one service at a time in this order, with the disk guard between:
@@ -137,7 +149,7 @@ base images, before two release Rust builds.
 - A build that fails because of this repository's files (a Containerfile, a lockfile, the web build) is fixed on
   `fix/container-build`, with `check-deploy` still green, and merged before stage 2.
 
-### 2. The plain stack (no branch unless a check needs code)
+### 2. The plain stack (no branch unless a check needs code) — done
 
 Project `lapidary-check`, its own env and an absolute store under `target/docker-check/lapidary-check/`, the default
 ports, `LAPIDARY_INGEST_DIR` = the repo's `fixtures/step` (6 files: 5 STEP, 1 IGES), read-only.
@@ -151,7 +163,7 @@ ports, `LAPIDARY_INGEST_DIR` = the repo's `fixtures/step` (6 files: 5 STEP, 1 IG
 - **Restart:** `down` (no `-v`) and `up` again: the same parts, revisions and thumbnails, and no job left failed.
 - **Exit:** a table of the above in the ROADMAP record, with any bug a check found fixed and merged.
 
-### 3. Sharing between two projects (branch only if a check needs code)
+### 3. Sharing between two projects (branch only if a check needs code) — done
 
 Projects `lapidary-share-a` (ports 8080–8082, 3000) and `lapidary-share-b` (18080–18082, 13000), each with the sharing
 overlay and its ports-only override, own env and store. `lapidary-check` is stopped first (its ports).
@@ -168,7 +180,7 @@ overlay and its ports-only override, own env and store. `lapidary-check` is stop
 - **Record also:** each peer container's peak memory against its 512 MB limit during the pull, and the time to pull.
 - **Exit:** the numbers beside goal 7's native ones.
 
-### 4. Upgrading an old database (branch `fix/upgrade-<what>` only if a migration fails)
+### 4. Upgrading an old database (branch `fix/upgrade-<what>` only if a migration fails) — done
 
 Not the owner's old install: a database built by the code before goal 7.
 - A worktree at `5724553`. Its own debug `lapidary-server --features mock-kernel` (a new build, on `/mnt/Storage`),
@@ -185,7 +197,7 @@ Not the owner's old install: a database built by the code before goal 7.
   first, then merged.
 - **Exit:** migrations applied and their time, row counts before and after, every part opens.
 
-### 5. The Containers workflow: `fix/containers-workflow`
+### 5. The Containers workflow: `fix/containers-workflow` — done
 
 - Build what compose builds: `api` (`--target api`), `worker` (`--target worker --build-arg
   SERVER_FEATURES=mock-kernel,occt-kernel`), `web`, `db`. Actions stay pinned by SHA.
@@ -197,7 +209,7 @@ Not the owner's old install: a database built by the code before goal 7.
 - If the runner runs out of disk building `worker`, record where, and change the dispatch to build `api`, `web` and `db`
   while tags build all four, then run it again. Record the run's URL, its time per image and its result.
 
-### 6. Close (on stage 5's branch before its merge, and one record after the run)
+### 6. Close (on stage 5's branch before its merge, and one record after the run) — done
 
 - The ROADMAP record per stage: what was built or fixed, bugs found, mutation counts, measured exits, decisions taken
   without the owner, what is left.
@@ -216,7 +228,7 @@ Not the owner's old install: a database built by the code before goal 7.
 - Images for another architecture, a registry push, image signing.
 - Quadlet units and the air-gapped image bundle (Phase 8).
 
-## Done when
+## Done when — met
 
 The images build from `main`; the plain stack, sharing between two projects, and an upgrade from `5724553` each pass in
 containers with their results recorded in `docs/ROADMAP.md` § "Containers (2026-09-17)"; every fix is merged `--no-ff`
