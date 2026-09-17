@@ -896,3 +896,45 @@ presents, and `name`, what this installation calls itself.
   timestamp of its own.
 - **Written by the peer role's hello round,** every 15 s. An answer sets `last_seen_at` and the name and clears
   `last_error`; a failure sets `last_error`, in words, and keeps `last_seen_at`.
+
+### 7.2 What this installation shares (S2a, S4)
+
+`share` (`0038`) is a category offered to everyone paired: `id`, `library_id`, `folder_id`, `created_at`, `removed_at`,
+and since `0041` `mode`, `open` or `ask`.
+- **A share is the category and everything under it,** parts filed there later included. Nothing lists parts: the
+  catalogue walks the folder tree when it is read, and every read requires the share and its category to be live.
+- **One live share a category** (`share_one_live_per_folder`). Stopping is soft.
+- **`ask` keeps the catalogue open and the files closed:** everyone paired still sees what it holds, and fetching a
+  file needs a grant.
+
+`share_grant` (`0041`) is one row a person a share: `share_id`, `device_id`, `state` (`asked`, `granted`, `denied`),
+`asked_at`, `decided_at`, and `decided_by`, null until Phase 8 has users to name.
+- **Asked once.** Asking again changes nothing, a denial included; the owner can change an answer at any time.
+- **Checked at every file request,** with the pairing and the share, so a grant taken back, a share stopped or a person
+  removed refuses the next request on a connection already open.
+
+### 7.3 What other installations share, mirrored (S2b)
+
+`peer_share` and `peer_share_part` (`0039`) are **a cache of another installation's list, not this installation's
+data.** `peer_share` holds each share somebody offers — their id for it, its name, part count, the `digest` it was last
+read under and `synced_at`; `peer_share_part` its catalogue by `source_path`, with name, part number, tags, licences,
+BLAKE3, size, format and a thumbnail kept only under 64 KB.
+- **The hello round writes it,** re-reading only a share whose digest moved, and replacing a catalogue whole in one
+  transaction.
+- **What a sharer stops offering is deleted from the mirror.** That is a cache catching up; the page says the sharer
+  stopped offering it, never that something here was removed.
+
+### 7.4 Pulls, and where a pulled part came from (S3, S4)
+
+`pull` (`0040`, states widened in `0041`) is one request to fetch a mirrored share into a library: `peer_share_id` (set
+null when the mirror forgets the share, so the row outlives it), `device_id`, a copy of `share_name`, `library_id`,
+`state` (`queued`, `fetching`, `waiting`, `paused`, `importing`, `done`, `failed`), file and byte counts, `batch_id`
+once its bundles are queued, and `error` in words.
+- **The row is the resume.** The peer role picks unfinished pulls up oldest first, paused ones aside, and a restart
+  picks up the same pull. The files themselves wait in the staging volume as `<blake3>.part`, then `<blake3>` once
+  their hash checks, until the batch is recorded.
+- **Nothing a pull stages is this installation's data** until import writes the parts; a failed pull's staged files are
+  reused by the next pull of the same files.
+
+`part_provenance` (`0040`) names who a pulled part came from: `part_id`, `device_id`, `sharer_name`, `pulled_at`. One row
+a part, refreshed by a later pull; purge deletes it with the part.
