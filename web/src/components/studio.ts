@@ -4,6 +4,7 @@ import {
   DataTexture,
   DirectionalLight,
   DoubleSide,
+  HemisphereLight,
   LinearSRGBColorSpace,
   Mesh,
   MeshBasicMaterial,
@@ -12,24 +13,33 @@ import {
   PlaneGeometry,
   type Object3D,
 } from 'three'
-import { LIGHT_DIR, type Vec3 } from '../lib/viewer-math'
+import { LIGHT_DIR, VIEW_DIR, type Vec3 } from '../lib/viewer-math'
 
 /**
- * How a part is lit and what it is made of, wherever three.js draws one: the part's 3D view and
- * the grid's turntable.
+ * How a part is lit in its own 3D view (the part page, the quick look, the stage): a studio.
  *
- * One definition because both views replace a thumbnail in place, and `raster.rs` drew that
- * thumbnail under exactly this light: a sun along `LIGHT_DIR` over a flat ambient fill, on a
- * pale grey, flat-shaded part. A canvas lit any other way would change the part's look the
- * moment it replaced the picture.
+ * - **Fill:** a hemisphere, a cool sky over a ground the colour of the bench, so a face turned
+ *   away from the key reads as shade rather than as a hole.
+ * - **Key:** the thumbnail's own light, along `LIGHT_DIR`, so the view keeps the picture's sense
+ *   of where the light is while the camera turns.
+ * - **Rim:** a faint light from behind and above the default view, which draws the silhouette
+ *   off the dark lamp.
+ *
+ * Three lights, not the thumbnail's two: this view is looked at and turned, and a part lit only
+ * from the front goes flat the moment it is turned around. The turntable and the first-run bench
+ * use `rasterLights` instead, because they fade in over a thumbnail and must match it exactly.
+ * The view's marks, ghost and cap are unlit materials, so none of them changes under these lights.
  *
  * `prepare()` compiles the view's shaders against these lights, and three keys a program on its
  * lights, so a change here reaches the compile and every view in one edit.
  */
 export function studioLights(): Object3D[] {
-  const sun = new DirectionalLight(0xffffff, 1.8)
-  sun.position.set(...LIGHT_DIR)
-  return [new AmbientLight(0xffffff, 0.45), sun]
+  const fill = new HemisphereLight(0xe6e8ec, 0x1a1a1d, 1.1)
+  const key = new DirectionalLight(0xffffff, 2.0)
+  key.position.set(...LIGHT_DIR)
+  const rim = new DirectionalLight(0xe8eef8, 1.1)
+  rim.position.set(-VIEW_DIR[0], -VIEW_DIR[1], 0.8)
+  return [fill, key, rim]
 }
 
 export function partMaterial(): MeshStandardMaterial {
