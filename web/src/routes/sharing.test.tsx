@@ -9,7 +9,17 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
-import type { LibraryId, MirroredShare, Peer, Pull, PullId, ShareRequest, ShareSummary, SharingIdentity } from '../lib/types'
+import type {
+  LibraryId,
+  MirroredShare,
+  Peer,
+  Pull,
+  PullId,
+  ShareMember,
+  ShareRequest,
+  ShareSummary,
+  SharingIdentity,
+} from '../lib/types'
 
 /**
  * The sharing page, which is where two people who know each other pair their installations. What it
@@ -59,6 +69,7 @@ function stub({
   theirs = [],
   requests = [],
   pulls = [],
+  members = [],
 }: {
   identity?: SharingIdentity
   peers?: Peer[]
@@ -67,6 +78,7 @@ function stub({
   theirs?: MirroredShare[]
   requests?: ShareRequest[]
   pulls?: Pull[]
+  members?: ShareMember[]
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -86,6 +98,9 @@ function stub({
       if (url === '/api/shares/requests') return answer(200, requests)
       if (url === '/api/sharing/pulls') return answer(200, pulls)
       if (method === 'PUT' && url.includes('/grants/')) return answer(204, {})
+      if (url.startsWith('/api/shares/') && url.endsWith('/members')) {
+        return method === 'GET' ? answer(200, members) : answer(204, {})
+      }
       if (url.startsWith('/api/sharing/peers/') && url.endsWith('/shares')) return answer(200, theirs)
       if (method === 'DELETE') return answer(204, {})
       return answer(404, {})
@@ -196,8 +211,20 @@ test('the tab says which page this is', async () => {
 test('what this installation shares is listed, and stopping one withdraws only that one', async () => {
   const calls = stub({
     shares: [
-      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0001', name: 'Terrain', partCount: 34, asksFirst: true },
-      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0002', name: 'Fasteners', partCount: 1, asksFirst: false },
+      {
+        id: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+        name: 'Terrain',
+        partCount: 34,
+        asksFirst: true,
+        reachesEveryone: true,
+      },
+      {
+        id: '01a07c41-5d22-7b03-9014-7e2f6dab0002',
+        name: 'Fasteners',
+        partCount: 1,
+        asksFirst: false,
+        reachesEveryone: true,
+      },
     ],
   })
   renderPage()
@@ -300,4 +327,50 @@ test('pulls are listed by the share they were of, and one whose sharer stopped s
       strings.sharing.pullStopped('Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.'),
     ),
   ).toBeDefined()
+})
+
+/**
+ * A folder picked for and a folder nobody picked for both have an empty list of members, and they reach
+ * opposite numbers of people: everyone paired, and nobody. The row must not read them the same.
+ */
+test('a folder picked for says who it goes to, and one picked for nobody says so', async () => {
+  stub({
+    shares: [
+      {
+        id: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+        name: 'Terrain',
+        partCount: 34,
+        asksFirst: false,
+        reachesEveryone: false,
+      },
+    ],
+    members: [
+      {
+        deviceId: AYSE.deviceId,
+        name: 'Ayşe’s workshop',
+        address: AYSE.address,
+        online: true,
+        addedAt: '2026-09-17T09:20:00Z',
+      },
+    ],
+  })
+  const page = renderPage()
+
+  await screen.findByText('Ayşe’s workshop', { selector: 'p' })
+  expect(screen.queryByText(strings.sharing.membersEveryone)).toBeNull()
+  page.unmount()
+
+  stub({
+    shares: [
+      {
+        id: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+        name: 'Terrain',
+        partCount: 34,
+        asksFirst: false,
+        reachesEveryone: false,
+      },
+    ],
+  })
+  renderPage()
+  await screen.findByText(strings.sharing.membersNone)
 })

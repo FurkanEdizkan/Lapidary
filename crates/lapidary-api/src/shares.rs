@@ -117,6 +117,9 @@ pub struct ShareSummary {
     #[ts(type = "number")]
     pub part_count: i64,
     pub asks_first: bool,
+    /// Whether it reaches whoever is paired because nobody has said who it goes to. A folder whose owner said,
+    /// and named nobody, has an empty member list too, and reaches nobody.
+    pub reaches_everyone: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,6 +211,7 @@ pub async fn all(State(state): State<AppState>) -> Response {
                     name: row.name,
                     part_count: row.part_count,
                     asks_first: row.asks_first,
+                    reaches_everyone: row.reaches_everyone,
                 })
                 .collect::<Vec<_>>(),
         )

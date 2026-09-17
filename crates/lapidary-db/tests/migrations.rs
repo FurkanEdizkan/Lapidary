@@ -783,18 +783,32 @@ fn the_standalone_backfill_file_and_the_copy_inside_0009_agree() {
 /// somebody is already sharing: a wrong default either hides every share or leaves every share open.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_share_made_before_member_lists_still_reaches_everyone(pool: PgPool) {
-    let audience: String = sqlx::query_scalar(
-        "INSERT INTO folder (id, library_id, name, slug) VALUES ($1, $2, 'Terrain', 'terrain') \
-         RETURNING (SELECT column_default FROM information_schema.columns \
-                    WHERE table_name = 'share' AND column_name = 'audience')",
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let folder = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO folder (id, library_id, name, slug) VALUES ($1, $2, 'Terrain', 'terrain')",
     )
-    .bind(Uuid::now_v7())
-    .bind(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
-    .fetch_one(&pool)
+    .bind(folder)
+    .bind(library)
+    .execute(&pool)
     .await
-    .expect("reads the default");
-    assert!(
-        audience.starts_with("'everyone'"),
-        "a share's audience defaults to everyone, got: {audience}"
+    .expect("a category");
+    // Written the way 0037 wrote one, naming no audience, which is what 0042 left every share already there.
+    sqlx::query("INSERT INTO share (id, library_id, folder_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(library)
+        .bind(folder)
+        .execute(&pool)
+        .await
+        .expect("a share");
+
+    let audience: String = sqlx::query_scalar("SELECT audience FROM share WHERE folder_id = $1")
+        .bind(folder)
+        .fetch_one(&pool)
+        .await
+        .expect("reads it back");
+    assert_eq!(
+        audience, "everyone",
+        "a share nobody picked people for goes on reaching whoever is paired"
     );
 }

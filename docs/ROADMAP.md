@@ -3164,10 +3164,13 @@ rule — people who know each other only, no tracker, no public directory. Plan:
 - **Api and pages.** `GET`/`PUT /api/shares/{id}/members`, and `ShareCategory.memberDeviceIds`, so the share dialog
   offers a folder and names its people in one call. The dialog ticks everybody paired to begin with; the sharing page
   says who each folder goes to and changes it.
-- **Decided without the owner:** a list sent with nobody in it reaches nobody, and says so on the page rather than
-  falling back to everyone; a dialog confirmed before the people arrived, or with nobody paired yet, sends no list and
-  the folder reaches whoever is paired, as it always did; an id nobody is paired with is refused (`badMember`) rather
-  than stored.
+- **Decided without the owner:** a list sent with nobody in it reaches nobody, and the row says so rather than reading
+  like a folder nobody has picked for — `ShareSummary.reachesEveryone` is what tells those two empty lists apart, and
+  the page and the picker both read it; a dialog confirmed before the people arrived, or with nobody paired yet, sends
+  no list and the folder reaches whoever is paired, as it always did; sharing a folder that is already shared — the way
+  asking first is switched on — sends no list either and says who it goes to is changed on the sharing page, so it can
+  never widen one somebody picked; an id that is not one is refused (`badMember`) before anything is shared, so a typo
+  leaves nothing shared.
 - **Left for later:** taking somebody off a folder does not touch what they already pulled — that is S10's subject,
   and their copies stay by decision.
 

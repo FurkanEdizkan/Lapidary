@@ -413,3 +413,23 @@ async fn a_share_says_who_it_goes_to_and_refuses_an_id_that_is_not_one(pool: sql
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(refusal["reason"], "notShared");
 }
+
+/// The ids are read before the folder is shared, so a typo leaves nothing shared rather than a folder offered
+/// to everyone paired while the person who typed it reads a refusal.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_device_id_that_is_not_one_shares_nothing(pool: sqlx::PgPool) {
+    let terrain = terrain(&pool).await;
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &shares(),
+        Some(json!({ "folderId": terrain.as_uuid(), "memberDeviceIds": ["ayşe's workshop"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refusal["reason"], "badMember");
+
+    let (status, shared) = send(&pool, "GET", &shares(), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shared, json!([]), "nothing was shared");
+}

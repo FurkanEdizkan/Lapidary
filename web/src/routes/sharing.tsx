@@ -388,8 +388,9 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
 /**
  * Who a folder goes to, under its row.
  *
- * A folder shared before member lists existed reaches everyone paired, and says so rather than listing them:
- * the list is empty because nobody picked, not because nobody is in it.
+ * A folder nobody has picked people for reaches everyone paired and says so; a folder whose owner picked has
+ * the same empty list when they picked nobody, and that one reaches nobody. Only the folder's own answer tells
+ * them apart, so the row reads it rather than the length of the list.
  */
 function Members({ share }: { share: ShareSummary }) {
   const members = useQuery({
@@ -397,13 +398,12 @@ function Members({ share }: { share: ShareSummary }) {
     queryFn: () => fetchShareMembers(share.id),
   })
   if (members.data === undefined) return null
-  return (
-    <p className="mt-1 text-xs text-[var(--color-muted)]">
-      {members.data.length === 0
-        ? strings.sharing.membersEveryone
-        : members.data.map((member) => member.name ?? strings.sharing.unnamed).join(', ')}
-    </p>
-  )
+  const who = share.reachesEveryone
+    ? strings.sharing.membersEveryone
+    : members.data.length === 0
+      ? strings.sharing.membersNone
+      : members.data.map((member) => member.name ?? strings.sharing.unnamed).join(', ')
+  return <p className="mt-1 text-xs text-[var(--color-muted)]">{who}</p>
 }
 
 /** Picking who a folder goes to. The list replaces whatever was there; nobody ticked reaches nobody. */
@@ -416,14 +416,15 @@ function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () =>
   })
   const [picked, setPicked] = useState<ReadonlySet<string> | null>(null)
   const [note, setNote] = useState<string | null>(null)
-  // What is on the folder now, until somebody ticks something. A folder that reaches everyone paired opens
-  // with everyone ticked, so saving without a change keeps what it had.
+  // What is on the folder now, until somebody ticks something, so saving without a change keeps what it had:
+  // everyone ticked for a folder nobody has picked people for, and what was picked for one that has — nobody
+  // included.
   const current =
     picked ??
     new Set(
       members.data === undefined
         ? []
-        : members.data.length === 0
+        : share.reachesEveryone
           ? (peers.data ?? []).map((peer) => peer.deviceId)
           : members.data.map((member) => member.deviceId),
     )

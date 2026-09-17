@@ -100,6 +100,10 @@ pub struct OfferedShare {
     pub digest: String,
     /// Whether fetching its files needs its owner's grant.
     pub asks_first: bool,
+    /// Whether it reaches whoever is paired, people paired later included, because nobody has said who it goes
+    /// to. A folder whose owner has said, and named nobody, reaches nobody — which reads the same in a list of
+    /// members and is not the same thing.
+    pub reaches_everyone: bool,
 }
 
 /// One part of a share's catalogue.
@@ -455,7 +459,7 @@ impl PgShares {
     }
 
     async fn offer_rows(&self, device: Option<DeviceId>) -> Result<Vec<OfferedShare>, DbError> {
-        let rows: Vec<(uuid::Uuid, String, i64, i64, String)> = sqlx::query_as(concat!(
+        let rows: Vec<(uuid::Uuid, String, i64, i64, String, bool)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT s.id AS share, f.id FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
@@ -463,7 +467,8 @@ impl PgShares {
              SELECT d.share, f.id FROM folder f JOIN down d ON f.parent_id = d.id) \
              CYCLE id SET is_cycle USING seen \
              SELECT s.id, f.name, count(DISTINCT p.id), \
-             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0), s.mode \
+             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0), s.mode, \
+             s.audience = 'everyone' \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              LEFT JOIN down d ON d.share = s.id AND NOT d.is_cycle \
              LEFT JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL AND p.library_id = s.library_id \
@@ -478,13 +483,16 @@ impl PgShares {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, part_count, newest_us, mode)| OfferedShare {
-                id: ShareId::from_uuid(id),
-                name,
-                part_count,
-                digest: format!("{part_count}-{newest_us}"),
-                asks_first: mode == "ask",
-            })
+            .map(
+                |(id, name, part_count, newest_us, mode, reaches_everyone)| OfferedShare {
+                    id: ShareId::from_uuid(id),
+                    name,
+                    part_count,
+                    digest: format!("{part_count}-{newest_us}"),
+                    asks_first: mode == "ask",
+                    reaches_everyone,
+                },
+            )
             .collect())
     }
 

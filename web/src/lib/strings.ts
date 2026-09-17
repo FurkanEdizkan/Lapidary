@@ -1847,6 +1847,7 @@ export const strings = {
     membersEveryone: 'Everyone you are paired with',
     membersNobodyPaired: 'Nobody is paired with this installation yet. Pair with somebody first, on this page.',
     membersNone: 'Nobody — this folder reaches no one until you pick somebody.',
+    membersKept: 'Who this already goes to stays as it is. Change that on the sharing page.',
     membersChange: 'Change who it goes to',
     membersSave: 'Save',
     membersSaving: 'Saving…',

@@ -679,6 +679,10 @@ async fn a_share_with_a_member_list_reaches_its_members_and_nobody_else(pool: sq
         .expect("live");
 
     // Shared with everybody until somebody says otherwise.
+    assert!(
+        shares.offered().await.expect("offers")[0].reaches_everyone,
+        "nobody has picked, so it reaches whoever is paired"
+    );
     assert_eq!(shares.offered_to(ayse()).await.expect("offers").len(), 1);
     assert_eq!(shares.offered_to(mira()).await.expect("offers").len(), 1);
     assert!(shares.members(terrain.id).await.expect("lists").is_empty());
@@ -717,8 +721,11 @@ async fn a_share_with_a_member_list_reaches_its_members_and_nobody_else(pool: sq
         "the refusal a stranger gets, so nobody learns what is shared by asking"
     );
 
-    // The owner's own page still lists it whoever it goes to.
-    assert_eq!(shares.offered().await.expect("offers").len(), 1);
+    // The owner's own page still lists it whoever it goes to, and says it is a folder somebody picked for: an
+    // empty list means nobody once it has been said, and everyone until then.
+    let own = shares.offered().await.expect("offers");
+    assert_eq!(own.len(), 1);
+    assert!(!own[0].reaches_everyone);
 
     // Taking somebody off is soft, and takes their ask with it.
     assert!(

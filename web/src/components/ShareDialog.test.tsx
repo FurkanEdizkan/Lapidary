@@ -68,11 +68,16 @@ function stub(
   return calls
 }
 
-function renderDialog() {
+function renderDialog(alreadyShared = false) {
   const onClose = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ShareDialog library={LIBRARY} folder={TERRAIN} onClose={onClose} />
+      <ShareDialog
+        library={LIBRARY}
+        folder={TERRAIN}
+        alreadyShared={alreadyShared}
+        onClose={onClose}
+      />
     </QueryClientProvider>,
   )
   return onClose
@@ -171,4 +176,22 @@ test('unticking somebody leaves them out of who the folder goes to', async () =>
     folderId: TERRAIN.id,
     memberDeviceIds: [WORKSHOP.deviceId],
   })
+})
+
+/** Sharing a folder again is how it is switched to asking first, and it must not widen who it goes to. */
+test('a folder already shared keeps who it goes to, and says where that is changed', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [WORKSHOP, BENCH])
+  const onClose = renderDialog(true)
+
+  await screen.findByText(strings.sharing.membersKept)
+  expect(screen.queryByRole('checkbox', { name: /Ayşe/ })).toBeNull()
+  fireEvent.click(screen.getByLabelText(strings.sharing.askFirstLabel))
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+    folderId: TERRAIN.id,
+    asksFirst: true,
+  })
+  expect(calls.some((call) => call.url.endsWith('/sharing/peers'))).toBe(false)
 })

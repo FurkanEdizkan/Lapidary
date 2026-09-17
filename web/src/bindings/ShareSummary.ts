@@ -4,4 +4,9 @@ import type { ShareId } from "./ShareId";
 /**
  * Everything this installation shares, as its sharing page lists it.
  */
-export type ShareSummary = { id: ShareId, name: string, partCount: number, asksFirst: boolean, };
+export type ShareSummary = { id: ShareId, name: string, partCount: number, asksFirst: boolean, 
+/**
+ * Whether it reaches whoever is paired because nobody has said who it goes to. A folder whose owner said,
+ * and named nobody, has an empty member list too, and reaches nobody.
+ */
+reachesEveryone: boolean, };

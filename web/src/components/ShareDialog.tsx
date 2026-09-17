@@ -21,10 +21,13 @@ const BUTTON =
 export function ShareDialog({
   library,
   folder,
+  alreadyShared,
   onClose,
 }: {
   library: LibraryId
   folder: FolderNode
+  /** Sharing it again — to ask first, say — which must not quietly widen who it already goes to. */
+  alreadyShared: boolean
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
@@ -32,17 +35,24 @@ export function ShareDialog({
     queryKey: ['shares', 'preview', library, folder.id],
     queryFn: () => previewShare(library, folder.id),
   })
-  const peers = useQuery({ queryKey: ['sharing', 'peers'], queryFn: fetchPeers })
+  const peers = useQuery({
+    queryKey: ['sharing', 'peers'],
+    queryFn: fetchPeers,
+    enabled: !alreadyShared,
+  })
   const [note, setNote] = useState<string | null>(null)
   const [asksFirst, setAsksFirst] = useState(false)
   // Everybody, until somebody is unticked: sharing with the people you know is what this did before member
   // lists, and the dialog should not make a person choose to keep that. The list is sent only once the people
   // are known — naming nobody would share a folder with no one, so a dialog confirmed before they arrived, or
-  // with nobody paired yet, sends no list and the share reaches whoever is paired, as it always did.
+  // with nobody paired yet, sends no list and the share reaches whoever is paired, as it always did. A folder
+  // already shared sends none either: this dialog does not know who it goes to, and everyone ticked here would
+  // widen a list somebody picked.
   const [dropped, setDropped] = useState<ReadonlySet<string>>(new Set())
-  const chosen = peers.data?.length
-    ? peers.data.filter((peer) => !dropped.has(peer.deviceId)).map((peer) => peer.deviceId)
-    : undefined
+  const chosen =
+    !alreadyShared && peers.data?.length
+      ? peers.data.filter((peer) => !dropped.has(peer.deviceId)).map((peer) => peer.deviceId)
+      : undefined
   const share = useMutation({
     mutationFn: () => shareCategory(library, folder.id, asksFirst, chosen),
     onSuccess: (result) => {
@@ -87,7 +97,9 @@ export function ShareDialog({
         <legend className="text-xs tracking-wider text-[var(--color-muted)] uppercase">
           {strings.sharing.membersLabel}
         </legend>
-        {peers.data === undefined ? null : peers.data.length === 0 ? (
+        {alreadyShared ? (
+          <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.membersKept}</p>
+        ) : peers.data === undefined ? null : peers.data.length === 0 ? (
           <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
             {strings.sharing.membersNobodyPaired}
           </p>

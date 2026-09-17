@@ -412,7 +412,12 @@ export function FolderTree({
         />
       )}
       {sharing === null ? null : (
-        <ShareDialog library={library} folder={sharing} onClose={() => setSharing(null)} />
+        <ShareDialog
+          library={library}
+          folder={sharing}
+          alreadyShared={shared.has(sharing.id)}
+          onClose={() => setSharing(null)}
+        />
       )}
       {renaming === null ? null : (
         <NameDialog
