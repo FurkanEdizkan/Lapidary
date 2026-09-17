@@ -1878,6 +1878,10 @@ export const strings = {
     introductionDecline: 'Not now',
     introductionAnswering: 'Answering…',
     introductionFailed: 'Could not answer that introduction. Reload the page and try again.',
+    /** Taking it back (S10): somebody who is paired and is in none of the folders either of you shares. */
+    introducedBySomebody: (introducer: string) => `Introduced by ${introducer}`,
+    noFoldersInCommon:
+      'No folder in common any more. They stay on this list until you remove them, and removing them keeps everything you pulled.',
     membersChange: 'Change who it goes to',
     membersSave: 'Save',
     membersSaving: 'Saving…',

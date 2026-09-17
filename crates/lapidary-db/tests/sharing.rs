@@ -232,3 +232,69 @@ async fn adding_somebody_removed_brings_their_row_back(pool: sqlx::PgPool) {
         [(ayse(), "192.168.1.31:8082".to_owned())]
     );
 }
+
+/// Sharing S10: taking it back. A folder's owner takes somebody off it, and what is left is a pairing with
+/// nothing between it — which the People list says rather than leaving them looking like anybody else.
+#[sqlx::test(migrations = "./migrations")]
+async fn somebody_no_folder_reaches_is_still_paired_and_says_so(pool: sqlx::PgPool) {
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(ayse(), "192.168.1.24:8082")
+        .await
+        .expect("pairs");
+    let library = lapidary_core::LibraryId::from_uuid(
+        "01931b6e-0000-7000-8000-000000000001"
+            .parse()
+            .expect("uuid"),
+    );
+    let terrain = lapidary_db::PgFolders(pool.clone())
+        .get_or_create(library, None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+    let shares = lapidary_db::PgShares(pool.clone());
+    let share = shares
+        .create(library, terrain)
+        .await
+        .expect("shares")
+        .expect("live")
+        .id;
+
+    let listed = sharing.peers().await.expect("lists");
+    assert_eq!(listed[0].folders_in_common, 1, "Terrain reaches her");
+    assert_eq!(
+        listed[0].introduced_by, None,
+        "her id was pasted, not passed on"
+    );
+
+    // Taken off the folder: still paired, and there is nothing between the two installations.
+    assert!(
+        shares
+            .set_members(share, &[])
+            .await
+            .expect("says who it goes to")
+    );
+    let listed = sharing.peers().await.expect("lists");
+    assert_eq!(
+        listed.len(),
+        1,
+        "removing her from a folder does not remove her"
+    );
+    assert_eq!(listed[0].folders_in_common, 0);
+
+    // And somebody who arrived on a folder's roster is marked with who introduced them.
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    sharing
+        .accept_introduction(mira, "192.168.1.31:8082", ayse())
+        .await
+        .expect("pairs with Mira");
+    let listed = sharing.peers().await.expect("lists");
+    let mira_row = listed
+        .iter()
+        .find(|peer| peer.device_id == mira)
+        .expect("Mira is on the list");
+    assert_eq!(mira_row.introduced_by, Some(ayse()));
+    assert_eq!(
+        mira_row.folders_in_common, 0,
+        "she is in no folder of this installation's"
+    );
+}

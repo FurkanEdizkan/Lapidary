@@ -58,6 +58,13 @@ pub struct Peer {
     /// Why the last hello failed, in words. `None` once one succeeds.
     pub last_error: Option<String>,
     pub online: bool,
+    /// Who introduced them, when they arrived on a folder's roster rather than by somebody pasting their id.
+    pub introduced_by: Option<String>,
+    /// How many folders this installation still has in common with them. Zero is somebody paired who reaches
+    /// nothing — every folder they were in has gone — which the page says rather than leaving them looking
+    /// like anybody else (S10).
+    #[ts(type = "number")]
+    pub folders_in_common: i64,
 }
 
 /// The `POST` body: what two people paste to each other.
@@ -292,6 +299,8 @@ fn peer(row: PeerRow) -> Peer {
         last_seen_at: row.last_seen_at,
         last_error: row.last_error,
         online: row.online,
+        introduced_by: row.introduced_by.map(|device| device.to_string()),
+        folders_in_common: row.folders_in_common,
     }
 }
 

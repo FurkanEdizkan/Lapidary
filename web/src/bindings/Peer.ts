@@ -11,4 +11,14 @@ name: string | null, addedAt: string, lastSeenAt: string | null,
 /**
  * Why the last hello failed, in words. `None` once one succeeds.
  */
-lastError: string | null, online: boolean, };
+lastError: string | null, online: boolean, 
+/**
+ * Who introduced them, when they arrived on a folder's roster rather than by somebody pasting their id.
+ */
+introducedBy: string | null, 
+/**
+ * How many folders this installation still has in common with them. Zero is somebody paired who reaches
+ * nothing — every folder they were in has gone — which the page says rather than leaving them looking
+ * like anybody else (S10).
+ */
+foldersInCommon: number, };

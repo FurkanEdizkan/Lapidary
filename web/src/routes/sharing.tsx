@@ -171,6 +171,9 @@ function People() {
   const queryClient = useQueryClient()
   const peers = useQuery({ queryKey: ['sharing', 'peers'], queryFn: fetchPeers, refetchInterval: REFRESH_MS })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['sharing', 'peers'] })
+  const named = new Map(
+    (peers.data ?? []).flatMap((peer) => (peer.name === null ? [] : [[peer.deviceId, peer.name] as const])),
+  )
   return (
     <div className={SECTION}>
       <h3 className={SECTION_TITLE}>{strings.sharing.people}</h3>
@@ -187,7 +190,7 @@ function People() {
       ) : (
         <ul role="list" className="mt-4 flex flex-col gap-2">
           {peers.data.map((peer) => (
-            <PeerRow key={peer.deviceId} peer={peer} onRemoved={refresh} />
+            <PeerRow key={peer.deviceId} peer={peer} peers={named} onRemoved={refresh} />
           ))}
         </ul>
       )}
@@ -255,7 +258,16 @@ function PairForm({ onPaired }: { onPaired: () => Promise<void> }) {
   )
 }
 
-function PeerRow({ peer, onRemoved }: { peer: Peer; onRemoved: () => Promise<void> }) {
+function PeerRow({
+  peer,
+  peers,
+  onRemoved,
+}: {
+  peer: Peer
+  /** Everybody paired, by device id, so an introducer is named rather than given as an id. */
+  peers: Map<string, string>
+  onRemoved: () => Promise<void>
+}) {
   const [note, setNote] = useState<string | null>(null)
   const remove = useMutation({
     mutationFn: () => removePeer(peer.deviceId),
@@ -273,6 +285,11 @@ function PeerRow({ peer, onRemoved }: { peer: Peer; onRemoved: () => Promise<voi
     : peer.lastSeenAt === null
       ? strings.sharing.notReached
       : strings.sharing.lastSeen(peer.lastSeenAt)
+  // Where they came from, for somebody a folder's owner introduced rather than somebody whose id was pasted.
+  const introducer =
+    peer.introducedBy === null
+      ? null
+      : strings.sharing.introducedBySomebody(peers.get(peer.introducedBy) ?? peer.introducedBy)
   return (
     <li className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
       <div className="flex flex-wrap items-center gap-3">
@@ -294,6 +311,14 @@ function PeerRow({ peer, onRemoved }: { peer: Peer; onRemoved: () => Promise<voi
           {remove.isPending ? strings.sharing.removing : strings.sharing.removeButton}
         </button>
       </div>
+      {introducer === null ? null : (
+        <p className="mt-1 text-xs text-[var(--color-muted)]">{introducer}</p>
+      )}
+      {peer.foldersInCommon > 0 ? null : (
+        <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+          {strings.sharing.noFoldersInCommon}
+        </p>
+      )}
       <p className="mt-1 font-mono text-xs break-all text-[var(--color-muted)]">
         {peer.deviceId} · {peer.address}
       </p>
