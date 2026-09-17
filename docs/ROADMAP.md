@@ -2994,6 +2994,39 @@ with the sharing overlay and a ports-only override each; `target/docker-check/sh
 - **Sharing from the upgraded data:** its peer claimed a device id, paired with stage 3's project B (both online 16 s after
   pasting), shared the `Brackets` category, and B pulled it in 3 s: both parts under `Shared/Upgraded workshop (BNRNG)/Brackets/`.
 
+**Stage 5: the Containers workflow** (`476a392`).
+- **The bug, as stage 1 showed it:** `.github/workflows/containers.yml` built `deploy/Containerfile` with no `--target` and no
+  `SERVER_FEATURES`, which builds the worker stage around a binary that refuses to run as a worker. It had never run: it
+  triggers only on `workflow_dispatch` and `v*` tags.
+- **Now** it builds the `api` target, the `worker` target with `SERVER_FEATURES=mock-kernel,occt-kernel`, and the `web` and
+  `db` images, and prints the runner's free disk around the worker build.
+- **`check-deploy` reads the workflow:** every build of `deploy/Containerfile` names a target, `api` with no
+  `SERVER_FEATURES`, `worker` with both kernels, and nothing else. Its test over the real file saw the old build first.
+- **Mutation-checked, 6 of 6 caught** (`target/docker-check/mutate-g8-containers-workflow.sh`): an untargeted build
+  passing, one kernel enough, an api with a kernel, any target, the web image held to the server's rules, and the real
+  worker losing its kernels. Two of the first attempts did not test what they claimed — one pattern no longer matched
+  after `rustfmt`, and one only broke compilation — and were rewritten before they counted.
+
+**Close.**
+- **Deploy docs the checks proved incomplete:** `deploy/compose.sharing.yaml` says what the peer sends now and how a pasted
+  address resolves inside its container, two installations on one machine included; `deploy/.env.example` names the peer
+  among the store's writers and gives the api image's own `chown` for a host without sudo.
+- **Teardown:** `down -v` for `lapidary-check`, `lapidary-share-a`, `lapidary-share-b` and `lapidary-upgrade`, their stores
+  emptied, `lapidary_upgrade` dropped, the per-project tags removed. The five `lapidary-check-*` images stay: `api` and `peer`
+  158 MB each, `worker` 268 MB, `web` 90 MB, `db` 647 MB. Root 14 GB free, `/mnt/Storage` 49 GB.
+- **The old install is unchanged** (`target/docker-check/old-install-after.txt` against `-before.txt`): the two volumes'
+  sizes and newest files, and `storage/`'s bytes, file count and newest file, identical.
+- **Decided without the owner:**
+  - the sharing and upgrade checks' per-project overrides add `extra_hosts`, and the upgrade's `DATABASE_URL`, beside ports;
+    none sets a build, target or role;
+  - images for other projects' checks are tags of `lapidary-check-*`, not builds of their own;
+  - stage 0 read the old install's volumes through a read-only mount to take their size.
+- **Left for later:**
+  - Starting the owner's old install on the new images, on copies, which would exercise a real upgrade with its own data.
+  - The worker image carries the whole OCCT build (OCCT's compile is 861 s cold here); a cached or prebuilt OCCT layer
+    would make the workflow's worker build much shorter.
+  - `docker compose build` builds `api` and `peer` as two images of the same layers (158 MB each, shared).
+
 ---
 
 ## Phase 6 — Dashboard and similarity
