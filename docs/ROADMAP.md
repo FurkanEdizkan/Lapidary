@@ -3027,6 +3027,16 @@ with the sharing overlay and a ports-only override each; `target/docker-check/sh
     would make the workflow's worker build much shorter.
   - `docker compose build` builds `api` and `peer` as two images of the same layers (158 MB each, shared).
 
+**The workflow's run** ([35208374456](https://github.com/FurkanEdizkan/Lapidary/actions/runs/35208374456), dispatched on
+`main` at `a19a503` after the push). **Succeeded in 44 min:** `api` 238 s, `worker` 2,351 s (OCCT from source on the
+runner), `web` 28 s, `db` 10 s. The runner had 87 GB free before and 82 GB after, so the fallback the goal file planned for
+a runner short of disk was not needed; the goal file's "about 14 GB" was wrong.
+
+**Goal 8 closed** (2026-09-17). The images build from `main`, locally and in the workflow; the plain stack, sharing
+between two compose projects and an upgrade from `5724553` pass in containers; the two bugs running them found — the peer's
+named volumes owned by root, and the workflow's untargeted build — are fixed, each with a `check-deploy` rule,
+mutation-checked (6 and 6 caught), and merged with `verify slice` green; `main` is pushed.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
