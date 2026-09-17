@@ -128,6 +128,11 @@ function RemovedRow({ card }: { card: PartCard }) {
       <div className="min-w-0 grow">
         <p className="text-sm font-medium text-[var(--color-bright)]">{breakable(card.name)}</p>
         <p className="tabular text-xs break-all text-[var(--color-muted)]">{card.sourcePath}</p>
+        {card.removedAt === null ? null : (
+          <p className="text-xs text-[var(--color-muted)]">
+            <time dateTime={card.removedAt}>{strings.removal.removedOn(card.removedAt)}</time>
+          </p>
+        )}
       </div>
 
       {/*

@@ -1562,7 +1562,7 @@ struct DetailColumns {
     updated_us: i64,
 }
 
-/// The sixteen columns a card is made of.
+/// The seventeen columns a card is made of, each aliased to its [`GridRow`] field.
 ///
 /// A `const` and not two copies, because `page` and `search` must select the same list in
 /// the same order or [`to_part_row`]'s positional tuple decodes one query's columns into
@@ -1575,18 +1575,21 @@ struct DetailColumns {
 /// compile time, no string building anywhere near a query.
 macro_rules! grid_columns {
     () => {
-        "p.id, p.library_id, r.id, p.name, p.part_number, p.source_path, \
-     d.thumb_bytes, r.triangle_count, \
-     s.blake3, s.size_bytes, s.stored_bytes, s.zstd_level, s.storage_path, l0.blake3, \
+        "p.id AS id, p.library_id AS library_id, r.id AS revision_id, p.name AS name, \
+     p.part_number AS part_number, p.source_path AS source_path, \
+     d.thumb_bytes AS thumb_bytes, r.triangle_count AS triangle_count, \
+     s.blake3 AS source_blake3, s.size_bytes AS source_bytes, s.stored_bytes AS stored_bytes, \
+     s.zstd_level AS zstd_level, s.storage_path AS storage_path, l0.blake3 AS l0_blake3, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
-     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us"
+     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
+     (extract(epoch FROM p.deleted_at) * 1000000)::bigint AS removed_us"
     };
 }
 
 /// The four LATERALs behind those columns: the latest revision, its thumbnail, its L0 rung
 /// and its source file.
 ///
-/// Shared for the same reason as [`GRID_COLUMNS`], and named separately because search puts
+/// Shared for the same reason as [`grid_columns`], and named separately because search puts
 /// a join between the two — its candidates come from a CTE, and the LATERALs then run for
 /// the page it kept rather than for every row that matched.
 macro_rules! grid_laterals {
@@ -3356,8 +3359,8 @@ impl PartRepository for PgParts {
         // `is_watertight` is deliberately not selected. It was read into `_watertight` and
         // dropped, and the merge that brought the folder filter alongside the LOD rung put
         // this select one column over sqlx's sixteen-tuple `FromRow` ceiling -- so the
-        // column nothing reads is the one that goes. A card that ever needs it can select
-        // it again, against a row type that is a struct by then.
+        // column nothing reads is the one that goes. `GridRow` is a named struct now
+        // (`removed_us` was the seventeenth), so a card that ever needs it costs a field.
         //
         // The folder filter is the recursive CTE at the top, and it is inline here rather
         // than a separate "give me the descendants" call for one reason: the descent and
@@ -3436,7 +3439,7 @@ impl PartRepository for PgParts {
             field,
             field_range,
         } = *grid;
-        // Same sixteen columns, same LATERALs, same `Shows` predicate, same subtree filter.
+        // Same seventeen columns, same LATERALs, same `Shows` predicate, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
         //
         // # The four tiers, and why they are 8/4/2/1 rather than 4/2/1
@@ -3944,59 +3947,59 @@ pub struct NewPartImage<'a> {
     pub source_url: Option<&'a str>,
 }
 
-/// One grid row, decoded. `page` and `search` select the same sixteen columns and both end
-/// here, so a card cannot mean one thing on the grid and another in a set of results.
+/// One grid row, decoded. `page`, `search` and the sorted pages select the same seventeen
+/// columns ([`grid_columns`]) and all end here, so a card cannot mean one thing on the grid and
+/// another in a set of results.
 ///
-/// The tuple is positional and stays that way: `#[derive(sqlx::FromRow)]` maps by column
-/// *name*, and this SELECT has two `id`s and two `blake3`s. Adopting it would mean aliasing
-/// the grid's crown-jewel query for a benefit nothing needs yet.
-///
-/// ponytail: a positional 16-tuple at sqlx's ceiling. A seventeenth column is the trigger to
-/// alias the SELECT and move to a named `FromRow` struct, not a reason to drop a column
-/// again.
-#[allow(clippy::type_complexity)]
-type GridRow = (
-    Uuid,
-    Uuid,
-    Uuid,
-    String,
-    Option<String>,
-    String,
-    Option<Vec<u8>>,
-    Option<i32>,
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-    Option<i16>,
-    Option<String>,
-    Option<String>,
-    i64,
-    i64,
-);
+/// A named `FromRow` struct since the seventeenth column (`removed_us`) went past sqlx's
+/// sixteen-tuple ceiling. The SELECT aliases every column, including the two `id`s and two
+/// `blake3`s that kept this positional before, so a column is decoded by what it is called
+/// rather than by where it sits.
+#[derive(sqlx::FromRow)]
+struct GridRow {
+    id: Uuid,
+    library_id: Uuid,
+    revision_id: Uuid,
+    name: String,
+    part_number: Option<String>,
+    source_path: String,
+    thumb_bytes: Option<Vec<u8>>,
+    triangle_count: Option<i32>,
+    source_blake3: Option<String>,
+    source_bytes: Option<i64>,
+    stored_bytes: Option<i64>,
+    zstd_level: Option<i16>,
+    storage_path: Option<String>,
+    l0_blake3: Option<String>,
+    created_us: i64,
+    updated_us: i64,
+    removed_us: Option<i64>,
+}
 
 fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
     fn bytes(column: &'static str, value: Option<i64>) -> Result<Option<u64>, DbError> {
         value.map(|v| bytes_column(column, v)).transpose()
     }
 
-    let (
+    let GridRow {
         id,
-        lib,
-        revision,
+        library_id: lib,
+        revision_id: revision,
         name,
         part_number,
         source_path,
         thumb_bytes,
-        triangles,
-        source_hash,
+        triangle_count: triangles,
+        source_blake3: source_hash,
         source_bytes,
         stored_bytes,
         zstd_level,
         storage_path,
-        tessellation_l0,
+        l0_blake3: tessellation_l0,
         created_us,
         updated_us,
-    ) = row;
+        removed_us,
+    } = row;
     {
         // `as u32` previously turned a negative column value into a number
         // near 4.29 billion instead of failing — the same silent-wraparound
@@ -4079,6 +4082,16 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                         value: updated_us,
                     }
                 })?,
+                removed_at: removed_us
+                    .map(|us| {
+                        jiff::Timestamp::from_microsecond(us).map_err(|_| {
+                            DbError::TimestampOutOfRange {
+                                column: "part.deleted_at",
+                                value: us,
+                            }
+                        })
+                    })
+                    .transpose()?,
             },
             thumbnail_webp: thumb_bytes,
             directory: storage_path.as_deref().and_then(model_directory),

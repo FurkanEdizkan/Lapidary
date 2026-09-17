@@ -102,4 +102,14 @@ storedBytes: number | null,
  * are written with `zstd_level NULL`, so ingesting bytes byte-identical to a
  * derivative writes a `role = 'source'` file row over a `NULL`-level blob.
  */
-compressed: boolean | null, createdAt: string, updatedAt: string, };
+compressed: boolean | null, createdAt: string, updatedAt: string, 
+/**
+ * When the part was removed, or `None` for a part still in its library.
+ *
+ * `part.deleted_at`, read by the grid queries whichever list they serve. The removed
+ * list shows it because purge starts a 30-day countdown the page describes, and a row
+ * that cannot say when it was removed leaves somebody guessing how long a part has sat
+ * there. Not `updated_at`: a rename or a revision also moves that, so it was never a
+ * removal time.
+ */
+removedAt: string | null, };

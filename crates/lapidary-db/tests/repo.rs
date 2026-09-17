@@ -3207,6 +3207,63 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
     );
 }
 
+/// The removed list says when each part was removed, and only a removed part says it at all.
+///
+/// `removed_at` is `part.deleted_at`, not `updated_at`: the part is renamed after it is removed
+/// here, which moves `updated_at` and must leave the removal time where it was. Restoring clears
+/// it, so a part brought back does not carry the date of a removal that no longer applies.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_removed_part_says_when_it_was_removed_and_a_live_one_says_nothing(pool: sqlx::PgPool) {
+    let removed = seed_named(&pool, 0xe1, "flange-dn40-lp-3310-02", None).await;
+    let live = seed_named(&pool, 0xe2, "spur-gear-m2-20t-lp-5140-00", None).await;
+    let parts = PgParts(pool.clone());
+    parts.soft_delete(removed).await.expect("removes it");
+    sqlx::query("UPDATE part SET deleted_at = '2026-09-10T08:30:00Z', updated_at = '2026-09-12T16:00:00Z' WHERE id = $1")
+        .bind(removed.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("pins both times, a rename after the removal moving updated_at");
+
+    let on_removed = parts
+        .page(
+            &GridQuery {
+                shows: Shows::Removed,
+                ..GridQuery::new(library(), 50)
+            },
+            Sort::Newest,
+        )
+        .await
+        .expect("reads the removed list");
+    assert_eq!(on_removed.len(), 1);
+    assert_eq!(
+        on_removed[0].summary.removed_at,
+        Some("2026-09-10T08:30:00Z".parse().expect("a timestamp")),
+        "the removal time, not the later update"
+    );
+
+    let in_library = parts
+        .page(&GridQuery::new(library(), 50), Sort::Newest)
+        .await
+        .expect("reads the grid");
+    assert_eq!(
+        in_library
+            .iter()
+            .map(|row| (row.summary.id, row.summary.removed_at))
+            .collect::<Vec<_>>(),
+        vec![(live, None)]
+    );
+
+    parts.restore(removed).await.expect("restores it");
+    let restored = parts
+        .page(&GridQuery::new(library(), 50), Sort::Newest)
+        .await
+        .expect("reads the grid");
+    assert!(
+        restored.iter().all(|row| row.summary.removed_at.is_none()),
+        "a restored part carries no removal date"
+    );
+}
+
 /// One part whose file on disk is named nothing like the part.
 ///
 /// `seed_part` passes `source_path: name`, so in every other search test in this file the
