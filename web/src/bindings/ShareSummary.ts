@@ -4,4 +4,4 @@ import type { ShareId } from "./ShareId";
 /**
  * Everything this installation shares, as its sharing page lists it.
  */
-export type ShareSummary = { id: ShareId, name: string, partCount: number, };
+export type ShareSummary = { id: ShareId, name: string, partCount: number, asksFirst: boolean, };

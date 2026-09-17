@@ -9,7 +9,7 @@ import {
 import { beforeEach, expect, test, vi } from 'vitest'
 import { SharingPage } from './sharing'
 import { strings } from '../lib/strings'
-import type { MirroredShare, Peer, ShareSummary, SharingIdentity } from '../lib/types'
+import type { LibraryId, MirroredShare, Peer, Pull, PullId, ShareRequest, ShareSummary, SharingIdentity } from '../lib/types'
 
 /**
  * The sharing page, which is where two people who know each other pair their installations. What it
@@ -57,12 +57,16 @@ function stub({
   pair = { status: 200, body: AYSE as unknown },
   shares = [],
   theirs = [],
+  requests = [],
+  pulls = [],
 }: {
   identity?: SharingIdentity
   peers?: Peer[]
   pair?: { status: number; body: unknown }
   shares?: ShareSummary[]
   theirs?: MirroredShare[]
+  requests?: ShareRequest[]
+  pulls?: Pull[]
 } = {}) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -79,6 +83,9 @@ function stub({
       if (url === '/api/sharing/peers' && method === 'POST') return answer(pair.status, pair.body)
       if (url === '/api/sharing/peers') return answer(200, peers)
       if (url === '/api/shares') return answer(200, shares)
+      if (url === '/api/shares/requests') return answer(200, requests)
+      if (url === '/api/sharing/pulls') return answer(200, pulls)
+      if (method === 'PUT' && url.includes('/grants/')) return answer(204, {})
       if (url.startsWith('/api/sharing/peers/') && url.endsWith('/shares')) return answer(200, theirs)
       if (method === 'DELETE') return answer(204, {})
       return answer(404, {})
@@ -189,14 +196,15 @@ test('the tab says which page this is', async () => {
 test('what this installation shares is listed, and stopping one withdraws only that one', async () => {
   const calls = stub({
     shares: [
-      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0001', name: 'Terrain', partCount: 34 },
-      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0002', name: 'Fasteners', partCount: 1 },
+      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0001', name: 'Terrain', partCount: 34, asksFirst: true },
+      { id: '01a07c41-5d22-7b03-9014-7e2f6dab0002', name: 'Fasteners', partCount: 1, asksFirst: false },
     ],
   })
   renderPage()
 
   await screen.findByText(strings.sharing.ownShareParts(34))
   expect(screen.getByText(strings.sharing.ownShareParts(1))).toBeDefined()
+  expect(screen.getAllByText(strings.sharing.asksFirst)).toHaveLength(1)
   fireEvent.click(screen.getByRole('button', { name: strings.sharing.stopSharingLabel('Fasteners') }))
 
   await waitFor(() =>
@@ -222,4 +230,74 @@ test('what somebody shares is listed under them, each linking to it', async () =
 
   const links = await screen.findAllByRole('link', { name: strings.sharing.theirShareParts('Terrain', 998) })
   expect(links[0]?.getAttribute('href')).toBe('/sharing/shares/01a0c7e2-4d11-7b20-9a31-7c2e5dab0001')
+})
+
+test('who asked to pull is listed with the answer given, and letting them pull sends that answer', async () => {
+  const calls = stub({
+    requests: [
+      {
+        shareId: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+        shareName: 'Terrain',
+        deviceId: AYSE.deviceId,
+        name: 'Ayşe’s workshop',
+        state: 'asked',
+        askedAt: '2026-09-17T02:10:00Z',
+      },
+      {
+        shareId: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+        shareName: 'Terrain',
+        deviceId: MAKERSPACE.deviceId,
+        name: null,
+        state: 'denied',
+        askedAt: '2026-09-17T01:55:00Z',
+      },
+    ],
+  })
+  renderPage()
+
+  await screen.findByText(strings.sharing.requestLine('Ayşe’s workshop', 'Terrain'))
+  expect(screen.getByText(strings.sharing.requestDenied)).toBeDefined()
+  const declineAgain = screen.getByRole('button', {
+    name: strings.sharing.denyLabel(MAKERSPACE.deviceId, 'Terrain'),
+  }) as HTMLButtonElement
+  expect(declineAgain.disabled).toBe(true)
+
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.grantLabel('Ayşe’s workshop', 'Terrain') }))
+  await waitFor(() =>
+    expect(
+      calls.find((call) => call.method === 'PUT'),
+    ).toEqual({
+      url: `/api/shares/01a07c41-5d22-7b03-9014-7e2f6dab0001/grants/${encodeURIComponent(AYSE.deviceId)}`,
+      method: 'PUT',
+      body: { granted: true },
+    }),
+  )
+})
+
+test('pulls are listed by the share they were of, and one whose sharer stopped sharing says so', async () => {
+  stub({
+    pulls: [
+      {
+        id: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0900' as PullId,
+        shareId: null,
+        shareName: 'Terrain',
+        sharer: 'Ayşe’s workshop',
+        libraryId: '01931b6e-0000-7000-8000-000000000001' as LibraryId,
+        state: 'failed',
+        filesTotal: 138,
+        filesDone: 49,
+        bytesTotal: 1_077_177_442,
+        bytesDone: 370_925_966,
+        batchId: null,
+        error: 'Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.',
+      },
+    ],
+  })
+  renderPage()
+  await screen.findByText(strings.sharing.pullLine('Terrain', 'Ayşe’s workshop'))
+  expect(
+    screen.getByText(
+      strings.sharing.pullStopped('Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.'),
+    ),
+  ).toBeDefined()
 })

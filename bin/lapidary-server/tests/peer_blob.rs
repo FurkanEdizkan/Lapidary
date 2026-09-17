@@ -234,3 +234,195 @@ async fn a_range_past_the_end_is_refused(pool: sqlx::PgPool) {
     let (status, _, _) = get(&pool, shared.root.path(), ayse(), &uri, Some(&past)).await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
 }
+
+async fn ask(
+    pool: &sqlx::PgPool,
+    device: DeviceId,
+    share: ShareId,
+) -> (StatusCode, serde_json::Value) {
+    let response = lapidary_peer::shares::shares_router(pool.clone())
+        .layer(MockConnectInfo(PeerDevice(Some(device))))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/peer/v1/shares/{}/request", share.as_uuid()))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body reads");
+    (
+        status,
+        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+fn reason(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body).expect("a refusal")["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_share_that_asks_first_sends_files_only_once_its_owner_grants_them(pool: sqlx::PgPool) {
+    let shared = shared(&pool).await;
+    let shares = PgShares(pool.clone());
+    shares
+        .set_asks_first(shared.share, true)
+        .await
+        .expect("asks first");
+    let uri = format!(
+        "/peer/v1/shares/{}/blob/{}",
+        shared.share.as_uuid(),
+        shared.inside.0
+    );
+
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &uri, None).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::FORBIDDEN, "askFirst".to_owned())
+    );
+
+    let (status, answer) = ask(&pool, ayse(), shared.share).await;
+    assert_eq!(
+        (status, &answer["grant"]),
+        (StatusCode::ACCEPTED, &serde_json::json!("asked"))
+    );
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &uri, None).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::FORBIDDEN, "askFirst".to_owned())
+    );
+
+    shares
+        .decide(shared.share, ayse(), true)
+        .await
+        .expect("grants");
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body == shared.inside.1);
+    let (_, answer) = ask(&pool, ayse(), shared.share).await;
+    assert_eq!(answer["grant"], "granted");
+
+    shares
+        .decide(shared.share, ayse(), false)
+        .await
+        .expect("denies");
+    let (status, _, body) = get(&pool, shared.root.path(), ayse(), &uri, None).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::FORBIDDEN, "denied".to_owned())
+    );
+
+    let stranger = DeviceId::from_public_key(b"a key nobody here paired with");
+    let (status, answer) = ask(&pool, stranger, shared.share).await;
+    assert_eq!(
+        (status, &answer["reason"]),
+        (StatusCode::NOT_FOUND, &serde_json::json!("notShared"))
+    );
+}
+
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn past_two_files_to_one_installation_or_eight_in_all_the_next_is_told_to_try_again(
+    pool: sqlx::PgPool,
+) {
+    let shared = shared(&pool).await;
+    let uri = format!(
+        "/peer/v1/shares/{}/blob/{}",
+        shared.share.as_uuid(),
+        shared.inside.0
+    );
+    let streams = lapidary_peer::blob::Streams::default();
+    let send = |streams: lapidary_peer::blob::Streams| {
+        let (pool, root, uri) = (pool.clone(), shared.root.path().to_path_buf(), uri.clone());
+        async move {
+            let response = lapidary_peer::blob::blob_router_with(pool, root, streams)
+                .layer(MockConnectInfo(PeerDevice(Some(ayse()))))
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request builds"),
+                )
+                .await
+                .expect("router responds");
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024 * 1024)
+                .await
+                .expect("body reads");
+            (status, body.to_vec())
+        }
+    };
+
+    let held: Vec<_> = (0..2)
+        .map(|_| streams.take(ayse()).expect("two to one installation"))
+        .collect();
+    let (status, body) = send(streams.clone()).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::TOO_MANY_REQUESTS, "busy".to_owned())
+    );
+
+    drop(held);
+    let (status, _) = send(streams.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    // Its stream ended with its body, so both are free again.
+    let again: Vec<_> = (0..2)
+        .map(|_| {
+            streams
+                .take(ayse())
+                .expect("released when the file was sent")
+        })
+        .collect();
+    drop(again);
+
+    // A file still being sent keeps its count: its body is not read yet, so the sending task is still at work.
+    let unread = lapidary_peer::blob::blob_router_with(
+        pool.clone(),
+        shared.root.path().to_path_buf(),
+        streams.clone(),
+    )
+    .layer(MockConnectInfo(PeerDevice(Some(ayse()))))
+    .oneshot(
+        Request::builder()
+            .uri(uri.clone())
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+    .expect("router responds");
+    assert_eq!(unread.status(), StatusCode::OK);
+    let one = streams.take(ayse()).expect("one of two is free");
+    assert!(
+        streams.take(ayse()).is_none(),
+        "the file being sent holds the other"
+    );
+    drop((one, unread));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Both at once: one alone was free all along.
+        while (streams.take(ayse()), streams.take(ayse())).1.is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a dropped body gives its count back");
+
+    let others: Vec<_> = (0u8..8)
+        .map(|n| {
+            streams
+                .take(DeviceId::from_bytes([n; 32]))
+                .expect("eight in all")
+        })
+        .collect();
+    let (status, body) = send(streams.clone()).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::TOO_MANY_REQUESTS, "busy".to_owned())
+    );
+    drop(others);
+}

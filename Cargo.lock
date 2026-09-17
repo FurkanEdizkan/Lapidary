@@ -1530,6 +1530,7 @@ dependencies = [
  "lapidary-jobs",
  "lapidary-peer",
  "lapidary-storage",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

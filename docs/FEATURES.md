@@ -386,12 +386,15 @@ Phase 8; see `docs/ROADMAP.md` § Shared libraries.
 
 | Feature | Phase |
 |---|---|
-| This installation's device id and name, shown to give to people | S1b |
-| Pair by pasting a device id and address; see who is online, and why not | S1b |
-| Remove somebody softly: hidden and refused, the entry kept | S1b |
-| Share a category, and browse what somebody shares | S2 |
-| Pull shared parts, resumable, with their licences shown | S3 |
-| Ask me first, grant, deny, revoke | S4 |
+| This installation's device id and name, shown to give to people | S1b, built |
+| Pair by pasting a device id and address; see who is online, and why not | S1b, built |
+| Remove somebody softly: hidden and refused, the entry kept | S1b, built |
+| Share a category, with a licence warning shown before it is offered | S2, built |
+| Browse what somebody shares, with previews and licences, while they are away | S2, built |
+| Pull a shared library into a chosen library, resumable, under `Shared/<sharer>`, naming who it came from | S3, built |
+| Choose which parts of a shared library to pull | S3, later |
+| Ask me first: grant, decline, change the answer; stopping a share or removing somebody refuses their next request | S4, built |
+| Pause and resume a pull; at most two files at once to one installation and eight in all | S4, built |
 | A public directory, tracker, swarm, relay or hole punching | **[—]** people who know each other only |
 
 ---

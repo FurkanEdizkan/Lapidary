@@ -6,7 +6,7 @@
 
 use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{
-    IngestRequest, NewPartSource, PgFolders, PgIngest, PgJobs, PgMirror, PgParts, PgPulls,
+    Grant, IngestRequest, NewPartSource, PgFolders, PgIngest, PgJobs, PgMirror, PgParts, PgPulls,
     PgRevisions, PgShares, PgSharing, StoredBlobRow,
 };
 use lapidary_peer::{PeerIdentity, Roster, pull, router, serve, server_config, sync};
@@ -78,8 +78,26 @@ async fn filed(
         .expect("records")
 }
 
-#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(pool: sqlx::PgPool) {
+/// Everything a pull needs, on one database: the sharer's Terrain/Rocks with a licensed, tagged cliff face, Terrain
+/// shared and served over a real pinned connection, this installation paired and mirrored, a library to pull into, and a
+/// worker importing.
+struct Terrain {
+    here: Arc<PeerIdentity>,
+    sharer: lapidary_core::DeviceId,
+    /// The share as this installation mirrors it.
+    share: lapidary_core::PeerShareId,
+    /// The same share on the sharer's side.
+    sharer_share: lapidary_core::ShareId,
+    ours: LibraryId,
+    staging: tempfile::TempDir,
+    our_store: tempfile::TempDir,
+    _sharer_store: tempfile::TempDir,
+    _ingest: tempfile::TempDir,
+    shutdown: tokio_util::sync::CancellationToken,
+    worker: tokio::task::JoinHandle<Result<(), lapidary_jobs::JobsError>>,
+}
+
+async fn terrain(pool: &sqlx::PgPool) -> Terrain {
     let sharer_store = tempfile::tempdir().expect("the sharer's store");
     let our_store = tempfile::tempdir().expect("this installation's store");
     let staging = tempfile::tempdir().expect("the staging volume");
@@ -100,7 +118,7 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
         .await
         .expect("Rocks");
     let cliff = filed(
-        &pool,
+        pool,
         sharer_store.path(),
         rocks,
         "Terrain/Rocks/cliff-face-lp-tr-0112.stl",
@@ -122,11 +140,12 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
         .set_tags(cliff, &["terrain".to_owned(), "28mm".to_owned()])
         .await
         .expect("tagged");
-    PgShares(pool.clone())
+    let sharer_share = PgShares(pool.clone())
         .create(sharers_library(), terrain)
         .await
         .expect("shares")
-        .expect("live");
+        .expect("live")
+        .id;
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -152,10 +171,10 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
         .expect("and the sharer with this installation");
 
     // This installation: learns the sharer's name, mirrors, and pulls into a library of its own.
-    sync::round(&pool, &here, &Roster::default())
+    sync::round(pool, &here, &Roster::default())
         .await
         .expect("says hello");
-    sync::mirror(&pool, &here, sharer, &address)
+    sync::mirror(pool, &here, sharer, &address)
         .await
         .expect("mirrors");
     let share = PgMirror(pool.clone())
@@ -186,6 +205,38 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
         shutdown.clone(),
     ));
 
+    Terrain {
+        here,
+        sharer,
+        share,
+        sharer_share,
+        ours,
+        staging,
+        our_store,
+        _sharer_store: sharer_store,
+        _ingest: ingest,
+        shutdown,
+        worker,
+    }
+}
+
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(pool: sqlx::PgPool) {
+    let Terrain {
+        here,
+        sharer,
+        share,
+        ours,
+        staging,
+        our_store,
+        shutdown,
+        worker,
+        // Held, not left to `..`: an unbound field is dropped at once, and with it the sharer's store.
+        _sharer_store,
+        _ingest,
+        ..
+    } = terrain(&pool).await;
+    let parts = PgParts(pool.clone());
     let pulls = PgPulls(pool.clone());
     let first = pulls
         .start(share, ours)
@@ -272,4 +323,225 @@ async fn a_pulled_share_lands_under_its_sharer_and_a_second_pull_moves_nothing(p
 
     shutdown.cancel();
     let _ = worker.await;
+}
+
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_pull_waits_for_a_grant_pauses_and_resumes_and_a_share_stopped_fails_it_by_name(
+    pool: sqlx::PgPool,
+) {
+    let terrain = terrain(&pool).await;
+    let here_id = terrain.here.device_id().expect("its id");
+    let shares = PgShares(pool.clone());
+    let pulls = PgPulls(pool.clone());
+    let work = |row| {
+        let (pool, here) = (pool.clone(), terrain.here.clone());
+        let (staging, store) = (
+            terrain.staging.path().to_path_buf(),
+            terrain.our_store.path().to_path_buf(),
+        );
+        async move {
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                pull::work(&pool, &here, &staging, &store, &row),
+            )
+            .await
+            .expect("settles within a minute")
+        }
+    };
+    shares
+        .set_asks_first(terrain.sharer_share, true)
+        .await
+        .expect("the sharer asks first");
+
+    let first = pulls
+        .start(terrain.share, terrain.ours)
+        .await
+        .expect("records")
+        .expect("mirrored");
+    let why = work(pulls.next().await.expect("reads").expect("queued"))
+        .await
+        .expect_err("waits for the sharer");
+    assert!(
+        why.contains("Ayşe/Workshop") && why.contains("Terrain"),
+        "{why}"
+    );
+    let waiting = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    assert_eq!((waiting.state.as_str(), waiting.files_done), ("waiting", 0));
+    assert_eq!(
+        shares
+            .grant(here_id, terrain.sharer_share)
+            .await
+            .expect("reads"),
+        Grant::Asked,
+        "the pull asked"
+    );
+
+    // Paused, the peer role passes it over; resumed, it is picked up again.
+    assert!(pulls.pause(first).await.expect("pauses"));
+    assert_eq!(pulls.next().await.expect("reads"), None);
+    assert!(pulls.resume(first).await.expect("resumes"));
+    let resumed = pulls.next().await.expect("reads").expect("picked up again");
+    assert_eq!(resumed.id, first);
+    // Paused again after the peer role read the row: its work starts nothing.
+    assert!(pulls.pause(first).await.expect("pauses"));
+    shares
+        .decide(terrain.sharer_share, here_id, true)
+        .await
+        .expect("the sharer grants it");
+    work(resumed.clone()).await.expect("stops at once");
+    let still = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    assert_eq!(
+        (still.state.as_str(), still.files_done),
+        ("paused", 0),
+        "{still:?}"
+    );
+    assert!(pulls.resume(first).await.expect("resumes"));
+    let resumed = pulls.next().await.expect("reads").expect("picked up again");
+
+    work(resumed).await.expect("finishes");
+    let done = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    assert_eq!(
+        (done.state.as_str(), done.files_total),
+        ("done", 1),
+        "{done:?}"
+    );
+
+    // Into a second library, after the sharer stopped sharing: refused, naming the share, and the parts pulled stay.
+    let second = PgParts(pool.clone())
+        .create_library("Second copy", "hobby")
+        .await
+        .expect("a second library");
+    pulls
+        .start(terrain.share, second)
+        .await
+        .expect("records")
+        .expect("still mirrored here");
+    shares
+        .remove(terrain.sharer_share)
+        .await
+        .expect("stops sharing");
+    work(pulls.next().await.expect("reads").expect("queued"))
+        .await
+        .expect("finishes, refused");
+    let stopped = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    let error = stopped.error.clone().unwrap_or_default();
+    assert_eq!(stopped.state, "failed");
+    assert!(
+        error.contains("Ayşe/Workshop") && error.contains("Terrain"),
+        "{error}"
+    );
+    let in_ours: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE library_id = $1")
+        .bind(terrain.ours.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(in_ours, 1, "what was pulled stays");
+
+    terrain.shutdown.cancel();
+    let _ = terrain.worker.await;
+}
+
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_denied_request_and_a_sharer_removed_here_each_fail_the_pull_saying_so(
+    pool: sqlx::PgPool,
+) {
+    let terrain = terrain(&pool).await;
+    let here_id = terrain.here.device_id().expect("its id");
+    let shares = PgShares(pool.clone());
+    let pulls = PgPulls(pool.clone());
+    shares
+        .set_asks_first(terrain.sharer_share, true)
+        .await
+        .expect("asks first");
+    shares
+        .ask(here_id, terrain.sharer_share)
+        .await
+        .expect("asked");
+    shares
+        .decide(terrain.sharer_share, here_id, false)
+        .await
+        .expect("the sharer denies it");
+
+    pulls
+        .start(terrain.share, terrain.ours)
+        .await
+        .expect("records")
+        .expect("mirrored");
+    let row = pulls.next().await.expect("reads").expect("queued");
+    pull::work(
+        &pool,
+        &terrain.here,
+        terrain.staging.path(),
+        terrain.our_store.path(),
+        &row,
+    )
+    .await
+    .expect("finishes, denied");
+    let denied = pulls
+        .latest(terrain.share)
+        .await
+        .expect("reads")
+        .expect("the pull");
+    assert_eq!(denied.state, "failed");
+    assert!(
+        denied
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("declined"),
+        "{denied:?}"
+    );
+
+    pulls
+        .start(terrain.share, terrain.ours)
+        .await
+        .expect("records")
+        .expect("mirrored");
+    PgSharing(pool.clone())
+        .remove_peer(terrain.sharer)
+        .await
+        .expect("this installation removes the sharer");
+    let row = pulls
+        .next()
+        .await
+        .expect("reads")
+        .expect("still picked up, to be told");
+    pull::work(
+        &pool,
+        &terrain.here,
+        terrain.staging.path(),
+        terrain.our_store.path(),
+        &row,
+    )
+    .await
+    .expect("finishes");
+    let removed = pulls.get(row.id).await.expect("reads").expect("the pull");
+    assert_eq!(removed.state, "failed");
+    assert!(
+        removed
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("removed"),
+        "{removed:?}"
+    );
+
+    terrain.shutdown.cancel();
+    let _ = terrain.worker.await;
 }

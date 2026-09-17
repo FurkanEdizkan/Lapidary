@@ -2,7 +2,7 @@
 
 use lapidary_core::{BlobHash, DeviceId, FolderId, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{
-    IngestRequest, NewPartSource, PgFolders, PgIngest, PgParts, PgShares, PgSharing,
+    Grant, IngestRequest, NewPartSource, PgFolders, PgIngest, PgParts, PgShares, PgSharing,
     SHARING_CHANNEL, StoredBlobRow,
 };
 
@@ -530,5 +530,126 @@ async fn a_file_is_found_only_when_its_part_is_offered(pool: sqlx::PgPool) {
         shares.blob(shared.id, &cliff).await.expect("reads"),
         None,
         "a removed part's file is not offered"
+    );
+}
+
+fn ayse() -> DeviceId {
+    DeviceId::from_public_key(b"ed25519 public key of the workshop pc in Ayse's garage")
+}
+
+fn mira() -> DeviceId {
+    DeviceId::from_public_key(b"ed25519 public key of mira's laptop at the makerspace")
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_share_that_asks_first_gives_files_only_to_whom_its_owner_granted(pool: sqlx::PgPool) {
+    let lib = terrain_library(&pool).await;
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(ayse(), "192.168.1.24:8082")
+        .await
+        .expect("pairs");
+    sharing
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs");
+    let shares = PgShares(pool.clone());
+    let terrain = shares
+        .create(library(), lib.terrain)
+        .await
+        .expect("creates")
+        .expect("live");
+    assert!(
+        !terrain.asks_first,
+        "a share is open unless asked otherwise"
+    );
+
+    // Open: nobody needs to ask, and asking records nothing.
+    assert_eq!(
+        shares.grant(ayse(), terrain.id).await.expect("reads"),
+        Grant::Open
+    );
+    assert_eq!(
+        shares.ask(ayse(), terrain.id).await.expect("asks"),
+        Some(Grant::Open)
+    );
+    assert!(shares.requests().await.expect("lists").is_empty());
+
+    assert!(
+        shares
+            .set_asks_first(terrain.id, true)
+            .await
+            .expect("switches")
+    );
+    assert!(shares.list(library()).await.expect("lists")[0].asks_first);
+    assert_eq!(
+        shares.grant(ayse(), terrain.id).await.expect("reads"),
+        Grant::NotAsked
+    );
+
+    // Asking twice is one request.
+    assert_eq!(
+        shares.ask(ayse(), terrain.id).await.expect("asks"),
+        Some(Grant::Asked)
+    );
+    assert_eq!(
+        shares.ask(ayse(), terrain.id).await.expect("asks"),
+        Some(Grant::Asked)
+    );
+    assert_eq!(
+        shares.ask(mira(), terrain.id).await.expect("asks"),
+        Some(Grant::Asked)
+    );
+    let requests = shares.requests().await.expect("lists");
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.state == Grant::Asked && request.share_name == "Terrain")
+    );
+
+    assert!(
+        shares
+            .decide(terrain.id, ayse(), true)
+            .await
+            .expect("grants")
+    );
+    assert!(
+        shares
+            .decide(terrain.id, mira(), false)
+            .await
+            .expect("denies")
+    );
+    assert_eq!(
+        shares.grant(ayse(), terrain.id).await.expect("reads"),
+        Grant::Granted
+    );
+    assert_eq!(
+        shares.grant(mira(), terrain.id).await.expect("reads"),
+        Grant::Denied
+    );
+    // A denial is not undone by asking again; its owner can still grant it.
+    assert_eq!(
+        shares.ask(mira(), terrain.id).await.expect("asks"),
+        Some(Grant::Denied)
+    );
+
+    // Somebody removed, or a share stopped, is asked nothing and granted nothing.
+    sharing.remove_peer(ayse()).await.expect("removes");
+    assert_eq!(
+        shares.grant(ayse(), terrain.id).await.expect("reads"),
+        Grant::NotShared
+    );
+    assert_eq!(shares.ask(ayse(), terrain.id).await.expect("asks"), None);
+    shares.remove(terrain.id).await.expect("stops");
+    assert_eq!(
+        shares.grant(mira(), terrain.id).await.expect("reads"),
+        Grant::NotShared
+    );
+    assert!(
+        !shares
+            .decide(terrain.id, mira(), true)
+            .await
+            .expect("decides nothing")
     );
 }

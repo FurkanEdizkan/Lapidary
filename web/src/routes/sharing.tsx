@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
   addPeer,
+  decideGrant,
   fetchPeerShares,
   fetchPeers,
+  fetchPulls,
+  fetchShareRequests,
   fetchShares,
   fetchSharingIdentity,
   removePeer,
@@ -12,7 +15,7 @@ import {
   stopSharing,
 } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { Peer, ShareSummary } from '../lib/types'
+import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -49,6 +52,8 @@ export function SharingPage() {
       <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
       <ThisInstallation />
       <OwnShares />
+      <Requests />
+      <Pulls />
       <People />
     </section>
   )
@@ -348,6 +353,9 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
           <span className="ml-2 text-xs text-[var(--color-muted)]">
             {strings.sharing.ownShareParts(share.partCount)}
           </span>
+          {share.asksFirst ? (
+            <span className="ml-2 text-xs text-[var(--color-muted)]">{strings.sharing.asksFirst}</span>
+          ) : null}
         </span>
         <button
           type="button"
@@ -366,6 +374,139 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
       )}
     </li>
   )
+}
+
+/** Who asked to pull a share that asks first, with this installation's answer and the way to give or change it. */
+function Requests() {
+  const queryClient = useQueryClient()
+  const requests = useQuery({
+    queryKey: ['shares', 'requests'],
+    queryFn: fetchShareRequests,
+    refetchInterval: REFRESH_MS,
+  })
+  if (!requests.isSuccess) return null
+  return (
+    <div className="mt-8">
+      <h3 className="text-base font-medium">{strings.sharing.requests}</h3>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.requestsNote}</p>
+      {requests.data.length === 0 ? (
+        <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.sharing.requestsNone}</p>
+      ) : (
+        <ul role="list" className="mt-3 flex flex-col gap-2">
+          {requests.data.map((request) => (
+            <RequestRow
+              key={`${request.shareId} ${request.deviceId}`}
+              request={request}
+              onDecided={() => queryClient.invalidateQueries({ queryKey: ['shares', 'requests'] })}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function RequestRow({ request, onDecided }: { request: ShareRequest; onDecided: () => Promise<void> }) {
+  const [note, setNote] = useState<string | null>(null)
+  const decide = useMutation({
+    mutationFn: (granted: boolean) => decideGrant(request.shareId, request.deviceId, granted),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      void onDecided()
+    },
+    onError: () => setNote(strings.sharing.requestFailed),
+  })
+  const who = request.name ?? request.deviceId
+  const standing =
+    request.state === 'granted'
+      ? strings.sharing.requestGranted
+      : request.state === 'denied'
+        ? strings.sharing.requestDenied
+        : strings.sharing.requestAsked
+  return (
+    <li className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="grow">
+          <span className="text-sm">{strings.sharing.requestLine(who, request.shareName)}</span>
+          <span className="ml-2 text-xs text-[var(--color-muted)]">{standing}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => decide.mutate(true)}
+          disabled={decide.isPending || request.state === 'granted'}
+          aria-label={strings.sharing.grantLabel(who, request.shareName)}
+          className={BUTTON}
+        >
+          {strings.sharing.grant}
+        </button>
+        <button
+          type="button"
+          onClick={() => decide.mutate(false)}
+          disabled={decide.isPending || request.state === 'denied'}
+          aria-label={strings.sharing.denyLabel(who, request.shareName)}
+          className={`${BUTTON} text-[var(--color-muted)]`}
+        >
+          {strings.sharing.deny}
+        </button>
+      </div>
+      {note === null ? null : (
+        <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </li>
+  )
+}
+
+/**
+ * The newest pulls, whichever share they were of. A share's own page follows its pull; this is where a pull whose share
+ * was withdrawn is still found, saying so, after the mirror has let the share go.
+ */
+function Pulls() {
+  const pulls = useQuery({ queryKey: ['sharing', 'pulls'], queryFn: fetchPulls, refetchInterval: REFRESH_MS })
+  if (!pulls.isSuccess || pulls.data.length === 0) return null
+  return (
+    <div className="mt-8">
+      <h3 className="text-base font-medium">{strings.sharing.pulls}</h3>
+      <ul role="list" className="mt-3 flex flex-col gap-2">
+        {pulls.data.map((pull) => (
+          <li
+            key={pull.id}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+          >
+            <p>
+              {pull.sharer === null
+                ? strings.sharing.pullFrom(pull.shareName)
+                : strings.sharing.pullLine(pull.shareName, pull.sharer)}
+            </p>
+            <p className="text-xs text-[var(--color-muted)]">{pullStanding(pull)}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function pullStanding(pull: Pull): string {
+  switch (pull.state) {
+    case 'done':
+      return strings.sharing.pullDone(pull.filesTotal)
+    case 'failed':
+      return strings.sharing.pullStopped(pull.error ?? '')
+    case 'paused':
+      return strings.sharing.pullPaused
+    case 'waiting':
+      return pull.error ?? strings.sharing.pullWaiting
+    case 'fetching':
+      return strings.sharing.pullFetching(pull.filesDone, pull.filesTotal, pull.bytesDone, pull.bytesTotal)
+    case 'importing':
+      return strings.sharing.pullImportingPlain
+    default:
+      return strings.sharing.pullQueued
+  }
 }
 
 /** What one person shares, each a link to the shared library — read from the mirror, so it lists while they are away. */

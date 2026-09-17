@@ -469,3 +469,105 @@ async fn a_pull_is_recorded_for_the_peer_role_and_followed_from_its_share(pool: 
         (StatusCode::NOT_FOUND, &json!("noSuchShare"))
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_pull_is_paused_and_resumed_and_a_finished_one_is_neither(pool: sqlx::PgPool) {
+    let id = mirrored_terrain(&pool).await;
+    let (_, pull) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{id}/pulls"),
+        Some(json!({ "libraryId": "01931b6e-0000-7000-8000-000000000001" })),
+    )
+    .await;
+    let pull_id = pull["id"].as_str().expect("an id").to_owned();
+
+    let (status, _) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/pause"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, followed) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!(followed["state"], "paused");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/pause"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::CONFLICT, &json!("notRunning"))
+    );
+
+    let (status, _) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, followed) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!(followed["state"], "queued");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::CONFLICT, &json!("notPaused"))
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn pulls_are_listed_by_share_name_after_the_mirror_forgets_their_share(pool: sqlx::PgPool) {
+    let id = mirrored_terrain(&pool).await;
+    let (_, pull) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{id}/pulls"),
+        Some(json!({ "libraryId": "01931b6e-0000-7000-8000-000000000001" })),
+    )
+    .await;
+    sqlx::query("UPDATE pull SET state = 'failed', error = 'Ayşe’s workshop no longer shares Terrain with you. Parts already pulled stay.'")
+        .execute(&pool)
+        .await
+        .expect("the peer role fails it");
+    sqlx::query("DELETE FROM peer_share")
+        .execute(&pool)
+        .await
+        .expect("the mirror forgets the share");
+
+    let (status, pulls) = send(&pool, "GET", "/api/sharing/pulls", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pulls.as_array().map(Vec::len), Some(1), "{pulls}");
+    assert_eq!(pulls[0]["id"], pull["id"]);
+    assert_eq!(pulls[0]["shareName"], "Terrain");
+    assert_eq!(pulls[0]["shareId"], serde_json::Value::Null);
+    assert_eq!(pulls[0]["state"], "failed");
+    assert!(
+        pulls[0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Terrain"))
+    );
+}

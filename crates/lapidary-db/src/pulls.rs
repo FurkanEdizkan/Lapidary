@@ -17,6 +17,8 @@ pub struct PullRow {
     pub sharer: Option<String>,
     /// Where the sharer is reached.
     pub address: String,
+    /// Whether this installation has removed the sharer.
+    pub removed: bool,
     pub share_name: String,
     pub library: LibraryId,
     /// `queued`, `fetching`, `importing`, `done` or `failed`.
@@ -31,7 +33,7 @@ pub struct PullRow {
 
 macro_rules! pull_columns {
     () => {
-        "SELECT pu.id, pu.peer_share_id, ps.remote_id, pu.device_id, pe.name, pe.address, pu.share_name, pu.library_id, pu.state, \
+        "SELECT pu.id, pu.peer_share_id, ps.remote_id, pu.device_id, pe.name, pe.address, pe.removed_at IS NOT NULL, pu.share_name, pu.library_id, pu.state, \
          pu.files_total, pu.files_done, pu.bytes_total, pu.bytes_done, pu.batch_id, pu.error \
          FROM pull pu JOIN peer pe ON pe.device_id = pu.device_id \
          LEFT JOIN peer_share ps ON ps.id = pu.peer_share_id"
@@ -45,6 +47,7 @@ type PullTuple = (
     Vec<u8>,
     Option<String>,
     String,
+    bool,
     String,
     uuid::Uuid,
     String,
@@ -64,6 +67,7 @@ fn pull_row(
         device,
         sharer,
         address,
+        removed,
         share_name,
         library,
         state,
@@ -89,6 +93,7 @@ fn pull_row(
         device,
         sharer,
         address,
+        removed,
         share_name,
         library: LibraryId::from_uuid(library),
         state,
@@ -130,17 +135,78 @@ impl PgPulls {
         Ok(Some(id))
     }
 
-    /// The oldest unfinished pull whose sharer is still paired: what the peer role works next, and what it picks up
-    /// again after a restart.
+    /// The oldest unfinished pull, paused ones aside: what the peer role works next, and what it picks up again after a
+    /// restart. A pull whose sharer was removed here is picked up too, so that it is told so rather than left waiting.
     pub async fn next(&self) -> Result<Option<PullRow>, DbError> {
         let row: Option<PullTuple> = sqlx::query_as(concat!(
             pull_columns!(),
-            " WHERE pu.state IN ('queued', 'fetching', 'importing') AND pe.removed_at IS NULL \
+            " WHERE pu.state IN ('queued', 'fetching', 'waiting', 'importing') \
              ORDER BY pu.created_at, pu.id LIMIT 1"
         ))
         .fetch_optional(&self.0)
         .await?;
         row.map(pull_row).transpose()
+    }
+
+    /// One pull.
+    pub async fn get(&self, pull: PullId) -> Result<Option<PullRow>, DbError> {
+        let row: Option<PullTuple> = sqlx::query_as(concat!(pull_columns!(), " WHERE pu.id = $1"))
+            .bind(pull.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
+        row.map(pull_row).transpose()
+    }
+
+    /// Waiting for the sharer to grant it. Not while paused.
+    pub async fn waiting(&self, pull: PullId) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE pull SET state = 'waiting', updated_at = now() \
+             WHERE id = $1 AND state IN ('queued', 'fetching', 'waiting')",
+        )
+        .bind(pull.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+
+    /// Pause a pull that has not reached its import. The peer role stops after the file it is fetching, and what is
+    /// staged stays. `false` when there was nothing to pause.
+    pub async fn pause(&self, pull: PullId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE pull SET state = 'paused', updated_at = now() \
+             WHERE id = $1 AND state IN ('queued', 'fetching', 'waiting')",
+        )
+        .bind(pull.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Resume a paused pull, and wake the peer role. `false` when it was not paused.
+    pub async fn resume(&self, pull: PullId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE pull SET state = 'queued', error = NULL, updated_at = now() WHERE id = $1 AND state = 'paused'",
+        )
+        .bind(pull.as_uuid())
+        .execute(&self.0)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        crate::sharing::tell_the_peer_role(&self.0).await?;
+        Ok(true)
+    }
+
+    /// The newest pulls, whichever share they were of.
+    pub async fn recent(&self, limit: i64) -> Result<Vec<PullRow>, DbError> {
+        let rows: Vec<PullTuple> = sqlx::query_as(concat!(
+            pull_columns!(),
+            " ORDER BY pu.created_at DESC, pu.id DESC LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter().map(pull_row).collect()
     }
 
     /// A share's newest pull, for its page.
@@ -155,41 +221,43 @@ impl PgPulls {
         row.map(pull_row).transpose()
     }
 
-    /// Fetching has begun, and how much there is to fetch. Clears an error a stalled attempt left.
+    /// Fetching has begun, and how much there is to fetch. Clears an error a stalled attempt left. `false` when the pull
+    /// was paused, and nothing changed.
     pub async fn fetching(
         &self,
         pull: PullId,
         files_total: i32,
         bytes_total: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
             "UPDATE pull SET state = 'fetching', files_total = $2, bytes_total = $3, files_done = 0, bytes_done = 0, \
-             error = NULL, updated_at = now() WHERE id = $1",
+             error = NULL, updated_at = now() WHERE id = $1 AND state <> 'paused'",
         )
         .bind(pull.as_uuid())
         .bind(files_total)
         .bind(bytes_total)
         .execute(&self.0)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    /// How much has been fetched, staged files already whole included.
+    /// How much has been fetched, staged files already whole included. `false` when the pull is no longer fetching:
+    /// it was paused, and the peer role stops.
     pub async fn progress(
         &self,
         pull: PullId,
         files_done: i32,
         bytes_done: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            "UPDATE pull SET files_done = $2, bytes_done = $3, updated_at = now() WHERE id = $1",
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE pull SET files_done = $2, bytes_done = $3, updated_at = now() WHERE id = $1 AND state = 'fetching'",
         )
         .bind(pull.as_uuid())
         .bind(files_done)
         .bind(bytes_done)
         .execute(&self.0)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Stopped for now, for a reason another attempt may not have: the sharer is offline, say. The pull stays

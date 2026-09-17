@@ -18,6 +18,62 @@ pub struct ShareRow {
     /// The category's name.
     pub name: String,
     pub created_at: Timestamp,
+    /// Whether fetching its files needs its owner's grant.
+    pub asks_first: bool,
+}
+
+/// Where somebody stands with a share's files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    /// The share does not ask first.
+    Open,
+    /// It asks first, and they have not asked.
+    NotAsked,
+    Asked,
+    Granted,
+    Denied,
+    /// Not shared with them: they are not paired, or were removed, or the share or its category is gone.
+    NotShared,
+}
+
+impl Grant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Grant::Open => "open",
+            Grant::NotAsked => "notAsked",
+            Grant::Asked => "asked",
+            Grant::Granted => "granted",
+            Grant::Denied => "denied",
+            Grant::NotShared => "notShared",
+        }
+    }
+
+    /// Whether files may be fetched.
+    pub fn allows_files(self) -> bool {
+        matches!(self, Grant::Open | Grant::Granted)
+    }
+
+    fn from_row(mode: &str, state: Option<&str>) -> Self {
+        match (mode, state) {
+            ("open", _) => Grant::Open,
+            (_, Some("granted")) => Grant::Granted,
+            (_, Some("denied")) => Grant::Denied,
+            (_, Some(_)) => Grant::Asked,
+            (_, None) => Grant::NotAsked,
+        }
+    }
+}
+
+/// Somebody who asked for a share's files, as its owner's page lists them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrantRow {
+    pub share: ShareId,
+    pub share_name: String,
+    pub device: DeviceId,
+    /// What they call themselves, as their last hello said.
+    pub name: Option<String>,
+    pub state: Grant,
+    pub asked_at: Timestamp,
 }
 
 /// A share as another installation sees it.
@@ -30,6 +86,8 @@ pub struct OfferedShare {
     /// share whose digest moved. The newest change counts a part's revisions as well as the part: recording a
     /// revision leaves `part.updated_at` alone, and a digest that missed it would leave pullers with a stale hash.
     pub digest: String,
+    /// Whether fetching its files needs its owner's grant.
+    pub asks_first: bool,
 }
 
 /// One part of a share's catalogue.
@@ -87,7 +145,9 @@ macro_rules! share_subtree {
          SELECT f.id FROM folder f JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen"
     };
 }
-type ShareTuple = (uuid::Uuid, uuid::Uuid, String, i64);
+type ShareTuple = (uuid::Uuid, uuid::Uuid, String, i64, String);
+
+type GrantTuple = (uuid::Uuid, String, Vec<u8>, Option<String>, String, i64);
 
 type CatalogueTuple = (
     uuid::Uuid,
@@ -102,12 +162,13 @@ type CatalogueTuple = (
     bool,
 );
 
-fn share_row((id, folder, name, created_us): ShareTuple) -> Result<ShareRow, DbError> {
+fn share_row((id, folder, name, created_us, mode): ShareTuple) -> Result<ShareRow, DbError> {
     Ok(ShareRow {
         id: ShareId::from_uuid(id),
         folder: FolderId::from_uuid(folder),
         name,
         created_at: detail_stamp("share.created_at", created_us)?,
+        asks_first: mode == "ask",
     })
 }
 
@@ -133,7 +194,7 @@ impl PgShares {
         .execute(&self.0)
         .await?;
         let row: Option<ShareTuple> = sqlx::query_as(
-            "SELECT s.id, s.folder_id, f.name, (extract(epoch FROM s.created_at) * 1000000)::bigint \
+            "SELECT s.id, s.folder_id, f.name, (extract(epoch FROM s.created_at) * 1000000)::bigint, s.mode \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.folder_id = $1 AND s.library_id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL",
         )
@@ -148,7 +209,7 @@ impl PgShares {
     /// A library's live shares, by category name.
     pub async fn list(&self, library: LibraryId) -> Result<Vec<ShareRow>, DbError> {
         let rows: Vec<ShareTuple> = sqlx::query_as(
-            "SELECT s.id, s.folder_id, f.name, (extract(epoch FROM s.created_at) * 1000000)::bigint \
+            "SELECT s.id, s.folder_id, f.name, (extract(epoch FROM s.created_at) * 1000000)::bigint, s.mode \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.library_id = $1 AND s.removed_at IS NULL AND f.deleted_at IS NULL \
              ORDER BY f.name, s.id",
@@ -170,9 +231,105 @@ impl PgShares {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Ask first, or stop asking. `false` when the share is not live. Nothing already granted or denied changes.
+    pub async fn set_asks_first(&self, share: ShareId, asks_first: bool) -> Result<bool, DbError> {
+        let result = sqlx::query("UPDATE share SET mode = $2 WHERE id = $1 AND removed_at IS NULL")
+            .bind(share.as_uuid())
+            .bind(if asks_first { "ask" } else { "open" })
+            .execute(&self.0)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Where `device` stands with `share`'s files.
+    pub async fn grant(&self, device: DeviceId, share: ShareId) -> Result<Grant, DbError> {
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT s.mode, g.state FROM peer pe, share s JOIN folder f ON f.id = s.folder_id \
+             LEFT JOIN share_grant g ON g.share_id = s.id AND g.device_id = $1 \
+             WHERE pe.device_id = $1 AND pe.removed_at IS NULL \
+             AND s.id = $2 AND s.removed_at IS NULL AND f.deleted_at IS NULL",
+        )
+        .bind(device.as_bytes().as_slice())
+        .bind(share.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(row.map_or(Grant::NotShared, |(mode, state)| {
+            Grant::from_row(&mode, state.as_deref())
+        }))
+    }
+
+    /// `device` asks for `share`'s files. Recorded once; asking again changes nothing, a denial included. `None` when the
+    /// share is not shared with them.
+    pub async fn ask(&self, device: DeviceId, share: ShareId) -> Result<Option<Grant>, DbError> {
+        match self.grant(device, share).await? {
+            Grant::NotShared => return Ok(None),
+            Grant::NotAsked => {}
+            standing => return Ok(Some(standing)),
+        }
+        sqlx::query(
+            "INSERT INTO share_grant (share_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(share.as_uuid())
+        .bind(device.as_bytes().as_slice())
+        .execute(&self.0)
+        .await?;
+        let standing = self.grant(device, share).await?;
+        Ok((standing != Grant::NotShared).then_some(standing))
+    }
+
+    /// Everybody who asked for a live share's files, newest first, whatever was decided.
+    pub async fn requests(&self) -> Result<Vec<GrantRow>, DbError> {
+        let rows: Vec<GrantTuple> = sqlx::query_as(
+            "SELECT s.id, f.name, g.device_id, pe.name, g.state, (extract(epoch FROM g.asked_at) * 1000000)::bigint \
+             FROM share_grant g JOIN share s ON s.id = g.share_id JOIN folder f ON f.id = s.folder_id \
+             JOIN peer pe ON pe.device_id = g.device_id \
+             WHERE s.removed_at IS NULL AND f.deleted_at IS NULL AND pe.removed_at IS NULL \
+             ORDER BY g.asked_at DESC, s.id, g.device_id",
+        )
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|(share, share_name, device, name, state, asked_us)| {
+                let length = device.len();
+                Ok(GrantRow {
+                    share: ShareId::from_uuid(share),
+                    share_name,
+                    device: <[u8; 32]>::try_from(device)
+                        .map(DeviceId::from_bytes)
+                        .map_err(|_| DbError::CorruptDeviceId {
+                            column: "share_grant.device_id",
+                            length,
+                        })?,
+                    name,
+                    state: Grant::from_row("ask", Some(&state)),
+                    asked_at: detail_stamp("share_grant.asked_at", asked_us)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Grant or deny a request. `false` when there is no such request on a live share.
+    pub async fn decide(
+        &self,
+        share: ShareId,
+        device: DeviceId,
+        granted: bool,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE share_grant g SET state = $3, decided_at = now() FROM share s \
+             WHERE g.share_id = $1 AND g.device_id = $2 AND s.id = g.share_id AND s.removed_at IS NULL",
+        )
+        .bind(share.as_uuid())
+        .bind(device.as_bytes().as_slice())
+        .bind(if granted { "granted" } else { "denied" })
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Every live share, as the people paired with this installation see them.
     pub async fn offered(&self) -> Result<Vec<OfferedShare>, DbError> {
-        let rows: Vec<(uuid::Uuid, String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(uuid::Uuid, String, i64, i64, String)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
              SELECT s.id AS share, f.id FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
@@ -180,23 +337,24 @@ impl PgShares {
              SELECT d.share, f.id FROM folder f JOIN down d ON f.parent_id = d.id) \
              CYCLE id SET is_cycle USING seen \
              SELECT s.id, f.name, count(DISTINCT p.id), \
-             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0) \
+             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0), s.mode \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              LEFT JOIN down d ON d.share = s.id AND NOT d.is_cycle \
              LEFT JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL AND p.library_id = s.library_id \
              LEFT JOIN revision r ON r.part_id = p.id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
-             GROUP BY s.id, f.name, s.created_at ORDER BY s.created_at, s.id",
+             GROUP BY s.id, f.name, s.created_at, s.mode ORDER BY s.created_at, s.id",
         )
         .fetch_all(&self.0)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, part_count, newest_us)| OfferedShare {
+            .map(|(id, name, part_count, newest_us, mode)| OfferedShare {
                 id: ShareId::from_uuid(id),
                 name,
                 part_count,
                 digest: format!("{part_count}-{newest_us}"),
+                asks_first: mode == "ask",
             })
             .collect())
     }

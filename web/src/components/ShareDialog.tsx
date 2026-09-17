@@ -33,8 +33,9 @@ export function ShareDialog({
     queryFn: () => previewShare(library, folder.id),
   })
   const [note, setNote] = useState<string | null>(null)
+  const [asksFirst, setAsksFirst] = useState(false)
   const share = useMutation({
-    mutationFn: () => shareCategory(library, folder.id),
+    mutationFn: () => shareCategory(library, folder.id, asksFirst),
     onSuccess: (result) => {
       if (result.kind === 'refused') {
         setNote(result.message)
@@ -73,6 +74,11 @@ export function ShareDialog({
           )}
         </>
       )}
+      <label className="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={asksFirst} onChange={(event) => setAsksFirst(event.target.checked)} />
+        {strings.sharing.askFirstLabel}
+      </label>
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.askFirstNote}</p>
       {note === null ? null : (
         <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
           {note}

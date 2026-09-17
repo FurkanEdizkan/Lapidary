@@ -12,26 +12,91 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, ShareId};
-use lapidary_db::{PgPool, PgShares};
+use lapidary_core::{BlobHash, DeviceId, ShareId};
+use lapidary_db::{Grant, PgPool, PgShares};
 use lapidary_storage::SourceReader;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+
+/// At most this many files go to one installation at once.
+pub const STREAMS_PER_DEVICE: usize = 2;
+/// At most this many files go out at once, to everybody.
+pub const STREAMS_IN_ALL: usize = 8;
+
+/// The files being sent, a count per installation and in all. A request past either limit is told to try again: a pull
+/// fetches one file at a time, so only somebody pulling in parallel, or many people at once, meets them.
+#[derive(Clone, Default)]
+pub struct Streams(Arc<Mutex<(HashMap<DeviceId, usize>, usize)>>);
+
+/// One file being sent. Its count is given back when this is dropped, which is when the file's body has been sent or
+/// the puller went away.
+pub struct Stream {
+    streams: Streams,
+    device: DeviceId,
+}
+
+impl Streams {
+    /// A stream for `device`, or `None` past a limit.
+    pub fn take(&self, device: DeviceId) -> Option<Stream> {
+        let mut counts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let (per_device, in_all) = &mut *counts;
+        let mine = per_device.entry(device).or_default();
+        if *mine >= STREAMS_PER_DEVICE || *in_all >= STREAMS_IN_ALL {
+            return None;
+        }
+        *mine += 1;
+        *in_all += 1;
+        Some(Stream {
+            streams: self.clone(),
+            device,
+        })
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        let mut counts = self
+            .streams
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (per_device, in_all) = &mut *counts;
+        if let Some(mine) = per_device.get_mut(&self.device) {
+            *mine = mine.saturating_sub(1);
+            if *mine == 0 {
+                per_device.remove(&self.device);
+            }
+        }
+        *in_all = in_all.saturating_sub(1);
+    }
+}
 
 /// What the blob route reads: the database, for access and reachability, and the store the bytes are in.
 #[derive(Clone)]
 pub struct BlobState {
     pub db: PgPool,
     pub blob_root: PathBuf,
+    pub streams: Streams,
 }
 
 /// The blob route, over the store the peer role mounts.
 pub fn blob_router(db: PgPool, blob_root: PathBuf) -> axum::Router {
+    blob_router_with(db, blob_root, Streams::default())
+}
+
+/// [`blob_router`], counting its streams in `streams`.
+pub fn blob_router_with(db: PgPool, blob_root: PathBuf, streams: Streams) -> axum::Router {
     axum::Router::new()
         .route(
             "/peer/v1/shares/{share}/blob/{blake3}",
             axum::routing::get(blob),
         )
-        .with_state(BlobState { db, blob_root })
+        .with_state(BlobState {
+            db,
+            blob_root,
+            streams,
+        })
 }
 
 async fn blob(
@@ -43,6 +108,36 @@ async fn blob(
     if let Err(refusal) = may_read(&state.db, device, share).await {
         return refusal;
     }
+    let Some(device) = device else {
+        return not_in_share();
+    };
+    // Browsing needs no grant; a file of a share that asks first does.
+    match PgShares(state.db.clone()).grant(device, share).await {
+        Ok(grant) if grant.allows_files() => {}
+        Ok(Grant::Denied) => {
+            return refused(
+                StatusCode::FORBIDDEN,
+                "denied",
+                "The owner of this share declined your request to pull it.",
+            );
+        }
+        Ok(Grant::NotShared) => return not_in_share(),
+        Ok(_) => {
+            return refused(
+                StatusCode::FORBIDDEN,
+                "askFirst",
+                "The owner of this share asks to be asked before anyone pulls it. Ask, then wait for them to grant it.",
+            );
+        }
+        Err(err) => return failed(&err),
+    }
+    let Some(stream) = state.streams.take(device) else {
+        return refused(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "This installation is sending as many files as it sends at once. Try again in a moment.",
+        );
+    };
     let Ok(hash) = BlobHash::parse_hex(&blake3) else {
         return not_in_share();
     };
@@ -80,7 +175,7 @@ async fn blob(
             );
         }
     };
-    let body = stream_from(reader, start);
+    let body = stream_from(reader, start, stream);
     let length = (header::CONTENT_LENGTH, (size - start).to_string());
     let kind = (header::CONTENT_TYPE, "application/octet-stream".to_owned());
     if start == 0 {
@@ -111,10 +206,12 @@ fn resume_from(headers: &HeaderMap) -> Option<u64> {
 
 /// The bytes after `skip`, from a blocking reader, streamed as `lapidary-api`'s download streams them: a bounded
 /// channel, so a slow puller stops the reader rather than letting it race ahead into memory.
-fn stream_from(mut reader: Box<dyn std::io::Read + Send>, skip: u64) -> Body {
+fn stream_from(mut reader: Box<dyn std::io::Read + Send>, skip: u64, stream: Stream) -> Body {
     use std::io::Read as _;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
     tokio::task::spawn_blocking(move || {
+        // Held until this task ends: the file is sent, or the puller went away and the channel closed.
+        let _stream = stream;
         if skip > 0
             && let Err(error) = std::io::copy(&mut (&mut reader).take(skip), &mut std::io::sink())
         {

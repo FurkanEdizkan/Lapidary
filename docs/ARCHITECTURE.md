@@ -92,9 +92,16 @@ crates/
 │                                     check inside it. A LIBRARY.
 ├── lapidary-peer/        L3          the peer protocol: the raw-public-key TLS listener
 │                                     pinned to paired device ids, the hello, and the
-│                                     hello round that refreshes who is paired. The only
-│                                     crate that speaks to another installation, and
-│                                     lapidary-api may never depend on it. A LIBRARY.
+│                                     hello round that refreshes who is paired and
+│                                     mirrors what they share; the share, file and
+│                                     request routes; and the pull. The only crate that
+│                                     speaks to another installation, and lapidary-api
+│                                     may never depend on it. It names SourceReader only
+│                                     in blob.rs, to serve a shared file, and SourceWriter
+│                                     only in pull.rs, to store a pulled bundle, and never
+│                                     SourceStore; `cargo xtask check-deploy` enforces
+│                                     it. It stages pulled files in its own volume,
+│                                     lapidary-peer-staging, beside the key's. A LIBRARY.
 └── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
 ├── lapidary-server/          container entrypoint: api, worker, or peer when sharing is on

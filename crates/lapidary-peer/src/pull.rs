@@ -89,6 +89,10 @@ pub enum FetchError {
     Stalled(String),
     /// Refused, or the wrong bytes: another attempt would meet the same answer.
     Refused(String),
+    /// The share is not shared with this installation any more.
+    NotShared,
+    /// The share asks first, and this installation's request is not granted: it waits, or was declined.
+    NotGranted,
 }
 
 /// Fetch one file into `staging`: nothing when it is staged whole already, the rest when part of it is, and all of it
@@ -178,21 +182,29 @@ async fn transfer(
             if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
                 let _ = tokio::fs::remove_file(partial).await;
             }
-            let message = response
+            let body = response
                 .bytes()
                 .await
                 .ok()
                 .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
-                .and_then(|body| body["message"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| format!("The sharer answered {status} for {hex}."));
-            return Err(
-                if status.is_client_error() && status != reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-                {
-                    FetchError::Refused(message)
-                } else {
-                    FetchError::Stalled(message)
-                },
+                .unwrap_or_default();
+            let message = body["message"].as_str().map_or_else(
+                || format!("The sharer answered {status} for {hex}."),
+                str::to_owned,
             );
+            // By the sharer's reason, not the status class: a share that asks first answers 403 until it is granted,
+            // and a busy sharer 429, and neither is a refusal to fail a pull over.
+            return Err(match body["reason"].as_str() {
+                Some("notShared") => FetchError::NotShared,
+                Some("askFirst" | "denied") => FetchError::NotGranted,
+                _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+                    || !status.is_client_error() =>
+                {
+                    FetchError::Stalled(message)
+                }
+                _ => FetchError::Refused(message),
+            });
         }
     };
 
@@ -300,18 +312,22 @@ pub async fn work(
     pull: &PullRow,
 ) -> Result<(), String> {
     let pulls = PgPulls(db.clone());
-    let (Some(share), Some(remote)) = (pull.share, pull.remote) else {
+    let who = sharer_named(pull);
+    if pull.removed && pull.state != "importing" {
         pulls
             .finish(
                 pull.id,
                 Some(&format!(
-                    "{} is no longer shared with this installation. Parts already pulled stay.",
+                    "You removed {who}, so {} is not pulled from them any more. Parts already pulled stay.",
                     pull.share_name
                 )),
             )
             .await
             .map_err(db_error)?;
         return Ok(());
+    }
+    let (Some(share), Some(remote)) = (pull.share, pull.remote) else {
+        return stopped_sharing(&pulls, pull).await;
     };
     let mut files = Vec::new();
     for part in PgMirror(db.clone())
@@ -360,15 +376,10 @@ pub async fn work(
         .filter_map(|(file, held)| (!held).then_some(file))
         .collect();
     let bytes_total: u64 = wanted.iter().map(|file| file.size).sum();
-    pulls
-        .fetching(
-            pull.id,
-            i32::try_from(wanted.len()).unwrap_or(i32::MAX),
-            i64::try_from(bytes_total).unwrap_or(i64::MAX),
-        )
-        .await
-        .map_err(db_error)?;
     if wanted.is_empty() {
+        if !pulls.fetching(pull.id, 0, 0).await.map_err(db_error)? {
+            return Ok(());
+        }
         return settled(db, pull, &places).await;
     }
 
@@ -379,11 +390,45 @@ pub async fn work(
         .read_timeout(PATIENCE)
         .build()
         .map_err(|err| format!("Could not set up a connection to {}: {err}.", pull.address))?;
-    let base = format!(
-        "https://{}/peer/v1/shares/{}/blob",
+    let shared = format!(
+        "https://{}/peer/v1/shares/{}",
         pull.address,
         remote.as_uuid()
     );
+    // Asked before every attempt, since asking again changes nothing: a share that asks first answers where this
+    // installation stands, and nothing is fetched until it is granted.
+    match ask(&client, &format!("{shared}/request")).await {
+        Ok(Standing::MayFetch) => {}
+        Ok(Standing::Waiting) => {
+            pulls.waiting(pull.id).await.map_err(db_error)?;
+            return Err(format!(
+                "Waiting for {who} to let you pull {}.",
+                pull.share_name
+            ));
+        }
+        Ok(Standing::Denied) => {
+            let why = format!(
+                "{who} declined your request to pull {}. Parts already pulled stay.",
+                pull.share_name
+            );
+            pulls.finish(pull.id, Some(&why)).await.map_err(db_error)?;
+            return Ok(());
+        }
+        Ok(Standing::NotShared) => return stopped_sharing(&pulls, pull).await,
+        Err(why) => return Err(why),
+    }
+    if !pulls
+        .fetching(
+            pull.id,
+            i32::try_from(wanted.len()).unwrap_or(i32::MAX),
+            i64::try_from(bytes_total).unwrap_or(i64::MAX),
+        )
+        .await
+        .map_err(db_error)?
+    {
+        return Ok(());
+    }
+    let base = format!("{shared}/blob");
     let (mut files_done, mut bytes_done, mut sent) = (0i32, 0i64, 0u64);
     let mut staged = Vec::with_capacity(wanted.len());
     for file in &wanted {
@@ -394,11 +439,16 @@ pub async fn work(
                 files_done += 1;
                 bytes_done =
                     bytes_done.saturating_add(i64::try_from(file.size).unwrap_or(i64::MAX));
-                pulls
+                staged.push(fetched.path);
+                if !pulls
                     .progress(pull.id, files_done, bytes_done)
                     .await
-                    .map_err(db_error)?;
-                staged.push(fetched.path);
+                    .map_err(db_error)?
+                {
+                    // Paused. What is staged stays for the resume.
+                    tracing::info!(pull = %pull.id.as_uuid(), files_done, sent_bytes = sent, "a pull paused");
+                    return Ok(());
+                }
             }
             Err(FetchError::Stalled(why)) => {
                 tracing::info!(pull = %pull.id.as_uuid(), files_done, sent_bytes = sent, "a pull's fetch stopped");
@@ -407,6 +457,14 @@ pub async fn work(
             Err(FetchError::Refused(why)) => {
                 pulls.finish(pull.id, Some(&why)).await.map_err(db_error)?;
                 return Ok(());
+            }
+            Err(FetchError::NotShared) => return stopped_sharing(&pulls, pull).await,
+            // A grant taken back mid-pull: the next attempt asks again, and waits or is told it was declined.
+            Err(FetchError::NotGranted) => {
+                return Err(format!(
+                    "{who} has not granted you {} any more.",
+                    pull.share_name
+                ));
             }
         }
     }
@@ -459,6 +517,61 @@ pub async fn work(
         let _ = tokio::fs::remove_file(path).await;
     }
     settle(db, pull, batch, &places).await
+}
+
+/// Who shares a pull's share: their name, or their device id's first group when they gave none.
+fn sharer_named(pull: &PullRow) -> String {
+    pull.sharer.clone().unwrap_or_else(|| {
+        let id = pull.device.to_string();
+        id.split('-').next().unwrap_or(&id).to_owned()
+    })
+}
+
+/// A pull whose share is not shared with this installation any more fails, naming it. The sharer's own answer names
+/// nothing, so that nobody learns what is shared by asking; this installation knows which share it was pulling.
+async fn stopped_sharing(pulls: &PgPulls, pull: &PullRow) -> Result<(), String> {
+    let why = format!(
+        "{} no longer shares {} with you. Parts already pulled stay.",
+        sharer_named(pull),
+        pull.share_name
+    );
+    pulls.finish(pull.id, Some(&why)).await.map_err(db_error)
+}
+
+/// Where this installation stands with a share's files.
+enum Standing {
+    MayFetch,
+    Waiting,
+    Denied,
+    NotShared,
+}
+
+/// Ask for a share's files. `Err` when the sharer could not be asked, with why.
+async fn ask(client: &reqwest::Client, url: &str) -> Result<Standing, String> {
+    let response = client
+        .post(url)
+        .send()
+        .await
+        .map_err(|err| format!("Could not reach the sharer: {err}."))?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+        .unwrap_or_default();
+    if status == reqwest::StatusCode::NOT_FOUND || body["reason"] == "notShared" {
+        return Ok(Standing::NotShared);
+    }
+    match body["grant"].as_str() {
+        Some("open" | "granted") => Ok(Standing::MayFetch),
+        Some("asked") => Ok(Standing::Waiting),
+        Some("denied") => Ok(Standing::Denied),
+        _ => Err(body["message"].as_str().map_or_else(
+            || format!("The sharer answered {status} when asked."),
+            str::to_owned,
+        )),
+    }
 }
 
 /// Files in fetch order, grouped into bundles of at most [`BUNDLE_MAX`] bytes and [`BUNDLE_FILES_MAX`] files.
