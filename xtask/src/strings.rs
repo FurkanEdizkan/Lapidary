@@ -134,6 +134,16 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
+        content: "252d28f931abf542",
+        reason: "a compose.yaml fixture (an api service mounting a bind-mounted store and a named volume, and a db) for the named-volume ownership rule; the YAML indentation is the structure under test",
+    },
+    Exemption {
+        file: "xtask/src/deploy.rs",
+        content: "aab29df7812b6595",
+        reason: "a compose.sharing.yaml fixture (a peer service mounting two named volumes and the store) for the named-volume ownership rule; the YAML indentation is the structure under test",
+    },
+    Exemption {
+        file: "xtask/src/deploy.rs",
         content: "c967147b7cf9b3e2",
         reason: "a doc comment quoting a real indented BuildKit RUN-continuation example (RUN foo, a comment line, then an indented bar) where the indentation is the example itself",
     },

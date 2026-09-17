@@ -508,6 +508,10 @@ fn check_deploy() -> Result<()> {
 
     let mut violations = deploy::check(&compose, &containerfile);
     violations.extend(deploy::check_overlay(&overlay));
+    violations.extend(deploy::check_volume_ownership(
+        &[&compose, &overlay],
+        &containerfile,
+    ));
 
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));

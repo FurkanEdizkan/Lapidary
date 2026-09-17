@@ -161,6 +161,9 @@ pub enum Violation {
     /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
     /// (`lapidary-api`) must never touch a source file — only derivatives.
     OpenPathNamesSourceStore { path: String },
+    /// A service that runs `lapidary-server` mounts a named volume at a path `deploy/Containerfile` does not create
+    /// owned by `lapidary`, so the volume comes up owned by root and the service cannot write to it.
+    NamedVolumeNotOwned { service: String, target: String },
     /// A file under `crates/lapidary-api/src/` names one of the narrow source-bytes
     /// handles somewhere other than the single route that handle exists for. Handing a
     /// user the exact bytes they asked for is a download, storing bytes a user just
@@ -342,6 +345,14 @@ impl std::fmt::Display for Violation {
                  check_containerfile in xtask/src/deploy.rs to find it, whatever form it now \
                  takes."
             ),
+            Violation::NamedVolumeNotOwned { service, target } => write!(
+                f,
+                "service '{service}' mounts a named volume at {target}, but deploy/Containerfile does not create \
+                 that directory owned by `lapidary`. Docker and Podman seed a new named volume from the image's \
+                 directory at the mount point, ownership included; with none there it comes up owned by root, \
+                 and the service, which runs as `lapidary`, cannot write to it. Add {target} to the runtime \
+                 stage's `install -d -o lapidary -g lapidary` line."
+            ),
             Violation::OpenPathNamesSourceStore { path } => write!(
                 f,
                 "{path} names SourceStore. lapidary-api serves the open path, which must \
@@ -409,6 +420,10 @@ struct ServiceBlock {
     /// `build: target:`, read only inside the `build:` block: a long-form volume mount has a
     /// `target:` key too, and it names a path in the container, not a stage.
     target: Option<String>,
+    /// The container paths of the named volumes the service mounts, from `volumes:`' short syntax
+    /// (`name:/path[:options]`). A source with a `/`, a `.`, a `~` or a `$` is a host path, and is not
+    /// the image's to create.
+    named_volumes: Vec<String>,
 }
 
 /// Strip one layer of matching YAML quotes from a scalar, plus surrounding whitespace.
@@ -448,6 +463,7 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
     let mut services: Vec<ServiceBlock> = Vec::new();
     let mut current: Option<ServiceBlock> = None;
     let mut in_build = false;
+    let mut in_volumes = false;
 
     for line in &lines[start + 1..] {
         // A non-blank, unindented line ends the services: block (e.g. a top-level
@@ -486,8 +502,10 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                     role: None,
                     build_short_form: false,
                     target: None,
+                    named_volumes: Vec::new(),
                 });
                 in_build = false;
+                in_volumes = false;
                 continue;
             }
         }
@@ -499,6 +517,17 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
             // four-space key closes.
             if indent == 4 && !trimmed.starts_with('#') && !trimmed.is_empty() {
                 in_build = trimmed.starts_with("build:");
+                in_volumes = trimmed.starts_with("volumes:");
+            }
+            if in_volumes
+                && indent == 6
+                && let Some(mount) = trimmed.strip_prefix('-').map(scalar)
+                && let Some((source, rest)) = mount.split_once(':')
+                && !source.is_empty()
+                && !source.contains(['/', '.', '~', '$'])
+            {
+                let target = rest.split(':').next().unwrap_or_default();
+                block.named_volumes.push(target.to_owned());
             }
             if in_build
                 && indent == 6
@@ -1053,6 +1082,45 @@ pub fn check_targets(containerfile: &str) -> Vec<Violation> {
 
 /// Run every rule over both files and collect the violations, in the order `main.rs`
 /// should report them.
+/// Every named volume a `lapidary-server` service mounts, in any of `compose_files`, is a directory the Containerfile
+/// creates owned by `lapidary` (`install -d -o lapidary …`): the image is what gives a fresh named volume its owner. Bind
+/// mounts are the operator's, and a service that does not build the Containerfile (`db`) runs as its own image's user.
+///
+/// Textual, as the rules above are: it reads `install` lines that name `-o lapidary`, in any stage.
+pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Vec<Violation> {
+    let owned: Vec<String> = logical_lines(containerfile)
+        .iter()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(|line| line.split("&&").map(str::to_owned).collect::<Vec<_>>())
+        .filter(|command| command.contains("install") && command.contains("-o lapidary"))
+        .flat_map(|command| {
+            command
+                .split_whitespace()
+                .filter(|word| word.starts_with('/'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    compose_files
+        .iter()
+        .filter_map(|contents| parse_services(contents).ok())
+        .flatten()
+        .filter(|service| service.dockerfile.as_deref() == Some(LAPIDARY_SERVER_DOCKERFILE))
+        .flat_map(|service| {
+            let owned = &owned;
+            service
+                .named_volumes
+                .iter()
+                .filter(move |target| !owned.contains(target))
+                .map(move |target| Violation::NamedVolumeNotOwned {
+                    service: service.name.clone(),
+                    target: target.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 pub fn check(compose_contents: &str, containerfile_contents: &str) -> Vec<Violation> {
     let mut violations = check_compose(compose_contents);
     violations.extend(check_containerfile(containerfile_contents));
@@ -1999,6 +2067,74 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
                     allowed: None,
                 },
             ]
+        );
+    }
+
+    /// Docker and Podman seed a new named volume from the image's directory at its mount point, ownership included. The
+    /// peer overlay's two volumes had no such directory, so they came up owned by root and the peer, running as
+    /// `lapidary`, could not write its identity key: found by goal 8 running the images, not by any check.
+    #[test]
+    fn a_named_volume_the_image_does_not_create_for_lapidary_is_refused() {
+        let compose = "\
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      target: api
+    environment:
+      LAPIDARY_ROLE: api
+    volumes:
+      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
+      - lapidary-uploads:/var/lib/lapidary-uploads:Z
+  db:
+    build:
+      context: .
+      dockerfile: db/Containerfile
+    volumes:
+      - lapidary-db:/var/lib/postgresql:Z
+";
+        let overlay = "\
+services:
+  peer:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+      target: api
+    environment:
+      LAPIDARY_ROLE: peer
+    volumes:
+      - \"lapidary-peer:/var/lib/lapidary-peer:Z\"
+      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
+      - lapidary-peer-staging:/var/lib/lapidary-peer-staging:Z
+";
+        let containerfile = "\
+FROM debian AS runtime
+RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \\
+    && install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary-uploads \\
+    && install -d -o lapidary -g lapidary -m 0700 /var/lib/lapidary-peer
+";
+        assert_eq!(
+            check_volume_ownership(&[compose, overlay], containerfile),
+            vec![Violation::NamedVolumeNotOwned {
+                service: "peer".to_owned(),
+                target: "/var/lib/lapidary-peer-staging".to_owned(),
+            }],
+            "the bind-mounted store and the db's own volume are not the image's to create"
+        );
+    }
+
+    #[test]
+    fn every_named_volume_in_the_real_deploy_files_is_created_for_lapidary() {
+        assert_eq!(
+            check_volume_ownership(
+                &[
+                    include_str!("../../deploy/compose.yaml"),
+                    include_str!("../../deploy/compose.sharing.yaml"),
+                ],
+                include_str!("../../deploy/Containerfile"),
+            ),
+            vec![]
         );
     }
 }
