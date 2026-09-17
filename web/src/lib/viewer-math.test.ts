@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import { AXES, VIEW_DIR, capPlacement, explodeOffsets, frameBox, hasWebGL, kept, partCentres, sectionPlane, visibleRanges, type Vec3 } from './viewer-math'
+import { AXES, Lru, VIEW_DIR, capPlacement, explodeOffsets, frameBox, hasWebGL, kept, partCentres, sectionPlane, thumbnailFrame, turningFrame, visibleRanges, type Vec3 } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -109,4 +109,81 @@ test('drawn apart, each part moves out from the centre by as far again as it is,
     [-5, 5, 20],
   ])
   expect(explodeOffsets(centres, [0, 0, 10], 0.5)[2]).toEqual([-2.5, 2.5, 5])
+})
+
+/** The turntable's model cache: a part looked at again stays, the one nobody returned to goes. */
+test('the least recently used model is the one let go, and it is handed back to be freed', () => {
+  const freed: string[] = []
+  const cache = new Lru<string, string>(2, (model) => freed.push(model))
+  cache.set('flange', 'flange mesh')
+  cache.set('gear', 'gear mesh')
+  expect(cache.get('flange')).toBe('flange mesh')
+  cache.set('vee-block', 'vee-block mesh')
+  expect(freed).toEqual(['gear mesh'])
+  expect(cache.get('gear')).toBeUndefined()
+  expect(cache.get('flange')).toBe('flange mesh')
+  // Replacing a key frees what it held.
+  cache.set('flange', 'flange mesh, reparsed')
+  expect(freed).toEqual(['gear mesh', 'flange mesh'])
+})
+
+/** An L-shaped bracket's corners, off the origin, as a rung's position buffer would carry them. */
+const BRACKET: number[] = [
+  [10, 5, 0], [70, 5, 0], [70, 25, 0], [10, 25, 0],
+  [10, 5, 6], [70, 5, 6], [70, 25, 6], [10, 25, 6],
+  [10, 5, 6], [16, 5, 6], [16, 25, 6], [10, 25, 6],
+  [10, 5, 48], [16, 5, 48], [16, 25, 48], [10, 25, 48],
+].flat()
+const BRACKET_PIVOT: Vec3 = [40, 15, 24]
+
+/** Where a world point lands on screen, relative to a frame, in the frame's own half-heights. */
+function onScreen(point: Vec3, frame: { center: Vec3; halfHeight: number }): [number, number] {
+  const v = VIEW_DIR
+  const r = Math.hypot(v[0], v[1])
+  const right: Vec3 = [-v[1] / r, v[0] / r, 0]
+  const up: Vec3 = [
+    v[1] * right[2] - v[2] * right[1],
+    v[2] * right[0] - v[0] * right[2],
+    v[0] * right[1] - v[1] * right[0],
+  ]
+  const d: Vec3 = [point[0] - frame.center[0], point[1] - frame.center[1], point[2] - frame.center[2]]
+  const along = (axis: Vec3) => (d[0] * axis[0] + d[1] * axis[1] + d[2] * axis[2]) / frame.halfHeight
+  return [along(right), along(up) / Math.hypot(...up)]
+}
+
+function corners(positions: number[]): Vec3[] {
+  return Array.from({ length: positions.length / 3 }, (_, i) => [positions[3 * i]!, positions[3 * i + 1]!, positions[3 * i + 2]!] as Vec3)
+}
+
+test('the thumbnail framing fills 92% of the view with the part, centred, as raster.rs does', () => {
+  const frame = thumbnailFrame(BRACKET, BRACKET_PIVOT)
+  const points = corners(BRACKET).map((corner) => onScreen(corner, frame))
+  const xs = points.map(([x]) => x)
+  const ys = points.map(([, y]) => y)
+  const spanX = Math.max(...xs) - Math.min(...xs)
+  const spanY = Math.max(...ys) - Math.min(...ys)
+  // The longer side of the outline is 92% of the view's full height (two half-heights).
+  expect(Math.max(spanX, spanY)).toBeCloseTo(2 * 0.92, 6)
+  expect((Math.max(...xs) + Math.min(...xs)) / 2).toBeCloseTo(0, 6)
+  expect((Math.max(...ys) + Math.min(...ys)) / 2).toBeCloseTo(0, 6)
+})
+
+test('the turning framing holds every corner inside the margin at every angle', () => {
+  const frame = turningFrame(BRACKET, BRACKET_PIVOT)
+  let furthest = 0
+  for (let step = 0; step < 360; step++) {
+    const angle = (step / 360) * Math.PI * 2
+    const [c, s] = [Math.cos(angle), Math.sin(angle)]
+    for (const [x, y, z] of corners(BRACKET)) {
+      const dx = x - BRACKET_PIVOT[0]
+      const dy = y - BRACKET_PIVOT[1]
+      const turned: Vec3 = [BRACKET_PIVOT[0] + dx * c - dy * s, BRACKET_PIVOT[1] + dx * s + dy * c, z]
+      const [sx, sy] = onScreen(turned, frame)
+      expect(Math.abs(sx)).toBeLessThanOrEqual(0.92 + 1e-9)
+      expect(Math.abs(sy)).toBeLessThanOrEqual(0.92 + 1e-9)
+      furthest = Math.max(furthest, Math.abs(sx), Math.abs(sy))
+    }
+  }
+  // And no looser than it has to be: at some angle some corner reaches the margin.
+  expect(furthest).toBeCloseTo(0.92, 3)
 })

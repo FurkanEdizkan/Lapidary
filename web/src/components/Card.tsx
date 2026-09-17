@@ -1,9 +1,11 @@
 import { Link } from '@tanstack/react-router'
-import { type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { reduced } from '../lib/motion'
+import { hasWebGL } from '../lib/viewer-math'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
-import type { PartCard, PartId } from '../lib/types'
+import type { BlobHash, PartCard, PartId } from '../lib/types'
 
 /**
  * The origin for a tile with no render yet. `flipFrom` declines on a zero-area rectangle, so
@@ -74,6 +76,31 @@ const FOOTER: Record<Layout, string> = {
   list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
 }
 
+/** How long the pointer rests on a card before it turns: long enough that sweeping past starts nothing. */
+const SPIN_INTENT_MS = 150
+
+/**
+ * Start the turntable in `well`, unless this reader or this browser should not have it: reduced
+ * motion (the thumbnail already is the still, lit picture), no WebGL, or — for a pointer — a screen
+ * that cannot hover, where a tap fires `mouseenter` on its way to opening the part. The three.js
+ * chunk is fetched here, on the first spin, and never for a visitor who does not hover a card.
+ */
+function turn(well: HTMLElement, hash: BlobHash, fromPointer: boolean): () => void {
+  if (reduced() || !hasWebGL()) return () => {}
+  if (fromPointer && !window.matchMedia('(hover: hover)').matches) return () => {}
+  let stop: (() => void) | null = null
+  let cancelled = false
+  void import('./turntable')
+    .then((turntable) => {
+      if (!cancelled) stop = turntable.spin(well, hash)
+    })
+    .catch(() => undefined)
+  return () => {
+    cancelled = true
+    stop?.()
+  }
+}
+
 export function Card({
   part,
   onRender,
@@ -85,6 +112,7 @@ export function Card({
   onToggle,
   onOpen,
   onHover,
+  spins = false,
 }: {
   part: PartCard
   onRender: (part: PartId) => void
@@ -96,8 +124,35 @@ export function Card({
   onToggle: (part: PartId, range: boolean) => void
   onOpen: (part: PartCard, from: DOMRect) => void
   onHover: (part: PartCard) => void
+  /** Whether resting on this card turns its part. Off while a quick look is open or parts are being picked. */
+  spins?: boolean
 }) {
   const nameId = `part-name-${part.id}`
+  const well = useRef<HTMLDivElement>(null)
+  const turning = useRef<{ timer: ReturnType<typeof setTimeout> | null; stop: (() => void) | null }>({
+    timer: null,
+    stop: null,
+  })
+  const halt = () => {
+    const { timer, stop } = turning.current
+    if (timer !== null) clearTimeout(timer)
+    stop?.()
+    turning.current = { timer: null, stop: null }
+  }
+  const intend = (fromPointer: boolean) => {
+    const hash = part.tessellationL0
+    if (!spins || hash === null) return
+    halt()
+    turning.current.timer = setTimeout(() => {
+      turning.current.timer = null
+      if (well.current !== null) turning.current.stop = turn(well.current, hash, fromPointer)
+    }, SPIN_INTENT_MS)
+  }
+  // A quick look opening, or selection starting, stops a card already turning.
+  useEffect(() => {
+    if (!spins) halt()
+  }, [spins])
+  useEffect(() => halt, [])
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -112,7 +167,11 @@ export function Card({
   return (
     <article
       aria-labelledby={nameId}
-      onMouseEnter={() => onHover(part)}
+      onMouseEnter={() => {
+        onHover(part)
+        intend(true)
+      }}
+      onMouseLeave={halt}
       /*
         The whole card opens the panel. It stays a handler rather than an anchor because the
         name inside it is itself a link, and an anchor inside an anchor is invalid HTML that
@@ -181,7 +240,7 @@ export function Card({
           className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-accent)]"
         />
       ) : null}
-      <div className={WELL[layout]}>
+      <div ref={well} className={WELL[layout]}>
         {part.thumbnail === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure,
           // and "the worker has not rasterized this yet" is not one.
@@ -224,6 +283,8 @@ export function Card({
               to="/parts/$partId"
               params={{ partId: part.id }}
               title={clampedName}
+              onFocus={() => intend(false)}
+              onBlur={halt}
               className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
             >
               {breakable(part.name)}

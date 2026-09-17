@@ -3,13 +3,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Group,
   AlwaysStencilFunc,
-  AmbientLight,
   BackSide,
   Box3,
   BufferGeometry,
   Color,
   DecrementWrapStencilOp,
-  DirectionalLight,
   DoubleSide,
   Float32BufferAttribute,
   FrontSide,
@@ -44,7 +42,6 @@ import { PICKS, measure, nearestCorner, placeEntities, withoutParts, type Pick, 
 import { strings } from '../lib/strings'
 import type { BatchId, BlobHash, PartDetail } from '../lib/types'
 import {
-  LIGHT_DIR,
   capPlacement,
   frameBox,
   kept,
@@ -54,6 +51,7 @@ import {
   type Section,
   type Vec3, explodeOffsets, partCentres } from '../lib/viewer-math'
 import { MeasureBar, SectionBar, ExplodeBar } from './Measure'
+import { disposeModel, partMaterial, studioLights } from './studio'
 
 type View = {
   show: (model: Object3D) => void
@@ -128,7 +126,7 @@ function kit(): Kit {
   renderer.localClippingEnabled = true
   return {
     renderer,
-    material: new MeshStandardMaterial({ color: new Color(0xb8bcc4), roughness: 0.75, flatShading: true }),
+    material: partMaterial(),
     markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
     // Drawn through the part rather than hidden behind it: a smaller earlier revision sits inside
     // the current one, and a ghost only visible where it sticks out would read as no change there.
@@ -185,13 +183,6 @@ function noMarks(): BufferGeometry {
   return new BufferGeometry().setAttribute('position', new Float32BufferAttribute([], 3))
 }
 
-/** The lights every view is drawn under. */
-function lights(): Object3D[] {
-  const sun = new DirectionalLight(0xffffff, 1.8)
-  sun.position.set(...LIGHT_DIR)
-  return [new AmbientLight(0xffffff, 0.45), sun]
-}
-
 /**
  * One kit for the session. A renderer made per open compiled the part's shaders again on every
  * open. Its materials are never disposed either, because disposing a material frees the program
@@ -216,7 +207,7 @@ export function prepare(): Promise<void> {
       new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3),
     )
     const scene = new Scene()
-    scene.add(...lights(), new Mesh(triangle, session.material), new Points(noMarks(), session.markMaterial))
+    scene.add(...studioLights(), new Mesh(triangle, session.material), new Points(noMarks(), session.markMaterial))
     await session.renderer.compileAsync(scene, new OrthographicCamera())
     triangle.dispose()
   })()
@@ -554,7 +545,7 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   node.appendChild(renderer.domElement)
 
   const scene = new Scene()
-  scene.add(...lights())
+  scene.add(...studioLights())
   const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
   let halfHeight = 1
@@ -892,12 +883,6 @@ export function hideParts(model: Object3D, material: Material, hidden: ReadonlyS
       object.geometry.addGroup(start, count, 0)
     }
     object.material = [material]
-  })
-}
-
-function disposeModel(model: Object3D) {
-  model.traverse((object) => {
-    if (object instanceof Mesh) object.geometry.dispose()
   })
 }
 

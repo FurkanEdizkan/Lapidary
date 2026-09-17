@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
 import { act, useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -6,10 +6,30 @@ import { breakable } from './Card'
 import { Grid } from './Grid'
 import type { PartCard, PartId } from '../lib/types'
 
-const arrive = vi.hoisted(() => vi.fn((_elements: readonly HTMLElement[]) => () => {}))
-vi.mock('../lib/motion', () => ({ arrive }))
+const { arrive, reduced, spin, stop } = vi.hoisted(() => {
+  const stop = vi.fn()
+  return {
+    arrive: vi.fn((_elements: readonly HTMLElement[]) => () => {}),
+    reduced: vi.fn(() => false),
+    spin: vi.fn((_well: HTMLElement, _hash: string) => stop),
+    stop,
+  }
+})
+vi.mock('../lib/motion', () => ({ arrive, reduced }))
+vi.mock('./turntable', () => ({ spin }))
+vi.mock('../lib/viewer-math', async (original) => ({
+  ...(await original<typeof import('../lib/viewer-math')>()),
+  hasWebGL: () => true,
+}))
 
-afterEach(() => arrive.mockClear())
+afterEach(() => {
+  arrive.mockClear()
+  spin.mockClear()
+  stop.mockClear()
+  reduced.mockReturnValue(false)
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 function card(id: string, name: string): PartCard {
   return {
@@ -17,6 +37,7 @@ function card(id: string, name: string): PartCard {
     name,
     partNumber: null,
     thumbnail: null,
+    tessellationL0: `b3${id.slice(-4)}`,
     triangleCount: 784,
     approximate: true,
     directory: 'flanges',
@@ -45,6 +66,7 @@ function Harness() {
       onSelectAll={() => {}}
       onOpen={() => {}}
       onHover={() => {}}
+      spins
     />
   )
 }
@@ -83,4 +105,86 @@ test('a name breaks after its separators and reads exactly as before', () => {
   expect(container.querySelectorAll('wbr')).toHaveLength(4)
   expect(container.textContent).toBe('flange-dn40_lp.3310-02')
   expect(container.innerHTML).toBe('<span>flange-<wbr>dn40_<wbr>lp.<wbr>3310-<wbr>02</span>')
+})
+
+/** A screen that can hover, for the pointer's half of these tests. */
+function hoverable() {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({ matches: query === '(hover: hover)' })),
+  )
+}
+
+/** Past the intent delay, and past the dynamic import of the turntable's chunk. */
+async function wait(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms)
+  })
+  await act(async () => {
+    await vi.dynamicImportSettled()
+  })
+}
+
+test('a card turns once the pointer has rested on it, and stops when it leaves', async () => {
+  hoverable()
+  await renderGrid()
+  vi.useFakeTimers()
+  const article = screen.getByRole('article', { name: GEAR.name })
+
+  fireEvent.mouseEnter(article)
+  await wait(149)
+  expect(spin).not.toHaveBeenCalled()
+
+  await wait(1)
+  expect(spin).toHaveBeenCalledTimes(1)
+  expect(spin.mock.calls[0]![1]).toBe(GEAR.tessellationL0)
+  expect(article.contains(spin.mock.calls[0]![0])).toBe(true)
+
+  fireEvent.mouseLeave(article)
+  expect(stop).toHaveBeenCalledTimes(1)
+})
+
+test('a pointer sweeping across a card does not start it', async () => {
+  hoverable()
+  await renderGrid()
+  vi.useFakeTimers()
+  const article = screen.getByRole('article', { name: FLANGE.name })
+  fireEvent.mouseEnter(article)
+  await wait(80)
+  fireEvent.mouseLeave(article)
+  await wait(200)
+  expect(spin).not.toHaveBeenCalled()
+})
+
+/** The keyboard path to a turning part: focus on the card's name, which is its one tab stop. */
+test('focus on the name turns the part, and moving on stops it', async () => {
+  hoverable()
+  await renderGrid()
+  vi.useFakeTimers()
+  const link = screen.getByRole('link', { name: FLANGE.name })
+  fireEvent.focus(link)
+  await wait(150)
+  expect(spin).toHaveBeenCalledTimes(1)
+  fireEvent.blur(link)
+  expect(stop).toHaveBeenCalledTimes(1)
+})
+
+test('a reader who asked for less motion gets the still picture', async () => {
+  hoverable()
+  reduced.mockReturnValue(true)
+  await renderGrid()
+  vi.useFakeTimers()
+  fireEvent.mouseEnter(screen.getByRole('article', { name: GEAR.name }))
+  await wait(300)
+  expect(spin).not.toHaveBeenCalled()
+})
+
+/** A tap on a touch screen fires `mouseenter` on its way to opening the part. */
+test('a screen that cannot hover does not turn a tapped card', async () => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
+  await renderGrid()
+  vi.useFakeTimers()
+  fireEvent.mouseEnter(screen.getByRole('article', { name: GEAR.name }))
+  await wait(300)
+  expect(spin).not.toHaveBeenCalled()
 })

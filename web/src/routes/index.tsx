@@ -1065,6 +1065,7 @@ export function Index({
               onToggle={toggle}
               onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
               onHover={warm}
+              spins={looking === undefined && !selecting}
               onOpen={(card, from) => {
                 setOpenFrom(from)
                 setOpenPart(card.id)
