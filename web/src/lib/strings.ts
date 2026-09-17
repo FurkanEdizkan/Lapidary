@@ -231,7 +231,7 @@ export const strings = {
      * figure on the part is tessellation-derived, not every one — so the badge names
      * the part, and the detail says which figures it can be speaking about.
      */
-    approximate: 'Approximate',
+    approximate: 'approximate',
     approximateDetail:
       'At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.',
     /**
@@ -803,6 +803,9 @@ export const strings = {
    * and neither total is worth showing alone.
    */
   storage: {
+    /** The rail's disclosure: what the library and the store occupy, and the server's state. */
+    title: 'Storage',
+    size: (value: number) => bytes(value),
     /**
      * Both totals are bytes on disk, and the two halves are counted differently because
      * the store holds them differently: one source file per part, counted per part, since

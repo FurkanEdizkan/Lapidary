@@ -971,7 +971,7 @@ test("shows the triangle count only alongside the approximate label", async () =
   renderIndex();
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   expect(within(card).getByText("12,486 triangles")).toBeDefined();
-  const badge = within(card).getByText("Approximate");
+  const badge = within(card).getByText("approximate");
   expect(badge.getAttribute("title")).toBe(
     "At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.",
   );
@@ -989,7 +989,7 @@ test("labels a triangle count even when the wire claims the part is not approxim
   renderIndex();
   const card = await screen.findByRole("article", { name: inconsistent.name });
   expect(within(card).getByText("12,486 triangles")).toBeDefined();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  expect(within(card).getByText("approximate")).toBeDefined();
 });
 
 // strings.parts.triangles has a singular branch, and nothing exercised it: every fixture
@@ -1010,7 +1010,7 @@ test("renders the singular form for a one-triangle mesh", async () => {
   const card = await screen.findByRole("article", { name: singleFacet.name });
   expect(within(card).getByText("1 triangle")).toBeDefined();
   expect(within(card).queryByText("1 triangles")).toBeNull();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  expect(within(card).getByText("approximate")).toBeDefined();
 });
 
 // The binding says `number | null`, but fetchParts casts the response rather than
@@ -1026,7 +1026,7 @@ test("survives a triangle count the server stopped sending", async () => {
   renderIndex();
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   expect(within(card).queryByText(/triangle/)).toBeNull();
-  expect(within(card).getByText("Approximate")).toBeDefined();
+  expect(within(card).getByText("approximate")).toBeDefined();
 });
 
 // The flag means "any figure on this part is mesh-derived", so a part can be approximate
@@ -1054,8 +1054,8 @@ test("labels a mesh-derived part approximate and leaves an analytic one unlabell
 
   const mesh = await screen.findByRole("article", { name: meshDerived.name });
   const brep = screen.getByRole("article", { name: analytic.name });
-  expect(within(mesh).getByText("Approximate")).toBeDefined();
-  expect(within(brep).queryByText("Approximate")).toBeNull();
+  expect(within(mesh).getByText("approximate")).toBeDefined();
+  expect(within(brep).queryByText("approximate")).toBeNull();
 });
 
 // Literal, not the constant, for the same reason the health failure above is literal:

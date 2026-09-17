@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { freeRenderCache } from '../lib/api'
 import { Dialog } from './Dialog'
 import { strings } from '../lib/strings'
@@ -174,5 +174,27 @@ export function InstanceStorage({
         </button>
       )}
     </div>
+  )
+}
+
+/**
+ * The foot of the rail: what this library and the whole store occupy, and whether the server
+ * answers. Closed by default. These are facts a person looks up now and then, and printed under
+ * the grid they read as debug output after every page of parts.
+ *
+ * The summary carries the library's total in the mono face, so the one number most visits want
+ * is there without opening it.
+ */
+export function StorageDetails({ total, children }: { total: number | null; children: ReactNode }) {
+  return (
+    <details className="group mt-6 border-t border-[var(--color-border)] pt-3">
+      <summary className="flex cursor-pointer list-none items-baseline justify-between gap-2 text-xs tracking-wider text-[var(--color-muted)] uppercase hover:text-[var(--color-text)] [&::-webkit-details-marker]:hidden">
+        {strings.storage.title}
+        {total === null ? null : (
+          <span className="tabular tracking-normal normal-case">{strings.storage.size(total)}</span>
+        )}
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
   )
 }

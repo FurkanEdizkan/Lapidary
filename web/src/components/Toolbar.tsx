@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { createLibrary, fetchLibraries, makeControlled } from '../lib/api'
 import { Dialog, closeMenu } from './Dialog'
 import { FieldsMenuItem } from './Fields'
@@ -119,12 +119,15 @@ export function LibraryMenu({
 }
 
 /**
- * The row over the grid: selection and the view menu, and the notes the header's menus leave.
+ * The row over the grid: what you are looking at on the left, and selection and the view menu
+ * on the right, then the notes the header's menus leave.
  *
  * The places, search, the library menu and Upload moved to the header (`AppFrame`). What stays
- * is what is about *this grid*: whether you are selecting, and how the cards are laid out.
+ * is what is about *this grid*: its scope, whether you are selecting, and how the cards are
+ * laid out.
  */
 export function Toolbar({
+  scope,
   settingsNote,
   note,
   pageSize,
@@ -139,6 +142,8 @@ export function Toolbar({
   selecting,
   onSelecting,
 }: {
+  /** The folder's name and how many parts are showing, built by the page that knows both. */
+  scope: ReactNode
   settingsNote: string | null
   note: string | null
   pageSize: PageSize
@@ -156,12 +161,14 @@ export function Toolbar({
 }) {
   return (
     <>
-      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="mr-auto flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">{scope}</div>
+        <div className="flex flex-none items-center gap-2">
         <button
           type="button"
           aria-pressed={selecting}
           onClick={() => onSelecting(!selecting)}
-          className="ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
+          className="ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
         >
           {strings.selection.toggle}
         </button>
@@ -234,6 +241,7 @@ export function Toolbar({
             </select>
           </label>
         </Menu>
+        </div>
       </div>
       {/*
         Outside the menus, always. A note that says the scan failed or that previews could not

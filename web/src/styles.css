@@ -149,6 +149,13 @@
     the only organic content on screen. Filter chips take a pill, where the shape carries
     "one choice among a set" without needing a border.
   */
+  /*
+    A phone held upright. Tailwind's own `sm` is 40rem; under 35rem a comfortable card column
+    (11rem) no longer fits twice, and one card the width of the screen is a list of pictures
+    rather than a grid, so the grid forces two columns below this.
+  */
+  --breakpoint-xs: 35rem;
+
   --radius-sm: 4px;
   --radius-ctl: 7px;
   --radius-md: 10px;

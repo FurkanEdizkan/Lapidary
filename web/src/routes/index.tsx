@@ -63,10 +63,10 @@ import type {
   ScanAccepted,
 } from '../lib/types'
 import { DEFAULT_ORIGIN } from '../components/Card'
-import { BULK_CONCURRENCY, Grid, MorePages, SelectionBar } from '../components/Grid'
+import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
 import { QuickLook, useWide } from '../components/QuickLook'
-import { InstanceStorage, StorageTotals } from '../components/Storage'
+import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
@@ -868,6 +868,28 @@ export function Index({
             selected={folderId ?? null}
             onSelect={(folder) => onSelectFolder?.(folder)}
           />
+          <StorageDetails
+            total={storage.data === undefined ? null : storage.data.sourceBytes + storage.data.derivativeBytes}
+          >
+            {loaded.length === 0 ? null : (
+              <>
+                <StorageTotals storage={storage.data} isError={storage.isError} />
+                <InstanceStorage
+                  instance={instance.data}
+                  isError={instance.isError}
+                  measuring={measure && instance.isFetching}
+                  measured={measure}
+                  onMeasure={() => setMeasure(true)}
+                />
+              </>
+            )}
+            {/* A failure is the banner over the grid, not a line in a closed disclosure. */}
+            {health.isError ? null : (
+              <p className="mt-2 text-xs text-[var(--color-muted)]">
+                {health.isPending ? strings.health.checking : strings.health.ok(health.data.database.major)}
+              </p>
+            )}
+          </StorageDetails>
         </>
       }
     >
@@ -880,6 +902,28 @@ export function Index({
       <title>{strings.titles.library}</title>
       <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
         <Toolbar
+          scope={
+            <>
+              {/*
+                The scope, which `v2` puts above the grid. Two facts a person needs before they
+                start scanning rather than after they finish: what they are looking at, and how
+                much of it there is. `h2` because it names the region the grid fills; the page's
+                `h1` is the application's name in the bar. The count is `.tabular`, so a number
+                that changes as pages load does not shift the words beside it, and it is only
+                there once there is a count to give.
+              */}
+              <h2 className="text-[15px] leading-none font-semibold text-[var(--color-bright)]">
+                {selectedFolderName ?? strings.folders.root}
+              </h2>
+              {parts.isSuccess && loaded.length > 0 ? (
+                <p className="tabular text-[10.5px] text-[var(--color-muted)]">
+                  {parts.hasNextPage
+                    ? strings.parts.showingSoFar(loaded.length)
+                    : strings.parts.showingAll(loaded.length)}
+                </p>
+              ) : null}
+            </>
+          }
           settingsNote={
             settings.isError
               ? strings.library.autoThumbnailFailed
@@ -947,8 +991,13 @@ export function Index({
             batch={activeBatch}
           />
         )}
+        {health.isError ? (
+          <p role="alert" className="mb-4 rounded-[var(--radius-ctl)] border border-[var(--color-bad)] px-3 py-2 text-sm text-[var(--color-text)]">
+            {strings.health.failed}
+          </p>
+        ) : null}
         {parts.isPending ? (
-          <p className="text-[var(--color-muted)]">{strings.parts.loading}</p>
+          <GridSkeleton label={strings.parts.loading} />
         ) : fieldGone || fieldUnreadable ? (
           <FilterGone
             text={fieldGone ? strings.fieldGone : strings.fieldUnreadable}
@@ -974,26 +1023,6 @@ export function Index({
           )
         ) : (
           <>
-            {/*
-              The scope line, which `v2` puts above the grid and this page had only below
-              it. Two facts a person needs before they start scanning rather than after
-              they finish: what they are looking at, and how much of it there is.
-
-              `h2` because it names the region the grid fills, and the grid is a list under
-              it — the page's `h1` is the application's name in the bar. The count is
-              `.tabular`, so it is set in the mono face like every other figure here, and a
-              number that changes as pages load does not shift the words beside it.
-            */}
-            <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h2 className="text-[15px] leading-none font-semibold text-[var(--color-bright)]">
-                {selectedFolderName ?? strings.folders.root}
-              </h2>
-              <p className="tabular text-[10.5px] text-[var(--color-muted)]">
-                {parts.hasNextPage
-                  ? strings.parts.showingSoFar(loaded.length)
-                  : strings.parts.showingAll(loaded.length)}
-              </p>
-            </div>
             {wide ? null : look}
             {moving === null ? null : (
               <MovePartDialog
@@ -1046,23 +1075,8 @@ export function Index({
               fetching={parts.isFetchingNextPage}
               onMore={() => void parts.fetchNextPage()}
             />
-            <StorageTotals storage={storage.data} isError={storage.isError} />
-            <InstanceStorage
-              instance={instance.data}
-              isError={instance.isError}
-              measuring={measure && instance.isFetching}
-              measured={measure}
-              onMeasure={() => setMeasure(true)}
-            />
           </>
         )}
-        <p className="mt-6 text-sm text-[var(--color-muted)]">
-          {health.isPending
-            ? strings.health.checking
-            : health.isError
-              ? strings.health.failed
-              : strings.health.ok(health.data.database.major)}
-        </p>
       </div>
       {/*
         The pane is the page's third column on a wide screen: not modal, so the grid beside it
