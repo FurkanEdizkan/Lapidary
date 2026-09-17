@@ -273,8 +273,9 @@ test('the scan reaches every directory that can render', () => {
   expect(componentFiles).toContain('./main.tsx')
   expect(componentFiles).toContain('./routes/index.tsx')
   expect(componentFiles).toContain('./routes/__root.tsx')
+  expect(componentFiles).toContain('./components/Card.tsx')
   expect(componentFiles.length).toBeGreaterThanOrEqual(3)
-  expect(sources['./routes/index.tsx']).toContain('function Card')
+  expect(sources['./components/Card.tsx']).toContain('function Card')
 })
 
 test('strings.ts was flattened into something to compare against', () => {
