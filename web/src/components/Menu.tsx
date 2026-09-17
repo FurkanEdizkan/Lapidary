@@ -1,8 +1,19 @@
 import { type CSSProperties, type ReactNode } from 'react'
-import { Icon } from './Icon'
+import { Icon, type IconName } from './Icon'
 
 /** A button and the popover it opens. See `styles.css` for why it is native. */
-export function Menu({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+export function Menu({
+  id,
+  label,
+  icon,
+  children,
+}: {
+  id: string
+  label: string
+  /** Shown instead of the label, which then names the button to a screen reader. */
+  icon?: IconName
+  children: ReactNode
+}) {
   // Each menu names its own anchor, so two menus on one page never position against the
   // same button.
   const anchor = { '--anchor': `--${id}` } as CSSProperties
@@ -12,12 +23,23 @@ export function Menu({ id, label, children }: { id: string; label: string; child
         type="button"
         popoverTarget={id}
         style={anchor}
-        className="menu-anchor ease-mechanical flex min-h-6 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
+        aria-label={icon === undefined ? undefined : label}
+        className={
+          icon === undefined
+            ? 'menu-anchor ease-mechanical flex min-h-6 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px'
+            : 'menu-anchor ease-mechanical flex min-h-8 flex-none items-center justify-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2.5 py-2 duration-[var(--duration-fast)] hover:-translate-y-px'
+        }
       >
-        {label}
-        <span className="opacity-75">
-          <Icon name="caretDown" size={12} />
-        </span>
+        {icon === undefined ? (
+          <>
+            {label}
+            <span className="opacity-75">
+              <Icon name="caretDown" size={12} />
+            </span>
+          </>
+        ) : (
+          <Icon name={icon} />
+        )}
       </button>
       <div
         id={id}

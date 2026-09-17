@@ -12,6 +12,8 @@ import {
 import { Detail, warmViewer } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
+import { Menu } from '../components/Menu'
+import { closeMenu } from '../components/Dialog'
 import { strings } from '../lib/strings'
 import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
@@ -84,37 +86,8 @@ export function PartPage({ partId }: { partId: string }) {
             // The page, not the dialog, is where a form that takes typing belongs — the same
             // line `actions` draws below.
             recordable
-            actions={
-              <>
-                {/*
-                  Render and Move live here as well as in the grid's panel, and that is not
-                  duplication for its own sake.
-
-                  The panel opens on a click of the tile and the tile has no keyboard path to
-                  it, so for a while these two controls — and the storage path below — existed
-                  nowhere a keyboard could reach. That is WCAG 2.2 SC 2.1.1, Level A, and it is
-                  about whether a *function* is available at all, not about which surface
-                  offers it. This page is the surface a keyboard reaches: the card's name is a
-                  real link, and it comes here.
-                */}
-                <PartTools part={part.data} />
-                <Remove part={part.data} />
-                {/*
-                  The reassurance sits beside the button rather than behind a confirmation
-                  dialog. Removing is reversible and touches nothing on disk, so a modal would
-                  spend on this action the alarm that purge is going to need — and purge is one
-                  deliberate step further away, on the removed list this sends you to.
-
-                  Inside `actions` and not inside `Detail`, because it is a sentence about a
-                  control: the grid's quick-look shows the same article without the remove
-                  button, and it was telling people they could restore something from a panel
-                  that offers no way to remove it.
-                */}
-                <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
-                  {strings.removal.removeHint}
-                </p>
-              </>
-            }
+            layout="page"
+            actions={<PartActions part={part.data} />}
           />
         )}
       </section>
@@ -122,15 +95,27 @@ export function PartPage({ partId }: { partId: string }) {
   )
 }
 
+/** A row in the page's ⋯ menu: a full-width target, at least 32px tall. */
+const ITEM =
+  'ease-mechanical flex min-h-8 w-full items-center rounded-[var(--radius-ctl)] px-2 text-left text-sm text-[var(--color-text)] duration-[var(--duration-fast)] hover:bg-[var(--color-raised)] disabled:opacity-50'
+
 /**
- * The per-part actions that are not destructive: render a preview, file it in a category.
+ * Everything a part's page can do to the part besides downloading it, behind one ⋯ button.
  *
- * Download lives in `Detail` already and Remove is beside this in the page's `actions`,
- * deliberately kept out of here — this component is the pair of controls the grid's panel
- * carries, put where a keyboard can reach them.
+ * Download is the page's one standing control, because getting the file is what a person came
+ * for; Render, Move, the storage path and Remove are occasional, and seven buttons in a row made
+ * every one of them look as important as Download.
+ *
+ * They were on the grid's panel alone once, which a keyboard could not open, so for a while they
+ * existed nowhere a keyboard could reach — WCAG 2.2 SC 2.1.1, Level A, about whether a function is
+ * available at all. This page is the surface a keyboard reaches (the card's name is a real link),
+ * and a native popover menu is reachable: Tab to ⋯, Enter, and the rows are in the tab order.
+ *
+ * A failure is said beside the menu, not inside it: a message in a closed menu is one nobody reads.
  */
-function PartTools({ part }: { part: PartDetail }) {
+function PartActions({ part }: { part: PartDetail }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [moving, setMoving] = useState(false)
   // The host's own view of the store, so the path this page prints is one a person can
   // paste. `false` because the walk behind `onDisk` is the expensive figure and this page
@@ -145,51 +130,12 @@ function PartTools({ part }: { part: PartDetail }) {
     // this part — the grid picks its own up on the next poll.
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['part', part.id] }),
   })
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => render.mutate()}
-        disabled={render.isPending}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {strings.render.part}
-      </button>
-      <button
-        type="button"
-        onClick={() => setMoving(true)}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-      >
-        {strings.folders.moveTo}
-      </button>
-      {render.isError ? (
-        <span className="text-xs text-[var(--color-muted)]">{strings.render.queueFailed}</span>
-      ) : null}
-      <ShowInFolder part={part} hostRoot={instance.data?.hostStorageRoot ?? null} />
-      {moving ? (
-        <MovePartDialog
-          part={{ id: part.id, name: part.name }}
-          library={part.library}
-          onClose={() => setMoving(false)}
-        />
-      ) : null}
-    </>
-  )
-}
-
-function Remove({ part }: { part: PartDetail }) {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const remove = useMutation({
     mutationFn: () => removePart(part.id),
     onSuccess: async () => {
-      // Both lists change: this part leaves the grid and joins the removed list. Awaited
-      // so the navigation lands on a grid that has already dropped the card, rather than
-      // showing it for one frame and then blinking it away.
-      // This part's own library, not the seeded one. `PartDetail` carries it, so the key
-      // needs no new field — the hard-coded id was simply the wrong library on any
-      // deployment with more than one.
+      // Both lists change: this part leaves the grid and joins the removed list. Awaited so the
+      // navigation lands on a grid that has already dropped the card, rather than showing it for
+      // one frame and then blinking it away. This part's own library, which `PartDetail` carries.
       await queryClient.invalidateQueries({ queryKey: ['parts', part.library] })
       await navigate({ to: '/' })
     },
@@ -197,16 +143,55 @@ function Remove({ part }: { part: PartDetail }) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => remove.mutate()}
-        disabled={remove.isPending}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {remove.isPending ? strings.removal.removing : strings.removal.remove}
-      </button>
+      <Menu id="part-menu" label={strings.detail.more} icon="more">
+        <div className="flex flex-col gap-0.5">
+          <button
+            type="button"
+            onClick={(event) => {
+              closeMenu(event.currentTarget)
+              render.mutate()
+            }}
+            disabled={render.isPending}
+            className={ITEM}
+          >
+            {strings.render.part}
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              closeMenu(event.currentTarget)
+              setMoving(true)
+            }}
+            className={ITEM}
+          >
+            {strings.folders.moveTo}
+          </button>
+        </div>
+        <ShowInFolder part={part} hostRoot={instance.data?.hostStorageRoot ?? null} />
+        <div className="border-t border-[var(--color-border)] pt-2">
+          <button type="button" onClick={() => remove.mutate()} disabled={remove.isPending} className={ITEM}>
+            {remove.isPending ? strings.removal.removing : strings.removal.remove}
+          </button>
+          {/*
+            The reassurance sits under the control rather than behind a confirmation dialog.
+            Removing is reversible and touches nothing on disk, so a modal would spend on this
+            action the alarm that purge is going to need.
+          */}
+          <p className="mt-1 px-2 text-xs text-[var(--color-muted)]">{strings.removal.removeHint}</p>
+        </div>
+      </Menu>
+      {render.isError ? (
+        <span role="alert" className="text-xs text-[var(--color-muted)]">
+          {strings.render.queueFailed}
+        </span>
+      ) : null}
       {remove.isError ? (
-        <span className="text-xs text-[var(--color-muted)]">{strings.removal.removeFailed}</span>
+        <span role="alert" className="text-xs text-[var(--color-muted)]">
+          {strings.removal.removeFailed}
+        </span>
+      ) : null}
+      {moving ? (
+        <MovePartDialog part={{ id: part.id, name: part.name }} library={part.library} onClose={() => setMoving(false)} />
       ) : null}
     </>
   )

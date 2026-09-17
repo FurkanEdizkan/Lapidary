@@ -1,6 +1,6 @@
 import { annotationsOf, labelsFor } from '../lib/annotations'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   addPartSource,
   blobUrl,
@@ -29,6 +29,8 @@ import { strings } from '../lib/strings'
 import { Dialog } from './Dialog'
 import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
+import { arrive } from '../lib/motion'
+import { breakable } from './Card'
 import type {
   AssemblyNode,
   BatchId,
@@ -727,6 +729,10 @@ const slicerReads = ['stl', '3mf']
 const control =
   'ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px'
 
+/** The page's one standing control, Download: brighter and heavier than the quiet ones beside it, never blue. */
+const standing =
+  'ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 py-1.5 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px'
+
 /**
  * A 3MF for a slicer, from a part no slicer reads as it is: asked for, written by the worker when it is not yet,
  * then offered as a download named `*.lapidary.3mf`.
@@ -789,6 +795,7 @@ export function Detail({
   actions,
   recordable = false,
   titled = false,
+  layout = 'panel',
 }: {
   part: PartDetailData
   actions?: ReactNode
@@ -810,7 +817,15 @@ export function Detail({
    * else names it, and the `h2` stays.
    */
   titled?: boolean
+  /** `panel` in the quick look; `page` is the part's own page, laid out as a studio. */
+  layout?: 'panel' | 'page'
 }) {
+  // The info column's blocks arrive in turn when a part's page opens (`arrive`), once per part.
+  const info = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const blocks = info.current?.children
+    if (blocks !== undefined) arrive(Array.from(blocks) as HTMLElement[])
+  }, [part.id])
   // Which parts are out of the view, and how many the view drew. Both belong to one part, so a
   // choice made on one assembly never carries to the next one shown in the same place.
   const [hiddenFor, setHiddenFor] = useState({ part: part.id, hidden: NONE })
@@ -839,62 +854,73 @@ export function Detail({
   const controlled =
     libraries.data?.find((library) => library.id === part.library)?.mode === 'controlled' &&
     part.sourceHash !== null
-  return (
-    <article className="mt-4">
-      <header className="mb-6 flex flex-wrap items-start gap-6">
-        <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} annotated={annotated} />
-        <div>
-          {titled ? null : <h2 className="text-xl font-medium">{part.name}</h2>}
-          {part.partNumber === null ? null : (
-            <p className="mt-1 text-sm text-[var(--color-muted)]">{part.partNumber}</p>
-          )}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {/*
-              Guarded, because a revision can exist with no `file` row of role `source` —
-              `0007`'s recovered parts are exactly that shape. The control used to be on the
-              card, which withheld it; moving it here without the guard would have offered a
-              download that 404s at the route, and the card's own test is what caught it.
-            */}
-            {part.sourceHash === null ? (
-              <span className="text-sm text-[var(--color-muted)]">
-                {strings.download.noSource}
-              </span>
-            ) : (
-              <a
-                href={downloadUrl(part.revision)}
-                download
-                className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-              >
-                {strings.download.original}
-              </a>
-            )}
-            {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
-              <SlicerExport key={part.revision} part={part} />
-            ) : null}
-            {controlled ? (
-              <a
-                href={openLink(part.id)}
-                className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-              >
-                {strings.download.openInApp}
-              </a>
-            ) : null}
-            {/*
-              A slot rather than a component, so that what changes the part stays with the
-              page and the panel gets only what is safe to show in something transient.
-              Removing a model from a dialog that closes on Escape is not a control this
-              belongs to.
-            */}
-            {actions}
-          </div>
-          {controlled ? (
-            <p className="mt-2 max-w-md text-xs text-[var(--color-muted)]">{strings.download.openInAppNote}</p>
-          ) : null}
-        </div>
-      </header>
-
-      <Gallery part={part.id} name={part.name} />
-
+  const page = layout === 'page'
+  const preview = (
+    <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} annotated={annotated} stage={page} />
+  )
+  const heading = (
+    <>
+      {titled ? null : (
+        <h2 className={page ? 'text-2xl leading-tight font-semibold text-[var(--color-bright)]' : 'text-xl font-medium'}>
+          {breakable(part.name)}
+        </h2>
+      )}
+      {part.partNumber === null ? null : (
+        <p className={page ? 'tabular mt-1.5 text-sm text-[var(--color-dim)]' : 'mt-1 text-sm text-[var(--color-muted)]'}>{part.partNumber}</p>
+      )}
+    </>
+  )
+  const tools = (
+    <>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {/*
+          Guarded, because a revision can exist with no `file` row of role `source` —
+          `0007`'s recovered parts are exactly that shape. The control used to be on the
+          card, which withheld it; moving it here without the guard would have offered a
+          download that 404s at the route, and the card's own test is what caught it.
+        */}
+        {part.sourceHash === null ? (
+          <span className="text-sm text-[var(--color-muted)]">
+            {strings.download.noSource}
+          </span>
+        ) : (
+          <a
+            href={downloadUrl(part.revision)}
+            download
+            className={page ? standing : control}
+          >
+            {strings.download.original}
+          </a>
+        )}
+        {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
+          <SlicerExport key={part.revision} part={part} />
+        ) : null}
+        {controlled ? (
+          <a
+            href={openLink(part.id)}
+            className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.download.openInApp}
+          </a>
+        ) : null}
+        {/*
+          A slot rather than a component, so that what changes the part stays with the
+          page and the panel gets only what is safe to show in something transient.
+          Removing a model from a dialog that closes on Escape is not a control this
+          belongs to.
+        */}
+        {actions}
+      </div>
+      {controlled ? (
+        <p className="mt-2 max-w-md text-xs text-[var(--color-muted)]">{strings.download.openInAppNote}</p>
+      ) : null}
+    </>
+  )
+  const gallery = (
+    <Gallery part={part.id} name={part.name} />
+  )
+  const about = (
+    <>
       {/* `?? []` for a server from before tags or materials, which sends a part without them. */}
       <WordList part={part} recordable={recordable} values={part.tags ?? []} text={strings.tags} save={setPartTags} />
       <WordList
@@ -908,7 +934,9 @@ export function Detail({
       <Fields part={part} recordable={recordable} />
 
       <Sources part={part.id} recordable={recordable} />
-
+    </>
+  )
+  const geometry = (
       <Section
         title={strings.detail.geometry}
         note={
@@ -972,7 +1000,9 @@ export function Detail({
               : strings.detail.watertightNo}
         </Row>
       </Section>
-
+  )
+  const rest = (
+    <>
       {part.structure === null ? null : (
         <Assembly hash={part.structure} hidden={hidden} onHide={setHidden} drawn={drawn} />
       )}
@@ -1050,6 +1080,51 @@ export function Detail({
       </Section>
 
       <History part={part.id} onGhost={onGhost} />
+    </>
+  )
+
+  if (!page) {
+    return (
+      <article className="mt-4">
+        <header className="mb-6 flex flex-wrap items-start gap-6">
+          {preview}
+          <div>
+            {heading}
+            {tools}
+          </div>
+        </header>
+        {gallery}
+        {about}
+        {geometry}
+        {rest}
+      </article>
+    )
+  }
+
+  /*
+    The part's own page, as a studio: the part on a stage that stays in view on the left, and
+    everything about it in a column on the right, read top to bottom in the order a decision needs
+    it: what it is, get it, its figures, then what people recorded about it. What is rarely needed
+    (the assembly tree, the file's PMI, the file, identity and history) sits under both, in two
+    columns, so it is all still on the page and findable, never behind a tab.
+  */
+  return (
+    <article className="mt-2 grid items-start gap-x-8 gap-y-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="scrim-in min-w-0 lg:sticky lg:top-[4.5rem]">
+        <div className="h-[min(60vh,26rem)] lg:h-[min(72vh,52rem)] lg:min-h-[20rem]">{preview}</div>
+        <div className="mt-4">{gallery}</div>
+      </div>
+      <div ref={info} className="min-w-0">
+        <div className="mb-6">
+          {heading}
+          {tools}
+        </div>
+        <div>{geometry}</div>
+        <div>{about}</div>
+      </div>
+      <div className="min-w-0 border-t border-[var(--color-border)] pt-6 lg:col-span-2 lg:columns-2 lg:gap-10 [&>*]:break-inside-avoid">
+        {rest}
+      </div>
     </article>
   )
 }

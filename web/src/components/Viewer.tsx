@@ -12,6 +12,8 @@ import {
   Float32BufferAttribute,
   FrontSide,
   IncrementWrapStencilOp,
+  Line,
+  LineBasicMaterial,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -52,6 +54,7 @@ import {
   type Vec3, explodeOffsets, partCentres } from '../lib/viewer-math'
 import { MeasureBar, SectionBar, ExplodeBar } from './Measure'
 import { disposeModel, partMaterial, studioLights } from './studio'
+import { tween } from '../lib/motion'
 
 type View = {
   show: (model: Object3D) => void
@@ -60,6 +63,8 @@ type View = {
   /** Where a ray from a pick, straight into the part, leaves it again: the far side of a wall. */
   through: (from: Pick) => Pick | null
   mark: (points: readonly Vec3[]) => void
+  /** A finished reading's line through `points` and its `text` beside them, drawn in; `null` for none. */
+  callout: (points: readonly Vec3[] | null, text: string | null) => void
   /** Leave these parts out, by their depth-first place in the tree; kept for every rung shown after. */
   hide: (hidden: ReadonlySet<number>) => void
   /** Cut the part along a plane across its box, or stop cutting; kept for every rung shown after. */
@@ -76,6 +81,10 @@ type View = {
 }
 
 const NONE: ReadonlySet<number> = new Set()
+
+/** A reading's label: the figure in the mono face on the card ground, edged in the marks' accent. */
+const CALLOUT =
+  'tabular whitespace-pre rounded-sm border border-[var(--color-accent)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[11px] leading-tight text-[var(--color-bright)]'
 
 /** A PMI label beside its face: small, on the panel colour, one annotation to a line. */
 const LABEL =
@@ -110,6 +119,8 @@ type Kit = {
   renderer: WebGLRenderer
   material: MeshStandardMaterial
   markMaterial: PointsMaterial
+  /** A reading's callout: an accent line between its picks, drawn over the part like the marks. */
+  calloutMaterial: LineBasicMaterial
   ghostMaterial: MeshBasicMaterial
   capMaterial: MeshBasicMaterial
   capBack: MeshBasicMaterial
@@ -128,6 +139,7 @@ function kit(): Kit {
     renderer,
     material: partMaterial(),
     markMaterial: new PointsMaterial({ color: MARK, size: 7, sizeAttenuation: false, depthTest: false }),
+    calloutMaterial: new LineBasicMaterial({ color: MARK, depthTest: false }),
     // Drawn through the part rather than hidden behind it: a smaller earlier revision sits inside
     // the current one, and a ghost only visible where it sticks out would read as no change there.
     // Amber, `--color-warn`, not grey: a grey ghost over a grey part on a near-black ground showed
@@ -207,7 +219,13 @@ export function prepare(): Promise<void> {
       new Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3),
     )
     const scene = new Scene()
-    scene.add(...studioLights(), new Mesh(triangle, session.material), new Points(noMarks(), session.markMaterial))
+    scene.add(
+      ...studioLights(),
+      new Mesh(triangle, session.material),
+      new Points(noMarks(), session.markMaterial),
+      // The callout's line, so the first reading does not link a shader as it draws in.
+      new Line(triangle, session.calloutMaterial),
+    )
     await session.renderer.compileAsync(scene, new OrthographicCamera())
     triangle.dispose()
   })()
@@ -452,6 +470,17 @@ export default function Viewer({
   useEffect(() => {
     view.current?.mark(picks.map((pick) => pick.point))
   }, [picks])
+  useEffect(() => {
+    if (tool === null || reading === null) {
+      view.current?.callout(null, null)
+      return
+    }
+    const value = (tool === 'angle' ? strings.measure.degrees : strings.measure.millimetres)(reading.value)
+    view.current?.callout(
+      picks.map((pick) => pick.point),
+      reading.approximate ? `${value} ${strings.detail.approximate}` : value,
+    )
+  }, [tool, reading, picks])
 
   const choose = (next: Tool | null) => {
     setTool(next)
@@ -518,7 +547,17 @@ export default function Viewer({
         ) : null}
       </div>
       {failed ? null : (
-        <>
+        /*
+          On a stage the tools dock in one row on the card ground under it, never over the lamp: the edge
+          grey that marks a control does not reach 3:1 on the lamp (`styles.css`), and it does on `surface`.
+        */
+        <div
+          className={
+            stage
+              ? 'mt-2 flex flex-none flex-wrap items-start gap-x-6 gap-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 [&>*]:mt-0'
+              : undefined
+          }
+        >
           <MeasureBar
             tool={tool}
             onTool={choose}
@@ -536,7 +575,7 @@ export default function Viewer({
               }}
             />
           ) : null}
-        </>
+        </div>
       )}
     </div>
   )
@@ -544,7 +583,7 @@ export default function Viewer({
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const own = sessionInUse
-  const { renderer, material, markMaterial, ghostMaterial, capMaterial, capBack, capFront } = own
+  const { renderer, material, markMaterial, calloutMaterial, ghostMaterial, capMaterial, capBack, capFront } = own
     ? kit()
     : (session ??= kit())
   sessionInUse = true
@@ -558,14 +597,16 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   const camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.up.set(0, 0, 1)
   let halfHeight = 1
-  // The view's width follows the box's shape; its height is the framing's, so a resize never
-  // changes how large the part is drawn, only how much room is beside it.
+  // The framing holds the part across the view's shorter side. In a wide box that is the height,
+  // so a resize changes only how much room is beside the part; in a tall one (a stage on a phone)
+  // it is the width, which a height-only framing let the part run out of at both edges.
   const fit = () => {
     const aspect = node.clientWidth / Math.max(node.clientHeight, 1)
-    camera.left = -halfHeight * aspect
-    camera.right = halfHeight * aspect
-    camera.top = halfHeight
-    camera.bottom = -halfHeight
+    const half = aspect < 1 ? halfHeight / aspect : halfHeight
+    camera.left = -half * aspect
+    camera.right = half * aspect
+    camera.top = half
+    camera.bottom = -half
     camera.updateProjectionMatrix()
   }
   fit()
@@ -584,6 +625,22 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   markers.renderOrder = 5
   scene.add(markers)
   scene.add(labels)
+  // A finished reading, drawn where it was taken: a line through its picks and its value beside them.
+  // The label is `aria-hidden`: the reading line under the view is the accessible one, and this is the
+  // same figure put where the eye already is.
+  const calloutLine = new Line(new BufferGeometry(), calloutMaterial)
+  calloutLine.renderOrder = 6
+  calloutLine.visible = false
+  scene.add(calloutLine)
+  const calloutElement = document.createElement('div')
+  calloutElement.className = CALLOUT
+  calloutElement.setAttribute('aria-hidden', 'true')
+  // Written every frame of the draw-in, so the stylesheet's opacity transition must not smooth it.
+  calloutElement.style.transition = 'none'
+  const calloutLabel = new CSS2DObject(calloutElement)
+  calloutLabel.visible = false
+  scene.add(calloutLabel)
+  let calloutCancel = () => {}
   // A section's cap: a square on the cut, placed by `capPlacement` and drawn after the stencil passes and
   // before the part. Not inside `model`, so no pick or wall ray ever meets it.
   const cap = new Mesh(new PlaneGeometry(1, 1), capMaterial)
@@ -826,6 +883,42 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       applyCut()
       if (model !== null) render()
     },
+    callout(points, text) {
+      calloutCancel()
+      calloutLine.geometry.dispose()
+      if (points === null || points.length === 0 || text === null) {
+        calloutLine.visible = false
+        calloutLabel.visible = false
+        render()
+        return
+      }
+      const origin = points[0]!
+      const mean = (axis: 0 | 1 | 2) => points.reduce((sum, point) => sum + point[axis], 0) / points.length
+      const centre: Vec3 = [mean(0), mean(1), mean(2)]
+      calloutElement.textContent = text
+      calloutLabel.position.set(...centre)
+      calloutLine.visible = points.length > 1
+      calloutLabel.visible = true
+      const positions = new Float32BufferAttribute(points.flat(), 3)
+      calloutLine.geometry = new BufferGeometry().setAttribute('position', positions)
+      // Drawn in from the first pick outward, with the label fading up, over `--duration-base`.
+      const progress = { k: 0 }
+      const draw = () => {
+        points.forEach((point, index) => {
+          positions.setXYZ(
+            index,
+            origin[0] + (point[0] - origin[0]) * progress.k,
+            origin[1] + (point[1] - origin[1]) * progress.k,
+            origin[2] + (point[2] - origin[2]) * progress.k,
+          )
+        })
+        positions.needsUpdate = true
+        calloutElement.style.opacity = String(progress.k)
+        render()
+      }
+      draw()
+      calloutCancel = tween(progress, { k: 1 }, draw)
+    },
     annotate(next) {
       // `clear` removes each label, and three takes a removed label's element out of the page.
       labels.clear()
@@ -840,6 +933,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       render()
     },
     dispose() {
+      calloutCancel()
+      scene.remove(calloutLabel)
+      calloutLine.geometry.dispose()
       labels.clear()
       labelRenderer.domElement.remove()
       resize.disconnect()
