@@ -775,3 +775,26 @@ fn the_standalone_backfill_file_and_the_copy_inside_0009_agree() {
          the two have drifted apart"
     );
 }
+
+/// `0042`: a category shared before member lists existed keeps reaching everyone paired — including people
+/// paired after the migration, until its owner says who it goes to.
+///
+/// Tested here rather than only in `shares.rs` because it is the migration that decides who can see data
+/// somebody is already sharing: a wrong default either hides every share or leaves every share open.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_share_made_before_member_lists_still_reaches_everyone(pool: PgPool) {
+    let audience: String = sqlx::query_scalar(
+        "INSERT INTO folder (id, library_id, name, slug) VALUES ($1, $2, 'Terrain', 'terrain') \
+         RETURNING (SELECT column_default FROM information_schema.columns \
+                    WHERE table_name = 'share' AND column_name = 'audience')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses"))
+    .fetch_one(&pool)
+    .await
+    .expect("reads the default");
+    assert!(
+        audience.starts_with("'everyone'"),
+        "a share's audience defaults to everyone, got: {audience}"
+    );
+}

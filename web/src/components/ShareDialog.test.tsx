@@ -3,12 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { ShareDialog } from './ShareDialog'
 import { strings } from '../lib/strings'
-import type { FolderNode, LicenceWarning } from '../lib/types'
+import type { FolderNode, LicenceWarning, Peer } from '../lib/types'
 
 /**
- * Sharing a category offers everything under it to everyone paired, so the dialog's one job is to say
- * what that is — how many parts, and how many carry no licence or a non-commercial one — before anything
- * is sent. The warning never blocks (owner's decision, 2026-09-16), so what is asserted is that it is shown.
+ * Sharing a category offers everything under it to the people ticked here, so the dialog's one job is to say
+ * what that is — how many parts, how many carry no licence or a non-commercial one, and who it reaches —
+ * before anything is sent. The warning never blocks (owner's decision, 2026-09-16), so what is asserted is
+ * that it is shown; the member list is asserted on what leaves in the body, since that is what the share is.
  */
 
 const LIBRARY = '01931b6e-0000-7000-8000-000000000001'
@@ -26,9 +27,29 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
+const WORKSHOP: Peer = {
+  deviceId: 'a3f1c2d40e5b6798a3f1c2d40e5b6798a3f1c2d40e5b6798a3f1c2d40e5b6798',
+  name: 'Ayşe’s workshop',
+  address: 'workshop.lan:8443',
+  addedAt: '2026-09-14T09:12:00Z',
+  lastSeenAt: '2026-09-17T08:03:00Z',
+  lastError: null,
+  online: true,
+}
+const BENCH: Peer = {
+  deviceId: 'b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6',
+  name: 'Mehmet’s bench',
+  address: 'bench.lan:8443',
+  addedAt: '2026-09-15T16:40:00Z',
+  lastSeenAt: null,
+  lastError: null,
+  online: false,
+}
+
 function stub(
   warning: LicenceWarning,
   shared: { status: number; body: unknown } = { status: 200, body: {} },
+  paired: Peer[] = [],
 ) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -40,6 +61,7 @@ function stub(
       if (url.endsWith('/shares') && method === 'POST') {
         return { ok: shared.status < 300, status: shared.status, json: async () => shared.body }
       }
+      if (url.endsWith('/sharing/peers')) return { ok: true, status: 200, json: async () => paired }
       return { ok: true, status: 200, json: async () => [] }
     }),
   )
@@ -121,4 +143,32 @@ test('asking first is sent only when it is chosen', async () => {
 
   await waitFor(() => expect(onClose).toHaveBeenCalled())
   expect(calls.find((call) => call.method === 'POST')?.body).toEqual({ folderId: TERRAIN.id, asksFirst: true })
+})
+
+test('a new share goes to everybody paired, each of them named', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [WORKSHOP, BENCH])
+  const onClose = renderDialog()
+
+  await screen.findByRole('checkbox', { name: /Ayşe/ })
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+    folderId: TERRAIN.id,
+    memberDeviceIds: [WORKSHOP.deviceId, BENCH.deviceId],
+  })
+})
+
+test('unticking somebody leaves them out of who the folder goes to', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [WORKSHOP, BENCH])
+  const onClose = renderDialog()
+
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Mehmet/ }))
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+    folderId: TERRAIN.id,
+    memberDeviceIds: [WORKSHOP.deviceId],
+  })
 })

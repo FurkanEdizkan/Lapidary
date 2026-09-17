@@ -93,7 +93,11 @@ async fn list(
         Ok(false) => return not_paired(),
         Err(err) => return failed(&err),
     }
-    match PgShares(db).offered().await {
+    // Paired, so the session named a device; the list it gets is the shares that reach that one.
+    let Some(device) = device else {
+        return not_paired();
+    };
+    match PgShares(db).offered_to(device).await {
         Ok(rows) => Json(
             rows.into_iter()
                 .map(|row| Share {

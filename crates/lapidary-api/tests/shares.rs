@@ -345,3 +345,71 @@ async fn a_share_that_asks_first_lists_who_asked_and_its_owner_grants_or_denies(
         (StatusCode::NOT_FOUND, &json!("noSuchRequest"))
     );
 }
+
+/// Saying who a folder goes to, in one call with the sharing, and afterwards.
+///
+/// The ids are device ids as a person pastes them; one that is not an id is refused as a body rather than
+/// quietly dropped, because a typo there is a person missing from a folder nobody notices.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_share_says_who_it_goes_to_and_refuses_an_id_that_is_not_one(pool: sqlx::PgPool) {
+    let terrain = terrain(&pool).await;
+    let ayse =
+        lapidary_core::DeviceId::from_public_key(b"ed25519 public key of ayse's workshop pc");
+    let (status, _) = send(
+        &pool,
+        "POST",
+        "/api/sharing/peers",
+        Some(json!({ "deviceId": ayse.to_string(), "address": "192.168.1.24:8082" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "pairs first");
+
+    let (status, share) = send(
+        &pool,
+        "POST",
+        &shares(),
+        Some(json!({ "folderId": terrain.as_uuid(), "memberDeviceIds": [ayse.to_string()] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{share}");
+    let members_uri = format!(
+        "/api/shares/{}/members",
+        share["id"].as_str().expect("an id")
+    );
+
+    let (status, members) = send(&pool, "GET", &members_uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(members.as_array().map(Vec::len), Some(1));
+    assert_eq!(members[0]["deviceId"], ayse.to_string());
+    assert_eq!(members[0]["address"], "192.168.1.24:8082");
+    assert_eq!(members[0]["online"], false, "nothing has said hello yet");
+
+    // Saying it again replaces the list; nobody is a list that reaches nobody, which is not stopping.
+    let (status, _) = send(&pool, "PUT", &members_uri, Some(json!({ "deviceIds": [] }))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, members) = send(&pool, "GET", &members_uri, None).await;
+    assert_eq!(members, json!([]));
+
+    let (status, refusal) = send(
+        &pool,
+        "PUT",
+        &members_uri,
+        Some(json!({ "deviceIds": ["not-a-device-id"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refusal["reason"], "badMember");
+
+    let (status, refusal) = send(
+        &pool,
+        "PUT",
+        &format!(
+            "/api/shares/{}/members",
+            lapidary_core::ShareId::new().as_uuid()
+        ),
+        Some(json!({ "deviceIds": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["reason"], "notShared");
+}

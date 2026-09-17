@@ -1,6 +1,7 @@
 //! Sharing (S2a), from this installation's side: `GET` and `POST /api/libraries/{id}/shares`,
-//! `GET /api/libraries/{id}/shares/preview?folderId=`, `GET /api/shares` and `DELETE /api/shares/{id}`; and asking
-//! first (S4): `GET /api/shares/requests` and `PUT /api/shares/{id}/grants/{device}`.
+//! `GET /api/libraries/{id}/shares/preview?folderId=`, `GET /api/shares` and `DELETE /api/shares/{id}`; asking
+//! first (S4): `GET /api/shares/requests` and `PUT /api/shares/{id}/grants/{device}`; and who a share goes to
+//! (S5): `GET` and `PUT /api/shares/{id}/members`.
 //!
 //! The api decides what is offered; the peer role serves it (`lapidary_peer::shares`), and this crate may not
 //! depend on that one. Nothing here is refused for its licences: the warning is counted and shown before
@@ -30,6 +31,27 @@ pub struct SharedCategory {
     pub created_at: Timestamp,
     /// Whether fetching its files needs this installation's grant.
     pub asks_first: bool,
+}
+
+/// One person a share goes to.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ShareMember {
+    pub device_id: String,
+    /// What they call themselves, as their last hello said.
+    pub name: Option<String>,
+    pub address: String,
+    pub online: bool,
+    pub added_at: Timestamp,
+}
+
+/// `PUT /api/shares/{id}/members`'s body: the whole list, not a change to it.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetMembers {
+    pub device_ids: Vec<String>,
 }
 
 /// Somebody who asked for a share's files.
@@ -64,6 +86,10 @@ pub struct ShareCategory {
     /// Ask before anyone fetches its files. Left out, a new share is open and an existing one keeps what it had.
     #[ts(optional)]
     pub asks_first: Option<bool>,
+    /// Who it goes to. Left out, a new share reaches everyone paired and an existing one keeps its list, so
+    /// sharing a folder the way it has always been shared stays one call with one field.
+    #[ts(optional)]
+    pub member_device_ids: Option<Vec<String>>,
 }
 
 /// What sharing a category would offer, counted before anybody confirms.
@@ -138,6 +164,7 @@ pub async fn share(
     let Ok(Json(ShareCategory {
         folder_id,
         asks_first,
+        member_device_ids,
     })) = body
     else {
         return refused(
@@ -146,12 +173,22 @@ pub async fn share(
             "Sharing needs the category to share, by its id. Choose the category in the tree and share it from there.",
         );
     };
+    // Read before anything is shared: a typo in an id must not leave a folder shared with everyone paired.
+    let members = match member_device_ids.map(|ids| parse_devices(&ids)) {
+        Some(None) => return bad_member(),
+        chosen => chosen.flatten(),
+    };
     let shares = PgShares(state.db);
     let mut row = match shares.create(library, folder_id).await {
         Ok(Some(row)) => row,
         Ok(None) => return no_such_category(),
         Err(err) => return internal_error(&err, "share failed"),
     };
+    if let Some(members) = members
+        && let Err(err) = shares.set_members(row.id, &members).await
+    {
+        return internal_error(&err, "share members failed");
+    }
     // Said, it is set, on a new share or one already shared; not said, the share keeps what it had.
     if let Some(asks_first) = asks_first.filter(|asks_first| *asks_first != row.asks_first) {
         match shares.set_asks_first(row.id, asks_first).await {
@@ -188,6 +225,69 @@ pub async fn stop(State(state): State<AppState>, Path(share): Path<ShareId>) -> 
             "That category is not shared, so there is nothing to stop. Reload the list of what this installation shares.",
         ),
         Err(err) => internal_error(&err, "stop sharing failed"),
+    }
+}
+
+/// Device ids as they are pasted and sent: hex of the digest. `None` when one of them is not one, which the
+/// callers refuse as a body rather than ignore, so a typo is a message and not a person quietly missing from a
+/// folder.
+fn parse_devices(ids: &[String]) -> Option<Vec<DeviceId>> {
+    ids.iter().map(|id| id.parse::<DeviceId>().ok()).collect()
+}
+
+fn bad_member() -> Response {
+    refused(
+        StatusCode::BAD_REQUEST,
+        "badMember",
+        "One of those device ids is not one. Copy each id from the person's own sharing page.",
+    )
+}
+
+/// `GET /api/shares/{id}/members` — who a share goes to, as its owner's page lists them.
+pub async fn members(State(state): State<AppState>, Path(share): Path<ShareId>) -> Response {
+    match PgShares(state.db).members(share).await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| ShareMember {
+                    device_id: row.device.to_string(),
+                    name: row.name,
+                    address: row.address,
+                    online: row.online,
+                    added_at: row.added_at,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => internal_error(&err, "share members failed"),
+    }
+}
+
+/// `PUT /api/shares/{id}/members` — say who a share goes to. The list replaces whatever was there, and saying
+/// it is what moves a share off "everyone paired": an empty list reaches nobody, which is not the same as
+/// stopping, and `DELETE /api/shares/{id}` is still how a category is withdrawn.
+pub async fn set_members(
+    State(state): State<AppState>,
+    Path(share): Path<ShareId>,
+    body: Result<Json<SetMembers>, JsonRejection>,
+) -> Response {
+    let Ok(Json(SetMembers { device_ids })) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badMember",
+            "Say who the folder goes to, as {\"deviceIds\": [\"…\"]}. An empty list shares it with nobody.",
+        );
+    };
+    let Some(members) = parse_devices(&device_ids) else {
+        return bad_member();
+    };
+    match PgShares(state.db).set_members(share, &members).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => refused(
+            StatusCode::NOT_FOUND,
+            "notShared",
+            "That category is not shared, so there is nobody it goes to. Share it first.",
+        ),
+        Err(err) => internal_error(&err, "share members failed"),
     }
 }
 

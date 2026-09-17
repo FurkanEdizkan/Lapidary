@@ -39,7 +39,8 @@ pub use repo::{
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use shares::{
-    BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, OfferedShare, PgShares, ShareRow,
+    BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
+    ShareRow,
 };
 pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;

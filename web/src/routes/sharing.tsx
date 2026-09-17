@@ -7,16 +7,19 @@ import {
   fetchPeerShares,
   fetchPeers,
   fetchPulls,
+  fetchShareMembers,
   fetchShareRequests,
   fetchShares,
   fetchSharingIdentity,
   removePeer,
+  setShareMembers,
   setSharingName,
   stopSharing,
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
+import { Dialog } from '../components/Dialog'
 import { breakable } from '../components/Card'
 import type { Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
 
@@ -334,6 +337,7 @@ function OwnShares() {
 
 function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () => Promise<void> }) {
   const [note, setNote] = useState<string | null>(null)
+  const [choosing, setChoosing] = useState(false)
   const stop = useMutation({
     mutationFn: () => stopSharing(share.id),
     onSuccess: (result) => {
@@ -357,6 +361,9 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
             <span className="ml-2 text-xs text-[var(--color-muted)]">{strings.sharing.asksFirst}</span>
           ) : null}
         </span>
+        <button type="button" onClick={() => setChoosing(true)} className={`${BUTTON} text-[var(--color-muted)]`}>
+          {strings.sharing.membersChange}
+        </button>
         <button
           type="button"
           onClick={() => stop.mutate()}
@@ -367,12 +374,116 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
           {stop.isPending ? strings.sharing.stopping : strings.sharing.stopSharing}
         </button>
       </div>
+      <Members share={share} />
+      {choosing ? <ChooseMembers share={share} onClose={() => setChoosing(false)} /> : null}
       {note === null ? null : (
         <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
           {note}
         </p>
       )}
     </li>
+  )
+}
+
+/**
+ * Who a folder goes to, under its row.
+ *
+ * A folder shared before member lists existed reaches everyone paired, and says so rather than listing them:
+ * the list is empty because nobody picked, not because nobody is in it.
+ */
+function Members({ share }: { share: ShareSummary }) {
+  const members = useQuery({
+    queryKey: ['shares', 'members', share.id],
+    queryFn: () => fetchShareMembers(share.id),
+  })
+  if (members.data === undefined) return null
+  return (
+    <p className="mt-1 text-xs text-[var(--color-muted)]">
+      {members.data.length === 0
+        ? strings.sharing.membersEveryone
+        : members.data.map((member) => member.name ?? strings.sharing.unnamed).join(', ')}
+    </p>
+  )
+}
+
+/** Picking who a folder goes to. The list replaces whatever was there; nobody ticked reaches nobody. */
+function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const peers = useQuery({ queryKey: ['sharing', 'peers'], queryFn: fetchPeers })
+  const members = useQuery({
+    queryKey: ['shares', 'members', share.id],
+    queryFn: () => fetchShareMembers(share.id),
+  })
+  const [picked, setPicked] = useState<ReadonlySet<string> | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  // What is on the folder now, until somebody ticks something. A folder that reaches everyone paired opens
+  // with everyone ticked, so saving without a change keeps what it had.
+  const current =
+    picked ??
+    new Set(
+      members.data === undefined
+        ? []
+        : members.data.length === 0
+          ? (peers.data ?? []).map((peer) => peer.deviceId)
+          : members.data.map((member) => member.deviceId),
+    )
+  const save = useMutation({
+    mutationFn: () => setShareMembers(share.id, [...current]),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      void queryClient.invalidateQueries({ queryKey: ['shares'] })
+      onClose()
+    },
+    onError: () => setNote(strings.sharing.membersFailed),
+  })
+  return (
+    <Dialog title={strings.sharing.membersLabel} onClose={onClose}>
+      {peers.data === undefined ? (
+        <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
+      ) : peers.data.length === 0 ? (
+        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.membersNobodyPaired}</p>
+      ) : (
+        <ul role="list" className="mt-3 flex list-none flex-col gap-1">
+          {peers.data.map((peer) => (
+            <li key={peer.deviceId}>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={current.has(peer.deviceId)}
+                  onChange={(event) => {
+                    const next = new Set(current)
+                    if (event.target.checked) next.add(peer.deviceId)
+                    else next.delete(peer.deviceId)
+                    setPicked(next)
+                  }}
+                />
+                {peer.name ?? strings.sharing.unnamed}
+                <span className="tabular text-xs text-[var(--color-muted)]">{peer.address}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {current.size > 0 ? null : (
+        <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.membersNone}</p>
+      )}
+      {note === null ? null : (
+        <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" onClick={onClose} autoFocus className={BUTTON}>
+          {strings.sharing.shareCancel}
+        </button>
+        <button type="button" onClick={() => save.mutate()} disabled={save.isPending} className={BUTTON}>
+          {save.isPending ? strings.sharing.membersSaving : strings.sharing.membersSave}
+        </button>
+      </div>
+    </Dialog>
   )
 }
 

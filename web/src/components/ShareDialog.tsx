@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { previewShare, shareCategory } from '../lib/api'
+import { fetchPeers, previewShare, shareCategory } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { FolderNode, LibraryId } from '../lib/types'
 import { Dialog } from './Dialog'
@@ -11,8 +11,8 @@ const BUTTON =
 /**
  * Sharing a category: what it would offer, said before anything is sent.
  *
- * A share is the category and everything under it, offered to everyone paired, parts filed there later
- * included — so the dialog counts the parts, and how many carry no licence or a non-commercial one. The
+ * A share is the category and everything under it, parts filed there later included, offered to the people
+ * ticked here — so the dialog counts the parts, and how many carry no licence or a non-commercial one. The
  * owner decided the warning is shown and never blocks, so Share is not disabled by it, only by the count
  * not having arrived: nobody confirms a warning they have not been shown.
  *
@@ -32,10 +32,19 @@ export function ShareDialog({
     queryKey: ['shares', 'preview', library, folder.id],
     queryFn: () => previewShare(library, folder.id),
   })
+  const peers = useQuery({ queryKey: ['sharing', 'peers'], queryFn: fetchPeers })
   const [note, setNote] = useState<string | null>(null)
   const [asksFirst, setAsksFirst] = useState(false)
+  // Everybody, until somebody is unticked: sharing with the people you know is what this did before member
+  // lists, and the dialog should not make a person choose to keep that. The list is sent only once the people
+  // are known — naming nobody would share a folder with no one, so a dialog confirmed before they arrived, or
+  // with nobody paired yet, sends no list and the share reaches whoever is paired, as it always did.
+  const [dropped, setDropped] = useState<ReadonlySet<string>>(new Set())
+  const chosen = peers.data?.length
+    ? peers.data.filter((peer) => !dropped.has(peer.deviceId)).map((peer) => peer.deviceId)
+    : undefined
   const share = useMutation({
-    mutationFn: () => shareCategory(library, folder.id, asksFirst),
+    mutationFn: () => shareCategory(library, folder.id, asksFirst, chosen),
     onSuccess: (result) => {
       if (result.kind === 'refused') {
         setNote(result.message)
@@ -74,7 +83,40 @@ export function ShareDialog({
           )}
         </>
       )}
-      <label className="mt-3 flex items-center gap-2 text-sm">
+      <fieldset className="mt-4">
+        <legend className="text-xs tracking-wider text-[var(--color-muted)] uppercase">
+          {strings.sharing.membersLabel}
+        </legend>
+        {peers.data === undefined ? null : peers.data.length === 0 ? (
+          <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
+            {strings.sharing.membersNobodyPaired}
+          </p>
+        ) : (
+          <ul role="list" className="mt-2 flex list-none flex-col gap-1">
+            {peers.data.map((peer) => (
+              <li key={peer.deviceId}>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!dropped.has(peer.deviceId)}
+                    onChange={(event) =>
+                      setDropped((current) => {
+                        const next = new Set(current)
+                        if (event.target.checked) next.delete(peer.deviceId)
+                        else next.add(peer.deviceId)
+                        return next
+                      })
+                    }
+                  />
+                  {peer.name ?? strings.sharing.unnamed}
+                  <span className="tabular text-xs text-[var(--color-muted)]">{peer.address}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </fieldset>
+      <label className="mt-4 flex items-center gap-2 text-sm">
         <input type="checkbox" checked={asksFirst} onChange={(event) => setAsksFirst(event.target.checked)} />
         {strings.sharing.askFirstLabel}
       </label>
