@@ -134,12 +134,12 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "252d28f931abf542",
+        content: "7083e391ca680109",
         reason: "a compose.yaml fixture (an api service mounting a bind-mounted store and a named volume, and a db) for the named-volume ownership rule; the YAML indentation is the structure under test",
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "aab29df7812b6595",
+        content: "ea214ab66ff3265e",
         reason: "a compose.sharing.yaml fixture (a peer service mounting two named volumes and the store) for the named-volume ownership rule; the YAML indentation is the structure under test",
     },
     Exemption {

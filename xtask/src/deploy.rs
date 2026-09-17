@@ -2086,6 +2086,7 @@ services:
       LAPIDARY_ROLE: api
     volumes:
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
+      - ../example/parts:/ingest:ro,z
       - lapidary-uploads:/var/lib/lapidary-uploads:Z
   db:
     build:
@@ -2107,12 +2108,15 @@ services:
       - \"lapidary-peer:/var/lib/lapidary-peer:Z\"
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
       - lapidary-peer-staging:/var/lib/lapidary-peer-staging:Z
+    ports:
+      - \"8082:8082\"
 ";
         let containerfile = "\
 FROM debian AS runtime
 RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \\
     && install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary-uploads \\
     && install -d -o lapidary -g lapidary -m 0700 /var/lib/lapidary-peer
+RUN install -d -m 0755 /var/lib/lapidary-peer-staging
 ";
         assert_eq!(
             check_volume_ownership(&[compose, overlay], containerfile),
@@ -2120,7 +2124,8 @@ RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \\
                 service: "peer".to_owned(),
                 target: "/var/lib/lapidary-peer-staging".to_owned(),
             }],
-            "the bind-mounted store and the db's own volume are not the image's to create"
+            "bind mounts and the db's own volume are not the image's to create, a port is not a volume, and a directory \
+             the image makes for root is not one it makes for lapidary"
         );
     }
 
