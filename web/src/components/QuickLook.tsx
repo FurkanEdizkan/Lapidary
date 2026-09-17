@@ -1,11 +1,12 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { fetchPartDetail } from '../lib/api'
+import { downloadUrl, fetchPartDetail } from '../lib/api'
 import { flipFrom } from '../lib/flip'
 import { Dialog } from './Dialog'
 import { ShowInFolder } from './ShowInFolder'
-import { Detail } from './PartDetail'
+import { Detail, Preview } from './PartDetail'
+import { Figure } from './Figure'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
 import { Icon } from './Icon'
@@ -211,5 +212,146 @@ export function QuickLook({
         </Link>
       </div>
     </Frame>
+  )
+}
+
+/** Keys that belong to a control: a stage's arrows must not steal them from a field or a toolbar. */
+function ownsArrows(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.closest('input, select, textarea, [role="toolbar"]') !== null)
+  )
+}
+
+/**
+ * The part on a stage: Space on a card's name.
+ *
+ * The side pane and its dialog are for reading a part; this is for looking at it. The live 3D view
+ * takes most of the window, on the lamp's ground, with only what a decision needs beside it: the
+ * part number, its figures, Download and the way to the full page. The arrow keys step to the next
+ * card and the one before, so a library can be walked part by part without leaving the stage, and
+ * Escape puts focus back on the card now on screen, scrolled into view.
+ *
+ * The render flies in from its card the first time (`flipFrom`, the quick look's authored moment);
+ * a step swaps the part in place.
+ */
+export function StageLook({
+  parts,
+  index,
+  from,
+  onStep,
+  onClose,
+}: {
+  parts: readonly PartCard[]
+  index: number
+  /** Where the first part's render sat on the grid; a zero rectangle after a step. */
+  from: DOMRect
+  onStep: (index: number) => void
+  onClose: () => void
+}) {
+  const part = parts[index]
+  const detail = useQuery({
+    queryKey: ['part', part?.id],
+    queryFn: () => fetchPartDetail(part!.id),
+    enabled: part !== undefined,
+  })
+  const stage = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const image = stage.current?.querySelector('img')
+    if (image != null) flipFrom(image, from)
+  }, [detail.data, from])
+
+  const step = useRef({ index, count: parts.length, onStep })
+  useEffect(() => {
+    step.current = { index, count: parts.length, onStep }
+  })
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+      if (event.defaultPrevented || ownsArrows(event.target)) return
+      const { index: at, count, onStep: go } = step.current
+      const next = at + (event.key === 'ArrowRight' ? 1 : -1)
+      if (next < 0 || next >= count) return
+      event.preventDefault()
+      go(next)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  if (part === undefined) return null
+  const data = detail.data?.id === part.id ? detail.data : undefined
+  return (
+    <Dialog
+      title={part.name}
+      size="stage"
+      onClose={onClose}
+      returnFocus={() => document.getElementById(`part-name-${part.id}`)?.querySelector('a') ?? null}
+    >
+      <div className="mt-3 grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div ref={stage} className="flex min-h-[18rem] min-w-0">
+          {data === undefined ? (
+            <div className="stage-lamp grid w-full place-items-center rounded-md">
+              <p className="text-sm text-[var(--color-muted)]">
+                {detail.isError ? strings.quickLook.failed : strings.quickLook.loading}
+              </p>
+            </div>
+          ) : (
+            <Preview part={data} stage />
+          )}
+        </div>
+        <div className="flex min-w-0 flex-col gap-4 text-sm">
+          <p className="tabular text-xs text-[var(--color-muted)]">
+            {strings.quickLook.position(index + 1, parts.length)}
+          </p>
+          {part.partNumber === null ? null : (
+            <p className="tabular text-[var(--color-dim)]">{part.partNumber}</p>
+          )}
+          {data === undefined ? null : (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t border-[var(--color-border)] pt-3">
+              <dt className="text-[var(--color-muted)]">{strings.detail.triangles}</dt>
+              <dd className="tabular">
+                {data.triangleCount === null ? strings.detail.unknown : strings.detail.trianglesValue(data.triangleCount)}
+              </dd>
+              <dt className="text-[var(--color-muted)]">{strings.detail.boundingBox}</dt>
+              <dd className="tabular">
+                {data.bboxMm === null ? (
+                  strings.detail.unknown
+                ) : (
+                  <Figure figure={data.bboxMm} render={(mm) => strings.detail.boundingBoxValue(mm)} />
+                )}
+              </dd>
+              <dt className="text-[var(--color-muted)]">{strings.detail.volume}</dt>
+              <dd className="tabular">
+                {data.volumeMm3 === null ? (
+                  data.isWatertight === false ? strings.detail.volumeUnavailable : strings.detail.unknown
+                ) : (
+                  <Figure figure={data.volumeMm3} render={strings.detail.volumeValue} />
+                )}
+              </dd>
+            </dl>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {data === undefined || data.sourceHash === null ? null : (
+              <a
+                href={downloadUrl(data.revision)}
+                download
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 py-1.5 font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
+              >
+                {strings.download.original}
+              </a>
+            )}
+            <Link
+              to="/parts/$partId"
+              params={{ partId: part.id }}
+              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px hover:text-[var(--color-text)]"
+            >
+              {strings.quickLook.fullPage}
+            </Link>
+          </div>
+          <p className="mt-auto text-xs text-[var(--color-muted)] max-md:hidden">{strings.quickLook.steps}</p>
+        </div>
+      </div>
+    </Dialog>
   )
 }

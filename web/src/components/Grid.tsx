@@ -91,6 +91,7 @@ export function Grid({
   onOpen,
   onHover,
   spins = false,
+  onLook,
 }: {
   parts: readonly PartCard[]
   onRender: (part: PartId) => void
@@ -110,6 +111,8 @@ export function Grid({
   onHover: (part: PartCard) => void
   /** Whether a card turns its part under a resting pointer or focus. See `turntable.ts`. */
   spins?: boolean
+  /** Space on a card's name. See `StageLook`. */
+  onLook?: (part: PartCard, from: DOMRect) => void
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -228,6 +231,7 @@ export function Grid({
             onOpen={onOpen}
             onHover={onHover}
             spins={spins && layout !== 'list'}
+            onLook={onLook}
           />
         </li>
       ))}

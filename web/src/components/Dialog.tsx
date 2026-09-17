@@ -46,10 +46,19 @@ export function Dialog({
   title,
   onClose,
   children,
+  size = 'default',
+  returnFocus,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
+  /** `stage` is the quick look's: most of the window, for a part in 3D. */
+  size?: 'default' | 'stage'
+  /**
+   * Where focus goes on close, when that is not what opened the dialog: the quick look steps from
+   * part to part, and closing it returns to the card now on screen rather than the first one.
+   */
+  returnFocus?: () => HTMLElement | null
 }) {
   const titleId = useId()
   const box = useRef<HTMLDivElement>(null)
@@ -58,8 +67,10 @@ export function Dialog({
   // down and re-run on every render, and its cleanup would throw focus back at the trigger
   // while the dialog was still open.
   const close = useRef(onClose)
+  const giveBack = useRef(returnFocus)
   useEffect(() => {
     close.current = onClose
+    giveBack.current = returnFocus
   })
 
   /**
@@ -121,6 +132,12 @@ export function Dialog({
       document.removeEventListener('keydown', onKeyDown)
       // Back to whatever opened this. A dialog that closes onto `<body>` costs a keyboard
       // user their place in the page, and there is no reason for them to hunt for it.
+      const chosen = giveBack.current?.() ?? null
+      if (chosen !== null) {
+        chosen.focus()
+        chosen.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
       const trigger = opener.current
       if (trigger instanceof HTMLElement && document.contains(trigger)) {
         trigger.focus()
@@ -158,7 +175,11 @@ export function Dialog({
             current.focus()
           }
         }}
-        className="panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay"
+        className={
+          size === 'stage'
+            ? 'panel-in flex h-[min(88vh,56rem)] max-h-full w-[min(92vw,80rem)] flex-col overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay'
+            : 'panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay'
+        }
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id={titleId} className="text-sm font-medium">

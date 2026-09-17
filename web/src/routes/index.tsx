@@ -65,7 +65,7 @@ import type {
 import { DEFAULT_ORIGIN } from '../components/Card'
 import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
-import { QuickLook, useWide } from '../components/QuickLook'
+import { QuickLook, StageLook, useWide } from '../components/QuickLook'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
@@ -435,6 +435,10 @@ export function Index({
   const [ownPart, setOwnPart] = useState<string | undefined>(undefined)
   const openPart = onOpenPart === undefined ? ownPart : part
   const [openFrom, setOpenFrom] = useState<DOMRect>(DEFAULT_ORIGIN)
+  // The part on the stage (Space on a card's name), by id: a refetch during a scan reorders the
+  // cards, and an index would quietly put a different part on the stage.
+  const [stagedId, setStagedId] = useState<PartId | null>(null)
+  const [stageFrom, setStageFrom] = useState<DOMRect>(DEFAULT_ORIGIN)
   const [moving, setMoving] = useState<PartCard | null>(null)
   const wide = useWide()
   // Found among the pages already loaded rather than fetched on its own: a part further down
@@ -457,6 +461,8 @@ export function Index({
   // viewer's code as soon as the browser is idle; its renderer waits for a hover or an open.
   useEffect(loadViewerWhenIdle, [])
   const lookingIndex = looking === undefined ? -1 : loaded.indexOf(looking)
+  // Gone from the list (removed, or filtered out) closes the stage rather than showing another part.
+  const staged = stagedId === null ? -1 : loaded.findIndex((card) => card.id === stagedId)
   useEffect(() => {
     if (lookingIndex === -1) return
     warm(loaded[lookingIndex - 1])
@@ -1024,6 +1030,20 @@ export function Index({
         ) : (
           <>
             {wide ? null : look}
+            {staged === -1 ? null : (
+              <StageLook
+                parts={loaded}
+                index={staged}
+                from={stageFrom}
+                onStep={(next) => {
+                  // No flight on a step: the part changes in place.
+                  setStageFrom(DEFAULT_ORIGIN)
+                  setStagedId(loaded[next]?.id ?? null)
+                  warm(loaded[next + 1])
+                }}
+                onClose={() => setStagedId(null)}
+              />
+            )}
             {moving === null ? null : (
               <MovePartDialog
                 part={{ id: moving.id, name: moving.name }}
@@ -1065,7 +1085,11 @@ export function Index({
               onToggle={toggle}
               onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
               onHover={warm}
-              spins={looking === undefined && !selecting}
+              spins={looking === undefined && staged === -1 && !selecting}
+              onLook={(card, from) => {
+                setStageFrom(from)
+                setStagedId(card.id)
+              }}
               onOpen={(card, from) => {
                 setOpenFrom(from)
                 setOpenPart(card.id)
