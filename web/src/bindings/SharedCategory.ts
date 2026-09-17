@@ -5,4 +5,8 @@ import type { ShareId } from "./ShareId";
 /**
  * A category of one library that this installation shares.
  */
-export type SharedCategory = { id: ShareId, folderId: FolderId, name: string, createdAt: string, };
+export type SharedCategory = { id: ShareId, folderId: FolderId, name: string, createdAt: string, 
+/**
+ * Whether fetching its files needs this installation's grant.
+ */
+asksFirst: boolean, };

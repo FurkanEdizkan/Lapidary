@@ -87,6 +87,10 @@ function stub({
         posted.push({ url, body: JSON.parse(init.body ?? 'null') })
         return { ok: true, status: 202, json: async () => pulled }
       }
+      if (url.endsWith('/pause') || url.endsWith('/resume')) {
+        posted.push({ url, body: null })
+        return { ok: true, status: 204, json: async () => null }
+      }
       if (url.endsWith('/pull')) {
         return { ok: true, status: 200, json: async () => pull }
       }
@@ -205,4 +209,21 @@ test('a library already pulled offers the library it was pulled into', async () 
   await screen.findByText(strings.sharing.pullDone(138))
   const into = screen.getByLabelText(strings.sharing.pullInto) as HTMLSelectElement
   await waitFor(() => expect(into.value).toBe(LIBRARIES[1]!.id))
+})
+
+test('a pull waiting for the sharer says so, and can be paused', async () => {
+  stub({ pull: { ...QUEUED, state: 'waiting', error: 'Waiting for Ayşe’s workshop to let you pull Terrain.' } })
+  renderPage()
+  await screen.findByText('Waiting for Ayşe’s workshop to let you pull Terrain.')
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.pause }))
+  await waitFor(() => expect(posted.map((call) => call.url)).toEqual([`/api/sharing/pulls/${QUEUED.id}/pause`]))
+})
+
+test('a paused pull says what it kept, and resumes', async () => {
+  stub({ pull: { ...QUEUED, state: 'paused', filesDone: 40, bytesDone: 312_000_000 } })
+  renderPage()
+  await screen.findByText(strings.sharing.pullPaused)
+  expect((screen.getByRole('button', { name: strings.sharing.pullAll }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.resume }))
+  await waitFor(() => expect(posted.map((call) => call.url)).toEqual([`/api/sharing/pulls/${QUEUED.id}/resume`]))
 })

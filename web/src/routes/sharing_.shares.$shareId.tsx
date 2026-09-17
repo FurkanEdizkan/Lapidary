@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useState } from 'react'
 import {
   SharedLibraryGone,
+  controlPull,
   fetchBatchStatus,
   fetchLatestPull,
   fetchLibraries,
@@ -117,8 +118,14 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
   )
 }
 
+/** Still moving: worth asking about again. A paused pull is not, until somebody resumes it. */
 function unfinished(pull: Pull | null | undefined): boolean {
-  return pull !== null && pull !== undefined && ['queued', 'fetching', 'importing'].includes(pull.state)
+  return pull !== null && pull !== undefined && ['queued', 'fetching', 'waiting', 'importing'].includes(pull.state)
+}
+
+/** Before its import, a pull can be paused; paused, it can be resumed. */
+function pausable(pull: Pull | null): boolean {
+  return pull !== null && ['queued', 'fetching', 'waiting'].includes(pull.state)
 }
 
 /** Pull every part into a library of this installation's, and follow the pull while the peer role works it. */
@@ -135,10 +142,20 @@ function PullPanel({ share }: { share: PeerShareId }) {
     mutationFn: (library: LibraryId) => startPull(share, library),
     onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
   })
+  const control = useMutation({
+    mutationFn: ({ pull, action }: { pull: Pull; action: 'pause' | 'resume' }) => controlPull(pull.id, action),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['sharing', 'shares', share, 'pull'] }),
+  })
   const pull = latest.data ?? null
   // The library this share was last pulled into, until somebody chooses another.
   const library = chosen ?? pull?.libraryId ?? libraries.data?.[0]?.id ?? null
-  const refusal = start.data?.kind === 'refused' ? start.data.message : null
+  const refusal =
+    start.data?.kind === 'refused'
+      ? start.data.message
+      : control.data?.kind === 'refused'
+        ? control.data.message
+        : null
+  const paused = pull?.state === 'paused'
   return (
     <div className="mt-4 flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -159,11 +176,21 @@ function PullPanel({ share }: { share: PeerShareId }) {
         <button
           type="button"
           onClick={() => library !== null && start.mutate(library)}
-          disabled={library === null || start.isPending || unfinished(pull)}
+          disabled={library === null || start.isPending || unfinished(pull) || paused}
           className={BUTTON}
         >
           {start.isPending ? strings.sharing.pullStarting : strings.sharing.pullAll}
         </button>
+        {pull !== null && (pausable(pull) || paused) ? (
+          <button
+            type="button"
+            onClick={() => control.mutate({ pull, action: paused ? 'resume' : 'pause' })}
+            disabled={control.isPending}
+            className={BUTTON}
+          >
+            {paused ? strings.sharing.resume : strings.sharing.pause}
+          </button>
+        ) : null}
       </div>
       {refusal === null ? null : (
         <p role="alert" className="text-sm">
@@ -189,6 +216,10 @@ function PullProgress({ pull }: { pull: Pull }) {
       ? strings.sharing.pullDone(pull.filesTotal)
       : pull.state === 'failed'
         ? strings.sharing.pullStopped(pull.error ?? '')
+        : pull.state === 'paused'
+          ? strings.sharing.pullPaused
+          : pull.state === 'waiting'
+            ? (pull.error ?? strings.sharing.pullWaiting)
         : pull.error !== null
           ? strings.sharing.pullRetrying(pull.error)
           : pull.state === 'queued'

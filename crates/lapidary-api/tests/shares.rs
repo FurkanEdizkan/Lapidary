@@ -188,7 +188,7 @@ async fn sharing_a_category_lists_it_once_however_often_it_is_shared(pool: sqlx:
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         everything,
-        json!([{ "id": first["id"], "name": "Terrain", "partCount": 3 }])
+        json!([{ "id": first["id"], "name": "Terrain", "partCount": 3, "asksFirst": false }])
     );
 }
 
@@ -274,5 +274,74 @@ async fn another_librarys_category_is_neither_counted_nor_shared_here(pool: sqlx
         send(&pool, "GET", "/api/shares", None).await.1,
         json!([]),
         "nothing shared anywhere"
+    );
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_share_that_asks_first_lists_who_asked_and_its_owner_grants_or_denies(
+    pool: sqlx::PgPool,
+) {
+    let terrain = terrain(&pool).await;
+    let (status, shared) = send(
+        &pool,
+        "POST",
+        &shares(),
+        Some(json!({ "folderId": terrain.as_uuid(), "asksFirst": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["asksFirst"], true);
+    // Sharing again without saying keeps asking first.
+    let (_, again) = send(
+        &pool,
+        "POST",
+        &shares(),
+        Some(json!({ "folderId": terrain.as_uuid() })),
+    )
+    .await;
+    assert_eq!(again["asksFirst"], true);
+
+    let share: lapidary_core::ShareId =
+        serde_json::from_value(shared["id"].clone()).expect("an id");
+    let ayse = lapidary_core::DeviceId::from_public_key(
+        b"ed25519 public key of the workshop pc in Ayse's garage",
+    );
+    lapidary_db::PgSharing(pool.clone())
+        .add_peer(ayse, "192.168.1.24:8082")
+        .await
+        .expect("pairs");
+    lapidary_db::PgShares(pool.clone())
+        .ask(ayse, share)
+        .await
+        .expect("asks");
+
+    let (status, requests) = send(&pool, "GET", "/api/shares/requests", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(requests.as_array().map(Vec::len), Some(1), "{requests}");
+    assert_eq!(requests[0]["shareName"], "Terrain");
+    assert_eq!(requests[0]["deviceId"], ayse.to_string());
+    assert_eq!(requests[0]["state"], "asked");
+
+    let grants = format!("/api/shares/{}/grants/{ayse}", share.as_uuid());
+    let (status, _) = send(&pool, "PUT", &grants, Some(json!({ "granted": true }))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, requests) = send(&pool, "GET", "/api/shares/requests", None).await;
+    assert_eq!(requests[0]["state"], "granted");
+    let (status, _) = send(&pool, "PUT", &grants, Some(json!({ "granted": false }))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, requests) = send(&pool, "GET", "/api/shares/requests", None).await;
+    assert_eq!(requests[0]["state"], "denied");
+
+    let stranger = lapidary_core::DeviceId::from_public_key(b"a key nobody here paired with");
+    let (status, refusal) = send(
+        &pool,
+        "PUT",
+        &format!("/api/shares/{}/grants/{stranger}", share.as_uuid()),
+        Some(json!({ "granted": true })),
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::NOT_FOUND, &json!("noSuchRequest"))
     );
 }

@@ -63,6 +63,9 @@ import type {
   MirroredPartsPage,
   MirroredShare,
   Pull,
+  PullId,
+  DecideGrant,
+  ShareRequest,
   StartPull,
   Peer,
   PeerShareId,
@@ -1583,8 +1586,9 @@ export async function previewShare(library: LibraryId, folder: FolderId): Promis
 }
 
 /** `POST /api/libraries/{id}/shares` — share a category and everything under it. */
-export async function shareCategory(library: LibraryId, folder: FolderId): Promise<FieldWritten> {
-  const body: ShareCategory = { folderId: folder }
+export async function shareCategory(library: LibraryId, folder: FolderId, asksFirst = false): Promise<FieldWritten> {
+  // Only said when asked for: left out, a new share is open and one already shared keeps what it had.
+  const body: ShareCategory = asksFirst ? { folderId: folder, asksFirst } : { folderId: folder }
   return fieldWritten(
     await fetch(`/api/libraries/${encodeURIComponent(library)}/shares`, {
       method: 'POST',
@@ -1592,6 +1596,36 @@ export async function shareCategory(library: LibraryId, folder: FolderId): Promi
       body: JSON.stringify(body),
     }),
     strings.sharing.shareFailed,
+  )
+}
+
+/** `GET /api/shares/requests` — everybody who asked to pull a share that asks first, whatever was answered. */
+export async function fetchShareRequests(): Promise<ShareRequest[]> {
+  const response = await fetch('/api/shares/requests')
+  if (!response.ok) {
+    throw new Error(`share requests returned ${response.status}`)
+  }
+  return (await response.json()) as ShareRequest[]
+}
+
+/** `PUT /api/shares/{id}/grants/{device}` — let somebody pull a share, or decline. */
+export async function decideGrant(share: ShareId, deviceId: string, granted: boolean): Promise<FieldWritten> {
+  const body: DecideGrant = { granted }
+  return fieldWritten(
+    await fetch(`/api/shares/${encodeURIComponent(share)}/grants/${encodeURIComponent(deviceId)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    strings.sharing.requestFailed,
+  )
+}
+
+/** `POST /api/sharing/pulls/{id}/pause` or `…/resume`. */
+export async function controlPull(pull: PullId, action: 'pause' | 'resume'): Promise<FieldWritten> {
+  return fieldWritten(
+    await fetch(`/api/sharing/pulls/${encodeURIComponent(pull)}/${action}`, { method: 'POST' }),
+    strings.sharing.pullControlFailed,
   )
 }
 

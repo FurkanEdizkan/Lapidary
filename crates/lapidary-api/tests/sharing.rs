@@ -469,3 +469,72 @@ async fn a_pull_is_recorded_for_the_peer_role_and_followed_from_its_share(pool: 
         (StatusCode::NOT_FOUND, &json!("noSuchShare"))
     );
 }
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_pull_is_paused_and_resumed_and_a_finished_one_is_neither(pool: sqlx::PgPool) {
+    let id = mirrored_terrain(&pool).await;
+    let (_, pull) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/shares/{id}/pulls"),
+        Some(json!({ "libraryId": "01931b6e-0000-7000-8000-000000000001" })),
+    )
+    .await;
+    let pull_id = pull["id"].as_str().expect("an id").to_owned();
+
+    let (status, _) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/pause"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, followed) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!(followed["state"], "paused");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/pause"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::CONFLICT, &json!("notRunning"))
+    );
+
+    let (status, _) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, followed) = send(
+        &pool,
+        "GET",
+        &format!("/api/sharing/shares/{id}/pull"),
+        None,
+    )
+    .await;
+    assert_eq!(followed["state"], "queued");
+    let (status, refusal) = send(
+        &pool,
+        "POST",
+        &format!("/api/sharing/pulls/{pull_id}/resume"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &refusal["reason"]),
+        (StatusCode::CONFLICT, &json!("notPaused"))
+    );
+}

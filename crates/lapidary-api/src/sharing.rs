@@ -415,6 +415,32 @@ pub async fn latest_pull(
     }
 }
 
+/// `POST /api/sharing/pulls/{id}/pause` — stop after the file being fetched, keeping what is staged.
+pub async fn pause_pull(State(state): State<AppState>, Path(pull): Path<PullId>) -> Response {
+    match PgPulls(state.db).pause(pull).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => refused(
+            StatusCode::CONFLICT,
+            "notRunning",
+            "That pull is not fetching, so there is nothing to pause: it is paused already, importing, or finished. Reload the page.",
+        ),
+        Err(err) => internal_error(&err, "pull pause failed"),
+    }
+}
+
+/// `POST /api/sharing/pulls/{id}/resume` — carry on from what is staged.
+pub async fn resume_pull(State(state): State<AppState>, Path(pull): Path<PullId>) -> Response {
+    match PgPulls(state.db).resume(pull).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => refused(
+            StatusCode::CONFLICT,
+            "notPaused",
+            "That pull is not paused, so there is nothing to resume. Reload the page.",
+        ),
+        Err(err) => internal_error(&err, "pull resume failed"),
+    }
+}
+
 fn pull(row: PullRow) -> Pull {
     Pull {
         id: row.id,

@@ -4,4 +4,8 @@ import type { FolderId } from "./FolderId";
 /**
  * The `POST` body.
  */
-export type ShareCategory = { folderId: FolderId, };
+export type ShareCategory = { folderId: FolderId, 
+/**
+ * Ask before anyone fetches its files. Left out, a new share is open and an existing one keeps what it had.
+ */
+asksFirst?: boolean, };

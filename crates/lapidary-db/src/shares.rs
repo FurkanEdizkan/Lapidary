@@ -86,6 +86,8 @@ pub struct OfferedShare {
     /// share whose digest moved. The newest change counts a part's revisions as well as the part: recording a
     /// revision leaves `part.updated_at` alone, and a digest that missed it would leave pullers with a stale hash.
     pub digest: String,
+    /// Whether fetching its files needs its owner's grant.
+    pub asks_first: bool,
 }
 
 /// One part of a share's catalogue.
@@ -327,7 +329,7 @@ impl PgShares {
 
     /// Every live share, as the people paired with this installation see them.
     pub async fn offered(&self) -> Result<Vec<OfferedShare>, DbError> {
-        let rows: Vec<(uuid::Uuid, String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(uuid::Uuid, String, i64, i64, String)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
              SELECT s.id AS share, f.id FROM share s JOIN folder f ON f.id = s.folder_id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
@@ -335,23 +337,24 @@ impl PgShares {
              SELECT d.share, f.id FROM folder f JOIN down d ON f.parent_id = d.id) \
              CYCLE id SET is_cycle USING seen \
              SELECT s.id, f.name, count(DISTINCT p.id), \
-             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0) \
+             coalesce((extract(epoch FROM greatest(max(p.updated_at), max(r.created_at))) * 1000000)::bigint, 0), s.mode \
              FROM share s JOIN folder f ON f.id = s.folder_id \
              LEFT JOIN down d ON d.share = s.id AND NOT d.is_cycle \
              LEFT JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL AND p.library_id = s.library_id \
              LEFT JOIN revision r ON r.part_id = p.id \
              WHERE s.removed_at IS NULL AND f.deleted_at IS NULL \
-             GROUP BY s.id, f.name, s.created_at ORDER BY s.created_at, s.id",
+             GROUP BY s.id, f.name, s.created_at, s.mode ORDER BY s.created_at, s.id",
         )
         .fetch_all(&self.0)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, part_count, newest_us)| OfferedShare {
+            .map(|(id, name, part_count, newest_us, mode)| OfferedShare {
                 id: ShareId::from_uuid(id),
                 name,
                 part_count,
                 digest: format!("{part_count}-{newest_us}"),
+                asks_first: mode == "ask",
             })
             .collect())
     }

@@ -110,3 +110,15 @@ test('cancel is where the dialog opens, and it shares nothing', async () => {
   expect(onClose).toHaveBeenCalled()
   expect(calls.some((call) => call.method === 'POST')).toBe(false)
 })
+
+test('asking first is sent only when it is chosen', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 })
+  const onClose = renderDialog()
+
+  await screen.findByText(strings.sharing.shareBody(34))
+  fireEvent.click(screen.getByLabelText(strings.sharing.askFirstLabel))
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({ folderId: TERRAIN.id, asksFirst: true })
+})

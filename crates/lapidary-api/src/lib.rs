@@ -323,6 +323,14 @@ pub fn router(state: AppState, role: Role) -> Router {
                     axum::routing::post(sharing::start_pull),
                 )
                 .route("/api/sharing/shares/{id}/pull", get(sharing::latest_pull))
+                .route(
+                    "/api/sharing/pulls/{id}/pause",
+                    axum::routing::post(sharing::pause_pull),
+                )
+                .route(
+                    "/api/sharing/pulls/{id}/resume",
+                    axum::routing::post(sharing::resume_pull),
+                )
                 // What this installation shares: a category and everything under it. The peer role
                 // serves it to the people paired; this is where it is decided. See `shares.rs`.
                 .route(
@@ -331,6 +339,13 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 .route("/api/libraries/{id}/shares/preview", get(shares::preview))
                 .route("/api/shares", get(shares::all))
+                // Asking first: who asked, and this installation's answer. Before `/api/shares/{id}`, which a
+                // literal segment outranks anyway.
+                .route("/api/shares/requests", get(shares::requests))
+                .route(
+                    "/api/shares/{id}/grants/{device}",
+                    axum::routing::put(shares::decide),
+                )
                 .route("/api/shares/{id}", axum::routing::delete(shares::stop))
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
