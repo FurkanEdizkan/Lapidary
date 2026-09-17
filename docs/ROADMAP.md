@@ -2911,6 +2911,26 @@ upgrade from the code before goal 7, and the Containers workflow. Goal file:
     ingest support" — and the `worker` image starts its job worker. The first is what the Containers workflow's untargeted
     build produces (stage 5).
 
+**Stage 2: the plain stack in containers** (no code; project `lapidary-check`, its own env and store;
+`target/docker-check/check-plain.sh` and `check-plain-part{1,2,3}.log`).
+- **Up:** every service healthy 7 s after `up`. The database reports `vector 0.8.6`, `pg_trgm 1.6` and the `turkish`
+  config, and holds all 41 migrations. **That answers ROADMAP's open point on pgvector against `postgres:18`** before
+  Phase 6.
+- **A store without sudo:** the api image chowned the empty store directory to uid 10001 (`docker run --rm --user 0
+  --entrypoint chown …`), and every service wrote to it.
+- **First start:** the 6 example parts, all with thumbnails, through Caddy on 3000.
+- **The real kernel:** a scan of `fixtures/step` (5 STEP, 1 IGES) into a controlled library ingested all 6 in about 1 s,
+  none failed, the worker peaking at 51 MiB of its 2 GiB. The PMI cylinder has its tree, entities and PMI (⌀22 +0.05/0,
+  flatness 0.02, perpendicularity 0.05 to A, datum A) at `occt-8.0.1-bridge-8`, and its page shows them
+  (`target/docker-check/shots/plain-step-part.png`). The assembly counts 1011 faces and 1437 edges, as in goal 4.
+- **Upload and download:** a chunked upload (probe, chunk, commit) ingested, and `variant=original` came back
+  byte-identical, again through Caddy after the restart.
+- **Bundle:** 6 parts exported as 256,415 bytes and imported into another controlled library: 6 ingested, the same six
+  source hashes, the PMI row with them.
+- **Restart:** `down` and `up` kept 13 parts, 13 revisions and 13 thumbnails, with no failed job.
+- **Harness slips, not product bugs:** the bundle export takes the form field `parts` (comma-separated), not JSON, and a
+  re-run met its own library name, rightly refused `409 nameTaken`. Both are fixed in the scripts.
+
 ---
 
 ## Phase 6 — Dashboard and similarity
