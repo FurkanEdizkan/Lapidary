@@ -132,35 +132,33 @@ test("the list asks for removed parts and tells two identically named ones apart
 
 test("purge is behind a confirmation that names the path, and declining calls nothing", async () => {
   const calls = stub([MOUNTING, SPARES]);
-  // `false`: the user read the dialog and said no. Nothing may reach the API — this is the
-  // one action in the product that cannot be undone.
-  // Typed argument, so the assertion below can read what the dialog actually said.
-  const confirm = vi.fn((_message: string) => false);
-  vi.stubGlobal("confirm", confirm);
   renderPage();
 
   const row = await rowFor("spares/LP-1042-03.stl");
   fireEvent.click(within(row).getByText(strings.removal.purge));
 
-  expect(confirm).toHaveBeenCalledWith(
-    strings.removal.purgeConfirm("spares/LP-1042-03.stl"),
-  );
-  // The confirmation has to name *this* row's path. A dialog naming the other part, or
-  // naming only the shared name, is one a person cannot answer correctly.
-  expect(confirm.mock.calls[0]?.[0]).toContain("spares/");
+  // The confirmation has to name *this* row's path. A dialog naming the other part, or naming
+  // only the shared name, is one a person cannot answer correctly.
+  const dialog = await screen.findByRole("dialog", { name: strings.removal.purgeTitle });
+  expect(within(dialog).getByText(strings.removal.purgeConfirm("spares/LP-1042-03.stl"))).toBeDefined();
+  // Cancel has focus, so a reflexive Enter keeps the part — this is the one action in the
+  // product that cannot be undone.
+  const cancel = within(dialog).getByRole("button", { name: strings.folders.cancel });
+  expect(document.activeElement).toBe(cancel);
+
+  fireEvent.click(cancel);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(calls.some((call) => call.url.includes("/purge"))).toBe(false);
 });
 
 test("confirming purge calls the route and reports what is kept, never what is freed", async () => {
   const calls = stub([MOUNTING], { quarantined: 2, quarantinedBytes: 182408 });
-  vi.stubGlobal(
-    "confirm",
-    vi.fn(() => true),
-  );
   renderPage();
 
   const row = await rowFor("mounting/LP-1042-03.stl");
   fireEvent.click(within(row).getByText(strings.removal.purge));
+  const dialog = await screen.findByRole("dialog", { name: strings.removal.purgeTitle });
+  fireEvent.click(within(dialog).getByRole("button", { name: strings.removal.purgeConfirmAction }));
 
   await waitFor(() =>
     expect(

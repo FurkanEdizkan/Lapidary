@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   DEFAULT_LIBRARY_ID,
   fetchParts,
@@ -7,7 +8,10 @@ import {
   restorePart,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { HEADLINE, LEAD } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
+import { breakable } from '../components/Card'
+import { Dialog } from '../components/Dialog'
 import type { LibraryId, PartCard } from '../lib/types'
 
 /**
@@ -59,10 +63,8 @@ export function RemovedPage({ library }: { library: LibraryId }) {
           title — and `index.html`'s static one stays as the pre-hydration fallback. SC 2.4.2.
         */}
         <title>{strings.titles.removed}</title>
-        <h2 className="text-xl font-medium">{strings.removal.removedTitle}</h2>
-        <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
-          {strings.removal.removedLead}
-        </p>
+        <h2 className={HEADLINE}>{strings.removal.removedTitle}</h2>
+        <p className={LEAD}>{strings.removal.removedLead}</p>
 
         {removed.isPending ? (
           <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
@@ -75,7 +77,7 @@ export function RemovedPage({ library }: { library: LibraryId }) {
             <p className="mt-6 text-sm text-[var(--color-muted)]">
               {strings.removal.removedCount(removed.data.parts.length)}
             </p>
-            <ul role="list" className="mt-3 flex flex-col gap-2">
+            <ul role="list" className="mt-3 flex flex-col border-t border-[var(--color-border)]">
               {removed.data.parts.map((card) => (
                 <RemovedRow key={card.id} card={card} />
               ))}
@@ -113,14 +115,20 @@ function RemovedRow({ card }: { card: PartCard }) {
     onSuccess: refresh,
   })
 
+  const [confirming, setConfirming] = useState(false)
+  const quiet =
+    'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2.5 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+
   return (
-    <li className="flex flex-wrap items-center gap-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-      <span className="grow">
-        <span className="text-sm">{card.name}</span>
-        <span className="ml-2 text-xs text-[var(--color-muted)]">
-          {card.sourcePath}
-        </span>
-      </span>
+    <li className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--color-border)] py-2.5">
+      {/* The render, small: two removed parts often share a name, and the picture is the quickest tell. */}
+      <div className="grid size-[46px] flex-none place-items-center overflow-hidden rounded-[var(--radius-ctl)] bg-[var(--color-raised)] p-1">
+        {card.thumbnail === null ? null : <img src={card.thumbnail} alt="" className="h-full w-full object-contain" />}
+      </div>
+      <div className="min-w-0 grow">
+        <p className="text-sm font-medium text-[var(--color-bright)]">{breakable(card.name)}</p>
+        <p className="tabular text-xs break-all text-[var(--color-muted)]">{card.sourcePath}</p>
+      </div>
 
       {/*
         The purge result is reported where the row is, and in the words `strings.removal`
@@ -141,29 +149,49 @@ function RemovedRow({ card }: { card: PartCard }) {
         <span className="text-xs text-[var(--color-muted)]">{strings.removal.purgeFailed}</span>
       ) : null}
 
-      <button
-        type="button"
-        onClick={() => restore.mutate()}
-        disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {restore.isPending ? strings.removal.restoring : strings.removal.restore}
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          // The one confirmation in the app, and it names the part. A dialog that says
-          // "are you sure?" is a dialog people clear without reading; this one has to be
-          // read to know which part it is about.
-          if (window.confirm(strings.removal.purgeConfirm(card.sourcePath))) {
-            purge.mutate()
-          }
-        }}
-        disabled={restore.isPending || purge.isPending}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-      >
-        {purge.isPending ? strings.removal.purging : strings.removal.purge}
-      </button>
+      <div className="flex flex-none gap-2">
+        <button
+          type="button"
+          onClick={() => restore.mutate()}
+          disabled={restore.isPending || purge.isPending}
+          className={quiet}
+        >
+          {restore.isPending ? strings.removal.restoring : strings.removal.restore}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={restore.isPending || purge.isPending}
+          className={`${quiet} text-[var(--color-muted)]`}
+        >
+          {purge.isPending ? strings.removal.purging : strings.removal.purge}
+        </button>
+      </div>
+      {!confirming ? null : (
+        /*
+          The one confirmation in the app, and it names the part by its path. A dialog that says
+          "are you sure?" is one people clear without reading; this one has to be read to know
+          which part it is about. Cancel has focus, so a reflexive Enter keeps the part.
+        */
+        <Dialog title={strings.removal.purgeTitle} onClose={() => setConfirming(false)}>
+          <p className="mt-3 text-sm">{strings.removal.purgeConfirm(card.sourcePath)}</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" autoFocus onClick={() => setConfirming(false)} className={quiet}>
+              {strings.folders.cancel}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(false)
+                purge.mutate()
+              }}
+              className={`${quiet} border-[var(--color-bad)] text-[var(--color-bad)]`}
+            >
+              {strings.removal.purgeConfirmAction}
+            </button>
+          </div>
+        </Dialog>
+      )}
     </li>
   )
 }

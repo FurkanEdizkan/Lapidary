@@ -13,7 +13,9 @@ import {
   startPull,
 } from '../lib/api'
 import { strings } from '../lib/strings'
+import { HEADLINE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
+import { breakable } from '../components/Card'
 import type { BatchId, LibraryId, MirroredPart, PeerShareId, Pull } from '../lib/types'
 
 const BUTTON =
@@ -77,7 +79,7 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
           </p>
         ) : (
           <>
-            <h2 className="mt-4 text-xl font-medium">{library.data.name}</h2>
+            <h2 className={`mt-4 ${HEADLINE}`}>{library.data.name}</h2>
             <p className="mt-1 text-sm text-[var(--color-muted)]">
               {strings.sharing.librarySharedBy(
                 library.data.sharer ?? strings.sharing.unnamedSharer,
@@ -233,10 +235,28 @@ function PullProgress({ pull }: { pull: Pull }) {
                   batch.data === undefined ? 0 : batch.data.total - batch.data.pending - batch.data.running,
                   batch.data?.total ?? 0,
                 )
+  // How far along, while there is a number to say it with: bytes while fetching, jobs while importing.
+  const fraction =
+    pull.state === 'fetching' && pull.bytesTotal > 0
+      ? pull.bytesDone / pull.bytesTotal
+      : importing && batch.data !== undefined && batch.data.total > 0
+        ? (batch.data.total - batch.data.pending - batch.data.running) / batch.data.total
+        : null
   return (
-    <p role="status" className="text-sm">
-      {text}
-    </p>
+    <div>
+      <p role="status" className="tabular text-sm">
+        {text}
+      </p>
+      {fraction === null ? null : (
+        // Layout Blue, because this is live. A transform, so it moves on the stylesheet's own transition.
+        <div aria-hidden="true" className="mt-2 h-1 max-w-md overflow-hidden rounded-full bg-[var(--color-border)]">
+          <div
+            style={{ transform: `scaleX(${Math.min(1, Math.max(0, fraction))})` }}
+            className="h-full origin-left bg-[var(--color-accent)]"
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -246,13 +266,14 @@ function SharedParts({ share, parts, read }: { share: PeerShareId; parts: Mirror
     return read ? <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.sharing.libraryEmpty}</p> : null
   }
   return (
-    <ul role="list" className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-3">
+    <ul role="list" className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4 max-xs:grid-cols-2 max-xs:gap-2">
       {parts.map((part) => (
+        // The grid's card, so a part looks the same whether it is yours or somebody else's.
         <li
           key={part.sourcePath}
-          className="flex flex-col rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2"
+          className="flex flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]"
         >
-          <div className="aspect-square overflow-hidden rounded bg-[var(--color-raised)]">
+          <div className="flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]">
             {part.thumbnail ? (
               <img
                 src={mirroredThumbnailUrl(share, part.sourcePath)}
@@ -262,14 +283,18 @@ function SharedParts({ share, parts, read }: { share: PeerShareId; parts: Mirror
               />
             ) : null}
           </div>
-          <p className="mt-2 text-sm">{part.name}</p>
-          <p className="text-xs break-all text-[var(--color-muted)]">{part.sourcePath}</p>
-          <p className="mt-1 text-xs">
-            {part.licences.length === 0
-              ? strings.sharing.noLicence
-              : strings.sharing.licences(part.licences.join(', '))}
-          </p>
-          <p className="text-xs text-[var(--color-muted)]">{strings.sharing.partKind(part.format, part.sizeBytes)}</p>
+          <div className="flex flex-1 flex-col gap-1 p-3">
+            <p className="line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--color-bright)]" title={part.name}>
+              {breakable(part.name)}
+            </p>
+            <p className="tabular text-[11px] break-all text-[var(--color-muted)]">{part.sourcePath}</p>
+            <p className="mt-auto pt-1 text-xs text-[var(--color-dim)]">
+              {part.licences.length === 0
+                ? strings.sharing.noLicence
+                : strings.sharing.licences(part.licences.join(', '))}
+            </p>
+            <p className="tabular text-[11px] text-[var(--color-muted)]">{strings.sharing.partKind(part.format, part.sizeBytes)}</p>
+          </div>
         </li>
       ))}
     </ul>

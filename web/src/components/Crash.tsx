@@ -1,5 +1,6 @@
 import { strings } from '../lib/strings'
 import { AppFrame } from './AppFrame'
+import { HEADLINE, LEAD, STANDING } from './Page'
 
 /**
  * What is left when a route throws.
@@ -21,12 +22,12 @@ export function Crash() {
   return (
     <AppFrame nav={false} search={null}>
       <section role="alert" className="mx-auto mt-12 max-w-prose">
-        <h2 className="text-xl font-medium">{strings.crash.title}</h2>
-        <p className="mt-3 text-sm text-[var(--color-muted)]">{strings.crash.body}</p>
+        <h2 className={HEADLINE}>{strings.crash.title}</h2>
+        <p className={LEAD}>{strings.crash.body}</p>
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="ease-mechanical mt-4 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          className={`mt-6 ${STANDING}`}
         >
           {strings.crash.reload}
         </button>

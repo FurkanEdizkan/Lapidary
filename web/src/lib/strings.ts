@@ -549,6 +549,8 @@ export const strings = {
      * stated as a deadline rather than a promise of recovery — there is no restore button
      * after this, only a hash and an operator.
      */
+    purgeTitle: 'Purge this part?',
+    purgeConfirmAction: 'Purge permanently',
     purgeConfirm: (sourcePath: string) =>
       `Purge “${sourcePath}” permanently? Its part, revision and file records are removed now. Bytes nothing else uses are kept for 30 days, then deleted.`,
     purging: 'Purging…',
