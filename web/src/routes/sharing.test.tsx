@@ -255,6 +255,9 @@ test('what somebody shares is listed under them, each linking to it', async () =
         name: 'Terrain',
         partCount: 998,
         syncedAt: '2026-09-17T01:40:00Z',
+        readFrom: null,
+        readFromName: null,
+        asOf: '2026-09-17T01:40:00Z',
       },
     ],
   })

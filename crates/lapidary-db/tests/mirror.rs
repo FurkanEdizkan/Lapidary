@@ -35,6 +35,27 @@ fn offer<'a>(
         name,
         part_count,
         digest,
+        owner: None,
+        as_of: None,
+    }
+}
+
+/// The same folder as another of its people passes it on: its owner's id for it, and when they read it (S7).
+fn relayed<'a>(
+    owner: DeviceId,
+    remote: ShareId,
+    name: &'a str,
+    part_count: i64,
+    digest: &'a str,
+    as_of: &str,
+) -> OfferedRemote<'a> {
+    OfferedRemote {
+        remote,
+        name,
+        part_count,
+        digest,
+        owner: Some(owner),
+        as_of: Some(as_of.parse().expect("a timestamp")),
     }
 }
 
@@ -366,5 +387,262 @@ async fn a_mirrored_folders_roster_offers_the_people_in_it_once_each(pool: sqlx:
             .await
             .expect("answers"),
         "the roster no longer names them"
+    );
+}
+
+/// Sharing S7: Terrain is Ayşe's, and Mira holds it too. When Ayşe is away, Mira's list is how it stays
+/// browsable — and a copy passed on must never be able to say a folder is gone, or to undo a fresher reading.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx::PgPool) {
+    let mirror = paired(&pool).await;
+    PgSharing(pool.clone())
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs with Mira as well");
+
+    // Read from Ayşe herself, as every round has until now.
+    let stale = mirror
+        .take_offer(ayse(), &[offer(terrain(), "Terrain", 2, "2-100")])
+        .await
+        .expect("takes the offer");
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].owner, ayse(), "hers, and read from her");
+    mirror
+        .replace_catalogue(
+            stale[0].id,
+            "2-100",
+            &[
+                part("rocks/cliff-face.stl", "Cliff face, LP-TR-0112", None),
+                part("standing-stone.stl", "Standing stone, LP-TR-0140", None),
+            ],
+        )
+        .await
+        .expect("reads it");
+
+    // Mira offers her own folder and passes Terrain on, as she read it — before this installation did.
+    let stale = mirror
+        .take_offer(
+            mira(),
+            &[
+                offer(bases(), "Bases", 1, "1-1"),
+                relayed(
+                    ayse(),
+                    terrain(),
+                    "Terrain",
+                    2,
+                    "2-100",
+                    "2026-09-17T09:00:00Z",
+                ),
+            ],
+        )
+        .await
+        .expect("takes Mira's list");
+    assert_eq!(
+        stale.iter().map(|share| share.owner).collect::<Vec<_>>(),
+        vec![mira()],
+        "only Mira's own folder is new; the Terrain she passes on is the one already held, and older"
+    );
+    let held = mirror.shares_of(ayse()).await.expect("lists");
+    assert_eq!(
+        held.len(),
+        1,
+        "Terrain is still Ayşe's folder, mirrored once"
+    );
+    assert_eq!(held[0].read_from, None, "read from her, not from Mira");
+    assert_eq!(
+        mirror
+            .parts(held[0].id, None, 10)
+            .await
+            .expect("reads")
+            .len(),
+        2,
+        "and a list from Mira never empties a folder of Ayşe's"
+    );
+
+    // Ayşe has changed Terrain since, and Mira has read it. That copy is newer, so it is taken.
+    let stale = mirror
+        .take_offer(
+            mira(),
+            &[
+                offer(bases(), "Bases", 1, "1-1"),
+                relayed(
+                    ayse(),
+                    terrain(),
+                    "Terrain",
+                    3,
+                    "3-200",
+                    "2026-09-18T09:00:00Z",
+                ),
+            ],
+        )
+        .await
+        .expect("takes Mira's list again");
+    let through_mira = stale
+        .iter()
+        .find(|share| share.owner == ayse())
+        .expect("Ayşe's folder is to be read again, through Mira");
+    assert_eq!(through_mira.digest, "3-200");
+    mirror
+        .relay_catalogue(
+            through_mira.id,
+            "3-200",
+            &[
+                part("rocks/cliff-face.stl", "Cliff face, LP-TR-0112", None),
+                part("rocks/scree.stl", "Scree slope, LP-TR-0118", None),
+                part("standing-stone.stl", "Standing stone, LP-TR-0140", None),
+            ],
+            mira(),
+            "2026-09-18T09:00:00Z".parse().expect("a timestamp"),
+        )
+        .await
+        .expect("takes what Mira read");
+    let held = mirror.shares_of(ayse()).await.expect("lists");
+    assert_eq!(held[0].read_from, Some(mira()));
+    assert_eq!(
+        held[0].as_of.map(|at| at.to_string()),
+        Some("2026-09-18T09:00:00Z".to_owned())
+    );
+    assert_eq!(
+        mirror
+            .parts(held[0].id, None, 10)
+            .await
+            .expect("reads")
+            .len(),
+        3
+    );
+
+    // Mira falls behind — an older reading of the same folder is not taken, however often she offers it.
+    let stale = mirror
+        .take_offer(
+            mira(),
+            &[relayed(
+                ayse(),
+                terrain(),
+                "Terrain",
+                2,
+                "2-100",
+                "2026-09-17T09:00:00Z",
+            )],
+        )
+        .await
+        .expect("takes Mira's list");
+    assert!(
+        stale.is_empty(),
+        "a reading older than the one held is nothing to read"
+    );
+    assert_eq!(
+        mirror
+            .parts(held[0].id, None, 10)
+            .await
+            .expect("reads")
+            .len(),
+        3,
+        "and it leaves what is held alone"
+    );
+
+    // Bases was Mira's own, and she stops offering it: that one she is entitled to withdraw.
+    mirror
+        .take_offer(
+            mira(),
+            &[relayed(
+                ayse(),
+                terrain(),
+                "Terrain",
+                3,
+                "3-200",
+                "2026-09-18T09:00:00Z",
+            )],
+        )
+        .await
+        .expect("takes Mira's list");
+    assert!(mirror.shares_of(mira()).await.expect("lists").is_empty());
+    assert_eq!(mirror.shares_of(ayse()).await.expect("lists").len(), 1);
+}
+
+/// A folder is passed on to the people its owner said it goes to, and to nobody else: holding the bytes is
+/// not what entitles anybody to them.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_folder_is_passed_on_only_to_the_people_its_owner_named(pool: sqlx::PgPool) {
+    let mirror = paired(&pool).await;
+    let nazli = DeviceId::from_public_key(b"ed25519 public key of nazli's laptop");
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs");
+    sharing
+        .add_peer(nazli, "192.168.1.44:8082")
+        .await
+        .expect("pairs");
+    let stale = mirror
+        .take_offer(ayse(), &[offer(terrain(), "Terrain", 1, "1-1")])
+        .await
+        .expect("takes the offer");
+    mirror
+        .replace_catalogue(
+            stale[0].id,
+            "1-1",
+            &[part(
+                "standing-stone.stl",
+                "Standing stone, LP-TR-0140",
+                None,
+            )],
+        )
+        .await
+        .expect("reads it");
+    mirror
+        .take_roster(
+            ayse(),
+            terrain(),
+            &[RemoteMember {
+                device: mira(),
+                name: Some("Mira’s studio"),
+                address: "192.168.1.31:8082",
+                may_fetch: true,
+            }],
+        )
+        .await
+        .expect("takes the roster");
+
+    let passed = mirror.relayable_to(mira()).await.expect("lists");
+    assert_eq!(
+        passed
+            .iter()
+            .map(|share| (
+                share.owner,
+                share.remote,
+                share.name.as_str(),
+                share.digest.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(ayse(), terrain(), "Terrain", "1-1")],
+        "Mira is on Terrain's roster, so she may have it from here while Ayşe is away"
+    );
+    assert!(
+        mirror.relayable_to(nazli).await.expect("lists").is_empty(),
+        "Nazlı is paired with this installation and is not in that folder"
+    );
+    assert_eq!(
+        mirror
+            .relayed_to(ayse(), terrain(), mira())
+            .await
+            .expect("answers"),
+        Some(stale[0].id)
+    );
+    assert_eq!(
+        mirror
+            .relayed_to(ayse(), terrain(), nazli)
+            .await
+            .expect("answers"),
+        None,
+        "the refusal a stranger gets"
+    );
+    assert_eq!(
+        mirror
+            .relayed_to(ayse(), bases(), mira())
+            .await
+            .expect("answers"),
+        None,
+        "a folder this installation does not mirror"
     );
 }

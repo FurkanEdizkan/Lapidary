@@ -228,6 +228,10 @@ pub async fn mirror(
             name: &share.name,
             part_count: share.part_count,
             digest: &share.digest,
+            // A folder this installation is passing on rather than one of its own (S7). An id that cannot be
+            // read is left as the answering installation's own, which is what protocol 1 meant by no owner.
+            owner: share.owner.as_deref().and_then(|owner| owner.parse().ok()),
+            as_of: share.as_of,
         })
         .collect();
     let mirror = PgMirror(db.clone());
@@ -239,15 +243,27 @@ pub async fn mirror(
         shares: offered.len(),
         ..MirrorReport::default()
     };
+    // When the installation being read read each folder it does not own, as it said, kept by the folder's own
+    // id so a catalogue written below records that reading rather than this moment.
+    let as_of: std::collections::HashMap<lapidary_core::ShareId, jiff::Timestamp> = offered
+        .iter()
+        .filter(|share| share.owner.is_some())
+        .filter_map(|share| Some((share.id, share.as_of?)))
+        .collect();
 
     for share in stale {
         let remote = share.remote.as_uuid();
+        // Whose folder it is, when the installation being read is not its owner: the query every request about
+        // that folder carries, so what comes back is the copy it holds rather than one of its own.
+        let relayed = (share.owner != device).then(|| share.owner.to_string());
+        let owner = relayed.as_deref().unwrap_or_default();
         let mut parts = Vec::new();
         let mut after = String::new();
         loop {
             let request = client.get(format!("{base}/{remote}/catalogue")).query(&[
                 ("after", after.as_str()),
                 ("limit", &CATALOGUE_MAX.to_string()),
+                ("owner", owner),
             ]);
             let (page, page_bytes): (CataloguePage, usize) = read_json(request, address).await?;
             report.pages += 1;
@@ -261,9 +277,10 @@ pub async fn mirror(
         let mut thumbnails = Vec::with_capacity(parts.len());
         for part in &parts {
             let bytes = if part.thumbnail {
-                let request = client
-                    .get(format!("{base}/{remote}/thumbnail"))
-                    .query(&[("part", part.part.as_uuid().to_string())]);
+                let request = client.get(format!("{base}/{remote}/thumbnail")).query(&[
+                    ("part", part.part.as_uuid().to_string().as_str()),
+                    ("owner", owner),
+                ]);
                 read_thumbnail(request, address).await?
             } else {
                 None
@@ -298,10 +315,22 @@ pub async fn mirror(
             .collect();
         // Under the digest the list gave before the pages were read: a change made while they were being read moves
         // the digest again, and the next round reads the catalogue once more.
-        mirror
-            .replace_catalogue(share.id, &share.digest, &rows)
-            .await
-            .map_err(|err| err.to_string())?;
+        //
+        // A folder read from one of its people rather than from its owner records both: whose reading this is,
+        // and when they read it, which is what the next round compares the next offer of it against.
+        let written = match as_of.get(&share.remote) {
+            Some(read_at) => {
+                mirror
+                    .relay_catalogue(share.id, &share.digest, &rows, device, *read_at)
+                    .await
+            }
+            None => {
+                mirror
+                    .replace_catalogue(share.id, &share.digest, &rows)
+                    .await
+            }
+        };
+        written.map_err(|err| err.to_string())?;
         report.read += 1;
         report.parts += parts.len();
     }

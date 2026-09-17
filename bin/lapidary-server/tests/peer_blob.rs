@@ -5,7 +5,10 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use lapidary_core::{DeviceId, FolderId, LibraryId, MeshMeasurements, ShareId};
-use lapidary_db::{IngestRequest, PgFolders, PgIngest, PgShares, PgSharing, StoredBlobRow};
+use lapidary_db::{
+    IngestRequest, MirroredPartIn, OfferedRemote, PgFolders, PgIngest, PgMirror, PgShares,
+    PgSharing, RemoteMember, StoredBlobRow,
+};
 use lapidary_peer::PeerDevice;
 use lapidary_storage::{Compression, SourceWriter};
 use tower::ServiceExt;
@@ -425,4 +428,89 @@ async fn past_two_files_to_one_installation_or_eight_in_all_the_next_is_told_to_
         (StatusCode::TOO_MANY_REQUESTS, "busy".to_owned())
     );
     drop(others);
+}
+
+/// Sharing S7: a folder held here but owned by somebody else is browsable through this installation, and its
+/// **files** are not served from here — not yet.
+///
+/// Serving them is S8, behind a switch and its own gate. Until then the blob route answers only about folders
+/// this installation shares itself, so a relayed folder's file is the refusal a stranger gets. This test is
+/// what keeps that true while S8 is written: the one way a relayed file may ever be served is S8's own branch.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_file_of_a_folder_only_held_here_is_not_served_yet(pool: sqlx::PgPool) {
+    let shared = shared(&pool).await;
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    PgSharing(pool.clone())
+        .add_peer(mira, "192.168.1.31:8082")
+        .await
+        .expect("pairs with Mira");
+
+    // Mira's Rockery, mirrored here, with Ayşe on the roster Mira published for it — and the same file in it.
+    let mirror = PgMirror(pool.clone());
+    let rockery = ShareId::from_uuid(
+        "01a0c7e2-4d11-7b20-9a31-7c2e5dab0009"
+            .parse()
+            .expect("uuid"),
+    );
+    let stale = mirror
+        .take_offer(
+            mira,
+            &[OfferedRemote {
+                remote: rockery,
+                name: "Rockery",
+                part_count: 1,
+                digest: "1-1",
+                owner: None,
+                as_of: None,
+            }],
+        )
+        .await
+        .expect("takes Mira's offer");
+    let hash = shared.inside.0.clone();
+    mirror
+        .replace_catalogue(
+            stale[0].id,
+            "1-1",
+            &[MirroredPartIn {
+                source_path: "standing-stone-lp-tr-0140.stl",
+                remote_part: lapidary_core::PartId::new(),
+                name: "Standing stone, LP-TR-0140",
+                part_number: None,
+                tags: &[],
+                licences: &[],
+                blake3: Some(&hash),
+                size_bytes: Some(204_800),
+                format: Some("stl"),
+                thumbnail: None,
+            }],
+        )
+        .await
+        .expect("reads Mira's catalogue");
+    mirror
+        .take_roster(
+            mira,
+            rockery,
+            &[RemoteMember {
+                device: ayse(),
+                name: Some("Ayşe's workshop"),
+                address: "192.168.1.24:8082",
+                may_fetch: true,
+            }],
+        )
+        .await
+        .expect("takes Rockery's roster");
+
+    let (status, _, _) = get(
+        &pool,
+        shared.root.path(),
+        ayse(),
+        &format!("/peer/v1/shares/{}/blob/{hash}", rockery.as_uuid()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the bytes are here and this installation does not share that folder"
+    );
 }

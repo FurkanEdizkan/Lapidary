@@ -89,7 +89,12 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
             <p className="mt-1 text-xs text-[var(--color-muted)]">
               {library.data.syncedAt === null
                 ? strings.sharing.libraryNotReadYet
-                : strings.sharing.librarySynced(library.data.syncedAt)}
+                : library.data.readFrom !== null && library.data.asOf !== null
+                  ? strings.sharing.libraryRelayed(
+                      library.data.readFromName ?? strings.sharing.unnamedSharer,
+                      library.data.asOf,
+                    )
+                  : strings.sharing.librarySynced(library.data.syncedAt)}
             </p>
             <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
             <PullPanel share={share} />

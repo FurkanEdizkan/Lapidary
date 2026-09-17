@@ -21,6 +21,9 @@ const TERRAIN: MirroredShare = {
   name: 'Terrain',
   partCount: 2,
   syncedAt: '2026-09-17T01:40:00Z',
+  readFrom: null,
+  readFromName: null,
+  asOf: '2026-09-17T01:40:00Z',
 }
 
 const CLIFF: MirroredPart = {
@@ -229,4 +232,28 @@ test('a paused pull says what it kept, and resumes', async () => {
   expect((screen.getByRole('button', { name: strings.sharing.pullAll }) as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: strings.sharing.resume }))
   await waitFor(() => expect(posted.map((call) => call.url)).toEqual([`/api/sharing/pulls/${QUEUED.id}/resume`]))
+})
+
+/**
+ * Sharing S7: a folder read from another of its people while its owner was away.
+ *
+ * What is on the page is somebody else's reading of it, which may be older than the owner's own, so the page
+ * says whose and when rather than letting it pass for a reading of its own.
+ */
+test('a folder read through somebody else says whose reading it is', async () => {
+  stub({
+    share: {
+      status: 200,
+      body: {
+        ...TERRAIN,
+        readFrom: 'b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6b7d90e12f3a4b5c6',
+        readFromName: 'Mira’s studio',
+        asOf: '2026-09-17T09:12:00Z',
+      },
+    },
+  })
+  renderPage()
+
+  await screen.findByText(strings.sharing.libraryRelayed('Mira’s studio', '2026-09-17T09:12:00Z'))
+  expect(screen.queryByText(strings.sharing.librarySynced('2026-09-17T01:40:00Z'))).toBeNull()
 })

@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+jiff.workspace = true
 lapidary-core.workspace = true
 # Who is paired and what this installation calls itself, read and written by each hello round.
 lapidary-db.workspace = true
