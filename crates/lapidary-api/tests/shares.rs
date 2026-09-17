@@ -188,7 +188,13 @@ async fn sharing_a_category_lists_it_once_however_often_it_is_shared(pool: sqlx:
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         everything,
-        json!([{ "id": first["id"], "name": "Terrain", "partCount": 3, "asksFirst": false }])
+        json!([{
+            "id": first["id"],
+            "name": "Terrain",
+            "partCount": 3,
+            "asksFirst": false,
+            "reachesEveryone": true,
+        }])
     );
 }
 
