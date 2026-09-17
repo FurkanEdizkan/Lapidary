@@ -10,12 +10,12 @@ import { strings } from './lib/strings'
  * rendered text, so a component hardcoding a byte-identical copy of today's copy renders
  * identically and passes every render test in the suite — provenance is invisible to the
  * DOM. Only reading the source can tell `{strings.parts.approximate}` from
- * `{'Approximate'}`, and the rule this guards is the one that difference breaks: Turkish
+ * `{'approximate'}`, and the rule this guards is the one that difference breaks: Turkish
  * is the planned second locale, and a string the translator never sees is a string that
  * never gets translated.
  *
  * It reads the AST rather than the text. The regex version this replaces had it backwards
- * in both directions: it missed `<i />Approximate` and `{cond ? 'Yes' : 'No'}` — ordinary
+ * in both directions: it missed `<i />approximate` and `{cond ? 'Yes' : 'No'}` — ordinary
  * React — while failing legitimate code like `` className={`… ${x ? 'a' : 'b'}`} ``,
  * `clsx('flex', busy && 'opacity-50')`, `throw new Error('…')`, and any `if` block
  * following a `Record<string, string>`, which it could not tell from a JSX tag. A gate
@@ -29,14 +29,14 @@ import { strings } from './lib/strings'
  * than by an allowlist — `className`, `data-*`, `style`, `queryKey`, cache keys, thrown
  * error messages and type literals are simply not any of these:
  *
- *   1. JSX text, in any position (`<i />Approximate` included).
+ *   1. JSX text, in any position (`<i />approximate` included).
  *   2. Any string or template literal inside a JSX expression container that is a CHILD
  *      of an element — however deeply nested, so ternaries, `&&`, call arguments and
  *      arrays are all covered, since each is a way a label reaches the screen.
  *   3. The value of a user-visible attribute: alt, title, aria-label, aria-description,
  *      placeholder, label.
  *   4. Any JSX attribute value at all whose content is a copy of something strings.ts
- *      already says — so `<Badge text={'Approximate'} />` is caught by identity even
+ *      already says — so `<Badge text={'approximate'} />` is caught by identity even
  *      though `text` is not a user-visible attribute name.
  *
  * Positions 1-3 also run the cross-check, which reports a copy of a known string as such:
@@ -280,7 +280,7 @@ test('the scan reaches every directory that can render', () => {
 
 test('strings.ts was flattened into something to compare against', () => {
   // The cross-check is only as good as this set; empty would make it inert.
-  expect(KNOWN.exact.has('Approximate')).toBe(true)
+  expect(KNOWN.exact.has('approximate')).toBe(true)
   expect(KNOWN.exact.has('Nothing here yet')).toBe(true)
   expect(KNOWN.exact.has('1 triangle')).toBe(true)
   expect(KNOWN.fragments.has('Rendered preview of')).toBe(true)
@@ -316,14 +316,14 @@ test('the scan catches copy in every position that renders', () => {
     violations(source).some((entry) => entry.startsWith(prefix))
 
   // The cross-check: byte-identical copies of known strings, single-word ones included.
-  expect(fires("const a = <span>{'Approximate'}</span>", 'copy of a strings.ts entry')).toBe(true)
+  expect(fires("const a = <span>{'approximate'}</span>", 'copy of a strings.ts entry')).toBe(true)
   expect(fires('const a = <p>Nothing here yet</p>', 'copy of a strings.ts entry')).toBe(true)
   expect(fires('const a = <img alt={`Rendered preview of ${n}`} />', 'copy of a strings.ts entry')).toBe(true)
-  expect(fires("const a = <Badge text={'Approximate'} />", 'copy of a strings.ts entry')).toBe(true)
+  expect(fires("const a = <Badge text={'approximate'} />", 'copy of a strings.ts entry')).toBe(true)
 
   // JSX text in a position that is not the first child — the shape that let a copy of
   // the mandated label through the regex version entirely.
-  expect(fires('const a = <p><i />Approximate</p>', 'copy of a strings.ts entry')).toBe(true)
+  expect(fires('const a = <p><i />approximate</p>', 'copy of a strings.ts entry')).toBe(true)
   expect(fires('const a = <p><i />Scanning the mounted directory</p>', 'bare JSX text')).toBe(true)
   expect(fires('const a = <p>Scanned {n} files</p>', 'bare JSX text')).toBe(true)
 

@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { type ReactNode } from 'react'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
@@ -17,16 +18,18 @@ export const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
  * Whole class strings, never assembled: Tailwind generates what it finds in source text, and
  * a class built at runtime is a class that was never generated.
  *
- * **Every layout keeps `Measurements` visible**, and that is the constraint the gallery is
+ * **Every layout keeps `Figures` visible**, and that is the constraint the gallery is
  * built around rather than an afterthought. `v2`'s gallery overlay shows a name and three
  * dimensions and nothing else; this one carries the approximate label as well, because
  * `CLAUDE.md` makes that label unconditional and an overlay is exactly where it would drop out.
  */
+// Flat, like everything that is not an overlay: the hover says "this one" with the edge and a
+// one-pixel lift, and a shadow under a card was the one place the grid broke that.
 const CARD_SHAPE: Record<Layout, string> = {
   detail:
-    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]',
+    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px hover:border-[var(--color-edge)]',
   gallery:
-    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-0.5 hover:border-[var(--color-edge)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.45)]',
+    'ease-mechanical group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] duration-[var(--duration-base)] hover:-translate-y-px hover:border-[var(--color-edge)]',
   // No lift on a row. Forty rows each rising under a passing pointer is a list that shimmers;
   // the edge brightening is enough to say which one is addressed.
   list: 'ease-mechanical group relative flex cursor-pointer items-center gap-3 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-2 duration-[var(--duration-fast)] hover:border-[var(--color-edge)]',
@@ -50,13 +53,15 @@ const WELL: Record<Layout, string> = {
  * the link's text for every reader and in its `title` for a pointer.
  */
 const NAME: Record<Layout, string> = {
-  detail: 'text-sm leading-snug font-semibold',
+  // Two lines, then an ellipsis: a slug of a name is long, and a card that grows a third line
+  // for one part pushes its whole row out of step with the rest.
+  detail: 'line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   gallery: 'truncate text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   list: 'text-sm leading-snug font-semibold',
 }
 
 const FOOTER: Record<Layout, string> = {
-  detail: 'flex flex-1 flex-col gap-1 p-3',
+  detail: 'flex flex-1 flex-col gap-1.5 p-3',
   // Clear at the top so the render reads through, and dark enough under the text for the
   // palette's contrast to hold over any render. `v2`'s own stops (0.88 at 48%) did not: over the
   // brightest face `raster.rs` can draw, the name's top row measured 4.1:1 and the triangle
@@ -99,10 +104,11 @@ export function Card({
   // from a `409` — the same status the route uses for a name collision, which the UI
   // would otherwise present as one.
   const movable = directory !== null
-  // Only where the gallery clamps the name to one line; elsewhere the whole name is on the
-  // card and a tooltip repeating it is noise. Decided here rather than in the attribute,
-  // because a literal inside a user-visible attribute reads to the bare-strings gate as copy.
-  const clampedName = layout === 'gallery' ? part.name : undefined
+  // Where the name can be clamped (a line in the gallery, two in the detail grid); a list row
+  // has room for the whole name and a tooltip repeating it is noise. Decided here rather than
+  // in the attribute, because a literal inside a user-visible attribute reads to the
+  // bare-strings gate as copy.
+  const clampedName = layout === 'list' ? undefined : part.name
   return (
     <article
       aria-labelledby={nameId}
@@ -220,44 +226,54 @@ export function Card({
               title={clampedName}
               className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
             >
-              {part.name}
+              {breakable(part.name)}
             </Link>
           </h2>
-          {part.partNumber === null ? null : (
-            <p className="tabular font-mono text-xs text-[var(--color-muted)]">{part.partNumber}</p>
-          )}
         </div>
         {/*
           `CLAUDE.md` says a mesh-derived measurement is labelled approximate *always*. It
           used to sit in the hover panel, where "always" quietly meant "never" — the row was
           clipped off the top of the tile at every desktop width. Always means here.
         */}
-        <Measurements part={part} tight={layout === 'gallery'} />
+        <Figures part={part} tight={layout === 'gallery'} />
       </div>
     </article>
   )
 }
 
 /**
- * The card's measurement line, rendered as one indivisible unit.
+ * A name with break opportunities after `-`, `_` and `.`.
+ *
+ * Part names here are slugs (`flange-dn40-lp-3310-02`), which have no spaces, so a browser
+ * wraps them wherever the column runs out, mid-word: `flange-dn40-lp-3310-` over `02`.
+ * `<wbr>` lets the line break at a separator instead, and adds no text, so the link's
+ * accessible name and a copied name are unchanged.
+ */
+export function breakable(name: string): ReactNode[] {
+  return name.split(/(?<=[-_.])/).flatMap((piece, index) => (index === 0 ? [piece] : [<wbr key={index} />, piece]))
+}
+
+/**
+ * The card's one line of figures: the part number, then the triangle count and its label.
  *
  * A triangle count is tessellation-derived by construction, so a card showing one is
  * showing a mesh-derived figure whatever the wire's `approximate` says. CLAUDE.md
  * forbids such a figure appearing unlabelled, so the label is not a sibling conditional
- * that the count can drift away from: either the whole line renders or none of it does,
- * and within it the badge is unconditional. No branch here can emit a count without a
- * label, which is the difference between the rule holding and the rule happening to
- * hold because the ingest path currently sets the flag to a constant.
+ * that the count can drift away from: either the count and the label render together or
+ * neither does, and the label also renders alone when the flag says some other figure on
+ * the part is mesh-derived. No branch here can emit a count without a label.
  *
- * The line still renders for a part with no count but the flag set, because the flag
- * means *any* figure on this part is mesh-derived — not that this count is.
+ * The label is a quiet lowercase word in the line rather than a boxed badge. It is still on
+ * every card at rest, never behind a hover; forty boxed capitals down a grid were louder than
+ * the parts' names.
  */
-function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean }) {
+function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   // Narrowed with typeof rather than compared to null: the binding says `number | null`,
   // but the response is cast rather than validated, so a field that disappears upstream
   // arrives here as undefined and would reach .toLocaleString() as one.
   const count = typeof part.triangleCount === 'number' ? part.triangleCount : null
-  if (!part.approximate && count === null) {
+  const labelled = part.approximate || count !== null
+  if (part.partNumber === null && !labelled) {
     return null
   }
   return (
@@ -266,17 +282,21 @@ function Measurements({ part, tight = false }: { part: PartCard; tight?: boolean
       // card, and eight pixels of it spent on air is eight pixels more of the part hidden.
       className={
         tight
-          ? 'tabular mt-auto flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]'
-          : 'tabular mt-auto flex flex-wrap items-center gap-2 pt-2 text-xs text-[var(--color-muted)]'
+          ? 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-[var(--color-muted)]'
+          : 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 pt-1 text-[11px] text-[var(--color-muted)]'
       }
     >
+      {part.partNumber === null ? null : <span className="text-[var(--color-dim)]">{part.partNumber}</span>}
+      {part.partNumber === null || !labelled ? null : <span aria-hidden="true">·</span>}
       {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
-      <span
-        title={strings.parts.approximateDetail}
-        className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs tracking-wider uppercase"
-      >
-        {strings.parts.approximate}
-      </span>
+      {!labelled ? null : (
+        <span
+          title={strings.parts.approximateDetail}
+          className="underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+        >
+          {strings.parts.approximate}
+        </span>
+      )}
     </p>
   )
 }

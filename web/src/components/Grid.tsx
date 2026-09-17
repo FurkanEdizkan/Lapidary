@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { type Density, type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
 import { Card } from './Card'
+import { arrive } from '../lib/motion'
 
 /**
  * How much of the library is on screen, and the sentinel that fetches the rest.
@@ -120,8 +121,8 @@ export function Grid({
     layout === 'list'
       ? 'grid-cols-1 gap-1.5'
       : density === 'compact'
-        ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3'
-        : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4'
+        ? 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-3 max-xs:grid-cols-2 max-xs:gap-2'
+        : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4 max-xs:grid-cols-2 max-xs:gap-2'
   //
   // **A compact card is TALLER, not shorter**, and guessing the other way was the first
   // thing this got wrong. A narrower column wraps more of the name and more of the "9.7 kB
@@ -130,6 +131,12 @@ export function Grid({
   // (median 27.6rem), compact 478–516px (median 31.1rem). The same mistake the 26rem figure
   // below already records making once — a guess, in the wrong direction, about a height
   // that has to be measured.
+  //
+  // **Measured again for the two-line card** (name clamped to two lines, one mono line of
+  // figures, no size sentence), in Chrome at a 1157px viewport over the example library:
+  // comfortable 17.16–18.28rem and compact 14.89rem. The old 26rem and 31rem figures below
+  // described a card that no longer exists; the compact card is shorter again now, because
+  // the clamp stops a narrow column wrapping the name onto a third and fourth line.
   //
   // Gallery and list, measured in Chrome over the seeded library: a comfortable gallery card
   // rendered 12.89rem tall and a compact one 8.47rem, at a 1157px viewport — square, because a
@@ -146,10 +153,35 @@ export function Grid({
           ? '[contain-intrinsic-size:auto_8.5rem]'
           : '[contain-intrinsic-size:auto_13rem]'
         : density === 'compact'
-          ? '[contain-intrinsic-size:auto_31rem]'
-          : '[contain-intrinsic-size:auto_26rem]'
+          ? '[contain-intrinsic-size:auto_15rem]'
+          : '[contain-intrinsic-size:auto_18.5rem]'
+  const list = useRef<HTMLUListElement>(null)
+  // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
+  // back the same parts as new objects, and replaying the arrival on each of them would make
+  // the grid flicker every time the worker finishes a file.
+  const shown = useRef(new Set<PartId>())
+  useLayoutEffect(() => {
+    const items = list.current?.children
+    if (items === undefined) return
+    const arriving: HTMLElement[] = []
+    parts.forEach((part, index) => {
+      if (shown.current.has(part.id)) return
+      shown.current.add(part.id)
+      const item = items[index]
+      // Only what is on screen. A card below the fold is skipped by `content-visibility`
+      // anyway, and would otherwise sit at opacity 0 for its turn with nobody watching.
+      if (item instanceof HTMLElement && item.getBoundingClientRect().top < window.innerHeight) {
+        arriving.push(item)
+      }
+    })
+    // Not cancelled when `parts` changes again: a refetch landing mid-arrival would snap the
+    // cards visible, and an animation on a card that unmounts simply ends with it.
+    if (arriving.length > 0) arrive(arriving)
+  }, [parts])
+
   return (
     <ul
+      ref={list}
       role="list"
       className={`grid list-none ${columns}`}
       // Ctrl/Cmd-A inside the grid selects every part loaded, while selecting. Anywhere else
@@ -243,7 +275,10 @@ export function SelectionBar({
   return (
     <section
       aria-label={strings.selection.bar}
-      className="mb-3 flex flex-col gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+      // Pinned to the foot of the window while you scroll a long grid picking parts: the count
+      // and the actions stay in reach of the fiftieth card. It floats over the cards, so it is
+      // the one bar that takes the overlay shadow.
+      className="sticky bottom-4 z-10 mb-3 flex flex-col gap-2 rounded-md border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-2 text-sm shadow-overlay"
     >
       <div className="flex flex-wrap items-center gap-2">
         <span aria-live="polite" className="tabular mr-2">
@@ -286,5 +321,29 @@ export function SelectionBar({
         </div>
       )}
     </section>
+  )
+}
+
+/**
+ * The grid while its first page is on the way: twelve card-shaped blocks, so the page has its
+ * shape before it has its parts and nothing jumps when they land. The sentence is for a screen
+ * reader; the blocks say it to everyone else.
+ */
+export function GridSkeleton({ label }: { label: string }) {
+  return (
+    <div role="status">
+      <span className="sr-only">{label}</span>
+      <div aria-hidden="true" className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4 max-xs:grid-cols-2 max-xs:gap-2">
+        {Array.from({ length: 12 }, (_, index) => (
+          <div key={index} className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
+            <div className="aspect-square bg-[var(--color-raised)]" />
+            <div className="flex flex-col gap-2 p-3">
+              <div className="h-3 w-3/4 rounded-sm bg-[var(--color-border)]" />
+              <div className="h-2.5 w-1/2 rounded-sm bg-[var(--color-border)]" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
