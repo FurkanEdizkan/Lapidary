@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-router'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { PartPage } from './parts.$partId'
+import { openMenu } from '../test-menu'
 import { warmViewer } from '../components/PartDetail'
 
 // The page warms the view as it opens; the real warm-up needs WebGL, which jsdom has none of.
@@ -591,22 +592,31 @@ test('every per-part action is reachable on the page a keyboard can get to', asy
   stub(PART)
   renderPage()
 
-  // The three that were mouse-only, plus the two that were always here.
+  // Download stands on the page; the rest are rows of the ⋯ menu, reached through the button's
+  // own `popovertarget` — so a menu wired to nothing fails here rather than passing on controls
+  // nobody can open.
+  const download = await screen.findByRole('link', { name: strings.download.original })
+  const menu = await openMenu(strings.detail.more)
   for (const name of [
     strings.render.part,
     strings.folders.moveTo,
     strings.folders.showInFolderFor(PART.name),
     strings.removal.remove,
   ]) {
-    expect(await screen.findByRole('button', { name })).toBeTruthy()
+    // `hidden: false`: none of them behind an inert wrapper. A control that exists but is
+    // `aria-hidden` or `display:none` satisfies a query that asks only for presence.
+    expect(within(menu).getByRole('button', { name, hidden: false })).toBeTruthy()
   }
-  expect(screen.getByRole('link', { name: strings.download.original })).toBeTruthy()
+  expect(menu.contains(download)).toBe(false)
+})
 
-  // And none of them is hidden from the accessibility tree behind an inert wrapper: a
-  // control that exists but is `aria-hidden` or `display:none` satisfies a query that asks
-  // only for presence, which is the assertion this repository keeps catching.
-  for (const name of [strings.render.part, strings.folders.moveTo]) {
-    expect(screen.getByRole('button', { name, hidden: false })).toBeTruthy()
+/** Download is the page's one standing control; nothing that changes the part stands beside it. */
+test('Download is the only standing action, and the rest wait in the menu', async () => {
+  stub(PART)
+  renderPage()
+  await screen.findByRole('link', { name: strings.download.original })
+  for (const name of [strings.render.part, strings.folders.moveTo, strings.removal.remove]) {
+    expect(screen.queryByRole('button', { name })).toBeNull()
   }
 })
 
@@ -615,9 +625,8 @@ test('show storage path reveals the part path on the detail page', async () => {
   stub(PART)
   renderPage()
 
-  fireEvent.click(
-    await screen.findByRole('button', { name: strings.folders.showInFolderFor(PART.name) }),
-  )
+  const menu = await openMenu(strings.detail.more)
+  fireEvent.click(within(menu).getByRole('button', { name: strings.folders.showInFolderFor(PART.name) }))
   expect(await screen.findByText(PART.storagePath as string)).toBeTruthy()
 })
 
