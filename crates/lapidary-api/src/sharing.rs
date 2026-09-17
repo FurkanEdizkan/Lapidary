@@ -69,6 +69,31 @@ pub struct AddPeer {
     pub address: String,
 }
 
+/// Somebody the owner of a shared folder has introduced, waiting for an answer (sharing S6).
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Introduction {
+    /// The mirrored folder they were introduced in: accepting is about that folder.
+    pub share_id: PeerShareId,
+    pub share_name: String,
+    pub device_id: String,
+    /// What they call themselves, as the folder's owner last heard it.
+    pub name: Option<String>,
+    pub address: String,
+    /// Who introduced them: the folder's owner.
+    pub introduced_by: String,
+    pub introducer_name: Option<String>,
+}
+
+/// The `POST` body: yes, or not now.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AnswerIntroduction {
+    pub accept: bool,
+}
+
 pub async fn identity(State(state): State<AppState>) -> Response {
     match PgSharing(state.db).identity().await {
         Ok(identity) => Json(SharingIdentity {
@@ -166,6 +191,83 @@ pub async fn remove(State(state): State<AppState>, Path(device): Path<String>) -
         ),
         Err(err) => internal_error(&err, "peer remove failed"),
     }
+}
+
+/// `GET /api/sharing/introductions` — who the owners of the folders mirrored here have introduced, and this
+/// installation has not answered yet.
+pub async fn introductions(State(state): State<AppState>) -> Response {
+    match PgMirror(state.db).introductions().await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| Introduction {
+                    share_id: row.share,
+                    share_name: row.share_name,
+                    device_id: row.device.to_string(),
+                    name: row.name,
+                    address: row.address,
+                    introduced_by: row.introducer.to_string(),
+                    introducer_name: row.introducer_name,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => internal_error(&err, "introduction list failed"),
+    }
+}
+
+/// `POST /api/sharing/introductions/{share}/{device}` — accept an introduction, or turn it down.
+///
+/// Accepting pairs with them, which is the row pasting a device id by hand makes: an introduction is how the
+/// id arrived, not a second kind of access. Turning it down keeps the answer, so it is not offered again every
+/// time the folder's roster is read.
+pub async fn answer_introduction(
+    State(state): State<AppState>,
+    Path((share, device)): Path<(PeerShareId, String)>,
+    body: Result<Json<AnswerIntroduction>, JsonRejection>,
+) -> Response {
+    let device = match device.parse::<DeviceId>() {
+        Ok(device) => device,
+        Err(err) => return bad_device_id(err),
+    };
+    let Ok(Json(AnswerIntroduction { accept })) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badAnswer",
+            "An introduction is answered with {\"accept\": true} or {\"accept\": false}. Reload the page and answer it again.",
+        );
+    };
+    let mirror = PgMirror(state.db.clone());
+    if !accept {
+        return match mirror.decline(share, device).await {
+            Ok(true) => StatusCode::NO_CONTENT.into_response(),
+            Ok(false) => no_introduction(),
+            Err(err) => internal_error(&err, "introduction decline failed"),
+        };
+    }
+    // Read where to reach them from the roster rather than from the page: what the folder's owner published is
+    // the only address this installation has any reason to trust for somebody it has never met.
+    let found = match mirror.introduction(share, device).await {
+        Ok(found) => found,
+        Err(err) => return internal_error(&err, "introduction read failed"),
+    };
+    let Some((address, introducer)) = found else {
+        return no_introduction();
+    };
+    match PgSharing(state.db)
+        .accept_introduction(device, &address, introducer)
+        .await
+    {
+        Ok(row) => Json(peer(row)).into_response(),
+        Err(err) => internal_error(&err, "introduction accept failed"),
+    }
+}
+
+fn no_introduction() -> Response {
+    refused(
+        StatusCode::NOT_FOUND,
+        "noIntroduction",
+        "There is no introduction waiting for an answer there any more: it may already have been answered, or the folder's owner may have taken them off it. Reload the page.",
+    )
 }
 
 /// A device id refused in `CoreError`'s own words, which say what to do about it.

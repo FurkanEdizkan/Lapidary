@@ -457,10 +457,28 @@ pub struct Hello {
     pub protocol: u16,
     /// What this installation calls itself, when its owner has named it.
     pub name: Option<String>,
+    /// What it answers beyond the routes protocol 1 shipped with, as [`FEATURES`] lists them.
+    ///
+    /// This is how the protocol grows without its number moving. An installation from before a route existed
+    /// sends no list at all, and `serde` reads that as none, so nothing here ever asks it for that route; and
+    /// it reads this hello with a field it does not know and ignores it. Bumping `PROTOCOL` instead would make
+    /// every older installation mark this one permanently unreachable, which is the opposite of an upgrade.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// The peer protocol's version, answered at hello and carried in every route's path.
 pub const PROTOCOL: u16 = 1;
+
+/// What this installation answers beyond protocol 1's routes.
+///
+/// [`ROSTERS`]: `GET /peer/v1/shares/{share}/members`, the roster of a folder, which is how the people a folder
+/// goes to learn about each other (sharing S6).
+pub const FEATURES: &[&str] = &[ROSTERS];
+
+/// The feature string for a folder's roster: answered by the installation that serves it, and asked for only of
+/// an installation whose hello listed it.
+pub const ROSTERS: &str = "members";
 
 /// The hello route. `shares::shares_router` and `blob::blob_router` hold the rest of what this installation answers.
 pub fn router(identity: DeviceId, roster: Roster) -> axum::Router {
@@ -473,6 +491,10 @@ pub fn router(identity: DeviceId, roster: Roster) -> axum::Router {
                     device_id: identity.to_string(),
                     protocol: PROTOCOL,
                     name,
+                    features: FEATURES
+                        .iter()
+                        .map(|feature| (*feature).to_owned())
+                        .collect(),
                 })
             }
         }),

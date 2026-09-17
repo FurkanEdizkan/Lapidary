@@ -6,6 +6,7 @@
 
 use crate::DbError;
 use crate::repo::detail_stamp;
+use crate::sharing::stored_device;
 use jiff::Timestamp;
 use lapidary_core::{DeviceId, PartId, PeerShareId, ShareId};
 use sqlx::PgPool;
@@ -40,6 +41,29 @@ pub struct MirroredPartIn<'a> {
     pub size_bytes: Option<i64>,
     pub format: Option<&'a str>,
     pub thumbnail: Option<&'a [u8]>,
+}
+
+/// One person on a mirrored folder's roster, as its owner published it.
+#[derive(Debug, Clone, Copy)]
+pub struct RemoteMember<'a> {
+    pub device: DeviceId,
+    pub name: Option<&'a str>,
+    pub address: &'a str,
+    pub may_fetch: bool,
+}
+
+/// Somebody a folder's owner has introduced, and this installation has not answered yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntroductionRow {
+    pub share: PeerShareId,
+    pub share_name: String,
+    pub device: DeviceId,
+    /// What they call themselves, as the folder's owner last heard it.
+    pub name: Option<String>,
+    pub address: String,
+    /// Who published the roster they are on.
+    pub introducer: DeviceId,
+    pub introducer_name: Option<String>,
 }
 
 /// A mirrored share, as a page lists it.
@@ -86,6 +110,16 @@ type ShareTuple = (
     String,
     i64,
     Option<i64>,
+);
+
+type IntroductionTuple = (
+    uuid::Uuid,
+    String,
+    Vec<u8>,
+    Option<String>,
+    String,
+    Vec<u8>,
+    Option<String>,
 );
 
 type PartTuple = (
@@ -227,6 +261,143 @@ impl PgMirror {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Take up a mirrored folder's roster as its owner publishes it now: who is on it, where they are, and
+    /// whether its owner lets them fetch its files. Somebody the roster no longer names leaves it — the folder's
+    /// owner took them off, and this installation has no business offering an introduction to them any more.
+    ///
+    /// An answer already given is kept: a declined introduction stays declined, rather than being offered again
+    /// on the next round.
+    /// Keyed by the folder's owner and its own id for the folder, which is what the roster came back for, so
+    /// the hello round needs no second read to turn that pair into the row it holds here.
+    pub async fn take_roster(
+        &self,
+        device: DeviceId,
+        remote: ShareId,
+        members: &[RemoteMember<'_>],
+    ) -> Result<bool, DbError> {
+        let devices: Vec<Vec<u8>> = members
+            .iter()
+            .map(|member| member.device.as_bytes().to_vec())
+            .collect();
+        let names: Vec<Option<&str>> = members.iter().map(|member| member.name).collect();
+        let addresses: Vec<&str> = members.iter().map(|member| member.address).collect();
+        let may_fetch: Vec<bool> = members.iter().map(|member| member.may_fetch).collect();
+        let mut tx = self.0.begin().await?;
+        let share: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM peer_share WHERE device_id = $1 AND remote_id = $2")
+                .bind(device.as_bytes().as_slice())
+                .bind(remote.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+        // The folder went while its roster was being read: nothing to write it against, and the next round
+        // will not ask for it again.
+        let Some(share) = share else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        sqlx::query(
+            "INSERT INTO peer_share_member (peer_share_id, device_id, name, address, may_fetch) \
+             SELECT $1, m.device, m.name, m.address, m.may_fetch \
+             FROM UNNEST($2::bytea[], $3::text[], $4::text[], $5::bool[]) \
+             AS m(device, name, address, may_fetch) \
+             ON CONFLICT (peer_share_id, device_id) DO UPDATE SET name = EXCLUDED.name, \
+             address = EXCLUDED.address, may_fetch = EXCLUDED.may_fetch, seen_at = now()",
+        )
+        .bind(share)
+        .bind(&devices)
+        .bind(&names)
+        .bind(&addresses)
+        .bind(&may_fetch)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM peer_share_member WHERE peer_share_id = $1 AND NOT (device_id = ANY($2))",
+        )
+        .bind(share)
+        .bind(&devices)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Who the owners of the folders mirrored here have introduced, and this installation has neither accepted
+    /// nor declined: not itself, not somebody already paired with, and not somebody it turned down.
+    ///
+    /// One row a person a folder: the same person introduced in two folders is two answers to give, because
+    /// accepting is about the folder they were introduced in.
+    pub async fn introductions(&self) -> Result<Vec<IntroductionRow>, DbError> {
+        let rows: Vec<IntroductionTuple> = sqlx::query_as(
+                "SELECT m.peer_share_id, ps.name, m.device_id, m.name, m.address, pe.device_id, pe.name \
+                 FROM peer_share_member m JOIN peer_share ps ON ps.id = m.peer_share_id \
+                 JOIN peer pe ON pe.device_id = ps.device_id \
+                 WHERE m.declined_at IS NULL AND pe.removed_at IS NULL \
+                 AND m.device_id <> COALESCE((SELECT device_id FROM peer_identity LIMIT 1), '\\x'::bytea) \
+                 AND NOT EXISTS (SELECT 1 FROM peer mine \
+                   WHERE mine.device_id = m.device_id AND mine.removed_at IS NULL) \
+                 ORDER BY m.seen_at, m.device_id",
+            )
+            .fetch_all(&self.0)
+            .await?;
+        rows.into_iter()
+            .map(
+                |(share, share_name, device, name, address, introducer, introducer_name)| {
+                    Ok(IntroductionRow {
+                        share: PeerShareId::from_uuid(share),
+                        share_name,
+                        device: stored_device("peer_share_member.device_id", device)?,
+                        name,
+                        address,
+                        introducer: stored_device("peer_share.device_id", introducer)?,
+                        introducer_name,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Turn an introduction down. `false` when there is none left to answer there — already answered, or the
+    /// folder's owner took them off it. Nothing is deleted: the row remembers the answer, so the next round
+    /// does not offer it again.
+    pub async fn decline(&self, share: PeerShareId, device: DeviceId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE peer_share_member SET declined_at = now() \
+             WHERE peer_share_id = $1 AND device_id = $2 AND declined_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM peer mine \
+               WHERE mine.device_id = $2 AND mine.removed_at IS NULL)",
+        )
+        .bind(share.as_uuid())
+        .bind(device.as_bytes().as_slice())
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Where an introduction says to reach somebody, and who introduced them. `None` when there is no such
+    /// introduction left to answer.
+    pub async fn introduction(
+        &self,
+        share: PeerShareId,
+        device: DeviceId,
+    ) -> Result<Option<(String, DeviceId)>, DbError> {
+        let row: Option<(String, Vec<u8>)> = sqlx::query_as(
+            "SELECT m.address, ps.device_id FROM peer_share_member m \
+             JOIN peer_share ps ON ps.id = m.peer_share_id \
+             JOIN peer pe ON pe.device_id = ps.device_id AND pe.removed_at IS NULL \
+             WHERE m.peer_share_id = $1 AND m.device_id = $2 AND m.declined_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM peer mine \
+               WHERE mine.device_id = $2 AND mine.removed_at IS NULL)",
+        )
+        .bind(share.as_uuid())
+        .bind(device.as_bytes().as_slice())
+        .fetch_optional(&self.0)
+        .await?;
+        row.map(|(address, introducer)| {
+            Ok((address, stored_device("peer_share.device_id", introducer)?))
+        })
+        .transpose()
     }
 
     /// What `device` shares, while it is paired and not removed.

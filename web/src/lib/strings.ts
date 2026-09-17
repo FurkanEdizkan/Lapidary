@@ -1848,6 +1848,18 @@ export const strings = {
     membersNobodyPaired: 'Nobody is paired with this installation yet. Pair with somebody first, on this page.',
     membersNone: 'Nobody — this folder reaches no one until you pick somebody.',
     membersKept: 'Who this already goes to stays as it is. Change that on the sharing page.',
+    /** Introductions (S6): the people a shared folder goes to, as its owner published them. */
+    introductionsTitle: 'People you have been introduced to',
+    introductionsNote:
+      'The owner of a folder you have says who else has it. Accepting pairs with them, so you can fetch that folder’s files from whoever is awake — and so they can fetch yours from you.',
+    introducedBy: (person: string, folder: string, introducer: string) =>
+      `${person} has ${folder}, introduced by ${introducer}.`,
+    introductionReaches: (folder: string) =>
+      `Accepting lets them reach what you share with them, and nothing else — ${folder} is how you met, not what they get.`,
+    introductionAccept: 'Accept',
+    introductionDecline: 'Not now',
+    introductionAnswering: 'Answering…',
+    introductionFailed: 'Could not answer that introduction. Reload the page and try again.',
     membersChange: 'Change who it goes to',
     membersSave: 'Save',
     membersSaving: 'Saving…',

@@ -174,7 +174,7 @@ async fn terrain(pool: &sqlx::PgPool) -> Terrain {
     sync::round(pool, &here, &Roster::default())
         .await
         .expect("says hello");
-    sync::mirror(pool, &here, sharer, &address)
+    sync::mirror(pool, &here, sharer, &address, &[])
         .await
         .expect("mirrors");
     let share = PgMirror(pool.clone())

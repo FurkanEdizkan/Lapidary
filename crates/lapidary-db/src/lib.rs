@@ -25,7 +25,8 @@ pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use mirror::{
-    MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote, PgMirror, StaleShare,
+    IntroductionRow, MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote, PgMirror,
+    RemoteMember, StaleShare,
 };
 pub use pulls::{PgPulls, PullRow};
 pub use repo::{
@@ -40,7 +41,7 @@ pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use shares::{
     BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
-    ShareRow,
+    RosterRow, ShareRow,
 };
 pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;

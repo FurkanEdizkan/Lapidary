@@ -6,12 +6,12 @@
 //! that role alone holds the identity key a hello is made with; a job for the worker would need the key
 //! mounted into a second container.
 
-use crate::shares::{CATALOGUE_MAX, CataloguePage, Share};
-use crate::{Hello, PROTOCOL, PeerIdentity, Roster, client_config};
+use crate::shares::{CATALOGUE_MAX, CataloguePage, Share, ShareMember};
+use crate::{Hello, PROTOCOL, PeerIdentity, ROSTERS, Roster, client_config};
 use lapidary_core::DeviceId;
 use lapidary_db::{
     DbError, MirroredPartIn, ONLINE_WITHIN_SECS, OfferedRemote, PgListener, PgMirror, PgPool,
-    PgSharing, SHARING_CHANNEL,
+    PgSharing, RemoteMember, SHARING_CHANNEL,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -53,8 +53,8 @@ pub async fn run(
         // everybody paired refused for a whole round while the roster is still empty.
         match round(&db, &identity, &roster).await {
             Ok(answered) => {
-                for (device, address) in answered {
-                    start_mirror(&db, &identity, &mirroring, device, address);
+                for (device, address, features) in answered {
+                    start_mirror(&db, &identity, &mirroring, device, address, features);
                 }
             }
             Err(error) => {
@@ -109,6 +109,7 @@ fn start_mirror(
     mirroring: &Arc<Mutex<HashSet<DeviceId>>>,
     device: DeviceId,
     address: String,
+    features: Vec<String>,
 ) {
     if !mirroring
         .lock()
@@ -119,7 +120,7 @@ fn start_mirror(
     }
     let (db, identity, mirroring) = (db.clone(), identity.clone(), mirroring.clone());
     tokio::spawn(async move {
-        match mirror(&db, &identity, device, &address).await {
+        match mirror(&db, &identity, device, &address, &features).await {
             Ok(report) if report.read > 0 => {
                 tracing::info!(device_id = %device, ?report, "mirrored what an installation shares")
             }
@@ -140,7 +141,7 @@ pub async fn round(
     db: &PgPool,
     identity: &std::sync::Arc<PeerIdentity>,
     roster: &Roster,
-) -> Result<Vec<(DeviceId, String)>, DbError> {
+) -> Result<Vec<(DeviceId, String, Vec<String>)>, DbError> {
     let sharing = PgSharing(db.clone());
     let name = sharing.identity().await?.and_then(|identity| identity.name);
     let paired = sharing.paired().await?;
@@ -168,9 +169,9 @@ pub async fn round(
         match outcome {
             Ok(answer) => {
                 sharing
-                    .seen(device, given_name(answer.name).as_deref())
+                    .seen(device, given_name(answer.name).as_deref(), &answer.features)
                     .await?;
-                answered.push((device, address));
+                answered.push((device, address, answer.features));
             }
             Err(reason) => sharing.unreachable(device, &reason).await?,
         }
@@ -190,6 +191,8 @@ pub struct MirrorReport {
     pub catalogue_bytes: usize,
     pub parts: usize,
     pub thumbnail_bytes: usize,
+    /// Folders whose roster was read, which is none of them when the other installation is from before rosters.
+    pub rosters: usize,
     /// Thumbnails larger than [`THUMBNAIL_MAX`], left out of the mirror.
     pub thumbnails_skipped: usize,
 }
@@ -205,6 +208,7 @@ pub async fn mirror(
     identity: &PeerIdentity,
     device: DeviceId,
     address: &str,
+    features: &[String],
 ) -> Result<MirrorReport, String> {
     // One client for the whole read, so a thousand thumbnails ride a few connections. The sharer checks access
     // on every request, so a removal on its side still stops the next one.
@@ -301,7 +305,64 @@ pub async fn mirror(
         report.read += 1;
         report.parts += parts.len();
     }
+
+    // The roster of every folder, not only the ones whose catalogue moved: who a folder goes to changes without
+    // a part changing. Asked for only of an installation that says it answers it, so one from before rosters is
+    // never asked, this round or any other.
+    if features.iter().any(|feature| feature == ROSTERS) {
+        for share in &offered {
+            let request = client.get(format!("{base}/{}/members", share.id.as_uuid()));
+            // A folder withdrawn between the list and this request answers `notShared`, as it does for a
+            // thumbnail read the same moment: the folder went, and the rest of this mirror still stands.
+            let Some((members, _)) =
+                read_optional_json::<Vec<ShareMember>>(request, address).await?
+            else {
+                continue;
+            };
+            let members: Vec<RemoteMember<'_>> = members
+                .iter()
+                .filter_map(|member| {
+                    Some(RemoteMember {
+                        device: member.device_id.parse().ok()?,
+                        name: member.name.as_deref(),
+                        address: &member.address,
+                        may_fetch: member.may_fetch,
+                    })
+                })
+                .collect();
+            if mirror
+                .take_roster(device, share.id, &members)
+                .await
+                .map_err(|err| err.to_string())?
+            {
+                report.rosters += 1;
+            }
+        }
+    }
     Ok(report)
+}
+
+/// A JSON answer, or `None` when the sharer says there is no such thing any more — a folder withdrawn while
+/// this mirror was reading it. Every other refusal is still a reason to stop, as [`read_json`] treats it.
+async fn read_optional_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    address: &str,
+) -> Result<Option<(T, usize)>, String> {
+    let response = request.send().await.map_err(|err| why(address, &err))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "The installation at {address} would not give what it shares ({}). It may have stopped sharing, or removed this installation.",
+            response.status()
+        ));
+    }
+    let body = response.bytes().await.map_err(|err| why(address, &err))?;
+    let bytes = body.len();
+    serde_json::from_slice(&body).map(|answer| Some((answer, bytes))).map_err(|_| {
+        format!("The installation at {address} answered with a list this installation cannot read. Check that both run the same Lapidary version.")
+    })
 }
 
 /// A JSON answer from the sharer and how many bytes it took, or why there was none, in words.

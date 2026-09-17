@@ -258,3 +258,65 @@ async fn a_thumbnail_comes_only_from_inside_the_share(pool: sqlx::PgPool) {
         "the round base has a preview, and is not in Terrain"
     );
 }
+
+/// A folder's roster is how its people reach each other while its owner is away (sharing S6), so it goes to
+/// the people the folder goes to and to nobody else — the same question the catalogue asks, and the same
+/// refusal, so a stranger learns nothing about who is in it.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_folders_roster_goes_to_its_people_and_says_who_may_fetch(pool: sqlx::PgPool) {
+    let shared = shared_terrain(&pool).await;
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    let sharing = PgSharing(pool.clone());
+    sharing
+        .add_peer(mira, "192.168.1.31:8082")
+        .await
+        .expect("pairs");
+
+    let roster = format!("/peer/v1/shares/{}/members", shared.share.as_uuid());
+    let (status, _, body) = get(&pool, Some(ayse()), &roster).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json(&body),
+        serde_json::json!([]),
+        "nobody has been picked for this folder, so its owner has said nothing about who else has it"
+    );
+
+    // Said who it goes to: Ayşe and nobody else, and the roster is that list.
+    let shares = PgShares(pool.clone());
+    shares
+        .set_members(shared.share, &[ayse()])
+        .await
+        .expect("says who it goes to");
+    let (_, _, body) = get(&pool, Some(ayse()), &roster).await;
+    let members = json(&body);
+    assert_eq!(members.as_array().map(Vec::len), Some(1), "{members}");
+    assert_eq!(members[0]["deviceId"], ayse().to_string());
+    assert_eq!(members[0]["address"], "192.168.1.24:8082");
+    assert_eq!(
+        members[0]["mayFetch"], true,
+        "the folder does not ask first, so everybody in it may fetch"
+    );
+
+    let (status, _, body) = get(&pool, Some(mira), &roster).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "somebody the folder does not reach is told it is not shared, not who is in it"
+    );
+    assert_eq!(json(&body)["reason"], "notShared");
+
+    // Asking first closes the files, not the folder: the roster says so rather than leaving it out.
+    shares
+        .set_asks_first(shared.share, true)
+        .await
+        .expect("switches");
+    let (_, _, body) = get(&pool, Some(ayse()), &roster).await;
+    assert_eq!(json(&body)[0]["mayFetch"], false, "asked and not answered");
+    shares.ask(ayse(), shared.share).await.expect("asks");
+    shares
+        .decide(shared.share, ayse(), true)
+        .await
+        .expect("granted");
+    let (_, _, body) = get(&pool, Some(ayse()), &roster).await;
+    assert_eq!(json(&body)[0]["mayFetch"], true, "granted");
+}

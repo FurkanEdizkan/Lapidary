@@ -31,6 +31,21 @@ pub struct Share {
     pub digest: String,
 }
 
+/// One person a share goes to, as its owner publishes the folder's roster to the others in it.
+///
+/// Its members see each other by name, id and address, and the prompt that offers an introduction says so
+/// (owner's decision, 2026-09-17). Nobody outside the folder reads this: the route asks the same question the
+/// catalogue does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareMember {
+    pub device_id: String,
+    pub name: Option<String>,
+    pub address: String,
+    /// Whether the folder's owner lets them fetch its files. What another holder reads before serving them.
+    pub may_fetch: bool,
+}
+
 /// One page of a share's catalogue. `next` is the `after` for the page that follows, `None` on the last.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +91,10 @@ pub fn shares_router(db: PgPool) -> axum::Router {
         .route(
             "/peer/v1/shares/{share}/thumbnail",
             axum::routing::get(thumbnail),
+        )
+        .route(
+            "/peer/v1/shares/{share}/members",
+            axum::routing::get(members),
         )
         .route(
             "/peer/v1/shares/{share}/request",
@@ -142,6 +161,33 @@ async fn catalogue(
             })
             .into_response()
         }
+        Err(err) => failed(&err),
+    }
+}
+
+/// `GET /peer/v1/shares/{share}/members` — who else this folder goes to, so the people in it can reach each
+/// other when its owner is away. Behind the same question as the catalogue: somebody the folder does not reach
+/// is told it is not shared with them, and learns nothing about who is in it.
+async fn members(
+    State(db): State<PgPool>,
+    ConnectInfo(PeerDevice(device)): ConnectInfo<PeerDevice>,
+    Path(share): Path<ShareId>,
+) -> Response {
+    if let Err(refusal) = may_read(&db, device, share).await {
+        return refusal;
+    }
+    match PgShares(db).roster(share).await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|row| ShareMember {
+                    device_id: row.device.to_string(),
+                    name: row.name,
+                    address: row.address,
+                    may_fetch: row.may_fetch,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Err(err) => failed(&err),
     }
 }

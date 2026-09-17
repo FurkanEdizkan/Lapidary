@@ -128,6 +128,43 @@ impl PgSharing {
         peer_row(row)
     }
 
+    /// Pair with somebody a folder's owner introduced, recording who introduced them. The same pairing adding
+    /// a device id by hand makes — an introduction is how the id arrived, not a second kind of access — with
+    /// the introducer kept for the list to say where they came from.
+    ///
+    /// One transaction: a pairing whose introducer was not written is a person on the list with no answer to
+    /// "who is this", which is the one question a page about introductions has to be able to answer.
+    pub async fn accept_introduction(
+        &self,
+        device: DeviceId,
+        address: &str,
+        introduced_by: DeviceId,
+    ) -> Result<PeerRow, DbError> {
+        let mut tx = self.0.begin().await?;
+        sqlx::query(
+            "INSERT INTO peer (device_id, address, introduced_by) VALUES ($1, $2, $3) \
+             ON CONFLICT (device_id) DO UPDATE SET address = EXCLUDED.address, removed_at = NULL, \
+             introduced_by = COALESCE(peer.introduced_by, EXCLUDED.introduced_by)",
+        )
+        .bind(device.as_bytes().as_slice())
+        .bind(address)
+        .bind(introduced_by.as_bytes().as_slice())
+        .execute(&mut *tx)
+        .await?;
+        let row: PeerTuple = sqlx::query_as(concat!(
+            "SELECT ",
+            peer_columns!(),
+            " FROM peer WHERE device_id = $2"
+        ))
+        .bind(ONLINE_WITHIN_SECS)
+        .bind(device.as_bytes().as_slice())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        tell_the_peer_role(&self.0).await?;
+        peer_row(row)
+    }
+
     /// Remove somebody: hidden from the list and refused by the peer role, and nothing deleted. `false`
     /// when they were not paired, or were removed already.
     pub async fn remove_peer(&self, device: DeviceId) -> Result<bool, DbError> {
@@ -153,13 +190,24 @@ impl PgSharing {
             .collect()
     }
 
-    /// A hello answered, with the name the other installation gave.
-    pub async fn seen(&self, device: DeviceId, name: Option<&str>) -> Result<(), DbError> {
+    /// A hello answered, with the name the other installation gave and what it said it can do.
+    ///
+    /// The features are what keeps mixed versions working: an installation from before a route existed lists
+    /// nothing, and nothing asks it for that route. An installation that stops answering something drops it
+    /// from the list, and this follows on the next hello.
+    pub async fn seen(
+        &self,
+        device: DeviceId,
+        name: Option<&str>,
+        features: &[String],
+    ) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE peer SET last_seen_at = now(), last_error = NULL, name = $2 WHERE device_id = $1",
+            "UPDATE peer SET last_seen_at = now(), last_error = NULL, name = $2, features = $3 \
+             WHERE device_id = $1",
         )
         .bind(device.as_bytes().as_slice())
         .bind(name)
+        .bind(features)
         .execute(&self.0)
         .await?;
         Ok(())
@@ -216,7 +264,7 @@ fn peer_row(
 }
 
 /// A stored device id back into the type. The table's check keeps every one 32 bytes.
-fn stored_device(column: &'static str, bytes: Vec<u8>) -> Result<DeviceId, DbError> {
+pub(crate) fn stored_device(column: &'static str, bytes: Vec<u8>) -> Result<DeviceId, DbError> {
     let length = bytes.len();
     <[u8; 32]>::try_from(bytes)
         .map(DeviceId::from_bytes)

@@ -59,6 +59,8 @@ import type {
   UploadManifest,
   UploadPlan,
   AddPeer,
+  AnswerIntroduction,
+  Introduction,
   LicenceWarning,
   MirroredPartsPage,
   MirroredShare,
@@ -1563,6 +1565,36 @@ export async function addPeer(deviceId: string, address: string): Promise<PeerPa
 export async function removePeer(deviceId: string): Promise<FieldWritten> {
   return fieldWritten(
     await fetch(`/api/sharing/peers/${encodeURIComponent(deviceId)}`, { method: 'DELETE' }),
+    strings.sharing.refusedWithoutReason,
+  )
+}
+
+/** `GET /api/sharing/introductions` — who the owners of the folders mirrored here have introduced. */
+export async function fetchIntroductions(): Promise<Introduction[]> {
+  const response = await fetch('/api/sharing/introductions')
+  if (!response.ok) {
+    throw new Error(`introductions returned ${response.status}`)
+  }
+  return (await response.json()) as Introduction[]
+}
+
+/**
+ * `POST /api/sharing/introductions/{share}/{device}` — accept an introduction, or turn it down.
+ *
+ * Where to reach them is not sent: the api takes it from the roster the folder's owner published, which is the
+ * only address this installation has any reason to trust for somebody it has never met.
+ */
+export async function answerIntroduction(
+  share: PeerShareId,
+  deviceId: string,
+  accept: boolean,
+): Promise<FieldWritten> {
+  const body: AnswerIntroduction = { accept }
+  return fieldWritten(
+    await fetch(
+      `/api/sharing/introductions/${encodeURIComponent(share)}/${encodeURIComponent(deviceId)}`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+    ),
     strings.sharing.refusedWithoutReason,
   )
 }

@@ -302,6 +302,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/sharing/peers/{device}",
                     axum::routing::delete(sharing::remove),
                 )
+                // Who the owners of the folders mirrored here have introduced, and the one answer each needs.
+                .route("/api/sharing/introductions", get(sharing::introductions))
+                .route(
+                    "/api/sharing/introductions/{share}/{device}",
+                    axum::routing::post(sharing::answer_introduction),
+                )
                 // What somebody shares, read from the mirror the peer role keeps, so a shared library
                 // browses while the other machine is asleep.
                 .route(

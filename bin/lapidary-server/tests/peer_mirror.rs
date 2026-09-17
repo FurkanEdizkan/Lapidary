@@ -8,6 +8,7 @@ use lapidary_db::{
 };
 use lapidary_peer::{PeerIdentity, Roster, router, serve, server_config, sync};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -61,6 +62,9 @@ struct Pair {
     address: String,
     share: ShareId,
     cliff: PartId,
+    here_id: DeviceId,
+    /// How often the sharer has been asked for a folder's roster.
+    rosters_asked: Arc<AtomicUsize>,
 }
 
 async fn sharing_terrain(pool: &sqlx::PgPool) -> Pair {
@@ -100,7 +104,21 @@ async fn sharing_terrain(pool: &sqlx::PgPool) -> Pair {
     let address = tcp.local_addr().expect("the port it took").to_string();
     let roster = Roster::new(vec![here_id], Some("Ayşe's workshop".to_owned()));
     let config = server_config(&sharer_identity, &roster).expect("the sharer's side");
-    let routes = router(sharer, roster).merge(lapidary_peer::shares::shares_router(pool.clone()));
+    let rosters_asked = Arc::new(AtomicUsize::new(0));
+    let counter = rosters_asked.clone();
+    let routes = router(sharer, roster)
+        .merge(lapidary_peer::shares::shares_router(pool.clone()))
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let counter = counter.clone();
+                async move {
+                    if request.uri().path().ends_with("/members") {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                    next.run(request).await
+                }
+            },
+        ));
     tokio::spawn(serve(tcp, config, routes));
 
     let sharing = PgSharing(pool.clone());
@@ -118,6 +136,8 @@ async fn sharing_terrain(pool: &sqlx::PgPool) -> Pair {
         address,
         share,
         cliff,
+        here_id,
+        rosters_asked,
     }
 }
 
@@ -125,7 +145,7 @@ async fn sharing_terrain(pool: &sqlx::PgPool) -> Pair {
 async fn what_a_paired_installation_shares_is_mirrored_with_its_thumbnails(pool: sqlx::PgPool) {
     let pair = sharing_terrain(&pool).await;
 
-    let report = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    let report = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("mirrors");
     assert_eq!(
@@ -160,11 +180,11 @@ async fn what_a_paired_installation_shares_is_mirrored_with_its_thumbnails(pool:
 #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn an_unchanged_share_is_not_read_again_and_a_changed_one_is(pool: sqlx::PgPool) {
     let pair = sharing_terrain(&pool).await;
-    sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("first read");
 
-    let again = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    let again = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("second read");
     assert_eq!(
@@ -178,7 +198,7 @@ async fn an_unchanged_share_is_not_read_again_and_a_changed_one_is(pool: sqlx::P
         .execute(&pool)
         .await
         .expect("the sharer removes the cliff face");
-    let changed = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    let changed = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("third read");
     assert_eq!((changed.read, changed.parts), (1, 1), "{changed:?}");
@@ -198,7 +218,7 @@ async fn an_unchanged_share_is_not_read_again_and_a_changed_one_is(pool: sqlx::P
 #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
 async fn a_share_its_sharer_stops_offering_leaves_the_mirror(pool: sqlx::PgPool) {
     let pair = sharing_terrain(&pool).await;
-    sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("first read");
 
@@ -206,7 +226,7 @@ async fn a_share_its_sharer_stops_offering_leaves_the_mirror(pool: sqlx::PgPool)
         .remove(pair.share)
         .await
         .expect("the sharer stops sharing");
-    let report = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address)
+    let report = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
         .await
         .expect("reads the list again");
     assert_eq!(report.shares, 0);
@@ -251,7 +271,7 @@ async fn hellos_to_silent_machines_do_not_hold_up_one_that_answers(pool: sqlx::P
     assert_eq!(
         answered
             .iter()
-            .map(|(device, _)| *device)
+            .map(|(device, _, _)| *device)
             .collect::<Vec<_>>(),
         [pair.sharer]
     );
@@ -291,4 +311,81 @@ async fn a_connection_opened_before_a_removal_is_refused_at_its_next_request(poo
     let refusal: serde_json::Value =
         serde_json::from_slice(&next.bytes().await.expect("reads")).expect("a refusal");
     assert_eq!(refusal["reason"], "notPaired");
+}
+
+/// A folder's roster, mirrored beside its catalogue (sharing S6): the people it goes to are who this
+/// installation may reach for its files when its owner is away.
+///
+/// Both installations share one database here, so everybody on the sharer's roster is already a row in it;
+/// what this test shows is that the roster crossed the wire and landed whole. Whom it then offers to meet is
+/// `lapidary-db`'s `mirror.rs` test, where a roster can name somebody this installation has no row for.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_mirrored_folders_roster_is_read_over_the_wire(pool: sqlx::PgPool) {
+    let pair = sharing_terrain(&pool).await;
+    let mira = DeviceId::from_public_key(b"ed25519 public key of mira's studio pc");
+    PgSharing(pool.clone())
+        .add_peer(mira, "192.168.1.31:8082")
+        .await
+        .expect("the sharer pairs with Mira too");
+    // A folder publishes a roster once its owner has picked who it goes to, and not before.
+    PgShares(pool.clone())
+        .set_members(pair.share, &[pair.here_id, mira])
+        .await
+        .expect("the sharer says who Terrain goes to");
+
+    let report = sync::mirror(
+        &pool,
+        &pair.here,
+        pair.sharer,
+        &pair.address,
+        &[lapidary_peer::ROSTERS.to_owned()],
+    )
+    .await
+    .expect("mirrors");
+    assert_eq!(report.rosters, 1, "{report:?}");
+    assert_eq!(pair.rosters_asked.load(Ordering::SeqCst), 1);
+
+    let roster: Vec<(Vec<u8>, String, bool)> = sqlx::query_as(
+        "SELECT m.device_id, m.address, m.may_fetch FROM peer_share_member m \
+         JOIN peer_share ps ON ps.id = m.peer_share_id WHERE ps.device_id = $1 ORDER BY m.address",
+    )
+    .bind(pair.sharer.as_bytes().as_slice())
+    .fetch_all(&pool)
+    .await
+    .expect("reads the mirrored roster");
+    // One database for both sides, so the sharer's `peer` table also holds a row for itself; what matters is
+    // that everybody Terrain reaches came over, with where to reach them and the ask-first answer.
+    let landed: Vec<(&[u8], &str, bool)> = roster
+        .iter()
+        .map(|(device, address, may_fetch)| (device.as_slice(), address.as_str(), *may_fetch))
+        .collect();
+    assert!(
+        landed.contains(&(mira.as_bytes().as_slice(), "192.168.1.31:8082", true)),
+        "{landed:?}"
+    );
+    assert!(
+        landed.contains(&(pair.here_id.as_bytes().as_slice(), "127.0.0.1:9", true)),
+        "{landed:?}"
+    );
+}
+
+/// An installation from before rosters existed lists none, and is never asked for one — not once, and not once
+/// a round for ever. The protocol number cannot say this: it stays 1 so older installations keep talking.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn an_installation_from_before_rosters_is_never_asked_for_one(pool: sqlx::PgPool) {
+    let pair = sharing_terrain(&pool).await;
+
+    let report = sync::mirror(&pool, &pair.here, pair.sharer, &pair.address, &[])
+        .await
+        .expect("mirrors");
+    assert_eq!(report.read, 1, "the catalogue still comes over");
+    assert_eq!(report.rosters, 0);
+    assert_eq!(pair.rosters_asked.load(Ordering::SeqCst), 0);
+    assert!(
+        PgMirror(pool.clone())
+            .introductions()
+            .await
+            .expect("lists")
+            .is_empty()
+    );
 }
