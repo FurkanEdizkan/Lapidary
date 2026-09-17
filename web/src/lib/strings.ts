@@ -352,6 +352,8 @@ export const strings = {
   detail: {
     /** The ⋯ button on a part's page: Render, Move, the storage path and Remove. */
     more: 'More actions',
+    /** The part page's index of the sections under the studio. */
+    sections: 'On this page',
     loading: 'Loading this part…',
     /**
      * Both a 404 and a network failure land here. They are one message because the
