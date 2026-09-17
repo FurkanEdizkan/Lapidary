@@ -10,6 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .
+      # What deploy/compose.yaml builds, target for target. The api image serves the open path and never links the CAD
+      # kernel; the worker image carries OCCT and a binary built with both kernels. An untargeted build takes the file's
+      # last stage, the worker, around a binary with neither, which refuses to start as a worker: what this workflow built
+      # until goal 8. `cargo xtask check-deploy` holds these lines to compose's.
+      - run: df -h /
+      - run: docker build -f deploy/Containerfile --target api -t lapidary-api:${{ github.sha }} .
+      - run: docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel,occt-kernel -t lapidary-worker:${{ github.sha }} .
+      - run: df -h /
       - run: docker build -f deploy/web/Containerfile -t lapidary-web:${{ github.sha }} .
       - run: docker build -f deploy/db/Containerfile -t lapidary-db:${{ github.sha }} deploy

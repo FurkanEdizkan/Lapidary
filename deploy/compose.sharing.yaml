@@ -13,7 +13,14 @@
 # paired with is refused during the handshake, before any route runs.
 #
 # What it sends is as narrow. Every 15 seconds it says hello to each installation its owner paired,
-# over the same pinned connection, to learn which of them are online; it contacts nobody else.
+# over the same pinned connection, to learn which of them are online; it reads what they share when
+# that changes, and fetches the files a person here asked to pull. It contacts nobody else.
+#
+# The address a person pastes is resolved inside this container. Another machine's LAN address works
+# as it is; `127.0.0.1` is this container itself. Two installations on one machine (two compose
+# projects on different ports) reach each other through the host: give each peer
+# `extra_hosts: ["host.docker.internal:host-gateway"]` and paste `host.docker.internal:<the other's
+# peer port>`, as goal 8's check did (docs/ROADMAP.md, "Containers").
 services:
   peer:
     # The same ceiling as the api: this serves metadata and files to a handful of machines a
