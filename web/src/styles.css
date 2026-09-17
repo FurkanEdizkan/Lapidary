@@ -93,6 +93,13 @@
     card *on* the rail has to read as raised and two identical values cannot say that.
   */
   --color-raised: #17171b;
+  /*
+    The pool of light a part stands in: the centre of `.stage-lamp`, the one ground that is
+    not flat. Every text token clears 4.5:1 on it (muted, the lowest, is 4.74:1), so a
+    reading may sit on the stage. `--color-edge` does not clear 3:1 here (2.81:1), which is
+    why a stage's controls sit on a `surface` dock and never on the lamp itself.
+  */
+  --color-lamp: #202024;
   --color-border: #26262b;
 
   --color-text: #e6e6e9;
@@ -145,6 +152,13 @@
   --radius-sm: 4px;
   --radius-ctl: 7px;
   --radius-md: 10px;
+
+  /*
+    The one shadow, for things that float over the page: dialogs and menus. Everything else
+    is flat and separates by ground and border. Offset and blurred, so it reads as height;
+    menus had drifted to a lighter copy of it.
+  */
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.6);
 
   --ease-mechanical: cubic-bezier(0.2, 0, 0, 1);
   --duration-fast: 120ms;
@@ -224,6 +238,21 @@
   .panel-in {
     animation: panel-in var(--duration-base) var(--ease-mechanical);
   }
+}
+
+/*
+  The stage a part stands on: a pool of lamp light fading to the page, centred a little above
+  the middle where a model's bulk sits once it rests on its lowest face. The only gradient in
+  the system, and it is lighting rather than decoration: the render's own key light comes
+  from above, so the ground under it should too.
+*/
+.stage-lamp {
+  background-color: var(--color-bg);
+  background-image: radial-gradient(
+    ellipse 65% 60% at 50% 42%,
+    var(--color-lamp),
+    var(--color-bg)
+  );
 }
 
 /*

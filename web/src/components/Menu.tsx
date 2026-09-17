@@ -32,7 +32,7 @@ export function Menu({ id, label, children }: { id: string; label: string; child
           the grid while every test stayed green: jsdom applies none of these classes, so the
           suite could not see it. The first browser check did.
         */
-        className="menu panel-in w-64 flex-col gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-[var(--color-text)] shadow-[0_14px_34px_rgba(0,0,0,0.5)] open:flex"
+        className="menu panel-in w-64 flex-col gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-[var(--color-text)] shadow-overlay open:flex"
       >
         {children}
       </div>
