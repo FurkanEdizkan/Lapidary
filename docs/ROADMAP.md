@@ -2861,11 +2861,15 @@ measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libr
   - Switching an existing share to ask first is the api's (sharing it again with `asksFirst`); the page offers it only
     when sharing.
   - The puller's page does not yet say, before pulling, that a share asks first.
+  - A share switched back to open still lists its old requests on the sharing page (`PgShares::requests` reads every
+    grant row as though its share asked first). Files are unaffected: the blob route reads the share's real mode.
+  - `0040` and `0041` have only been applied to fresh databases, by the tests and both two-stack runs. Both are safe on
+    an existing one as written: `0040` adds tables, and `0041` adds a defaulted column and widens a CHECK.
 
 **Goal 7 closed** (2026-09-17). The listener hardening, S2a, S2b, S3 and S4 are each merged `--no-ff` with `cargo xtask
 verify slice` green on the merged tree, mutation-checked (4, 18, 14, 21 and 24 caught), and measured on two stacks as
-recorded above. `docs/DATA.md` §7, `docs/FEATURES.md` §10 and `docs/ARCHITECTURE.md` describe what was built. Nothing was
-pushed.
+recorded above. `docs/DATA.md` §7, `docs/FEATURES.md` §10 and `docs/ARCHITECTURE.md` describe what was built, and
+`PRODUCT.md` says what the peer role now sends to the installations paired with it. Nothing was pushed.
 
 ---
 
