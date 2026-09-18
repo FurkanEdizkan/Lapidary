@@ -967,9 +967,9 @@ test('a shared category says so, and Share opens the warning for the category it
   })
   renderTree()
 
-  const terrain = (await screen.findByText('Terrain')).closest('div') as HTMLElement
+  const terrain = (await screen.findByText('Terrain')).closest('li') as HTMLElement
   await within(terrain).findByText(strings.folders.shared)
-  const fasteners = screen.getByText('Fasteners').closest('div') as HTMLElement
+  const fasteners = screen.getByText('Fasteners').closest('li') as HTMLElement
   expect(within(fasteners).queryByText(strings.folders.shared)).toBeNull()
 
   fireEvent.click(screen.getByRole('button', { name: strings.folders.shareFor('Fasteners') }))

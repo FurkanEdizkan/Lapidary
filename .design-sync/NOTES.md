@@ -111,9 +111,6 @@ Two ordering rules that are cheap to honour and permanent to get wrong:
 - `extraFonts: copied <woff2> — add a matching @font-face` fires once per font on every build.
   Noise: the compiled CSS carries the `@font-face` rules and the build rewrites their `url()`s to
   `./fonts/`. Verified present in `_ds_bundle.css`.
-- The `AppFrame` Parts card shows category names cut to a letter or two in the rail. That is the
-  real `FolderTree`: a row's Share/Rename/Delete buttons are `opacity-0` until hover but keep
-  their width, so a 14rem rail leaves the name almost nothing. An app bug, not a sync one.
 
 ## Re-sync risks
 
