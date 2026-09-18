@@ -35,9 +35,14 @@ The first sync (8 Sep) predates the Lit Bench refinement. The refresh changed:
 - **Authored previews**: `AppFrame` (Parts with a seeded `FolderTree` rail; Sharing in `Page.ts`
   anatomy), `Card` (detail, gallery, list, selected), `Grid` (both densities, picking with
   `SelectionBar`, loading), `Menu` (Library, opened on mount with `showPopover()`; closed), and
-  `Dialog` brought up to today's classes. The bracket's picture is `raster.rs`'s golden render of
+  `Dialog` brought up to today's classes, and `Icon` (the six glyphs; one inside a control). The
+  bracket's picture is `raster.rs`'s golden render of
   `fixtures/bracket-lp-1042-03`, inlined as a data URL; the other fixture parts show the empty well
   on purpose. The remaining components take the floor card.
+- **Every preview paints its own ground** (`Ground` in each `.tsx`). The card page's template
+  body is white and covers the dark `:root`, so a preview that relied on `:root` came out as
+  Lapidary controls on a white page. Designs have the same trap: a screen's outermost element
+  should paint `bg-[var(--color-bg)]` itself.
 - **Checked before the run**: the previews and both new modules typecheck against the real
   components (a throwaway tsconfig mapping `lapidary-web` to `.ds-entry.tsx` and `react` to
   `web/node_modules/@types/react`), and `cfg.buildCmd` produces a `dist/ds.css` carrying both
@@ -97,16 +102,18 @@ Two ordering rules that are cheap to honour and permanent to get wrong:
 
 ## Known render warns
 
-- None. The final render check reported `bad: 0`, `thin: 0`, `variantsIdentical: 0` across
-  all four components. Any warn on a future run is genuinely new — look at it.
-
-- Three of four components (`Detail`, `FolderTree`, `MovePartDialog`) ship the **floor
-  card** by design — the user scoped preview authoring to `Dialog` only on the first sync.
-  `3 showing the typographic floor card` is expected, not a regression. They are fully
-  importable regardless; authoring their previews is the standing offer on any re-sync.
-- `extraFonts: copied <woff2> — add a matching @font-face` fires twice on every build. It is
-  noise here: the compiled CSS already carries both `@font-face` rules and the build rewrites
-  their `url()`s to `./fonts/`. Verified present in `_ds_bundle.css`.
+- The 2026-09-18 render check: 17/17, `bad: 0`, `thin: 0`, `variantsIdentical: 0`. Any warn on a
+  future run is new — look at it.
+- **Eight floor cards, by design.** `Detail`, `FolderTree`, `MovePartDialog`, `ShareDialog` read
+  the query cache and have no authored preview; `Figure`, `GridSkeleton`, `MeasureBar`,
+  `SelectionBar` draw from props alone but nobody authored them (`GridSkeleton` and `SelectionBar`
+  appear inside `Grid`'s preview). All are importable; authoring any of them is the standing offer.
+- `extraFonts: copied <woff2> — add a matching @font-face` fires once per font on every build.
+  Noise: the compiled CSS carries the `@font-face` rules and the build rewrites their `url()`s to
+  `./fonts/`. Verified present in `_ds_bundle.css`.
+- The `AppFrame` Parts card shows category names cut to a letter or two in the rail. That is the
+  real `FolderTree`: a row's Share/Rename/Delete buttons are `opacity-0` until hover but keep
+  their width, so a 14rem rail leaves the name almost nothing. An app bug, not a sync one.
 
 ## Re-sync risks
 
@@ -119,7 +126,7 @@ Two ordering rules that are cheap to honour and permanent to get wrong:
 - **`fonts/fonts.css` carries root-absolute `url(/fonts/…)`** where `_ds_bundle.css` carries
   correct relative `./fonts/…`. Harmless today because `styles.css` imports `fonts.css`
   first and `_ds_bundle.css` second, so the correct rules win the cascade — but if that
-  import order ever changes, Inter silently falls back.
+  import order ever changes, Archivo and JetBrains Mono silently fall back.
 - **The shipped stylesheet is Lapidary's compiled Tailwind subset** (~150 utilities), not
   all of Tailwind. `conventions.md` documents this and tells the design agent to fall back
   to inline styles over tokens. If the app's own class usage shrinks, the vocabulary

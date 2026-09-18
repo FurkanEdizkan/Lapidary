@@ -9,6 +9,28 @@
 */
 import { AppFrame, DesignProviders, FolderTree, Grid } from 'lapidary-web'
 
+import type React from 'react'
+
+/**
+ * The app's page ground. Lapidary paints it on `:root`, and the preview page's own white `body`
+ * covers that — so every preview lays its ground down itself, filling the cell, as the app's
+ * screen would be.
+ */
+function Ground({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
+  return (
+    <div
+      style={{
+        background: 'var(--color-bg)',
+        color: 'var(--color-text)',
+        minHeight: 'calc(100vh - 48px)',
+        padding: padded ? 16 : 0,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 const LIBRARY = '01931b6e-0000-7000-8000-000000000001'
 
 /** `raster.rs`'s own golden render of the fixture bracket — the picture the grid really shows for it. */
@@ -83,6 +105,7 @@ const CATEGORIES = [
 export function Parts() {
   return (
     <DesignProviders seed={[[['folders', LIBRARY], CATEGORIES]]}>
+      <Ground padded={false}>
       <AppFrame
         current="parts"
         library={LIBRARY as never}
@@ -112,6 +135,7 @@ export function Parts() {
           />
         </div>
       </AppFrame>
+      </Ground>
     </DesignProviders>
   )
 }
@@ -120,6 +144,7 @@ export function Parts() {
 export function Sharing() {
   return (
     <DesignProviders>
+      <Ground padded={false}>
       <AppFrame current="sharing" search={null}>
         <section className="max-w-3xl">
           <h2 className={HEADLINE}>Shared libraries</h2>
@@ -146,6 +171,7 @@ export function Sharing() {
           </div>
         </section>
       </AppFrame>
+      </Ground>
     </DesignProviders>
   )
 }

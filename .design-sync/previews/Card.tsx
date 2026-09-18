@@ -5,6 +5,28 @@
 */
 import { Card, DesignProviders } from 'lapidary-web'
 
+import type React from 'react'
+
+/**
+ * The app's page ground. Lapidary paints it on `:root`, and the preview page's own white `body`
+ * covers that — so every preview lays its ground down itself, filling the cell, as the app's
+ * screen would be.
+ */
+function Ground({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
+  return (
+    <div
+      style={{
+        background: 'var(--color-bg)',
+        color: 'var(--color-text)',
+        minHeight: 'calc(100vh - 48px)',
+        padding: padded ? 16 : 0,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 const LIBRARY = '01931b6e-0000-7000-8000-000000000001'
 
 /** `raster.rs`'s own golden render of the fixture bracket — the picture the grid really shows for it. */
@@ -68,7 +90,8 @@ function Shown({ width, layout, selecting = false, selected = false }: {
 }) {
   return (
     <DesignProviders>
-      <div style={{ width, padding: 16 }}>
+      <Ground>
+        <div style={{ width }}>
         <Card
           part={BRACKET}
           layout={layout}
@@ -81,7 +104,8 @@ function Shown({ width, layout, selecting = false, selected = false }: {
           onOpen={noop}
           onHover={noop}
         />
-      </div>
+        </div>
+      </Ground>
     </DesignProviders>
   )
 }
@@ -98,7 +122,7 @@ export function Gallery() {
 
 /** One row of the list layout. */
 export function List() {
-  return <Shown width="44rem" layout="list" />
+  return <Shown width="100%" layout="list" />
 }
 
 /** Picking parts: a checkbox on every card, and a 2px Layout Blue outline on the chosen ones. */
