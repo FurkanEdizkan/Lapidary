@@ -614,53 +614,68 @@ function FolderLevel({
               ) : (
                 <span aria-hidden="true" className="size-5 shrink-0" />
               )}
-              <FolderButton
-                name={folder.name}
-                selected={selected === folder.id}
-                onSelect={() => onSelect(folder.id)}
-                onDrop={(event) => onDropPart(event, folder.id)}
-              />
+              <div className="relative flex min-w-0 flex-1 items-center">
+                <FolderButton
+                  name={folder.name}
+                  selected={selected === folder.id}
+                  onSelect={() => onSelect(folder.id)}
+                  onDrop={(event) => onDropPart(event, folder.id)}
+                />
+                {/*
+                  Present for every category and quiet until it is wanted, and it comes back on
+                  keyboard focus as well as on hover — a control that only exists under a
+                  pointer is a control a keyboard cannot reach.
+
+                  Laid over the end of the name rather than beside it. Invisible is not the same
+                  as absent: beside it, the three words kept their width at rest, and in a 14rem
+                  rail that left a category's name a letter or two. Over it, the name has the
+                  whole row until the row is wanted, and the ground behind the words — the
+                  selected row's own surface on that row — hides the tail they cover. Inset a
+                  pixel so a selected row keeps its outline.
+
+                  Transparent means untappable, and on a touch screen it means neither. An
+                  invisible control that still takes taps is a delete nobody meant to press, so
+                  `pointer-events` follows the opacity; and a device with no hover has no way to
+                  reveal it at all, so `pointer-coarse` shows it outright, back in the row where
+                  it covers nothing, rather than leaving the row's only destructive action
+                  unreachable there.
+                */}
+                <div
+                  className={`ease-mechanical pointer-events-none absolute inset-y-px right-px flex items-center rounded pl-1 opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:static pointer-coarse:bg-transparent pointer-coarse:opacity-100 ${
+                    selected === folder.id ? 'bg-[var(--color-surface)]' : 'bg-[var(--color-bg)]'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onShare(folder)}
+                    aria-label={strings.folders.shareFor(folder.name)}
+                    className="rounded px-1.5 py-1 text-xs text-[var(--color-muted)]"
+                  >
+                    {strings.folders.shareAction}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRename(folder)}
+                    aria-label={strings.folders.renameFor(folder.name)}
+                    className="rounded px-1.5 py-1 text-xs text-[var(--color-muted)]"
+                  >
+                    {strings.folders.renameAction}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(folder)}
+                    aria-label={strings.folders.deleteFor(folder.name)}
+                    className="rounded px-1.5 py-1 text-xs text-[var(--color-muted)]"
+                  >
+                    {strings.folders.deleteAction}
+                  </button>
+                </div>
+              </div>
               {shared.has(folder.id) ? (
                 <span className="shrink-0 text-[10px] font-medium text-[var(--color-accent)]">
                   {strings.folders.shared}
                 </span>
               ) : null}
-              {/*
-                Present for every category and quiet until it is wanted: opacity only, so it
-                costs no layout, and it comes back on keyboard focus as well as on hover —
-                a control that only exists under a pointer is a control a keyboard cannot
-                reach.
-
-                Transparent means untappable, and on a touch screen it means neither. An
-                invisible control that still takes taps is a delete nobody meant to press,
-                so `pointer-events` follows the opacity; and a device with no hover has no
-                way to reveal it at all, so `pointer-coarse` shows it outright rather than
-                leaving the row's only destructive action unreachable there.
-              */}
-              <button
-                type="button"
-                onClick={() => onShare(folder)}
-                aria-label={strings.folders.shareFor(folder.name)}
-                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-              >
-                {strings.folders.shareAction}
-              </button>
-              <button
-                type="button"
-                onClick={() => onRename(folder)}
-                aria-label={strings.folders.renameFor(folder.name)}
-                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-              >
-                {strings.folders.renameAction}
-              </button>
-              <button
-                type="button"
-                onClick={() => onDelete(folder)}
-                aria-label={strings.folders.deleteFor(folder.name)}
-                className="ease-mechanical pointer-events-none rounded px-1.5 py-1 text-xs text-[var(--color-muted)] opacity-0 duration-[var(--duration-fast)] group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-              >
-                {strings.folders.deleteAction}
-              </button>
             </div>
             <RowNote note={noteFor(folder.id)} />
             {opened ? (
