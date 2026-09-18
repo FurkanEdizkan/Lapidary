@@ -11,7 +11,7 @@
 import { Dialog } from 'lapidary-web'
 
 const button =
-  'ease-mechanical rounded border border-[var(--color-border)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
 /** A destructive confirmation. Cancel is autofocused — the safe answer, per the component's own rule. */
 export function Confirmation() {
@@ -48,7 +48,7 @@ export function Rename() {
           defaultValue="flange-dn40-lp-3310-02"
           aria-label="Category name"
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
         />
         <p className="mt-2 text-xs text-[var(--color-muted)]">
           Used in the folder path. Letters, digits and dashes.
@@ -79,7 +79,7 @@ export function Refused() {
           defaultValue="Weld neck"
           aria-label="Category name"
           autoFocus
-          className="mt-3 w-full rounded border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm"
+          className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
         />
         <p role="alert" className="mt-1 text-sm text-[var(--color-muted)]">
           A category called Weld neck is already here.

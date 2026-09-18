@@ -16,6 +16,33 @@ Repo-specific gotchas for `/design-sync`. Read this before a re-sync.
   `["src", "vite.config.ts", "vitest.config.ts"]`, so `npm run build` never typechecks it and
   the app build pays nothing for the sync.
 
+## The 2026-09-18 refresh (the Lit Bench)
+
+The first sync (8 Sep) predates the Lit Bench refinement. The refresh changed:
+
+- **Fonts.** Inter is gone from `web/public/fonts/`; the app is **Archivo** for words and
+  **JetBrains Mono** for figures, two subsets each. `cfg.extraFonts` lists the four woff2s. The
+  project still holds `fonts/inter-*` from the first sync — the re-sync's plan should delete them.
+- **Surface: 17 components** (was 4), in three kinds by what they need — see `web/.ds-entry.tsx`'s
+  header and `conventions.md`'s table. Every one has a hand-written `dtsPropsFor` body; keep them
+  in step with source in the same commit.
+- **`DesignProviders`** (`web/.ds-providers.tsx`, re-exported from the entry) replaces the
+  `cfg.provider`/`extraEntries` route the first notes proposed: previews and designs wrap
+  themselves, so nothing depends on a config key's schema. It gives a memory router (what `Link`
+  needs in `AppFrame`, `Card`, `Crash`) and a `QueryClient` with queries off, plus `seed` —
+  `[queryKey, answer]` pairs — so a data component can draw with data. It is an export, not a
+  card: it is deliberately absent from `componentSrcMap`.
+- **Authored previews**: `AppFrame` (Parts with a seeded `FolderTree` rail; Sharing in `Page.ts`
+  anatomy), `Card` (detail, gallery, list, selected), `Grid` (both densities, picking with
+  `SelectionBar`, loading), `Menu` (Library, opened on mount with `showPopover()`; closed), and
+  `Dialog` brought up to today's classes. The bracket's picture is `raster.rs`'s golden render of
+  `fixtures/bracket-lp-1042-03`, inlined as a data URL; the other fixture parts show the empty well
+  on purpose. The remaining components take the floor card.
+- **Checked before the run**: the previews and both new modules typecheck against the real
+  components (a throwaway tsconfig mapping `lapidary-web` to `.ds-entry.tsx` and `react` to
+  `web/node_modules/@types/react`), and `cfg.buildCmd` produces a `dist/ds.css` carrying both
+  font families, every token (`--color-lamp` included) and every utility `conventions.md` names.
+
 ## Build
 
 - Run from the **repo root**, with `--node-modules web/node_modules` (there is no root
@@ -83,15 +110,12 @@ Two ordering rules that are cheap to honour and permanent to get wrong:
 
 ## Re-sync risks
 
-- **Previewing the other three needs a QueryClient.** `Detail`, `FolderTree` and
-  `MovePartDialog` call `useQuery`/`useMutation`/`useQueryClient`, and
-  `@tanstack/query-core` is inlined into the bundle but `QueryClientProvider` is **not** a
-  `window.Lapidary` export. `cfg.provider.component` is validated against the bundle's
-  export list and fails fatally on a name that isn't there, so a bare `QueryClientProvider`
-  will not work. Authoring those previews means adding a tiny wrapper module — a provider
-  around a pre-seeded `QueryClient` — via `cfg.extraEntries` with a `./`-relative path.
-  Put that module **outside `web/src/`**: `src/no-bare-strings.test.ts` fails any
-  user-facing string in `src/` that does not route through `src/lib/strings.ts`.
+- **Data components need `DesignProviders`** (settled 2026-09-18, see the refresh above).
+  `QueryClientProvider` is not a `window.Lapidary` export and `cfg.provider.component` fails
+  fatally on a name that isn't one, which is why the wrapper is a bundle export of its own and
+  every preview that needs it wraps itself. It lives **outside `web/src/`**:
+  `src/no-bare-strings.test.ts` fails any user-facing string in `src/` that does not route
+  through `src/lib/strings.ts`, and preview-only strings have no business there.
 - **`fonts/fonts.css` carries root-absolute `url(/fonts/…)`** where `_ds_bundle.css` carries
   correct relative `./fonts/…`. Harmless today because `styles.css` imports `fonts.css`
   first and `_ds_bundle.css` second, so the correct rules win the cascade — but if that
