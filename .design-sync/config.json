@@ -39,6 +39,11 @@
       "cardMode": "single",
       "primaryStory": "Library",
       "viewport": "480x380"
+    },
+    "Icon": {
+      "cardMode": "single",
+      "primaryStory": "Glyphs",
+      "viewport": "560x220"
     }
   },
   "componentSrcMap": {

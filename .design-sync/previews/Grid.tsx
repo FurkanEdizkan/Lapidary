@@ -5,6 +5,28 @@
 */
 import { DesignProviders, Grid, GridSkeleton, SelectionBar } from 'lapidary-web'
 
+import type React from 'react'
+
+/**
+ * The app's page ground. Lapidary paints it on `:root`, and the preview page's own white `body`
+ * covers that — so every preview lays its ground down itself, filling the cell, as the app's
+ * screen would be.
+ */
+function Ground({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
+  return (
+    <div
+      style={{
+        background: 'var(--color-bg)',
+        color: 'var(--color-text)',
+        minHeight: 'calc(100vh - 48px)',
+        padding: padded ? 16 : 0,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 const LIBRARY = '01931b6e-0000-7000-8000-000000000001'
 
 /** `raster.rs`'s own golden render of the fixture bracket — the picture the grid really shows for it. */
@@ -81,9 +103,9 @@ function Wall({ density, selected }: { density: 'comfortable' | 'compact'; selec
 export function Comfortable() {
   return (
     <DesignProviders>
-      <div style={{ padding: 16 }}>
+      <Ground>
         <Wall density="comfortable" />
-      </div>
+      </Ground>
     </DesignProviders>
   )
 }
@@ -91,9 +113,9 @@ export function Comfortable() {
 export function Compact() {
   return (
     <DesignProviders>
-      <div style={{ padding: 16 }}>
+      <Ground>
         <Wall density="compact" />
-      </div>
+      </Ground>
     </DesignProviders>
   )
 }
@@ -102,7 +124,7 @@ export function Compact() {
 export function Picking() {
   return (
     <DesignProviders>
-      <div style={{ padding: 16 }}>
+      <Ground>
         <SelectionBar
           count={2}
           bulk={null}
@@ -115,7 +137,7 @@ export function Picking() {
         <div style={{ marginTop: 12 }}>
           <Wall density="comfortable" selected={[PARTS[0]!.id, PARTS[4]!.id]} />
         </div>
-      </div>
+      </Ground>
     </DesignProviders>
   )
 }
@@ -123,8 +145,8 @@ export function Picking() {
 /** The first page of a library, before it arrives. */
 export function Loading() {
   return (
-    <div style={{ padding: 16 }}>
+    <Ground>
       <GridSkeleton label="Loading parts" />
-    </div>
+    </Ground>
   )
 }

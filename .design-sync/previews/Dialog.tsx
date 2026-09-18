@@ -10,12 +10,35 @@
 */
 import { Dialog } from 'lapidary-web'
 
+import type React from 'react'
+
+/**
+ * The app's page ground. Lapidary paints it on `:root`, and the preview page's own white `body`
+ * covers that — so every preview lays its ground down itself, filling the cell, as the app's
+ * screen would be.
+ */
+function Ground({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
+  return (
+    <div
+      style={{
+        background: 'var(--color-bg)',
+        color: 'var(--color-text)',
+        minHeight: 'calc(100vh - 48px)',
+        padding: padded ? 16 : 0,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 const button =
   'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
 /** A destructive confirmation. Cancel is autofocused — the safe answer, per the component's own rule. */
 export function Confirmation() {
   return (
+    <Ground>
     <Dialog title="Delete Flanges DN40?" onClose={() => {}}>
       <p className="mt-2 text-sm text-[var(--color-muted)]">
         18 parts and 2 subcategories move to Removed. Nothing is erased — purge is a separate,
@@ -35,12 +58,14 @@ export function Confirmation() {
         </button>
       </div>
     </Dialog>
+    </Ground>
   )
 }
 
 /** Create and rename: one field, a hint, a confirm disabled until the name is non-empty. */
 export function Rename() {
   return (
+    <Ground>
     <Dialog title="Rename flange-dn40-lp-3310-02" onClose={() => {}}>
       <form>
         <input
@@ -63,6 +88,7 @@ export function Rename() {
         </div>
       </form>
     </Dialog>
+    </Ground>
   )
 }
 
@@ -72,6 +98,7 @@ export function Rename() {
  */
 export function Refused() {
   return (
+    <Ground>
     <Dialog title="New category in Flanges DN40" onClose={() => {}}>
       <form>
         <input
@@ -94,5 +121,6 @@ export function Refused() {
         </div>
       </form>
     </Dialog>
+    </Ground>
   )
 }

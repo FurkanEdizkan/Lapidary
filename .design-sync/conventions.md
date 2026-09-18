@@ -13,7 +13,9 @@ decorative colour at all, and nothing raises its voice.
 
 Importing `styles.css` is the whole of the styling setup — there is no theme object and no theme
 provider. **Dark only**: `:root` already sets `color-scheme: dark`, the ground colour, the text
-colour and Archivo. Never paint a light background; never add a theme switch.
+colour and Archivo. Never paint a light background; never add a theme switch. A host page's own
+`body` background can cover `:root`, so give a screen's outermost element
+`bg-[var(--color-bg)] text-[var(--color-text)]` and the ground holds wherever it renders.
 
 Most components need nothing around them. Three need a router, and the four data components need
 Lapidary's API — wrap those in **`DesignProviders`** (a bundle export):
