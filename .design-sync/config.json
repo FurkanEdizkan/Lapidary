@@ -1,0 +1,82 @@
+{
+  "pkg": "lapidary-web",
+  "globalName": "Lapidary",
+  "projectId": "20053b00-d7ba-496e-abb6-06e58c40f99d",
+  "shape": "package",
+  "entry": "web/.ds-entry.tsx",
+  "srcDir": "src",
+  "buildCmd": "cd web && npm run build && cp dist/assets/index-*.css dist/ds.css",
+  "cssEntry": "dist/ds.css",
+  "extraFonts": [
+    "public/fonts/archivo-latin-wght-normal.woff2",
+    "public/fonts/archivo-latin-ext-wght-normal.woff2",
+    "public/fonts/jetbrains-mono-latin-wght-normal.woff2",
+    "public/fonts/jetbrains-mono-latin-ext-wght-normal.woff2"
+  ],
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "Dialog": {
+      "cardMode": "single",
+      "primaryStory": "Confirmation",
+      "viewport": "560x360"
+    },
+    "AppFrame": {
+      "cardMode": "single",
+      "primaryStory": "Parts",
+      "viewport": "1280x760"
+    },
+    "Card": {
+      "cardMode": "single",
+      "primaryStory": "Detail",
+      "viewport": "760x420"
+    },
+    "Grid": {
+      "cardMode": "single",
+      "primaryStory": "Comfortable",
+      "viewport": "1040x640"
+    },
+    "Menu": {
+      "cardMode": "single",
+      "primaryStory": "Library",
+      "viewport": "480x380"
+    }
+  },
+  "componentSrcMap": {
+    "Icon": "src/components/Icon.tsx",
+    "Menu": "src/components/Menu.tsx",
+    "Dialog": "src/components/Dialog.tsx",
+    "Grid": "src/components/Grid.tsx",
+    "GridSkeleton": "src/components/Grid.tsx",
+    "SelectionBar": "src/components/Grid.tsx",
+    "Figure": "src/components/Figure.tsx",
+    "MeasureBar": "src/components/Measure.tsx",
+    "SectionBar": "src/components/Measure.tsx",
+    "FirstRun": "src/components/FirstRun.tsx",
+    "AppFrame": "src/components/AppFrame.tsx",
+    "Card": "src/components/Card.tsx",
+    "Crash": "src/components/Crash.tsx",
+    "FolderTree": "src/components/FolderTree.tsx",
+    "MovePartDialog": "src/components/FolderTree.tsx",
+    "Detail": "src/components/PartDetail.tsx",
+    "ShareDialog": "src/components/ShareDialog.tsx"
+  },
+  "dtsPropsFor": {
+    "Icon": "/** One of the vendored Phosphor glyphs: `caretDown`, `close`, `more`, `list`, `search`, `upload`. Add a glyph in source, never by a package. */\n  name: 'caretDown' | 'close' | 'more' | 'list' | 'search' | 'upload';\n  /** Pixels. 16 by default, where Phosphor's regular weight is a one-pixel line. Always `aria-hidden`: put it inside a control that carries its own label. */\n  size?: number;",
+    "Menu": "/** Unique on the page: the popover's id and its anchor name. */\n  id: string;\n  /** The button's text, and its accessible name when `icon` replaces it. */\n  label: string;\n  /** Shown instead of the label. */\n  icon?: 'caretDown' | 'close' | 'more' | 'list' | 'search' | 'upload';\n  /** The panel's contents: a column of controls, 12px apart. The panel is 16rem, Machined Slate, overlay shadow. */\n  children: React.ReactNode;",
+    "Dialog": "/** Heading text. Also the dialog's accessible name, via `aria-labelledby`. */\n  title: string;\n  /** Escape, a click on the scrim, and the close button all call this. */\n  onClose: () => void;\n  /** The body. `Dialog` renders the scrim, panel, title row and close button — everything below the title is the caller's. */\n  children: React.ReactNode;\n  /** `stage` is most of the window, for a part in 3D (the Space stage). */\n  size?: 'default' | 'stage';\n  /** Where focus goes on close, when not to whatever opened it. */\n  returnFocus?: () => HTMLElement | null;",
+    "Grid": "parts: ReadonlyArray<{\n    id: string; library: string; revision: string;\n    name: string; partNumber: string | null; sourcePath: string;\n    /** `data:image/webp;base64,...` with alpha — the render inset in the card's well — or null. */\n    thumbnail: string | null;\n    triangleCount: number | null;\n    /** True when any figure is mesh-derived; the card then says \"approximate\". Always label it. */\n    approximate: boolean;\n    sourceHash: string | null; tessellationL0: string | null;\n    sourceBytes: number | null; storedBytes: number | null; compressed: boolean | null;\n    /** `libraries/default/Terrain/rock` — shown, selectable, never a link. */\n    directory: string | null; storagePath: string | null;\n    createdAt: string; updatedAt: string; removedAt: string | null;\n  }>;\n  /** Reflow by whole tiles: `minmax(11rem, 1fr)` with 16px gutters, or `minmax(8rem, 1fr)` with 12px. */\n  density: 'comfortable' | 'compact';\n  layout: 'detail' | 'gallery' | 'list';\n  /** Picking parts: every card shows a checkbox. */\n  selecting: boolean;\n  selected: ReadonlySet<string>;\n  onToggle: (part: string, range: boolean) => void;\n  onSelectAll: () => void;\n  onOpen: (part: object, from: DOMRect) => void;\n  onHover: (part: object) => void;\n  onRender: (part: string) => void;\n  /** The part whose preview is rendering now. */\n  busyPart?: string;\n  /** Where the store is on the host, prefixed to storage paths when known. */\n  hostRoot: string | null;\n  /** Whether a resting pointer turns a card's part in 3D. Off in a design. */\n  spins?: boolean;\n  onLook?: (part: object, from: DOMRect) => void;",
+    "GridSkeleton": "/** What is loading, for a screen reader. The skeleton itself is 12 grey tiles in the grid's own shape. */\n  label: string;",
+    "SelectionBar": "/** How many parts are picked. */\n  count: number;\n  /** A bulk move or removal under way, or null. */\n  bulk: { done: number; total: number; failures: { id: string; name: string; reason: string }[] } | null;\n  onMove: () => void;\n  onRemove: () => void;\n  onExport: () => void;\n  /** What the last export said, or null. */\n  note: string | null;\n  onClear: () => void;",
+    "Figure": "/** A measured value and whether it is mesh-derived. An approximate one is labelled \"approximate\" — never drop the label. */\n  figure: { value: unknown; approximate: boolean };\n  /** Formats the value: mono, tabular, with units, e.g. `(mm) => mm.toFixed(1) + ' mm'`. */\n  render: (value: unknown) => string;",
+    "MeasureBar": "/** The pressed tool, or null. A pressed tool takes a Layout Blue edge. */\n  tool: 'distance' | 'edge' | 'diameter' | 'angle' | 'wall' | null;\n  onTool: (tool: 'distance' | 'edge' | 'diameter' | 'angle' | 'wall' | null) => void;\n  /** The reading, mono, with \"approximate\" when mesh-derived. */\n  reading: { value: number; approximate: boolean } | null;\n  /** What to do next, shown while there is no reading. */\n  note: string | null;\n  /** Why measuring is off; no tool can be picked while it is set. */\n  off?: string | null;",
+    "SectionBar": "/** The cut, or null for none: an axis, where along it, and which side is kept. */\n  section: { axis: 'x' | 'y' | 'z'; at: number; flip: boolean } | null;\n  onSection: (section: { axis: 'x' | 'y' | 'z'; at: number; flip: boolean } | null) => void;\n  /** Whether the part is a closed mesh; null when nobody measured. Only a closed one's cut is filled. */\n  closed: boolean | null;",
+    "FirstRun": "/** Upload, the one way in a click reaches from an empty library. The lit bench of three example parts beside it needs WebGL and is decoration. */\n  onUpload: () => void;",
+    "AppFrame": "/** The place this page is: the places switch raises it. */\n  current?: 'parts' | 'removed' | 'sharing';\n  /** The library the places carry, so leaving and coming back keeps it. */\n  library?: string;\n  /** The content's anchor, for the skip link. */\n  skipTo?: { href: string; label: string };\n  /** The page's own search. Absent: a search that takes you to the grid. `null`: none. */\n  search?: React.ReactNode | null;\n  /** The page's actions, right of search — Upload and the Library menu on the parts page. */\n  actions?: React.ReactNode;\n  /** The category rail: beside the content from `md`, a drawer under it. */\n  rail?: React.ReactNode;\n  /** Off only for the crash page. */\n  nav?: boolean;\n  children: React.ReactNode;",
+    "Card": "part: {\n    id: string; library: string; revision: string;\n    name: string; partNumber: string | null; sourcePath: string;\n    /** `data:image/webp;base64,...` with alpha — the render inset in the card's well — or null. */\n    thumbnail: string | null;\n    triangleCount: number | null;\n    /** True when any figure is mesh-derived; the card then says \"approximate\". Always label it. */\n    approximate: boolean;\n    sourceHash: string | null; tessellationL0: string | null;\n    sourceBytes: number | null; storedBytes: number | null; compressed: boolean | null;\n    /** `libraries/default/Terrain/rock` — shown, selectable, never a link. */\n    directory: string | null; storagePath: string | null;\n    createdAt: string; updatedAt: string; removedAt: string | null;\n  };\n  /** Card layout: square inset well with name and figures below; render filling the card under a dark foot; one list row. */\n  layout: 'detail' | 'gallery' | 'list';\n  selecting: boolean;\n  /** Picked: a 2px Layout Blue outline. */\n  selected: boolean;\n  /** This card's preview is rendering. */\n  busy: boolean;\n  hostRoot: string | null;\n  onRender: (part: string) => void;\n  onToggle: (part: string, range: boolean) => void;\n  onOpen: (part: object, from: DOMRect) => void;\n  onHover: (part: object) => void;\n  /** Whether a resting pointer turns the part in 3D. Off in a design. */\n  spins?: boolean;\n  onLook?: (part: object, from: DOMRect) => void;",
+    "Crash": "/* No props. The page the app shows when a render throws: the frame without its places, one Headline, one sentence that nothing on disk was touched, and Reload. */",
+    "FolderTree": "/** Library whose category tree is shown. Reads `['folders', library]` — seed it through `DesignProviders` to draw rows. */\n  library: string;\n  /** The selected category, or `null` for the whole library. */\n  selected: string | null;\n  /** Fired when a row is chosen. `null` means the selection was cleared. */\n  onSelect: (folder: string | null) => void;",
+    "MovePartDialog": "/** The part being moved. */\n  part: { id: string; name: string };\n  /** The library the move happens within. Moves never cross libraries. */\n  library: string;\n  /** Called on cancel and after a completed move. */\n  onClose: () => void;",
+    "Detail": "/** One part's full record, exactly as `GET /api/parts/{id}` returns it (the ts-rs `PartDetail`): identity (id, library, revision, revLabel, name, partNumber, sourcePath), what people recorded (tags, materials, custom fields), geometry (triangleCount, isWatertight, bboxMm, volumeMm3, surfaceAreaMm2 — each `{ value, approximate }`, and an approximate one must be labelled), the file (sourceFormat, sourceBytes, storedBytes, sourceHash, directory, storagePath), derivative hashes, lock, sharedBy, createdAt, updatedAt. */\n  part: object;\n  /** Controls for the header. The part page passes Download and the ⋯ menu; the quick look passes none. */\n  actions?: React.ReactNode;\n  /** Whether the record-a-source form is offered. Off in the quick look, on for the full page. */\n  recordable?: boolean;\n  /** Whether something around it already names the part (the quick look's dialog title). */\n  titled?: boolean;\n  /** `panel` in the quick look; `page` is the part's own page, laid out as a studio. */\n  layout?: 'panel' | 'page';",
+    "ShareDialog": "/** The library the category is in. */\n  library: string;\n  /** The category to share: `{ id, parentId, name, slug, partCount }`. */\n  folder: { id: string; parentId: string | null; name: string; slug: string; partCount: number };\n  /** Already shared: the dialog then keeps who it goes to rather than widening it, and says so. */\n  alreadyShared: boolean;\n  onClose: () => void;"
+  }
+}

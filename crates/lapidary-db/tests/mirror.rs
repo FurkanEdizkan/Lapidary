@@ -47,7 +47,7 @@ fn relayed<'a>(
     name: &'a str,
     part_count: i64,
     digest: &'a str,
-    as_of: &str,
+    as_of: jiff::Timestamp,
 ) -> OfferedRemote<'a> {
     OfferedRemote {
         remote,
@@ -55,7 +55,7 @@ fn relayed<'a>(
         part_count,
         digest,
         owner: Some(owner),
-        as_of: Some(as_of.parse().expect("a timestamp")),
+        as_of: Some(as_of),
     }
 }
 
@@ -394,6 +394,18 @@ async fn a_mirrored_folders_roster_offers_the_people_in_it_once_each(pool: sqlx:
 /// browsable — and a copy passed on must never be able to say a folder is gone, or to undo a fresher reading.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx::PgPool) {
+    // Relative to the clock, never written as dates: the direct read below is stamped `now()` by the
+    // database, so a relay's reading is behind it only if it is earlier than today, and ahead only if
+    // it is later. Fixed dates passed the day they were written and failed the day after.
+    let now = jiff::Timestamp::now()
+        .round(jiff::Unit::Second)
+        .expect("rounds");
+    let behind = now
+        .checked_sub(jiff::SignedDuration::from_hours(24))
+        .expect("a day earlier");
+    let ahead = now
+        .checked_add(jiff::SignedDuration::from_hours(1))
+        .expect("an hour later");
     let mirror = paired(&pool).await;
     PgSharing(pool.clone())
         .add_peer(mira(), "192.168.1.31:8082")
@@ -425,14 +437,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
             mira(),
             &[
                 offer(bases(), "Bases", 1, "1-1"),
-                relayed(
-                    ayse(),
-                    terrain(),
-                    "Terrain",
-                    2,
-                    "2-100",
-                    "2026-09-17T09:00:00Z",
-                ),
+                relayed(ayse(), terrain(), "Terrain", 2, "2-100", behind),
             ],
         )
         .await
@@ -465,14 +470,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
             mira(),
             &[
                 offer(bases(), "Bases", 1, "1-1"),
-                relayed(
-                    ayse(),
-                    terrain(),
-                    "Terrain",
-                    3,
-                    "3-200",
-                    "2026-09-18T09:00:00Z",
-                ),
+                relayed(ayse(), terrain(), "Terrain", 3, "3-200", ahead),
             ],
         )
         .await
@@ -492,7 +490,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
                 part("standing-stone.stl", "Standing stone, LP-TR-0140", None),
             ],
             mira(),
-            "2026-09-18T09:00:00Z".parse().expect("a timestamp"),
+            ahead,
         )
         .await
         .expect("takes what Mira read");
@@ -500,7 +498,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
     assert_eq!(held[0].read_from, Some(mira()));
     assert_eq!(
         held[0].as_of.map(|at| at.to_string()),
-        Some("2026-09-18T09:00:00Z".to_owned())
+        Some(ahead.to_string())
     );
     assert_eq!(
         mirror
@@ -515,14 +513,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
     let stale = mirror
         .take_offer(
             mira(),
-            &[relayed(
-                ayse(),
-                terrain(),
-                "Terrain",
-                2,
-                "2-100",
-                "2026-09-17T09:00:00Z",
-            )],
+            &[relayed(ayse(), terrain(), "Terrain", 2, "2-100", behind)],
         )
         .await
         .expect("takes Mira's list");
@@ -544,14 +535,7 @@ async fn a_relayed_catalogue_only_ever_adds_and_only_when_it_is_newer(pool: sqlx
     mirror
         .take_offer(
             mira(),
-            &[relayed(
-                ayse(),
-                terrain(),
-                "Terrain",
-                3,
-                "3-200",
-                "2026-09-18T09:00:00Z",
-            )],
+            &[relayed(ayse(), terrain(), "Terrain", 3, "3-200", ahead)],
         )
         .await
         .expect("takes Mira's list");

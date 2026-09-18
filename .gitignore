@@ -110,3 +110,19 @@ Thumbs.db
 # it rebuilds. It carries `built_at_commit`, so a reader can tell how stale it is.
 # ponytail: if that churn becomes the complaint, drop it — with cache/semantic committed
 # a rebuild costs no tokens and about a minute.
+
+# ---------------------------------------------------------------------------
+# design-sync — the claude.ai/design import (`/design-sync`).
+#
+# Committed: .design-sync/config.json, NOTES.md, conventions.md and previews/ —
+# the inputs that make a re-sync reproducible on any machine.
+#
+# Ignored below: the staged converter and its node_modules, the regenerated
+# bundle, and machine-local verification state. Verified-component state is
+# carried by the uploaded project's own _ds_sync.json, never by git.
+# ---------------------------------------------------------------------------
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
