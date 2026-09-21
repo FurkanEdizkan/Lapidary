@@ -10,8 +10,8 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 
 | Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
 |---|---|---|---|---|---|---|---|---|
-| [B0](B0.md) | Several sessions at once | 0 | lead | — | `docs/goals/`, `scripts/`, `xtask/src/lane.rs`, `CLAUDE.md`, `.claude/settings.json` | — | claimed (lead) | `chore/parallel-sessions` |
-| [W0](W0.md) | Phase 6 contracts | 0 | lead, Rust | B0 | `lapidary-core/src/{shape,event,link}.rs`, `lapidary-db/src/shapes.rs`, `repo.rs` purge + `rows_by_id`, `lapidary-api/src/{likeness,dashboard}.rs` (types only), `strings.ts` blocks | 0047, 0048 | open | `feat/phase-6-contracts` |
+| [B0](B0.md) | Several sessions at once | 0 | lead | — | `docs/goals/`, `scripts/`, `xtask/src/lane.rs`, `CLAUDE.md`, `.claude/settings.json` | — | merged `31f282c` | `chore/parallel-sessions` |
+| [W0](W0.md) | Phase 6 contracts | 0 | lead, Rust | B0 | `lapidary-core/src/{shape,event,link}.rs`, `lapidary-db/src/shapes.rs`, `repo.rs` purge + `rows_by_id`, `lapidary-api/src/{likeness,dashboard}.rs` (types only), `strings.ts` blocks | 0047, 0048 | merged `322d382` | `feat/phase-6-contracts` |
 | [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | open | `feat/shape-profiles` |
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | open | `feat/likeness-api` |
 | [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | open | `feat/likeness-ui` |
@@ -22,6 +22,9 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | open | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | open | `fix/mass-and-materials` |
 
+**Wave 1 is open** (G2, G3, G6, L1): W0 merged on 2026-09-21. Read [`W0.md`](W0.md)'s Record before building
+against the contracts — it says where they differ from W0's stage text.
+
 Merge order the lead follows: B0 → W0 → G3 → G2 → G6 → L1 → G4 → G1 → G5 → L2 → L3 → close (W3).
 
 **W3, the close (lead, after L3):** both Phase 6 exits measured on the merged `main` through a compose stack on a lane
@@ -29,7 +32,8 @@ port block; the ROADMAP Phase 6 ledger; FEATURES rows for similarity and near-du
 auth"); DATA.md §3.8 (`part_shape`, `part_link`, the profile version rule); ARCHITECTURE's layout and events rows.
 
 **Migration numbers:** 0047–0048 W0 · 0049 G1 · 0050 spare (lead) · 0051 L3 · 0052 L2. Nobody takes the next free
-number.
+number. `0047` restated `job_outcome_known` to add `profiled`: a later migration that restates it again keeps
+`profiled` and every value before it.
 
 ## Backlog — recorded, not scheduled
 

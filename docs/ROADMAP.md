@@ -3363,6 +3363,31 @@ cannot reach each other, and `PRODUCT.md` says what the peer role now sends and 
 **Exit:** a 12-widget dashboard settles in one round trip; uploading a known part surfaces
 its near-duplicates.
 
+### Wave 0: several sessions at once, and the contracts (2026-09-21)
+
+The owner asked for Phase 6 and the loose ends to be built by several Claude Code sessions at once, one goal each, with
+one lead merging. The plan is `docs/goals/` — [`PROTOCOL.md`](goals/PROTOCOL.md) for how, [`BOARD.md`](goals/BOARD.md)
+for what, [`phase-6.md`](goals/phase-6.md) for the design every goal shares.
+
+- **B0, the machinery** (merged `31f282c`). The working rules moved out of one session's memory into the repository
+  (`PROTOCOL.md`, `CLAUDE.md` § "Working in this repository", `AGENTS.md`). A lane is a worktree with its own
+  `target/`, its own test database (`lapidary-test-db-<n>` on `55432+n`) and its own ports, written to an untracked
+  `.lane.env` that every `cargo xtask` command applies by re-running itself; the compiling gates and `cargo xtask
+  heavy -- …` take one machine-wide lock (`std::fs::File::lock` on the git common dir), so two sessions never compile
+  at once. `scripts/claim-goal.sh` makes the branch — the claim — and `scripts/release-goal.sh` takes it all down.
+  Housekeeping with the owner's leave: `target/debug` (134 GB) cleared, `origin/feat/v2-shell` deleted, the
+  `design-sync-import` worktree removed, goal 9's `lapidary-group-*` stacks and volumes removed. Gate: 14 green in
+  273.08 s (`target/verify-b0.log`).
+- **The dry run** was W0 itself, claimed as lane 1: a second claim of it was refused, a compiling run waited 10 s on
+  the lock and said so, the lane's build went to its own `target/` and its tests to `55433`, the commit hooks passed
+  inside the worktree, and `release-goal.sh W0` removed the worktree and branch and stopped `lapidary-test-db-1`.
+- **W0, the contracts** (merged `322d382`): the shape profile, event and link types in `lapidary-core`; `part_shape`
+  and `part_link` (`0047`, `0048`), both purged with the part; `PgShapes`, `PgParts::rows_by_id`; the likeness and
+  dashboard wire types with empty routers; the `dashboard` and `likeness` string blocks. Where the result differs from
+  the goal's text — `size_band()` is a function, `rows_by_id` takes `Shows`, `Fold` and `WidgetValue` were added — is
+  in [`W0.md`](goals/W0.md)'s Record. Gate on the merged tree: 14 green in 230.81 s (`target/verify-W0-merged.log`).
+  Nothing was pushed.
+
 ---
 
 ## Phase 7 — Build graph
