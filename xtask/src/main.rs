@@ -2,6 +2,7 @@
 
 mod commit;
 mod deploy;
+mod lane;
 mod layers;
 mod setup;
 mod strings;
@@ -13,6 +14,11 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() -> Result<()> {
+    // A lane's worktree carries its own database and build settings; apply them before anything
+    // runs, so the gate and the git hooks never reach the lead's database by accident.
+    if let Some(code) = lane::rerun_with_lane_env(&workspace_root()?)? {
+        std::process::exit(code);
+    }
     match std::env::args().nth(1).as_deref() {
         Some("check-layers") => check_layers(),
         Some("check-deploy") => check_deploy(),
@@ -22,15 +28,44 @@ fn main() -> Result<()> {
         Some("export-agents-md") => export_agents_md(),
         Some("setup") => run_setup(),
         Some("verify") => run_verify(std::env::args().nth(2).as_deref()),
+        Some("heavy") => run_heavy(std::env::args().skip(2).collect()),
         Some(other) => bail!(
-            "Unknown xtask '{other}'. Available: verify, check-layers, check-deploy, check-strings, check-commit-msg, export-bindings, export-agents-md, setup"
+            "Unknown xtask '{other}'. Available: verify, heavy, check-layers, check-deploy, check-strings, check-commit-msg, export-bindings, export-agents-md, setup"
         ),
         None => {
             bail!(
-                "Usage: cargo xtask <verify [fast|task|slice|occt]|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
+                "Usage: cargo xtask <verify [fast|task|slice|occt]|heavy -- <command>|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
             )
         }
     }
+}
+
+/// `cargo xtask heavy -- cargo test -p lapidary-db`: an ad hoc build or test run, under the same
+/// compile lock and lane settings as the gate, so two sessions never build at once.
+fn run_heavy(args: Vec<String>) -> Result<()> {
+    let args: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .skip_while(|arg| *arg == "--")
+        .collect();
+    let Some((program, rest)) = args.split_first() else {
+        bail!(
+            "Usage: cargo xtask heavy -- <command> [args...], for example `cargo xtask heavy -- cargo test -p lapidary-db`"
+        );
+    };
+    let root = workspace_root()?;
+    let lock = lane::heavy_lock(&root)?;
+    let here = std::env::current_dir().context("Could not read the current directory")?;
+    let status = Command::new(program)
+        .args(rest)
+        .current_dir(here)
+        .status()
+        .with_context(|| format!("Could not run `{program}`. Is it installed and on PATH?"))?;
+    drop(lock);
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
 }
 
 /// Run the verification bar at one tier. See `xtask/src/verify.rs` for what each tier
@@ -53,6 +88,12 @@ fn run_verify(tier_arg: Option<&str>) -> Result<()> {
 
     let started = std::time::Instant::now();
     for step in &steps {
+        // Held for this step only, so another session's text checks and web suite run meanwhile.
+        let _lock = if verify::compiles(step) {
+            Some(lane::heavy_lock(&root)?)
+        } else {
+            None
+        };
         let at = std::time::Instant::now();
         let (name, outcome) = match step {
             verify::Step::Internal { name, check } => (*name, run_internal(*check)),

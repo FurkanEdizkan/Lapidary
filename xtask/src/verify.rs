@@ -106,6 +106,23 @@ pub enum Step {
     },
 }
 
+/// Whether a step compiles the workspace, and so takes the machine-wide compile lock
+/// (`xtask/src/lane.rs`). The text checks, the web suite and `git status` do not, so a session
+/// running those never waits on another's build.
+///
+/// `export-bindings` counts: it shells `cargo test --workspace export_bindings -- --list`, which
+/// links every test target — a cache hit after `cargo test` in the same run, and a full build
+/// otherwise.
+pub fn compiles(step: &Step) -> bool {
+    match step {
+        Step::Command { program, args, .. } => {
+            *program == "cargo" && matches!(args.first(), Some(&("clippy" | "test" | "build")))
+        }
+        Step::Internal { check, .. } => *check == Check::ExportBindings,
+        Step::Generated { .. } => false,
+    }
+}
+
 /// Paths whose change can make `cargo deny check` say something new.
 fn touches_dependencies(path: &str) -> bool {
     path == "Cargo.lock"
@@ -389,6 +406,22 @@ mod tests {
     fn check_commit_msg_is_not_one_of_the_steps() {
         let got = names(&steps(Tier::Slice, None));
         assert!(!got.iter().any(|n| n.contains("commit")));
+    }
+
+    /// Only the steps that build the workspace wait on another session's build: a lane checking
+    /// its strings or running the web suite never queues behind somebody's `cargo test`.
+    #[test]
+    fn only_the_steps_that_compile_take_the_lock() {
+        let locked: Vec<&str> = steps(Tier::Slice, None)
+            .iter()
+            .filter(|step| compiles(step))
+            .map(|step| match step {
+                Step::Internal { name, .. }
+                | Step::Command { name, .. }
+                | Step::Generated { name, .. } => *name,
+            })
+            .collect();
+        assert_eq!(locked, ["clippy", "test", "export-bindings"]);
     }
 
     #[test]
