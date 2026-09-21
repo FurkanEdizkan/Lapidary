@@ -2761,9 +2761,11 @@ async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: 
         "derivative",
         "file",
         "part_image",
+        "part_link",
         "part_lock",
         "part_move",
         "part_provenance",
+        "part_shape",
         "part_source",
         "revision",
     ];

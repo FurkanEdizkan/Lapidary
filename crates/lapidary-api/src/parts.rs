@@ -869,7 +869,7 @@ fn internal_error(err: &DbError, what: &'static str) -> Response {
         .into_response()
 }
 
-fn to_card(row: PartRow) -> PartCard {
+pub(crate) fn to_card(row: PartRow) -> PartCard {
     let summary = row.summary;
     PartCard {
         id: summary.id,

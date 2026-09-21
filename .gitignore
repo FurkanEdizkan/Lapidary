@@ -3,7 +3,8 @@
 **/*.rs.bk
 
 # Node
-node_modules/
+# No trailing slash: a lane's web/node_modules is a symlink to the main checkout's (scripts/claim-goal.sh).
+node_modules
 web/dist/
 .vite/
 

@@ -127,6 +127,8 @@ export const strings = {
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
     sharing: 'Shared libraries — Lapidary',
+    dashboard: 'Dashboard — Lapidary',
+    duplicates: 'Possible duplicates — Lapidary',
   },
   /**
    * The bar above the grid: where you are, what you are looking for, how it is laid out, and
@@ -202,6 +204,8 @@ export const strings = {
    * first part by keyboard means tabbing through every category first.
    */
   skipToParts: 'Skip to the parts',
+  /** The dashboard (Phase 6): its widgets, their settings, and moving them about. Goal G5's. */
+  dashboard: {},
   /**
    * The last thing the application can say. A crash inside a route unmounts everything
    * below it, so this replaces the page rather than annotating it — and it names the
@@ -504,6 +508,11 @@ export const strings = {
     /** Recorded as who released a lock. The page has no signed-in person to name yet. */
     releasedBy: 'the part page',
   },
+  /**
+   * Parts that look alike (Phase 6): identical, near-duplicate, similar, and what a person decides about a
+   * pair. Goal G6's. "Fold into", never "merge": CLAUDE.md keeps "no merge" for versioning.
+   */
+  likeness: {},
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:
    * *"We never delete user data implicitly. Delete is soft. Purge is separate and

@@ -2,6 +2,9 @@
 //! and never forked per distribution.
 
 mod blob;
+// Wire types only until goal G4 routes them; G4 removes this allow.
+#[allow(dead_code)]
+mod dashboard;
 mod densities;
 mod derive;
 mod detail;
@@ -15,6 +18,9 @@ mod health;
 mod images;
 mod jobs;
 mod lifecycle;
+// Wire types only until goal G3 routes them; G3 removes this allow.
+#[allow(dead_code)]
+mod likeness;
 mod locks;
 mod moves;
 mod part_number;
@@ -437,7 +443,10 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // that may — see `download.rs`. `Role::Api` for the same reason the blob
                 // route is: nothing proxies a browser to the worker, and this URL is one a
                 // user clicks.
-                .route("/api/revisions/{id}/download", get(download::original)),
+                .route("/api/revisions/{id}/download", get(download::original))
+                // Phase 6's two, each filling its own file so that goals G3 and G4 never edit this chain.
+                .merge(likeness::routes())
+                .merge(dashboard::routes()),
             Role::Worker => Router::new(),
             // Empty for `Role::Worker`'s reason, and one of its own: the peer protocol is
             // `lapidary-peer`'s router, which `bin/lapidary-server` serves instead of this one,

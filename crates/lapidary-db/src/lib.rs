@@ -12,6 +12,7 @@ mod pulls;
 mod repo;
 mod revisions;
 mod saved_filters;
+mod shapes;
 mod shares;
 mod sharing;
 mod touches;
@@ -39,6 +40,7 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
+pub use shapes::{PgShapes, ShapeRow};
 pub use shares::{
     BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
     RosterRow, ShareRow,
