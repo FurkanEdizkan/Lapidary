@@ -12,6 +12,10 @@
 --   ALTER TABLE part_shape ALTER descriptor TYPE vector(35) USING descriptor::vector;
 --
 -- One row a part — its current shape. Purged with the part (`PgParts::purge`); no cascade, as everywhere.
+--
+-- `library_id` is copied from `part` when the row is written, with no foreign key, so the size index below serves a
+-- library on its own. It cannot go stale: nothing updates `part.library_id` after insert (checked at 0047 — every
+-- `UPDATE part` sets something else). A change that moves a part between libraries must move this row with it.
 CREATE TABLE part_shape (
     part_id uuid PRIMARY KEY REFERENCES part (id),
     library_id uuid NOT NULL,

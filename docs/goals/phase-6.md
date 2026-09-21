@@ -58,6 +58,9 @@ anyone, so there is no approximate figure to label.
   part kept. **Nothing is moved and nothing is deleted:** the folded part keeps its tags, sources, images and revisions,
   and Restore brings it back. The dialog says so.
 - `variant` and `distinct` take the pair out of the review queue for good. Cross-library links are refused 404.
+- **Purge takes links from either side.** Purging the part something was folded *into* removes that `folded_into` row
+  too, so the folded part stays removed as an ordinary removed part — no "folded into" line, Restore as usual. That is
+  expected, not an orphan: G3's folds list simply does not name it, and G6 shows nothing special for it.
 
 ## App-wide events — `GET /api/events`
 
