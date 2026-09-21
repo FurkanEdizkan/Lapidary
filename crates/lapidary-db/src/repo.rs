@@ -2387,6 +2387,11 @@ impl PgParts {
             // Who a pulled part came from (sharing S3), for `part_source`'s reason: after a purge there is no part for
             // it to be about.
             "DELETE FROM part_provenance WHERE part_id = $1",
+            // The shape profile (Phase 6): a derived value, and it references `revision`, so it goes before it.
+            "DELETE FROM part_shape WHERE part_id = $1",
+            // What a person decided about this part and another, from either side: "these two are variants"
+            // means nothing once one of them is gone.
+            "DELETE FROM part_link WHERE part_id = $1 OR other_id = $1",
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",
@@ -3575,6 +3580,35 @@ impl PartRepository for PgParts {
 }
 
 impl PgParts {
+    /// The grid's rows for these parts, in the order asked (Phase 6: the parts a likeness or a duplicates
+    /// cluster names, ranked by the caller). An id not in `library`, or on the other side of `shows`, is
+    /// left out rather than refused; so is one purged since it was named.
+    pub async fn rows_by_id(
+        &self,
+        library: LibraryId,
+        ids: &[PartId],
+        shows: Shows,
+    ) -> Result<Vec<PartRow>, DbError> {
+        let ids: Vec<Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        let rows: Vec<GridRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            grid_columns!(),
+            " FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted (id, n) \
+              JOIN part p ON p.id = wanted.id ",
+            grid_laterals!(),
+            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $3 \
+             ORDER BY wanted.n",
+        ))
+        .bind(library.as_uuid())
+        .bind(&ids)
+        .bind(shows == Shows::Removed)
+        .bind(DerivativeKind::Thumbnail.as_str())
+        .bind(DerivativeKind::TessellationL0.as_str())
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter().map(to_part_row).collect()
+    }
+
     /// [`PartRepository::page`] in an order other than newest: `query` is [`sorted_page!`] for
     /// one key.
     ///
