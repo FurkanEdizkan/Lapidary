@@ -126,3 +126,10 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# ---------------------------------------------------------------------------
+# Several sessions at once (docs/goals/PROTOCOL.md). A lane's settings and a
+# session's own Claude settings are per machine and per worktree, never shared.
+# ---------------------------------------------------------------------------
+.lane.env
+.claude/settings.local.json

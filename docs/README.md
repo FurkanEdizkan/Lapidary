@@ -12,6 +12,7 @@
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
 | [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, search, or `lapidary-cad` LOD. Search lives in `lapidary-db` and migrations `0016`/`0020` today; `lapidary-index` is a placeholder crate that Phase 2's metadata extractor fills |
+| [`goals/`](goals) | The work in flight: [`PROTOCOL.md`](goals/PROTOCOL.md) (how several sessions work at once), [`BOARD.md`](goals/BOARD.md) (who holds which goal), and one file per goal | **Before starting any work** — then the goal you claimed |
 | [`superpowers/specs/`](superpowers/specs) | Per-slice design specs: the decisions, data flow, schema and testing plan for one slice | Working on a slice — the spec for it is the closest thing to a contract for what it does |
 | [`superpowers/plans/`](superpowers/plans) | The execution plans those specs were built from, and historical handoffs | Tracing why something was built the way it was; not a description of the current system |
 
@@ -32,7 +33,8 @@ Every run reports what was already correct, so "already fine" is distinguishable
 "did not look".
 
 `.claude/settings.json` is committed and declares the plugins this repo's workflow
-assumes, plus the marketplaces they come from. Open the repo on a new machine and Claude
+assumes, plus the marketplaces they come from, and the impeccable design hooks (which do
+nothing in a checkout without the impeccable engine; `.codex/hooks.json` carries the same two). Open the repo on a new machine and Claude
 Code registers those marketplaces and enables the plugins; `/plugin` shows their state and
 `/plugin update` refreshes them.
 

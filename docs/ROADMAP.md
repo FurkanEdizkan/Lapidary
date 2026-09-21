@@ -892,7 +892,6 @@ below.
 | Real-world STEP files on this machine; OCCT itself was **built in goal 4**, which did the rest of this row | Timing Phase 0 and Phase 2 on real STEP files and assemblies; datums no tolerance refers to (OCCT's reader creates only a datum a tolerance refers to) |
 | Licence-clean AP242 files from other CAD tools. Phase 4's exit on Linux, which needed FreeCAD, was **met in goal 4's stage 8** | AP242 files written by other CAD tools |
 | A macOS or Windows machine | The FSEvents and `ReadDirectoryChangesW` watchers, the Windows overflow rescan, and the rest of Phase 4's exit |
-| Pulling a pgvector image | Checking pgvector against `postgres:18`, before Phase 6 (see Open items) |
 | Phase 8 | The lifecycle facet, per-user saved filters, auth on locks, `lapidary worker` |
 
 **Open questions, answered 2026-09-15.**
@@ -2608,7 +2607,7 @@ sequenced ahead of Phase 8. What the work is built on:
     so it does not show today; a long pull would. *Closed in S4:* every share and file route asks the database at
     every request, and a test keeps one connection open across a removal and sees its next request refused.
   - Hellos go one at a time, each allowed 5 s. Past about six machines that do not answer, a round outlasts the
-    online window (`ponytail:` in `sync.rs`).
+    online window. *Closed in S2b:* eight at a time (`HELLOS_AT_ONCE` in `sync.rs`), and the `ponytail:` is gone.
 
 **The listener, hardened** (goal 7 stage 1, `5be7d13`). What S1a recorded for S4, done first so everything after it
 measures the listener that ships (`docs/superpowers/plans/2026-09-17-shared-libraries-goal.md`).
@@ -3357,7 +3356,9 @@ cannot reach each other, and `PRODUCT.md` says what the peer role now sends and 
 - Widget registry, drag-resize layout, named groups
 - Single batched `/api/dashboard/resolve` with per-key timeouts and partial results
 - Live patches over the existing SSE stream
-- Geometry embeddings + pgvector; near-duplicate clustering with merge/link-as-variant
+- Geometry embeddings + pgvector; near-duplicate clustering with merge/link-as-variant. *Decided 2026-09-21:* a shape
+  profile per part in a plain `real[]`, compared exactly in Rust — no pgvector in Phase 6, and "merge" is called
+  **fold into** (a soft delete that records where the part went). Design: `docs/goals/phase-6.md`.
 
 **Exit:** a 12-widget dashboard settles in one round trip; uploading a known part surfaces
 its near-duplicates.
@@ -3482,10 +3483,14 @@ before incorporating** — some of it depends on day-one entity structure.
 
 - **Trademark.** "Lapidary" is a common English word — check TÜRKPATENT and EUIPO in the
   relevant software classes before registering a domain.
-- **`pgvector` and Turkish `tsvector`** against `postgres:18`. Turkish is settled: checked on
-  2026-09-14, `postgres:18`'s `pg_ts_config` lists `turkish`. pgvector is not: the official image
-  offers no `vector` extension, `deploy/db/Containerfile` installs `postgresql-${PG_MAJOR}-pgvector`
-  and `deploy/db/init/10-extensions.sql` creates it, and no test or gate checks either yet.
+- **`pgvector` and Turkish `tsvector`** against `postgres:18`. Both are settled. Turkish: checked on 2026-09-14,
+  `postgres:18`'s `pg_ts_config` lists `turkish` (and Turkish search was since removed, `0031`). pgvector: goal 8's
+  stack database reports `vector 0.8.6`, from `deploy/db/Containerfile`'s package and
+  `deploy/db/init/10-extensions.sql`. **Phase 6 does not use it** (owner's decision, 2026-09-21): at the sizes this app
+  serves, an exact scan over a `real[]` beats an approximate index, and the test databases — stock `postgres:18`,
+  with no `vector` — stay as they are. The ceiling is about 100k parts a library; the upgrade is one
+  `ALTER TABLE part_shape ALTER descriptor TYPE vector(35) USING descriptor::vector`, plus the test databases moving to
+  `deploy/db`'s image. Nothing tests the extension, because nothing uses it.
 - **zstd dictionary gain** — moot while library files stay raw: tiering and dictionaries were
   retired on 2026-09-15 (DATA §1.2, §1.3). Measure on a real STEP corpus only if a raw-plus-compressed
   store is ever proposed.
