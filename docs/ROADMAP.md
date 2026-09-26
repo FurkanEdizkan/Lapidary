@@ -3423,6 +3423,37 @@ its job: every gate log carries `lock … another session is compiling; waiting`
     same file name, the same bytes and the same profile in two libraries. The reads' `library_id` filters remain
     defence in depth rather than a tested rule, because `rows_by_id` filters a foreign card out downstream — recorded
     rather than glossed.
+- **G6, the likeness UI** (merged `4479e1b`, gate 14 green in 148.33 s on the merged tree; the
+  lane's own run on `main` merged in was 352 s). `web/src/lib/likeness.ts`, `components/Likeness.tsx` and the
+  `/duplicates` route, mounted with one line each into the part page, the grid and the removed page. Web suite 441 in 34
+  files, up from 399 in 31. Built entirely against W0's bindings with `fetch` mocked while G3 was being written, then
+  gated again with G3 merged in — the two never blocked each other.
+  - **The three decisions are offered on Identical as well as Near-duplicates.** Withholding them from identical pairs
+    would leave the case where folding is most obviously right reachable only from the queue. `distinct` on a
+    byte-identical pair reads oddly and is kept, because without it two deliberate copies can never leave the queue.
+  - **The finished line counts parts, not groups:** eleven copies of one bracket is one group, and reporting "1" would
+    understate it. `justAdded` counts the parts added since the batch began that are in a group with something else.
+  - **No "approximate" note anywhere in it**, and that is the rule rather than an omission: no score is shown, so there
+    is no mesh-derived figure to label. The one figure on a row is the part's own triangle count, which carries the
+    label it always has.
+  - **"Folded into X" is a link only while X is in the library.** The api answers with a kept part that was itself
+    removed since — deliberately, since the sentence stays true — so the words stay and the link goes, and a purged X
+    drops the line entirely. Found by the lane asking rather than by anybody clicking it.
+  - `Date.parse`, not string order, for both the queue's order and the finished count: one server sending `+03:00`
+    where another sends `Z` names the same instant and sorts wrongly as text.
+  - **21 mutations, all caught** (`target/likeness-check/mutate-g6.sh`, kept in the main checkout). Two survived the
+    first pass and the *tests* were strengthened rather than the harness weakened: a fixture had one just-added part per
+    group, so two different counts agreed by accident, and a stub already handed groups over in the order under test.
+  - **Accessibility, taken on the way past:** `ScanProgress` now carries `role="status"`, and its unknown-batch sentence
+    `role="alert"` — on the line, not the block, because a live region around the failure list would re-read a hundred
+    filenames per poll. No id was added: one existing only for a test driver is scaffolding. The consequence is recorded
+    for whoever writes the next harness — the grid page can hold four `role="status"` regions at once, so a bare role
+    query there matches the wrong one.
+  - **Left for later, named so it does not vanish:** a `variant` or `distinct` decision can be taken back through the
+    api and there is no screen that offers it, because the queue lists undecided pairs only; no paging on the queue (the
+    wire carries no cursor); no bulk fold, so a group of eleven is ten presses; and `ReviewOffer` reads the queue once
+    at `finishedAt` rather than resyncing, which is what ties Phase 6's second exit to the worker enqueuing a profile
+    inside the ingest batch.
 
 ---
 
