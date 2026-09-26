@@ -6,7 +6,7 @@
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
-#   scripts/e2e/stack.sh down [--keep]    # reverse the chown, remove the project, remove the store
+#   scripts/e2e/stack.sh down [--keep|--purge]   # reverse the chown, remove the project and the store
 #   scripts/e2e/stack.sh status
 #
 # Everything heavy belongs inside `cargo xtask heavy -- …`, which takes the machine-wide compile lock,
@@ -748,7 +748,16 @@ EOF
 # ---------------------------------------------------------------------------------------------------
 # down
 
+# What `down` keeps, and why.
+#
+# `runs/` is the record — stage 6's `--compare` reads a previous `report.json`, and the goal's Record
+# quotes numbers out of them — and `ingest/` is 861 MiB that takes minutes to rebuild from the corpus.
+# Neither is root-owned, so neither can stop `scripts/release-goal.sh` removing the worktree, which is
+# what stage 2's exit was actually protecting. They are printed with their size so nobody meets that
+# 861 MiB by surprise, and `down --purge` sweeps the floor for somebody who wants it swept.
 cmd_down() {
+  local purge=0
+  if [ "${1:-}" = --purge ]; then purge=1; shift; fi
   if [ "${1:-}" = --keep ]; then
     note "--keep: leaving $PROJECT up and $STORE in place. Tear it down with \`stack.sh down\` when the
   interactive pass is finished; until then this lane holds ports $LAPIDARY_PORT_WEB/$LAPIDARY_PORT_API."
@@ -775,9 +784,41 @@ cmd_down() {
   remove_store
   # Last, and only once the volumes are gone: while a db volume survives, its password must too.
   rm -f "$ENVFILE"
-  echo "  left behind: $(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_" || true) of this project's volumes, $(docker ps -a --format '{{.Names}}' | grep -c "^${PROJECT}-" || true) of its containers"
+  if [ "$purge" = 1 ]; then
+    # The same path gate as the store: a variable that is set and wrong is not caught by `set -u`.
+    for doomed in "$RUNS" "$INGEST"; do
+      case "$doomed" in
+        "$ROOT"/target/e2e/[0-4]/runs | "$ROOT"/target/e2e/[0-4]/ingest) rm -rf "$doomed" ;;
+        *) die "refusing to remove \`$doomed\`: that is not target/e2e/<lane>/runs or /ingest." ;;
+      esac
+    done
+    echo "  --purge: removed runs/ and ingest/ as well"
+  fi
+
+  echo "  removed: $(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_" || true) of this project's volumes remain, $(docker ps -a --format '{{.Names}}' | grep -c "^${PROJECT}-" || true) of its containers"
   echo "  the owner's volumes, untouched: $(docker volume ls --format '{{.Name}}' | grep -c '^lapidary_lapidary-' || true) of 2"
-  echo "  $WORK holds: $(ls -A "$WORK" 2>/dev/null | paste -sd', ' -)"
+  # What survives, and how big it is. `runs/` is the regression record and `ingest/` is the corpus slice;
+  # both are host-owned, so neither blocks `release-goal.sh` removing the worktree.
+  local kept=0
+  for keep in "$RUNS" "$INGEST"; do
+    if [ -d "$keep" ]; then
+      kept=1
+      printf '  kept: %s — %s, %s file(s)%s\n' \
+        "${keep#"$ROOT"/}" \
+        "$(du -sh --apparent-size "$keep" 2>/dev/null | cut -f1)" \
+        "$(find "$keep" -type f 2>/dev/null | wc -l)" \
+        "$([ "$keep" = "$RUNS" ] && echo ' (the regression record: drive --compare reads these)' || echo ' (the corpus slice: minutes to rebuild)')"
+    fi
+  done
+  [ "$kept" = 1 ] && echo "  \`stack.sh down --purge\` removes those two as well."
+  # The guarantee stage 2 is actually after: nothing here is root-owned, so the worktree can be removed.
+  local rooted
+  rooted=$(find "$WORK" ! -user "$(id -u)" 2>/dev/null | head -3)
+  if [ -n "$rooted" ]; then
+    die "these are not owned by $(id -un), so scripts/release-goal.sh could not remove this worktree:
+$rooted"
+  fi
+  echo "  nothing under $WORK is owned by another user, so the worktree is removable"
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -813,7 +854,7 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
-    echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep]" >&2
+    echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
     exit 2
     ;;
 esac
