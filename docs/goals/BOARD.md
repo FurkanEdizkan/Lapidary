@@ -57,6 +57,11 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
 - **Sharing:** choosing several parts to pull at once; part names from the manifest; a controlled destination taking
   a sharer's revisions; a grant or a new share waking the other side's peer role (deferred three times); progress
   moving a file at a time.
+- **Accessibility, found by T1's rig (2026-09-26):** `ScanProgress` (`web/src/components/Upload.tsx:296`) has no
+  `role`, no id and no `aria-live`, so a scan's progress is announced to nobody and a driver can only key off its text
+  (offered to G6, which is already in that component). Several regions label themselves with `useId()` for
+  `aria-labelledby` — saved filters, the quick-look pane, every `Dialog` title, `FirstRun` — so they are reachable only
+  by heading text, which every future harness pays for.
 - **Web:** lossy WebP at about q85 (`images.rs:184`); per-triangle face ids for measurement snapping
   (`web/src/lib/measure.ts:97`); the 1,000-part UI sweep and GPU frame times; category re-parenting.
 - **Other:** the `notify` watcher for `lapidary folder` (`bin/lapidary/src/folder.rs:18`); a cached OCCT layer for the
