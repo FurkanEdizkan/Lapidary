@@ -128,6 +128,13 @@ function RemovedRow({ card, into }: { card: PartCard; into: PartCard | null }) {
   const [confirming, setConfirming] = useState(false)
   // `typeof`, not `=== null`: the response is cast, and a server from before this field sends none.
   const removedAt = typeof card.removedAt === 'string' ? card.removedAt : null
+  /*
+    Whether the part this one was folded into has since been removed as well, which decides whether
+    the line naming it is a link. `typeof` for the same reason as above, and hoisted out of the JSX
+    on purpose: a bare `'string'` inside a child expression is a literal reaching the screen as far
+    as `no-bare-strings.test.ts` can tell, and it is right to say so.
+  */
+  const intoRemoved = into !== null && typeof into.removedAt === 'string'
   const quiet =
     'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2.5 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
@@ -154,13 +161,27 @@ function RemovedRow({ card, into }: { card: PartCard; into: PartCard | null }) {
         */}
         {into === null ? null : (
           <p className="text-xs">
-            <Link
-              to="/parts/$partId"
-              params={{ partId: into.id }}
-              className="ease-mechanical text-[var(--color-dim)] underline decoration-[var(--color-edge)] underline-offset-2 duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
-            >
-              {strings.likeness.foldedInto(into.name)}
-            </Link>
+            {/*
+              Said either way, and a link only while the part it names is in the library.
+
+              `GET /api/libraries/{id}/folds` answers with the kept part whether it is live or
+              itself removed, deliberately: "folded into X" is true whether or not X is in the
+              library today. But a removed part has no page — every read path filters `deleted_at`
+              — so linking to one offers a press that lands on "could not open this part". The
+              sentence is the same; only the press is withheld. A *purged* kept part takes its
+              `folded_into` row with it, so `into` is `null` and this line is not drawn at all.
+            */}
+            {intoRemoved ? (
+              <span className="text-[var(--color-dim)]">{strings.likeness.foldedInto(into.name)}</span>
+            ) : (
+              <Link
+                to="/parts/$partId"
+                params={{ partId: into.id }}
+                className="ease-mechanical text-[var(--color-dim)] underline decoration-[var(--color-edge)] underline-offset-2 duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+              >
+                {strings.likeness.foldedInto(into.name)}
+              </Link>
+            )}
           </p>
         )}
       </div>

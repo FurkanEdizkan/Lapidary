@@ -374,6 +374,28 @@ test('a folded part is removed, and the Removed list says which part it went int
   screen.getByRole('button', { name: strings.removal.restore })
 })
 
+/**
+ * `/folds` answers with the kept part whether it is live or itself removed, so that "folded into X"
+ * stays true whichever it is (G3's handler says so in as many words). A removed part has no page —
+ * every read path filters `deleted_at` — so the sentence stays and the press goes: linking would
+ * offer a click that lands on "could not open this part".
+ */
+test('a part folded into one that was removed since still says so, without a link', async () => {
+  stub({
+    removed: [
+      { ...SPARES, removedAt: '2026-09-26T09:20:00Z' },
+      { ...MOUNTING, removedAt: '2026-09-26T11:00:00Z' },
+    ],
+    folds: [{ part: SPARES.id, into: { ...MOUNTING, removedAt: '2026-09-26T11:00:00Z' } }],
+  })
+  mount(<RemovedPage library={LIBRARY} />)
+  const said = await screen.findByText(strings.likeness.foldedInto(MOUNTING.name))
+  expect(said.tagName).toBe('SPAN')
+  expect(screen.queryByRole('link', { name: strings.likeness.foldedInto(MOUNTING.name) })).toBeNull()
+  // And the way back is still the ordinary one, on both rows.
+  expect(screen.getAllByRole('button', { name: strings.removal.restore })).toHaveLength(2)
+})
+
 test('an ordinary removal says nothing about folding', async () => {
   stub({ removed: [{ ...SPARES, removedAt: '2026-09-26T09:20:00Z' }], folds: [] })
   mount(<RemovedPage library={LIBRARY} />)
