@@ -425,9 +425,18 @@ EOF
 build_ingest_tree() {
   if [ -f "$INGEST/.seeded" ] && [ "${FRESH_INGEST:-}" != 1 ]; then
     echo "  ingest tree already built ($(find "$INGEST" -type f ! -name .seeded | wc -l) files); FRESH_INGEST=1 to rebuild"
+    # Still checked, and this is the path that most needs it: a tree kept across a `down` is reattached
+    # by the next `up`, and if that did not happen the mount is stale and every scan finds nothing.
+    check_worker_sees_ingest
     return 0
   fi
-  rm -rf "$INGEST"
+  # Clear the CONTENTS, never the directory. `rm -rf "$INGEST"` replaces the inode, and the worker's
+  # bind mount follows the inode rather than the path — so the container goes on seeing the old, deleted,
+  # empty directory and every scan finds nothing, with no error anywhere. That cost a run: the walk
+  # reported `total=1 ingested=0` and looked like a broken scan route. Measured proof, for anyone who
+  # doubts it: host inode 16909401, container /ingest inode 16908512, after one `rm -rf`.
+  mkdir -p "$INGEST"
+  find "$INGEST" -mindepth 1 -delete
   mkdir -p "$INGEST/step" "$INGEST/misc" "$INGEST/alike"
 
   # step/: the six B-rep fixtures, which is what sends work through the OCCT worker at all.
@@ -503,6 +512,21 @@ build_ingest_tree() {
 
   : > "$INGEST/.seeded"
   echo "  ingest tree: $(find "$INGEST" -type f ! -name .seeded | wc -l) files, $(du -sh --apparent-size "$INGEST" | cut -f1), $(find "$INGEST" -mindepth 1 -type d | wc -l) directories"
+  check_worker_sees_ingest
+}
+
+# The worker must actually see the tree. This is the assertion the inode bug needed: without it a broken
+# mount looks like a broken scan route, three checks downstream and a scan's worth of time later.
+check_worker_sees_ingest() {
+  local host_files seen
+  host_files=$(find "$INGEST" -type f ! -name .seeded | wc -l)
+  seen=$(compose exec -T worker sh -c 'find /ingest -type f ! -name .seeded | wc -l' 2>/dev/null | tr -dc '0-9')
+  [ "${seen:-0}" = "$host_files" ] || die "the host has $host_files files under $INGEST but the worker sees
+  ${seen:-0} in /ingest, so the bind mount is not showing this directory and every scan will find nothing.
+  A bind mount follows the inode, not the path: if anything replaced the directory rather than its
+  contents, only \`stack.sh down\` then \`up\` reattaches it. Compare \`stat -c %i $INGEST\` with
+  \`compose exec -T worker stat -c %i /ingest\` to confirm that is what happened."
+  echo "  the worker sees all $seen of them in /ingest"
 }
 
 # A library by name, made if it is not there. Names, not ids, so `seed` is re-runnable.
