@@ -6,6 +6,7 @@
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
+#   scripts/e2e/stack.sh exit2 [<part.stl> …]    # Phase 6 exit 2, with the numbers behind the verdict
 #   scripts/e2e/stack.sh down [--keep|--purge]   # reverse the chown, remove the project and the store
 #   scripts/e2e/stack.sh status
 #
@@ -905,6 +906,67 @@ EOF
 }
 
 # ---------------------------------------------------------------------------------------------------
+# exit2: Phase 6's second exit, measured — "uploading a known part surfaces its near-duplicates".
+#
+# One library per pair, because near-duplicates are found within a library and two pairs in one library
+# would be each other's candidates. The original goes in, then the same solid turned **off-axis** by 37
+# degrees goes in at a second path, and the question is whether `/likeness` surfaces it. The numbers behind
+# the verdict are read from `part_shape` rather than inferred: the 35-float descriptor and `size_mm` are
+# both columns, so the Euclidean distance and the size-band position are exact rather than estimated.
+#
+# No score is shown in the interface, on purpose — `phase-6.md` says a figure like 0.038 invites a
+# judgement nobody can calibrate — so reading the database is the only way to report one, and this is the
+# place it is legitimate to.
+cmd_exit2() {
+  wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
+  local sources=("$@")
+  [ ${#sources[@]} -gt 0 ] || sources=("$ROOT/fixtures/bracket-lp-1042-03.stl")
+  local degrees=${TURN_DEGREES:-37}
+  local stamp; stamp=$(date +%s)
+  local out=$WORK/exit2-$stamp.json
+  echo "[" > "$out"
+  local first=1
+
+  for source in "${sources[@]}"; do
+    [ -f "$source" ] || die "no such file: $source"
+    local name; name=$(basename "$source" .stl)
+    local turned=$WORK/exit2-$name-turn$degrees.stl
+    python3 "$ROOT/scripts/e2e/skew-stl.py" --turn "$degrees" "$source" "$turned" > /dev/null ||
+      die "skew-stl.py --turn $degrees failed on $source"
+
+    local lib
+    lib=$(library_named "Exit 2 $name $stamp" hobby)
+    [ -n "$lib" ] || die "could not make a library for $name"
+    echo "== $name into ${lib:0:8}…"
+    local began=$SECONDS
+    echo "  the known part:  $(upload_file "$lib" "$source" "pair/$name.stl")"
+    echo "  turned $degrees degrees: $(upload_file "$lib" "$turned" "pair/$name-turn$degrees.stl")"
+    local settled=$((SECONDS - began))
+
+    local a b
+    a=$(sql "SELECT id FROM part WHERE library_id = '$lib' AND source_path = 'pair/$name.stl'")
+    b=$(sql "SELECT id FROM part WHERE library_id = '$lib' AND source_path = 'pair/$name-turn$degrees.stl'")
+    # Both profiles, and how many parts of this library have none. Profiling runs in line inside the ingest
+    # job, so a settled batch should leave nothing unprofiled and no `profile_shape` job behind.
+    local rows stray
+    rows=$(sql "SELECT p.source_path || E'\t' || s.size_mm || E'\t' || array_to_string(s.descriptor, ',') FROM part p JOIN part_shape s ON s.part_id = p.id WHERE p.library_id = '$lib' ORDER BY p.source_path")
+    stray=$(sql "SELECT count(*) FROM job WHERE library_id = '$lib' AND kind LIKE '%profile%'")
+    local unprofiled
+    unprofiled=$(sql "SELECT count(*) FROM part p WHERE p.library_id = '$lib' AND p.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM part_shape s WHERE s.part_id = p.id)")
+    local likeness
+    likeness=$(curl -sf "$API/api/parts/$a/likeness")
+
+    WORK=$WORK TURN_DEGREES=$degrees PAIR_NAME=$name SETTLED=$settled STRAY=${stray:-?} UNPROFILED=${unprofiled:-?} \
+      TURNED_ID=$b LIKENESS=$likeness ROWS=$rows python3 "$ROOT/scripts/e2e/exit2.py" | tee "$WORK/exit2-$name.txt"
+    [ "$first" = 1 ] || echo "," >> "$out"
+    first=0
+    cat "$WORK/exit2-$name.json" >> "$out"
+  done
+  echo "]" >> "$out"
+  note "exit 2 measurements in $out"
+}
+
+# ---------------------------------------------------------------------------------------------------
 # down
 
 # What `down` keeps, and why.
@@ -1013,12 +1075,14 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   up) shift; cmd_up "$@" ;;
   seed) shift; cmd_seed "$@" ;;
+  exit2) shift; cmd_exit2 "$@" ;;
   drive) shift; cmd_drive "$@" ;;
   down) shift; cmd_down "$@" ;;
   status) shift; cmd_status "$@" ;;
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
+    echo "  exit2 [<part.stl> …]   Phase 6 exit 2: a known part, then the same solid turned off-axis" >&2
     exit 2
     ;;
 esac

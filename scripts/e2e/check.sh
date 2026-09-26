@@ -87,9 +87,11 @@ for mjs in "$HERE"/*.mjs; do
     no "node --check $(basename "$mjs")"; node --check "$mjs"
   fi
 done
-if python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$HERE/skew-stl.py"; then
-  ok "python parses skew-stl.py"
-else no "python parses skew-stl.py"; fi
+for py in "$HERE"/*.py; do
+  if python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$py"; then
+    ok "python parses $(basename "$py")"
+  else no "python parses $(basename "$py")"; fi
+done
 if python3 -c "import sys,yaml; yaml.safe_load(open(sys.argv[1]))" "$HERE/e2e.override.yaml" 2> /dev/null; then
   ok "yaml parses e2e.override.yaml"
 else
@@ -114,14 +116,14 @@ echo "== stack.sh still defines every function it needs"
 for fn in die refuse note ask_owner lane_var assert_project compose or_none free_gb ram_gib field json \
   sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
   build_ingest_tree check_worker_sees_ingest library_named upload_file \
-  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status; do
+  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_exit2; do
   if grep -qE "^$fn\(\) \{" "$HERE/stack.sh"; then
     pass=$((pass + 1))
   else
     no "stack.sh no longer defines $fn()"
   fi
 done
-ok "all 33 of stack.sh's functions are defined (counted individually above)"
+ok "all 34 of stack.sh's functions are defined (counted individually above)"
 
 echo "== skew-stl.py makes the geometry it claims to"
 # The two duplicate fixtures carry the whole meaning of the near-duplicate case, so their geometry is
