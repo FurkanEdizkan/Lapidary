@@ -274,7 +274,14 @@ const FLOWS = [
       const n = await cardsSettled(page, (v) => v > 0 && v < 50)
       const step = facets.formats.find((f) => f.value === 'step')
       expect(n > 0, 'filtering to STEP showed no cards')
-      expect(n === step.count, `${n} cards shown, but the facet counts ${step.count} STEP parts`)
+      // `count` is null past the server's exact-count threshold, and the UI then shows no number at all.
+      // Six STEP fixtures is far under it, so an exact match is the real assertion — but a null must not
+      // fail against correct behaviour.
+      if (step.count === null) {
+        expect(n <= 50, `${n} cards on one page of 50`)
+      } else {
+        expect(n === step.count, `${n} cards shown, but the facet counts ${step.count} STEP parts`)
+      }
       return `${formats.length} formats (${formats.join(', ')}); STEP ${JSON.stringify(pressed)} shows ${n}`
     },
   },
@@ -690,7 +697,7 @@ const FLOWS = [
       expect(pmiToggle === 'true', `the PMI toggle: ${pmiToggle}`)
       // The labels are DOM over the canvas, not drawn into it, which is why they are assertable.
       const labels = await page.evaluate(
-        `document.querySelectorAll(${JSON.stringify(S.pmiSection)} + ' , ' + ${JSON.stringify(S.pmiSection)}).length && [...document.querySelectorAll(${JSON.stringify(S.pmiSection)} + ' [role="list"] li')].length`,
+        `document.querySelectorAll(${JSON.stringify(`${S.pmiSection} [role="list"] li`)}).length`,
       )
       expect(labels > 0, 'the specified-dimensions section lists no tolerances')
       // Explode is a labelled range and only exists for a drawn assembly, so it is looked for on the
@@ -742,14 +749,19 @@ const FLOWS = [
         { timeout: 20_000 },
       )
       expect(listed.includes(victim.name), `${JSON.stringify(victim.name)} is removed but /removed does not name it`)
-      // The restore control is a plain button in the row; there is no aria-label and no id.
+      // The restore control is a plain button in the row; there is no aria-label and no id. So it has to
+      // be found inside the row that names *this* part — the first Restore in the document belongs to
+      // whichever part /removed happens to list first, and restoring somebody else's would leave this
+      // flow's victim removed and quietly change the library for every run after it.
       const restored = await page.evaluate(`(() => {
-        const b = [...document.querySelectorAll('button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.restore)})
-        if (!b) return false
+        const row = [...document.querySelectorAll('li')].find((li) => li.textContent.includes(${JSON.stringify(victim.name)}))
+        if (!row) return 'no row names it'
+        const b = [...row.querySelectorAll('button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.restore)})
+        if (!b) return 'its row has no Restore button'
         b.click()
-        return true
+        return 'clicked'
       })()`)
-      expect(restored, `no "${T.restore}" button on /removed`)
+      expect(restored === 'clicked', `${JSON.stringify(victim.name)} on /removed: ${restored}`)
       const after = await page.settle(
         () => ctx.countParts(ctx.sweep.id),
         (n) => n === before,
@@ -950,8 +962,7 @@ const FLOWS = [
     async run(page, ctx) {
       // The three cases are seeded and asserted here so that when G6 lands, the only thing missing is
       // the assertion on its own widget.
-      const { parts } = await ctx.get(`/api/libraries/${ctx.sweep.id}/parts?limit=500`)
-      const alike = parts.filter((p) => (p.sourcePath ?? '').startsWith('alike/'))
+      const alike = (await ctx.allParts()).filter((p) => (p.sourcePath ?? '').startsWith('alike/'))
       expect(alike.length === 4, `alike/ should hold the flange and its three variants; found ${alike.length}`)
       const kinds = alike.map((p) => p.sourcePath.replace('alike/flange-dn40-lp-3310-02', '').replace('.stl', '') || '(the original)')
       for (const want of ['-second-copy', '-rotated', '-scaled-115']) {
@@ -1012,13 +1023,30 @@ const ctx = {
     }
     throw new Error(`countParts walked 40 pages of ${library} without reaching the end`)
   },
-  /** One part of Sweep whose source path matches, cached so a flow costs one page read. */
-  async partLike(pattern, optional = false) {
+  /**
+   * Every part of Sweep, cached. Paged on `next` rather than trusting one `limit=500` read: Sweep holds
+   * about 412 today, so a single page happens to be the whole thing, and a flow written against that
+   * would quietly test a prefix the day the corpus slice grows.
+   */
+  async allParts() {
     if (ctx._parts === undefined) {
-      const { parts } = await ctx.get(`/api/libraries/${ctx.sweep.id}/parts?limit=500`)
-      ctx._parts = parts
+      const all = []
+      let after
+      for (let page = 0; page < 40; page++) {
+        const { parts, next } = await ctx.get(
+          `/api/libraries/${ctx.sweep.id}/parts?limit=500${after ? `&after=${after}` : ''}`,
+        )
+        all.push(...parts)
+        if (next === null || next === undefined) break
+        after = next
+      }
+      ctx._parts = all
     }
-    const found = ctx._parts.find((p) => pattern.test(p.sourcePath ?? ''))
+    return ctx._parts
+  },
+  /** One part of Sweep whose source path matches. */
+  async partLike(pattern, optional = false) {
+    const found = (await ctx.allParts()).find((p) => pattern.test(p.sourcePath ?? ''))
     if (found === undefined && !optional) {
       throw new Error(`no part in Sweep whose source path matches ${pattern}; the seed did not land`)
     }
