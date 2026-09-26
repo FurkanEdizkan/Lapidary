@@ -1002,9 +1002,11 @@ const FLOWS = [
     name: 'duplicates',
     widths: [1440, 390],
     pending:
-      "G6's /duplicates page and part-page section are not on main yet. G3's API is (merged f18e0f0), so " +
-      'everything below except the page assertions runs for real; the page assertions turn themselves on ' +
-      'the moment the route renders, so landing G6 leaves only this flag to remove.',
+      "Two things are missing, not one. G6's /duplicates page is not on main — and nothing writes " +
+      'part_shape at all yet, so every part is unprofiled and only the identical-by-hash half of ' +
+      'likeness can answer. What runs below is real and asserted; the near-duplicate and page ' +
+      'assertions arm themselves the moment a producer and the page exist, so landing both leaves only ' +
+      'this flag to remove.',
     async run(page, ctx) {
       // The three fixtures, and what each of them is *for*. This is the assertion `alike/` was seeded to
       // make, and `docs/phase-6.md`'s claim stated as a test: a rotation is a near-duplicate because the
@@ -1020,28 +1022,15 @@ const FLOWS = [
         expect(part !== undefined, `no ${what} fixture in alike/: ${JSON.stringify(alike.map((p) => p.sourcePath))}`)
 
       const likeness = await ctx.get(`/api/parts/${original.id}/likeness`)
-      expect(likeness.profiled === true, 'the flange has no shape profile, so likeness cannot answer for it')
       const ids = (list) => (list ?? []).map((p) => p.id)
-      // Identical: the same bytes at a second path. `library_holds` joins on source_path AND hash, so this
-      // is a second part rather than a skipped job — the case an ingest-time hash check cannot make.
+
+      // Identical, and this half needs no profile at all — it is the parts sharing this one's current
+      // source `blake3`. `library_holds` joins on source_path AND hash, so the same bytes at a second path
+      // are a second part rather than a skipped job, which is the case an ingest-time hash check cannot
+      // make and the reason `-second-copy` is in the fixtures.
       expect(
         ids(likeness.identical).includes(copy.id),
-        `-second-copy has the same bytes at another path and must be identical; identical holds ${ids(likeness.identical).length} parts`,
-      )
-      // Near-duplicate: the same solid on a different axis. The invariance phase-6.md claims.
-      expect(
-        ids(likeness.nearDuplicates).includes(rotated.id),
-        `-rotated is the same solid stood up and must be a near-duplicate; nearDuplicates holds ${JSON.stringify(ids(likeness.nearDuplicates).length)}`,
-      )
-      // Similar but NOT near: 15 % larger is outside the ln(1.02) band by design. A detector that called
-      // this one a near-duplicate would be wrong, and this is the assertion that would catch it.
-      expect(
-        !ids(likeness.nearDuplicates).includes(scaled.id),
-        '-scaled-115 is 15 % larger, far outside the ln(1.02) band, and must NOT be a near-duplicate',
-      )
-      expect(
-        ids(likeness.similar).includes(scaled.id) || ids(likeness.variants).includes(scaled.id),
-        `-scaled-115 should come back as similar or a variant; it is in neither (similar ${ids(likeness.similar).length}, variants ${ids(likeness.variants).length})`,
+        `-second-copy has the same bytes at another path and must come back identical; identical holds ${ids(likeness.identical).length} parts`,
       )
 
       const clusters = await ctx.get(`/api/libraries/${ctx.sweep.id}/duplicates`)
@@ -1053,6 +1042,40 @@ const FLOWS = [
       const folds = await ctx.get(`/api/libraries/${ctx.sweep.id}/folds`)
       expect(Array.isArray(folds), 'GET /folds did not answer a list')
 
+      // The near-duplicate half, which arms itself. Nothing writes `part_shape` today — G3 built the reads
+      // and W0 the types, and `PgShapes::record` is described as the repository the worker *will* use — so
+      // `profiled` is false, `nearDuplicates` and `similar` are empty, and the route saying so is correct
+      // rather than broken. The moment a producer lands, `profiled` turns true and these three become the
+      // assertions `alike/` was seeded to make: `docs/phase-6.md`'s rotation invariance, stated as a test.
+      let near = 'unprofiled, so the near-duplicate half cannot be exercised yet'
+      if (likeness.profiled) {
+        expect(
+          ids(likeness.nearDuplicates).includes(rotated.id),
+          `-rotated is the same solid stood on a different axis and must be a near-duplicate; nearDuplicates holds ${ids(likeness.nearDuplicates).length}`,
+        )
+        // A detector that called 15 % larger a near-duplicate would be wrong, and this catches it.
+        expect(
+          !ids(likeness.nearDuplicates).includes(scaled.id),
+          '-scaled-115 is 15 % larger, far outside the ln(1.02) band, and must NOT be a near-duplicate',
+        )
+        expect(
+          ids(likeness.similar).includes(scaled.id) || ids(likeness.variants).includes(scaled.id),
+          `-scaled-115 should come back similar or a variant; it is in neither (similar ${ids(likeness.similar).length}, variants ${ids(likeness.variants).length})`,
+        )
+        near = 'rotated is near, scaled-115 is similar and not near'
+      } else {
+        // The honest assertion while there is no producer: the route must say "not compared yet" rather
+        // than imply nothing is alike, and the queue must own up to the whole library being unprofiled.
+        expect(
+          ids(likeness.nearDuplicates).length === 0 && ids(likeness.similar).length === 0,
+          `profiled is false but the route returned ${ids(likeness.nearDuplicates).length} near and ${ids(likeness.similar).length} similar parts, which it cannot know`,
+        )
+        expect(
+          clusters.unprofiled >= ctx.sweep.parts - 1,
+          `nothing profiles parts yet, so /duplicates should report about ${ctx.sweep.parts} unprofiled; it says ${clusters.unprofiled}`,
+        )
+      }
+
       // The page. It turns itself on: while G6 is not on main the route renders nothing recognisable and
       // this reports what it found, and the day it does render, these become real assertions with no edit
       // here — so landing G6 leaves only the `pending` flag above to remove.
@@ -1061,7 +1084,7 @@ const FLOWS = [
         `[...document.querySelectorAll('h1, h2')].some((h) => /duplicate/i.test(h.textContent))`,
       )
       if (!hasPage) {
-        return `API only: identical/near/similar all correct, ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s) — /duplicates renders no page yet`
+        return `API only (no /duplicates page yet): identical-by-hash correct, ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s); ${near}`
       }
       const shown = await page.settle(
         () => page.evaluate('document.body.textContent'),
@@ -1069,7 +1092,7 @@ const FLOWS = [
         { timeout: 20_000 },
       )
       expect(shown.includes(original.name), 'the /duplicates page does not name the flange it clustered')
-      return `page and API agree: ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s)`
+      return `page and API agree: ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s); ${near}`
     },
   },
 ]
