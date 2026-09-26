@@ -28,6 +28,7 @@ mod migrate;
 pub mod reap;
 mod scan;
 mod seed;
+mod shape;
 
 pub use handler::WorkerHandler;
 pub use seed::seed_examples;

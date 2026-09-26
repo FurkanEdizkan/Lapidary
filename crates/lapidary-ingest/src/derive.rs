@@ -47,6 +47,9 @@ impl WorkerHandler {
     /// fails: a database that will not answer at startup costs a rebuild delayed to the next
     /// start, not a worker that never came up.
     pub async fn enqueue_stale_derivatives(&self) {
+        // Beside the rung sweep and not inside it: a part can be missing its shape profile while
+        // every rung it has is current — every part ingested before Phase 6 is. See `shape.rs`.
+        self.enqueue_stale_shapes().await;
         let jobs = PgJobs(self.db.clone());
         for format in MESH_EXTENSIONS.iter().chain(&CAD_FORMATS) {
             let Ok(kernel) = self.kernel_for(format) else {
@@ -240,6 +243,16 @@ impl WorkerHandler {
                 };
                 self.store_hashed(revision, want, &rung.glb, rung.grid, &kernel_version)
                     .await?;
+                // A rebuilt L0 is a new set of triangles, so the stored shape profile was computed
+                // from a rung that is no longer this revision's: `part_shape.l0_blake3` would not
+                // match and every reader would ignore the row. Profiled again here, from the bytes
+                // just written, rather than left for the next worker start to sweep up. Warn-only,
+                // as ingest's is: the rung is committed and serving, and failing this job would
+                // tell the user a picture was not rebuilt when it was. See `shape.rs`.
+                if want == DerivativeKind::TessellationL0 {
+                    self.record_shape(library, revision, &format!("revision {revision}"))
+                        .await;
+                }
             }
         }
         Ok(Outcome::Rendered)

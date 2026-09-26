@@ -40,7 +40,7 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
-pub use shapes::{PgShapes, ShapeRow};
+pub use shapes::{PgShapes, ShapeRow, StaleShape};
 pub use shares::{
     BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
     RosterRow, ShareRow,

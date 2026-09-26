@@ -186,6 +186,98 @@ pub(crate) fn write_glb(indexed: &Indexed) -> Result<Vec<u8>, CadError> {
     Ok(out)
 }
 
+/// A GLB's JSON document and its BIN chunk, every offset re-derived from the bytes rather than
+/// recomputed the way [`write_glb`] computed it. A self-consistent writer passes a reader built
+/// from its own arithmetic every time, which is the failure this shape exists to catch.
+fn parse_glb(bytes: &[u8]) -> Result<(serde_json::Value, &[u8]), CadError> {
+    let refused = |detail: String| CadError::Unrenderable { detail };
+    let u32_at = |offset: usize| -> Result<usize, CadError> {
+        bytes
+            .get(offset..offset + 4)
+            .and_then(|four| <[u8; 4]>::try_from(four).ok())
+            .map(|four| u32::from_le_bytes(four) as usize)
+            .ok_or_else(|| refused(format!("it stops at {} bytes", bytes.len())))
+    };
+    if u32_at(0)? != MAGIC as usize || u32_at(4)? != CONTAINER_VERSION as usize {
+        return Err(refused("it is not a glTF 2.0 binary file".to_owned()));
+    }
+    if u32_at(8)? != bytes.len() {
+        return Err(refused(format!(
+            "it declares {} bytes and holds {}",
+            u32_at(8)?,
+            bytes.len()
+        )));
+    }
+    let json_len = u32_at(12)?;
+    if u32_at(16)? != CHUNK_JSON as usize {
+        return Err(refused("its first chunk is not JSON".to_owned()));
+    }
+    let json = bytes
+        .get(20..20 + json_len)
+        .ok_or_else(|| refused("its JSON chunk runs past the file".to_owned()))?;
+    let json: serde_json::Value = serde_json::from_slice(json)
+        .map_err(|source| refused(format!("its glTF document does not parse: {source}")))?;
+    let bin_header = 20 + json_len;
+    let bin_len = u32_at(bin_header)?;
+    if u32_at(bin_header + 4)? != CHUNK_BIN as usize {
+        return Err(refused("its second chunk is not BIN".to_owned()));
+    }
+    let bin = bytes
+        .get(bin_header + 8..bin_header + 8 + bin_len)
+        .ok_or_else(|| refused("its BIN chunk runs past the file".to_owned()))?;
+    Ok((json, bin))
+}
+
+/// The triangles one of our rungs holds: shared positions, and the index buffer over them.
+///
+/// The inverse of [`write_glb`] for the two buffer views it writes, and nothing more — no
+/// materials, no normals, no scene graph, because it writes none. `shape.rs` reads a stored L0
+/// through this, which is why it is production code rather than a test helper: an algorithm
+/// change costs a 5k-triangle decode instead of a re-tessellation (`docs/goals/phase-6.md`
+/// § Shape profile).
+///
+/// Round-trips float32 bit for bit, as the codecs do and as the tests below check. Refuses
+/// anything it cannot make triangles of rather than returning a partial mesh: a profile computed
+/// from half a part is a wrong answer that looks like a right one.
+pub fn read_triangles(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, Vec<u32>), CadError> {
+    let (json, bin) = parse_glb(bytes)?;
+    let refused = |detail: String| CadError::Unrenderable { detail };
+    let view = |at: usize| -> Result<(&[u8], usize), CadError> {
+        let ext = &json["bufferViews"][at]["extensions"][MESHOPT];
+        let number = |key: &str| {
+            ext[key]
+                .as_u64()
+                .map(|n| n as usize)
+                .ok_or_else(|| refused(format!("buffer view {at} has no compressed {key}")))
+        };
+        let start = number("byteOffset")?;
+        let end = start + number("byteLength")?;
+        let slice = bin
+            .get(start..end)
+            .ok_or_else(|| refused(format!("buffer view {at} runs past the BIN chunk")))?;
+        Ok((slice, number("count")?))
+    };
+    let (vertices, vertex_count) = view(0)?;
+    let (indices, index_count) = view(1)?;
+    let positions = meshopt::decode_vertex_buffer::<[f32; 3]>(vertices, vertex_count)
+        .map_err(|source| refused(format!("its positions do not decode: {source}")))?;
+    let indices = meshopt::decode_index_buffer::<u32>(indices, index_count)
+        .map_err(|source| refused(format!("its triangles do not decode: {source}")))?;
+    if indices.len() % 3 != 0 {
+        return Err(refused(format!(
+            "it holds {} indices, which is not a whole number of triangles",
+            indices.len()
+        )));
+    }
+    if let Some(past) = indices.iter().find(|&&i| i as usize >= positions.len()) {
+        return Err(refused(format!(
+            "a triangle names vertex {past} and it holds {}",
+            positions.len()
+        )));
+    }
+    Ok((positions, indices))
+}
+
 fn position_bounds(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
@@ -202,10 +294,9 @@ fn position_bounds(positions: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
 mod tests {
     use super::*;
 
-    /// A minimal GLB reader written from the specification, deliberately sharing no helper
-    /// with the writer above. It re-derives every offset from the bytes rather than
-    /// recomputing them the way `write_glb` did — a self-consistent writer passes a reader
-    /// built from its own arithmetic every time, which is the failure this exists to catch.
+    /// The GLB read back through `parse_glb`, which shares no helper with the writer above and
+    /// re-derives every offset from the bytes — a self-consistent writer passes a reader built
+    /// from its own arithmetic every time, which is the failure this shape exists to catch.
     struct Parsed {
         json: serde_json::Value,
         bin: Vec<u8>,
@@ -218,28 +309,10 @@ mod tests {
     }
 
     fn read_glb(bytes: &[u8]) -> Parsed {
-        assert_eq!(u32_at(bytes, 0), MAGIC, "magic");
-        assert_eq!(u32_at(bytes, 4), 2, "container version");
-        assert_eq!(
-            u32_at(bytes, 8) as usize,
-            bytes.len(),
-            "the declared length must be the real length"
-        );
-
-        let json_len = u32_at(bytes, 12) as usize;
-        assert_eq!(u32_at(bytes, 16), CHUNK_JSON);
-        let json_start = 20;
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes[json_start..json_start + json_len])
-                .expect("the JSON chunk parses");
-
-        let bin_header = json_start + json_len;
-        let bin_len = u32_at(bytes, bin_header) as usize;
-        assert_eq!(u32_at(bytes, bin_header + 4), CHUNK_BIN);
-        let bin_start = bin_header + 8;
+        let (json, bin) = parse_glb(bytes).expect("our own GLB reads back");
         Parsed {
             json,
-            bin: bytes[bin_start..bin_start + bin_len].to_vec(),
+            bin: bin.to_vec(),
         }
     }
 
@@ -364,29 +437,11 @@ mod tests {
         );
     }
 
-    /// The positions and triangles the two compressed views decode to.
-    fn decode(parsed: &Parsed) -> (Vec<[f32; 3]>, Vec<u32>) {
-        let view = |i: usize| {
-            let ext = &parsed.json["bufferViews"][i]["extensions"][MESHOPT];
-            let start = ext["byteOffset"].as_u64().expect("offset") as usize;
-            let end = start + ext["byteLength"].as_u64().expect("length") as usize;
-            (
-                &parsed.bin[start..end],
-                ext["count"].as_u64().expect("count") as usize,
-            )
-        };
-        let (vertices, vertex_count) = view(0);
-        let (indices, index_count) = view(1);
-        (
-            meshopt::decode_vertex_buffer(vertices, vertex_count).expect("positions decode"),
-            meshopt::decode_index_buffer(indices, index_count).expect("triangles decode"),
-        )
-    }
-
     #[test]
     fn decoding_gives_back_every_triangle_bit_for_bit() {
         let mesh = a_grid();
-        let (positions, decoded) = decode(&read_glb(&write_glb(&mesh).expect("writes")));
+        let (positions, decoded) =
+            read_triangles(&write_glb(&mesh).expect("writes")).expect("decodes");
         assert_eq!(
             triangles(&positions, &decoded),
             triangles(&mesh.positions, &mesh.indices)
@@ -410,12 +465,13 @@ mod tests {
         two.indices.extend(indices);
         two.parts = vec![per_part, per_part];
 
-        let parsed = read_glb(&write_glb(&two).expect("writes"));
+        let bytes = write_glb(&two).expect("writes");
+        let parsed = read_glb(&bytes);
         assert_eq!(
             parsed.json["meshes"][0]["extras"]["parts"],
             serde_json::json!([per_part, per_part])
         );
-        let (positions, decoded) = decode(&parsed);
+        let (positions, decoded) = read_triangles(&bytes).expect("decodes");
         let split = per_part as usize * 3;
         assert!(
             decoded[..split]
