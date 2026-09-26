@@ -883,6 +883,11 @@ cmd_down() {
     echo "  no $ENVFILE, so no compose project to remove"
   fi
   remove_store
+  # These describe a stack that no longer exists, and `drive` reads seed.json to address the libraries by
+  # id. Left behind, they point at ids the next database has never heard of — so `drive` would run against
+  # 404s, or against whatever a re-seed happened to give those names, and report it as flow failures. They
+  # go with the database that made them; `runs/` stays, because a finished run's report is still true.
+  rm -f "$WORK/seed.json" "$WORK/stack.json" "$WORK/seed-checks.tsv"
   # Last, and only once the volumes are gone: while a db volume survives, its password must too.
   rm -f "$ENVFILE"
   if [ "$purge" = 1 ]; then
