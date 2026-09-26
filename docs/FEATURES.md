@@ -154,8 +154,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | User-defined custom fields, max 8 offered as grid filters. Built (`2484c17`): text, number and choice, one GIN index; a number field filters by a range since goal 5 (`870ac66`), and each choice shows how many parts hold it (`0a193c4`) | 5 |
 | Turkish text search config per library. Built (`aad407e`), then removed at the owner's word (`8bb5ea4`): search is `simple` for every library | 5 |
-| Near-duplicate clustering with merge-or-link-as-variant | 6 |
-| Similarity search by geometry embedding (pgvector) | 6 |
+| Near-duplicate clustering with fold-into-or-link-as-variant. *"Fold into" is Phase 6's name for merging a duplicate — a soft delete that records the part kept; CLAUDE.md reserves "no merge" for versioning* | 6 |
+| Similarity search by geometry: a 35-float shape profile per part in a plain `real[]`, compared exactly in Rust. *Decided 2026-09-21: no pgvector in Phase 6; the ceiling is about 100k parts a library and the upgrade is one `ALTER`* | 6 |
 
 ## 3. Viewer and measurement
 
@@ -184,9 +184,10 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Section plane. Capped (`13fd3bf`): a closed mesh's cut face is filled, and an open one says why not | 5 |
 <!--
   **Early, recorded 2026-09-14.** A cut along X, Y or Z across the part's box, moved with a slider
-  and flipped. Picks and wall-thickness rays count only what the cut left drawn. The cut is open:
-  behind it only surfaces facing the viewer are drawn, so a solid reads as its outline and the walls
-  of its holes, not as a filled face. `ROADMAP.md` Phase 5 records the check.
+  and flipped. Picks and wall-thickness rays count only what the cut left drawn. `ROADMAP.md` Phase 5
+  records the check, which was run while the cut was still open — a solid read as its outline and the
+  walls of its holes. **Capping came after it** (`13fd3bf`): a closed mesh's cut face is filled through
+  the stencil buffer, and an open one says why it cannot be.
 -->
 | PMI / GD&T display from AP242 | 5 |
 <!--
@@ -358,7 +359,7 @@ The largest subsystem. Detailed spec below.
 | Feature | Phase |
 |---|---|
 | Widget registry with sizing constraints and config schema | 6 |
-| Drag-resize grid layout, persisted per user per workspace | 6 |
+| Drag-resize grid layout, persisted **per browser** until there are users (Phase 8), as the grid's own preferences are | 6 |
 | Named groups / sections | 6 |
 | Single batched `/api/dashboard/resolve` endpoint | 6 |
 | Live patches over the existing SSE stream | 6 |

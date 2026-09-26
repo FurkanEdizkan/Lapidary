@@ -832,7 +832,8 @@ What it does not do:
 - **A saved category does not follow its deletion.** A filter saved on a category that is then
   deleted still opens to it: an empty grid saying nothing is filed in that category yet, though
   the category is gone from the tree.
-- **No rename or reordering.** To change one, remove it and save again.
+- **No rename or reordering.** To change one, remove it and save again. *(Overtaken: both shipped with
+  `ce894a6` — `PATCH /api/libraries/{library}/filters/{filter}` renames and `…/move` reorders.)*
 
 **Exit:** keep a part's source URL with a title and licence typed in, and an image fetched from a pasted
 image URL; export a 40-part assembly as a bundle another user can import with full lineage intact.

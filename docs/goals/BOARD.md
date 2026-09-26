@@ -15,23 +15,30 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | open | `feat/shape-profiles` |
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | open | `feat/likeness-api` |
 | [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | open | `feat/likeness-ui` |
-| [L1](L1.md) | Sharing screens, seen and finished | 1 | web (+ one db read) | B0 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | open | `fix/sharing-screens` |
+| [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | open | `test/e2e-rig` |
+| [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | open | `fix/sharing-screens` |
 | [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | open | `feat/dashboard-resolve` |
 | [G1](G1.md) | App-wide event stream | 2 | Rust | W0 | `lapidary-db/src/events.rs`, `lapidary-api/src/events.rs`, the headers in `jobs.rs`, `bin/lapidary-server/src/main.rs`, `deploy/web/Caddyfile` if needed | 0049 | open | `feat/events-stream` |
 | [G5](G5.md) | Dashboard UI | 2 | web | W0 | `web/src/routes/dashboard.tsx`, `components/dashboard/*`, `lib/{dashboard,events}.ts`, the nav in `AppFrame.tsx`, `dashboard` strings block | — | open | `feat/dashboard-ui` |
 | [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | open | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | open | `fix/mass-and-materials` |
+| [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | open | `feat/tag-browse` |
+| [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
+| [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
+| [P4](P4.md) | The explore landing | 5 | web | G3, G4, G5, P2, P3 | `web/src/routes/explore.tsx`, `explore` strings block | — | open | `feat/explore-landing` |
 
-**Wave 1 is open** (G2, G3, G6, L1): W0 merged on 2026-09-21. Read [`W0.md`](W0.md)'s Record before building
+**Wave 1 is open** (G3, G2, G6, T1), run by one agent per lane with the lead merging (2026-09-26). L1 moved to wave 2,
+where it reuses T1's rig rather than standing up its own. W0 merged on 2026-09-21. Read [`W0.md`](W0.md)'s Record before building
 against the contracts — it says where they differ from W0's stage text.
 
-Merge order the lead follows: B0 → W0 → G3 → G2 → G6 → L1 → G4 → G1 → G5 → L2 → L3 → close (W3).
+Merge order the lead follows: B0 → W0 → **G3 → G2 → G6** (T1 whenever it is ready — it owns only new files) → G4 → G1
+→ G5 → L1 → L2 → L3 → P3 → P1 → P2 → P4 → close (W3).
 
 **W3, the close (lead, after L3):** both Phase 6 exits measured on the merged `main` through a compose stack on a lane
 port block; the ROADMAP Phase 6 ledger; FEATURES rows for similarity and near-duplicates and §8 ("per browser until
 auth"); DATA.md §3.8 (`part_shape`, `part_link`, the profile version rule); ARCHITECTURE's layout and events rows.
 
-**Migration numbers:** 0047–0048 W0 · 0049 G1 · 0050 spare (lead) · 0051 L3 · 0052 L2. Nobody takes the next free
+**Migration numbers:** 0047–0048 W0 · 0049 G1 · 0050 spare (lead) · 0051 L3 · 0052 L2 · 0053 P1. Nobody takes the next free
 number. `0047` restated `job_outcome_known` to add `profiled`: a later migration that restates it again keeps
 `profiled` and every value before it.
 
