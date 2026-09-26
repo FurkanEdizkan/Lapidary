@@ -72,6 +72,7 @@ import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
+import { ReviewOffer } from '../components/Likeness'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -997,6 +998,15 @@ export function Index({
             library={library}
             batch={activeBatch}
           />
+        )}
+        {/*
+          Under the finished line rather than inside it: what a batch did is one sentence, and
+          whether any of it was already here is a different question with a different answer and
+          its own request. `ReviewOffer` draws nothing — and asks nothing — until the batch is
+          finished and something actually looks alike (Phase 6, G6).
+        */}
+        {activeBatch === undefined ? null : (
+          <ReviewOffer status={scan.data} kind={kind} library={library} />
         )}
         {health.isError ? (
           <p role="alert" className="mb-4 rounded-[var(--radius-ctl)] border border-[var(--color-bad)] px-3 py-2 text-sm text-[var(--color-text)]">
