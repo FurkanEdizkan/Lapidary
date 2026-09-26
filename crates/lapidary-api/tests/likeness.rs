@@ -84,11 +84,24 @@ async fn call_json(
 /// A part with a real ingest record behind it: a `blob` row, a revision and a source file, so the
 /// "same bytes" read has something a repository actually maintains to look at.
 async fn seed(pool: &sqlx::PgPool, name: &str, path: &str, blob: u8) -> PartId {
-    let stored = format!("libraries/default/{}", path);
+    seed_in(pool, library(), "default", name, path, blob).await
+}
+
+/// [`seed`], into a library the test named itself. `slug` is that library's directory, so two parts
+/// with one file name do not claim one storage path.
+async fn seed_in(
+    pool: &sqlx::PgPool,
+    library: LibraryId,
+    slug: &str,
+    name: &str,
+    path: &str,
+    blob: u8,
+) -> PartId {
+    let stored = format!("libraries/{slug}/{path}");
     PgIngest(pool.clone())
         .record(IngestRequest {
             origin: RevisionOrigin::Ingest,
-            library: library(),
+            library,
             name,
             source_path: path,
             folder: None,
@@ -129,8 +142,18 @@ fn profile(size_mm: f64, off: f32) -> ShapeProfile {
 
 /// Record a profile against the part's current revision, exactly as G2's job will.
 async fn record(pool: &sqlx::PgPool, part: PartId, path: &str, profile: &ShapeProfile) {
+    record_in(pool, library(), part, path, profile).await;
+}
+
+async fn record_in(
+    pool: &sqlx::PgPool,
+    library: LibraryId,
+    part: PartId,
+    path: &str,
+    profile: &ShapeProfile,
+) {
     let revision = PgRevisions(pool.clone())
-        .current(library(), path)
+        .current(library, path)
         .await
         .expect("reads the current revision")
         .expect("the part has one")
@@ -736,6 +759,79 @@ async fn a_fold_refuses_itself_another_library_and_a_removed_target(pool: sqlx::
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn two_libraries_never_see_each_other(pool: sqlx::PgPool) {
+    // The same file, the same bytes and the same shape, in two libraries. Everything that could make
+    // them one part is true except the one thing that matters.
+    let path = "bushing-ptfe-8x12.stl";
+    let here = profiled(
+        &pool,
+        "Bushing, PTFE 8 x 12",
+        path,
+        0xa1,
+        profile(11.5, 0.0),
+    )
+    .await;
+    let jigs = PgParts(pool.clone())
+        .create_library("Workshop jigs", "hobby")
+        .await
+        .expect("a second library");
+    let there = seed_in(
+        &pool,
+        jigs,
+        "workshop-jigs",
+        "Bushing, PTFE 8 x 12",
+        path,
+        0xa1,
+    )
+    .await;
+    record_in(&pool, jigs, there, path, &profile(11.5, 0.0)).await;
+
+    let (status, json) = call_json(
+        pool.clone(),
+        "POST",
+        &format!("/api/parts/{here}/fold"),
+        serde_json::json!({ "into": there.to_string() }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a part of another library cannot be folded into: {json}"
+    );
+    let (status, json) = call_json(
+        pool.clone(),
+        "PUT",
+        &format!("/api/parts/{here}/links/{there}"),
+        serde_json::json!({ "kind": "variant" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "nor decided about across libraries: {json}"
+    );
+
+    // And neither library's reads name the other's part.
+    let json = likeness(&pool, here).await;
+    for list in ["identical", "nearDuplicates", "similar", "variants"] {
+        assert!(
+            ids(&json[list]).is_empty(),
+            "{list} named a part of another library"
+        );
+    }
+    assert!(cluster_sets(&duplicates(&pool, "").await).is_empty());
+    let (status, json) = call(
+        pool.clone(),
+        "GET",
+        &format!("/api/libraries/{jigs}/duplicates"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cluster_sets(&json).is_empty());
+    assert_eq!(json["unprofiled"], 0);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn an_unknown_library_and_an_unknown_part_are_not_found(pool: sqlx::PgPool) {
     let nowhere = LibraryId::new();
     for uri in [
@@ -815,6 +911,19 @@ async fn ten_thousand_profiles_answer_both_routes_inside_their_budgets(pool: sql
         format!("/api/libraries/{SEEDED_LIBRARY}/duplicates"),
     )
     .await;
+    // What that 300 ms was actually spent on: a cluster's every part is a card with an inline
+    // thumbnail, so the shape of the answer says more than the number on its own.
+    let answer = duplicates_body(&pool).await;
+    let clusters = answer["clusters"].as_array().expect("clusters");
+    let clustered: usize = clusters
+        .iter()
+        .map(|c| c["parts"].as_array().expect("parts").len())
+        .sum();
+    println!(
+        "/duplicates answered {} cluster(s) holding {clustered} card(s), {} unprofiled",
+        clusters.len(),
+        answer["unprofiled"]
+    );
     assert!(
         likeness < std::time::Duration::from_millis(50),
         "/likeness took {likeness:.1?}"
@@ -823,6 +932,17 @@ async fn ten_thousand_profiles_answer_both_routes_inside_their_budgets(pool: sql
         duplicates < std::time::Duration::from_millis(300),
         "/duplicates took {duplicates:.1?}"
     );
+}
+
+async fn duplicates_body(pool: &sqlx::PgPool) -> serde_json::Value {
+    let (status, json) = call(
+        pool.clone(),
+        "GET",
+        &format!("/api/libraries/{SEEDED_LIBRARY}/duplicates"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    json
 }
 
 /// The measurement's seeder: like [`seed`], with the blob hash spread over two bytes so 10,000 parts
