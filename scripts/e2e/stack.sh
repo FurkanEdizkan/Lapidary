@@ -825,7 +825,7 @@ cmd_drive() {
     node "$ROOT/web/scripts/open-timing.mjs" --url "$WEB" --rounds 2
   } 2>&1 | tee "$run/run.log"
 
-  python3 - "$run" "$WORK/stack.json" "$WORK/seed.json" <<'EOF'
+  python3 - "$run" "$WORK/stack.json" "$WORK/seed.json" "$(git -C "$ROOT" rev-parse HEAD)" <<'EOF'
 import json, pathlib, sys
 run, stack, seed = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 def load(p, default=None):
@@ -839,7 +839,12 @@ timing = log.split("== TIMING", 1)[1] if "== TIMING" in log else ""
 # failure and not an empty success: that is the same silent pass as comparing two `undefined`s, one level up.
 exit_line = [l for l in log.splitlines() if l.startswith("flows exit ")]
 flows_exit = int(exit_line[-1].split()[-1]) if exit_line else 1
+# Three shas, and `--compare` is only readable if they are told apart. `stack.sha` is the tree the app was
+# brought up from and `builtFromSha` the tree its images were built from; `driveSha` is the tree the *rig*
+# ran from, which is what changes when a flow is edited between two runs. Comparing two reports whose
+# driveSha differs compares two different harnesses, and calling that flakiness would be wrong.
 report = {
+    "driveSha": sys.argv[4],
     "stack": load(stack, {}),
     "seed": load(seed, {}),
     "flows": load(run / "flows.json", []),
@@ -872,9 +877,16 @@ def by_name(r): return {f["name"]: f for f in r.get("flows", [])}
 a, b = by_name(old), by_name(new)
 for label, report in (("was", old), ("now", new)):
     stack = report.get("stack", {})
-    print(f"  {label}: sha {str(stack.get('sha'))[:12]} on {stack.get('branch')}, images built from {str(stack.get('builtFromSha'))[:12]}")
-if old.get("stack", {}).get("sha") == new.get("stack", {}).get("sha"):
-    print("  same sha both runs, so a status that moved is flakiness, not a regression")
+    print(f"  {label}: rig {str(report.get('driveSha'))[:12]}, app {str(stack.get('sha'))[:12]} on "
+          f"{stack.get('branch')}, images from {str(stack.get('builtFromSha'))[:12]}")
+same_rig = old.get("driveSha") == new.get("driveSha")
+same_app = old.get("stack", {}).get("sha") == new.get("stack", {}).get("sha")
+if same_rig and same_app:
+    print("  same rig and same app both runs, so a status that moved is flakiness, not a regression")
+elif not same_rig:
+    print("  the RIG differs between these runs, so a status that moved may be the flow's own change")
+else:
+    print("  the app differs between these runs, so a status that moved is a regression signal")
 for name in sorted(set(a) | set(b)):
     was, now = a.get(name, {}), b.get(name, {})
     ws, ns = was.get("status", "absent"), now.get("status", "absent")
