@@ -722,6 +722,9 @@ const FLOWS = [
   },
   {
     name: 'remove-restore',
+    // Stage 4's narrow set is grid, quick look, part detail, **removed** and sharing, and /removed is this
+    // flow's. Safe at both widths because it restores what it took.
+    widths: [1440, 390],
     async run(page, ctx) {
       // Removed and put back inside the flow, so a second run sees the same library.
       const victim = await ctx.partLike(/scaled-115/)
@@ -1172,7 +1175,11 @@ const shots = join(args.out, 'shots')
   }
 }
 
-writeFileSync(join(args.out, 'flows.json'), JSON.stringify(rows, null, 2))
+// Written here and from the exit handler both: a run killed between two flows should still leave the rows
+// it gathered, because those rows are the only account of what it saw.
+const save = () => writeFileSync(join(args.out, 'flows.json'), JSON.stringify(rows, null, 2))
+process.on('exit', save)
+save()
 const failed = rows.filter((r) => r.status === 'failed' || r.status === 'pending-broken')
 console.log(`\n${rows.length} rows, ${failed.length} failed${failed.length ? ': ' + failed.map((f) => f.name).join(', ') : ''}`)
 process.exit(failed.length === 0 ? 0 : 1)

@@ -22,6 +22,38 @@ no() { printf '  FAIL  %s\n' "$*"; fail=$((fail + 1)); }
 
 # A `docker` that answers nothing and writes down that it was asked. First on PATH, so anything in the
 # script that reaches for a container hits this instead of the real one.
+# Reading *code*, not prose, for every scan below.
+#
+# This rig's prose is substantial: every command it forbids and every port it refuses is named in a comment
+# or inside a multi-line error message, and its helpers embed whole python programs in quoted spans. So
+# `code_of` drops comment lines and everything inside quotes, tracking quote parity **across** lines — a
+# `refuse "…"` message spanning four lines is one string, and a line-at-a-time filter reads its last three
+# lines as code. Both quote characters count: inside code a `'` is always a delimiter. What is left is what
+# the shell would actually run.
+#
+# check.sh itself is scanned only where that is meaningful; it necessarily spells out what it looks for.
+code_of() {
+  awk '
+    { line = $0 }
+    # A comment cannot continue a string, so it is dropped without touching the quote state.
+    !inq && !ins && line ~ /^[[:space:]]*(#|\/\/)/ { next }
+    {
+      out = ""
+      n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "\"" && !ins) { inq = !inq; continue }
+        if (c == "'"'"'" && !inq) { ins = !ins; continue }
+        if (inq || ins) continue
+        if (c == "#" && out ~ /^[[:space:]]*$/) break
+        out = out c
+      }
+      if (out ~ /[^[:space:]]/) print FNR ":" out
+    }
+  ' "$1"
+}
+
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/docker" <<EOF
 #!/bin/sh
@@ -67,6 +99,29 @@ else
     ok "e2e.override.yaml carries ports: !override (no yaml module, or its !override tag)"
   else no "e2e.override.yaml has no \`ports: !override\`"; fi
 fi
+
+echo "== stack.sh still defines every function it needs"
+# `bash -n` is blind to a missing function: it is a runtime name lookup, not a syntax error. So a script
+# that lost one parses perfectly and then prints `command not found` at every call. That happened — an edit
+# to one function silently deleted the four helpers defined beside it, and the seed ran to the end, reported
+# 0 checks and left a `seed.json` nothing had verified. For a test rig that is the worst failure mode there
+# is, because it reads as a pass.
+#
+# The check is a list, deliberately, rather than a parser that guesses at command position: this script
+# embeds whole python programs in heredocs and quoted spans, and every attempt to infer calls from them
+# produced more false positives than findings. A list catches the thing that actually goes wrong — a helper
+# disappearing under an edit to its neighbour — and costs one line when a helper is added.
+for fn in die refuse note ask_owner lane_var assert_project compose or_none free_gb ram_gib field json \
+  sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
+  build_ingest_tree check_worker_sees_ingest library_named upload_file \
+  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status; do
+  if grep -qE "^$fn\(\) \{" "$HERE/stack.sh"; then
+    pass=$((pass + 1))
+  else
+    no "stack.sh no longer defines $fn()"
+  fi
+done
+ok "all 33 of stack.sh's functions are defined (counted individually above)"
 
 echo "== skew-stl.py makes the geometry it claims to"
 # The two duplicate fixtures carry the whole meaning of the near-duplicate case, so their geometry is
@@ -178,38 +233,13 @@ echo "== no bare compose call anywhere in the rig"
 # the ports it refuses — is written inside backticks in a comment somewhere, so a plain grep matches the
 # documentation and calls it a violation. So: strip backticked spans and whole-line comments first, and
 # skip this file, which necessarily spells out everything it is looking for.
-# These greps must read *code*, not prose, and this rig's prose is substantial: every command it
-# forbids and every port it refuses is named in a comment or inside a multi-line error message. So
-# `code_of` removes comment lines and everything inside double quotes, tracking quote parity **across**
-# lines — a `refuse "…"` message spanning four lines is one string, and a line-at-a-time filter would
-# read its last three lines as code. What is left is what the shell would actually run.
-#
-# check.sh itself is not scanned: it necessarily spells out everything it looks for.
-code_of() {
-  awk '
-    { line = $0 }
-    # A comment cannot continue a string, so it is dropped without touching the quote state.
-    !inq && line ~ /^[[:space:]]*(#|\/\/)/ { next }
-    {
-      out = ""
-      n = length(line)
-      for (i = 1; i <= n; i++) {
-        c = substr(line, i, 1)
-        if (c == "\\") { i++; continue }
-        if (c == "\"") { inq = !inq; continue }
-        if (inq) continue
-        if (c == "#" && out ~ /^[[:space:]]*$/) break
-        out = out c
-      }
-      if (out ~ /[^[:space:]]/) print FNR ":" out
-    }
-  ' "$1"
-}
 scanned=()
 for f in "$HERE"/*.sh "$HERE"/*.mjs; do [ "$f" = "$HERE/check.sh" ] || scanned+=("$f"); done
 
 # One compose function with -p hard-coded. A call without it targets the owner's `lapidary` project,
 # whose volumes hold their real library.
+scanned=()
+for f in "$HERE"/*.sh "$HERE"/*.mjs; do [ "$f" = "$HERE/check.sh" ] || scanned+=("$f"); done
 hits=''
 for f in "${scanned[@]}"; do
   hits+=$(code_of "$f" | grep 'docker compose' | grep -v 'docker compose -p' | sed "s|^|$(basename "$f"):|")

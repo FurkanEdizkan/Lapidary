@@ -179,6 +179,29 @@ field() { python3 -c "import json,sys; value=json.load(sys.stdin); print($1)"; }
 json() { curl -sf -X "$1" -H 'content-type: application/json' ${3:+-d "$3"} "$2"; }
 sql() { compose exec -T db psql -U lapidary -d lapidary -Atc "$1"; }
 
+# Stage 3's thresholds, asserted rather than printed. `seed` exits non-zero on a miss and the whole list
+# lands in `seed.json`, because stage 6's pass condition is "the seed counts match" and a seed that only
+# echoed them gave nothing to match against.
+#
+# These live here, beside the other helpers, rather than above `cmd_seed`: they were once glued to it, and
+# rewriting the function next door deleted all four. `bash -n` cannot see that — a missing function is a
+# runtime name lookup, not a syntax error — so the seed ran to the end printing `command not found` and
+# reporting 0 checks. `check.sh` grew a called-but-never-defined check off the back of it.
+seed_fail=0
+seed_check() { # name, 1|0, detail
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$WORK/seed-checks.tsv"
+  if [ "$2" = 1 ]; then
+    echo "  ok    $1 — $3"
+  else
+    echo "  FAIL  $1 — $3"
+    seed_fail=$((seed_fail + 1))
+  fi
+}
+# `1` when the arithmetic holds, `0` when it does not: a bare `[ ... ]` in a `$( )` would abort under -e.
+holds() { if eval "[ $* ]" 2> /dev/null; then echo 1; else echo 0; fi; }
+# One counter out of a settle line like `total=412 pending=0 … ingested=412 …`.
+counter() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | tail -1; }
+
 wait_for() { # url, what, seconds
   timeout "${3:-180}" bash -c "until curl -sf '$1' >/dev/null 2>&1; do sleep 1; done" ||
     { echo "  $2 never answered at $1"; return 1; }
@@ -618,7 +641,7 @@ cmd_seed() {
   # key returned an empty string for every failure, which hid five real errors behind ''.
   local failures
   failures=$(curl -sf "$API/api/libraries/$sweep/jobs/$batch" |
-    field '"; ".join(f"{f[\"path\"].split(\"/\")[-1]}: {f[\"reason\"][:150]}" for f in value.get("failed", []))')
+    field '"; ".join(f["path"].split("/")[-1] + ": " + f["reason"][:150] for f in value.get("failed", []))')
   echo "  failures: ${failures:-none}"
   local unexplained
   unexplained=$(curl -sf "$API/api/libraries/$sweep/jobs/$batch" |
@@ -802,6 +825,12 @@ def load(p, default=None):
     except Exception: return default
 log = (run / "run.log").read_text(errors="replace")
 timing = log.split("== TIMING", 1)[1] if "== TIMING" in log else ""
+# What the flows process itself said. `flows.json` is written at the end of a run, so anything that kills
+# flows.mjs outside a flow — Chrome refusing a debugging port, `session()` throwing for the narrow or
+# reduced-motion pass, `--only` matching nothing — leaves no rows at all. An empty list must therefore be a
+# failure and not an empty success: that is the same silent pass as comparing two `undefined`s, one level up.
+exit_line = [l for l in log.splitlines() if l.startswith("flows exit ")]
+flows_exit = int(exit_line[-1].split()[-1]) if exit_line else 1
 report = {
     "stack": load(stack, {}),
     "seed": load(seed, {}),
@@ -811,6 +840,10 @@ report = {
 (run / "report.json").write_text(json.dumps(report, indent=2))
 flows = report["flows"]
 bad = [f["name"] for f in flows if f.get("status") not in ("ok", "pending")]
+if not flows:
+    print("FAILED: the flows wrote no rows at all — flows.mjs died before any flow ran; see run.log")
+if flows_exit != 0:
+    print(f"FAILED: flows.mjs exited {flows_exit}")
 print(f"\n{len(flows)} flows: " + ", ".join(
     f"{s}={sum(1 for f in flows if f.get('status') == s)}"
     for s in sorted({f.get("status") for f in flows})))
@@ -818,7 +851,7 @@ print("report " + str(run / "report.json"))
 if bad: print("FAILED: " + ", ".join(bad))
 # The exit code IS the result: `drive` is what a later goal runs in CI, and a run that failed a flow
 # must not answer 0. The flows process exits non-zero too, but its status is swallowed by the tee.
-sys.exit(1 if bad else 0)
+sys.exit(0 if (not bad and flows and flows_exit == 0) else 1)
 EOF
   local code=$?
 
