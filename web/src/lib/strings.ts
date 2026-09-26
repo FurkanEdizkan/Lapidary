@@ -512,7 +512,110 @@ export const strings = {
    * Parts that look alike (Phase 6): identical, near-duplicate, similar, and what a person decides about a
    * pair. Goal G6's. "Fold into", never "merge": CLAUDE.md keeps "no merge" for versioning.
    */
-  likeness: {},
+  likeness: {
+    /** The part page's one section, and what the review queue calls the same thing. */
+    title: 'Looks alike',
+    loading: 'Looking for parts that look like this one…',
+    failed:
+      'Could not look for parts that look like this one. Check that the api service is running, then reload.',
+    /**
+     * `Likeness.profiled === false`. Said instead of the lists, because four empty lists read
+     * as "nothing here is alike" when the truth is that nothing has been compared yet — which is
+     * the difference between an answer and the absence of one.
+     */
+    unprofiled:
+      'This part has no shape profile yet, so its shape has not been compared with anything. One is made shortly after a part is added — reload then.',
+    /**
+     * The three kinds of alike, exactly as `phase-6.md` fixes them. A person reads one of these
+     * words and never a number: there is no similarity score in the interface, on purpose, because
+     * a figure like 0.038 invites a judgement nobody can calibrate.
+     */
+    identical: 'Identical',
+    identicalNote: 'The same bytes as this part — their source files have one hash.',
+    nearDuplicates: 'Near-duplicates',
+    nearNote: 'Alike in shape and within 2% in size, and nobody has decided about them yet.',
+    variants: 'Variants',
+    variantsNote: 'Parts somebody said belong with this one.',
+    similar: 'Similar',
+    similarNote: 'The closest shapes in this library, whatever their size.',
+    /** Profiled, compared, and nothing came back. Distinct from `unprofiled`, which is "not asked yet". */
+    nothing: 'Nothing else in this library looks like this part.',
+    /**
+     * The three decisions, and the only three. Each button names its own part in its accessible
+     * label: a list of five rows whose buttons all read "Fold into this" tells a screen reader
+     * nothing about which row it is on. Named by path, because parts that look alike are exactly
+     * the parts that share a name.
+     *
+     * **Each label begins with the button's visible words**, which is WCAG 2.5.3 (Label in Name,
+     * Level A) and not a style: somebody driving this by voice says "click Fold into this", and a
+     * name that reads "Fold spares/LP-1042-03.stl into this part" matches nothing they said. The
+     * pattern is `failure.retryOne`'s — a visible "Retry", a name of "Retry <path>".
+     */
+    fold: 'Fold into this',
+    foldLabel: (path: string) => `Fold into this — ${path}`,
+    variant: 'Link as variant',
+    variantLabel: (path: string) => `Link as variant — ${path}`,
+    distinct: 'Not the same',
+    distinctLabel: (path: string) => `Not the same — ${path}`,
+    working: 'Working…',
+    actionFailed: 'That did not go through. Nothing changed — try again.',
+    /**
+     * The fold dialog. "Fold into", never "merge" — `CLAUDE.md` keeps "merge" out of this product
+     * entirely, and versioning is where it is reserved from.
+     */
+    foldTitle: 'Fold one part into the other?',
+    /**
+     * Three facts, all of them required. Which part goes and which is kept, by *path*: two
+     * near-duplicates usually carry the same name, and a confirmation that cannot be answered
+     * correctly is worse than none — `removal.purgeConfirm` names a part by path for the same
+     * reason. That the fold takes nothing away: this is the soft delete, so the part keeps its
+     * tags, sources, images and revisions, and none of its bytes move. And that Restore undoes
+     * it, which is the sentence that makes the decision cheap enough to make.
+     */
+    foldConfirm: (from: string, into: string) =>
+      `Fold “${from}” into “${into}”? “${from}” is hidden from the library, the way Remove hides a part. Nothing is deleted and nothing moves — it keeps its tags, files and history, the Removed list says where it went, and Restore brings it back.`,
+    foldConfirmAction: 'Fold into this part',
+    /**
+     * On the Removed list: where a folded part went, as a link to the part that was kept, so
+     * a fold is never a dead end. The whole sentence is the link rather than the name alone —
+     * a fragment around a name is not a sentence a translator can move.
+     */
+    foldedInto: (name: string) => `Folded into ${name}`,
+    /**
+     * The finished upload or scan line's offer. It counts *parts just added that are in a group
+     * with something else*, not groups: a person who just uploaded eleven files wants to know how
+     * many of them are already here, and the number of groups is not that number.
+     */
+    reviewOffer: (count: number) =>
+      count === 1
+        ? '1 part just added looks like another part in this library.'
+        : `${count.toLocaleString('en-US')} parts just added look like other parts in this library.`,
+    review: 'Review',
+    /** `/duplicates`, the review queue. Its title is `titles.duplicates`. */
+    queueTitle: 'Possible duplicates',
+    queueLead:
+      'Parts in this library that look like each other, worked out when this page is opened and never stored anywhere. Decide about a pair and it leaves this list for good.',
+    queueEmpty: 'No two parts in this library look like duplicates of each other.',
+    /**
+     * Said whenever `DuplicateClusters.unprofiled` is not zero, so the page never implies it
+     * checked a library it only partly checked.
+     */
+    queueUnprofiled: (count: number) =>
+      count === 1
+        ? '1 part has no shape profile yet and was not compared.'
+        : `${count.toLocaleString('en-US')} parts have no shape profile yet and were not compared.`,
+    queueCount: (count: number) =>
+      count === 1 ? '1 group to look at' : `${count.toLocaleString('en-US')} groups to look at`,
+    /**
+     * A group's heading. Every action in the group is relative to this one part — the largest of
+     * them, which is the order the wire sends — so the heading has to name it before the buttons
+     * say "into this part".
+     */
+    clusterKept: (path: string) => `These look like “${path}”`,
+    /** Which kind of alike the group is. Byte-identical carries no shape judgement at all. */
+    sameBytes: 'The same bytes',
+    alikeShape: 'Alike in shape',
+  },
   /**
    * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:
    * *"We never delete user data implicitly. Delete is soft. Purge is separate and

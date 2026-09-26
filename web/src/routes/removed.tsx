@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
@@ -7,6 +7,7 @@ import {
   purgePart,
   restorePart,
 } from '../lib/api'
+import { fetchFolds } from '../lib/likeness'
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
@@ -53,6 +54,15 @@ export function RemovedPage({ library }: { library: LibraryId }) {
     queryKey: ['parts', library, 'removed'],
     queryFn: () => fetchParts(library, undefined, 'removed'),
   })
+  /*
+    Which of these were folded into another part, and into which (Phase 6, G6). Its own query,
+    and deliberately not awaited by anything: this page is the only route back to a removed
+    part, so a `/folds` that 404s on an older server, or fails outright, must cost the list
+    nothing. A failure leaves `folds` empty and every row reads as an ordinary removal, which
+    is what a folded part becomes anyway once the part it was folded into is purged.
+  */
+  const folds = useQuery({ queryKey: ['folds', library], queryFn: () => fetchFolds(library) })
+  const foldedInto = new Map((folds.data ?? []).map((fold) => [fold.part, fold.into]))
 
   return (
     <AppFrame current="removed" library={library}>
@@ -79,7 +89,7 @@ export function RemovedPage({ library }: { library: LibraryId }) {
             </p>
             <ul role="list" className="mt-3 flex flex-col border-t border-[var(--color-border)]">
               {removed.data.parts.map((card) => (
-                <RemovedRow key={card.id} card={card} />
+                <RemovedRow key={card.id} card={card} into={foldedInto.get(card.id) ?? null} />
               ))}
             </ul>
           </>
@@ -97,7 +107,7 @@ export function RemovedPage({ library }: { library: LibraryId }) {
  * long. `CLAUDE.md` requires that difference in wording, and the reason it matters is that
  * these two sit a few pixels apart.
  */
-function RemovedRow({ card }: { card: PartCard }) {
+function RemovedRow({ card, into }: { card: PartCard; into: PartCard | null }) {
   const queryClient = useQueryClient()
   // Both mutations change both lists — the library's and this one — so both invalidate the
   // shared prefix rather than only the key they were read from. A restore that refreshed
@@ -118,6 +128,13 @@ function RemovedRow({ card }: { card: PartCard }) {
   const [confirming, setConfirming] = useState(false)
   // `typeof`, not `=== null`: the response is cast, and a server from before this field sends none.
   const removedAt = typeof card.removedAt === 'string' ? card.removedAt : null
+  /*
+    Whether the part this one was folded into has since been removed as well, which decides whether
+    the line naming it is a link. `typeof` for the same reason as above, and hoisted out of the JSX
+    on purpose: a bare `'string'` inside a child expression is a literal reaching the screen as far
+    as `no-bare-strings.test.ts` can tell, and it is right to say so.
+  */
+  const intoRemoved = into !== null && typeof into.removedAt === 'string'
   const quiet =
     'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2.5 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
@@ -133,6 +150,38 @@ function RemovedRow({ card }: { card: PartCard }) {
         {removedAt === null ? null : (
           <p className="text-xs text-[var(--color-muted)]">
             <time dateTime={removedAt}>{strings.removal.removedOn(removedAt)}</time>
+          </p>
+        )}
+        {/*
+          Where a folded part went, as a link to the part that was kept — so folding is never a
+          dead end and the Restore beside it is visibly the way back. `null` for an ordinary
+          removal, and for a part folded into one that has since been purged: purge takes the
+          link from either side, and from then on this is an ordinary removed part with an
+          ordinary Restore. `phase-6.md` calls that expected rather than an orphan.
+        */}
+        {into === null ? null : (
+          <p className="text-xs">
+            {/*
+              Said either way, and a link only while the part it names is in the library.
+
+              `GET /api/libraries/{id}/folds` answers with the kept part whether it is live or
+              itself removed, deliberately: "folded into X" is true whether or not X is in the
+              library today. But a removed part has no page — every read path filters `deleted_at`
+              — so linking to one offers a press that lands on "could not open this part". The
+              sentence is the same; only the press is withheld. A *purged* kept part takes its
+              `folded_into` row with it, so `into` is `null` and this line is not drawn at all.
+            */}
+            {intoRemoved ? (
+              <span className="text-[var(--color-dim)]">{strings.likeness.foldedInto(into.name)}</span>
+            ) : (
+              <Link
+                to="/parts/$partId"
+                params={{ partId: into.id }}
+                className="ease-mechanical text-[var(--color-dim)] underline decoration-[var(--color-edge)] underline-offset-2 duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+              >
+                {strings.likeness.foldedInto(into.name)}
+              </Link>
+            )}
           </p>
         )}
       </div>
