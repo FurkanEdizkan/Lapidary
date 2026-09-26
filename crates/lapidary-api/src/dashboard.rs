@@ -7,11 +7,44 @@
 //! no polling: a widget is asked again when the event stream says its library changed.
 
 use crate::AppState;
-use crate::parts::{FacetValue, InstanceStorageView, LibraryStorage, PartCard};
+use crate::filters::FilterSearch;
+use crate::parts::{
+    FacetValue, GridRefusal, InstanceStorageView, LibraryStorage, PartCard, grid_rows, to_card,
+};
+use axum::Json;
 use axum::Router;
+use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use lapidary_core::{LibraryId, SavedFilterId};
+use lapidary_db::{DbError, PgDashboard, PgParts, PgPool, PgSavedFilters, Shows, Sort};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use ts_rs::TS;
+
+/// The most widgets one resolve carries. A layout past this is refused whole rather than answered in
+/// part: a runaway layout must not be able to hold the pool's connections.
+const MAX_WIDGETS: usize = 32;
+
+/// How many keys run at once. Below the pool's `max_connections(8)` on purpose — see [`resolve`].
+const AT_ONCE: usize = 4;
+
+/// How long one key gets, counted from when it starts rather than from when it was asked.
+const PER_KEY: Duration = Duration::from_secs(2);
+
+/// The most cards a card-carrying widget hands back. `phase-6.md` gives `recent` and `savedFilter`
+/// twelve, and [`Widget`]'s `limit: u8` cannot carry that, so it is enforced here.
+const MOST_CARDS: u8 = 12;
+
+/// The most values a [`Widget::Facet`] hands back. The design sets no figure; a tile that lists more
+/// than this is a list nobody reads, and a facet value is cheap but not free.
+const MOST_FACET_VALUES: u8 = 24;
 
 /// One widget, as a layout stores it and a resolve asks for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -156,7 +189,368 @@ pub struct DuplicateSummary {
     pub unprofiled: u32,
 }
 
-/// This file's routes, merged for the api role. Empty until goal G4.
+/// `POST /api/dashboard/resolve` — every widget on the screen, in one round trip.
+///
+/// The body is refused whole (422) when it carries no widget, more than [`MAX_WIDGETS`], or a key
+/// twice; anything else answers 200, and a widget that failed or ran out of time says so in its own
+/// result while the others still arrive. A key never fails the request: a dashboard of twelve tiles
+/// where one library has been deleted shows eleven tiles and one message.
+///
+/// **The semaphore and the timeout are one mechanism, in this order.** A [`JoinSet`] spawns every key
+/// at once, [`AT_ONCE`] of them hold a permit, and each key's [`PER_KEY`] starts *after* it has that
+/// permit. Both halves matter: the pool is `max_connections(8)`, so without the permit limit twelve
+/// keys would race for eight connections and the slow ones would report a timeout they spent waiting
+/// for a connection rather than for their own query — and with the permit limit but a clock started at
+/// spawn, a key that queued behind three slow ones would report the same lie from the other side.
+/// `tests/dashboard.rs` holds both distinctions.
+async fn resolve(
+    State(app): State<AppState>,
+    body: Result<Json<ResolveRequest>, JsonRejection>,
+) -> Response {
+    let widgets = match body {
+        Ok(Json(body)) => body.widgets,
+        Err(rejection) => return bad_body(&rejection),
+    };
+    if widgets.is_empty() || widgets.len() > MAX_WIDGETS {
+        return refused(&format!(
+            "A dashboard resolve asks for 1 to {MAX_WIDGETS} widgets, and this one asks for \
+             {}. Send the widgets on the screen, in one request.",
+            widgets.len()
+        ));
+    }
+    let mut seen = HashSet::with_capacity(widgets.len());
+    if let Some(twice) = widgets
+        .iter()
+        .find(|asked| !seen.insert(asked.key.as_str()))
+    {
+        return refused(&format!(
+            "Two widgets in this resolve share the key “{}”. The answers come back keyed, \
+             so a repeated key could not be told apart — give every widget in the layout its own.",
+            twice.key
+        ));
+    }
+    drop(seen);
+
+    let permits = Arc::new(Semaphore::new(AT_ONCE));
+    let mut keys: Vec<String> = Vec::with_capacity(widgets.len());
+    let mut running = JoinSet::new();
+    for (at, WidgetRequest { key, widget }) in widgets.into_iter().enumerate() {
+        keys.push(key);
+        let app = app.clone();
+        let permits = Arc::clone(&permits);
+        running.spawn(async move {
+            // The permit first, then the clock: see this function's doc.
+            let _permit = permits.acquire().await;
+            let result = match tokio::time::timeout(PER_KEY, value_of(&app, &widget)).await {
+                Ok(Ok(value)) => WidgetResult::Ok { value },
+                Ok(Err(message)) => WidgetResult::Failed { message },
+                Err(_elapsed) => WidgetResult::TimedOut,
+            };
+            (at, result)
+        });
+    }
+    let mut answers: Vec<Option<WidgetResult>> = keys.iter().map(|_| None).collect();
+    while let Some(finished) = running.join_next().await {
+        match finished {
+            Ok((at, result)) => answers[at] = Some(result),
+            // A resolver that panicked takes its own key down and nothing else. Which key it was is
+            // not recoverable from the join error, so every unanswered key gets the same message; the
+            // log line below is where the panic itself is.
+            Err(err) => tracing::error!(error = %err, "a dashboard widget panicked"),
+        }
+    }
+    Json(ResolveResponse {
+        results: keys
+            .into_iter()
+            .zip(answers)
+            .map(|(key, result)| KeyResult {
+                key,
+                result: result.unwrap_or_else(|| WidgetResult::Failed {
+                    message: "This widget could not be answered at all. Reload the dashboard, \
+                              and check the server logs if it says this again."
+                        .to_owned(),
+                }),
+            })
+            .collect(),
+    })
+    .into_response()
+}
+
+/// One widget's value, or the message that says why there is none.
+///
+/// Every arm is a read that already exists somewhere in this crate, called with the dashboard's own
+/// limits. Nothing here writes, and nothing here touches a source file.
+async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, String> {
+    match widget {
+        Widget::Storage { library } => storage(&app.db, *library).await,
+        Widget::InstanceStorage => instance_storage(app).await,
+        Widget::Recent { library, limit } => recent(&app.db, *library, *limit).await,
+        Widget::SavedFilter {
+            library,
+            filter,
+            limit,
+        } => saved_filter(&app.db, *library, *filter, *limit).await,
+        Widget::Facet {
+            library,
+            facet,
+            limit,
+        } => one_facet(&app.db, *library, *facet, *limit).await,
+        Widget::Queue { library } => queue(&app.db, *library).await,
+        Widget::Duplicates { library } => duplicates(&app.db, *library).await,
+    }
+}
+
+/// [`Widget::Storage`] — `GET /api/libraries/{id}/storage`'s figures. Its own read says when the
+/// library is not there, so it needs no probe.
+async fn storage(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+    match PgParts(db.clone()).storage_totals(library).await {
+        Ok(Some(totals)) => Ok(WidgetValue::Storage(crate::parts::library_storage(totals))),
+        Ok(None) => Err(no_such_library()),
+        Err(err) => Err(failed(&err, "dashboard library storage read failed")),
+    }
+}
+
+/// [`Widget::InstanceStorage`] — the storage page's figures without its disk walk, and without its
+/// flush of the pending reads: a widget is a read, and the render-cache figure is the one it affects,
+/// at most five minutes behind. `GET /api/storage` is where an exact one is.
+async fn instance_storage(app: &AppState) -> Result<WidgetValue, String> {
+    match PgParts(app.db.clone()).instance_storage().await {
+        Ok(totals) => Ok(WidgetValue::InstanceStorage(
+            crate::parts::instance_storage_view(totals, None, app.host_storage_root.clone()),
+        )),
+        Err(err) => Err(failed(&err, "dashboard instance storage read failed")),
+    }
+}
+
+/// [`Widget::Recent`] — the newest parts, the grid's own read with no filters.
+async fn recent(db: &PgPool, library: LibraryId, limit: u8) -> Result<WidgetValue, String> {
+    exists(db, library).await?;
+    let rows = grid_rows(
+        db,
+        library,
+        &FilterSearch::default(),
+        None,
+        u16::from(capped(limit, MOST_CARDS)),
+        Shows::Live,
+        Sort::Newest,
+    )
+    .await
+    .map_err(grid_failed)?;
+    Ok(WidgetValue::Recent(rows.into_iter().map(to_card).collect()))
+}
+
+/// [`Widget::SavedFilter`] — what one saved filter finds, and its name as it is now.
+///
+/// The library's filters are read in full and this one picked out, which is `GET
+/// /api/libraries/{id}/filters`'s own query: it is the read that already knows whether the category a
+/// filter names is still there, and a library holds a handful of filters, not a page of them.
+async fn saved_filter(
+    db: &PgPool,
+    library: LibraryId,
+    filter: SavedFilterId,
+    limit: u8,
+) -> Result<WidgetValue, String> {
+    let saved = PgSavedFilters(db.clone())
+        .list(library)
+        .await
+        .map_err(|err| failed(&err, "dashboard saved filter read failed"))?;
+    // An unknown library has no filters, so this one answer covers both: neither a deleted library nor
+    // a deleted filter leaves anything for the widget to show.
+    let Some(saved) = saved.into_iter().find(|row| row.id == filter) else {
+        return Err(
+            "This saved filter is no longer in the library — it, or the library, has been \
+             deleted. Point the widget at another filter, or remove it from the dashboard."
+                .to_owned(),
+        );
+    };
+    // The grid opened on such a filter says the category is gone rather than showing an empty grid
+    // (`filters.rs`), and `FilteredParts` has no room to say it — so the key fails instead of showing
+    // an empty tile, which would read as "nothing matches".
+    if saved.folder_gone {
+        return Err(format!(
+            "“{}” filters on a category that has been deleted, so it can show nothing. \
+             Edit the filter in the grid, or point this widget at another one.",
+            saved.name
+        ));
+    }
+    let search: FilterSearch = serde_json::from_str(&saved.search).map_err(|err| {
+        tracing::error!(error = %err, filter = %saved.id, "a saved filter holds a search this build cannot read");
+        "This saved filter holds settings this version cannot read. Check the server logs for \
+         which one, and save it again from the grid."
+            .to_owned()
+    })?;
+    let rows = grid_rows(
+        db,
+        library,
+        &search,
+        None,
+        u16::from(capped(limit, MOST_CARDS)),
+        Shows::Live,
+        Sort::Newest,
+    )
+    .await
+    .map_err(grid_failed)?;
+    Ok(WidgetValue::SavedFilter(FilteredParts {
+        name: saved.name,
+        parts: rows.into_iter().map(to_card).collect(),
+    }))
+}
+
+/// [`Widget::Facet`] — the commonest values of one facet, unfiltered.
+///
+/// The facet reads answer in value order, so the sort here is what makes "commonest" true. Past
+/// [`lapidary_db::EXACT_FACET_ROWS`] matching parts there is no count to sort by at all (`DATA.md`
+/// §3.4 withholds them), and a stable sort then leaves the query's own order, which is by value — the
+/// only order left.
+async fn one_facet(
+    db: &PgPool,
+    library: LibraryId,
+    facet: FacetKind,
+    limit: u8,
+) -> Result<WidgetValue, String> {
+    exists(db, library).await?;
+    let parts = PgParts(db.clone());
+    let read = match facet {
+        FacetKind::Format => {
+            parts
+                .format_facet(library, None, None, Shows::Live, None, None, None, None)
+                .await
+        }
+        FacetKind::Material => {
+            parts
+                .material_facet(library, None, None, Shows::Live, None, None, None, None)
+                .await
+        }
+        FacetKind::Tag => {
+            parts
+                .tag_facet(library, None, None, Shows::Live, None, None, None, None)
+                .await
+        }
+    };
+    let mut values = read.map_err(|err| failed(&err, "dashboard facet read failed"))?;
+    values.sort_by(|left, right| right.count.cmp(&left.count));
+    values.truncate(usize::from(capped(limit, MOST_FACET_VALUES)));
+    Ok(WidgetValue::Facet(
+        values
+            .into_iter()
+            .map(|value| FacetValue {
+                value: value.value,
+                count: value.count,
+            })
+            .collect(),
+    ))
+}
+
+/// [`Widget::Queue`] — what this library has waiting, running and failed.
+async fn queue(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+    exists(db, library).await?;
+    let counts = PgDashboard(db.clone())
+        .queue(library)
+        .await
+        .map_err(|err| failed(&err, "dashboard queue read failed"))?;
+    Ok(WidgetValue::Queue(QueueSummary {
+        pending: counts.pending,
+        running: counts.running,
+        failed: counts.failed,
+    }))
+}
+
+/// [`Widget::Duplicates`] — how many groups of near-duplicates are waiting for somebody to decide.
+///
+/// ponytail: `likeness::clusters` builds a card, inline thumbnail and all, for every part in every
+/// cluster, and this widget counts the groups and throws the cards away. One definition of a cluster
+/// is worth that: G3 measured the whole read at 234 ms on a deliberately duplicate-heavy library of
+/// 10,000 parts, mostly in the cards. A count-only read is the upgrade if a real library measures slow.
+async fn duplicates(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+    // This widget's own probe, and not belt-and-braces: `clusters` answers an empty queue for a
+    // library that does not exist rather than an error (G3's Record says so), so without this an
+    // unknown library would read as "no duplicates here" instead of failing its key.
+    exists(db, library).await?;
+    let found = crate::likeness::clusters(db, library, None)
+        .await
+        .map_err(|err| failed(&err, "dashboard duplicates read failed"))?;
+    Ok(WidgetValue::Duplicates(DuplicateSummary {
+        clusters: u32::try_from(found.clusters.len()).unwrap_or(u32::MAX),
+        unprofiled: found.unprofiled,
+    }))
+}
+
+/// Whether the library is there at all, through `PgParts::auto_thumbnail` — the existence probe
+/// `derive.rs` and G3's routes already use.
+///
+/// Only the widgets whose own read cannot tell the difference ask this. `recent`, `facet` and `queue`
+/// each answer emptily for an id naming nothing, and `duplicates` does too; `storage` and
+/// `savedFilter` say so themselves, and `instanceStorage` names no library.
+async fn exists(db: &PgPool, library: LibraryId) -> Result<(), String> {
+    match PgParts(db.clone()).auto_thumbnail(library).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(no_such_library()),
+        Err(err) => Err(failed(&err, "dashboard library lookup failed")),
+    }
+}
+
+/// `limit` inside `1..=most`. Clamped rather than refused: the body is otherwise valid, a widget is a
+/// read, and 422ing a whole dashboard because one tile asked for twenty cards would take down eleven
+/// tiles that were fine. Zero is one for `parts.rs`'s reason — a limit of nothing is nobody's ask.
+fn capped(limit: u8, most: u8) -> u8 {
+    limit.clamp(1, most)
+}
+
+/// A library id that names nothing. It fails its own key and no other.
+fn no_such_library() -> String {
+    "No library with that id exists. It may have been deleted since this dashboard was arranged \
+     — point the widget at another library, or remove it."
+        .to_owned()
+}
+
+/// A read that failed. The operator gets the detail through the log; the key carries what a person can
+/// act on, exactly as `parts.rs`'s `internal_error` decides.
+fn failed(err: &DbError, what: &'static str) -> String {
+    tracing::error!(error = %err, "{what}");
+    err.client_message()
+}
+
+/// A grid read that could not be answered, as a message. The refused half is a whole response composed
+/// by `fields::filter_of`, whose text cannot be read back out here, so this says what a person can do
+/// about either shape of it.
+fn grid_failed(refusal: GridRefusal) -> String {
+    match refusal {
+        GridRefusal::Db(err) => failed(&err, "dashboard grid read failed"),
+        GridRefusal::Field(_) => "This saved filter filters on a custom field the library no \
+                                  longer offers as a filter. Open the filter in the grid to see \
+                                  which, then edit or remove it."
+            .to_owned(),
+    }
+}
+
+/// A body that is well-formed JSON and still not a resolve, or not JSON at all. The rejection's own
+/// status is kept — 415 for the wrong content type, 400 for broken syntax, 422 for a shape serde read
+/// and refused — and its text is wrapped in what to send instead.
+fn bad_body(rejection: &JsonRejection) -> Response {
+    (
+        rejection.status(),
+        Json(serde_json::json!({
+            "message": format!(
+                "Could not read the dashboard resolve body: {rejection}. It is \
+                 `{{\"widgets\": [{{\"key\": \"…\", \"widget\": {{\"kind\": \"…\"}}}}]}}`, \
+                 1 to {MAX_WIDGETS} widgets, each key once."
+            )
+        })),
+    )
+        .into_response()
+}
+
+/// A body that read cleanly and still cannot be carried out.
+fn refused(message: &str) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(serde_json::json!({ "message": message })),
+    )
+        .into_response()
+}
+
+/// This file's routes, merged for the api role. One route: there is deliberately no per-widget
+/// endpoint (`FEATURES.md` §8 calls per-widget polling a self-inflicted DoS).
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
+    Router::new().route("/api/dashboard/resolve", post(resolve))
 }
