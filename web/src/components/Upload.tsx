@@ -344,7 +344,14 @@ export function ScanProgress({
             { failed: strings.scan.failed, unknown: strings.upload.batchUnknown }
           : strings.scan
   if (isError) {
-    return <p className="mb-4 max-w-prose text-[var(--color-muted)]">{copy.unknown}</p>
+    // `alert`, because this replaces the progress line rather than following it: a status poll
+    // that fails leaves the page silent about a batch somebody just started, and the sentence
+    // says which of the four kinds of batch it could not find.
+    return (
+      <p role="alert" className="mb-4 max-w-prose text-[var(--color-muted)]">
+        {copy.unknown}
+      </p>
+    )
   }
   if (status === undefined) {
     return null
@@ -361,7 +368,15 @@ export function ScanProgress({
     'ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-60'
   return (
     <div className="mb-4 max-w-prose text-[var(--color-muted)]">
-      <p className="flex flex-wrap items-center gap-2">
+      {/*
+        `status`, on the line and not on the block around it. The line is what changes while a
+        batch runs — "Scanning — 148 of 399 files" every second — and a screen reader that is
+        never told a scan is under way is left with a page that looks idle. The block is not the
+        region, deliberately: `role="status"` is atomic, and a region wrapping the failure list
+        would re-read a hundred failed files on every poll. The same reason the upload transfer's
+        own line carries it alone (`index.tsx`).
+      */}
+      <p role="status" className="flex flex-wrap items-center gap-2">
         <span>{progressText(status, kind)}</span>
         {status.failedTotal === 0 ? null : <span>{copy.failed(status.failedTotal)}</span>}
         {retryable && status.failedTotal > 1 ? (

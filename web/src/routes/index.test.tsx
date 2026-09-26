@@ -1482,7 +1482,11 @@ test("says so when the batch in the URL is not one this library can show", async
   });
   renderIndex({ batch: BATCH_ID });
 
-  expect(await screen.findByText(strings.scan.unknown)).toBeTruthy();
+  // An alert: this replaces the progress line, so a poll that fails must not leave the page
+  // silent about a batch somebody just started.
+  expect((await screen.findByText(strings.scan.unknown)).getAttribute("role")).toBe(
+    "alert",
+  );
 });
 
 test("refetches the grid as the worker commits parts", async () => {
@@ -2091,7 +2095,9 @@ test("a scan started in one library is not polled under the next one", async () 
   fireEvent.click(
     await screen.findByRole("button", { name: strings.scan.start }),
   );
-  expect(await screen.findByText(strings.scan.walking)).toBeTruthy();
+  // A live region, so a scan that is running is announced and not only drawn. On the line
+  // alone — the failure list below it must not be re-read on every poll.
+  expect((await screen.findByText(strings.scan.walking)).closest("[role=status]")).not.toBeNull();
 
   switchTo(SECOND_LIBRARY_ROW.id);
 
