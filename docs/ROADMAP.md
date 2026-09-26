@@ -3495,6 +3495,51 @@ its job: every gate log carries `lock … another session is compiling; waiting`
     finer rung (which would stop profiling being free at ingest). T1's run is to report how often the miss actually
     bites on real corpus parts, as an observation beside the exit rather than as a pass or a failure, so the revisit has
     a number behind it. `phase-6.md`'s claim that L0 smooths a re-tessellation is corrected in place.
+- **T1, the end-to-end rig** (merged `9818ad2`, gate 14 green in 184.62 s on the merged tree). `scripts/e2e/` — committed,
+  not another scratch harness: `stack.sh` (`build | up | seed | drive | exit2 | down | status`) running compose under its
+  own project name on a lane port block, `cdp.mjs`, `flows.mjs`, `skew-stl.py`, `exit2.py`, and `check.sh`, which the
+  design did not ask for and which turned out to be the point — nothing in `verify slice` lints a shell or an `.mjs`
+  file, so **69 assertions with a 12-mutation harness behind them are all the checking this rig has**.
+  - **31 of 31 flows `ok`, twice, every status identical, 50.6 s and 50.3 s, 30 screenshots**, across the five routes at
+    desktop and phone widths. Verified from the reports rather than the summary. `--compare` prints per-flow deltas and
+    which sha moved; the two runs are kept at `target/e2e-baseline/` as the first baseline.
+  - **Two estimates in the goal file were wrong and the rig corrected both:** the seed is **41–52 s**, not "well over
+    12 minutes" (the scan is 22–32 s, and six B-rep parts are a rounding error beside 400 meshes), and the store is
+    **926 MB**, not 1.7 GB. Bring-up is healthy in **6–7 s** against an estimated 90; teardown 1.8 s; images 3 min 52 s;
+    411 parts, 411 thumbnails, 116 categories, five formats, worker peak 71.7 MiB of its 2 GiB ceiling.
+  - **Phase 6 exit 2 passes against real geometry**, which is the first time rotation invariance has been checked on
+    anything but synthetic profiles: the bracket turned 37° off-axis scores **distance 0.000000** with `size_mm`
+    identical to four decimals, and comes back under `nearDuplicates`. All 421 live parts profiled at version 1 with
+    **zero profiling jobs left behind**, confirming G2's in-line profiling from outside the process.
+  - **The owner's observation, and it is worse than "the area term".** Two dense corpus meshes turned 37° off-axis:
+    `GONML_N2_SHTG` (84,164 triangles) came back at 0.022775 and was recognised; `GONML_N5_mace_SUP` (84,418) scored
+    **0.104507**, 2.6× the threshold, and was listed only as `similar`. The miss is **on distance, not the band**, so
+    widening the band would not help — and the rig measured something the calibration could not: **`size_mm` moves by
+    up to 1.55 % under a rigid turn, 78 % of the whole ±2 % band**, which it cannot legitimately do. A rigid rotation
+    changes no distance on the surface, so **the hypothesis — recorded as a hypothesis, with no per-term breakdown
+    behind it — is that L0's mesh itself depends on orientation**, which would feed every term rather than one, and
+    would move the fix from the descriptor to the tessellation. Re-runnable as `stack.sh exit2 <part.stl>`.
+  - **Thirteen bugs, all in the rig, three of which made it report success while testing nothing** — the exact failure
+    this goal exists to prevent. An edit deleted four seed helpers and `bash -n` cannot see a missing function, so the
+    seed ran to the end and wrote a report with **zero checks in it**; `drive` defaulted its flow list to empty and
+    exited 0; one flow read its "before" state after the change and compared 50 cards against nothing. Also: two flows
+    compared `undefined` with `undefined` because `GET …/parts` carries no `total`; `rm -rf` on a bind-mount source
+    replaces the inode, so the worker kept seeing an empty directory; and **`DOM.setFileInputFiles` does nothing to this
+    app's inputs** — a real upload needs chooser interception plus a dispatched click for user activation, and takes a
+    *directory*, which incidentally makes folder uploads with categories drivable after all. Two assertions were wrong
+    about correct behaviour and were fixed against the code, not the code against them.
+  - **The interactive pass became a measurement**, because the extension's tab is `hidden` and fired **0 rAF callbacks
+    in 1,200 ms** — so the GPU half went through the headless rig with `--gl gpu`. On an RTX 3060 Ti a 411-card grid
+    scrolled 16,192 px at a **locked 60 fps** (median 16.7 ms, one frame over 32 ms in 173), the turntable creates one
+    canvas and releases it, and **the real GPU and SwiftShader agree within 10 %** — so the open path is not GPU-bound
+    and the headless numbers Phase 3 recorded are representative. The motion rule measured across 234 elements: only
+    120/180 ms, one easing curve, transform and opacity only. All 11 contrast pairs pass AA, worst 5.07:1.
+  - **Wave 1 closes here.** Four goals, four agents at once, each in its own worktree with its own database and ports,
+    merged one at a time with the gate green on every merged tree. The compile lock held throughout — every gate log
+    carries a wait — and no lane clobbered another's build.
+
+**Wave 1 closed** (2026-09-26). G3 `f18e0f0`, G6 `4479e1b`, G2 `5fdd5af`, T1 `9818ad2`. Phase 6's **second exit is met**
+and measured through containers; the first (a 12-widget dashboard in one round trip) waits on G4 and G5. Nothing pushed.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.

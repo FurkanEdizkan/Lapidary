@@ -14,8 +14,8 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [W0](W0.md) | Phase 6 contracts | 0 | lead, Rust | B0 | `lapidary-core/src/{shape,event,link}.rs`, `lapidary-db/src/shapes.rs`, `repo.rs` purge + `rows_by_id`, `lapidary-api/src/{likeness,dashboard}.rs` (types only), `strings.ts` blocks | 0047, 0048 | merged `322d382` | `feat/phase-6-contracts` |
 | [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | merged `5fdd5af` | `feat/shape-profiles` |
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | merged `f18e0f0` | `feat/likeness-api` |
-| [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
-| [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | open | `test/e2e-rig` |
+| [G6](G6.md) | Likeness UI | 1 | web | W0, G3 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
+| [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | merged `9818ad2` | `test/e2e-rig` |
 | [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | open | `fix/sharing-screens` |
 | [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | open | `feat/dashboard-resolve` |
 | [G1](G1.md) | App-wide event stream | 2 | Rust | W0 | `lapidary-db/src/events.rs`, `lapidary-api/src/events.rs`, the headers in `jobs.rs`, `bin/lapidary-server/src/main.rs`, `deploy/web/Caddyfile` if needed | 0049 | open | `feat/events-stream` |
@@ -57,6 +57,13 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
 - **Sharing:** choosing several parts to pull at once; part names from the manifest; a controlled destination taking
   a sharer's revisions; a grant or a new share waking the other side's peer role (deferred three times); progress
   moving a file at a time.
+- **From T1's two clean runs (2026-09-26), one line each.** `Permission denied (os error 13)` names the file and the
+  errno but not what to do, which is half the error rule. `scripts/e2e/check.sh` is not wired into any gate: its 69
+  assertions ran by hand on every commit, and wiring it in is **not** a one-liner, because `docker compose config` is
+  among them and CI has no docker — it needs a CI-safe subset first. `stack.sh up` takes the compile lock and compiles
+  nothing, so it queued behind four `cargo test --workspace` runs, each wait longer than the 7 s of work. The
+  `/duplicates` queue uses the left ~800 px of a 1440 viewport while wrapping long path headings onto three lines inside
+  that column. A 1,000-part sweep is `CORPUS_SLICE=1000` away, and the backlog's UI-sweep row is now cheap.
 - **A decision cannot be taken back from any screen (G6, 2026-09-26).** `DELETE /api/parts/{id}/links/{other}` undoes
   a `variant` or `distinct`, and nothing offers it: the queue lists undecided pairs only, so a pair leaves it and never
   reappears. Wants either a "decided about" list per library or an undo on the row before it disappears. Also from the
