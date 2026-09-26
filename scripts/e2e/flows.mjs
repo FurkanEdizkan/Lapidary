@@ -76,8 +76,31 @@ const S = {
   pmiSection: '#part-specified',
   // Two hidden file inputs exist; only this one takes models. The other imports a bundle.
   fileInput: 'input[type="file"][webkitdirectory]',
-  uploadStatus: '#parts p[role="status"]',
+  // Not `#parts p[role="status"]` on its own: the grid page can hold four status regions at once — the
+  // grid skeleton, this transfer line, ScanProgress and the review offer — and a bare role query there
+  // takes whichever came first in the DOM. The flow matches this line's own vocabulary instead; see
+  // `W` below for every wording the rig depends on.
+  statusIn: '#parts [role="status"], #parts p[aria-live], #parts div.mb-4.max-w-prose > p',
   historySection: '#part-history',
+}
+
+/**
+ * The wordings this rig depends on, because the DOM does not identify them.
+ *
+ * Every entry here is a `strings.ts` value that a flow matches as **text**, and it is a list rather than a
+ * scattering of literals so that a copy change breaks one named thing. Three of these are load-bearing in
+ * a way a selector normally would be:
+ *
+ *   `upload.*`  the transfer line has `role="status"`, and so do the grid skeleton, ScanProgress and the
+ *               review offer — four on one page. Only the wording tells them apart.
+ *   `scan.*`    ScanProgress has no id, deliberately (an id existing only for a driver is scaffolding), so
+ *               its text is the only handle there is.
+ *   `loadingMesh`  `open-timing.mjs` parses this same literal out of `strings.ts` for the same reason.
+ */
+const W = {
+  upload: ['Reading ', 'Asking which files are new', 'Uploading ', 'Finishing the upload'],
+  scanRunning: /Reading the folder|Scanning — [\d,]+ of/,
+  scanDone: /Scan complete — [^.]*\./,
 }
 
 // Text the flows match on: the rendered strings, because that is what the person reads. Every one of
@@ -797,10 +820,28 @@ const FLOWS = [
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
       await setFiles(page, S.fileInput, [file])
       // The transfer's own line first, then the batch line: two displays, both real.
+      // Matched on this line's own vocabulary, and two matches are a failure: taking the first
+      // `role="status"` in the DOM would read the grid skeleton's "Loading parts…" as upload progress and
+      // call that a pass.
       const progress = await page.settle(
-        () => text(page, S.uploadStatus),
-        (t) => t !== null,
+        () =>
+          page.evaluate(`(() => {
+            const want = ${JSON.stringify(W.upload)}
+            const hits = [...document.querySelectorAll(${JSON.stringify(S.statusIn)})]
+              .map((e) => e.textContent.trim())
+              .filter((t) => want.some((w) => t.includes(w)))
+            return { hits, all: [...document.querySelectorAll('#parts [role="status"]')].map((e) => e.textContent.trim().slice(0, 40)) }
+          })()`),
+        (r) => r.hits.length === 1,
         { timeout: 30_000, every: 250 },
+      )
+      expect(
+        progress.hits.length > 0,
+        `no line in #parts used the upload's own wording (${W.upload.join(' / ')}); the status regions there say ${JSON.stringify(progress.all)}`,
+      )
+      expect(
+        progress.hits.length === 1,
+        `${progress.hits.length} lines matched the upload's wording, so the rig cannot tell which is the transfer line: ${JSON.stringify(progress.hits)}`,
       )
       const done = await page.settle(
         () => page.evaluate('document.body.textContent'),
@@ -814,7 +855,7 @@ const FLOWS = [
         { timeout: 60_000, every: 1000 },
       )
       expect(after > before, `the upload never landed: ${before} parts before and after`)
-      return `${before} -> ${after} parts in Governed; progress line ${JSON.stringify(progress)}`
+      return `${before} -> ${after} parts in Governed; progress line ${JSON.stringify(progress.hits[0])}`
     },
   },
   {
@@ -840,20 +881,20 @@ const FLOWS = [
       // which is a finding in its own right, not a workaround.
       const line = await page.settle(
         () => page.evaluate(`document.querySelector('#parts')?.textContent ?? ''`),
-        (t) => /Reading the folder|Scanning — [\d,]+ of/.test(t),
+        (t) => W.scanRunning.test(t),
         { timeout: 90_000, every: 400 },
       )
-      const shown = /Scanning — [\d,]+ of [\d,]+ files\./.exec(line)?.[0] ?? /Reading the folder…/.exec(line)?.[0]
+      const shown = W.scanRunning.exec(line)?.[0]
       expect(
         shown !== undefined,
         'a scan was started and #parts shows neither "Reading the folder…" nor "Scanning — N of M files."',
       )
       const finished = await page.settle(
         () => page.evaluate(`document.querySelector('#parts')?.textContent ?? ''`),
-        (t) => /Scan complete —/.test(t),
+        (t) => W.scanDone.test(t),
         { timeout: 600_000, every: 2000 },
       )
-      const done = /Scan complete — [^.]*\./.exec(finished)?.[0]
+      const done = W.scanDone.exec(finished)?.[0]
       expect(done !== undefined, 'the scan never said "Scan complete — …"')
       // Nothing new: the same bytes at the same paths are already here, so a second scan adds no part.
       const after = await ctx.countParts(ctx.sweep.id)
@@ -959,21 +1000,76 @@ const FLOWS = [
   },
   {
     name: 'duplicates',
+    widths: [1440, 390],
     pending:
-      'G6 builds the duplicates UI — there is no /duplicates route, strings.likeness is an empty block, ' +
-      'and the DuplicateCluster/Likeness bindings are generated but imported by nothing. The fixtures are here.',
+      "G6's /duplicates page and part-page section are not on main yet. G3's API is (merged f18e0f0), so " +
+      'everything below except the page assertions runs for real; the page assertions turn themselves on ' +
+      'the moment the route renders, so landing G6 leaves only this flag to remove.',
     async run(page, ctx) {
-      // The three cases are seeded and asserted here so that when G6 lands, the only thing missing is
-      // the assertion on its own widget.
+      // The three fixtures, and what each of them is *for*. This is the assertion `alike/` was seeded to
+      // make, and `docs/phase-6.md`'s claim stated as a test: a rotation is a near-duplicate because the
+      // descriptor is rotation-invariant, and a 15 % scale is not, by design.
       const alike = (await ctx.allParts()).filter((p) => (p.sourcePath ?? '').startsWith('alike/'))
       expect(alike.length === 4, `alike/ should hold the flange and its three variants; found ${alike.length}`)
-      const kinds = alike.map((p) => p.sourcePath.replace('alike/flange-dn40-lp-3310-02', '').replace('.stl', '') || '(the original)')
-      for (const want of ['-second-copy', '-rotated', '-scaled-115']) {
-        expect(kinds.includes(want), `no ${want} fixture: ${JSON.stringify(kinds)}`)
+      const of = (suffix) => alike.find((p) => p.sourcePath === `alike/flange-dn40-lp-3310-02${suffix}.stl`)
+      const original = of('')
+      const copy = of('-second-copy')
+      const rotated = of('-rotated')
+      const scaled = of('-scaled-115')
+      for (const [what, part] of [['the original', original], ['-second-copy', copy], ['-rotated', rotated], ['-scaled-115', scaled]])
+        expect(part !== undefined, `no ${what} fixture in alike/: ${JSON.stringify(alike.map((p) => p.sourcePath))}`)
+
+      const likeness = await ctx.get(`/api/parts/${original.id}/likeness`)
+      expect(likeness.profiled === true, 'the flange has no shape profile, so likeness cannot answer for it')
+      const ids = (list) => (list ?? []).map((p) => p.id)
+      // Identical: the same bytes at a second path. `library_holds` joins on source_path AND hash, so this
+      // is a second part rather than a skipped job — the case an ingest-time hash check cannot make.
+      expect(
+        ids(likeness.identical).includes(copy.id),
+        `-second-copy has the same bytes at another path and must be identical; identical holds ${ids(likeness.identical).length} parts`,
+      )
+      // Near-duplicate: the same solid on a different axis. The invariance phase-6.md claims.
+      expect(
+        ids(likeness.nearDuplicates).includes(rotated.id),
+        `-rotated is the same solid stood up and must be a near-duplicate; nearDuplicates holds ${JSON.stringify(ids(likeness.nearDuplicates).length)}`,
+      )
+      // Similar but NOT near: 15 % larger is outside the ln(1.02) band by design. A detector that called
+      // this one a near-duplicate would be wrong, and this is the assertion that would catch it.
+      expect(
+        !ids(likeness.nearDuplicates).includes(scaled.id),
+        '-scaled-115 is 15 % larger, far outside the ln(1.02) band, and must NOT be a near-duplicate',
+      )
+      expect(
+        ids(likeness.similar).includes(scaled.id) || ids(likeness.variants).includes(scaled.id),
+        `-scaled-115 should come back as similar or a variant; it is in neither (similar ${ids(likeness.similar).length}, variants ${ids(likeness.variants).length})`,
+      )
+
+      const clusters = await ctx.get(`/api/libraries/${ctx.sweep.id}/duplicates`)
+      expect(Array.isArray(clusters.clusters), 'GET /duplicates did not answer a cluster list')
+      expect(
+        clusters.clusters.some((c) => c.identical && ids(c.parts).includes(copy.id)),
+        `no identical cluster holds -second-copy; ${clusters.clusters.length} clusters, ${clusters.unprofiled} unprofiled`,
+      )
+      const folds = await ctx.get(`/api/libraries/${ctx.sweep.id}/folds`)
+      expect(Array.isArray(folds), 'GET /folds did not answer a list')
+
+      // The page. It turns itself on: while G6 is not on main the route renders nothing recognisable and
+      // this reports what it found, and the day it does render, these become real assertions with no edit
+      // here — so landing G6 leaves only the `pending` flag above to remove.
+      await page.go('/duplicates', `document.readyState === 'complete'`)
+      const hasPage = await page.evaluate(
+        `[...document.querySelectorAll('h1, h2')].some((h) => /duplicate/i.test(h.textContent))`,
+      )
+      if (!hasPage) {
+        return `API only: identical/near/similar all correct, ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s) — /duplicates renders no page yet`
       }
-      // The identical pair is the case an ingest-time hash check cannot make: the same bytes at a
-      // second path are a second part, because library_holds joins on source_path AND hash.
-      return `4 fixtures in alike/: ${kinds.join(', ')}; no /duplicates route yet`
+      const shown = await page.settle(
+        () => page.evaluate('document.body.textContent'),
+        (t) => t.includes(original.name),
+        { timeout: 20_000 },
+      )
+      expect(shown.includes(original.name), 'the /duplicates page does not name the flange it clustered')
+      return `page and API agree: ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s)`
     },
   },
 ]

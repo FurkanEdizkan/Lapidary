@@ -353,7 +353,8 @@ cmd_build() {
   write_env
   verify_ports
   local summary=$WORK/build-summary.txt
-  echo "== $(date -Is) build of $PROJECT; / $(free_gb /) GB free; /mnt/Storage $(free_gb "$ROOT") GB free" > "$summary"
+  echo "== $(date -Is) build of $PROJECT from $(git -C "$ROOT" rev-parse --short HEAD); / $(free_gb /) GB free; /mnt/Storage $(free_gb "$ROOT") GB free" > "$summary"
+  git -C "$ROOT" rev-parse HEAD > "$WORK/built-from.sha"
   for svc in $services; do
     # The guard, before each service and not once at the top: the OCCT worker stage alone can move
     # root free space by several gigabytes. Under it we stop and ask — we never prune, because
@@ -437,6 +438,13 @@ json.dump({
               "worker": $LAPIDARY_PORT_WORKER, "peer": $LAPIDARY_PORT_PEER},
     "extensions": """$extensions""", "migration": """$migration""",
     "deviceId": "$device",
+    # Which tree these images were built from, and which tree drove them. `--compare` is only meaningful
+    # between reports that say so: a flow status that changed between two shas is a regression, and the
+    # same change between two builds of one sha is flakiness. They differ whenever a stack is kept across
+    # a merge, which is exactly when somebody would misread the comparison.
+    "builtFromSha": "$(cat "$WORK/built-from.sha" 2>/dev/null || echo unknown)",
+    "sha": "$(git -C "$ROOT" rev-parse HEAD)",
+    "branch": "$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)",
 }, open(sys.argv[1], "w"), indent=2)
 EOF
 }
@@ -862,6 +870,11 @@ import json, pathlib, re, sys
 old, new = (json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:3])
 def by_name(r): return {f["name"]: f for f in r.get("flows", [])}
 a, b = by_name(old), by_name(new)
+for label, report in (("was", old), ("now", new)):
+    stack = report.get("stack", {})
+    print(f"  {label}: sha {str(stack.get('sha'))[:12]} on {stack.get('branch')}, images built from {str(stack.get('builtFromSha'))[:12]}")
+if old.get("stack", {}).get("sha") == new.get("stack", {}).get("sha"):
+    print("  same sha both runs, so a status that moved is flakiness, not a regression")
 for name in sorted(set(a) | set(b)):
     was, now = a.get(name, {}), b.get(name, {})
     ws, ns = was.get("status", "absent"), now.get("status", "absent")
