@@ -203,6 +203,13 @@ pub struct DuplicateSummary {
 /// for a connection rather than for their own query — and with the permit limit but a clock started at
 /// spawn, a key that queued behind three slow ones would report the same lie from the other side.
 /// `tests/dashboard.rs` holds both distinctions.
+///
+/// ponytail: the timeout bounds how long a key *waits*, not how long its statement runs. Cancelling the
+/// future leaves the query running on the server, and sqlx cannot hand that connection back until it
+/// answers — `a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears` states it. So a
+/// long-held lock plus repeated resolves can still drain the pool. The fix is a server-side
+/// `lock_timeout`/`statement_timeout` on the pool `lapidary_db::connect` builds, which is not this
+/// goal's file.
 async fn resolve(
     State(app): State<AppState>,
     body: Result<Json<ResolveRequest>, JsonRejection>,
@@ -428,7 +435,7 @@ async fn one_facet(
         }
     };
     let mut values = read.map_err(|err| failed(&err, "dashboard facet read failed"))?;
-    values.sort_by(|left, right| right.count.cmp(&left.count));
+    values.sort_by_key(|value| std::cmp::Reverse(value.count));
     values.truncate(usize::from(capped(limit, MOST_FACET_VALUES)));
     Ok(WidgetValue::Facet(
         values

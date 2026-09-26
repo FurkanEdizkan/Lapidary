@@ -772,6 +772,41 @@ async fn twelve_blocked_keys_go_four_at_a_time(pool: sqlx::PgPool) {
     );
 }
 
+/// What a key that ran out of time leaves behind, which is the ceiling on the whole mechanism: the
+/// permit limit bounds how many keys are waiting at once, not how many connections keys that gave up
+/// are still holding. Our two seconds cancel the future, but the statement is still running on the
+/// server, and sqlx cannot return the connection to the pool until the server answers.
+///
+/// A pool of one makes that visible: the read blocks on the lock, is cancelled, and the next read has
+/// nowhere to go until the lock clears.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears(pool: sqlx::PgPool) {
+    let one = pool_of(&pool, 1).await;
+    let held = lock_the_queue(&pool).await;
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(300),
+        sqlx::query("SELECT count(*) FROM job").fetch_one(&one),
+    )
+    .await;
+    let after = tokio::time::timeout(
+        Duration::from_millis(500),
+        sqlx::query("SELECT 1").fetch_one(&one),
+    )
+    .await;
+
+    held.rollback().await.expect("releases the lock");
+    one.close().await;
+
+    assert!(blocked.is_err(), "the locked read does not finish");
+    assert!(
+        after.is_err(),
+        "the cancelled read's connection is not free again while the lock is held, so a long lock \
+         plus repeated resolves can drain the pool — a server-side `lock_timeout` is the fix, and it \
+         belongs in `lapidary_db::connect` rather than here"
+    );
+}
+
 /// Three dashboards open at once. Three resolves of twelve keys share the pool of eight, and all three
 /// answer every key — the permit limit is per request, so nine keys are in flight at the busiest
 /// moment and none of them is waiting on the pool long enough to matter.
