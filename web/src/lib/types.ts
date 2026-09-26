@@ -104,3 +104,13 @@ export type { PullId } from '../bindings/PullId'
 export type { SharedBy } from '../bindings/SharedBy'
 export type { StartPull } from '../bindings/StartPull'
 export type { PeerShareId } from '../bindings/PeerShareId'
+
+// Phase 6's likeness wire types (W0's contracts, G3's routes). `Fold` and `PartLinkKind`
+// come with them: the removed page reads the first and `SetLink` is typed by the second.
+export type { DuplicateCluster } from '../bindings/DuplicateCluster'
+export type { DuplicateClusters } from '../bindings/DuplicateClusters'
+export type { Fold } from '../bindings/Fold'
+export type { FoldPart } from '../bindings/FoldPart'
+export type { Likeness } from '../bindings/Likeness'
+export type { PartLinkKind } from '../bindings/PartLinkKind'
+export type { SetLink } from '../bindings/SetLink'

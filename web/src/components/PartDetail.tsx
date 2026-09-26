@@ -28,6 +28,7 @@ import {
 import { strings } from '../lib/strings'
 import { Dialog } from './Dialog'
 import { Figure } from './Figure'
+import { Likeness } from './Likeness'
 import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
 import { breakable } from './Card'
@@ -1010,6 +1011,14 @@ export function Detail({
       )}
 
       <Specified part={part} annotated={annotated} onAnnotate={setAnnotated} />
+
+      {/*
+        What else in this library looks like this part (Phase 6). On the part's own page only:
+        the quick look is for scanning a grid, and its `Dialog` is already a modal — a fold
+        confirmation opening inside it would be a dialog in a dialog, two focus traps deep, for
+        a decision nobody makes while flicking through cards.
+      */}
+      {page ? <Likeness part={part} /> : null}
 
       <Section id="part-file" title={strings.detail.file}>
         <Row label={strings.detail.format}>

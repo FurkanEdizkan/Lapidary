@@ -17,7 +17,7 @@ vi.mock('../components/PartDetail', async (original) => ({
   warmViewer: vi.fn(async () => {}),
 }))
 import { strings } from '../lib/strings'
-import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
+import type { AssemblyNode, AssemblyTree, Likeness, PartDetail } from '../lib/types'
 
 /**
  * The part page, which is where `CLAUDE.md`'s measurement rules actually reach a screen.
@@ -69,6 +69,22 @@ const PART: PartDetail = {
   updatedAt: '2026-09-06T10:00:00Z',
 }
 
+/**
+ * What `/likeness` answers in these stubs: a part with no shape profile yet.
+ *
+ * The honest fixture for a page whose subject the worker has not reached, and the smallest one —
+ * the section renders a single sentence rather than four lists, so nothing here asserts about
+ * likeness except the section index, which asserts it is present. `Likeness.test.tsx` is where
+ * the lists and the decisions are tested.
+ */
+const UNPROFILED: Likeness = {
+  profiled: false,
+  identical: [],
+  nearDuplicates: [],
+  similar: [],
+  variants: [],
+}
+
 beforeEach(() => {
   vi.unstubAllGlobals()
 })
@@ -98,6 +114,7 @@ function stub(
       // And its history, for the same reason: one revision, so no History section.
       // And the library's custom fields, which the page lists beside the tags.
       if (url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields')) return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       // The page reads its sources too. Same reason as the gallery above: a stub that
       // answered this with a `PartDetail` would hand `[].map` an object.
       if (url.endsWith('/sources')) {
@@ -290,6 +307,7 @@ test('a refused picture shows the reason the server gave', async () => {
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -339,6 +357,7 @@ test('pasting an address posts it to the fetch route and shows the picture', asy
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => gallery }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -379,6 +398,7 @@ test('an address the server will not fetch from keeps the explanation it gave', 
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -442,6 +462,7 @@ test('clicking a picture sets its focal point', async () => {
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -481,6 +502,7 @@ test('a re-frame the server refuses says so and leaves the picture as it was', a
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [image] }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -507,6 +529,7 @@ test('a recorded source shows its licence and its price', async () => {
     vi.fn(async (url: string) => {
       if (url.endsWith('/images') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       if (url.endsWith('/sources')) {
         return {
           ok: true,
@@ -555,6 +578,7 @@ test('a price typed as a decimal is sent as exact minor units', async () => {
       if (url.endsWith('/images')) return { ok: true, status: 200, json: async () => [] }
       if (url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields'))
         return { ok: true, status: 200, json: async () => [] }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -714,6 +738,7 @@ test('an assembly shows its tree, each branch a disclosure the keyboard can open
       if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields')) {
         return { ok: true, status: 200, json: async () => [] }
       }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => ({ ...PART, structure }) }
     }),
   )
@@ -752,7 +777,13 @@ test('the section index links the sections that are on the page, and only those'
   renderPage()
   const index = await screen.findByRole('navigation', { name: strings.detail.sections })
   const links = within(index).getAllByRole('link')
-  expect(links.map((link) => link.textContent)).toEqual([strings.detail.file, strings.detail.identity])
+  // "Looks alike" is on every part's page, profiled or not: an unprofiled part says so there,
+  // which is the section doing its job rather than an empty section that should not have drawn.
+  expect(links.map((link) => link.textContent)).toEqual([
+    strings.likeness.title,
+    strings.detail.file,
+    strings.detail.identity,
+  ])
   for (const link of links) {
     const target = document.getElementById((link.getAttribute('href') ?? '').slice(1))
     expect(target?.querySelector('h3')?.textContent).toBe(link.textContent)
@@ -800,6 +831,7 @@ test('a field value that is not a number is refused in the server’s words, and
       if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
         return { ok: true, status: 200, json: async () => [] }
       }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => PART }
     }),
   )
@@ -838,6 +870,7 @@ test('a field value changed elsewhere replaces what the box shows when the part 
       if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries')) {
         return { ok: true, status: 200, json: async () => [] }
       }
+      if (url.endsWith('/likeness')) return { ok: true, status: 200, json: async () => UNPROFILED }
       return { ok: true, status: 200, json: async () => ({ ...PART, custom }) }
     }),
   )

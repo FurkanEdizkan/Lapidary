@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DuplicatesRouteImport } from './routes/duplicates'
 import { Route as RemovedRouteImport } from './routes/removed'
 import { Route as SharingRouteImport } from './routes/sharing'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
@@ -18,6 +19,11 @@ import { Route as SharingSharesShareIdRouteImport } from './routes/sharing_.shar
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DuplicatesRoute = DuplicatesRouteImport.update({
+  id: '/duplicates',
+  path: '/duplicates',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RemovedRoute = RemovedRouteImport.update({
@@ -43,6 +49,7 @@ const SharingSharesShareIdRoute = SharingSharesShareIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -50,6 +57,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -58,6 +66,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -67,6 +76,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/duplicates'
     | '/removed'
     | '/sharing'
     | '/parts/$partId'
@@ -74,6 +84,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/duplicates'
     | '/removed'
     | '/sharing'
     | '/parts/$partId'
@@ -81,6 +92,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/duplicates'
     | '/removed'
     | '/sharing'
     | '/parts/$partId'
@@ -89,6 +101,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DuplicatesRoute: typeof DuplicatesRoute
   RemovedRoute: typeof RemovedRoute
   SharingRoute: typeof SharingRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
@@ -102,6 +115,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/duplicates': {
+      id: '/duplicates'
+      path: '/duplicates'
+      fullPath: '/duplicates'
+      preLoaderRoute: typeof DuplicatesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/removed': {
@@ -137,6 +157,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DuplicatesRoute: DuplicatesRoute,
   RemovedRoute: RemovedRoute,
   SharingRoute: SharingRoute,
   PartsPartIdRoute: PartsPartIdRoute,
