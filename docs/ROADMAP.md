@@ -3423,6 +3423,81 @@ its job: every gate log carries `lock … another session is compiling; waiting`
     same file name, the same bytes and the same profile in two libraries. The reads' `library_id` filters remain
     defence in depth rather than a tested rule, because `rows_by_id` filters a foreign card out downstream — recorded
     rather than glossed.
+- **G6, the likeness UI** (merged `4479e1b`, gate 14 green in 148.33 s on the merged tree; the
+  lane's own run on `main` merged in was 352 s). `web/src/lib/likeness.ts`, `components/Likeness.tsx` and the
+  `/duplicates` route, mounted with one line each into the part page, the grid and the removed page. Web suite 441 in 34
+  files, up from 399 in 31. Built entirely against W0's bindings with `fetch` mocked while G3 was being written, then
+  gated again with G3 merged in — the two never blocked each other.
+  - **The three decisions are offered on Identical as well as Near-duplicates.** Withholding them from identical pairs
+    would leave the case where folding is most obviously right reachable only from the queue. `distinct` on a
+    byte-identical pair reads oddly and is kept, because without it two deliberate copies can never leave the queue.
+  - **The finished line counts parts, not groups:** eleven copies of one bracket is one group, and reporting "1" would
+    understate it. `justAdded` counts the parts added since the batch began that are in a group with something else.
+  - **No "approximate" note anywhere in it**, and that is the rule rather than an omission: no score is shown, so there
+    is no mesh-derived figure to label. The one figure on a row is the part's own triangle count, which carries the
+    label it always has.
+  - **"Folded into X" is a link only while X is in the library.** The api answers with a kept part that was itself
+    removed since — deliberately, since the sentence stays true — so the words stay and the link goes, and a purged X
+    drops the line entirely. Found by the lane asking rather than by anybody clicking it.
+  - `Date.parse`, not string order, for both the queue's order and the finished count: one server sending `+03:00`
+    where another sends `Z` names the same instant and sorts wrongly as text.
+  - **21 mutations, all caught** (`target/likeness-check/mutate-g6.sh`, kept in the main checkout). Two survived the
+    first pass and the *tests* were strengthened rather than the harness weakened: a fixture had one just-added part per
+    group, so two different counts agreed by accident, and a stub already handed groups over in the order under test.
+  - **Accessibility, taken on the way past:** `ScanProgress` now carries `role="status"`, and its unknown-batch sentence
+    `role="alert"` — on the line, not the block, because a live region around the failure list would re-read a hundred
+    filenames per poll. No id was added: one existing only for a test driver is scaffolding. The consequence is recorded
+    for whoever writes the next harness — the grid page can hold four `role="status"` regions at once, so a bare role
+    query there matches the wrong one.
+  - **Left for later, named so it does not vanish:** a `variant` or `distinct` decision can be taken back through the
+    api and there is no screen that offers it, because the queue lists undecided pairs only; no paging on the queue (the
+    wire carries no cursor); no bulk fold, so a group of eleven is ten presses; and `ReviewOffer` reads the queue once
+    at `finishedAt` rather than resyncing, which is what ties Phase 6's second exit to the worker enqueuing a profile
+    inside the ingest batch.
+- **G2, shape profiles in the worker** (merged `5fdd5af`, gate 14 green in 294.57 s on the merged tree).
+  `lapidary_cad::profile` over the stored L0 — area-weighted principal axes, a 65,536-pair D2 distribution stored as
+  square roots, and `ln(area/m²)` — plus `glb::read_triangles` (the GLB tests' own decoder promoted, so there is one
+  reader), `JobPayload::ProfileShape`, `Outcome::Profiled`, `PgShapes::l0_of_revision` and `stale_revisions`, and a
+  backfill sweep capped at 5,000 parts a worker start. 20 new tests; 10 mutations, 10 caught — and the first run's two
+  survivors were both real test gaps, fixed rather than explained away.
+  - **Profiling is in line, inside the ingest job, and enqueues nothing.** `record_shape` runs beside `record_topology`
+    on both commit paths, before the job reports its outcome, so **a batch cannot reach `finishedAt` with its parts
+    unprofiled** — which is what Phase 6's second exit rests on. A test asserts zero `profile_shape` jobs after an
+    ingest, so it cannot drift; the job kind exists for backfill alone. A rebuilt L0 re-profiles in line inside the
+    derive job. Warn-only, like topology: if profiling itself fails the ingest still succeeds and the next worker start
+    sweeps the part up.
+  - **Per L0, release, idle: median 4.33 ms, p95 4.77 ms, worst 6.82 ms** (GLB decode 0.03 ms of it) against a 5 ms
+    target — met at median and p95, over at the worst case.
+  - **`NEAR_DUPLICATE_DISTANCE` stays 0.04, and nothing in `lapidary-core` changed.** There is **no gap above the
+    sampler's noise floor**, the case the goal pre-agreed the tight number for. Over 966 corpus parts the in-band
+    nearest-neighbour distances run 5% at 0.0188, 10% at 0.0289, 25% at 0.0496, 50% at 0.0942; parts with an in-band
+    neighbour under 0.04 are 170, or 17.6%. The floor is arithmetic rather than luck: storing √p makes each bin's
+    deviation about 1/(2√N), so `√(BINS/(4·PAIRS))` = **0.011**, measured 0.013 on a reordered cylinder. Nothing below
+    that can mean anything, and halving it costs four times the pairs — which is why the design's 65,536 stayed.
+  - The closest non-identical pairs in the corpus are `_L`/`_R` mirror halves of one model at 0.0113–0.0169: the
+    documented mirror behaviour turning up in real data rather than in a fixture.
+  - **The area term makes the profile sensitive to re-tessellation, and `phase-6.md` claimed the opposite.** Calibrated
+    over 974 corpus meshes, both sides through L0: a copy moved 250 mm scores 0.0002, scaled 1% 0.0001, **turned a
+    quarter about z 0.0000** — but the **same surface subdivided four times scores 0.0509** and a **37° off-axis turn
+    0.0907**, against a 0.04 threshold, with about a quarter of those copies falling outside the ±2% size band and so
+    never becoming candidates at all. It is not rotation that fails: an off-axis turn or a finer triangulation changes
+    L0's clustering, its area differs by a few per cent, and `ln(area/m²)` carries that straight into the descriptor
+    (0.1024 of a 0.111 total). No threshold repairs it. Simple parts are unaffected and tested — the bracket fixture
+    turned 37° and ingested at another path **is** a near-duplicate — so Phase 6's exit holds as written, because the
+    exit names that fixture. Left as the owner's decision with its cost measured: dropping `ln(area/m²)` brings the 37°
+    turn to 0.0354 and the subdivision to 0.0284, both inside the threshold, but takes parts with an in-band neighbour
+    under 0.04 from **170 to 368** — roughly twice the review queue — and it is a `SHAPE_VERSION` bump against a
+    contract G3 already reads.
+  - **Decided by the owner, 2026-09-26: accept it for now and revisit once the rig has run.** Identical files, mirror
+    halves and genuinely similar parts are all served well; a re-exported or re-tessellated copy of a dense mesh is not
+    caught, and that is written down rather than hidden. The other two options and their costs stay in
+    [`G2.md`](goals/G2.md)'s Record — dropping the area term (34 floats, twice the queue, a version bump) and profiling a
+    finer rung (which would stop profiling being free at ingest). T1's run is to report how often the miss actually
+    bites on real corpus parts, as an observation beside the exit rather than as a pass or a failure, so the revisit has
+    a number behind it. `phase-6.md`'s claim that L0 smooths a re-tessellation is corrected in place.
+  - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
+    permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
+    notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
 
 ---
 

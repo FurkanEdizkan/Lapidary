@@ -21,8 +21,11 @@ near-duplicates.
 
 - **Input:** the stored L0 tessellation (`derivative.kind = 'tessellation_l0'`), decoded from its GLB — never the
   source file, never the kernel. Ingest and backfill read the same bytes, so they give bit-identical results, and an
-  algorithm change costs a 5k-triangle decode, not a re-tessellation. L0's clustering smooths the difference between
-  an STL and a STEP of the same part.
+  algorithm change costs a 5k-triangle decode, not a re-tessellation. **Corrected by G2's calibration (2026-09-26):
+  L0's clustering does not smooth a re-tessellation, it carries one into the area term** — the same surface subdivided
+  four times scores 0.0509 and a 37° off-axis turn 0.0907, against a 0.04 threshold, because L0 re-clusters and
+  `ln(area/m²)` follows. Simple parts are unaffected. The owner chose to accept this for now (see the ROADMAP's Wave 1
+  ledger); the measured cost of dropping the area term is recorded there.
 - **Computation** (`crates/lapidary-cad/src/shape.rs`, pure Rust, no new crates):
   - principal axes: area-weighted surface covariance, exact per triangle; eigenvalues λ1 ≥ λ2 ≥ λ3 from a closed-form
     3×3 solver;

@@ -12,9 +12,9 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 |---|---|---|---|---|---|---|---|---|
 | [B0](B0.md) | Several sessions at once | 0 | lead | — | `docs/goals/`, `scripts/`, `xtask/src/lane.rs`, `CLAUDE.md`, `.claude/settings.json` | — | merged `31f282c` | `chore/parallel-sessions` |
 | [W0](W0.md) | Phase 6 contracts | 0 | lead, Rust | B0 | `lapidary-core/src/{shape,event,link}.rs`, `lapidary-db/src/shapes.rs`, `repo.rs` purge + `rows_by_id`, `lapidary-api/src/{likeness,dashboard}.rs` (types only), `strings.ts` blocks | 0047, 0048 | merged `322d382` | `feat/phase-6-contracts` |
-| [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | open | `feat/shape-profiles` |
+| [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | merged `5fdd5af` | `feat/shape-profiles` |
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | merged `f18e0f0` | `feat/likeness-api` |
-| [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | open | `feat/likeness-ui` |
+| [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
 | [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | open | `test/e2e-rig` |
 | [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | open | `fix/sharing-screens` |
 | [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | open | `feat/dashboard-resolve` |
@@ -57,10 +57,14 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
 - **Sharing:** choosing several parts to pull at once; part names from the manifest; a controlled destination taking
   a sharer's revisions; a grant or a new share waking the other side's peer role (deferred three times); progress
   moving a file at a time.
-- **Accessibility, found by T1's rig (2026-09-26):** `ScanProgress` (`web/src/components/Upload.tsx:296`) has no
-  `role`, no id and no `aria-live`, so a scan's progress is announced to nobody and a driver can only key off its text
-  (offered to G6, which is already in that component). Several regions label themselves with `useId()` for
-  `aria-labelledby` — saved filters, the quick-look pane, every `Dialog` title, `FirstRun` — so they are reachable only
+- **A decision cannot be taken back from any screen (G6, 2026-09-26).** `DELETE /api/parts/{id}/links/{other}` undoes
+  a `variant` or `distinct`, and nothing offers it: the queue lists undecided pairs only, so a pair leaves it and never
+  reappears. Wants either a "decided about" list per library or an undo on the row before it disappears. Also from the
+  same goal: no paging on the duplicates queue (the wire carries no cursor), and no bulk fold — a group of eleven copies
+  is ten presses, and `bulk.ts` is the shape to follow.
+- **Accessibility, found by T1's rig (2026-09-26):** `ScanProgress`'s half is **done** — G6 gave the progress line
+  `role="status"` and its unknown-batch sentence `role="alert"`. What remains: several regions label themselves with
+  `useId()` for `aria-labelledby` — saved filters, the quick-look pane, every `Dialog` title, `FirstRun` — so they are reachable only
   by heading text, which every future harness pays for.
 - **Web:** lossy WebP at about q85 (`images.rs:184`); per-triangle face ids for measurement snapping
   (`web/src/lib/measure.ts:97`); the 1,000-part UI sweep and GPU frame times; category re-parenting.
