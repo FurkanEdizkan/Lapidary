@@ -128,6 +128,8 @@ const T = {
   uploadButton: 'Upload a folder',
   looksAlike: 'Looks alike',
   duplicatesTitle: 'Possible duplicates',
+  foldInto: 'Fold into this',
+  notTheSame: 'Not the same',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
   thisInstallation: 'This installation',
@@ -806,7 +808,9 @@ const FLOWS = [
       const before = await ctx.countParts(ctx.sweep.id)
       let removed = false
       try {
-      await page.go(`/parts/${victim.id}`, `document.querySelector('h1, h2') !== null`)
+      // Waited on the CONTROL, not the heading. The heading lands before the actions menu mounts, so this
+      // flow failed in one run and passed in the next — and stage 6 counts that as a finding, not noise.
+      await page.go(`/parts/${victim.id}`, `document.querySelector('button[popovertarget="${S.partMenu}"]') !== null`)
       // No confirmation, deliberately: removal is reversible and the hint under the button says so.
       // The control is in the part's own actions menu, whose children are display:none until opened.
       await page.openMenu(S.partMenu)
@@ -1143,9 +1147,30 @@ const FLOWS = [
 
       const clusters = await ctx.get(`/api/libraries/${ctx.sweep.id}/duplicates`)
       expect(Array.isArray(clusters.clusters), 'GET /duplicates did not answer a cluster list')
+      // The queue groups by shape, so all three flange fixtures land in **one** cluster.
+      const trio = clusters.clusters.find((c) => ids(c.parts).includes(copy.id))
       expect(
-        clusters.clusters.some((c) => c.identical && ids(c.parts).includes(copy.id)),
-        `no identical cluster holds -second-copy; ${clusters.clusters.length} clusters, ${clusters.unprofiled} unprofiled`,
+        trio !== undefined,
+        `no cluster holds -second-copy; ${clusters.clusters.length} clusters, ${clusters.unprofiled} unprofiled`,
+      )
+      for (const [what, part] of [['the original', original], ['-second-copy', copy], ['-rotated', rotated]]) {
+        expect(
+          ids(trio.parts).includes(part.id),
+          `the flange's cluster is missing ${what}: it holds ${JSON.stringify(trio.parts.map((p) => p.sourcePath))}`,
+        )
+      }
+      // And it is **not** flagged identical, which is right and is the subtle half: `identical` means every
+      // part in the group came from the same bytes, "so there is no shape judgement in it". The original and
+      // -second-copy do share bytes, but -rotated is in the same shape cluster and does not — so the flag is
+      // false for the group while `/likeness` still separates the pair out as identical. Asserting
+      // `identical === true` here, as this flow first did, was asserting against correct behaviour.
+      expect(
+        trio.identical === false,
+        'the flange cluster is flagged identical, but -rotated is in it and does not share the others\' bytes',
+      )
+      expect(
+        !ids(trio.parts).includes(scaled.id),
+        '-scaled-115 is in the same cluster as the flange, but 15 % larger is outside the size band the sweep uses',
       )
       expect(
         clusters.unprofiled === 0,
@@ -1174,12 +1199,17 @@ const FLOWS = [
         shown.body.includes(original.name),
         'the /duplicates page does not name the flange it clustered',
       )
-      const words = ['Identical', 'Near-duplicates'].filter((w) => shown.body.includes(w))
-      expect(
-        words.length > 0,
-        `the queue names neither Identical nor Near-duplicates: ${JSON.stringify(shown.body.slice(0, 200))}`,
+      // What the queue is *for*: deciding about a pair. It uses only `queueTitle` and `queueLead` of the
+      // likeness strings — "Identical" and "Near-duplicates" are the part page section's list headings, not
+      // this page's, and asserting them here was asserting against a page that never claimed them.
+      const decisions = await page.evaluate(
+        `[...document.querySelectorAll('button')].map((b) => b.textContent.trim()).filter((t) => t === ${JSON.stringify(T.foldInto)} || t === ${JSON.stringify(T.notTheSame)})`,
       )
-      return `page and API agree: ${clusters.clusters.length} cluster(s), 0 unprofiled, ${folds.length} fold(s); rotated is near, scaled-115 is not; queue says ${words.join(' + ')}`
+      expect(
+        decisions.includes(T.foldInto) && decisions.includes(T.notTheSame),
+        `the queue offers no decision for a pair; its buttons are ${JSON.stringify(decisions)}`,
+      )
+      return `page and API agree: ${clusters.clusters.length} cluster(s), 0 unprofiled, ${folds.length} fold(s); the flange trio is one cluster (identical=false, since -rotated is in it); rotated is near, scaled-115 is not; queue offers ${decisions.length} decision control(s)`
     },
   },
 ]
