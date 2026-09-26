@@ -26,6 +26,10 @@ import struct
 import sys
 from pathlib import Path
 
+# Importing `example/parts/generate.py` by path would otherwise leave a `__pycache__/` beside it, in a
+# directory this goal does not own and which would turn up untracked in somebody's `git status`.
+sys.dont_write_bytecode = True
+
 REPO = Path(__file__).resolve().parents[2]
 
 
