@@ -1002,11 +1002,11 @@ const FLOWS = [
     name: 'duplicates',
     widths: [1440, 390],
     pending:
-      "Two things are missing, not one. G6's /duplicates page is not on main — and nothing writes " +
-      'part_shape at all yet, so every part is unprofiled and only the identical-by-hash half of ' +
-      'likeness can answer. What runs below is real and asserted; the near-duplicate and page ' +
-      'assertions arm themselves the moment a producer and the page exist, so landing both leaves only ' +
-      'this flag to remove.',
+      "Waiting on two merges, both owned. G6 brings the /duplicates page; G2 (Shape profiles in the " +
+      "worker) brings the producer — nothing on main writes part_shape yet, so every part is unprofiled " +
+      'and only the identical-by-hash half of likeness can answer. What runs below is real and asserted, ' +
+      'and the near-duplicate and page assertions arm themselves the moment each lands, so this flag is ' +
+      'the only edit either one needs.',
     async run(page, ctx) {
       // The three fixtures, and what each of them is *for*. This is the assertion `alike/` was seeded to
       // make, and `docs/phase-6.md`'s claim stated as a test: a rotation is a near-duplicate because the
@@ -1042,8 +1042,8 @@ const FLOWS = [
       const folds = await ctx.get(`/api/libraries/${ctx.sweep.id}/folds`)
       expect(Array.isArray(folds), 'GET /folds did not answer a list')
 
-      // The near-duplicate half, which arms itself. Nothing writes `part_shape` today — G3 built the reads
-      // and W0 the types, and `PgShapes::record` is described as the repository the worker *will* use — so
+      // The near-duplicate half, which arms itself. Nothing on main writes `part_shape` today — G3 built
+      // the reads, W0 the types, and G2 ('Shape profiles in the worker') is building the producer — so
       // `profiled` is false, `nearDuplicates` and `similar` are empty, and the route saying so is correct
       // rather than broken. The moment a producer lands, `profiled` turns true and these three become the
       // assertions `alike/` was seeded to make: `docs/phase-6.md`'s rotation invariance, stated as a test.
@@ -1241,8 +1241,12 @@ const shots = join(args.out, 'shots')
   }
 }
 
+// The three sessions below cost a Chrome each and assert things no single flow owns, so `--only` skips
+// them: `--only measure` should run one flow, not open four browsers and fail on an unrelated heap reading.
+const wholeSuite = only === undefined
+
 // One reduced-motion session over the grid and a part page: motion is a rule here, not a flourish.
-{
+if (wholeSuite) {
   const page = await session({ width: 1440, height: 900, base: args.web, shots, reducedMotion: true })
   try {
     for (const flow of chosen.filter((f) => ['grid-loads', 'part-detail'].includes(f.name))) {
@@ -1272,7 +1276,7 @@ const shots = join(args.out, 'shots')
 }
 
 // The heap across 50 hovers, which is the one measurement a screenshot cannot make.
-{
+if (wholeSuite) {
   const page = await session({ width: 1440, height: 900, base: args.web, shots })
   try {
     await page.go(grid(ctx.sweep.id), gridReady)
