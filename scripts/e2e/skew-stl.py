@@ -11,6 +11,13 @@ Two kinds, and the difference between them is the whole point:
   --scale <factor>  the same shape at a different size. 1.15 is 15 % larger, which is far
                     outside that band by design: it is the "similar but not near" case, and a
                     detector that called it a near-duplicate would be wrong.
+  --turn <degrees>  the same solid turned **off-axis**, about the (1,1,1) diagonal. Unlike
+                    `--rotate`, this is not a coordinate permutation: every vertex moves to a
+                    new place, so the mesh a tessellator would produce for this orientation is
+                    not the one it produced for the original. G2's calibration found that the
+                    descriptor's area term carries that difference for dense meshes, and the
+                    owner has accepted it for now — this switch is how the evidence for a
+                    revisit gets gathered from real parts rather than from synthetic profiles.
 
 `write_stl` is imported too, so the bytes are laid out by the same writer that made the six
 example parts — a second STL writer here could differ in normals or padding and turn a seeding
@@ -22,6 +29,7 @@ bug into a detection finding.
 
 import argparse
 import importlib.util
+import math
 import struct
 import sys
 from pathlib import Path
@@ -83,17 +91,48 @@ def read_binary_stl(path: Path):
     return tris
 
 
+def turn(tris, degrees):
+    """Rotate every vertex about the normalised (1,1,1) axis, by Rodrigues' formula.
+
+    A rigid motion — so the solid, its volume and its surface area are unchanged — but genuinely
+    off-axis: no coordinate is permuted and no axis is left alone, which is what makes it a different
+    orientation for a tessellator rather than a relabelling of the same one.
+    """
+    t = math.radians(degrees)
+    k = 1.0 / math.sqrt(3.0)
+    kx = ky = kz = k
+    c, s = math.cos(t), math.sin(t)
+    d = 1.0 - c
+    # R = I cos t + sin t [k]x + (1 - cos t) k k^T
+    r = (
+        (c + kx * kx * d, kx * ky * d - kz * s, kx * kz * d + ky * s),
+        (ky * kx * d + kz * s, c + ky * ky * d, ky * kz * d - kx * s),
+        (kz * kx * d - ky * s, kz * ky * d + kx * s, c + kz * kz * d),
+    )
+    def apply(p):
+        return tuple(r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2] for i in range(3))
+    return [tuple(apply(p) for p in tri) for tri in tris]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--rotate", action="store_true", help="stand the solid up: (x, y, z) -> (x, -z, y)")
     mode.add_argument("--scale", type=float, metavar="FACTOR", help="scale every vertex about the origin")
+    mode.add_argument(
+        "--turn",
+        type=float,
+        metavar="DEGREES",
+        help="rotate about the (1,1,1) diagonal: a rigid motion, but off-axis, so no coordinate is merely permuted",
+    )
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
     args = parser.parse_args(argv)
 
     if args.scale is not None and not 0.01 <= args.scale <= 100:
         raise SystemExit(f"--scale {args.scale} is not a plausible factor; 0.01 to 100 is the range.")
+    if args.turn is not None and not -360 <= args.turn <= 360:
+        raise SystemExit(f"--turn {args.turn} is not a plausible angle; -360 to 360 is the range.")
     if not args.source.is_file():
         raise SystemExit(f"No such file: {args.source}")
 
@@ -102,6 +141,9 @@ def main(argv=None):
     if args.rotate:
         out = generate.rotate_x90(tris)
         what = "rotated 90 degrees about X"
+    elif args.turn is not None:
+        out = turn(tris, args.turn)
+        what = f"turned {args.turn:g} degrees about the (1,1,1) diagonal"
     else:
         k = args.scale
         out = [tuple(tuple(c * k for c in p) for p in t) for t in tris]

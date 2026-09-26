@@ -219,11 +219,15 @@ Reading the folder
 Asking which files are new
 Finishing the upload
 Scan complete —
+Looks alike
+Possible duplicates
+Identical
+Near-duplicates
 LITERALS
   if [ -n "$gone" ]; then
     printf '    these are matched by a flow and are no longer in strings.ts:%s\n' "$gone"
     no "a string a flow depends on has been renamed"
-  else ok "all 28 strings the flows match are still in strings.ts"; fi
+  else ok "all 32 strings the flows match are still in strings.ts"; fi
 fi
 
 echo "== the override says nothing check-deploy cannot see"

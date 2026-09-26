@@ -126,6 +126,8 @@ const T = {
   removeFromLibrary: 'Remove from library',
   restore: 'Restore',
   uploadButton: 'Upload a folder',
+  looksAlike: 'Looks alike',
+  duplicatesTitle: 'Possible duplicates',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
   thisInstallation: 'This installation',
@@ -615,6 +617,11 @@ const FLOWS = [
           index: [...document.querySelectorAll('nav[aria-label="On this page"] a')].map((a) => a.textContent.trim()),
           file: document.querySelector('#part-file') !== null,
           identity: document.querySelector('#part-identity') !== null,
+          likeness: document.querySelector('#part-likeness') !== null,
+          likenessHeading: (() => {
+            const s = document.querySelector('#part-likeness')
+            return s ? (s.querySelector('h3') || {}).textContent : null
+          })(),
           // The Volume row's own figure, not the page as a whole. A STEP part's triangle count counts
           // tessellated primitives and cannot be analytic -- the revision schema says so, and declines
           // to give it a _source column -- so an approximate mark somewhere on this page is correct.
@@ -630,6 +637,13 @@ const FLOWS = [
       expect(page_.file, 'no #part-file section')
       expect(page_.identity, 'no #part-identity section')
       expect(page_.index.length >= 2, `the section index lists ${page_.index.length} sections`)
+      // G6's one section on the part page. Its heading is `strings.likeness.title`, and the rig's own
+      // strings gate keeps that literal honest.
+      expect(page_.likeness, `no #part-likeness section; the h3s are ${JSON.stringify(page_.h3)}`)
+      expect(
+        (page_.likenessHeading ?? '').trim() === T.looksAlike,
+        `#part-likeness is headed ${JSON.stringify(page_.likenessHeading)}, not ${JSON.stringify(T.looksAlike)}`,
+      )
       // Measurement must not lie, and this is the half a B-rep fixture can prove: the volume of a STEP
       // solid is read from the entity, not derived from a mesh. The mesh half is `measure`, which
       // asserts the tessellated mark on a reading taken from an STL.
@@ -641,7 +655,7 @@ const FLOWS = [
         page_.volumeTitle.startsWith(T.analyticTitle),
         `${part.sourcePath} is B-rep, so its volume must be read from an analytic entity; the figure says ${JSON.stringify(page_.volumeTitle)}`,
       )
-      return `${part.sourcePath}: ${page_.index.length} sections (${page_.index.join(', ')}), volume ${JSON.stringify(page_.volumeTitle)}`
+      return `${part.sourcePath}: ${page_.index.length} sections (${page_.index.join(', ')}), "${T.looksAlike}" mounted, volume ${JSON.stringify(page_.volumeTitle)}`
     },
   },
   {
@@ -1081,16 +1095,10 @@ const FLOWS = [
   {
     name: 'duplicates',
     widths: [1440, 390],
-    pending:
-      "Waiting on two merges, both owned. G6 brings the /duplicates page; G2 (Shape profiles in the " +
-      "worker) brings the producer — nothing on main writes part_shape yet, so every part is unprofiled " +
-      'and only the identical-by-hash half of likeness can answer. What runs below is real and asserted, ' +
-      'and the near-duplicate and page assertions arm themselves the moment each lands, so this flag is ' +
-      'the only edit either one needs.',
     async run(page, ctx) {
-      // The three fixtures, and what each of them is *for*. This is the assertion `alike/` was seeded to
-      // make, and `docs/phase-6.md`'s claim stated as a test: a rotation is a near-duplicate because the
-      // descriptor is rotation-invariant, and a 15 % scale is not, by design.
+      // The three fixtures, and what each is *for*. This is the assertion `alike/` was seeded to make, and
+      // `docs/phase-6.md`'s claim stated as a test: a rotation is a near-duplicate because the descriptor is
+      // rotation-invariant, and a 15 % scale is not, by design.
       const alike = (await ctx.allParts()).filter((p) => (p.sourcePath ?? '').startsWith('alike/'))
       expect(alike.length === 4, `alike/ should hold the flange and its three variants; found ${alike.length}`)
       const of = (suffix) => alike.find((p) => p.sourcePath === `alike/flange-dn40-lp-3310-02${suffix}.stl`)
@@ -1103,14 +1111,34 @@ const FLOWS = [
 
       const likeness = await ctx.get(`/api/parts/${original.id}/likeness`)
       const ids = (list) => (list ?? []).map((p) => p.id)
+      // Profiling runs in line inside the ingest job, before it reports its outcome, so a settled batch has
+      // its profiles — there is nothing to wait for and no second batch to poll.
+      expect(
+        likeness.profiled === true,
+        'the flange has no shape profile, but profiling is in line with ingest — a settled scan should have left one',
+      )
 
-      // Identical, and this half needs no profile at all — it is the parts sharing this one's current
-      // source `blake3`. `library_holds` joins on source_path AND hash, so the same bytes at a second path
-      // are a second part rather than a skipped job, which is the case an ingest-time hash check cannot
-      // make and the reason `-second-copy` is in the fixtures.
+      // Identical, and this half needs no profile: the parts sharing this one's current source blake3.
+      // `library_holds` joins on source_path AND hash, so the same bytes at a second path are a second
+      // part — the case an ingest-time hash check cannot make.
       expect(
         ids(likeness.identical).includes(copy.id),
-        `-second-copy has the same bytes at another path and must come back identical; identical holds ${ids(likeness.identical).length} parts`,
+        `-second-copy has the same bytes at another path and must come back identical; identical holds ${ids(likeness.identical).length}`,
+      )
+      // Near-duplicate: the same solid stood on a different axis. The invariance phase-6.md claims.
+      expect(
+        ids(likeness.nearDuplicates).includes(rotated.id),
+        `-rotated is the same solid stood up and must be a near-duplicate; nearDuplicates holds ${ids(likeness.nearDuplicates).length}`,
+      )
+      // Similar but NOT near: 15 % larger is outside the ln(1.02) band by design, so a detector that
+      // called it a near-duplicate would be wrong.
+      expect(
+        !ids(likeness.nearDuplicates).includes(scaled.id),
+        '-scaled-115 is 15 % larger, far outside the ln(1.02) band, and must NOT be a near-duplicate',
+      )
+      expect(
+        ids(likeness.similar).includes(scaled.id) || ids(likeness.variants).includes(scaled.id),
+        `-scaled-115 should come back similar or a variant; it is in neither (similar ${ids(likeness.similar).length}, variants ${ids(likeness.variants).length})`,
       )
 
       const clusters = await ctx.get(`/api/libraries/${ctx.sweep.id}/duplicates`)
@@ -1119,60 +1147,39 @@ const FLOWS = [
         clusters.clusters.some((c) => c.identical && ids(c.parts).includes(copy.id)),
         `no identical cluster holds -second-copy; ${clusters.clusters.length} clusters, ${clusters.unprofiled} unprofiled`,
       )
+      expect(
+        clusters.unprofiled === 0,
+        `${clusters.unprofiled} of the library's parts have no profile, and in-line profiling should leave none`,
+      )
       const folds = await ctx.get(`/api/libraries/${ctx.sweep.id}/folds`)
       expect(Array.isArray(folds), 'GET /folds did not answer a list')
 
-      // The near-duplicate half, which arms itself. Nothing on main writes `part_shape` today — G3 built
-      // the reads, W0 the types, and G2 ('Shape profiles in the worker') is building the producer — so
-      // `profiled` is false, `nearDuplicates` and `similar` are empty, and the route saying so is correct
-      // rather than broken. The moment a producer lands, `profiled` turns true and these three become the
-      // assertions `alike/` was seeded to make: `docs/phase-6.md`'s rotation invariance, stated as a test.
-      let near = 'unprofiled, so the near-duplicate half cannot be exercised yet'
-      if (likeness.profiled) {
-        expect(
-          ids(likeness.nearDuplicates).includes(rotated.id),
-          `-rotated is the same solid stood on a different axis and must be a near-duplicate; nearDuplicates holds ${ids(likeness.nearDuplicates).length}`,
-        )
-        // A detector that called 15 % larger a near-duplicate would be wrong, and this catches it.
-        expect(
-          !ids(likeness.nearDuplicates).includes(scaled.id),
-          '-scaled-115 is 15 % larger, far outside the ln(1.02) band, and must NOT be a near-duplicate',
-        )
-        expect(
-          ids(likeness.similar).includes(scaled.id) || ids(likeness.variants).includes(scaled.id),
-          `-scaled-115 should come back similar or a variant; it is in neither (similar ${ids(likeness.similar).length}, variants ${ids(likeness.variants).length})`,
-        )
-        near = 'rotated is near, scaled-115 is similar and not near'
-      } else {
-        // The honest assertion while there is no producer: the route must say "not compared yet" rather
-        // than imply nothing is alike, and the queue must own up to the whole library being unprofiled.
-        expect(
-          ids(likeness.nearDuplicates).length === 0 && ids(likeness.similar).length === 0,
-          `profiled is false but the route returned ${ids(likeness.nearDuplicates).length} near and ${ids(likeness.similar).length} similar parts, which it cannot know`,
-        )
-        expect(
-          clusters.unprofiled >= ctx.sweep.parts - 1,
-          `nothing profiles parts yet, so /duplicates should report about ${ctx.sweep.parts} unprofiled; it says ${clusters.unprofiled}`,
-        )
-      }
-
-      // The page. It turns itself on: while G6 is not on main the route renders nothing recognisable and
-      // this reports what it found, and the day it does render, these become real assertions with no edit
-      // here — so landing G6 leaves only the `pending` flag above to remove.
-      await page.go('/duplicates', `document.readyState === 'complete'`)
-      const hasPage = await page.evaluate(
-        `[...document.querySelectorAll('h1, h2')].some((h) => /duplicate/i.test(h.textContent))`,
-      )
-      if (!hasPage) {
-        return `API only (no /duplicates page yet): identical-by-hash correct, ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s); ${near}`
-      }
+      // G6's review queue. A person reads one of the three words and never a number — there is no
+      // similarity score in the interface, on purpose — so the page is asserted on its words.
+      await page.go(`/duplicates?library=${ctx.sweep.id}`, `document.querySelector('h2') !== null`)
       const shown = await page.settle(
-        () => page.evaluate('document.body.textContent'),
-        (t) => t.includes(original.name),
-        { timeout: 20_000 },
+        () =>
+          page.evaluate(`(() => ({
+            heading: [...document.querySelectorAll('h1, h2')].map((h) => h.textContent.trim()),
+            body: document.body.textContent,
+          }))()`),
+        (r) => r.heading.includes(T.duplicatesTitle) && r.body.includes(original.name),
+        { timeout: 25_000 },
       )
-      expect(shown.includes(original.name), 'the /duplicates page does not name the flange it clustered')
-      return `page and API agree: ${clusters.clusters.length} cluster(s), ${clusters.unprofiled} unprofiled, ${folds.length} fold(s); ${near}`
+      expect(
+        shown.heading.includes(T.duplicatesTitle),
+        `the /duplicates page is headed ${JSON.stringify(shown.heading)}`,
+      )
+      expect(
+        shown.body.includes(original.name),
+        'the /duplicates page does not name the flange it clustered',
+      )
+      const words = ['Identical', 'Near-duplicates'].filter((w) => shown.body.includes(w))
+      expect(
+        words.length > 0,
+        `the queue names neither Identical nor Near-duplicates: ${JSON.stringify(shown.body.slice(0, 200))}`,
+      )
+      return `page and API agree: ${clusters.clusters.length} cluster(s), 0 unprofiled, ${folds.length} fold(s); rotated is near, scaled-115 is not; queue says ${words.join(' + ')}`
     },
   },
 ]
