@@ -227,9 +227,16 @@ export async function session({
    * Their children are in the document at all times but `display: none` until the popover opens, so a
    * driver reading `value` can skip this and a driver clicking by coordinate cannot.
    */
+  /** Click, then let React re-render before anything reads the result. */
+  const clickAndSettle = async (expression, ms = 200) => {
+    const out = await evaluate(expression)
+    await sleep(ms)
+    return out
+  }
+
   const openMenu = async (id) => {
     const opened = await evaluate(`(() => {
-      const trigger = document.querySelector('button[popovertarget=${JSON.stringify(id).replaceAll('"', "'")}]')
+      const trigger = document.querySelector('button[popovertarget=${JSON.stringify(id)}]')
       if (!trigger) return false
       trigger.click()
       return true
@@ -349,6 +356,7 @@ export async function session({
     byText,
     setControl,
     openMenu,
+    clickAndSettle,
     heapAcrossHovers,
     collect,
     close,

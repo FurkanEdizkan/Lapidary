@@ -323,19 +323,28 @@ const FLOWS = [
       const root = await text(page, S.folderCurrent)
       expect(root !== null, 'no category is marked current, not even the root')
       // A plain <button> whose text is the name — there is no treeitem role and no aria-selected.
+      // Named from the API's own tree, not inferred from the markup: a filter on "a button with no
+      // aria-label" also matches `New category`, which is what the first real run clicked — and clicking
+      // it selects nothing, so the flow failed waiting for a `folderId` that was never going to arrive.
+      const wanted = []
+      const walk = (nodes) => nodes.forEach((n) => { wanted.push(n.name); walk(n.children ?? []) })
+      walk(tree)
       const picked = await page.evaluate(`(() => {
+        const names = ${JSON.stringify(wanted)}
         const tree = document.querySelector(${JSON.stringify(S.folderTree)})
         const b = [...tree.querySelectorAll('button')].find((e) =>
           e.getAttribute('aria-current') === null &&
           e.getAttribute('aria-expanded') === null &&
-          (e.getAttribute('aria-label') ?? '') === '' &&
-          e.textContent.trim().length > 0)
+          names.includes(e.textContent.trim()))
         if (!b) return null
         const label = b.textContent.trim()
         b.click()
         return label
       })()`)
-      expect(picked !== null, 'the tree rendered but held no selectable category row')
+      expect(
+        picked !== null,
+        `no button in the tree carries any of the ${wanted.length} category names the api reported`,
+      )
       await page.waitFor(`new URL(location.href).searchParams.get('folderId') !== null`, 10_000)
       // Subtree-inclusive: a category shows what is in it and everything under it.
       const narrowed = await page.settle(() => cards(page), (n) => n !== all, { timeout: 20_000 })
@@ -350,7 +359,6 @@ const FLOWS = [
     async run(page, ctx) {
       await page.go(grid(ctx.sweep.id), gridReady)
       await cardsSettled(page, (n) => n >= 50)
-      const first = (await names(page))[0]
       // The order lives in localStorage and a react-query key, never in the URL — so the assertion is
       // on the card order, which is the thing the person actually sees change.
       const options = await page.evaluate(`(() => {
@@ -367,16 +375,21 @@ const FLOWS = [
         return s.value
       })()`)
       expect(set === pick.value, `setting the order to ${pick.value} left it at ${set}`)
+      // The whole order, not just the first card. Two orders can legitimately agree on their first part —
+      // the fixture-plate assembly is both the newest and the largest by volume — and asserting on
+      // `[0]` called that a failure on the first real run. What sorting means is that the sequence moved.
+      const before = await names(page)
       const reordered = await page.settle(
         () => names(page),
-        (list) => list.length > 0 && list[0] !== first,
+        (list) => list.length > 0 && list.join('\u0000') !== before.join('\u0000'),
         { timeout: 20_000 },
       )
+      const moved = reordered.filter((n, i) => before[i] !== n).length
       expect(
-        reordered[0] !== first,
-        `ordering by ${JSON.stringify(pick.text)} left ${JSON.stringify(first)} first`,
+        moved > 0,
+        `ordering by ${JSON.stringify(pick.text)} left all ${before.length} cards in the same positions`,
       )
-      return `${options.options.length} orders, was ${options.value}; ${JSON.stringify(pick.text)} puts ${JSON.stringify(reordered[0])} first`
+      return `${options.options.length} orders, was ${options.value}; ${JSON.stringify(pick.text)} moves ${moved} of ${before.length} cards, ${JSON.stringify(reordered[0])} first`
     },
   },
   {
@@ -709,15 +722,27 @@ const FLOWS = [
       )
       await page.setControl(`${S.sectionBar} input[type="range"]`, '750', 'input')
       // PMI is not in the viewer bar: it is a toggle inside the specified-dimensions section.
-      const pmiToggle = await page.evaluate(`(() => {
+      const found = await page.evaluate(`(() => {
         const s = document.querySelector(${JSON.stringify(S.pmiSection)})
         if (!s) return 'no ${S.pmiSection} section'
         const b = [...s.querySelectorAll('button[aria-pressed]')].find((e) => e.textContent.trim() === ${JSON.stringify(T.showInView)})
         if (!b) return 'no toggle reading "${T.showInView}"'
         b.click()
-        return b.getAttribute('aria-pressed')
+        return 'clicked'
       })()`)
-      expect(pmiToggle === 'true', `the PMI toggle: ${pmiToggle}`)
+      expect(found === 'clicked', `the PMI toggle: ${found}`)
+      // Read after React has re-rendered, not in the same tick as the click — reading `aria-pressed`
+      // immediately reported the old value and failed against a toggle that worked.
+      const pmiToggle = await page.settle(
+        () =>
+          page.evaluate(`(() => {
+            const b = [...document.querySelectorAll(${JSON.stringify(`${S.pmiSection} button[aria-pressed]`)})].find((e) => e.textContent.trim() === ${JSON.stringify(T.showInView)})
+            return b ? b.getAttribute('aria-pressed') : null
+          })()`),
+        (v) => v === 'true',
+        { timeout: 8000 },
+      )
+      expect(pmiToggle === 'true', `the PMI toggle stayed aria-pressed=${pmiToggle} after being clicked`)
       // The labels are DOM over the canvas, not drawn into it, which is why they are assertable.
       const labels = await page.evaluate(
         `document.querySelectorAll(${JSON.stringify(`${S.pmiSection} [role="list"] li`)}).length`,
@@ -819,10 +844,11 @@ const FLOWS = [
       await page.go(grid(ctx.governed.id), 'document.querySelector("#parts") !== null')
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
       await setFiles(page, S.fileInput, [file])
-      // The transfer's own line first, then the batch line: two displays, both real.
-      // Matched on this line's own vocabulary, and two matches are a failure: taking the first
-      // `role="status"` in the DOM would read the grid skeleton's "Loading parts…" as upload progress and
-      // call that a pass.
+      // The transfer line is *transient*, and for a 1 KB fixture it can be gone before the first poll —
+      // the first real run spent 30 s waiting for a line the upload had already finished with. So it is
+      // reported when it appears and never required; the batch line below is the outcome that matters.
+      // Matched on this line's own vocabulary all the same: taking the first `role="status"` in the DOM
+      // would read the grid skeleton's "Loading parts…" as upload progress and call that a pass.
       const progress = await page.settle(
         () =>
           page.evaluate(`(() => {
@@ -833,14 +859,10 @@ const FLOWS = [
             return { hits, all: [...document.querySelectorAll('#parts [role="status"]')].map((e) => e.textContent.trim().slice(0, 40)) }
           })()`),
         (r) => r.hits.length === 1,
-        { timeout: 30_000, every: 250 },
+        { timeout: 6000, every: 100 },
       )
       expect(
-        progress.hits.length > 0,
-        `no line in #parts used the upload's own wording (${W.upload.join(' / ')}); the status regions there say ${JSON.stringify(progress.all)}`,
-      )
-      expect(
-        progress.hits.length === 1,
+        progress.hits.length <= 1,
         `${progress.hits.length} lines matched the upload's wording, so the rig cannot tell which is the transfer line: ${JSON.stringify(progress.hits)}`,
       )
       const done = await page.settle(
@@ -855,7 +877,7 @@ const FLOWS = [
         { timeout: 60_000, every: 1000 },
       )
       expect(after > before, `the upload never landed: ${before} parts before and after`)
-      return `${before} -> ${after} parts in Governed; progress line ${JSON.stringify(progress.hits[0])}`
+      return `${before} -> ${after} parts in Governed; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch for a 1 KB file'}`
     },
   },
   {
