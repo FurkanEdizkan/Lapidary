@@ -129,8 +129,16 @@ RUNS=$WORK/runs
 WEB=http://127.0.0.1:$LAPIDARY_PORT_WEB
 API=http://127.0.0.1:$LAPIDARY_PORT_API
 WORKER_URL=http://127.0.0.1:$LAPIDARY_PORT_WORKER
-CORPUS="$ROOT/target/sharing-check/corpus-1000/STL Files"
-CORPUS_TSV=$ROOT/target/sharing-check/corpus-1000.tsv
+# The corpus lives in the **main checkout's** `target/`, not this worktree's.
+#
+# `target/` is per-worktree and gitignored — that is the whole point of the lane rules — so the 1,000
+# symlinks an earlier goal made exist in exactly one place on this machine, and a lane looking for them
+# beside its own build directory finds nothing. The main checkout is found the way
+# `scripts/claim-goal.sh` finds it: the parent of the common git directory, which is the same answer from
+# any worktree. `LAPIDARY_CORPUS` overrides it for a machine that keeps the corpus somewhere else.
+MAIN_ROOT=$(cd -- "$(git -C "$ROOT" rev-parse --git-common-dir)/.." 2>/dev/null && pwd) || MAIN_ROOT=$ROOT
+CORPUS=${LAPIDARY_CORPUS:-$MAIN_ROOT/target/sharing-check/corpus-1000/STL Files}
+CORPUS_TSV=${LAPIDARY_CORPUS_TSV:-$MAIN_ROOT/target/sharing-check/corpus-1000.tsv}
 CORPUS_SLICE=${CORPUS_SLICE:-400}
 
 # Every variable the three compose files interpolate. Unset for the child, so `e2e.env` is the only
@@ -433,7 +441,9 @@ build_ingest_tree() {
   # worth looking at. IFS is a tab and nothing else: these paths have spaces and parentheses in them.
   [ -d "$CORPUS" ] || die "the corpus is not at \`$CORPUS\`. It is 1,000 symlinks into
   /mnt/Storage2/All/STL Files, made by an earlier goal, and the tsv's paths are relative to it — note
-  the \`STL Files\` level. If /mnt/Storage2 is not mounted, mount it; the slice needs the real bytes."
+  the \`STL Files\` level. It lives under the MAIN checkout's target/ ($MAIN_ROOT), because target/ is
+  per-worktree; set LAPIDARY_CORPUS and LAPIDARY_CORPUS_TSV if it is somewhere else on this machine. If
+  /mnt/Storage2 is not mounted, mount it; the slice needs the real bytes."
   [ -f "$CORPUS_TSV" ] || die "no corpus index at $CORPUS_TSV."
   local first
   first=$(head -1 "$CORPUS_TSV" | cut -f2)
