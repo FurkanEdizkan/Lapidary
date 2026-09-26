@@ -6,7 +6,9 @@
 //! row and the worker computes it again.
 
 use crate::DbError;
-use lapidary_core::{BlobHash, DESCRIPTOR_LEN, PartId, RevisionId, SHAPE_VERSION, ShapeProfile};
+use lapidary_core::{
+    BlobHash, DESCRIPTOR_LEN, LibraryId, PartId, RevisionId, SHAPE_VERSION, ShapeProfile,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -87,5 +89,106 @@ impl PgShapes {
                 descriptor,
             },
         }))
+    }
+}
+
+/// A part whose profile is missing or stale, and the revision to compute it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleShape {
+    pub library: LibraryId,
+    pub part: PartId,
+    /// The part's latest revision — the one whose L0 the profile must come from.
+    pub revision: RevisionId,
+}
+
+impl PgShapes {
+    /// The L0 tessellation a `profile_shape` job must read, and the part it belongs to.
+    ///
+    /// Scoped through `part.library_id`, not by a check the caller has to remember: a revision id
+    /// is a uuid a caller might hold from anywhere, and content addressing is not authorization
+    /// (`CLAUDE.md`). `None` when this library has no such revision, when its part is deleted, or
+    /// when the revision has no L0 yet — three different reasons for the same answer, because the
+    /// caller does the same thing with all three: it cannot profile, and says so.
+    ///
+    /// "Newest L0" is `created_at DESC, id DESC`, character for character as
+    /// `PgParts::derivative_hash` resolves it. Two resolutions of the same thing that can disagree
+    /// are a bug waiting for a second rung to exist.
+    pub async fn l0_of_revision(
+        &self,
+        library: LibraryId,
+        revision: RevisionId,
+    ) -> Result<Option<(PartId, BlobHash)>, DbError> {
+        let row: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT p.id, d.blake3 FROM revision r \
+             JOIN part p ON p.id = r.part_id AND p.library_id = $1 AND p.deleted_at IS NULL \
+             JOIN LATERAL (SELECT blake3 FROM derivative \
+                            WHERE revision_id = r.id AND kind = 'tessellation_l0' \
+                              AND blake3 IS NOT NULL \
+                            ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             WHERE r.id = $2",
+        )
+        .bind(library.as_uuid())
+        .bind(revision.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((part, l0)) = row else {
+            return Ok(None);
+        };
+        let l0 = BlobHash::parse_hex(&l0).map_err(|_| DbError::CorruptBlobHash {
+            column: "derivative.blake3",
+            value: l0,
+        })?;
+        Ok(Some((PartId::from_uuid(part), l0)))
+    }
+
+    /// Every part whose latest revision has an L0 tessellation but no current profile of it, newest
+    /// part first, at most `limit`.
+    ///
+    /// Four ways to be stale, and they are one query because they are one question — *is the stored
+    /// row the profile of this part's current L0, computed by this build?*
+    ///
+    /// - no row at all (a part ingested before Phase 6, or one whose row was purged);
+    /// - `version <> SHAPE_VERSION` (the algorithm moved);
+    /// - `l0_blake3` is not the current L0's (the rung was rebuilt by a newer kernel);
+    /// - `revision_id <> ` the latest revision's (a controlled part gained a revision).
+    ///
+    /// `<>` and not `<` on the revision: a row pointing at a *newer* revision than the latest is
+    /// impossible today, and if some future path made one, profiling the latest again is the right
+    /// answer rather than leaving a row nothing can explain.
+    ///
+    /// Deleted parts are skipped, as `PgParts::revisions_missing` skips them: a part in the bin is
+    /// not in the duplicate review queue either.
+    // ponytail: a revision whose L0 will never profile — a rung that decodes but has no surface —
+    // is found again on every worker start and fails again each time. One row of "we tried this
+    // L0 and it has no shape" would stop that; a handful of permanently failed jobs a start is
+    // cheaper than the row until somebody sees it in the log.
+    pub async fn stale_revisions(&self, limit: i64) -> Result<Vec<StaleShape>, DbError> {
+        let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT p.library_id, p.id, r.id FROM part p \
+             JOIN LATERAL (SELECT id FROM revision \
+                            WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r \
+                       ON true \
+             JOIN LATERAL (SELECT blake3 FROM derivative \
+                            WHERE revision_id = r.id AND kind = 'tessellation_l0' \
+                              AND blake3 IS NOT NULL \
+                            ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
+             LEFT JOIN part_shape s ON s.part_id = p.id \
+             WHERE p.deleted_at IS NULL \
+               AND (s.part_id IS NULL OR s.version <> $1 OR s.l0_blake3 <> d.blake3 \
+                    OR s.revision_id <> r.id) \
+             ORDER BY p.id DESC LIMIT $2",
+        )
+        .bind(SHAPE_VERSION)
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(library, part, revision)| StaleShape {
+                library: LibraryId::from_uuid(library),
+                part: PartId::from_uuid(part),
+                revision: RevisionId::from_uuid(revision),
+            })
+            .collect())
     }
 }

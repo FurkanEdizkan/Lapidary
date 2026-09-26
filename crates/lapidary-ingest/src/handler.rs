@@ -187,6 +187,11 @@ impl JobHandler for WorkerHandler {
                 self.import_part(job.library_id, bundle, part, &path).await
             }
             JobPayload::DescribePart { part } => self.describe_part(job.library_id, part).await,
+            // The revision comes from the payload and the library from the row, as a derive's do:
+            // nothing here resolves "latest" a second time. See `shape.rs`.
+            JobPayload::ProfileShape { revision } => {
+                self.profile_shape(job.library_id, revision).await
+            }
         }
     }
 }
@@ -763,6 +768,9 @@ impl WorkerHandler {
                     source_path,
                 )
                 .await;
+                // The new revision's L0 is what the part's shape is now, so the row the previous
+                // revision wrote is stale. Warn-only, as the counts are; see `shape.rs`.
+                self.record_shape(library, *revision, source_path).await;
             }
             if let Err(error) = recorded {
                 // Never `classify_write`: a unique violation here is a lost race for a label,
@@ -1091,6 +1099,8 @@ impl WorkerHandler {
                     source_path,
                 )
                 .await;
+                // And its shape, from the L0 rung this ingest just wrote. Warn-only; see `shape.rs`.
+                self.record_shape(library, revision, source_path).await;
                 // From the rows, while the part's row is held, as a revision and a custom value write theirs:
                 // a value committed meanwhile waits for this file rather than being written over by it.
                 let written = PgRevisions(self.db.clone())

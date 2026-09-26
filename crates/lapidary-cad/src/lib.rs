@@ -12,11 +12,12 @@ mod obj;
 #[cfg(feature = "occt-kernel")]
 mod occt;
 mod raster;
+mod shape;
 mod stl;
 mod tmf;
 
 pub use cluster::{Lod, Tessellation, cluster};
-pub use glb::GLB_VERSION;
+pub use glb::{GLB_VERSION, read_triangles};
 pub use kernel::{
     AssemblyNode, AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams,
     KernelVersion, MeasurementProvenance, Unproduced,
@@ -29,6 +30,7 @@ pub use obj::parse_obj;
 #[cfg(feature = "occt-kernel")]
 pub use occt::OcctKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
+pub use shape::profile;
 pub use stl::{Mesh, parse_stl, write_stl};
 pub use tmf::{parse_3mf, write_3mf};
 

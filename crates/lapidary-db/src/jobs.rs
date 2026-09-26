@@ -503,6 +503,7 @@ impl PgJobs {
             Outcome::Described => "described",
             Outcome::Revised => "revised",
             Outcome::Unkept => "unkept",
+            Outcome::Profiled => "profiled",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
