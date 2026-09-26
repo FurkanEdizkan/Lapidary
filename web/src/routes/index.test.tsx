@@ -205,6 +205,15 @@ function stubFetch(routes: {
   blob?: () => Promise<StubResponse>;
   /** The library's saved filters: listed by GET, saved by POST, removed by DELETE. */
   filters?: (url: string, init?: { method?: string; body?: string }) => Promise<StubResponse>;
+  /**
+   * `GET /api/libraries/{id}/duplicates`, which the finished batch line asks for once (Phase 6).
+   *
+   * Unstubbed it is no groups, not `pending`. It fell through to the bare-library rule before
+   * this route existed, so it hung — which is why nothing crashed on a `LibrarySettings` body and
+   * also why the line the grid draws was tested by nothing. A library where nothing looks alike is
+   * what every test here but one means.
+   */
+  duplicates?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string; body?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
@@ -284,6 +293,9 @@ function stubFetch(routes: {
     if (url.endsWith("/shares")) return empty();
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith("/storage")) return (routes.storage ?? pending)();
+    // Same, and it carries a `since` parameter, so `includes` rather than `endsWith`.
+    if (url.includes("/duplicates"))
+      return (routes.duplicates ?? ok({ clusters: [], unprofiled: 0 }))();
     if (url.includes("/jobs/")) return (routes.batch ?? pending)();
     // Last of the library routes, because the settings read is the bare path every one of
     // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
@@ -1425,6 +1437,56 @@ test("showing more lists the failures past the sample", async () => {
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${BATCH_ID}/failed?after=${FAILED_SPACER.job}`,
   );
   expect(screen.queryByRole("button", { name: strings.failure.more(1) })).toBeNull();
+});
+
+/**
+ * Phase 6's second exit, from the grid's side: upload a part that is already here and the page
+ * says so, where the person is standing.
+ *
+ * Mounted here and not only in `Likeness.test.tsx`, because the component passing on its own says
+ * nothing about whether this page draws it — deleting the mount from `index.tsx` left every other
+ * test in both files green.
+ */
+test("a finished upload says how much of it was already here, and offers a review", async () => {
+  // The mount that was here in August, and the copy this batch just added under another folder.
+  const already = MOTOR_MOUNT;
+  const justAdded: PartCard = {
+    ...MOTOR_MOUNT,
+    id: "01931b6e-0000-7000-8000-0000000a0009",
+    revision: "01931b6e-0000-7000-8000-0000000b0009",
+    sourcePath: "printables/LP-3105-A-mount.stl",
+    createdAt: "2026-09-03T23:29:10.000000Z",
+    updatedAt: "2026-09-03T23:29:10.000000Z",
+  };
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([already, justAdded])),
+    batch: ok(
+      batchStatus({
+        pending: 0,
+        ingested: 1,
+        skipped: 0,
+        total: 1,
+        finishedAt: "2026-09-03T23:29:20.086374Z",
+      }),
+    ),
+    duplicates: ok({
+      clusters: [{ parts: [already, justAdded], identical: true }],
+      unprofiled: 0,
+    }),
+  });
+  renderIndex({ batch: BATCH_ID });
+
+  // One part just added, in a group with one that was already here.
+  const line = await screen.findByText(strings.likeness.reviewOffer(1), undefined, {
+    timeout: 3000,
+  });
+  expect(line.closest("[role=status]")).not.toBeNull();
+  const review = screen.getByRole("link", { name: strings.likeness.review });
+  // This batch's own queue, so eleven files do not land on the whole library's.
+  expect(review.getAttribute("href")).toContain(
+    `since=${encodeURIComponent("2026-09-03T23:28:56.014618Z")}`,
+  );
 });
 
 test("stops polling once the batch reports it finished", async () => {

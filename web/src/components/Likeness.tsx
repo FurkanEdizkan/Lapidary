@@ -417,7 +417,16 @@ export function ReviewOffer({
     duplicates.data === undefined || since === undefined ? 0 : justAdded(duplicates.data.clusters, since)
   if (!settled || count === 0) return null
   return (
-    <p className="mb-4 flex flex-wrap items-center gap-2 text-sm text-[var(--color-muted)]">
+    /*
+      `status`, like the progress line it appears under: this line arrives on its own, some time
+      after the batch finished and the page stopped changing, so a reader who is not looking at
+      the grid is told nothing by it otherwise. Atomic is right here — it is one sentence and a
+      link, not a list.
+    */
+    <p
+      role="status"
+      className="mb-4 flex flex-wrap items-center gap-2 text-sm text-[var(--color-muted)]"
+    >
       <span>{strings.likeness.reviewOffer(count)}</span>
       <Link to="/duplicates" search={{ library, since }} className={QUIET}>
         {strings.likeness.review}

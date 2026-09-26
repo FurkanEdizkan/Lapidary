@@ -119,7 +119,15 @@ export async function fetchFolds(library: LibraryId): Promise<Fold[]> {
   if (!response.ok) {
     throw new Error(`folds returned ${response.status}`)
   }
-  return (await response.json()) as Fold[]
+  const folds = (await response.json()) as Fold[]
+  // The body is cast, not validated, and the page that reads this is the only route back to a
+  // removed part: a 200 carrying something that is not a list would reach `.map` and take the
+  // whole list of removed parts down with it. Rejected here instead, where the query turns it
+  // into "no folds" and every row stays an ordinary removal.
+  if (!Array.isArray(folds)) {
+    throw new Error('folds answered something that is not a list')
+  }
+  return folds
 }
 
 /** The newest part in a group, as milliseconds. `-Infinity` for a group with no readable date. */

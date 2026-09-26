@@ -220,6 +220,25 @@ test('each decision button names its own part, since two of them share a name', 
   screen.getByRole('button', { name: strings.likeness.distinctLabel(SPARES.sourcePath) })
 })
 
+/**
+ * WCAG 2.5.3, Label in Name (Level A): every one of these buttons is named for its own part, and
+ * a name that drops the visible words is a button somebody driving this by voice cannot press —
+ * they say "click Fold into this" and nothing matches. `failure.retryOne` is the same pattern.
+ */
+test('every decision button’s accessible name begins with the words on it', async () => {
+  stub({})
+  mount(<LikenessSection part={MOUNTING} />)
+  await screen.findByRole('heading', { name: strings.likeness.identical })
+  const buttons = screen.getAllByRole('button')
+  expect(buttons.length).toBeGreaterThan(0)
+  for (const button of buttons) {
+    const name = button.getAttribute('aria-label') ?? button.textContent ?? ''
+    // Reported as a pair, so a failure names the button and not merely `false`.
+    expect({ visible: button.textContent, name, startsWith: name.startsWith(button.textContent ?? '') })
+      .toEqual({ visible: button.textContent, name, startsWith: true })
+  }
+})
+
 test('a part with no shape profile says so instead of showing empty lists', async () => {
   stub({ likeness: { profiled: false, identical: [], nearDuplicates: [], similar: [], variants: [] } })
   mount(<LikenessSection part={MOUNTING} />)
@@ -438,6 +457,9 @@ const PAIR: DuplicateCluster = {
 test('a finished upload offers a review of what looks like parts already here', async () => {
   stub({ clusters: [PAIR] })
   mount(<ReviewOffer status={FINISHED} kind="upload" library={LIBRARY} />)
+  // Announced, not only drawn: the line arrives on its own, after the batch finished and the page
+  // stopped changing, so a reader not looking at the grid is told nothing by it otherwise.
+  expect((await screen.findByText(strings.likeness.reviewOffer(2))).closest('[role=status]')).not.toBeNull()
   // Two parts just added, in one group. Counting groups would say 1 and send somebody to review
   // half of what they uploaded.
   await screen.findByText(strings.likeness.reviewOffer(2))

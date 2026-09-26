@@ -545,13 +545,18 @@ export const strings = {
      * label: a list of five rows whose buttons all read "Fold into this" tells a screen reader
      * nothing about which row it is on. Named by path, because parts that look alike are exactly
      * the parts that share a name.
+     *
+     * **Each label begins with the button's visible words**, which is WCAG 2.5.3 (Label in Name,
+     * Level A) and not a style: somebody driving this by voice says "click Fold into this", and a
+     * name that reads "Fold spares/LP-1042-03.stl into this part" matches nothing they said. The
+     * pattern is `failure.retryOne`'s — a visible "Retry", a name of "Retry <path>".
      */
     fold: 'Fold into this',
-    foldLabel: (path: string) => `Fold ${path} into this part`,
+    foldLabel: (path: string) => `Fold into this — ${path}`,
     variant: 'Link as variant',
-    variantLabel: (path: string) => `Link ${path} as a variant of this part`,
+    variantLabel: (path: string) => `Link as variant — ${path}`,
     distinct: 'Not the same',
-    distinctLabel: (path: string) => `Say ${path} is not the same part`,
+    distinctLabel: (path: string) => `Not the same — ${path}`,
     working: 'Working…',
     actionFailed: 'That did not go through. Nothing changed — try again.',
     /**

@@ -85,6 +85,19 @@ test('a decision about a pair is a PUT of its kind, and folding is not one of th
   await setPartLink(MOUNTING, SPARES, 'foldedInto')
 })
 
+/**
+ * The Removed list is the only route back to a removed part, so `/folds` must cost it nothing
+ * however it misbehaves. A 200 carrying an object rather than a list would reach `.map` inside the
+ * page and take the whole list down; rejected here, the query turns it into "no folds" and every
+ * row stays an ordinary removal.
+ */
+test('a folds answer that is not a list is refused before a page can map over it', async () => {
+  stub(200, { clusters: [], unprofiled: 0 })
+  await expect(fetchFolds(LIBRARY)).rejects.toThrow()
+  stub(200, [])
+  await expect(fetchFolds(LIBRARY)).resolves.toEqual([])
+})
+
 test('a refused read throws rather than answering with a shape the page would render', async () => {
   stub(500)
   await expect(fetchLikeness(MOUNTING)).rejects.toThrow()
