@@ -451,17 +451,38 @@ build_ingest_tree() {
   under \`$CORPUS\`. Either the corpus root is wrong or /mnt/Storage2 is not mounted — copying would
   otherwise quietly produce an empty library."
 
-  local copied=0 failed=0
+  # Read *down* the sorted list until the slice is full, rather than taking the first N rows.
+  #
+  # 20 of the 1,000 symlinks dangle — one whole directory's targets have gone from /mnt/Storage2 since
+  # the corpus was made, and all 20 are inside the smallest 400. `cp -L` on a dangling link fails, so
+  # taking rows 1-400 blind would either abort the seed or quietly leave a 380-file library and break the
+  # paging arithmetic that "400 is the number" rests on. Skipping them and reading on keeps the slice
+  # "the smallest 400 that exist", and reports the rot as a number instead of hiding it.
+  local copied=0 dangling=0 failed=0 rows=0
   while IFS=$'\t' read -r size path; do
     [ -n "$path" ] || continue
+    [ "$copied" -lt "$CORPUS_SLICE" ] || break
+    rows=$((rows + 1))
+    if [ ! -e "$CORPUS/$path" ]; then
+      dangling=$((dangling + 1))
+      continue
+    fi
+    # -L dereferences: the corpus is symlinks and a container cannot follow one out of its own mount.
+    # --parents keeps the real creator/set/part tree, which is what makes the category facet worth
+    # looking at.
     if (cd "$CORPUS" && cp -L --parents -- "$path" "$INGEST/"); then
       copied=$((copied + 1))
     else
       failed=$((failed + 1))
+      echo "    could not copy: $path"
     fi
-  done < <(sort -n "$CORPUS_TSV" | head -"$CORPUS_SLICE")
-  [ "$failed" = 0 ] || die "$failed of $CORPUS_SLICE corpus files would not copy."
-  echo "  corpus slice: $copied files, $(du -sh --apparent-size "$INGEST" | cut -f1) so far"
+  done < <(sort -n "$CORPUS_TSV")
+  [ "$failed" = 0 ] || die "$failed corpus files exist but would not copy. That is not the dangling-link
+  case (those are counted separately and skipped) — check permissions on $CORPUS."
+  [ "$copied" = "$CORPUS_SLICE" ] || die "only $copied of $CORPUS_SLICE corpus files could be copied after
+  reading all $rows rows of $CORPUS_TSV ($dangling of them dangling). The corpus has lost more than it
+  can spare; remake it, or lower CORPUS_SLICE and say so in the goal's Record."
+  echo "  corpus slice: $copied files from $rows rows ($dangling dangling links skipped), $(du -sh --apparent-size "$INGEST" | cut -f1) so far"
 
   # alike/: the three deliberate duplicate cases, beside the part they are duplicates *of* — a
   # duplicate needs both halves in one library to be one.
