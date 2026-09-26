@@ -178,6 +178,54 @@ PYEOF
   else no "skew-stl.py's geometry is not what the duplicate cases need"; fi
 else no "skew-stl.py would not run against example/parts/flange-dn40-lp-3310-02.stl"; fi
 
+echo "== every string the flows match still exists in strings.ts"
+# The flows have no test ids to work with — this application has none, and T1 owns none of `web/` — so a
+# dozen of them match rendered text. A copy change should therefore break *this*, at commit time, rather
+# than a flow twenty minutes into a run against a live stack. Every literal below is one a flow matches; if
+# one moves, either the flow follows it or the rename was not meant.
+strings=$ROOT/web/src/lib/strings.ts
+if [ ! -f "$strings" ]; then no "no $strings to check against"; else
+  gone=''
+  while IFS= read -r literal; do
+    [ -n "$literal" ] || continue
+    grep -qF "$literal" "$strings" || gone="$gone
+    $literal"
+  done <<'LITERALS'
+Load more
+Select
+Order
+Cards per page
+Save this filter
+Name for this filter
+Point to point
+Show in the 3D view
+Explode
+Remove from library
+Restore
+Scan the ingest folder
+Storage
+This installation
+Upload complete —
+Loading the full-detail mesh
+Derived from tessellated
+Read from an analytic CAD entity
+Nothing here yet
+Upload a folder
+Search this library
+Categories
+All models
+Selected parts
+Reading the folder
+Asking which files are new
+Finishing the upload
+Scan complete —
+LITERALS
+  if [ -n "$gone" ]; then
+    printf '    these are matched by a flow and are no longer in strings.ts:%s\n' "$gone"
+    no "a string a flow depends on has been renamed"
+  else ok "all 28 strings the flows match are still in strings.ts"; fi
+fi
+
 echo "== the override says nothing check-deploy cannot see"
 # `check-deploy` reads deploy/ only, so a build stage, a feature set or a role in this file would be a
 # deployment change the gate is blind to.
