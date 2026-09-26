@@ -5,6 +5,7 @@ mod custom_fields;
 mod densities;
 mod folders;
 mod jobs;
+mod likeness;
 mod locks;
 mod migrate;
 mod mirror;
@@ -23,6 +24,9 @@ pub use custom_fields::{
 pub use densities::{DensityRow, PgDensities};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
+pub use likeness::{
+    Alike, Cluster, Folded, LinkRow, LivePart, PgLikeness, Shaped, alike, clusters,
+};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use mirror::{

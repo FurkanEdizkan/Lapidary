@@ -18,8 +18,6 @@ mod health;
 mod images;
 mod jobs;
 mod lifecycle;
-// Wire types only until goal G3 routes them; G3 removes this allow.
-#[allow(dead_code)]
 mod likeness;
 mod locks;
 mod moves;
