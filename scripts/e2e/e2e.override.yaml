@@ -1,0 +1,37 @@
+# The end-to-end rig's host ports, one lane's block at a time, and the host reachable from the peer.
+#
+# Deliberately thin. `cargo xtask check-deploy` reads `deploy/compose.yaml`, `deploy/compose.sharing.yaml`
+# and `deploy/Containerfile` — it cannot see this file. So anything here that changed a build stage, a
+# feature set or a service's role would be a deployment change the gate could not check, and a rig that
+# could pass while the real stack was wrong is worse than no rig. This file therefore says nothing about
+# how a service is built or what it is; it only moves the four published ports off the fixed literals in
+# `deploy/` so several lanes (and the owner's own install on 3000/8080) can exist at once, and gives the
+# peer the one host alias two installations on one machine need to reach each other.
+#
+# `!override` and not the default list merge: compose *appends* published ports, so without it every
+# service would publish both `deploy/`'s literal and the lane's, and the first lane up would take 3000
+# and 8080 from the owner.
+#
+# The four values are required, with no fallback: `scripts/e2e/stack.sh` writes them into the per-run
+# env file from the lane's `.lane.env`, and a missing one must stop compose rather than quietly bind a
+# port nobody chose.
+services:
+  api:
+    ports: !override
+      - "${LAPIDARY_PORT_API:?stack.sh writes this into target/e2e/<lane>/e2e.env}:8080"
+
+  worker:
+    ports: !override
+      - "${LAPIDARY_PORT_WORKER:?stack.sh writes this into target/e2e/<lane>/e2e.env}:8081"
+
+  web:
+    ports: !override
+      - "${LAPIDARY_PORT_WEB:?stack.sh writes this into target/e2e/<lane>/e2e.env}:8080"
+
+  peer:
+    ports: !override
+      - "${LAPIDARY_PORT_PEER:?stack.sh writes this into target/e2e/<lane>/e2e.env}:8082"
+    # A pasted address is resolved inside the peer's own network namespace, where 127.0.0.1 is the peer
+    # itself. Installations on one machine reach each other through the published peer port on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
