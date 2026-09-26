@@ -3454,6 +3454,43 @@ its job: every gate log carries `lock … another session is compiling; waiting`
     wire carries no cursor); no bulk fold, so a group of eleven is ten presses; and `ReviewOffer` reads the queue once
     at `finishedAt` rather than resyncing, which is what ties Phase 6's second exit to the worker enqueuing a profile
     inside the ingest batch.
+- **G2, shape profiles in the worker** (merged `5fdd5af`, gate 14 green in 294.57 s on the merged tree).
+  `lapidary_cad::profile` over the stored L0 — area-weighted principal axes, a 65,536-pair D2 distribution stored as
+  square roots, and `ln(area/m²)` — plus `glb::read_triangles` (the GLB tests' own decoder promoted, so there is one
+  reader), `JobPayload::ProfileShape`, `Outcome::Profiled`, `PgShapes::l0_of_revision` and `stale_revisions`, and a
+  backfill sweep capped at 5,000 parts a worker start. 20 new tests; 10 mutations, 10 caught — and the first run's two
+  survivors were both real test gaps, fixed rather than explained away.
+  - **Profiling is in line, inside the ingest job, and enqueues nothing.** `record_shape` runs beside `record_topology`
+    on both commit paths, before the job reports its outcome, so **a batch cannot reach `finishedAt` with its parts
+    unprofiled** — which is what Phase 6's second exit rests on. A test asserts zero `profile_shape` jobs after an
+    ingest, so it cannot drift; the job kind exists for backfill alone. A rebuilt L0 re-profiles in line inside the
+    derive job. Warn-only, like topology: if profiling itself fails the ingest still succeeds and the next worker start
+    sweeps the part up.
+  - **Per L0, release, idle: median 4.33 ms, p95 4.77 ms, worst 6.82 ms** (GLB decode 0.03 ms of it) against a 5 ms
+    target — met at median and p95, over at the worst case.
+  - **`NEAR_DUPLICATE_DISTANCE` stays 0.04, and nothing in `lapidary-core` changed.** There is **no gap above the
+    sampler's noise floor**, the case the goal pre-agreed the tight number for. Over 966 corpus parts the in-band
+    nearest-neighbour distances run 5% at 0.0188, 10% at 0.0289, 25% at 0.0496, 50% at 0.0942; parts with an in-band
+    neighbour under 0.04 are 170, or 17.6%. The floor is arithmetic rather than luck: storing √p makes each bin's
+    deviation about 1/(2√N), so `√(BINS/(4·PAIRS))` = **0.011**, measured 0.013 on a reordered cylinder. Nothing below
+    that can mean anything, and halving it costs four times the pairs — which is why the design's 65,536 stayed.
+  - The closest non-identical pairs in the corpus are `_L`/`_R` mirror halves of one model at 0.0113–0.0169: the
+    documented mirror behaviour turning up in real data rather than in a fixture.
+  - **The area term makes the profile sensitive to re-tessellation, and `phase-6.md` claimed the opposite.** Calibrated
+    over 974 corpus meshes, both sides through L0: a copy moved 250 mm scores 0.0002, scaled 1% 0.0001, **turned a
+    quarter about z 0.0000** — but the **same surface subdivided four times scores 0.0509** and a **37° off-axis turn
+    0.0907**, against a 0.04 threshold, with about a quarter of those copies falling outside the ±2% size band and so
+    never becoming candidates at all. It is not rotation that fails: an off-axis turn or a finer triangulation changes
+    L0's clustering, its area differs by a few per cent, and `ln(area/m²)` carries that straight into the descriptor
+    (0.1024 of a 0.111 total). No threshold repairs it. Simple parts are unaffected and tested — the bracket fixture
+    turned 37° and ingested at another path **is** a near-duplicate — so Phase 6's exit holds as written, because the
+    exit names that fixture. Left as the owner's decision with its cost measured: dropping `ln(area/m²)` brings the 37°
+    turn to 0.0354 and the subdivision to 0.0284, both inside the threshold, but takes parts with an in-band neighbour
+    under 0.04 from **170 to 368** — roughly twice the review queue — and it is a `SHAPE_VERSION` bump against a
+    contract G3 already reads.
+  - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
+    permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
+    notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
 
 ---
 

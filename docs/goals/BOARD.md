@@ -12,7 +12,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 |---|---|---|---|---|---|---|---|---|
 | [B0](B0.md) | Several sessions at once | 0 | lead | — | `docs/goals/`, `scripts/`, `xtask/src/lane.rs`, `CLAUDE.md`, `.claude/settings.json` | — | merged `31f282c` | `chore/parallel-sessions` |
 | [W0](W0.md) | Phase 6 contracts | 0 | lead, Rust | B0 | `lapidary-core/src/{shape,event,link}.rs`, `lapidary-db/src/shapes.rs`, `repo.rs` purge + `rows_by_id`, `lapidary-api/src/{likeness,dashboard}.rs` (types only), `strings.ts` blocks | 0047, 0048 | merged `322d382` | `feat/phase-6-contracts` |
-| [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | open | `feat/shape-profiles` |
+| [G2](G2.md) | Shape profiles in the worker | 1 | Rust | W0 | `lapidary-cad/src/{shape,glb}.rs`, `JobPayload::ProfileShape`, `lapidary-ingest/src/shape.rs`, dispatch in `handler.rs`/`derive.rs`, `lapidary-db/src/shapes.rs` reads | — | merged `5fdd5af` | `feat/shape-profiles` |
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | merged `f18e0f0` | `feat/likeness-api` |
 | [G6](G6.md) | Likeness UI | 1 | web | W0 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
 | [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | open | `test/e2e-rig` |
