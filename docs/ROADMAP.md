@@ -3389,6 +3389,41 @@ for what, [`phase-6.md`](goals/phase-6.md) for the design every goal shares.
   in [`W0.md`](goals/W0.md)'s Record. Gate on the merged tree: 14 green in 230.81 s (`target/verify-W0-merged.log`).
   Nothing was pushed.
 
+### Wave 1 (2026-09-26): one agent a lane, the lead merging
+
+Four goals were handed to four background agents at once, each claiming its own worktree, database and port block
+through `scripts/claim-goal.sh`, with this session merging serially and gating each merged tree. The compile lock did
+its job: every gate log carries `lock … another session is compiling; waiting`, and no build clobbered another.
+
+- **G3, the likeness API** (merged `f18e0f0`, gate 14 green in 390.24 s on the merged tree). `PgLikeness` with five
+  reads and three writes, and the handlers filling W0's empty `routes()`: `GET /api/parts/{id}/likeness?limit=`
+  (default 24, clamped 1–96), `GET /api/libraries/{id}/duplicates?since=`, `PUT`/`DELETE
+  /api/parts/{id}/links/{other}`, `POST /api/parts/{id}/fold`, `GET /api/libraries/{id}/folds`. Ranking and clustering
+  are pure functions unit-tested beside the SQL; A like B and B like C is one group of three, not two overlapping
+  questions. **No wire type changed**, so G6 built against W0's types while this was written.
+  - **Measured** (10,000 synthetic profiles, release, warm, median of seven through `router().oneshot` so card building
+    counts): **`/likeness` 26.6 ms** against a 50 ms budget, **`/duplicates` 234.0 ms** against 300 ms.
+  - **That duplicates figure is an upper bound, and says so.** The synthetic corpus puts nearly every part within the
+    band of its neighbour — 119 clusters holding 9,991 of 10,000 parts — so the time is mostly building and serialising
+    9,991 cards, not the reads or the ranking. A real library does strictly less work. The measurement is `#[ignore]`d
+    so the gate does not pay 12 s of seeding for a number that belongs here.
+  - **"Current profile" means this build's `SHAPE_VERSION` and no newer revision, not the L0 hash.** The hash half
+    needs the current revision's L0 derivative — a second lateral per row on the 50 ms path — and catches only an L0
+    rebuilt for one revision without a version bump, which is the worker's to notice. The spelling is load-bearing:
+    `NOT EXISTS (… n.id > ps.revision_id)` on the UUID v7 ordering, where the obvious `ORDER BY created_at DESC LIMIT
+    1` cost 29 ms of a 52 ms answer and a `DISTINCT ON` CTE 77 ms.
+  - **A fold's removal and its link share one transaction stamp**, and the folds list reads that equality back — so
+    fold, Restore, then an ordinary removal no longer leaves the removed page claiming the part was folded somewhere.
+    That was a hole in the goal's own design, closed without touching `repo.rs` or `lifecycle.rs`.
+  - A `distinct` pair leaves the queue for good but stays reachable through "more like this"; one row a pair whichever
+    way it was decided; a `folded_into` row is undone by Restore, never by `DELETE …/links/{other}`; the folds list
+    still names a kept part that was itself removed since.
+  - **Eight mutation checks**, each rule broken then restored. The tenant test was rewritten after the first version
+    proved nothing: it had used an id naming no library, so dropping either write guard left it green. It now puts the
+    same file name, the same bytes and the same profile in two libraries. The reads' `library_id` filters remain
+    defence in depth rather than a tested rule, because `rows_by_id` filters a foreign card out downstream — recorded
+    rather than glossed.
+
 ---
 
 ## Phase 7 — Build graph
