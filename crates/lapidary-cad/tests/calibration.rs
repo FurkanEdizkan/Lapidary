@@ -112,16 +112,38 @@ fn mapped(mesh: &Mesh, f: impl Fn([f32; 3]) -> [f32; 3]) -> Mesh {
 
 /// The profile of a mesh as the worker computes it: clustered to a rung, written as our GLB,
 /// decoded again, profiled.
-fn through_rung(mesh: &Mesh, lod: Lod) -> Option<(ShapeProfile, f64, u32)> {
+fn through_rung(mesh: &Mesh, lod: Lod) -> Option<(ShapeProfile, [f64; 2], u32)> {
     let rung = cluster(mesh, lod).ok()?;
-    let (positions, indices) = read_triangles(&rung.glb).ok()?;
+    // Timed as the worker pays for it: the decode of the stored rung, then the profile. "Time to
+    // profile one L0" is both, since the worker never has the triangles without decoding them.
     let started = Instant::now();
+    let (positions, indices) = read_triangles(&rung.glb).ok()?;
+    let decoded = started.elapsed().as_secs_f64() * 1000.0;
     let profile = profile(&positions, &indices).ok()?;
     Some((
         profile,
-        started.elapsed().as_secs_f64() * 1000.0,
+        [decoded, started.elapsed().as_secs_f64() * 1000.0],
         rung.triangle_count,
     ))
+}
+
+/// Every triangle split into four at its edge midpoints: the same surface, four times the triangle
+/// list. The closest a run without the CAD kernel gets to "the same part, tessellated again" — and
+/// unlike the L0-against-L1 row below, both sides of the comparison go through L0, which is what
+/// production always compares.
+fn subdivided(mesh: &Mesh) -> Mesh {
+    let mid = |a: [f32; 3], b: [f32; 3]| [0, 1, 2].map(|i| (a[i] + b[i]) / 2.0);
+    Mesh {
+        triangles: mesh
+            .triangles
+            .iter()
+            .flat_map(|t| {
+                let (ab, bc, ca) = (mid(t[0], t[1]), mid(t[1], t[2]), mid(t[2], t[0]));
+                [[t[0], ab, ca], [ab, t[1], bc], [ca, bc, t[2]], [ab, bc, ca]]
+            })
+            .collect(),
+        parts: vec![],
+    }
 }
 
 #[test]
@@ -142,6 +164,7 @@ fn calibrate_the_near_duplicate_threshold() {
     let mut profiles: Vec<(String, ShapeProfile)> = Vec::new();
     let mut identical: HashMap<u64, Vec<usize>> = HashMap::new();
     let mut timings: Vec<f64> = Vec::new();
+    let mut decodes: Vec<f64> = Vec::new();
     let mut triangles_l0: Vec<u32> = Vec::new();
     let (mut too_big, mut unparsed, mut unprofiled) = (0usize, 0usize, 0usize);
     /// One generated duplicate, measured every way the Record needs it.
@@ -173,10 +196,11 @@ fn calibrate_the_near_duplicate_threshold() {
             unparsed += 1;
             continue;
         };
-        let Some((shape, took_ms, l0_triangles)) = through_rung(&mesh, Lod::L0) else {
+        let Some((shape, [decode_ms, took_ms], l0_triangles)) = through_rung(&mesh, Lod::L0) else {
             unprofiled += 1;
             continue;
         };
+        decodes.push(decode_ms);
         timings.push(took_ms);
         triangles_l0.push(l0_triangles);
         let mut hasher = DefaultHasher::new();
@@ -187,15 +211,24 @@ fn calibrate_the_near_duplicate_threshold() {
         // would take: turned, moved, scaled 1% (inside the size band), and re-tessellated at L1's
         // budget, which is what a kernel-version bump does to a stored rung.
         if at % EVERY == 0 {
-            let cases: [(&str, Mesh, Lod); 4] = [
+            let cases: [(&str, Mesh, Lod); 6] = [
                 ("rotated 37°", rotate(&mesh, 0.6458), Lod::L0),
+                // A quarter turn keeps the bounding box axis-aligned, so L0's grid is the same
+                // grid with two axes swapped. If this lands near zero while 37° does not, what
+                // moves the descriptor is the grid's alignment, not rotation.
+                (
+                    "rotated 90° (z)",
+                    mapped(&mesh, |v| [-v[1], v[0], v[2]]),
+                    Lod::L0,
+                ),
+                ("subdivided 4x, both L0", subdivided(&mesh), Lod::L0),
                 (
                     "moved 250 mm",
                     mapped(&mesh, |v| [v[0] + 250.0, v[1] - 80.0, v[2] + 40.0]),
                     Lod::L0,
                 ),
                 ("scaled 1%", mapped(&mesh, |v| v.map(|c| c * 1.01)), Lod::L0),
-                ("re-tessellated (L1)", mesh.clone(), Lod::L1),
+                ("L0 against the L1 rung", mesh.clone(), Lod::L1),
             ];
             for (what, copy, lod) in cases {
                 let Some((other, _, _)) = through_rung(&copy, lod) else {
@@ -231,14 +264,16 @@ fn calibrate_the_near_duplicate_threshold() {
     .expect("writes");
 
     timings.sort_by(f64::total_cmp);
+    decodes.sort_by(f64::total_cmp);
     triangles_l0.sort_unstable();
     writeln!(
         report,
-        "one profile of one L0: median {:.2} ms, p95 {:.2} ms, worst {:.2} ms (L0 triangles: \
-         median {}, worst {})",
+        "decode + profile of one L0: median {:.2} ms, p95 {:.2} ms, worst {:.2} ms; the decode \
+         alone is {:.2} ms at the median (L0 triangles: median {}, worst {})",
         timings[timings.len() / 2],
         timings[timings.len() * 95 / 100],
         timings[timings.len() - 1],
+        decodes[decodes.len() / 2],
         triangles_l0[triangles_l0.len() / 2],
         triangles_l0[triangles_l0.len() - 1],
     )
@@ -348,10 +383,12 @@ fn calibrate_the_near_duplicate_threshold() {
     )
     .expect("writes");
     for what in [
-        "rotated 37°",
         "moved 250 mm",
         "scaled 1%",
-        "re-tessellated (L1)",
+        "rotated 90° (z)",
+        "subdivided 4x, both L0",
+        "rotated 37°",
+        "L0 against the L1 rung",
     ] {
         let theirs: Vec<&Copy> = generated.iter().filter(|c| c.what == what).collect();
         if theirs.is_empty() {

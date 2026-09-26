@@ -31,8 +31,18 @@
 //! `m`, and `m` carries the scale instead. Triangle and vertex order hold to within the sampler's
 //! own noise: reordering triangles changes which of them the cumulative-area search picks, so two
 //! orderings of one mesh differ by about 0.013 in [`distance`](lapidary_core::shape::distance) —
-//! the noise floor [`PAIRS`] derives, a third of `NEAR_DUPLICATE_DISTANCE`. Re-tessellation holds
-//! the same way, and no threshold can ever be tighter than that floor.
+//! the noise floor [`PAIRS`] derives, a third of `NEAR_DUPLICATE_DISTANCE`. No threshold can ever
+//! be tighter than that floor.
+//!
+//! **What is invariant here is not invariant of the L0 rung the worker feeds it, and the goal's
+//! Record has the figures.** Clustering to L0 snaps vertices to a 32-cell grid over the part's
+//! bounding box, so which vertices share a cell depends on the triangulation and on how the box is
+//! oriented. Measured over 974 corpus parts, both sides through L0: a quarter turn, which leaves
+//! the box axis-aligned, moves the descriptor by 0.0000; a 37° turn moves it by 0.0907; the same
+//! surface triangulated four times as finely moves it by 0.0509. The term that carries almost all
+//! of that is `ln(area / m²)`, because a differently clustered rung has a few per cent more or
+//! less surface. That is a fact about the rung, not about the arithmetic below, and what to do
+//! about it is the design's decision rather than this module's.
 //!
 //! **Mirror images look identical, on purpose.** Nothing here can tell a left hand from a right
 //! one: every ingredient is a distance, an area or an eigenvalue, and reflection changes none of
@@ -453,6 +463,23 @@ mod tests {
         assert_eq!(once.size_mm.to_bits(), twice.size_mm.to_bits());
     }
 
+    /// The 32 bins hold square roots of probabilities, not the probabilities. That is the whole
+    /// reason `lapidary_core::shape::distance` — a plain Euclidean distance — is the Hellinger
+    /// distance over that block, and it is what the threshold was calibrated against.
+    #[test]
+    fn the_d2_block_holds_the_square_roots_of_a_whole_distribution() {
+        for mesh in [bracket(), cube(60.0), cylinder(11.0, 48.0, 96)] {
+            let mass: f32 = profile_of(&mesh).descriptor[..32]
+                .iter()
+                .map(|b| b * b)
+                .sum();
+            assert!(
+                (mass - 1.0).abs() < 1e-5,
+                "the squares of the 32 bins must sum to 1, got {mass}"
+            );
+        }
+    }
+
     #[test]
     fn moving_a_part_does_not_change_its_shape() {
         let mesh = bracket();
@@ -499,8 +526,11 @@ mod tests {
         assert!(apart < NOISE, "reordered: {apart}");
     }
 
+    /// A finer mesh of one surface, profiled directly. Through an L0 rung the answer is different
+    /// and worse — see this module's header — but that is the rung's doing, and this is the
+    /// property the descriptor itself has to have.
     #[test]
-    fn a_finer_tessellation_of_one_cylinder_is_the_same_shape() {
+    fn a_finer_mesh_of_one_cylinder_is_the_same_shape() {
         let coarse = profile_of(&cylinder(11.0, 48.0, 48));
         let fine = profile_of(&cylinder(11.0, 48.0, 192));
         let apart = distance(&coarse.descriptor, &fine.descriptor);

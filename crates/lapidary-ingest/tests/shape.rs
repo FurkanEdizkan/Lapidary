@@ -336,6 +336,27 @@ async fn a_new_revision_moves_the_row_to_its_own_rung(pool: PgPool) {
         0,
         "and the revision left nothing for the sweep to do"
     );
+
+    // The sweep's `revision_id` branch, which needs two revisions for a row to be behind: a row
+    // left at revision 1 while revision 2 is current is stale, whatever its version and rung say.
+    sqlx::query("UPDATE part_shape SET revision_id = $1")
+        .bind(first.revision.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("puts the row back a revision");
+    handler.enqueue_stale_derivatives().await;
+    assert_eq!(
+        profile_jobs(&pool).await,
+        1,
+        "a row naming a revision that is no longer the latest must be swept up"
+    );
+    let job = queued_profile_job(&pool).await;
+    handler.handle(&job).await.expect("profiles");
+    assert_eq!(
+        shape_of(&pool, part).await.revision,
+        second.revision,
+        "and the row it writes names the current revision again"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -346,6 +367,32 @@ async fn a_revision_with_no_viewer_mesh_fails_once_and_says_what_to_do(pool: PgP
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
     handler.handle(&ingest_job(BRACKET)).await.expect("ingests");
     let revision = latest_revision(&pool, only_part(&pool).await).await;
+
+    // First, while the rung is still there: the same revision named by another library's job. A
+    // revision id is a uuid a caller might hold from anywhere, and content addressing is not
+    // authorization — asked before the rung is deleted, because a missing rung would refuse this
+    // job for the wrong reason and prove nothing.
+    let elsewhere = LibraryId::from_uuid(
+        Uuid::parse_str("01931b6e-0000-7000-8000-0000000000e2").expect("an id parses"),
+    );
+    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture jigs', 'fixture jigs')")
+        .bind(elsewhere.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("seeds a second library");
+    let other = job_row(elsewhere, &JobPayload::ProfileShape { revision });
+    assert!(
+        matches!(
+            handler.handle(&other).await,
+            Err(HandlerError::Permanent { .. })
+        ),
+        "another library's job must not reach this revision"
+    );
+    sqlx::query("DELETE FROM part_shape")
+        .execute(&pool)
+        .await
+        .expect("clears the row the refused job must not have written");
+
     sqlx::query("DELETE FROM derivative WHERE kind = 'tessellation_l0'")
         .execute(&pool)
         .await
@@ -363,23 +410,106 @@ async fn a_revision_with_no_viewer_mesh_fails_once_and_says_what_to_do(pool: PgP
         message.contains("re-scan the part"),
         "the error must say what to do, not only what is missing: {message}"
     );
-
-    // And the same revision named by another library is refused the same way: a revision id is a
-    // uuid a caller might hold from anywhere, and content addressing is not authorization.
-    let elsewhere = LibraryId::from_uuid(
-        Uuid::parse_str("01931b6e-0000-7000-8000-0000000000e2").expect("an id parses"),
+    assert!(
+        PgShapes(pool.clone())
+            .of_part(only_part(&pool).await)
+            .await
+            .expect("reads")
+            .is_none(),
+        "and nothing was recorded for a revision that could not be profiled"
     );
-    sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, 'Fixture jigs', 'fixture jigs')")
-        .bind(elsewhere.as_uuid())
+}
+
+/// Two more ways a row goes stale: the algorithm moved, and the rung was rebuilt. The third — the
+/// part gained a revision the row never followed — is at the end of the revision test above, which
+/// is where there are two revisions for a row to be behind. All three are one query, and a reader
+/// ignores a stale row, so a branch that stops finding one leaves the part out of the duplicate
+/// review for good.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_row_of_another_version_or_another_rung_is_swept_up(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    handler.handle(&ingest_job(BRACKET)).await.expect("ingests");
+    let part = only_part(&pool).await;
+    let current = shape_of(&pool, part).await;
+
+    for (what, spoil) in [
+        (
+            "an older SHAPE_VERSION",
+            "UPDATE part_shape SET version = version - 1",
+        ),
+        (
+            "another rung's bytes",
+            "UPDATE part_shape SET l0_blake3 = repeat('0', 64)",
+        ),
+    ] {
+        sqlx::query("DELETE FROM job")
+            .execute(&pool)
+            .await
+            .expect("clears the queue");
+        sqlx::query(spoil)
+            .execute(&pool)
+            .await
+            .expect("spoils the row");
+        handler.enqueue_stale_derivatives().await;
+        assert_eq!(
+            profile_jobs(&pool).await,
+            1,
+            "a row naming {what} must be swept up"
+        );
+        let job = queued_profile_job(&pool).await;
+        assert_eq!(
+            handler.handle(&job).await.expect("profiles"),
+            Outcome::Profiled
+        );
+        let fresh = shape_of(&pool, part).await;
+        assert_eq!(
+            (fresh.version, fresh.l0, fresh.revision),
+            (current.version, current.l0, current.revision),
+            "and the row that replaces it names this build's version and the current rung"
+        );
+    }
+}
+
+/// A rebuilt L0 is a different set of triangles, so the profile computed from the old one is not
+/// this part's shape any more. `derive_one` profiles again from the bytes it just wrote rather than
+/// leaving a stale row for the next worker start.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn rebuilding_the_viewer_mesh_profiles_the_part_again(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    handler.handle(&ingest_job(BRACKET)).await.expect("ingests");
+    let part = only_part(&pool).await;
+    let revision = latest_revision(&pool, part).await;
+    let before = shape_of(&pool, part).await;
+    sqlx::query("DELETE FROM part_shape")
         .execute(&pool)
         .await
-        .expect("seeds a second library");
-    let other = job_row(elsewhere, &JobPayload::ProfileShape { revision });
-    assert!(
-        matches!(
-            handler.handle(&other).await,
-            Err(HandlerError::Permanent { .. })
-        ),
-        "another library's job must not reach this revision"
+        .expect("takes the row away");
+
+    let rebuild = job_row(
+        seeded(),
+        &JobPayload::Derive {
+            revision,
+            produce: lapidary_core::DerivativeKind::TessellationL0,
+        },
+    );
+    assert_eq!(
+        handler.handle(&rebuild).await.expect("rebuilds the rung"),
+        Outcome::Rendered,
+        "a derive reports what it built, not the profile it recorded on the way"
+    );
+    assert_eq!(
+        shape_of(&pool, part)
+            .await
+            .profile
+            .descriptor
+            .map(f32::to_bits),
+        before.profile.descriptor.map(f32::to_bits),
+        "the rebuilt rung is the same rung, so the row it writes is the same row"
     );
 }
