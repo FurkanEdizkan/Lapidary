@@ -364,13 +364,51 @@ export async function session({
 }
 
 /**
- * Give the file input behind a control real files. `DOM.setFileInputFiles` is the only way: a file
- * input's value cannot be set from script, so an upload driven any other way is not the upload the
- * person does.
+ * Upload through the app's own control, the way a person does: press the button, and answer the file
+ * chooser it opens.
+ *
+ * `DOM.setFileInputFiles` aimed straight at the app's `<input type=file>` does **nothing** here — Chrome
+ * accepts the call, answers no error, and leaves `input.files` empty, so the upload never starts and
+ * there is nothing at all to diagnose. Bisected on HeadlessChrome/153: an input this driver injects into
+ * the same page takes a file fine, and so does one on a `data:` page, but neither of the app's two does.
+ * What *does* work is the documented route — intercept the chooser, press the real control, and hand the
+ * files to the node the `Page.fileChooserOpened` event names.
+ *
+ * Two things that route needs, and both cost a run to find:
+ *
+ *   * **A real input event.** Chrome will not open a file chooser without user activation, so a synthetic
+ *     `element.click()` from `Runtime.evaluate` produces no event whatsoever. `press` must dispatch through
+ *     `Input.dispatchMouseEvent`.
+ *   * **A directory, for a `webkitdirectory` input.** Given file paths it sets nothing; given the directory
+ *     it reports every file underneath *with `webkitRelativePath` filled in* — which is also the only way
+ *     to drive a folder upload and get the categories it makes.
+ *
+ * `press` is called with the page and must click the real control. Returns how many files the chooser was
+ * given.
  */
-export async function setFiles(page, selector, files) {
-  const { root } = await page.send('DOM.getDocument', { depth: -1 })
-  const { nodeId } = await page.send('DOM.querySelector', { nodeId: root.nodeId, selector })
-  if (!nodeId) throw new Error(`no file input matched ${selector}`)
-  await page.send('DOM.setFileInputFiles', { files, nodeId })
+export async function uploadThrough(page, press, paths, { mode } = {}) {
+  const chosen = page.collect('Page.fileChooserOpened')
+  await page.send('Page.setInterceptFileChooserDialog', { enabled: true })
+  try {
+    await press(page)
+    const end = Date.now() + 8000
+    while (chosen.length === 0) {
+      if (Date.now() > end) {
+        throw new Error(
+          'pressing the control opened no file chooser in 8 s. Chrome needs user activation for one, so ' +
+            'the press must be a real Input.dispatchMouseEvent and not element.click().',
+        )
+      }
+      await sleep(50)
+    }
+    const event = chosen[0]
+    if (mode !== undefined && event.mode !== mode) {
+      throw new Error(`the chooser opened as ${event.mode}, not ${mode}`)
+    }
+    await page.send('DOM.setFileInputFiles', { files: paths, backendNodeId: event.backendNodeId })
+    return { mode: event.mode, given: paths.length }
+  } finally {
+    // Left on would swallow a chooser some later flow expects to see.
+    await page.send('Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {})
+  }
 }

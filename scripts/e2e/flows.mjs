@@ -17,11 +17,11 @@
 //     the same file is never sent twice);
 //   * every selector a flow depends on is a named entry in `S` below, so the goal's "rename one
 //     selector and watch that flow alone fail" test is a one-line edit.
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { session, setFiles, sleep } from './cdp.mjs'
+import { session, sleep, uploadThrough } from './cdp.mjs'
 
 const { values: args } = parseArgs({
   options: {
@@ -97,6 +97,14 @@ const S = {
  *               its text is the only handle there is.
  *   `loadingMesh`  `open-timing.mjs` parses this same literal out of `strings.ts` for the same reason.
  */
+// The nested folder the upload flow sends, and asserts its parts are filed under.
+const UPLOAD_CATEGORY = 'Brackets'
+// [source in the repo, name in the uploaded folder]. Binary STLs only — see the flow for why.
+const UPLOAD_FILES = [
+  ['fixtures/bracket-lp-1042-03.stl', 'bracket-lp-1042-03.stl'],
+  ['example/parts/hex-spacer-m4x20-lp-2145-01.stl', 'hex-spacer-m4x20-lp-2145-01.stl'],
+]
+
 const W = {
   upload: ['Reading ', 'Asking which files are new', 'Uploading ', 'Finishing the upload'],
   scanRunning: /Reading the folder|Scanning — [\d,]+ of/,
@@ -117,6 +125,7 @@ const T = {
   explode: 'Explode',
   removeFromLibrary: 'Remove from library',
   restore: 'Restore',
+  uploadButton: 'Upload a folder',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
   thisInstallation: 'This installation',
@@ -368,6 +377,11 @@ const FLOWS = [
       expect(options !== null, `no order <select> under a #view-menu label starting "${T.order}"`)
       expect(options.options.length >= 5, `the order control offers ${options.options.length} options`)
       const pick = options.options.find((o) => o.value !== options.value)
+      // Read BEFORE the change is dispatched. Reading it after put the grid mid-refetch, `before` came
+      // back empty, and `moved` counted 50 differences against nothing — so the flow passed while testing
+      // nothing at all. A false pass is the one outcome this rig may not produce.
+      const before = await names(page)
+      expect(before.length >= 50, `only ${before.length} cards to reorder`)
       const set = await page.evaluate(`(() => {
         const s = ${viewSelect(T.order)}
         Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(pick.value)})
@@ -378,10 +392,9 @@ const FLOWS = [
       // The whole order, not just the first card. Two orders can legitimately agree on their first part —
       // the fixture-plate assembly is both the newest and the largest by volume — and asserting on
       // `[0]` called that a failure on the first real run. What sorting means is that the sequence moved.
-      const before = await names(page)
       const reordered = await page.settle(
         () => names(page),
-        (list) => list.length > 0 && list.join('\u0000') !== before.join('\u0000'),
+        (list) => list.length >= before.length && list.join('\u0000') !== before.join('\u0000'),
         { timeout: 20_000 },
       )
       const moved = reordered.filter((n, i) => before[i] !== n).length
@@ -777,6 +790,8 @@ const FLOWS = [
       // Removed and put back inside the flow, so a second run sees the same library.
       const victim = await ctx.partLike(/scaled-115/)
       const before = await ctx.countParts(ctx.sweep.id)
+      let removed = false
+      try {
       await page.go(`/parts/${victim.id}`, `document.querySelector('h1, h2') !== null`)
       // No confirmation, deliberately: removal is reversible and the hint under the button says so.
       // The control is in the part's own actions menu, whose children are display:none until opened.
@@ -788,11 +803,18 @@ const FLOWS = [
         return true
       })()`)
       expect(pressed, `no "${T.removeFromLibrary}" button in #${S.partMenu}`)
+      removed = true
       // It invalidates the grid and navigates back to it.
       await page.waitFor(`new URL(location.href).pathname === '/'`, 20_000)
-      // Soft, never implicit: the part is still readable and a purge is a different action.
-      const still = await ctx.get(`/api/parts/${victim.id}`)
-      expect(still.id === victim.id, 'a removed part should still be readable; delete is soft')
+      // Soft, never implicit — but *not* still served by the detail route: `GET /api/parts/{id}` answers
+      // 404 for a removed part, with or without `?state=removed`. What "soft" means is that the row and
+      // the bytes survive, `/removed` lists it, and a restore brings it back; a purge is the separate,
+      // explicit action that starts the 30-day countdown. So this asserts the 404 deliberately.
+      const gone = await fetch(`${args.api}/api/parts/${victim.id}`)
+      expect(
+        gone.status === 404,
+        `the detail route answered ${gone.status} for a removed part; if that changed, this flow should assert the new behaviour rather than be loosened`,
+      )
       await page.go(`/removed?library=${ctx.sweep.id}`, `document.querySelector('h2') !== null`)
       const listed = await page.settle(
         () => page.evaluate('document.body.textContent'),
@@ -818,32 +840,59 @@ const FLOWS = [
         (n) => n === before,
         { timeout: 30_000, every: 1000 },
       )
-      if (after !== before) {
-        // Belt and braces: the next run must not start a part short.
-        await ctx.post(`/api/parts/${victim.id}/restore`, {})
-        fail(`the library held ${before} parts and holds ${after} after the restore`)
+      expect(after === before, `the library held ${before} parts and holds ${after} after the restore`)
+      removed = false
+      return `${JSON.stringify(victim.name)} removed, 404 from the detail route, listed on /removed, restored (${before} parts either side)`
+      } finally {
+        // Unconditional. Whatever went wrong above, this part goes back — otherwise one failure leaves the
+        // library changed and every later flow, and the next run, inherits it.
+        if (removed) {
+          await ctx.post(`/api/parts/${victim.id}/restore`, {}).catch(() => {})
+        }
       }
-      return `${JSON.stringify(victim.name)} removed, listed on /removed, restored (${before} parts either side)`
     },
   },
   {
     name: 'upload',
     async run(page, ctx) {
-      // Through the real control with `DOM.setFileInputFiles`: a file input's value cannot be set from
-      // script, so anything else would not be the upload a person does. Note what that costs — a
-      // CDP-injected file has an empty `webkitRelativePath`, so `lib/upload.ts` reads it as a flat
-      // drop of loose files and the upload makes no category. That is correct, so nothing here
-      // asserts a folder.
-      const file = join(ctx.tmp, `bracket-lp-1042-03-e2e-${ctx.stamp}.stl`)
-      const bytes = readFileSync(join(ctx.root, 'fixtures/bracket-lp-1042-03.stl'))
-      // A per-run stamp in the 80-byte header: identical bytes would be `Skipped`, and a flow that
-      // only passes the first time fails the rig's own repeatability test.
-      Buffer.from(`Lapidary e2e ${ctx.stamp}`.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
-      writeFileSync(file, bytes)
+      // A whole folder, through the real control. The only input the app offers for models carries
+      // `webkitdirectory`, so this is a *folder* upload with `webkitRelativePath` filled in, and the
+      // categories it makes are part of what is under test. Handing `DOM.setFileInputFiles` the files
+      // instead of the directory sets nothing at all — see `setFiles`, which now says so.
+      const folder = join(ctx.tmp, `e2e-upload-${ctx.stamp}`)
+      const inner = join(folder, UPLOAD_CATEGORY)
+      mkdirSync(inner, { recursive: true })
+      // A per-run stamp in each 80-byte header: identical bytes would be `Skipped`, and a flow that only
+      // passes the first time fails the rig's own repeatability test.
+      // Both **binary** STLs. The stamp overwrites the first 80 bytes, which is a binary STL's header and
+      // an ASCII STL's opening `solid …` line — stamping `fixtures/cube.stl` corrupted it and the app said
+      // so, correctly ("1 file could not be read"). `fixtures/spacer-lp-2001-00.stl` and `cube.stl` are the
+      // two ASCII ones in the tree; everything under `example/parts/` is binary.
+      for (const [from, name] of UPLOAD_FILES) {
+        const bytes = readFileSync(join(ctx.root, from))
+        Buffer.from(`Lapidary e2e ${ctx.stamp}`.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
+        writeFileSync(join(inner, name), bytes)
+      }
       const before = await ctx.countParts(ctx.governed.id)
       await page.go(grid(ctx.governed.id), 'document.querySelector("#parts") !== null')
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
-      await setFiles(page, S.fileInput, [file])
+      const before2 = before
+      // Pressed for real, because Chrome opens no file chooser without user activation.
+      const chooser = await uploadThrough(
+        page,
+        async (p) => {
+          const at = await p.evaluate(`(() => {
+            const b = [...document.querySelectorAll('header button')].find((e) => e.textContent.includes(${JSON.stringify(T.uploadButton)}))
+            if (!b) return null
+            const r = b.getBoundingClientRect()
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+          })()`)
+          expect(at !== null, `no header button reads "${T.uploadButton}"`)
+          await p.click(at.x, at.y)
+        },
+        [folder],
+        { mode: 'selectMultiple' },
+      )
       // The transfer line is *transient*, and for a 1 KB fixture it can be gone before the first poll —
       // the first real run spent 30 s waiting for a line the upload had already finished with. So it is
       // reported when it appears and never required; the batch line below is the outcome that matters.
@@ -877,7 +926,16 @@ const FLOWS = [
         { timeout: 60_000, every: 1000 },
       )
       expect(after > before, `the upload never landed: ${before} parts before and after`)
-      return `${before} -> ${after} parts in Governed; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch for a 1 KB file'}`
+      expect(after === before + 2, `a 2-file folder should add 2 parts; it added ${after - before}`)
+      // The folder structure survived, which a flat drop of loose files could not have shown: both parts
+      // are filed under the directory they came from.
+      const filed = await ctx.get(`/api/libraries/${ctx.governed.id}/parts?limit=500`)
+      const landed = filed.parts.filter((p) => (p.sourcePath ?? '').includes(UPLOAD_CATEGORY))
+      expect(
+        landed.length >= 2,
+        `the uploaded parts are not filed under ${UPLOAD_CATEGORY}: ${JSON.stringify(filed.parts.map((p) => p.sourcePath).slice(-4))}`,
+      )
+      return `${before2} -> ${after} parts in Governed through the real control (chooser ${chooser.mode}), filed under ${UPLOAD_CATEGORY}; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch'}`
     },
   },
   {
