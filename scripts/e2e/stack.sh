@@ -502,6 +502,24 @@ upload_file() { # library, local file, source path in the library
   settle "$lib" "$(echo "$commit" | field 'value["batchId"]')" 600
 }
 
+# Stage 3's thresholds, asserted rather than printed. `seed` exits non-zero on a miss and the whole list
+# lands in `seed.json`, because stage 6's pass condition is "the seed counts match" and a seed that only
+# echoed them gave nothing to match against.
+seed_fail=0
+seed_check() { # name, 1|0, detail
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$WORK/seed-checks.tsv"
+  if [ "$2" = 1 ]; then
+    echo "  ok    $1 — $3"
+  else
+    echo "  FAIL  $1 — $3"
+    seed_fail=$((seed_fail + 1))
+  fi
+}
+# `1` when the arithmetic holds, `0` when it does not: `[ ... ]` in a `$( )` would abort under -e.
+holds() { if eval "[ $* ]" 2> /dev/null; then echo 1; else echo 0; fi; }
+# One counter out of a settle line like `total=412 pending=0 … ingested=412 …`.
+counter() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | tail -1; }
+
 cmd_seed() {
   wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
   echo "== INGEST TREE"
@@ -523,20 +541,46 @@ cmd_seed() {
   echo "  scan: $scanned in $((SECONDS - began)) s"
   echo "  worker memory, peak sampled: $(awk '{print $2}' "$WORK/worker-stats.txt" | sort -h | tail -1) (ceiling 2GiB)"
   echo "  failures: $(curl -sf "$API/api/libraries/$sweep/jobs/$batch" | field '[(f.get("path"), f.get("message","")[:160]) for f in value.get("failed", [])]')"
+  : > "$WORK/seed-checks.tsv"
+  local ingested failed_total
+  ingested=$(counter "$scanned" ingested)
+  failed_total=$(counter "$scanned" failedTotal)
+  # 400 corpus + 6 step + 2 misc + 4 alike = 412; 409 is the floor stage 3 set.
+  seed_check "ingested at least 409" "$(holds "${ingested:-0}" -ge 409)" "ingested=${ingested:-none}"
+  seed_check "no ingest failures" "$(holds "${failed_total:-1}" -eq 0)" "failedTotal=${failed_total:-none}"
 
   local parts thumbs folders formats
   parts=$(sql "SELECT count(*) FROM part WHERE library_id = '$sweep' AND deleted_at IS NULL")
-  thumbs=$(sql "SELECT count(DISTINCT p.id) FROM part p JOIN revision r ON r.part_id = p.id JOIN derivative d ON d.revision_id = r.id WHERE p.library_id = '$sweep' AND d.kind = 'thumbnail'")
+  local thumb_sql="SELECT count(DISTINCT p.id) FROM part p JOIN revision r ON r.part_id = p.id JOIN derivative d ON d.revision_id = r.id WHERE p.library_id = '$sweep' AND d.kind = 'thumbnail'"
+  # Waited for, not sampled: thumbnails are their own jobs and finish after the ingest batch settles, so
+  # counting once would fail on a library that is perfectly fine thirty seconds later.
+  local waited=0
+  thumbs=$(sql "$thumb_sql")
+  while [ "${thumbs:-0}" -lt "${parts:-1}" ] && [ "$waited" -lt 600 ]; do
+    sleep 5
+    waited=$((waited + 5))
+    thumbs=$(sql "$thumb_sql")
+  done
   folders=$(curl -sf "$API/api/libraries/$sweep/folders" | python3 -c 'import json,sys
 def count(nodes): return sum(1 + count(n.get("children") or []) for n in nodes)
 print(count(json.load(sys.stdin)))')
   formats=$(curl -sf "$API/api/libraries/$sweep/facets" | field '", ".join(f["value"] for f in value["formats"])')
-  echo "  parts $parts, thumbnails $thumbs, folders $folders, formats: $formats"
+  echo "  parts $parts, thumbnails $thumbs (after ${waited} s), folders $folders, formats: $formats"
+  seed_check "a thumbnail for every part" "$(holds "${thumbs:-0}" -eq "${parts:-1}")" "$thumbs of $parts"
+  seed_check "at least 8 categories" "$(holds "${folders:-0}" -ge 8)" "$folders"
+  local missing=''
+  for want in stl step igs obj 3mf; do
+    case ",${formats// /}," in *",$want,"*) ;; *) missing="$missing $want" ;; esac
+  done
+  seed_check "five formats present" "$(holds -z "\"$missing\"")" "${formats:-none}${missing:+ (missing$missing)}"
 
   echo "  re-scan settles all-skipped:"
-  local again
+  local again rescan
   again=$(json POST "$API/api/libraries/$sweep/scan" | field 'value["batchId"]')
-  echo "    $(settle "$sweep" "$again" 3600)"
+  rescan=$(settle "$sweep" "$again" 3600)
+  echo "    $rescan"
+  seed_check "the re-scan adds nothing" \
+    "$(holds "$(counter "$rescan" ingested)" -eq 0 -a "$(counter "$rescan" skipped)" -ge 409)" "$rescan"
 
   # The PMI cylinder's detail, check-plain.sh's assertions kept: this is what proves the real kernel
   # ran and not the mock.
@@ -544,18 +588,23 @@ print(count(json.load(sys.stdin)))')
   pmi_part=$(sql "SELECT id FROM part WHERE library_id = '$sweep' AND source_path LIKE '%pmi%' LIMIT 1")
   if [ -n "$pmi_part" ]; then
     detail=$(curl -sf "$API/api/parts/$pmi_part")
-    echo "  PMI cylinder: format $(echo "$detail" | field 'value["sourceFormat"]'), structure $(echo "$detail" | field 'value["structure"] is not None'), entities $(echo "$detail" | field 'value["entities"] is not None'), pmi $(echo "$detail" | field 'value["pmi"] is not None'), kernel $(echo "$detail" | field 'value["kernelVersion"]')"
+    local pmi_ok
+    pmi_ok=$(echo "$detail" | field 'int(all(value.get(k) is not None for k in ("structure", "entities", "pmi", "kernelVersion")))')
+    seed_check "the real kernel read the PMI cylinder" "${pmi_ok:-0}" \
+      "format $(echo "$detail" | field 'value["sourceFormat"]'), kernel $(echo "$detail" | field 'value["kernelVersion"]'), structure/entities/pmi $(echo "$detail" | field '[value.get(k) is not None for k in ("structure","entities","pmi")]')"
   else
-    echo "  PMI cylinder: no part matched '%pmi%' in Sweep — the STEP scan did not land."
+    seed_check "the real kernel read the PMI cylinder" 0 "no part matched '%pmi%' in Sweep — the STEP scan did not land"
   fi
 
   echo "== THE DEFAULT LIBRARY, left as the Phase 3 exit timed it"
-  local default_lib default_count
-  default_lib=$(curl -sf "$API/api/libraries" | field 'value[0]["id"]')
-  default_count=$(curl -sf "$API/api/libraries" | field 'value[0]["partCount"]')
+  # The literal from `web/src/lib/api.ts`'s DEFAULT_LIBRARY_ID, seeded by migration 0002. Not
+  # `value[0]`: that is whatever the list route happens to order first, and Sweep now exists.
+  local default_lib=01931b6e-0000-7000-8000-000000000001 default_count
+  default_count=$(curl -sf "$API/api/libraries" | field "next((l['partCount'] for l in value if l['id'] == '$default_lib'), -1)")
   # Deliberately not scanned: web/scripts/open-timing.mjs opens this library's grid, and the Phase 3
   # numbers it is compared against were measured on exactly these six example parts.
   echo "  $default_lib holds $default_count parts (the six examples, unscanned on purpose)"
+  seed_check "the default library still holds its six examples" "$(holds "${default_count:-0}" -eq 6)" "$default_count"
 
   echo "== GOVERNED (controlled), through the upload route"
   local governed revised
@@ -575,11 +624,16 @@ print(count(json.load(sys.stdin)))')
   vee=$(sql "SELECT id FROM part WHERE library_id = '$governed' AND source_path = 'uploads/vee-block-lp-3072-02.stl'")
   revised=$(curl -sf "$API/api/parts/$vee/revisions" | field 'len(value)')
   echo "  vee-block now has $revised revisions"
+  seed_check "a controlled part reached a second revision" "$(holds "${revised:-0}" -ge 2)" "$revised revisions"
 
   echo "== EMPTY, created and never scanned"
-  local empty
+  local empty empty_count
   empty=$(library_named Empty hobby)
+  empty_count=$(sql "SELECT count(*) FROM part WHERE library_id = '$empty'")
   echo "  $empty"
+  # It must stay empty: it is the only fixture for the empty states, and any flow that scanned it would
+  # spend the fixture and leave an 861 MiB ingest running under everything measured after it.
+  seed_check "Empty is empty" "$(holds "${empty_count:-1}" -eq 0)" "$empty_count parts"
 
   python3 - "$WORK/seed.json" <<EOF
 import json, sys
@@ -591,9 +645,18 @@ json.dump({
     "governed": {"id": "$governed", "revisedPart": "$vee", "revisions": ${revised:-0}},
     "empty": {"id": "$empty"},
     "ingestFiles": $(find "$INGEST" -type f ! -name .seeded | wc -l),
+    "checks": [
+        {"name": n, "ok": ok == "1", "detail": d}
+        for n, ok, d in (
+            line.rstrip("\n").split("\t", 2)
+            for line in open("$WORK/seed-checks.tsv")
+        )
+    ],
 }, open(sys.argv[1], "w"), indent=2)
 EOF
-  note "seed facts in $WORK/seed.json"
+  note "seed facts and $(wc -l < "$WORK/seed-checks.tsv") checks in $WORK/seed.json"
+  [ "$seed_fail" = 0 ] || die "$seed_fail of the seed's checks failed (listed above, and in
+  $WORK/seed.json). Driving a library that is not what stage 3 describes would test the wrong thing."
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -652,6 +715,9 @@ print(f"\n{len(flows)} flows: " + ", ".join(
     for s in sorted({f.get("status") for f in flows})))
 print("report " + str(run / "report.json"))
 if bad: print("FAILED: " + ", ".join(bad))
+# The exit code IS the result: `drive` is what a later goal runs in CI, and a run that failed a flow
+# must not answer 0. The flows process exits non-zero too, but its status is swallowed by the tee.
+sys.exit(1 if bad else 0)
 EOF
   local code=$?
 
@@ -696,7 +762,13 @@ cmd_down() {
   if [ -f "$ENVFILE" ]; then
     # -v removes THIS project's volumes and no others: lapidary-e2e-<lane>_lapidary-db and friends. The
     # owner's lapidary_lapidary-db is a different project, which is what the assertion above protects.
+    #
+    # PIPESTATUS, not $?: piping into `tail` would otherwise hide a failed teardown behind a successful
+    # tail, and the two lines below would then delete the password of a database volume that survived.
     compose down -v --remove-orphans 2>&1 | tail -4
+    [ "${PIPESTATUS[0]}" = 0 ] || die "\`compose down -v\` failed for $PROJECT. Nothing was deleted —
+  $ENVFILE still holds the password its database volume was initialised with, and removing it would
+  make the next \`up\` fail authentication instead. Fix the teardown, then run \`down\` again."
   else
     echo "  no $ENVFILE, so no compose project to remove"
   fi

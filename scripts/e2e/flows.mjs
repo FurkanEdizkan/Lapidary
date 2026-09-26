@@ -103,6 +103,8 @@ const T = {
   // The provenance title on a tessellated figure. "Measurement must not lie": this is the mark, and
   // the `≈` beside it is aria-hidden, so the mark is what an assertion must read.
   approximateTitle: 'Derived from tessellated',
+  // Its opposite, on a figure read from a B-rep entity. The two together are "measurement must not lie".
+  analyticTitle: 'Read from an analytic CAD entity',
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -427,7 +429,16 @@ const FLOWS = [
       expect(box !== null, `the save form has no input labelled "${T.filterNameLabel}"`)
       await page.click(box.x, box.y)
       await page.type(name)
-      await page.evaluate(`document.querySelector('button[type="submit"]').click()`)
+      // Scoped to this form: `button[type=submit]` unqualified takes the first one in the document,
+      // which on a page with a search form and a pair form is not necessarily this one.
+      const submitted = await page.evaluate(`(() => {
+        const l = [...document.querySelectorAll('label')].find((e) => e.textContent.startsWith(${JSON.stringify(T.filterNameLabel)}))
+        const b = l?.closest('form')?.querySelector('button[type="submit"]')
+        if (!b) return false
+        b.click()
+        return true
+      })()`)
+      expect(submitted, 'the save form has no submit button of its own')
       // It comes back from the server, not from component state: the list is refetched.
       const saved = await page.settle(
         () => ctx.get(`/api/libraries/${ctx.sweep.id}/filters`),
@@ -548,20 +559,33 @@ const FLOWS = [
           index: [...document.querySelectorAll('nav[aria-label="On this page"] a')].map((a) => a.textContent.trim()),
           file: document.querySelector('#part-file') !== null,
           identity: document.querySelector('#part-identity') !== null,
-          approximate: document.querySelector('span[title^="${T.approximateTitle}"]') !== null,
+          // The Volume row's own figure, not the page as a whole. A STEP part's triangle count counts
+          // tessellated primitives and cannot be analytic -- the revision schema says so, and declines
+          // to give it a _source column -- so an approximate mark somewhere on this page is correct.
+          // "Analytic values from B-rep entities where available" is about figures like this one.
+          volumeTitle: (() => {
+            const dt = [...document.querySelectorAll('dt')].find((e) => e.textContent.trim() === 'Volume')
+            const dd = dt?.nextElementSibling
+            return dd?.querySelector('span[title]')?.getAttribute('title') ?? null
+          })(),
         }
       })()`)
       expect(page_.h3.includes('Geometry'), `no Geometry section; headings are ${JSON.stringify(page_.h3)}`)
       expect(page_.file, 'no #part-file section')
       expect(page_.identity, 'no #part-identity section')
       expect(page_.index.length >= 2, `the section index lists ${page_.index.length} sections`)
-      // Measurement must not lie. A STEP part's figures are read from analytic entities, so this page
-      // must NOT carry the tessellated mark — the half of the rule a fixture can actually check.
+      // Measurement must not lie, and this is the half a B-rep fixture can prove: the volume of a STEP
+      // solid is read from the entity, not derived from a mesh. The mesh half is `measure`, which
+      // asserts the tessellated mark on a reading taken from an STL.
       expect(
-        page_.approximate === false,
-        `${part.sourcePath} is B-rep and its figures should be analytic, but the page carries the "${T.approximateTitle}…" mark`,
+        page_.volumeTitle !== null,
+        `no figure in the Volume row of ${part.sourcePath} carries a provenance title`,
       )
-      return `${part.sourcePath}: ${page_.index.length} sections (${page_.index.join(', ')}), no approximate mark`
+      expect(
+        page_.volumeTitle.startsWith(T.analyticTitle),
+        `${part.sourcePath} is B-rep, so its volume must be read from an analytic entity; the figure says ${JSON.stringify(page_.volumeTitle)}`,
+      )
+      return `${part.sourcePath}: ${page_.index.length} sections (${page_.index.join(', ')}), volume ${JSON.stringify(page_.volumeTitle)}`
     },
   },
   {
@@ -694,7 +718,7 @@ const FLOWS = [
     async run(page, ctx) {
       // Removed and put back inside the flow, so a second run sees the same library.
       const victim = await ctx.partLike(/scaled-115/)
-      const before = await ctx.get(`/api/libraries/${ctx.sweep.id}/parts?limit=1`)
+      const before = await ctx.countParts(ctx.sweep.id)
       await page.go(`/parts/${victim.id}`, `document.querySelector('h1, h2') !== null`)
       // No confirmation, deliberately: removal is reversible and the hint under the button says so.
       // The control is in the part's own actions menu, whose children are display:none until opened.
@@ -727,16 +751,16 @@ const FLOWS = [
       })()`)
       expect(restored, `no "${T.restore}" button on /removed`)
       const after = await page.settle(
-        () => ctx.get(`/api/libraries/${ctx.sweep.id}/parts?limit=1`),
-        (r) => r.total === before.total,
-        { timeout: 30_000, every: 500 },
+        () => ctx.countParts(ctx.sweep.id),
+        (n) => n === before,
+        { timeout: 30_000, every: 1000 },
       )
-      if (after.total !== before.total) {
+      if (after !== before) {
         // Belt and braces: the next run must not start a part short.
         await ctx.post(`/api/parts/${victim.id}/restore`, {})
-        fail(`the library held ${before.total} parts and holds ${after.total} after the restore`)
+        fail(`the library held ${before} parts and holds ${after} after the restore`)
       }
-      return `${JSON.stringify(victim.name)} removed, listed on /removed, restored (${before.total} parts either side)`
+      return `${JSON.stringify(victim.name)} removed, listed on /removed, restored (${before} parts either side)`
     },
   },
   {
@@ -753,7 +777,7 @@ const FLOWS = [
       // only passes the first time fails the rig's own repeatability test.
       Buffer.from(`Lapidary e2e ${ctx.stamp}`.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
       writeFileSync(file, bytes)
-      const before = await ctx.get(`/api/libraries/${ctx.governed.id}/parts?limit=1`)
+      const before = await ctx.countParts(ctx.governed.id)
       await page.go(grid(ctx.governed.id), 'document.querySelector("#parts") !== null')
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
       await setFiles(page, S.fileInput, [file])
@@ -770,20 +794,25 @@ const FLOWS = [
       )
       expect(done.includes(T.uploadComplete), `the upload never said "${T.uploadComplete}"`)
       const after = await page.settle(
-        () => ctx.get(`/api/libraries/${ctx.governed.id}/parts?limit=1`),
-        (r) => r.total > before.total,
-        { timeout: 60_000, every: 500 },
+        () => ctx.countParts(ctx.governed.id),
+        (n) => n > before,
+        { timeout: 60_000, every: 1000 },
       )
-      expect(after.total > before.total, `the upload never landed: ${before.total} parts before and after`)
-      return `${before.total} -> ${after.total} parts in Governed; progress line ${JSON.stringify(progress)}`
+      expect(after > before, `the upload never landed: ${before} parts before and after`)
+      return `${before} -> ${after} parts in Governed; progress line ${JSON.stringify(progress)}`
     },
   },
   {
     name: 'scan-progress',
     async run(page, ctx) {
-      // Empty is scanned here and nowhere else, so this flow owns its own library and cannot race the
-      // seeded Sweep. The ingest tree is the same, so it is real work with a visible queue.
-      await page.go(grid(ctx.empty.id), 'document.querySelector("#parts") !== null')
+      // Sweep is re-scanned, not Empty. Scanning Empty would spend the only empty-state fixture, start
+      // an 861 MiB ingest that then runs underneath every later flow and underneath
+      // `open-timing.mjs`'s numbers, and make run 2's statuses differ from run 1's — the rig breaking
+      // its own repeatability. A re-scan of Sweep walks the same tree, shows the same progress line and
+      // settles all-skipped.
+      const before = await ctx.countParts(ctx.sweep.id)
+      await page.go(grid(ctx.sweep.id), gridReady)
+      await cardsSettled(page)
       await page.openMenu(S.libraryMenu)
       const started = await page.evaluate(`(() => {
         const b = [...document.querySelectorAll('#library-menu button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.scanStart)})
@@ -792,22 +821,58 @@ const FLOWS = [
         return true
       })()`)
       expect(started, `no "${T.scanStart}" button in #${S.libraryMenu}`)
-      // ScanProgress has no role, no id and no aria-live — the text is the only stable handle, and
-      // that is a finding, not a workaround. `Reading the folder…` then `Scanning — N of M files.`
+      // ScanProgress has no role, no id and no aria-live, so its text is the only handle there is —
+      // which is a finding in its own right, not a workaround.
       const line = await page.settle(
         () => page.evaluate(`document.querySelector('#parts')?.textContent ?? ''`),
-        (t) => /Reading the folder|Scanning — \d/.test(t),
-        { timeout: 60_000, every: 400 },
-      )
-      expect(
-        /Reading the folder|Scanning — \d/.test(line),
-        'a scan was started and #parts shows neither "Reading the folder…" nor "Scanning — N of M files."',
+        (t) => /Reading the folder|Scanning — [\d,]+ of/.test(t),
+        { timeout: 90_000, every: 400 },
       )
       const shown = /Scanning — [\d,]+ of [\d,]+ files\./.exec(line)?.[0] ?? /Reading the folder…/.exec(line)?.[0]
-      // The grid fills while the batch runs, which is what makes the progress line worth having.
-      const grew = await page.settle(() => cards(page), (n) => n > 0, { timeout: 120_000, every: 1000 })
-      expect(grew > 0, 'the scan is running and no card ever appeared in the grid')
-      return `${JSON.stringify(shown)}; ${grew} cards visible while it runs`
+      expect(
+        shown !== undefined,
+        'a scan was started and #parts shows neither "Reading the folder…" nor "Scanning — N of M files."',
+      )
+      const finished = await page.settle(
+        () => page.evaluate(`document.querySelector('#parts')?.textContent ?? ''`),
+        (t) => /Scan complete —/.test(t),
+        { timeout: 600_000, every: 2000 },
+      )
+      const done = /Scan complete — [^.]*\./.exec(finished)?.[0]
+      expect(done !== undefined, 'the scan never said "Scan complete — …"')
+      // Nothing new: the same bytes at the same paths are already here, so a second scan adds no part.
+      const after = await ctx.countParts(ctx.sweep.id)
+      expect(after === before, `a re-scan of an unchanged tree changed the count: ${before} -> ${after}`)
+      expect(
+        /already here/.test(done),
+        `a re-scan should report everything already here; it says ${JSON.stringify(done)}`,
+      )
+      return `${JSON.stringify(shown)} -> ${JSON.stringify(done)}; ${before} parts either side`
+    },
+  },
+  {
+    name: 'empty-library',
+    async run(page, ctx) {
+      // The empty states, which nothing else covers — and the reason `scan-progress` above leaves this
+      // library alone.
+      expect(await ctx.countParts(ctx.empty.id) === 0, 'the Empty library is not empty any more')
+      await page.go(grid(ctx.empty.id), `document.querySelector('#parts') !== null`)
+      const body = await page.settle(
+        () => page.evaluate('document.body.textContent'),
+        (t) => t.includes('Nothing here yet'),
+        { timeout: 20_000 },
+      )
+      expect(body.includes('Nothing here yet'), 'an empty library does not say "Nothing here yet"')
+      // It offers the two ways out rather than only stating the fact.
+      const offered = await page.evaluate(
+        `[...document.querySelectorAll('button')].map((b) => b.textContent.trim()).filter((t) => t.includes('Upload a folder'))`,
+      )
+      expect(offered.length > 0, 'the first-run state offers no "Upload a folder" button')
+      expect(
+        (await cards(page)) === 0,
+        'the empty library rendered a card',
+      )
+      return `"Nothing here yet", ${offered.length} upload affordance(s), 0 cards`
     },
   },
   {
@@ -928,6 +993,25 @@ const ctx = {
   del(path) {
     return ctx.request('DELETE', path)
   },
+  /**
+   * How many parts a library holds.
+   *
+   * `GET /api/libraries/{id}/parts` answers `{ parts, next }` and **no total** — the grid is keyset
+   * paged and computes its own count line. So counting means walking the pages on `next`, and a flow
+   * that compared a `.total` would be comparing `undefined` with `undefined` and passing for free.
+   */
+  async countParts(library, state) {
+    let after
+    let total = 0
+    for (let page = 0; page < 40; page++) {
+      const query = `limit=500${after ? `&after=${after}` : ''}${state ? `&state=${state}` : ''}`
+      const { parts, next } = await ctx.get(`/api/libraries/${library}/parts?${query}`)
+      total += parts.length
+      if (next === null || next === undefined) return total
+      after = next
+    }
+    throw new Error(`countParts walked 40 pages of ${library} without reaching the end`)
+  },
   /** One part of Sweep whose source path matches, cached so a flow costs one page read. */
   async partLike(pattern, optional = false) {
     if (ctx._parts === undefined) {
@@ -947,6 +1031,15 @@ const rows = []
 async function runFlow(flow, page, suffix) {
   const name = suffix ? `${flow.name}@${suffix}` : flow.name
   const began = Date.now()
+  // Every flow at one width shares one browser profile, and the grid's page size, order, density and
+  // layout live in `localStorage` under `lapidary.grid.v1.<libraryId>` rather than in the URL. So
+  // `page-size` leaves 250 behind and `sort` leaves a new order, and without this `paging` would be
+  // testing 250-per-page by accident and `--only paging` would not reproduce the full run's result.
+  try {
+    await page.send('Storage.clearDataForOrigin', { origin: args.web, storageTypes: 'local_storage' })
+  } catch (error) {
+    console.log(`  note  could not clear ${args.web}'s stored preferences: ${error.message}`)
+  }
   let status = 'ok'
   let detail = ''
   try {
