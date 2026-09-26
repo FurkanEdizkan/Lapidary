@@ -546,43 +546,53 @@ library_named() { # name, mode
   json POST "$API/api/libraries" "{\"name\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"),\"mode\":\"$2\"}" | field 'value["id"]'
 }
 
-# The chunked upload loop, lifted from check-plain.sh: probe, PUT 4 MiB at a time, commit, settle.
+# The chunked upload, following the plan the server answers rather than sending regardless.
+#
+# `POST /uploads/probe` answers `UploadPlan { have, needRows, needBytes }`, and those three cases are the
+# whole protocol: `have` means this library already holds these bytes at this path and there is nothing to
+# do; `needRows` means the store has the bytes (some other library ingested them) so only a row is needed
+# and **no transfer at all**; `needBytes` means send them. check-plain.sh sent the chunks unconditionally
+# because it only ever ran against an empty library — do that against a library that already holds the
+# file and the PUT is refused, correctly, with nothing staged to write into. "Hash first, always" is what
+# makes the plan possible; ignoring it is what made this rig look broken on its second run.
 upload_file() { # library, local file, source path in the library
-  local lib=$1 file=$2 path=$3 hash size offset=0 manifest commit
+  local lib=$1 file=$2 path=$3 hash size offset=0 manifest plan commit
   hash=$(cd "$ROOT/web" && node -e "const {blake3}=require('hash-wasm'); blake3(require('fs').readFileSync(process.argv[1])).then(h=>console.log(h))" "$file") ||
     { echo "  could not hash $file (is web/node_modules linked?)"; return 1; }
   size=$(stat -c %s "$file")
   manifest="{\"files\":[{\"path\":\"$path\",\"blake3\":\"$hash\"}]}"
-  json POST "$API/api/libraries/$lib/uploads/probe" "$manifest" > /dev/null || { echo "  probe refused for $path"; return 1; }
-  while [ $offset -lt "$size" ]; do
-    dd if="$file" iflag=skip_bytes,count_bytes skip=$offset count=$((4 * 1048576)) status=none |
-      curl -sf -X PUT -H 'content-type: application/octet-stream' --data-binary @- \
-        "$API/api/libraries/$lib/uploads/$hash?offset=$offset" > /dev/null ||
-      { echo "  chunk at $offset refused for $path"; return 1; }
-    offset=$((offset + 4 * 1048576))
-  done
+  plan=$(json POST "$API/api/libraries/$lib/uploads/probe" "$manifest") ||
+    { echo "  probe refused for $path"; return 1; }
+
+  case "$(printf '%s' "$plan" | field 'next((k for k in ("have", "needRows", "needBytes") if value.get(k)), "?")')" in
+    have)
+      echo "already here (the library holds these bytes at this path)"
+      return 0
+      ;;
+    needRows)
+      # The bytes are already in the store, so commit alone is right: sending them again would be the
+      # transfer the content-addressed store exists to avoid.
+      echo -n "bytes already stored, row only: "
+      ;;
+    needBytes)
+      while [ $offset -lt "$size" ]; do
+        dd if="$file" iflag=skip_bytes,count_bytes skip=$offset count=$((4 * 1048576)) status=none |
+          curl -sf -X PUT -H 'content-type: application/octet-stream' --data-binary @- \
+            "$API/api/libraries/$lib/uploads/$hash?offset=$offset" > /dev/null ||
+          { echo "  chunk at $offset refused for $path"; return 1; }
+        offset=$((offset + 4 * 1048576))
+      done
+      ;;
+    *)
+      echo "  the probe named neither have, needRows nor needBytes for $path: $plan"
+      return 1
+      ;;
+  esac
+
   commit=$(json POST "$API/api/libraries/$lib/uploads/commit" "$manifest") ||
     { echo "  commit refused for $path"; return 1; }
   settle "$lib" "$(echo "$commit" | field 'value["batchId"]')" 600
 }
-
-# Stage 3's thresholds, asserted rather than printed. `seed` exits non-zero on a miss and the whole list
-# lands in `seed.json`, because stage 6's pass condition is "the seed counts match" and a seed that only
-# echoed them gave nothing to match against.
-seed_fail=0
-seed_check() { # name, 1|0, detail
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$WORK/seed-checks.tsv"
-  if [ "$2" = 1 ]; then
-    echo "  ok    $1 — $3"
-  else
-    echo "  FAIL  $1 — $3"
-    seed_fail=$((seed_fail + 1))
-  fi
-}
-# `1` when the arithmetic holds, `0` when it does not: `[ ... ]` in a `$( )` would abort under -e.
-holds() { if eval "[ $* ]" 2> /dev/null; then echo 1; else echo 0; fi; }
-# One counter out of a settle line like `total=412 pending=0 … ingested=412 …`.
-counter() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | tail -1; }
 
 cmd_seed() {
   wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
@@ -617,8 +627,7 @@ cmd_seed() {
   local ingested failed_total
   ingested=$(counter "$scanned" ingested)
   failed_total=$(counter "$scanned" failedTotal)
-  # 400 corpus + 6 step + 2 misc + 4 alike = 412; 409 is the floor stage 3 set.
-  seed_check "ingested at least 409" "$(holds "${ingested:-0}" -ge 409)" "ingested=${ingested:-none}"
+  echo "  this batch: ingested=${ingested:-none} of $(counter "$scanned" total) queued"
   # Stage 3 said "no failures". That is not what a slice of 400 real downloaded files can promise: one of
   # them has a non-finite coordinate at triangle 49957 and the application says so, precisely and
   # actionably, which is the behaviour we want rather than a regression. So the check is that failures
@@ -646,6 +655,10 @@ def count(nodes): return sum(1 + count(n.get("children") or []) for n in nodes)
 print(count(json.load(sys.stdin)))')
   formats=$(curl -sf "$API/api/libraries/$sweep/facets" | field '", ".join(f["value"] for f in value["formats"])')
   echo "  parts $parts, thumbnails $thumbs (after ${waited} s), folders $folders, formats: $formats"
+  # 400 corpus + 6 step + 2 misc + 4 alike = 412, less the one corrupt file = 411; 409 is stage 3's floor.
+  # Asserted on what the library holds, not on this batch's `ingested`: a second seed against a library
+  # that already has the tree ingests nothing new and would fail a per-batch check while being correct.
+  seed_check "the library holds at least 409 parts" "$(holds "${parts:-0}" -ge 409)" "$parts parts"
   seed_check "a thumbnail for every part" "$(holds "${thumbs:-0}" -eq "${parts:-1}")" "$thumbs of $parts"
   seed_check "at least 8 categories" "$(holds "${folders:-0}" -ge 8)" "$folders"
   local missing=''
@@ -697,13 +710,20 @@ print(count(json.load(sys.stdin)))')
   # A second revision, which is the only way to a history, a diff and a lock: a scan has no subpath so
   # it cannot target one part, and a hobby library answers `Unkept` to new bytes at a path it holds.
   # The stamp makes this re-runnable — the same bytes twice would be `Skipped`, not a revision.
-  local stamped=$WORK/revised-vee-block.stl
-  cp "$ROOT/example/parts/vee-block-lp-3072-02.stl" "$stamped"
-  printf 'lapidary e2e rev %s' "$(date +%s)" | dd of="$stamped" bs=1 seek=0 conv=notrunc status=none
-  echo "  re-upload vee-block with new bytes: $(upload_file "$governed" "$stamped" "uploads/vee-block-lp-3072-02.stl")"
   local vee
   vee=$(sql "SELECT id FROM part WHERE library_id = '$governed' AND source_path = 'uploads/vee-block-lp-3072-02.stl'")
   revised=$(curl -sf "$API/api/parts/$vee/revisions" | field 'len(value)')
+  if [ "${revised:-0}" -lt 2 ]; then
+    local stamped=$WORK/revised-vee-block.stl
+    cp "$ROOT/example/parts/vee-block-lp-3072-02.stl" "$stamped"
+    printf 'lapidary e2e rev %s' "$(date +%s)" | dd of="$stamped" bs=1 seek=0 conv=notrunc status=none
+    echo "  re-upload vee-block with new bytes: $(upload_file "$governed" "$stamped" "uploads/vee-block-lp-3072-02.stl")"
+    revised=$(curl -sf "$API/api/parts/$vee/revisions" | field 'len(value)')
+  else
+    # Only when it is needed: re-seeding one stack would otherwise stack up a fourth revision and a
+    # fifth, and the history this fixture exists for is "two", not "however many times seed has run".
+    echo "  vee-block already has a second revision; not adding another"
+  fi
   echo "  vee-block now has $revised revisions"
   seed_check "a controlled part reached a second revision" "$(holds "${revised:-0}" -ge 2)" "$revised revisions"
 
