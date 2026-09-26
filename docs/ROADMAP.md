@@ -3488,6 +3488,13 @@ its job: every gate log carries `lock … another session is compiling; waiting`
     turn to 0.0354 and the subdivision to 0.0284, both inside the threshold, but takes parts with an in-band neighbour
     under 0.04 from **170 to 368** — roughly twice the review queue — and it is a `SHAPE_VERSION` bump against a
     contract G3 already reads.
+  - **Decided by the owner, 2026-09-26: accept it for now and revisit once the rig has run.** Identical files, mirror
+    halves and genuinely similar parts are all served well; a re-exported or re-tessellated copy of a dense mesh is not
+    caught, and that is written down rather than hidden. The other two options and their costs stay in
+    [`G2.md`](goals/G2.md)'s Record — dropping the area term (34 floats, twice the queue, a version bump) and profiling a
+    finer rung (which would stop profiling being free at ingest). T1's run is to report how often the miss actually
+    bites on real corpus parts, as an observation beside the exit rather than as a pass or a failure, so the revisit has
+    a number behind it. `phase-6.md`'s claim that L0 smooths a re-tessellation is corrected in place.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
