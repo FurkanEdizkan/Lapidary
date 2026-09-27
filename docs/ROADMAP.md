@@ -3765,6 +3765,36 @@ on the board.
     `max_connections(8)` with two held for good by its own listeners — recorded for L4 rather than fixed here; a pull
     stalled by another's claim waits a whole 15 s hello round; `peer_share.asks_first` is never cleared where a folder
     survives only as a relay.
+- **L3, mass and materials' leftovers** (merged `3866a62`, gate 14 green in 358.84 s on the merged tree). Goal 5's five
+  remaining items, migration `0051`.
+  - **A part's own mass on its page**, always approximate — and the interesting part is *why*: the server marks it
+    `Approximate::tessellated` **even when the volume is analytic**, because a typed density is not a measurement, so
+    their product cannot be exact. Checked in the merged code rather than taken on report. Five distinct reasons when it
+    is absent, ordered so an open mesh is not told to set a density and a part that holds none is not told to give it one.
+  - **"Holds no material" is now sayable, and needed no schema change.** `PUT /api/parts/{id}/materials` with an empty
+    list used to hand the part back to its file; it now means *this part holds none*, kept as firmly as any other answer,
+    and `DELETE` is the reset. Typed-and-empty was already expressible and `set_metadata` already respected it — only
+    the API conflated the two. Goal 5's record said otherwise in two places and now says what changed.
+  - **A material takes 200 characters where a tag still takes 64** (`0051` raises `material_density`'s check, and
+    `MATERIAL_MAX` splits out of `tags.rs`). "Stainless steel, AISI 316L, annealed, cold drawn bar to ASTM A276/A276M"
+    is 71 characters, so it could never have had a density, so that part could never have had a mass. Saved rather than
+    refused, decided by the lane.
+  - **The goal's own premise was half wrong, and the lane said so.** It was told to re-derive centre of mass for
+    revisions from before bridge 8; those are **already** swept, because the bridge version is inside the kernel version
+    the existing sweep keys on. The population nothing sweeps is **meshes** — `MeshKernel::version` names the format and
+    the rasteriser and nothing about how it measures. So the re-derive is scoped to mesh formats, and the reasoning is
+    the part worth keeping: a CAD revision in that queue would fail `Permanent` on a kernel-less worker **at every
+    worker start**, which is the board's "re-attempted by every scan" bug reappearing somewhere new.
+  - **Another stated test that passed on broken code**, the twelfth goal running to find one:
+    `a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_starts` had *two* vacuous legs, because
+    `enqueue_if_absent` declines while the job the test had already dequeued is still `running`, so neither "nothing is
+    queued" leg ever reached the predicate. Breaking `volume > 0` into `volume IS NOT NULL` left it green.
+  - **Eighteen mutations, eighteen caught** — and three further bugs were found in *review* rather than by mutation (a
+    CAD re-queue loop, the order of the mass reasons, and a comparison promising a re-read for revisions nothing would
+    re-read), with mutations written afterwards so each fails without its fix.
+  - **Left for later:** a bridge-8 STEP revision whose warn-only centre write failed is now reachable by neither sweep
+    (rare and log-visible); mass only for a part of exactly one material; `part.materials` unbounded while a density key
+    stops at 200.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.

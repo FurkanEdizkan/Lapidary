@@ -229,9 +229,12 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
     - face and edge counts since goal 4 (`718d8ad`), exact, for a CAD part read by bridge 7 or later;
     - mass since goal 5: each revision's volume times the density of the part's one material as
       it is today, worked out when read and always ≈: its change beside volume's in the history,
-      and a Mass row in the comparison, with no mass of its own on the page yet;
+      and a Mass row in the comparison; **its own row on the part page since L3 (2026-09-27)**, always ≈ because a
+      typed density is not a measurement whatever the volume was, with a reason given when there is none;
     - centre of mass since goal 5, per axis: exact from a B-rep (bridge 8), ≈ from a closed mesh,
-      stored at ingest; a revision recorded before then has none and its rows say so.
+      stored at ingest; a revision recorded before then has none and its rows say so. **L3 (2026-09-27) re-derives the
+    missing ones for mesh formats at worker start** — the CAD ones were already swept, since the bridge version is part
+    of the kernel version that sweep keys on.
   - Locks: one per part, free-text holder, no auth; a forced release is recorded.
   - Overlay diff (Phase 4 slice 2): the From revision is drawn as an amber ghost through the part,
     its L1 or else its L0, and never picked.
