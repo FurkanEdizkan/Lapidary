@@ -1878,8 +1878,8 @@ export const strings = {
     shareTitle: (name: string) => `Share ${name}`,
     shareBody: (parts: number) =>
       parts === 1
-        ? '1 part in this category and everything under it will be offered to everyone you are paired with, and so will parts you file here later.'
-        : `${parts} parts in this category and everything under it will be offered to everyone you are paired with, and so will parts you file here later.`,
+        ? '1 part in this category and everything under it will be offered, and so will parts you file here later.'
+        : `${parts} parts in this category and everything under it will be offered, and so will parts you file here later.`,
     shareUnrecorded: (count: number) =>
       count === 1 ? '1 part has no licence recorded.' : `${count} parts have no licence recorded.`,
     shareNonCommercial: (count: number) =>
@@ -1895,7 +1895,7 @@ export const strings = {
     ownShares: 'What this installation shares',
     ownSharesNone: 'Nothing yet. Share a category from the tree beside a library, and it appears here.',
     ownShareParts: (count: number) => (count === 1 ? '1 part offered' : `${count} parts offered`),
-    stopNote: 'Stopping takes a category away from everyone you are paired with at once. Nothing in it is deleted.',
+    stopNote: 'Stopping takes a category away from everyone it goes to, at once. Nothing in it is deleted.',
     stopSharing: 'Stop sharing',
     stopSharingLabel: (name: string) => `Stop sharing ${name}`,
     stopping: 'Stopping…',
@@ -1903,12 +1903,12 @@ export const strings = {
     theirShares: 'What they share',
     theirSharesNone: 'Nothing shared with you yet.',
     theirShareParts: (name: string, count: number) =>
-      count === 1 ? `${name}, 1 part` : `${name}, ${count} parts offered`,
+      count === 1 ? `${name}, 1 part offered` : `${name}, ${count} parts offered`,
     /** A shared library: somebody else's category, read from the mirror, so it browses while they are away. */
     libraryTitle: (name: string) => `${name} — Shared libraries — Lapidary`,
     backToSharing: 'Back to shared libraries',
     librarySharedBy: (sharer: string, count: number) =>
-      count === 1 ? `Shared by ${sharer}, 1 part` : `Shared by ${sharer}, ${count} parts offered`,
+      count === 1 ? `Shared by ${sharer}, 1 part offered` : `Shared by ${sharer}, ${count} parts offered`,
     unnamedSharer: 'somebody who has not given a name',
     librarySynced: (at: string) =>
       `Last read ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
@@ -1950,8 +1950,8 @@ export const strings = {
       ahead === 1
         ? 'Waiting for one pull ahead of this one to finish…'
         : `Waiting for ${ahead.toLocaleString('en-US')} pulls ahead of this one to finish…`,
-    partDownload: 'Download',
-    partDownloadLabel: (name: string) => `Download ${name}`,
+    partDownload: 'Pull',
+    partDownloadLabel: (name: string) => `Pull ${name} into your library`,
     partHeld: 'In your library',
     pullFetching: (done: number, total: number, bytesDone: number, bytesTotal: number) =>
       `Fetching ${done} of ${total} files — ${bytes(bytesDone)} of ${bytes(bytesTotal)}`,
@@ -1974,6 +1974,8 @@ export const strings = {
     pullControlFailed: 'Could not change the pull. Reload and try again.',
     /** Who a folder goes to. A folder shared before member lists existed reaches everyone paired until this is used. */
     membersLabel: 'Who this goes to',
+    /** The same dialog opened from a row, where the page lists several folders and the title must say which. */
+    membersTitle: (folder: string) => `Who ${folder} goes to`,
     membersEveryone: 'Everyone you are paired with',
     membersNobodyPaired: 'Nobody is paired with this installation yet. Pair with somebody first, on this page.',
     membersNone: 'Nobody — this folder reaches no one until you pick somebody.',
@@ -1999,8 +2001,16 @@ export const strings = {
     membersSaving: 'Saving…',
     membersFailed: 'Could not say who that folder goes to. Check that the api service is running, then try again.',
     askFirstLabel: 'Ask me before anyone pulls its files',
-    askFirstNote: 'Everyone you are paired with still sees what it holds. Files go only to the people you let pull it.',
-    asksFirst: 'Asks first',
+    askFirstNote:
+      'Everyone it goes to still sees what it holds. Its files go only to the people you let pull them.',
+    /** The same switch on the sharing page, where several folders have one each and each must say which. */
+    askFirstRowLabel: (folder: string) => `Ask me before anyone pulls files from ${folder}`,
+    /** Switched off, the asks about that folder go: everybody it reaches may pull it, so there is nothing to decide. */
+    askFirstOffNote:
+      'Anyone you share it with can pull its files without asking. Switching this on again brings back who asked, and what you answered.',
+    askFirstFailed:
+      'Could not change how that folder is shared. Check that the api service is running, then try again.',
+    askFirstSaving: 'Saving…',
     requests: 'Asking to pull',
     requestsNote: 'People asking to pull a share that asks first. You can change an answer later.',
     requestsNone: 'Nobody has asked to pull from a share that asks first.',

@@ -141,7 +141,11 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
                 library.data.partCount,
               )}
             </p>
-            <p className="mt-1 text-xs text-[var(--color-muted)]">
+            <p
+              className={`mt-1 text-[var(--color-muted)] ${
+                library.data.readFrom === null ? 'text-xs' : 'text-sm'
+              }`}
+            >
               {library.data.syncedAt === null
                 ? strings.sharing.libraryNotReadYet
                 : library.data.readFrom !== null && library.data.asOf !== null
@@ -315,7 +319,7 @@ function PullProgress({ pull }: { pull: Pull }) {
         : null
   return (
     <div>
-      <p role="status" className="tabular text-sm">
+      <p role="status" className="text-sm tabular-nums">
         {text}
       </p>
       {fraction === null ? null : (

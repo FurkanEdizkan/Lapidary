@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { ShareDialog } from './ShareDialog'
 import { strings } from '../lib/strings'
-import type { FolderNode, LicenceWarning, Peer } from '../lib/types'
+import type { FolderNode, LicenceWarning, Peer, SharedCategory } from '../lib/types'
 
 /**
  * Sharing a category offers everything under it to the people ticked here, so the dialog's one job is to say
@@ -54,6 +54,8 @@ function stub(
   warning: LicenceWarning,
   shared: { status: number; body: unknown } = { status: 200, body: {} },
   paired: Peer[] = [],
+  /** What the library already shares, which is where the dialog learns whether this folder asks first. */
+  already: SharedCategory[] = [],
 ) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -66,6 +68,7 @@ function stub(
         return { ok: shared.status < 300, status: shared.status, json: async () => shared.body }
       }
       if (url.endsWith('/sharing/peers')) return { ok: true, status: 200, json: async () => paired }
+      if (url.endsWith('/shares')) return { ok: true, status: 200, json: async () => already }
       return { ok: true, status: 200, json: async () => [] }
     }),
   )
@@ -198,4 +201,48 @@ test('a folder already shared keeps who it goes to, and says where that is chang
     asksFirst: true,
   })
   expect(calls.some((call) => call.url.endsWith('/sharing/peers'))).toBe(false)
+})
+
+const TERRAIN_SHARED: SharedCategory = {
+  id: '01a06b30-4c11-7a92-8f03-6d1e5c9a00aa',
+  folderId: TERRAIN.id,
+  name: 'Terrain',
+  createdAt: '2026-09-17T10:00:00Z',
+  asksFirst: true,
+}
+
+/**
+ * Sending `asksFirst: false` is what makes switching a share back to open possible at all, and it is also a
+ * way to undo somebody's decision by accident: a box that starts unticked on a folder that asks first would
+ * turn it open on a re-share nobody meant as a change. So the box starts where the folder stands.
+ */
+test('the box starts ticked for a folder that already asks first, and re-sharing keeps it', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [], [TERRAIN_SHARED])
+  const onClose = renderDialog(true)
+
+  const box = await screen.findByLabelText(strings.sharing.askFirstLabel)
+  await waitFor(() => expect((box as HTMLInputElement).checked).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+    folderId: TERRAIN.id,
+    asksFirst: true,
+  })
+})
+
+test('unticking it on a folder that asks first switches that folder back to open', async () => {
+  const calls = stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [], [TERRAIN_SHARED])
+  const onClose = renderDialog(true)
+
+  const box = await screen.findByLabelText(strings.sharing.askFirstLabel)
+  await waitFor(() => expect((box as HTMLInputElement).checked).toBe(true))
+  fireEvent.click(box)
+  fireEvent.click(screen.getByRole('button', { name: strings.sharing.shareConfirm }))
+
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+  expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+    folderId: TERRAIN.id,
+    asksFirst: false,
+  })
 })
