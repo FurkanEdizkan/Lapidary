@@ -73,6 +73,13 @@ export function DashboardPage({ library }: { library: LibraryId }) {
    * `staleTime: Infinity` and no refetch on focus, because the event stream is what keeps this
    * current. Without them, every return to the tab would cost a second resolve of everything —
    * polling by another name, on a schedule set by how often somebody looks at the window.
+   *
+   * `refetchOnMount: 'always'` is the one exception, and it is not a timer: the `QueryClient` is
+   * shared across the whole application and holds this key for five minutes after the page is
+   * left. Coming back inside that window would otherwise show the *previous* visit's answer with
+   * no request at all — and a widget added during that visit would sit on "Loading" for ever,
+   * because its result only ever lived in `later`, which is component state. So each arrival asks
+   * once, for the layout as it is now, and the values already cached stay on screen meanwhile.
    */
   const asked = useQuery({
     queryKey: ['dashboard', 'resolve'],
@@ -81,6 +88,7 @@ export function DashboardPage({ library }: { library: LibraryId }) {
     enabled: layout.widgets.length > 0,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
     retry: false,
   })
 
@@ -125,6 +133,13 @@ export function DashboardPage({ library }: { library: LibraryId }) {
     const settled = settleAll(next)
     writeLayout(settled)
     setLayout(settled)
+    /*
+      Nothing to ask for when the board was empty. The query was disabled with no widgets and is
+      about to become enabled, which resolves the whole layout by itself — so asking here as well
+      would make the very first widget somebody adds cost two requests, which is the one number
+      this page is about.
+    */
+    if (layout.widgets.length === 0) return
     askFor(
       settled.widgets
         .filter((widget) => {

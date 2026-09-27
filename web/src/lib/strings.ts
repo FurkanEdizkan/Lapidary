@@ -235,7 +235,14 @@ export const strings = {
     instanceStorageLabel: 'All storage',
     recentLabel: 'Recently added',
     savedFilterLabel: 'Saved filter',
+    /**
+     * The kind, in the Add menu. Its *heading* names the facet instead — three of these on one
+     * board all read the same otherwise, which is what the 1440 pass found.
+     */
     facetLabel: 'Value counts',
+    facetFormatLabel: 'Formats',
+    facetMaterialLabel: 'Materials',
+    facetTagLabel: 'Tags',
     queueLabel: 'Jobs',
     duplicatesLabel: 'Possible duplicates',
     /**

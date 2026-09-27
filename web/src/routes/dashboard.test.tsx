@@ -195,14 +195,14 @@ function seed(
   window.localStorage.setItem(DASHBOARD_KEY, JSON.stringify(layout))
 }
 
-function renderPage() {
+function renderPage(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const rootRoute = createRootRoute({ component: () => <DashboardPage library={LIBRARY} /> })
   const router = createRouter({
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <RouterProvider router={router as never} />
     </QueryClientProvider>,
   )
@@ -279,6 +279,11 @@ test('twelve widgets settle in exactly one request', async () => {
   // Two libraries, two storage panels, told apart by the name stored beside each widget.
   screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, NAME) })
   screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, OTHER_NAME) })
+  // And the three facet widgets name their facet, not their kind: all three are one library's, so
+  // the kind's label would put "Value counts — Fixtures" on the board three times.
+  screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.facetFormatLabel, NAME) })
+  screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.facetMaterialLabel, NAME) })
+  screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.facetTagLabel, NAME) })
 })
 
 test('every list on the page carries a role', async () => {
@@ -374,6 +379,35 @@ test('the arrow keys move a widget, say where it went, and cost no request', asy
 
   // Four moves and a resize, and the page has still made one request in its life.
   expect(resolves(calls)).toHaveLength(1)
+})
+
+/**
+ * Focus survives a move down, which is the one direction that can lose it.
+ *
+ * Moving down reorders the group, and React reconciles a reorder by relocating this widget's DOM
+ * node — which takes focus off whatever was inside it. Moving *up* relocates the other node
+ * instead, so the loss is one-directional and would have been the kind of bug nobody reproduces.
+ * A keyboard user who pressed Down twice would be moving nothing the second time.
+ */
+test('the grip keeps focus after moving down, which is where it would be lost', async () => {
+  const two = [
+    widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 12, h: 2 }),
+    widget('w2', { kind: 'duplicates', library: LIBRARY }, { x: 0, y: 2, w: 12, h: 2 }),
+  ]
+  seed(two)
+  stub(two)
+  renderPage()
+  const title = strings.dashboard.inLibrary(strings.dashboard.queueLabel, NAME)
+  await screen.findByText(strings.dashboard.queueLine(3, 1, 0))
+  const handle = screen.getByRole('button', { name: strings.dashboard.moveLabel(title) })
+  handle.focus()
+  expect(document.activeElement).toBe(handle)
+
+  fireEvent.keyDown(handle, { key: 'ArrowDown' })
+  await waitFor(() => expect(stored().widgets.find((entry) => entry.key === 'w1')?.y).toBe(2))
+  expect((document.activeElement as HTMLElement | null)?.getAttribute('aria-label')).toBe(
+    strings.dashboard.moveLabel(title),
+  )
 })
 
 test('a widget can be taken off the page, and nothing else asks again', async () => {
@@ -545,12 +579,137 @@ test('coming back to the tab does not re-resolve the dashboard', async () => {
   const calls = stub(TWELVE)
   renderPage()
   await screen.findByText(strings.dashboard.duplicatesLine(2))
-  fireEvent.focus(window)
-  document.dispatchEvent(new Event('visibilitychange'))
+  // On `window`, which is where TanStack Query's focus manager listens. An `Event` dispatched on
+  // `document` does not reach it, and the mutation that turns the two options back on survived
+  // this test until it was sent to the right target.
+  window.dispatchEvent(new Event('visibilitychange'))
+  window.dispatchEvent(new Event('focus'))
   await new Promise((settle) => {
     setTimeout(settle, 60)
   })
   expect(resolves(calls)).toHaveLength(1)
+})
+
+/**
+ * Leaving the dashboard and coming back asks once more, for the layout as it is now.
+ *
+ * The `QueryClient` is the application's, not the page's, and it holds this key for five minutes
+ * after the page unmounts. Without `refetchOnMount: 'always'` the second visit would show the
+ * first visit's answer with no request at all — and the widget added during the first visit would
+ * sit on "Loading" for ever, because its result only ever lived in component state. Anything the
+ * event stream said in between would be missed too.
+ */
+test('coming back to the page asks again, and nothing is left on Loading', async () => {
+  seed([{ ...(TWELVE[9] as StoredWidget), x: 0, w: 12 }])
+  const calls = stub(TWELVE)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const first = renderPage(client)
+  await screen.findByText(strings.dashboard.queueLine(3, 1, 0))
+
+  // Add one, the way somebody would, so the second visit has a widget the first answer never held.
+  fireEvent.click(screen.getByRole('button', { name: strings.dashboard.add }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.dashboard.addConfirm }))
+  await waitFor(() => expect(resolves(calls)).toHaveLength(2))
+  first.unmount()
+
+  renderPage(client)
+  await waitFor(() => expect(resolves(calls)).toHaveLength(3))
+  expect(resolves(calls)[2]?.body?.widgets).toHaveLength(2)
+  await waitFor(() => expect(screen.queryByText(strings.dashboard.loading)).toBeNull())
+})
+
+/**
+ * The very first widget on an empty dashboard is one request, not two. The query is disabled while
+ * there are no widgets and becomes enabled by the same change that adds one, so asking for the new
+ * key as well would resolve it twice.
+ */
+test('the first widget on an empty dashboard costs one resolve', async () => {
+  const calls = stub(TWELVE)
+  renderPage()
+  await screen.findByText(strings.dashboard.empty)
+  fireEvent.click(screen.getByRole('button', { name: strings.dashboard.add }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.dashboard.addConfirm }))
+  await waitFor(() => expect(resolves(calls)).toHaveLength(1))
+  expect(resolves(calls)[0]?.body?.widgets).toHaveLength(1)
+  // And no second one arrives a tick later.
+  await new Promise((settle) => {
+    setTimeout(settle, 80)
+  })
+  expect(resolves(calls)).toHaveLength(1)
+})
+
+/**
+ * The drag, which is the half of a hand-rolled grid no unit test reaches: the pointer's offset
+ * inside the group's grid, turned into a column and a row by `layout.ts`.
+ *
+ * jsdom measures every element as zero, so the grid is given a rectangle the way `flip.test.ts`
+ * gives one to an element. Without it the arithmetic is a division by zero, which `columnAt`
+ * answers as column 0 — a silent answer that would make this test pass on a broken drag.
+ */
+test('dragging the grip puts the widget in the cell under the pointer', async () => {
+  const two = [
+    widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 4, h: 2 }),
+    widget('w2', { kind: 'duplicates', library: LIBRARY }, { x: 4, y: 0, w: 4, h: 2 }),
+  ]
+  seed(two)
+  const calls = stub(two)
+  renderPage()
+  const title = strings.dashboard.inLibrary(strings.dashboard.queueLabel, NAME)
+  await screen.findByText(strings.dashboard.queueLine(3, 1, 0))
+  const grid = document.querySelector('section div.grid') as HTMLElement
+  Object.defineProperty(grid, 'getBoundingClientRect', {
+    value: () => ({ left: 0, top: 0, width: 1200, height: 400 }) as DOMRect,
+  })
+
+  const handle = screen.getByRole('button', { name: strings.dashboard.moveLabel(title) })
+  const w1 = () => stored().widgets.find((entry) => entry.key === 'w1')
+  fireEvent.pointerDown(handle, { button: 0, pointerId: 1 })
+  // 850px across a 1200px board is column 8; 90px down, at an 80px pitch, is row 1. Dropped in
+  // columns 8–12 it shares none with the other widget, so compaction pulls it back to the top row
+  // — the row is a position among the others, never a value the drag gets to keep.
+  fireEvent.pointerMove(handle, { pointerId: 1, clientX: 850, clientY: 90 })
+  await waitFor(() => expect(w1()?.x).toBe(8))
+  expect(w1()?.y).toBe(0)
+
+  // Now into columns 5–9, which do overlap the other widget, at the same row: it lands under it.
+  fireEvent.pointerMove(handle, { pointerId: 1, clientX: 520, clientY: 90 })
+  await waitFor(() => expect(w1()?.x).toBe(5))
+  expect(w1()?.y).toBe(2)
+  expect(stored().widgets.find((entry) => entry.key === 'w2')?.y).toBe(0)
+
+  fireEvent.pointerUp(handle, { pointerId: 1 })
+  expect(resolves(calls)).toHaveLength(1)
+})
+
+/**
+ * The corner, and that it obeys the same limits Shift+arrow does — one definition of how large a
+ * widget may be, in the pure module, reached by both.
+ */
+test('dragging the corner resizes the widget, inside its kind limits', async () => {
+  const one = [widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 4, h: 2 })]
+  seed(one)
+  stub(one)
+  renderPage()
+  const title = strings.dashboard.inLibrary(strings.dashboard.queueLabel, NAME)
+  await screen.findByText(strings.dashboard.queueLine(3, 1, 0))
+  const grid = document.querySelector('section div.grid') as HTMLElement
+  Object.defineProperty(grid, 'getBoundingClientRect', {
+    value: () => ({ left: 0, top: 0, width: 1200, height: 400 }) as DOMRect,
+  })
+
+  const corner = screen.getByRole('button', { name: strings.dashboard.resizeLabel(title) })
+  fireEvent.pointerDown(corner, { button: 0, pointerId: 1 })
+  // Column 5 is the far corner, so six columns wide — and `queue` is capped at six.
+  fireEvent.pointerMove(corner, { pointerId: 1, clientX: 550, clientY: 170 })
+  await waitFor(() => expect(stored().widgets[0]?.w).toBe(6))
+  expect(announced()).toBe(strings.dashboard.resized(title, 6, 3))
+
+  // Past the cap, and it stops there rather than growing.
+  fireEvent.pointerMove(corner, { pointerId: 1, clientX: 1150, clientY: 170 })
+  await waitFor(() => expect(stored().widgets[0]?.w).toBe(6))
+  fireEvent.pointerUp(corner, { pointerId: 1 })
 })
 
 /** The route the resolve was refused by is the one the page reports; a widget never reads its own. */

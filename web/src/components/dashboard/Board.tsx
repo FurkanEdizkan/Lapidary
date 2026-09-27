@@ -53,6 +53,16 @@ const PANEL =
 const HANDLE =
   'ease-mechanical flex size-6 flex-none touch-none cursor-grab items-center justify-center rounded-[3px] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] active:cursor-grabbing'
 
+/**
+ * The corner, drawn as two borders rather than a glyph.
+ *
+ * A real button in the tab order, and its arrow keys resize without Shift — the grip's
+ * Shift+arrow is the same action from the header, and a corner nobody can reach by keyboard is
+ * the half of a hand-rolled resize that WCAG is about.
+ */
+const CORNER =
+  'absolute right-0 bottom-0 size-4 cursor-se-resize touch-none rounded-br-md border-r-2 border-b-2 border-[var(--color-edge)] opacity-60 hover:opacity-100'
+
 const ITEM =
   'ease-mechanical w-full rounded-[3px] px-2 py-1.5 text-left text-xs text-[var(--color-text)] duration-[var(--duration-fast)] hover:bg-[var(--color-raised)]'
 
@@ -109,8 +119,20 @@ export function Board({
   const nodes = useRef(new Map<string, HTMLElement>())
   const rects = useRef(new Map<string, DOMRect>())
   const grids = useRef(new Map<string, HTMLElement>())
+  const handles = useRef(new Map<string, HTMLElement>())
   /** The cell a drag last applied, so a pointer moving inside one cell costs nothing. */
   const dragging = useRef<{ key: string; x: number; row: number } | null>(null)
+  const resizing = useRef<{ key: string; w: number; h: number } | null>(null)
+  /**
+   * The widget a key just moved, so its handle can be given focus back.
+   *
+   * A move down reorders the array, and React reconciles that by relocating the widget's DOM
+   * node — which blurs whatever had focus inside it. A move *up* relocates the other node, so
+   * focus survives, and the bug would have been intermittent in exactly the way nobody
+   * reproduces. `keyDown` in a test fires on an element reference and passes either way, so this
+   * is held by the browser pass and by refocusing rather than by hoping.
+   */
+  const refocus = useRef<string | null>(null)
 
   useLayoutEffect(() => {
     for (const [key, node] of nodes.current) {
@@ -124,6 +146,11 @@ export function Board({
     }
     for (const key of [...rects.current.keys()]) {
       if (!nodes.current.has(key)) rects.current.delete(key)
+    }
+    const wanted = refocus.current
+    if (wanted !== null) {
+      refocus.current = null
+      handles.current.get(wanted)?.focus()
     }
   })
 
@@ -141,47 +168,96 @@ export function Board({
     )
   }
 
-  const onKeyDown = (event: React.KeyboardEvent, stored: StoredWidget) => {
+  const onKeyDown = (event: React.KeyboardEvent, stored: StoredWidget, corner = false) => {
     const dx = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0
     const dy = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
     if (dx === 0 && dy === 0) return
     event.preventDefault()
     const tiles = tilesOf(layout, stored.group)
-    if (event.shiftKey) {
+    if (event.shiftKey || corner) {
       // Shift+arrow resizes: right and down grow, left and up shrink, inside the kind's limits.
       apply(stored.group, resizeBy(tiles, stored.key, dx, dy, limitsOf(stored.widget)), stored.key, 'resized')
       return
     }
     const moved = dx !== 0 ? moveHorizontal(tiles, stored.key, dx) : moveVertical(tiles, stored.key, dy)
+    // Asked for before the layout changes, because reordering relocates this widget's node.
+    refocus.current = corner ? null : stored.key
     apply(stored.group, moved, stored.key, 'moved')
   }
 
-  const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, stored: StoredWidget) => {
-    // Primary button only, and never a second drag while one is running.
-    if (event.button !== 0) return
+  /**
+   * Take the pointer, so the drag keeps going when it leaves the handle.
+   *
+   * jsdom implements no pointer capture, and neither does a browser driving this with a keyboard.
+   * Guarded for the reason `flipFrom` guards `animate`: a drag that throws on pointerdown is
+   * worse than one that follows the pointer without capture.
+   */
+  const capture = (event: ReactPointerEvent<HTMLElement>) => {
     const handle = event.currentTarget
-    // jsdom has no pointer capture, and neither does a browser without a pointer. Guarded for
-    // the reason `flipFrom` guards `animate`: a drag that throws on mousedown is worse than one
-    // that simply follows the pointer without capture.
     if (typeof handle.setPointerCapture === 'function') handle.setPointerCapture(event.pointerId)
+  }
+
+  /** Where in the group's grid a pointer is, in cells. */
+  const cellUnder = (event: ReactPointerEvent<HTMLElement>, group: string) => {
+    const grid = grids.current.get(group)
+    if (grid === undefined) return null
+    const box = grid.getBoundingClientRect()
+    return {
+      x: columnAt(event.clientX - box.left, box.width),
+      row: rowAt(event.clientY - box.top, ROW_PITCH),
+    }
+  }
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => {
+    // Primary button only.
+    if (event.button !== 0) return
+    capture(event)
     dragging.current = { key: stored.key, x: stored.x, row: stored.y }
   }
 
-  const onPointerMove = (event: ReactPointerEvent<HTMLButtonElement>, stored: StoredWidget) => {
+  const onPointerMove = (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => {
     const drag = dragging.current
     if (drag === null || drag.key !== stored.key) return
-    const grid = grids.current.get(stored.group)
-    if (grid === undefined) return
-    const box = grid.getBoundingClientRect()
-    const x = columnAt(event.clientX - box.left, box.width)
-    const row = rowAt(event.clientY - box.top, ROW_PITCH)
-    if (x === drag.x && row === drag.row) return
-    dragging.current = { key: stored.key, x, row }
-    apply(stored.group, placeAt(tilesOf(layout, stored.group), stored.key, x, row), stored.key, 'moved')
+    const cell = cellUnder(event, stored.group)
+    if (cell === null || (cell.x === drag.x && cell.row === drag.row)) return
+    dragging.current = { key: stored.key, x: cell.x, row: cell.row }
+    apply(stored.group, placeAt(tilesOf(layout, stored.group), stored.key, cell.x, cell.row), stored.key, 'moved')
   }
 
-  const endDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const onResizeDown = (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => {
+    if (event.button !== 0) return
+    capture(event)
+    resizing.current = { key: stored.key, w: stored.w, h: stored.h }
+  }
+
+  /**
+   * Drag the corner: the cell under the pointer becomes the widget's far corner.
+   *
+   * Expressed as a delta and handed to `resizeBy`, so the kind's limits and the right edge hold
+   * for a pointer exactly as they do for Shift+arrow — one definition of how large a widget may
+   * be, in the pure module.
+   */
+  const onResizeMove = (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => {
+    const drag = resizing.current
+    if (drag === null || drag.key !== stored.key) return
+    const cell = cellUnder(event, stored.group)
+    if (cell === null) return
+    const w = Math.max(1, cell.x - stored.x + 1)
+    const h = Math.max(1, cell.row - stored.y + 1)
+    if (w === drag.w && h === drag.h) return
+    resizing.current = { key: stored.key, w, h }
+    const tiles = tilesOf(layout, stored.group)
+    apply(
+      stored.group,
+      resizeBy(tiles, stored.key, w - stored.w, h - stored.h, limitsOf(stored.widget)),
+      stored.key,
+      'resized',
+    )
+  }
+
+  const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
     dragging.current = null
+    resizing.current = null
     const handle = event.currentTarget
     if (typeof handle.releasePointerCapture === 'function' && handle.hasPointerCapture?.(event.pointerId)) {
       handle.releasePointerCapture(event.pointerId)
@@ -193,6 +269,9 @@ export function Board({
       widget.key === stored.key ? { ...widget, group, x: 0, y: Number.MAX_SAFE_INTEGER } : widget,
     )
     const next = settleAll({ ...layout, widgets: moved })
+    // The panel is unmounted from one section and mounted in another, so focus has to be asked
+    // for again by name — there is no node left to keep it.
+    refocus.current = stored.key
     onLayout(next)
     const tile = next.widgets.find((widget) => widget.key === stored.key)
     const name = layout.groups.find((entry) => entry.id === group)?.name ?? ''
@@ -312,6 +391,8 @@ export function Board({
                   onKeyDown={onKeyDown}
                   onPointerDown={onPointerDown}
                   onPointerMove={onPointerMove}
+                  onResizeDown={onResizeDown}
+                  onResizeMove={onResizeMove}
                   onPointerUp={endDrag}
                   onSettings={setSettingsFor}
                   onChangeGroup={changeGroup}
@@ -319,6 +400,10 @@ export function Board({
                   register={(node) => {
                     if (node === null) nodes.current.delete(stored.key)
                     else nodes.current.set(stored.key, node)
+                  }}
+                  registerHandle={(node) => {
+                    if (node === null) handles.current.delete(stored.key)
+                    else handles.current.set(stored.key, node)
                   }}
                 />
               ))}
@@ -410,24 +495,30 @@ function Panel({
   onKeyDown,
   onPointerDown,
   onPointerMove,
+  onResizeDown,
+  onResizeMove,
   onPointerUp,
   onSettings,
   onChangeGroup,
   onRemove,
   register,
+  registerHandle,
 }: {
   stored: StoredWidget
   groups: readonly { id: string; name: string }[]
   result: WidgetResult | undefined
   onRetry: (key: string) => void
-  onKeyDown: (event: React.KeyboardEvent, stored: StoredWidget) => void
-  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>, stored: StoredWidget) => void
-  onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>, stored: StoredWidget) => void
-  onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onKeyDown: (event: React.KeyboardEvent, stored: StoredWidget, corner?: boolean) => void
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => void
+  onPointerMove: (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => void
+  onResizeDown: (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => void
+  onResizeMove: (event: ReactPointerEvent<HTMLElement>, stored: StoredWidget) => void
+  onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void
   onSettings: (key: string) => void
   onChangeGroup: (stored: StoredWidget, group: string) => void
   onRemove: (key: string) => void
   register: (node: HTMLElement | null) => void
+  registerHandle: (node: HTMLElement | null) => void
 }) {
   const title = widgetTitle(stored, result)
   const spec = registry[stored.widget.kind]
@@ -445,6 +536,7 @@ function Panel({
     >
       <header className="flex flex-none items-center gap-1.5 border-b border-[var(--color-border)] px-2 py-1.5">
         <button
+          ref={registerHandle}
           type="button"
           aria-label={strings.dashboard.moveLabel(title)}
           title={strings.dashboard.moveHint}
@@ -494,6 +586,16 @@ function Panel({
       <div className="min-h-0 grow overflow-y-auto px-2.5 py-2">
         <Body stored={stored} result={result} onRetry={onRetry} />
       </div>
+      <button
+        type="button"
+        aria-label={strings.dashboard.resizeLabel(title)}
+        className={CORNER}
+        onKeyDown={(event) => onKeyDown(event, stored, true)}
+        onPointerDown={(event) => onResizeDown(event, stored)}
+        onPointerMove={(event) => onResizeMove(event, stored)}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      />
     </article>
   )
 }

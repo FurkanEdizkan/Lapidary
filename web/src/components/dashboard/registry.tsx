@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { strings } from '../../lib/strings'
 import type { StoredWidget } from '../../lib/dashboard'
-import type { Widget, WidgetResult, WidgetValue } from '../../lib/types'
+import type { FacetKind, Widget, WidgetResult, WidgetValue } from '../../lib/types'
 import type { Limits, Size } from './layout'
 import {
   DuplicatesBody,
@@ -168,8 +168,22 @@ export function drawValue(widget: Widget, value: WidgetValue): ReactNode {
  * new one.
  */
 export function widgetTitle(stored: StoredWidget, result: WidgetResult | undefined): string {
-  const spec = registry[stored.widget.kind]
+  return heading(stored, result)
+}
+
+/** The three facets, named. A board can hold all three, and "Value counts" three times is not a name. */
+const FACET_LABELS: Record<FacetKind, string> = {
+  format: strings.dashboard.facetFormatLabel,
+  material: strings.dashboard.facetMaterialLabel,
+  tag: strings.dashboard.facetTagLabel,
+}
+
+function heading(stored: StoredWidget, result: WidgetResult | undefined): string {
   const named =
-    result?.status === 'ok' && result.value.kind === 'savedFilter' ? result.value.value.name : spec.label
+    result?.status === 'ok' && result.value.kind === 'savedFilter'
+      ? result.value.value.name
+      : stored.widget.kind === 'facet'
+        ? FACET_LABELS[stored.widget.facet]
+        : registry[stored.widget.kind].label
   return stored.libraryName === null ? named : strings.dashboard.inLibrary(named, stored.libraryName)
 }
