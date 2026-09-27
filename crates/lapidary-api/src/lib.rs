@@ -392,10 +392,12 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 // The tags a person gives a part, the whole list in one write.
                 .route("/api/parts/{id}/tags", axum::routing::put(tags::set))
-                // What a part is made of, typed over what its file states. See `tags.rs`.
+                // What a part is made of, typed over what its file states. `PUT` with an empty list
+                // says the part holds none, which is a different thing from never having been told:
+                // `DELETE` is what hands the part back to its file. See `tags.rs`.
                 .route(
                     "/api/parts/{id}/materials",
-                    axum::routing::put(tags::set_materials),
+                    axum::routing::put(tags::set_materials).delete(tags::unset_materials),
                 )
                 // One part's value for one of its library's custom fields. See `fields.rs`.
                 .route(

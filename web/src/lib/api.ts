@@ -1156,7 +1156,8 @@ export async function setPartTags(
 
 /**
  * `PUT /api/parts/{id}/materials` — replace a part's materials with `materials`, kept over what its file
- * states. An empty list hands the part back to its file. Refused as tags are.
+ * states. An **empty list says the part holds none**, and is kept just as firmly;
+ * [`unsetPartMaterials`] is what hands the part back to its file. Refused as tags are.
  */
 export async function setPartMaterials(
   part: PartId,
@@ -1171,17 +1172,34 @@ export async function setPartMaterials(
   )
 }
 
+/**
+ * `DELETE /api/parts/{id}/materials` — hand the part back to what its file states, now and at every
+ * later read of it. Takes the same shape of answer as the `PUT`, so one caller handles both.
+ */
+export async function unsetPartMaterials(
+  part: PartId,
+): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  return putList(
+    `/api/parts/${encodeURIComponent(part)}/materials`,
+    undefined,
+    strings.materials.refusedWithoutReason,
+    'materials',
+    'DELETE',
+  )
+}
+
 /** One whole list PUT to a part: saved, or refused in the server's own sentence, else `fallback`. */
 async function putList(
   path: string,
-  body: SetTags | SetMaterials,
+  body: SetTags | SetMaterials | undefined,
   fallback: string,
   what: string,
+  method: 'PUT' | 'DELETE' = 'PUT',
 ): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
   const response = await fetch(path, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (response.ok) return { kind: 'saved' }
   if (response.status === 400 || response.status === 404) {

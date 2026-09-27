@@ -67,6 +67,7 @@ const BRACKET: PartDetail = {
   bboxMm: { value: [60, 40, 60], approximate: false },
   volumeMm3: { value: 35840, approximate: false },
   surfaceAreaMm2: { value: 11392, approximate: false },
+  massG: null,
   kernelVersion: 'occt occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1',
   lock: null,
   sharedBy: null,
@@ -180,6 +181,71 @@ test('materials are edited like tags, and a list nobody typed says it is the fil
   await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['revisions', BRACKET.id] }))
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ['diff', BRACKET.id] })
   vi.unstubAllGlobals()
+})
+
+test('removing a part\u2019s only material says it holds none, and the way back is its own button', async () => {
+  // L3, item 4. The × on the only material used to hand the part straight back to its file, which
+  // named the material again and said nothing about it. Now the empty list is a decision the page
+  // states, and `DELETE` is the undo.
+  const sent: { url: string; method: string; body: unknown }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === 'PUT' || init?.method === 'DELETE') {
+        sent.push({ url, method: init.method, body: JSON.parse(init.body ?? 'null') })
+        return { ok: true, status: 204, json: async () => null }
+      }
+      return { ok: true, status: 200, json: async () => [] }
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...BRACKET, materials: ['AISI 1045 steel'], materialsTyped: false }} recordable />
+    </QueryClientProvider>,
+  )
+  // Nobody has typed a list yet, so there is nothing to hand back.
+  expect(screen.queryByRole('button', { name: strings.materials.reset })).toBeNull()
+  fireEvent.click(
+    screen.getByRole('button', { name: strings.materials.remove('AISI 1045 steel') }),
+  )
+  await waitFor(() =>
+    expect(sent).toEqual([
+      { url: `/api/parts/${BRACKET.id}/materials`, method: 'PUT', body: { materials: [] } },
+    ]),
+  )
+  view.unmount()
+
+  // The part as the server hands it back afterwards: typed, and empty.
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...BRACKET, materials: [], materialsTyped: true }} recordable />
+    </QueryClientProvider>,
+  )
+  expect(screen.getByText(strings.materials.none)).toBeTruthy()
+  expect(screen.queryByText(strings.materials.fromFile)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: strings.materials.reset }))
+  await waitFor(() =>
+    expect(sent.at(-1)).toEqual({
+      url: `/api/parts/${BRACKET.id}/materials`,
+      method: 'DELETE',
+      body: null,
+    }),
+  )
+  vi.unstubAllGlobals()
+})
+
+test('a part that holds no material says so where the list cannot be edited', async () => {
+  // The quick look does not offer the form, and `WordList` used to render nothing at all for an
+  // empty list there. "Holds no material" is exactly the state a reader needs told, because the
+  // blank was somebody's decision rather than a gap.
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <Detail part={{ ...BRACKET, materials: [], materialsTyped: true }} />
+    </QueryClientProvider>,
+  )
+  expect(screen.getByText(strings.materials.none)).toBeTruthy()
+  expect(screen.queryByRole('button', { name: strings.materials.reset })).toBeNull()
 })
 
 const IDENTITY: AssemblyNode['transform'] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
@@ -489,8 +555,17 @@ test('the history appears once a part has a second revision, and says where each
   expect(table.textContent).toContain(strings.detail.mass)
   expect(table.textContent).toContain(strings.detail.massChange(28.134, 10))
   expect(screen.getByText(strings.detail.massNote)).toBeTruthy()
-  // A centre of mass neither revision recorded is said so per axis, not shown as no movement.
+  // A centre of mass neither revision recorded is said so per axis, not shown as no movement — and
+  // because both revisions have a volume, what it says is that a re-read is queued for it (L3, item
+  // 1), not "not measured in both", which would be a claim about a measurement nobody attempted.
+  const centre = (axis: 0 | 1 | 2) =>
+    [...table.querySelectorAll('tr')].find(
+      (tr) => tr.querySelector('th')?.textContent === strings.detail.centreAxis(axis),
+    )
   expect(table.textContent).toContain(strings.detail.centreAxis(2))
+  for (const axis of [0, 1, 2] as const) {
+    expect(centre(axis)?.querySelector('td')?.textContent).toBe(strings.detail.centreQueued)
+  }
   vi.unstubAllGlobals()
 })
 
@@ -546,6 +621,12 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
   await waitFor(() => expect(row(strings.detail.faces)?.textContent).toContain(strings.detail.countChange(4, (4 / 38) * 100)))
   expect(row(strings.detail.faces)?.textContent).not.toContain(strings.detail.approximate)
   expect(row(strings.detail.edges)?.textContent).toContain(strings.detail.countChange(12, (12 / 96) * 100))
+  // Neither of these revisions recorded a volume, so there is no centre to queue a re-read for and
+  // the row falls back to the ordinary words. Without this the "queued" wording would be untested
+  // against the case it must not claim.
+  expect(row(strings.detail.centreAxis(0))?.querySelector('td')?.textContent).toBe(
+    strings.detail.notInBoth,
+  )
 })
 
 test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {

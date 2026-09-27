@@ -2238,22 +2238,40 @@ impl PgParts {
     }
 
     /// The materials a person gave this part, replacing the ones it had and kept over whatever its file
-    /// states from then on. An empty list hands the part back to its file: the materials its file stated
-    /// when last read (`metadata_json.cad.materials`) at once, and each later read's after that. Only a
-    /// live part, for [`PgParts::set_part_number`]'s reason.
+    /// states from then on. Only a live part, for [`PgParts::set_part_number`]'s reason.
+    ///
+    /// **An empty list is a decision, not a reset.** A part whose file names a material is a part
+    /// somebody may know holds none — a machined blank, a file whose header names the stock it was cut
+    /// from — and before L3 there was no way to say so: the empty list handed the part straight back to
+    /// its file, which named the material again. So typed-and-empty is its own state, `materials_typed`
+    /// with `materials = '{}'`, which `set_metadata` already respects like any other typed list.
+    /// [`PgParts::unset_materials`] is the reset.
     pub async fn set_materials(&self, part: PartId, materials: &[String]) -> Result<bool, DbError> {
         let result = sqlx::query(
-            "UPDATE part SET \
-               materials = CASE WHEN cardinality($2::text[]) > 0 THEN $2::text[] \
-                 ELSE ARRAY(SELECT jsonb_array_elements_text( \
-                   CASE WHEN jsonb_typeof(metadata_json->'cad'->'materials') = 'array' \
-                        THEN metadata_json->'cad'->'materials' ELSE '[]'::jsonb END)) END, \
-               materials_typed = cardinality($2::text[]) > 0, \
-               updated_at = now() \
+            "UPDATE part SET materials = $2::text[], materials_typed = true, updated_at = now() \
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(part.as_uuid())
         .bind(materials)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Hand the part back to its file: the materials its file stated when last read
+    /// (`metadata_json.cad.materials`) at once, and each later read's after that. The undo of
+    /// [`PgParts::set_materials`], whichever list it wrote — including the empty one.
+    pub async fn unset_materials(&self, part: PartId) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE part SET \
+               materials = ARRAY(SELECT jsonb_array_elements_text( \
+                 CASE WHEN jsonb_typeof(metadata_json->'cad'->'materials') = 'array' \
+                      THEN metadata_json->'cad'->'materials' ELSE '[]'::jsonb END)), \
+               materials_typed = false, \
+               updated_at = now() \
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(part.as_uuid())
         .execute(&self.0)
         .await?;
         Ok(result.rows_affected() > 0)
