@@ -72,6 +72,10 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
   nothing, so it queued behind four `cargo test --workspace` runs, each wait longer than the 7 s of work. The
   `/duplicates` queue uses the left ~800 px of a 1440 viewport while wrapping long path headings onto three lines inside
   that column. A 1,000-part sweep is `CORPUS_SLICE=1000` away, and the backlog's UI-sweep row is now cheap.
+- **Five handlers log a database error outside the `internal_error` family** (`tags`, `filters`, `part_number`,
+  `moves`'s rename, `blob`'s reachability sweep) and so still log a *cancelled* statement at error rather than warn —
+  over-loud, never silent, and documented where it happens (`error.rs`'s `log_db_error`). L4 offered to wire `tags`
+  alone; doing one of five would be less consistent than doing none. Wants one pass over all five.
 - **Nothing writes a tag but a person and a bundle import** (P3, 2026-09-27): no migration seeds one, ingest reads none
   off a file, the rig writes none — so `/tags` is empty on any library nobody has hand-tagged, and the discovery half
   has nothing to discover until P1 carries tags in with a release. **A product decision for the owner**, and it shapes

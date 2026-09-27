@@ -91,8 +91,14 @@ anyone, so there is no approximate figure to label.
   by the Rust union, so a new Rust kind fails `tsc` until the web registers it.
 - **Resolve:** body `{ widgets: [{ key, widget }] }`, 1–32 unique keys (else 422). Always answers 200 with
   `{ results: [{ key, result }] }` in request order, `result` = `ok { value } | timedOut | failed { message }`. A
-  `JoinSet` with a semaphore of 4 and a 2 s timeout per key **starting once the key has its permit** — the pool is
-  `max_connections(8)`, and without the semaphore keys would time out waiting for the pool, not their query. An unknown
+  `JoinSet` with a semaphore of 4 and a timeout per key **starting once the key has its permit** — the pool is
+  `max_connections(8)`, and without the semaphore keys would time out waiting for the pool, not their query.
+  **Amended by the lead, 2026-09-28, after L4 measured it:** the *read* still gets exactly **2 s**, now enforced by
+  PostgreSQL as the api pool's `lock_timeout` rather than by our clock, and `PER_KEY` — the outer bound covering the
+  wait for a permit or a connection, where there is no statement to abandon — is **3 s**. They cannot be equal: with
+  both at 2 s, which one fires is a coin flip, and L4 measured a locked tile reporting `failed` once in sixteen instead
+  of `timedOut`. So a person still waits at most two seconds for a widget; the extra second exists only where nothing is
+  running to cancel. An unknown
   library fails only its key.
 - **No per-widget polling** (FEATURES §8 calls it a self-inflicted DoS): no per-widget endpoint exists, and a web test
   fails if `refetchInterval` appears under the dashboard's directory.
