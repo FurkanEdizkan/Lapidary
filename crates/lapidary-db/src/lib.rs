@@ -327,8 +327,37 @@ impl DbError {
     /// surface anything — this is deliberately an exhaustive match, not a wildcard
     /// fallthrough, so a new `DbError` variant forces a decision here at compile time
     /// instead of silently inheriting "safe to show" by default.
+    /// Did the server stop this statement itself, because it passed the role's [`Ceiling`]?
+    ///
+    /// `57014` is `statement_timeout`, `55P03` is `lock_timeout`. Read off the SQLSTATE rather
+    /// than the message, and read here rather than at each of the hundred call sites, because
+    /// every one of them is reached the same way: a repository method's `?` turns a `sqlx::Error`
+    /// into [`DbError::Query`]. The four modules that classify a write first (`folders`,
+    /// `saved_filters`, `custom_fields`, `repo`) end in `_ => DbError::Query(err)`, so they arrive
+    /// here too.
+    ///
+    /// It is not a fault, which is the whole point of asking: the statement was cancelled on
+    /// purpose, nothing it would have written was written, and the caller should be told to try
+    /// again rather than shown a server error and logged at a level that wakes somebody.
+    pub fn gave_up(&self) -> bool {
+        let DbError::Query(sqlx::Error::Database(db)) = self else {
+            return false;
+        };
+        matches!(db.code().as_deref(), Some("57014" | "55P03"))
+    }
+
     pub fn client_message(&self) -> String {
         match self {
+            // A statement the server cancelled for passing the role's `Ceiling` is the one
+            // `Query` that has something to say: it is not a bug, it is contention or a read
+            // this installation has outgrown, and "try again" is honest advice rather than a
+            // shrug. Everything else stays opaque, for the reason above.
+            DbError::Query(_) if self.gave_up() => {
+                "This took longer than the server allows and was stopped, so nothing was changed. \
+                 Something else may be holding the data it needed — try again in a moment, and if \
+                 it keeps happening check the server logs for which query it was."
+                    .to_owned()
+            }
             DbError::Query(_) => {
                 "A database query failed. Check the server logs for detail.".to_owned()
             }
@@ -464,11 +493,106 @@ fn quoted_name(message: &str) -> Option<&str> {
     Some(&message[start..end])
 }
 
+/// How long a statement may run, and how long it may wait for a lock, on one role's pool.
+///
+/// **A `tokio::time::timeout` bounds how long a caller waits, not how long the statement runs.**
+/// Dropping the future cancels nothing on the server, and sqlx cannot hand that connection back to
+/// the pool until PostgreSQL has finished answering — so a caller that gave up keeps costing a
+/// connection, and enough of them drain a pool of eight. Only the server can stop a statement, and
+/// these two settings are how it is asked to: they ride in on the connection's startup `options`,
+/// so every statement on every connection of that pool carries them with no round trip of its own.
+///
+/// **The roles get different ceilings because they are doing different things.** The api answers a
+/// person who is waiting: nothing it reads has ever been measured near a second (the slowest,
+/// `GET /api/libraries/{id}/duplicates` over 10,000 parts that are nearly all near-duplicates, is
+/// 234 ms), and a statement past [`INTERACTIVE`]'s ceiling is not slow, it is stuck. The worker
+/// tessellates for minutes at a time — legitimately, and with no one waiting — so
+/// [`BACKGROUND`]'s ceiling is a runaway backstop rather than a budget. Handing the worker the
+/// api's ceiling would fail honest ingest work; handing the api the worker's would leave the hole
+/// this exists to close.
+///
+/// Migrations are deliberately outside both: [`migrate`] builds its own pool, from the URL alone,
+/// because `0002_parts.sql` takes ~1.4 s of DDL and the migrator's advisory lock waits ~2.1 s while
+/// another container holds it — both longer than [`INTERACTIVE`]'s lock ceiling, and both the
+/// system working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ceiling {
+    /// `statement_timeout`: the whole statement, cancelled with SQLSTATE `57014`.
+    pub statement: std::time::Duration,
+    /// `lock_timeout`: only the part spent waiting for a lock, cancelled with `55P03`.
+    ///
+    /// Lower than `statement` on every role, because waiting for a lock is never this product
+    /// doing work — it is one statement held up by another, and the honest answer to a person is
+    /// "something else is holding this, try again" rather than a stalled page.
+    pub lock: std::time::Duration,
+}
+
+/// The ceiling for a pool somebody is waiting on: the api and the peer role.
+///
+/// 5 s for a statement is twenty times the slowest read ever measured here, so nothing legitimate
+/// reaches it; what it bounds is how long a caller that has already given up can keep its
+/// connection. 2 s for a lock is the dashboard's own per-widget budget
+/// (`lapidary-api/src/dashboard.rs`), which is what makes a locked table the thing a widget
+/// *reports* rather than the thing it waits through.
+///
+/// The peer role takes this one rather than [`BACKGROUND`]: a remote installation is waiting at the
+/// other end of every statement it runs, its heaviest is one page of a catalogue
+/// (`lapidary-peer`'s `CATALOGUE_MAX`, 500 rows), and nothing caps how many sharers it works at
+/// once — so a statement that hung would pin one of the six connections its two listeners leave it.
+pub const INTERACTIVE: Ceiling = Ceiling {
+    statement: std::time::Duration::from_secs(5),
+    lock: std::time::Duration::from_secs(2),
+};
+
+/// The ceiling for a pool nobody is waiting on: the worker.
+///
+/// Ten minutes and two minutes are not budgets — a worker statement anywhere near either is
+/// already wrong. They are there so a runaway one cannot pin a connection for the life of the
+/// process. Both are far above the two places the worker legitimately holds a lock across slow
+/// work: `PgStorageMigration::claim_hash` holds an advisory lock across a file copy (and takes it
+/// with `pg_try_advisory_xact_lock`, so it never waits), and a revision holds its part row across
+/// `write_manifest`.
+pub const BACKGROUND: Ceiling = Ceiling {
+    statement: std::time::Duration::from_secs(600),
+    lock: std::time::Duration::from_secs(120),
+};
+
+impl Ceiling {
+    /// These ceilings as PostgreSQL startup options on `options`.
+    ///
+    /// Appended, so anything an operator put in `DATABASE_URL`'s own `options` is kept — and,
+    /// since PostgreSQL takes the last `-c` for a setting, ours is the one that wins. That
+    /// direction is deliberate: a ceiling somebody can raise from a connection string is not a
+    /// ceiling.
+    ///
+    /// Public so a test can build a pool the way a role does. `tests/ceilings.rs` and
+    /// `lapidary-api/tests/dashboard.rs` both do, and the second is the reason this is not just
+    /// inlined into [`connect`]: a dashboard test that builds its own pool has to be able to build
+    /// the pool the api actually serves from, or it proves nothing about it.
+    pub fn applied_to(
+        self,
+        options: sqlx::postgres::PgConnectOptions,
+    ) -> sqlx::postgres::PgConnectOptions {
+        options.options([
+            (
+                "statement_timeout",
+                format!("{}ms", self.statement.as_millis()),
+            ),
+            ("lock_timeout", format!("{}ms", self.lock.as_millis())),
+        ])
+    }
+}
+
 /// Connect and verify the server is PostgreSQL 18 or newer.
-pub async fn connect(url: &str) -> Result<PgPool, DbError> {
+///
+/// `ceiling` is the role's, and `bin/lapidary-server`'s `ceiling_of` is where a role is turned into
+/// one — see [`Ceiling`] for why they differ.
+pub async fn connect(url: &str, ceiling: Ceiling) -> Result<PgPool, DbError> {
+    let options: sqlx::postgres::PgConnectOptions =
+        url.parse().map_err(|e| classify_connect_error(&e, url))?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
-        .connect(url)
+        .connect_with(ceiling.applied_to(options))
         .await
         .map_err(|e| classify_connect_error(&e, url))?;
 
@@ -833,5 +957,115 @@ mod tests {
                 "variant {classified:?} leaked the password: {rendered}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::{BACKGROUND, DbError, INTERACTIVE};
+    use std::borrow::Cow;
+    use std::error::Error as StdError;
+
+    /// A database error carrying only a SQLSTATE, which is all `gave_up` reads. sqlx will not let a
+    /// `PgDatabaseError` be built outside its own crate; this is the same stand-in the module above
+    /// uses, kept separate so neither test's helper has to grow the other's fields.
+    #[derive(Debug)]
+    struct WithCode(&'static str);
+
+    impl std::fmt::Display for WithCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "canceling statement ({})", self.0)
+        }
+    }
+
+    impl StdError for WithCode {}
+
+    impl sqlx::error::DatabaseError for WithCode {
+        fn message(&self) -> &str {
+            "canceling statement"
+        }
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.0))
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+        fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    fn cancelled(code: &'static str) -> DbError {
+        DbError::Query(sqlx::Error::Database(Box::new(WithCode(code))))
+    }
+
+    /// Both SQLSTATEs, and nothing else. `40001` is a serialization failure — a real reason to
+    /// retry, and not this one: it is not a statement the server stopped for taking too long, and
+    /// calling it one would put a timeout's advice on a conflict's error.
+    #[test]
+    fn only_the_two_cancellation_sqlstates_read_as_a_statement_the_server_stopped() {
+        assert!(cancelled("57014").gave_up(), "statement_timeout");
+        assert!(cancelled("55P03").gave_up(), "lock_timeout");
+        assert!(
+            !cancelled("40001").gave_up(),
+            "a serialization failure is not a ceiling"
+        );
+        assert!(!cancelled("23505").gave_up(), "nor is a unique violation");
+        assert!(!DbError::Query(sqlx::Error::PoolClosed).gave_up());
+        assert!(
+            !DbError::UnsupportedVersion {
+                found: "17".to_owned()
+            }
+            .gave_up()
+        );
+    }
+
+    /// The one `Query` that says something. Everything else keeps the opaque text, and the point of
+    /// asserting both here is that this arm was carved out of that one.
+    #[test]
+    fn a_cancelled_statement_tells_the_caller_what_to_do_rather_than_its_sqlstate() {
+        let message = cancelled("55P03").client_message();
+        assert!(
+            message.contains("try again in a moment"),
+            "what to do is missing: {message}"
+        );
+        assert!(
+            message.contains("nothing was changed"),
+            "what broke is missing: {message}"
+        );
+        assert!(
+            !message.contains("55P03") && !message.to_lowercase().contains("query_canceled"),
+            "a SQLSTATE is not an error message: {message}"
+        );
+        assert_eq!(
+            DbError::Query(sqlx::Error::PoolClosed).client_message(),
+            "A database query failed. Check the server logs for detail.",
+            "an ordinary query failure keeps the opaque text"
+        );
+    }
+
+    /// The numbers, and the order between them. A lock ceiling at or above the statement ceiling
+    /// would never fire — `statement_timeout` counts the lock wait too — and the api would lose the
+    /// one cancellation that names contention.
+    #[test]
+    fn a_lock_ceiling_is_always_the_lower_of_the_two_and_the_roles_do_not_share_one() {
+        for ceiling in [INTERACTIVE, BACKGROUND] {
+            assert!(
+                ceiling.lock < ceiling.statement,
+                "{ceiling:?}: a lock ceiling above the statement ceiling can never fire"
+            );
+        }
+        assert!(
+            BACKGROUND.statement > INTERACTIVE.statement * 10,
+            "a job that tessellates for a minute is not a stuck query"
+        );
+        assert_eq!(INTERACTIVE.statement, std::time::Duration::from_secs(5));
+        assert_eq!(INTERACTIVE.lock, std::time::Duration::from_secs(2));
     }
 }

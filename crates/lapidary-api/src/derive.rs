@@ -491,7 +491,7 @@ pub(crate) fn no_such_part() -> Response {
 /// the real error through the log, the client gets whatever `client_message` decides is
 /// safe to hand back.
 pub(crate) fn internal_error(err: &DbError, what: &'static str) -> Response {
-    tracing::error!(error = %err, "{what}");
+    crate::error::log_db_error(err, what);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

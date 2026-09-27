@@ -573,7 +573,7 @@ async fn main() -> Result<()> {
     // (unreachable, wrong credentials, missing database) and that message is
     // actionable on its own — this outer line must only name the startup stage, not
     // guess a cause the classified error below it might contradict.
-    let db = lapidary_db::connect(&config.database_url)
+    let db = lapidary_db::connect(&config.database_url, ceiling_of(role))
         .await
         .context("Could not start: connecting to the database failed.")?;
 
@@ -799,6 +799,49 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// How long a statement may run on this role's pool, and how long it may wait for a lock.
+///
+/// The one place a role becomes a ceiling. `lapidary_db::Ceiling` carries both numbers and the
+/// reasoning; the split is here because this is where the role is known, and it is a whole function
+/// rather than a `match` inlined at the `connect` call so that `a_role_nobody_waits_on_gets_the_long
+/// _ceiling` can assert it without starting a server.
+///
+/// **The worker is the different one.** It tessellates for minutes with nobody waiting, so it takes
+/// the long ceiling; a job that runs long is not a stuck query. The api and the peer role both
+/// answer somebody who is waiting — a browser and another installation respectively — so both take
+/// the interactive one.
+fn ceiling_of(role: Role) -> lapidary_db::Ceiling {
+    match role {
+        Role::Api | Role::Peer => lapidary_db::INTERACTIVE,
+        Role::Worker => lapidary_db::BACKGROUND,
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::{Role, ceiling_of};
+
+    /// The mapping itself, which no integration test reaches: a stack built from this binary would
+    /// have to be inspected through `pg_stat_activity` to tell one role's ceiling from another's.
+    /// Both directions are asserted, because "the worker gets the long ceiling" and "the api does
+    /// not" are two different mistakes.
+    #[test]
+    fn a_role_nobody_waits_on_gets_the_long_ceiling_and_the_others_do_not() {
+        assert_eq!(ceiling_of(Role::Worker), lapidary_db::BACKGROUND);
+        assert_eq!(ceiling_of(Role::Api), lapidary_db::INTERACTIVE);
+        assert_eq!(
+            ceiling_of(Role::Peer),
+            lapidary_db::INTERACTIVE,
+            "a remote installation is waiting at the other end of every statement the peer runs"
+        );
+        assert_ne!(
+            ceiling_of(Role::Api),
+            ceiling_of(Role::Worker),
+            "the api and the worker must not share a ceiling"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "mock-kernel"))]

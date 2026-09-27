@@ -927,7 +927,7 @@ fn bad_query(rejection: &QueryRejection) -> Response {
 /// the response body — the same asymmetry `health::healthz` already keeps by never
 /// putting a live error's text in its response at all.
 fn internal_error(err: &DbError, what: &'static str) -> Response {
-    tracing::error!(error = %err, "{what}");
+    crate::error::log_db_error(err, what);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

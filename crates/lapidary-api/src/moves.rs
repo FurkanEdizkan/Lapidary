@@ -348,7 +348,7 @@ fn storage_failure(
 /// Same shape and reasoning as `parts.rs`'s: the operator gets the real error through the
 /// log, the caller gets whatever `client_message` has decided is safe to show.
 fn internal_error(err: &DbError, what: &'static str) -> Response {
-    tracing::error!(error = %err, "{what}");
+    crate::error::log_db_error(err, what);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

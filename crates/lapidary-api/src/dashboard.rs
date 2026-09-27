@@ -36,7 +36,20 @@ const MAX_WIDGETS: usize = 32;
 const AT_ONCE: usize = 4;
 
 /// How long one key gets, counted from when it starts rather than from when it was asked.
-const PER_KEY: Duration = Duration::from_secs(2);
+///
+/// **The outer guard, not the mechanism** (goal L4). What ends a key's *read* is the api pool's
+/// `lock_timeout` of two seconds and `statement_timeout` of five (`lapidary_db::INTERACTIVE`),
+/// server-side, which is the only kind of timeout that frees the connection as well as the caller.
+/// A widget's budget for a database read is therefore still the two seconds G4 gave it.
+///
+/// **Three seconds rather than two, deliberately, and the order is the whole reason.** Were this
+/// equal to the lock ceiling, which of the two ended a blocked widget would come down to a few
+/// milliseconds — and our clock would usually win, because it starts before the statement does. The
+/// key would then be ended by a dropped future, which abandons a running statement, which is the bug
+/// this goal exists to remove. A second of daylight puts the server first every time and leaves this
+/// for what only it can catch: a key waiting for a permit or for a connection, where there is no
+/// statement to abandon.
+const PER_KEY: Duration = Duration::from_secs(3);
 
 /// The most cards a card-carrying widget hands back. `phase-6.md` gives `recent` and `savedFilter`
 /// twelve, and [`Widget`]'s `limit: u8` cannot carry that, so it is enforced here.
@@ -204,12 +217,22 @@ pub struct DuplicateSummary {
 /// spawn, a key that queued behind three slow ones would report the same lie from the other side.
 /// `tests/dashboard.rs` holds both distinctions.
 ///
-/// ponytail: the timeout bounds how long a key *waits*, not how long its statement runs. Cancelling the
-/// future leaves the query running on the server, and sqlx cannot hand that connection back until it
-/// answers — `a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears` states it. So a
-/// long-held lock plus repeated resolves can still drain the pool. The fix is a server-side
-/// `lock_timeout`/`statement_timeout` on the pool `lapidary_db::connect` builds, which is not this
-/// goal's file.
+/// **What stops a key is the server, not [`PER_KEY`]** (goal L4). `lapidary_db::INTERACTIVE` puts
+/// `lock_timeout = 2 s` and `statement_timeout = 5 s` on every connection of the api's pool, so a
+/// widget held up by a locked table is cancelled *by PostgreSQL* at two seconds and gives its
+/// connection straight back — which is what makes the twelfth simultaneous resolve of a locked table
+/// leave the pool with connections in it. [`PER_KEY`] stays as the outer guard for a key that is
+/// waiting on something other than its own statement (a permit, or a connection), where dropping the
+/// future costs nothing because there is no statement running to abandon.
+///
+/// ponytail: a key stopped by `statement_timeout` rather than by `lock_timeout` — a read that is
+/// genuinely slow instead of blocked — is reported at [`PER_KEY`] and its statement runs on for up to
+/// two seconds more (five less three), still holding its connection. Bounded, where it used to be
+/// open-ended, and no read in this file has ever been measured within an order of magnitude of either
+/// number. Closing it
+/// would mean the resolve setting its own `statement_timeout` per key, which needs the resolvers to
+/// hold a connection rather than take the pool, and that is `repo.rs`'s signature rather than this
+/// file's.
 async fn resolve(
     State(app): State<AppState>,
     body: Result<Json<ResolveRequest>, JsonRejection>,
@@ -242,7 +265,7 @@ async fn resolve(
     let mut keys: Vec<String> = Vec::with_capacity(widgets.len());
     let mut running = JoinSet::new();
     for (at, WidgetRequest { key, widget }) in widgets.into_iter().enumerate() {
-        keys.push(key);
+        keys.push(key.clone());
         let app = app.clone();
         let permits = Arc::clone(&permits);
         running.spawn(async move {
@@ -250,8 +273,21 @@ async fn resolve(
             let _permit = permits.acquire().await;
             let result = match tokio::time::timeout(PER_KEY, value_of(&app, &widget)).await {
                 Ok(Ok(value)) => WidgetResult::Ok { value },
-                Ok(Err(message)) => WidgetResult::Failed { message },
-                Err(_elapsed) => WidgetResult::TimedOut,
+                Ok(Err(WidgetRefusal::TimedOut)) => WidgetResult::TimedOut,
+                Ok(Err(WidgetRefusal::Failed(message))) => WidgetResult::Failed { message },
+                // The outer guard fired, so this key was waiting on something that is not a
+                // statement — `PER_KEY` is longer than the api's `lock_timeout` and a cancelled
+                // statement comes back through `failed`, which logs its own line. Said out loud
+                // anyway: an unexplained tile is what made the connection G4 found invisible.
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        key = %key,
+                        widget = ?widget,
+                        "a dashboard widget ran out of time without its read being stopped, so it \
+                         was waiting for a permit or a connection rather than for the database"
+                    );
+                    WidgetResult::TimedOut
+                }
             };
             (at, result)
         });
@@ -283,11 +319,26 @@ async fn resolve(
     .into_response()
 }
 
-/// One widget's value, or the message that says why there is none.
+/// Why a widget has no value.
+///
+/// Two answers rather than one string, because the wire type has had two answers since W0 and a read
+/// the server cancelled belongs in the second one. A statement PostgreSQL stopped for passing
+/// `lapidary_db::INTERACTIVE` **is** this widget running out of time — reporting it as `failed` with
+/// a message would hide a timeout inside the wording of a fault, and would make which of the two a
+/// locked table produces depend on whether our clock or the server's ran out first.
+enum WidgetRefusal {
+    /// The server stopped the read. `KeyResult` carries no message for this — the tile says it timed
+    /// out, and the one line naming the widget is in the log.
+    TimedOut,
+    /// Anything else, as what a person can do about it.
+    Failed(String),
+}
+
+/// One widget's value, or the reason there is none.
 ///
 /// Every arm is a read that already exists somewhere in this crate, called with the dashboard's own
 /// limits. Nothing here writes, and nothing here touches a source file.
-async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, String> {
+async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, WidgetRefusal> {
     match widget {
         Widget::Storage { library } => storage(&app.db, *library).await,
         Widget::InstanceStorage => instance_storage(app).await,
@@ -309,7 +360,7 @@ async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, String
 
 /// [`Widget::Storage`] — `GET /api/libraries/{id}/storage`'s figures. Its own read says when the
 /// library is not there, so it needs no probe.
-async fn storage(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+async fn storage(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetRefusal> {
     match PgParts(db.clone()).storage_totals(library).await {
         Ok(Some(totals)) => Ok(WidgetValue::Storage(crate::parts::library_storage(totals))),
         Ok(None) => Err(no_such_library()),
@@ -320,7 +371,7 @@ async fn storage(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String>
 /// [`Widget::InstanceStorage`] — the storage page's figures without its disk walk, and without its
 /// flush of the pending reads: a widget is a read, and the render-cache figure is the one it affects,
 /// at most five minutes behind. `GET /api/storage` is where an exact one is.
-async fn instance_storage(app: &AppState) -> Result<WidgetValue, String> {
+async fn instance_storage(app: &AppState) -> Result<WidgetValue, WidgetRefusal> {
     match PgParts(app.db.clone()).instance_storage().await {
         Ok(totals) => Ok(WidgetValue::InstanceStorage(
             crate::parts::instance_storage_view(totals, None, app.host_storage_root.clone()),
@@ -330,7 +381,7 @@ async fn instance_storage(app: &AppState) -> Result<WidgetValue, String> {
 }
 
 /// [`Widget::Recent`] — the newest parts, the grid's own read with no filters.
-async fn recent(db: &PgPool, library: LibraryId, limit: u8) -> Result<WidgetValue, String> {
+async fn recent(db: &PgPool, library: LibraryId, limit: u8) -> Result<WidgetValue, WidgetRefusal> {
     exists(db, library).await?;
     let rows = grid_rows(
         db,
@@ -356,7 +407,7 @@ async fn saved_filter(
     library: LibraryId,
     filter: SavedFilterId,
     limit: u8,
-) -> Result<WidgetValue, String> {
+) -> Result<WidgetValue, WidgetRefusal> {
     let saved = PgSavedFilters(db.clone())
         .list(library)
         .await
@@ -364,27 +415,29 @@ async fn saved_filter(
     // An unknown library has no filters, so this one answer covers both: neither a deleted library nor
     // a deleted filter leaves anything for the widget to show.
     let Some(saved) = saved.into_iter().find(|row| row.id == filter) else {
-        return Err(
+        return Err(WidgetRefusal::Failed(
             "This saved filter is no longer in the library — it, or the library, has been \
              deleted. Point the widget at another filter, or remove it from the dashboard."
                 .to_owned(),
-        );
+        ));
     };
     // The grid opened on such a filter says the category is gone rather than showing an empty grid
     // (`filters.rs`), and `FilteredParts` has no room to say it — so the key fails instead of showing
     // an empty tile, which would read as "nothing matches".
     if saved.folder_gone {
-        return Err(format!(
+        return Err(WidgetRefusal::Failed(format!(
             "“{}” filters on a category that has been deleted, so it can show nothing. \
              Edit the filter in the grid, or point this widget at another one.",
             saved.name
-        ));
+        )));
     }
     let search: FilterSearch = serde_json::from_str(&saved.search).map_err(|err| {
         tracing::error!(error = %err, filter = %saved.id, "a saved filter holds a search this build cannot read");
-        "This saved filter holds settings this version cannot read. Check the server logs for \
-         which one, and save it again from the grid."
-            .to_owned()
+        WidgetRefusal::Failed(
+            "This saved filter holds settings this version cannot read. Check the server logs \
+             for which one, and save it again from the grid."
+                .to_owned(),
+        )
     })?;
     let rows = grid_rows(
         db,
@@ -414,7 +467,7 @@ async fn one_facet(
     library: LibraryId,
     facet: FacetKind,
     limit: u8,
-) -> Result<WidgetValue, String> {
+) -> Result<WidgetValue, WidgetRefusal> {
     exists(db, library).await?;
     let parts = PgParts(db.clone());
     let read = match facet {
@@ -449,7 +502,7 @@ async fn one_facet(
 }
 
 /// [`Widget::Queue`] — what this library has waiting, running and failed.
-async fn queue(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+async fn queue(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetRefusal> {
     exists(db, library).await?;
     let counts = PgDashboard(db.clone())
         .queue(library)
@@ -468,7 +521,7 @@ async fn queue(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
 /// cluster, and this widget counts the groups and throws the cards away. One definition of a cluster
 /// is worth that: G3 measured the whole read at 234 ms on a deliberately duplicate-heavy library of
 /// 10,000 parts, mostly in the cards. A count-only read is the upgrade if a real library measures slow.
-async fn duplicates(db: &PgPool, library: LibraryId) -> Result<WidgetValue, String> {
+async fn duplicates(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetRefusal> {
     // This widget's own probe, and not belt-and-braces: `clusters` answers an empty queue for a
     // library that does not exist rather than an error (G3's Record says so), so without this an
     // unknown library would read as "no duplicates here" instead of failing its key.
@@ -488,7 +541,7 @@ async fn duplicates(db: &PgPool, library: LibraryId) -> Result<WidgetValue, Stri
 /// Only the widgets whose own read cannot tell the difference ask this. `recent`, `facet` and `queue`
 /// each answer emptily for an id naming nothing, and `duplicates` does too; `storage` and
 /// `savedFilter` say so themselves, and `instanceStorage` names no library.
-async fn exists(db: &PgPool, library: LibraryId) -> Result<(), String> {
+async fn exists(db: &PgPool, library: LibraryId) -> Result<(), WidgetRefusal> {
     match PgParts(db.clone()).auto_thumbnail(library).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(no_such_library()),
@@ -504,29 +557,44 @@ fn capped(limit: u8, most: u8) -> u8 {
 }
 
 /// A library id that names nothing. It fails its own key and no other.
-fn no_such_library() -> String {
-    "No library with that id exists. It may have been deleted since this dashboard was arranged \
-     — point the widget at another library, or remove it."
-        .to_owned()
+fn no_such_library() -> WidgetRefusal {
+    WidgetRefusal::Failed(
+        "No library with that id exists. It may have been deleted since this dashboard was \
+         arranged — point the widget at another library, or remove it."
+            .to_owned(),
+    )
 }
 
-/// A read that failed. The operator gets the detail through the log; the key carries what a person can
-/// act on, exactly as `parts.rs`'s `internal_error` decides.
-fn failed(err: &DbError, what: &'static str) -> String {
-    tracing::error!(error = %err, "{what}");
-    err.client_message()
+/// A read that did not answer. The operator gets the detail through the log — once, naming this
+/// widget, and at warn rather than error when the server stopped it on purpose
+/// (`crate::error::log_db_error`); the key carries what a person can act on, exactly as `parts.rs`'s
+/// `internal_error` decides.
+///
+/// **This is where the log line for an abandoned statement comes from.** Before the api's pool had a
+/// ceiling, a widget held up by a lock was ended by our own clock and this function was never
+/// reached: the only line was sqlx's own "slow statement" warning, which carries the SQL and names
+/// neither the widget nor the fact that the connection was gone. Two lines now, and between them they
+/// say which widget, which statement, and that the server stopped it.
+fn failed(err: &DbError, what: &'static str) -> WidgetRefusal {
+    crate::error::log_db_error(err, what);
+    if err.gave_up() {
+        WidgetRefusal::TimedOut
+    } else {
+        WidgetRefusal::Failed(err.client_message())
+    }
 }
 
 /// A grid read that could not be answered, as a message. The refused half is a whole response composed
 /// by `fields::filter_of`, whose text cannot be read back out here, so this says what a person can do
 /// about either shape of it.
-fn grid_failed(refusal: GridRefusal) -> String {
+fn grid_failed(refusal: GridRefusal) -> WidgetRefusal {
     match refusal {
         GridRefusal::Db(err) => failed(&err, "dashboard grid read failed"),
-        GridRefusal::Field(_) => "This saved filter filters on a custom field the library no \
-                                  longer offers as a filter. Open the filter in the grid to see \
-                                  which, then edit or remove it."
-            .to_owned(),
+        GridRefusal::Field(_) => WidgetRefusal::Failed(
+            "This saved filter filters on a custom field the library no longer offers as a \
+             filter. Open the filter in the grid to see which, then edit or remove it."
+                .to_owned(),
+        ),
     }
 }
 
