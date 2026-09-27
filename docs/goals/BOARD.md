@@ -22,7 +22,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [G5](G5.md) | Dashboard UI | 2 | web | W0 | `web/src/routes/dashboard.tsx`, `components/dashboard/*`, `lib/{dashboard,events}.ts`, the nav in `AppFrame.tsx`, `dashboard` strings block | — | merged `a20b3aa` | `feat/dashboard-ui` |
 | [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | merged `bac30be` | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | merged `3866a62` | `fix/mass-and-materials` |
-| [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | claimed (lane 1) | `fix/statement-timeouts` |
+| [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | merged `fd5c7dd` | `fix/statement-timeouts` |
 | [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | merged `bd362e4` | `feat/tag-browse` |
 | [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |

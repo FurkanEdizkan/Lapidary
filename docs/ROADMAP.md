@@ -3822,6 +3822,48 @@ on the board.
   - **Left for later:** no paging on `/tags`; the related read is not shared between tag pages; no tag rename or merge,
     and this page makes `dragon` and `Dragon` being two tags visible for the first time; nothing here has met a running
     server, since every web test mocks `fetch` and the Rust read is exercised only through the router.
+- **L4, a query that gave up stops running** (merged `fd5c7dd`, gate 14 green in 337.04 s on the merged tree). The hole G4
+  found, closed where it belonged: a Rust timeout bounds how long a caller *waits*, never how long a statement *runs*,
+  so a key that gave up went on pinning its connection until PostgreSQL finished. Ceilings now ride in on the
+  connection's startup options — **api and peer 5 s `statement_timeout` / 2 s `lock_timeout`, worker 10 min / 2 min** —
+  appended so an operator's own `options=` survives while ours still wins, because PostgreSQL takes the last `-c`. As
+  the lane put it: a ceiling you can raise from a connection string is not a ceiling.
+  - **Measured.** A read blocked on `LOCK TABLE job IN ACCESS EXCLUSIVE MODE` is cancelled by the server at
+    **2.0005 s**, and the next resolve on that same connection answers in **8.3 ms** where it used to wait for the lock
+    to clear. Across sixteen keys giving up over four rounds, with a listener holding one of the eight connections, the
+    worst an unrelated `SELECT 1` waited was **162 ms** against 2.222 s before.
+  - **The design's "2 s per key" had to be split, and the measurement is why.** With the key's own budget and the
+    lock ceiling both at 2 s, which one fires is a coin flip — a locked tile reported `failed` once in sixteen runs
+    instead of `timedOut`. So the **read** keeps exactly two seconds, now enforced by PostgreSQL rather than by our
+    clock, and the per-key bound is **3 s**, covering only the wait for a permit or a connection where there is no
+    statement to abandon. A person still waits at most two seconds for a widget. `phase-6.md` carries the amendment.
+  - **The ceilings were chosen against measurements, not taste:** 5 s is twenty times the slowest api read anybody has
+    recorded (`/duplicates` at 234 ms over 10,000 near-duplicate parts), and 2 s *is* the dashboard's per-widget budget,
+    which is what makes a locked table something a widget reports rather than waits through. The lock ceiling sits below
+    the statement ceiling on both roles because `statement_timeout` counts a lock wait too, and an equal one could never
+    fire. `migrate()` is outside both, which is now load-bearing: `0002_parts.sql` is about 1.4 s of DDL and the
+    migrator's advisory lock waits about 2.1 s. The peer takes the api's ceiling, decided by the lane, because a remote
+    installation is waiting at the other end of every statement.
+  - Every path L4.md named was checked rather than assumed: the bundle plan is capped at 500 ids, `instance_storage`'s
+    walk is Rust behind a flag the dashboard skips, the purge is scoped to one part, and `enqueue_stale_shapes` is the
+    worker's. The one library-wide api write — the bulk thumbnail enqueue — was **measured at 50.4 / 49.1 / 53.8 ms for
+    10,000 rows**, a hundredth of the ceiling.
+  - **`DbError::gave_up()`** reads `57014`/`55P03` off the SQLSTATE and reaches every caller through `?` without
+    touching `repo.rs`; a cancelled statement now logs once at warn with its route named, and nobody sees a bare
+    `query_canceled`. **14 mutations, 14 caught, every one of the fourteen logs read for its panic message** rather than
+    its exit code — and G4's own two were re-run and still catch.
+  - **It changed two of G4's tests and said so:** one needed eight blocked keys rather than four, because with four
+    G4's own mutation slipped through; the other's threshold moved 3.5 s → 5 s, because without the semaphore the run
+    now lands at 3.006 s and the old threshold had half a second of margin. It also made the role→ceiling mapping a
+    plain unit-tested function **specifically to avoid L2's "a rule I had written and never broken"** trap.
+  - **Left for later:** a key stopped by `statement_timeout` rather than `lock_timeout` still pins its connection for up
+    to two seconds past the per-key bound — the slow-read path, now bounded where it was open-ended; closing it needs the
+    resolvers to hold a connection rather than take the pool, which is `repo.rs`'s signatures. `acquire_timeout` is
+    still sqlx's default 30 s. Nothing measures the ceilings through a running stack.
+
+**Wave 3 closed** (2026-09-28): L2 `bac30be`, L3 `3866a62`, P3 `bd362e4`, L4 `fd5c7dd`. Thirteen goals merged since the
+board was written; what remains is the discovery half — P1, P2 and P4 — and P1's shape waits on the owner, because
+nothing in this product writes a tag today.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
