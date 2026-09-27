@@ -808,8 +808,9 @@ async fn a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears(poo
 }
 
 /// Three dashboards open at once. Three resolves of twelve keys share the pool of eight, and all three
-/// answer every key — the permit limit is per request, so nine keys are in flight at the busiest
-/// moment and none of them is waiting on the pool long enough to matter.
+/// answer every key. The permit limit is per request, so twelve keys can be in flight against eight
+/// connections: this passes because these reads are fast, not because the pool is held back — see
+/// `a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears` for what a slow one costs.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn three_resolves_at_once_all_answer_every_key(pool: sqlx::PgPool) {
     corpus(&pool).await;
