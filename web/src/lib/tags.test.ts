@@ -99,6 +99,9 @@ test('by name is a reader’s order, not a byte order', () => {
   ]
   // A plain `<` puts `zulu` before `Éclair`, because `É` is past `z` in code-point order.
   expect(byName(tags).map((tag) => tag.value)).toEqual(['Éclair', 'elf', 'zulu'])
+  // And it leaves the list it was given alone, as `byCount` does: the page holds one answer and
+  // reads it two ways, so a sort in place would hand the other order a list already sorted.
+  expect(tags.map((tag) => tag.value)).toEqual(['Éclair', 'zulu', 'elf'])
 })
 
 test('a tag that does not start with a letter is filed under one heading', () => {

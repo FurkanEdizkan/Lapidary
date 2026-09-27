@@ -103,6 +103,19 @@ test('the two orders are addresses, and A to Z files the tags under letters', as
   expect(byName.getAttribute('aria-current')).toBeNull()
 })
 
+test('on the A-to-Z page it is A to Z that is marked, and only it', async () => {
+  stub(CORPUS)
+  renderAt('/tags?order=name')
+  // **This is where the router's default goes wrong.** "Most used" carries no `order`, and an empty
+  // search is a subset of `?order=name` under a partial match, so without `exact` both links read as
+  // the current one — which is one more current link than a page has.
+  const byName = await screen.findByRole('link', { name: strings.tagIndex.byName })
+  expect(byName.getAttribute('aria-current')).toBe('page')
+  expect(
+    screen.getByRole('link', { name: strings.tagIndex.byCount }).getAttribute('aria-current'),
+  ).toBeNull()
+})
+
 test('ordered by name, the groups are headed by letter and numbers share one heading', async () => {
   stub(CORPUS)
   renderAt('/tags?order=name')

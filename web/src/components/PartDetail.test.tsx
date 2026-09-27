@@ -130,9 +130,9 @@ test('tags are added and removed where the part is recordable, and only listed e
   // context — without a provider the whole panel renders as nothing. The tree is synthetic, as
   // `index.test.tsx`'s is: what this test is about is the editing, and the link wants a real target
   // to resolve against rather than a real route tree to live in.
-  const page = (recordable: boolean) => {
+  const pageFor = (part: typeof tagged, recordable: boolean) => {
     const root = createRootRoute({
-      component: () => <Detail part={tagged} recordable={recordable} />,
+      component: () => <Detail part={part} recordable={recordable} />,
     })
     const tags = createRoute({ getParentRoute: () => root, path: '/tags/$tag', component: () => null })
     const router = createRouter({
@@ -146,6 +146,7 @@ test('tags are added and removed where the part is recordable, and only listed e
       </QueryClientProvider>
     )
   }
+  const page = (recordable: boolean) => pageFor(tagged, recordable)
   render(page(true))
   // `RouterProvider` has nothing mounted on its first render, so the panel arrives a tick later.
   await screen.findByLabelText(strings.tags.field)
@@ -167,6 +168,16 @@ test('tags are added and removed where the part is recordable, and only listed e
   // `about` both layouts draw. Materials get no link — there is no page of a library's materials.
   expect(screen.getByRole('link', { name: 'welding jig' }).getAttribute('href')).toBe(
     '/tags/welding%20jig',
+  )
+
+  // A model in a second library: the chip carries the library, or the tag opens the first library's
+  // page — the same word about a different set of models.
+  cleanup()
+  const elsewhere = '01952c40-0000-7000-8000-0000000000f2'
+  render(pageFor({ ...tagged, library: elsewhere }, false))
+  await screen.findByText('welding jig')
+  expect(screen.getByRole('link', { name: 'welding jig' }).getAttribute('href')).toBe(
+    `/tags/welding%20jig?library=${elsewhere}`,
   )
   expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
   expect(screen.queryByLabelText(strings.tags.field)).toBeNull()

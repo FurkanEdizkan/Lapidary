@@ -68,25 +68,13 @@ function Related({ library, tag }: { library: LibraryId; tag: string }) {
   })
   const home = library === DEFAULT_LIBRARY_ID ? {} : { library }
   return (
-    <section aria-labelledby="tag-related" className="mb-4">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h3 id="tag-related" className="text-xs font-medium tracking-wider text-[var(--color-muted)] uppercase">
-          {strings.tagIndex.related}
-        </h3>
-        <Link
-          to="/tags"
-          search={home}
-          className="ease-mechanical text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
-        >
-          {strings.tagIndex.back}
-        </Link>
-      </div>
+    <div className="mb-4">
       {near.isError ? (
         /*
           A note and not an alert that takes the page with it: the models below arrived from their own
           request and are right. Only the suggestions are missing.
         */
-        <p className="mt-1 max-w-[70ch] text-xs text-[var(--color-muted)]">
+        <p className="max-w-[70ch] text-xs text-[var(--color-muted)]">
           {strings.tagIndex.relatedFailed}
         </p>
       ) : near.data === undefined ? null : near.data.parts === 0 ? (
@@ -95,20 +83,31 @@ function Related({ library, tag }: { library: LibraryId; tag: string }) {
           a filter that went wrong — so the page says which of the two it is. Removal is soft, so the
           honest sentence is about the models, not about a tag being deleted: there is no tag to delete.
         */
-        <p role="status" className="mt-1 max-w-[70ch] text-sm text-[var(--color-muted)]">
+        <p role="status" className="max-w-[70ch] text-sm text-[var(--color-muted)]">
           {strings.tagIndex.gone(tag)}
         </p>
       ) : (
         <>
-          <p className="mt-1 text-xs text-[var(--color-muted)]">
+          <p className="text-xs text-[var(--color-muted)]">
             {strings.tagIndex.counted(near.data.parts)}
           </p>
           {near.data.related.length === 0 ? (
-            <p className="mt-1 max-w-[70ch] text-xs text-[var(--color-muted)]">
+            <p className="max-w-[70ch] text-xs text-[var(--color-muted)]">
               {strings.tagIndex.relatedNone}
             </p>
           ) : (
-            <>
+            /*
+              Titled, so the chips are not a row of words with no say in what they are. The heading is
+              drawn only where there is something under it — over "no model carries this any more" it
+              would be a promise of suggestions that are not coming.
+            */
+            <section aria-labelledby="tag-related" className="mt-2">
+              <h3
+                id="tag-related"
+                className="text-xs font-medium tracking-wider text-[var(--color-muted)] uppercase"
+              >
+                {strings.tagIndex.related}
+              </h3>
               <ul role="list" className="mt-1.5 flex flex-wrap gap-1">
                 {near.data.related.map(({ value, count }) => (
                   <li key={value}>
@@ -137,10 +136,25 @@ function Related({ library, tag }: { library: LibraryId; tag: string }) {
               <p className="mt-1.5 max-w-[70ch] text-xs text-[var(--color-muted)]">
                 {strings.tagIndex.relatedNote(near.data.floor)}
               </p>
-            </>
+            </section>
           )}
         </>
       )}
-    </section>
+      {/*
+        The way back, under the suggestions rather than beside their heading: beside it, "Often
+        together with" and "All tags" sat a gap apart and read as one phrase. It is drawn whatever the
+        panel above says, including while it is still on its way and when the tag is gone — a page
+        about a tag nothing carries is exactly where somebody wants the list of the ones that are.
+      */}
+      <p className="mt-2">
+        <Link
+          to="/tags"
+          search={home}
+          className="ease-mechanical text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+        >
+          {strings.tagIndex.back}
+        </Link>
+      </p>
+    </div>
   )
 }

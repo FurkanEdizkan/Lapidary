@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { routeTree } from '../routeTree.gen'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import type { PartCard, RelatedTags } from '../lib/types'
+import type { PartCard, RelatedTags, SavedFilter } from '../lib/types'
 
 /**
  * `/tags/{tag}` — the grid pre-filtered, through the real route tree.
@@ -54,7 +54,15 @@ const NEAR: RelatedTags = {
  * resolving, so no panel here ever asserts against a body it did not ask for — the rule
  * `index.test.tsx`'s own dispatcher is built on.
  */
-function stub(over: { related?: RelatedTags | 'fails'; cards?: PartCard[] } = {}) {
+function stub(
+  over: {
+    related?: RelatedTags | 'fails'
+    cards?: PartCard[]
+    /** The library's tags as the facet panel sees them. `[]` is a library nobody has tagged. */
+    facetTags?: { value: string; count: number }[]
+    filters?: SavedFilter[]
+  } = {},
+) {
   const asked: string[] = []
   vi.stubGlobal(
     'fetch',
@@ -71,18 +79,19 @@ function stub(over: { related?: RelatedTags | 'fails'; cards?: PartCard[] } = {}
         return ok({
           formats: [{ value: 'stl', count: 12 }],
           materials: [],
-          tags: [
-            { value: 'dragon', count: 12 },
-            { value: 'terrain', count: 9 },
-          ],
+          tags:
+            over.facetTags ??
+            [
+              { value: 'dragon', count: 12 },
+              { value: 'terrain', count: 9 },
+            ],
           fields: [],
         })
       }
       if (url.includes('/parts')) return ok({ parts: over.cards ?? [BASALT], next: null })
       if (url.endsWith('/tags')) return ok({ tags: [{ value: 'dragon', count: 12 }] })
-      if (url.endsWith('/folders') || url.includes('/filters') || url.endsWith('/fields')) {
-        return ok([])
-      }
+      if (url.includes('/filters')) return ok(over.filters ?? [])
+      if (url.endsWith('/folders') || url.endsWith('/fields')) return ok([])
       return new Promise(() => {})
     }),
   )
@@ -116,6 +125,18 @@ test('the page is titled by its tag, and the grid asks for that tag', async () =
   // **The same grid, the same parameter.** Not a second endpoint and not a second component.
   expect(asked.some((url) => url.includes('/parts?') && url.includes('tag=dragon'))).toBe(true)
   expect(asked.some((url) => url.includes('/tags/related?tag=dragon'))).toBe(true)
+})
+
+test('the document holds one title, not the grid’s as well as the tag’s', async () => {
+  // Emptied rather than seeded with `index.html`'s fallback, which the tests above need and this one
+  // would count: the head is one document across a file's tests.
+  document.head.innerHTML = ''
+  stub()
+  renderAt('/tags/dragon')
+  await screen.findByRole('article', { name: BASALT.name })
+  // `titled={false}` is the whole rule: React hoists every `<title>` it is given, and `document.title`
+  // taking the first in tree order is not a reason to render two.
+  expect(document.head.querySelectorAll('title')).toHaveLength(1)
 })
 
 test('related tags are listed with the floor they earned, and each one is a place', async () => {
@@ -213,4 +234,29 @@ test('a second library rides on the way into the index and out to a neighbour', 
   const chip = screen.getByRole('link', { name: `28 mm ${strings.tagIndex.shared(11)}` })
   expect(chip.getAttribute('href')).toBe(`/tags/28%20mm?library=${OTHER}`)
   expect(within(screen.getByRole('main')).getAllByRole('link').length).toBeGreaterThan(0)
+})
+
+test('a library nobody has tagged is offered no way into an empty index', async () => {
+  stub({ facetTags: [] })
+  renderAt('/tags/dragon')
+  await screen.findByRole('article', { name: BASALT.name })
+  expect(screen.queryByRole('link', { name: strings.tagIndex.all })).toBeNull()
+})
+
+test('a saved filter carrying a tag lands on that tag’s page, with the tag in the path only', async () => {
+  stub({
+    filters: [
+      {
+        id: '01952c40-0000-7000-8000-0000000000a1',
+        name: 'Dragons, pre-supported',
+        search: { tag: 'pre-supported', format: 'stl' },
+        folderGone: false,
+      },
+    ],
+  })
+  const router = renderAt('/tags/dragon')
+  fireEvent.click(await screen.findByRole('button', { name: 'Dragons, pre-supported' }))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/tags/pre-supported'))
+  // Not `?tag=`: the old tag in the path and the new one in the search would be two tags and one grid.
+  expect(router.state.location.searchStr).toBe('?format=stl')
 })

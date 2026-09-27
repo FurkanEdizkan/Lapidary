@@ -87,7 +87,9 @@ export function TagsPage({ library, order }: { library: LibraryId; order?: 'name
             {byLetter ? (
               <ByLetter library={library} tags={tags.data} />
             ) : (
-              <TagRows library={library} tags={byCount(tags.data)} />
+              <div className="mt-3">
+                <TagRows library={library} tags={byCount(tags.data)} />
+              </div>
             )}
           </>
         )}
