@@ -441,12 +441,31 @@ async fn a_lost_listener_becomes_a_resync(pool: sqlx::PgPool) {
     stop(&shutdown, &pool).await;
 }
 
-/// Both of this crate's streams carry both headers. `docs/ARCHITECTURE.md` calls a buffering proxy the
-/// most common works-in-dev-breaks-in-prod bug in this stack, and until this goal the batch stream had
-/// neither header.
+/// Both of this crate's streams carry both headers, **on the router the api process actually serves**.
+///
+/// `docs/ARCHITECTURE.md` calls a buffering proxy the most common works-in-dev-breaks-in-prod bug in
+/// this stack, and until this goal the batch stream had neither header.
+///
+/// The router here is the merge `bin/lapidary-server` performs for the api role, not `events::router`
+/// on its own, because that merge is the one seam nothing else covers: axum panics at merge time on a
+/// path both routers claim or a fallback both set, and the first place that would otherwise show is a
+/// container that will not start.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn both_streams_ask_not_to_be_buffered(pool: sqlx::PgPool) {
-    let (app, shutdown) = hub(&pool).await;
+    let shutdown = CancellationToken::new();
+    let hub = Hub::spawn(pool.clone(), shutdown.clone()).await;
+    let app = lapidary_api::router(
+        lapidary_api::AppState {
+            db: pool.clone(),
+            blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+            touches: Default::default(),
+        },
+        lapidary_api::Role::Api,
+    )
+    .merge(lapidary_api::events::router(hub));
+
     let response = open(&app).await;
     assert_eq!(response.status(), StatusCode::OK);
     for header in ["cache-control", "x-accel-buffering"] {
@@ -459,30 +478,21 @@ async fn both_streams_ask_not_to_be_buffered(pool: sqlx::PgPool) {
     }
     assert_eq!(response.headers()["cache-control"], "no-cache");
     assert_eq!(response.headers()["x-accel-buffering"], "no");
-    stop(&shutdown, &pool).await;
 
-    // The per-batch stream, on the main router. A batch that does not exist still answers 200 with its
-    // headers — the status is sent before the first read and an `EventSource` could not read a body
-    // anyway, which is `jobs.rs`'s own reasoning.
+    // The per-batch stream, on the same merged router. A batch that does not exist still answers 200
+    // with its headers — the status is sent before the first read and an `EventSource` could not read a
+    // body anyway, which is `jobs.rs`'s own reasoning.
     let batch = BatchId::new();
-    let response = lapidary_api::router(
-        lapidary_api::AppState {
-            db: pool,
-            blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            touches: Default::default(),
-        },
-        lapidary_api::Role::Api,
-    )
-    .oneshot(
-        Request::builder()
-            .uri(format!("/api/libraries/{}/jobs/{batch}/events", seeded()))
-            .body(Body::empty())
-            .expect("request builds"),
-    )
-    .await
-    .expect("router responds");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/libraries/{}/jobs/{batch}/events", seeded()))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-cache");
     assert_eq!(
@@ -490,6 +500,7 @@ async fn both_streams_ask_not_to_be_buffered(pool: sqlx::PgPool) {
         "no",
         "the batch stream gets the same treatment: it goes through the same proxy"
     );
+    stop(&shutdown, &pool).await;
 }
 
 /// The hub ends on shutdown, and its end is what ends every stream. Nothing in the router is cancelled
