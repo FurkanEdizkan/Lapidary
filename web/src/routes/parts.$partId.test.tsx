@@ -230,6 +230,10 @@ test('a part with no mass says which of the reasons it is', async () => {
   // Four reasons, and a blank would read as "weighs nothing" for all four. Three of them are
   // something the reader can act on, which is why each is said in its own words.
   for (const [part, said] of [
+    // No volume first: an open mesh told to set a density would still have no mass after setting one.
+    [{ isWatertight: false, volumeMm3: null }, strings.detail.massNoVolume],
+    // And a part somebody has just said holds no material must not be told to give it one.
+    [{ materials: [], materialsTyped: true }, strings.detail.massHoldsNone],
     [{ materials: [] }, strings.detail.massNoMaterial],
     [
       { materials: ['C93200 bronze', 'PTFE'], materialsTyped: true },

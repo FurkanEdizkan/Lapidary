@@ -1045,14 +1045,21 @@ export function Detail({
             rather than in a row with an empty `dt`, which is what the `dl` would otherwise become.
           */}
           {/* Falsy and not `=== null`: a server from before L3 sends no `massG` at all, and `Figure`
-              cannot be handed `undefined` — it reads the flag off it. */}
+              cannot be handed `undefined` — it reads the flag off it.
+
+              The reasons are checked in the order a reader can act in. No volume first: an open mesh
+              told to set a density would still have no mass after setting one. Then a part somebody
+              has said holds no material, which must not be told to give it one — that is the decision
+              it just recorded. */}
           {!part.massG ? (
-            materials.length === 0 ? (
+            part.volumeMm3 === null ? (
+              strings.detail.massNoVolume
+            ) : part.materialsTyped === true && materials.length === 0 ? (
+              strings.detail.massHoldsNone
+            ) : materials.length === 0 ? (
               strings.detail.massNoMaterial
             ) : materials.length > 1 ? (
               strings.detail.massSeveralMaterials
-            ) : part.volumeMm3 === null ? (
-              strings.detail.massNoVolume
             ) : (
               strings.detail.massNoDensity(materials[0] as string)
             )

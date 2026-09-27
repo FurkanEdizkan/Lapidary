@@ -57,7 +57,7 @@ impl WorkerHandler {
         // Beside the rung sweep and not inside it: a part can be missing its shape profile while
         // every rung it has is current — every part ingested before Phase 6 is. See `shape.rs`.
         self.enqueue_stale_shapes().await;
-        // And for the same reason a revision can be missing its centre of mass while its rung is
+        // And for the same reason a mesh revision can be missing its centre of mass while its rung is
         // current: the mesh kernel's version string says nothing about how it measures.
         self.enqueue_centreless_revisions().await;
         let jobs = PgJobs(self.db.clone());
@@ -93,19 +93,21 @@ impl WorkerHandler {
         }
     }
 
-    /// Queue a rebuild of the L0 rung of every revision whose volume says it has a centre of mass and
-    /// whose row holds none. A worker runs this as it starts, beside the stale-derivative sweep.
+    /// Queue a rebuild of the L0 rung of every **mesh** revision whose volume says it has a centre of
+    /// mass and whose row holds none. A worker runs this as it starts, beside the stale-derivative
+    /// sweep.
     ///
-    /// The L0 rung and not the `structure` read, because a mesh has no structure and the mesh
-    /// revisions are the population this exists for ([`PgRevisions::centreless_revisions`] says why).
-    /// Both kernels measure on every `process`, whatever `produce` asked for, so rebuilding the rung
-    /// is what makes the centre arrive — see the L0 branch of [`derive_one`](Self::derive_one).
+    /// The L0 rung and not the `structure` read, because a mesh has no structure. Mesh formats only,
+    /// and that is not an optimisation — [`PgRevisions::centreless_revisions`] says why a CAD format
+    /// here would queue a job that fails at every worker start for ever. The mesh kernel measures on
+    /// every `process`, whatever `produce` asked for, so rebuilding the rung is what makes the centre
+    /// arrive — see the L0 branch of [`derive_one`](Self::derive_one).
     ///
     /// Never fails, for the stale sweep's reason: a database that will not answer at startup costs a
     /// backfill delayed to the next start, not a worker that never came up.
     pub(crate) async fn enqueue_centreless_revisions(&self) {
         let centreless = match PgRevisions(self.db.clone())
-            .centreless_revisions(CENTRES_PER_START)
+            .centreless_revisions(CENTRES_PER_START, &MESH_EXTENSIONS)
             .await
         {
             Ok(centreless) => centreless,

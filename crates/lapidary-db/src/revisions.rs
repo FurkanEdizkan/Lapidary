@@ -370,36 +370,40 @@ impl PgRevisions {
         Ok(())
     }
 
-    /// Revisions whose centre of mass was never recorded although their volume says they have one, newest
-    /// first, at most `limit` — what a worker re-derives at startup (L3, item 1).
+    /// Revisions of a file in `formats` whose centre of mass was never recorded although their volume
+    /// says they have one, newest first, at most `limit` — what a worker re-derives at startup (L3,
+    /// item 1).
     ///
-    /// Two populations. A STEP revision read by a bridge before 8, which wrote no centre: those the
-    /// stale-derivative sweep already re-reads, because the bridge version is inside the kernel version
-    /// it keys on. And a **mesh** revision from before `measure::measured` computed one — which that
-    /// sweep never finds, because the mesh kernel's version string names its format, its GLB writer and
-    /// its rasteriser, and nothing about how it measures. Those are the rows this exists for.
+    /// **`formats` is the mesh formats, and a CAD format must never be in it.** A mesh revision from
+    /// before `measure::measured` computed centres is the whole population this exists for: the
+    /// stale-derivative sweep never finds one, because `MeshKernel::version` names the format, the GLB
+    /// writer and the rasteriser and nothing about how it measures, so the rung is current. A STEP
+    /// revision read by a bridge before 8 wrote no centre either, but that sweep *does* find it — the
+    /// bridge version is inside the kernel version it keys on, and the `Structure` branch has always
+    /// recorded a centre. Queueing STEP here would re-read it twice on a worker that has a CAD kernel,
+    /// and on a worker that has none it would queue a job that fails `Permanent` at every start, for
+    /// ever: the board's "permanently-failing file re-attempted by every scan", in a new place.
     ///
-    /// `volume > 0`, not `volume IS NOT NULL`, and that is what makes the sweep terminate: the mesh
-    /// kernel gates its centre on `is_watertight && signed_volume != 0.0` and its volume on
+    /// `volume > 0`, not `volume IS NOT NULL`, is the other half of what makes the sweep terminate: the
+    /// mesh kernel gates its centre on `is_watertight && signed_volume != 0.0` and its volume on
     /// `is_watertight` alone, so a closed mesh enclosing nothing has a volume of 0 and no centre, for
-    /// ever. Asking for one again at every worker start is the board's "re-attempted by every scan"
-    /// bug in a new place.
-    // ponytail: a CAD worker running a bridge older than 8 still writes no centre, so its revisions are
-    // queued again at each start — the same ceiling `PgShapes::stale_revisions` accepts, capped the same
-    // way by the caller's limit and by `enqueue_if_absent`. One row of "this kernel version has no
-    // centre for this revision" would settle it.
+    /// ever.
     pub async fn centreless_revisions(
         &self,
         limit: i64,
+        formats: &[&str],
     ) -> Result<Vec<CentrelessRevision>, DbError> {
+        let formats: Vec<&str> = formats.to_vec();
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT p.library_id, r.id FROM revision r \
              JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
-             WHERE r.volume > 0 AND r.mass_props_json IS NULL \
-               AND EXISTS (SELECT 1 FROM file f WHERE f.revision_id = r.id AND f.role = 'source') \
+             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
+                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
+             WHERE r.volume > 0 AND r.mass_props_json IS NULL AND s.format = ANY($2) \
              ORDER BY r.created_at DESC, r.id DESC LIMIT $1",
         )
         .bind(limit)
+        .bind(&formats)
         .fetch_all(&self.0)
         .await?;
         Ok(rows

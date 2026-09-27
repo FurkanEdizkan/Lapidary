@@ -578,16 +578,19 @@ export const strings = {
     /** Under the mass, naming the material the density came from. */
     massSource: (material: string) => `${material}, at the density set for this library`,
     /**
-     * Why there is no mass, rather than a blank a reader would take for "weighs nothing". Four
-     * reasons and the page can tell them apart from what it already holds: the materials list and
-     * the volume.
+     * Why there is no mass, rather than a blank a reader would take for "weighs nothing". Said in the
+     * order the page checks them, which is the order a reader can act in: **no volume first**, because
+     * an open mesh told to set a density would still have no mass after setting one. Then a part
+     * somebody has said holds none, which must not be told to give it a material — that is the
+     * decision it just recorded.
      */
+    massNoVolume: 'Not available — without a volume there is nothing to multiply',
+    massHoldsNone: 'Not available — this part is recorded as holding no material',
     massNoMaterial: 'Not available — give the part its material, then set that material’s density',
     massSeveralMaterials:
       'Not available — a part of several materials has no one density to work a mass out from',
     massNoDensity: (material: string) =>
       `Not available — no density is set for ${material} in this library`,
-    massNoVolume: 'Not available — without a volume there is nothing to multiply',
     format: 'Format',
     /** The path the part is known by, which since slice 6a is its identity in the
      *  library — two parts called `bracket` in two folders are told apart by this. */
@@ -654,10 +657,12 @@ export const strings = {
     /**
      * Said instead for a centre of mass, where "not measured" would be the wrong word: one of these
      * revisions was read before Lapidary recorded centres, and a worker re-reads it in the
-     * background. Worded as a thing already queued and not as a promise of when, because a worker
-     * built without a CAD kernel does not re-read STEP at all.
+     * background. It never says *which* revision, because either of the two may be the one and the
+     * comparison takes them in any order. Worded as a thing already queued and not as a promise of
+     * when: only a mesh revision is swept, and a pre-bridge-8 CAD one waits on a worker that has a
+     * CAD kernel.
      */
-    centreQueued: 'Not recorded yet — a re-read of the earlier file is queued for it',
+    centreQueued: 'Not recorded yet — a re-read is queued for it',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
     /** The overlay: the From revision drawn as a grey ghost over the part (Phase 4 slice 2). */
     ghost: 'Show From as a ghost in the 3D view',

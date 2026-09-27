@@ -3186,6 +3186,32 @@ async fn a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_start
             .is_none(),
         "a revision with no volume has no centre to ask for"
     );
+
+    // And a CAD revision is never this sweep's, whatever its row says. `handler_over` has no CAD
+    // kernel, so a `Derive` job for a STEP file would fail `Permanent` here and be queued again at
+    // every start — which is the very bug the sweep must not reintroduce. The stale-derivative sweep
+    // is what re-reads a pre-bridge-8 STEP revision, because the bridge version is inside the kernel
+    // version it keys on.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
+    sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 35840")
+        .execute(&pool)
+        .await
+        .expect("gives the revision a volume and no centre again");
+    sqlx::query("UPDATE file SET format = 'step' WHERE role = 'source'")
+        .execute(&pool)
+        .await
+        .expect("makes it a CAD source");
+    handler.enqueue_stale_derivatives().await;
+    assert!(
+        jobs.dequeue("worker-d", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a CAD revision is the stale-derivative sweep's, never this one's"
+    );
 }
 
 /// The one part's materials, and whether a person typed them.
