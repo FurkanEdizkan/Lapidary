@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { expect, test, vi } from 'vitest'
 import { Detail } from './PartDetail'
 import { strings } from '../lib/strings'
@@ -125,12 +126,29 @@ test('tags are added and removed where the part is recordable, and only listed e
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const tagged = { ...BRACKET, tags: ['welding jig'] }
-  const page = (recordable: boolean) => (
-    <QueryClientProvider client={client}>
-      <Detail part={tagged} recordable={recordable} />
-    </QueryClientProvider>
-  )
-  const { rerender } = render(page(true))
+  // A router, because a tag chip is a `<Link>` to the tag's own page (P3) and `<Link>` reads router
+  // context — without a provider the whole panel renders as nothing. The tree is synthetic, as
+  // `index.test.tsx`'s is: what this test is about is the editing, and the link wants a real target
+  // to resolve against rather than a real route tree to live in.
+  const page = (recordable: boolean) => {
+    const root = createRootRoute({
+      component: () => <Detail part={tagged} recordable={recordable} />,
+    })
+    const tags = createRoute({ getParentRoute: () => root, path: '/tags/$tag', component: () => null })
+    const router = createRouter({
+      routeTree: root.addChildren([tags]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    return (
+      <QueryClientProvider client={client}>
+        {/* The synthetic tree is not the registered one, so the cast is confined to this one line. */}
+        <RouterProvider router={router as never} />
+      </QueryClientProvider>
+    )
+  }
+  render(page(true))
+  // `RouterProvider` has nothing mounted on its first render, so the panel arrives a tick later.
+  await screen.findByLabelText(strings.tags.field)
 
   fireEvent.change(screen.getByLabelText(strings.tags.field), { target: { value: 'spare' } })
   fireEvent.click(screen.getByRole('button', { name: strings.tags.add }))
@@ -140,8 +158,16 @@ test('tags are added and removed where the part is recordable, and only listed e
   fireEvent.click(screen.getByRole('button', { name: strings.tags.remove('welding jig') }))
   await waitFor(() => expect(puts).toEqual([{ tags: ['welding jig', 'spare'] }, { tags: [] }]))
 
-  rerender(page(false))
-  expect(screen.getByText('welding jig')).toBeTruthy()
+  // A second render rather than a rerender: each `page()` builds its own router, and swapping one
+  // `RouterProvider` for another inside the same tree leaves the new router unmounted.
+  cleanup()
+  render(page(false))
+  await screen.findByText('welding jig')
+  // The chip is a link to the tag's page, in the quick look as on the part page: it is the one
+  // `about` both layouts draw. Materials get no link — there is no page of a library's materials.
+  expect(screen.getByRole('link', { name: 'welding jig' }).getAttribute('href')).toBe(
+    '/tags/welding%20jig',
+  )
   expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
   expect(screen.queryByLabelText(strings.tags.field)).toBeNull()
   vi.unstubAllGlobals()

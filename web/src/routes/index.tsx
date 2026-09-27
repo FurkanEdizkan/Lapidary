@@ -1,6 +1,6 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   batchEventsUrl,
   blobUrl,
@@ -90,9 +90,34 @@ export const Route = createFileRoute('/')({
    * hands back nothing, so the poll below would simply never enable — silently, and
    * identically to there being no scan.
    */
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { batch?: string; folderId?: string; q?: string; library?: string; format?: string; material?: string; tag?: string; part?: string; field?: string; fieldValue?: string; fieldMin?: string; fieldMax?: string } => {
+  validateSearch: validateGridSearch,
+})
+
+/**
+ * Every parameter the grid reads. Named, and exported, because `/tags/{tag}` is the same grid with
+ * the tag fixed and reads every one of them: a tag page that took only the tag would leave the
+ * format and material facets, the search box, the category tree, the quick look and the saved
+ * filters all silently doing nothing, since `Index` draws a control whose callback is missing and
+ * then ignores the press.
+ */
+export type GridSearch = {
+  batch?: string
+  folderId?: string
+  q?: string
+  library?: string
+  format?: string
+  material?: string
+  tag?: string
+  part?: string
+  field?: string
+  fieldValue?: string
+  fieldMin?: string
+  fieldMax?: string
+}
+
+/** `validateSearch` for both routes that draw the grid, so neither can read a parameter differently. */
+export function validateGridSearch(search: Record<string, unknown>): GridSearch {
+  {
     const batch = search.batch
     const folderId = search.folderId
     const q = search.q
@@ -153,8 +178,8 @@ export const Route = createFileRoute('/')({
           }
         : {}),
     }
-  },
-})
+  }
+}
 
 /** A search param as text: a string as it is, a number as its digits, and an empty string or anything else as absent. */
 function searchText(value: unknown): string | undefined {
@@ -171,91 +196,114 @@ function searchText(value: unknown): string | undefined {
  * reload and it is a link a person can send someone.
  */
 function RouteComponent() {
-  const { batch, folderId, q, library, format, material, tag, part, field, fieldValue, fieldMin, fieldMax } = Route.useSearch()
-  const navigate = Route.useNavigate()
-  return (
-    <Index
-      batch={batch}
-      folderId={folderId}
-      q={q}
-      // The seeded library when nobody has chosen: `DEFAULT_LIBRARY_ID` stops being the
-      // answer and becomes the fallback, which is the whole of what "more than one library"
-      // changes about every screen.
-      library={(library as LibraryId | undefined) ?? DEFAULT_LIBRARY_ID}
-      onSelectLibrary={(next) =>
-        void navigate({
-          // Everything below a library belongs to it: a category id and a search from the
-          // old one mean nothing in the new one, and carrying them over would filter the
-          // new library by a folder it does not have.
-          search: { library: next === DEFAULT_LIBRARY_ID ? undefined : next },
-        })
-      }
-      onSelectFolder={(folder) =>
-        void navigate({
-          search: (previous) => ({ ...previous, folderId: folder ?? undefined, part: undefined }),
-        })
-      }
-      material={material}
-      onSelectMaterial={(value) =>
-        void navigate({
-          search: (previous) => ({ ...previous, material: value ?? undefined, part: undefined }),
-        })
-      }
-      tag={tag}
-      onSelectTag={(value) =>
-        void navigate({
-          search: (previous) => ({ ...previous, tag: value ?? undefined, part: undefined }),
-        })
-      }
-      field={field}
-      fieldValue={fieldValue}
-      fieldMin={fieldMin}
-      fieldMax={fieldMax}
-      onSelectField={(key, value, range) =>
-        void navigate({
-          search: (previous) => ({
-            ...previous,
-            field: key ?? undefined,
-            fieldValue: value ?? undefined,
-            fieldMin: range?.min,
-            fieldMax: range?.max,
-            part: undefined,
-          }),
-        })
-      }
-      format={format}
-      onSelectFormat={(value) =>
-        void navigate({
-          search: (previous) => ({ ...previous, format: value ?? undefined, part: undefined }),
-        })
-      }
-      part={part}
-      onOpenPart={(id) =>
-        void navigate({
-          search: (previous) => ({ ...previous, part: id ?? undefined }),
-          // One history entry however many parts are looked at, so Back leaves the grid rather
-          // than stepping through every card clicked on the way — and Back from the full page
-          // still lands on the pane it was opened from.
-          replace: true,
-        })
-      }
-      onSearch={(query) =>
-        void navigate({
-          search: (previous) => ({ ...previous, q: query === '' ? undefined : query }),
-          // The back button walks a person through the pages they went to, not through
-          // every keystroke on the way to one.
-          replace: true,
-        })
-      }
-      onApplyFilter={(search) =>
-        void navigate({
-          // In place of every filter there, and without the open part: a saved filter is a new
-          // look at the library, and a step the back button can undo.
-          search: (previous) => ({ library: previous.library, ...search }),
-        })
-      }
-    />
-  )
+  return <Index {...useGridWiring(Route.useSearch())} />
+}
+
+/**
+ * The grid's props, wired to the URL: what `RouteComponent` used to spell inline, lifted so that
+ * `/tags/{tag}` — the same grid with one tag fixed — gets the same wiring rather than a copy of it
+ * that goes stale. `Index` takes every one of these as a prop rather than calling `useSearch` itself,
+ * which is how `index.test.tsx` renders it without a router.
+ *
+ * `useNavigate` rather than `Route.useNavigate`: the caller is whichever route is drawing the grid,
+ * and a navigate bound to `/` would write the tag page's changes to the wrong path.
+ */
+export function useGridWiring(search: GridSearch, pathTag?: string): Parameters<typeof Index>[0] {
+  const { batch, folderId, q, library, format, material, tag, part, field, fieldValue, fieldMin, fieldMax } = search
+  const navigate = useNavigate()
+  /*
+    Where a change lands. **Every navigation names its route**, because the two routes that draw this
+    grid are told apart by one thing — whether the tag is in the path — and a relative navigation from
+    a hook that does not know which route it is on has no search schema to type its updater against.
+    Two concrete calls rather than one with a computed `to`: both routes read the same `GridSearch`, so
+    the updater fits either, and a union of the two `to` values types as nothing at all.
+  */
+  const go = (
+    next: string | null,
+    reduce: (previous: GridSearch) => GridSearch,
+    replace?: boolean,
+  ) =>
+    void (next === null
+      ? navigate({ to: '/', search: reduce, replace })
+      : navigate({ to: '/tags/$tag', params: { tag: next }, search: reduce, replace }))
+  /** A change that keeps you where you are, whichever of the two routes that is. */
+  const stay = (reduce: (previous: GridSearch) => GridSearch, replace?: boolean) =>
+    go(pathTag ?? null, reduce, replace)
+  return {
+    batch,
+    folderId,
+    q,
+    // The seeded library when nobody has chosen: `DEFAULT_LIBRARY_ID` stops being the
+    // answer and becomes the fallback, which is the whole of what "more than one library"
+    // changes about every screen.
+    library: (library as LibraryId | undefined) ?? DEFAULT_LIBRARY_ID,
+    onSelectLibrary: (next) =>
+      // Everything below a library belongs to it: a category id and a search from the old one mean
+      // nothing in the new one, and carrying them over would filter the new library by a folder it
+      // does not have. The tag survives, because a tag is a word and not an id — the new library may
+      // well have it, and its page says plainly when it does not.
+      stay(() => ({ library: next === DEFAULT_LIBRARY_ID ? undefined : next })),
+    onSelectFolder: (folder) =>
+      stay((previous) => ({ ...previous, folderId: folder ?? undefined, part: undefined })),
+    material,
+    onSelectMaterial: (value) =>
+      stay((previous) => ({ ...previous, material: value ?? undefined, part: undefined })),
+    // The path's tag first: on `/tags/{tag}` a `?tag=` typed on the end is the same tag or a
+    // contradiction, and the address bar's own path is the one a person can read.
+    tag: pathTag ?? tag,
+    /*
+      The one filter whose choice is a *place*. A tag has its own page — the same grid, pre-filtered,
+      with the tags most often beside it — so choosing one goes there instead of writing `?tag=` here,
+      and there is one URL for "the grid narrowed to this tag" rather than two. Everything else in the
+      search rides along, which is what makes this safe: the format, the query and the category a
+      person already chose are still there when they arrive. Clearing the tag comes back to the grid,
+      still with the rest. `?tag=` on `/` goes on working — every link anybody has already sent has
+      one — it is only no longer what this application writes.
+    */
+    onSelectTag: (value) => go(value, (previous) => ({ ...previous, tag: undefined, part: undefined })),
+    field,
+    fieldValue,
+    fieldMin,
+    fieldMax,
+    onSelectField: (key, value, range) =>
+      stay((previous) => ({
+        ...previous,
+        field: key ?? undefined,
+        fieldValue: value ?? undefined,
+        fieldMin: range?.min,
+        fieldMax: range?.max,
+        part: undefined,
+      })),
+    format,
+    onSelectFormat: (value) =>
+      stay((previous) => ({ ...previous, format: value ?? undefined, part: undefined })),
+    part,
+    onOpenPart: (id) =>
+      stay(
+        (previous) => ({ ...previous, part: id ?? undefined }),
+        // One history entry however many parts are looked at, so Back leaves the grid rather
+        // than stepping through every card clicked on the way — and Back from the full page
+        // still lands on the pane it was opened from.
+        true,
+      ),
+    onSearch: (query) =>
+      stay(
+        (previous) => ({ ...previous, q: query === '' ? undefined : query }),
+        // The back button walks a person through the pages they went to, not through
+        // every keystroke on the way to one.
+        true,
+      ),
+    // In place of every filter there, and without the open part: a saved filter is a new look at the
+    // library, and a step the back button can undo. A filter carrying a tag lands on that tag's page,
+    // for the reason `onSelectTag` gives — otherwise applying one from a tag page would leave the old
+    // tag in the path and the new one in the search, which is two tags and one grid.
+    onApplyFilter: (filters) =>
+      go(filters.tag ?? null, (previous) => ({
+        library: previous.library,
+        ...filters,
+        tag: undefined,
+      })),
+  }
 }
 
 export function Index({
@@ -280,6 +328,9 @@ export function Index({
   part,
   onOpenPart,
   onApplyFilter,
+  titled = true,
+  heading,
+  intro,
 }: {
   batch?: string
   folderId?: string
@@ -313,6 +364,16 @@ export function Index({
   onOpenPart?: (part: PartId | null) => void
   /** Puts a saved filter's filters on the grid in one step, in place of the ones there. */
   onApplyFilter?: (search: FilterSearch) => void
+  /**
+   * Off for a route that renders its own `<title>` — `/tags/{tag}`, which is titled by its tag. React
+   * hoists every title it is given and the document takes the first in tree order, so two of them
+   * would be settled by which piece of JSX happened to be written first; this way there is one.
+   */
+  titled?: boolean
+  /** What the heading above the grid says, in place of the selected category's name. */
+  heading?: string
+  /** A strip between the toolbar and the grid: what `/tags/{tag}` puts its related tags in. */
+  intro?: ReactNode
 }) {
   const queryClient = useQueryClient()
 
@@ -907,7 +968,7 @@ export function Index({
         its title and `index.html`'s static one stays as the pre-hydration fallback.
         SC 2.4.2, Level A — one title for the whole application titles none of its pages.
       */}
-      <title>{strings.titles.library}</title>
+      {titled ? <title>{strings.titles.library}</title> : null}
       <div id="parts" tabIndex={-1} className="min-w-0 flex-1">
         <Toolbar
           scope={
@@ -921,7 +982,7 @@ export function Index({
                 there once there is a count to give.
               */}
               <h2 className="text-[15px] leading-none font-semibold text-[var(--color-bright)]">
-                {selectedFolderName ?? strings.folders.root}
+                {heading ?? selectedFolderName ?? strings.folders.root}
               </h2>
               {parts.isSuccess && loaded.length > 0 ? (
                 <p className="tabular text-[10.5px] text-[var(--color-muted)]">
@@ -969,6 +1030,12 @@ export function Index({
             setBulk(null)
           }}
         />
+        {/*
+          Between the heading and the grid, and in the main column rather than in the rail, which is a
+          drawer under `md`: a tag page's related tags and its "nothing carries this any more" line are
+          the two things a person on a phone most needs to see, and the rail hides both behind a button.
+        */}
+        {intro}
         <DropOverlay onFiles={startUpload} picker={picker} />
         {upload.isPending && uploading !== undefined ? (
           <p role="status" className="mb-4 text-sm text-[var(--color-muted)]">
@@ -1574,6 +1641,23 @@ function Facets({
         name={(value) => value}
         option={strings.facets.tagOption}
       />
+      {/*
+        The way into the whole library's tags, which is a different question from this panel's: these
+        rows count within the grid a person has narrowed, and `/tags` counts the library. Drawn only
+        when there is a tag to find — `/tags` with nothing on it is not a page to send anybody to.
+        It carries the library and nothing else, for the same reason.
+      */}
+      {(facets.data.tags ?? []).length === 0 ? null : (
+        <p className="mb-6 -mt-4">
+          <Link
+            to="/tags"
+            search={library === DEFAULT_LIBRARY_ID ? {} : { library }}
+            className="ease-mechanical inline-block rounded-sm px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+          >
+            {strings.tagIndex.all}
+          </Link>
+        </p>
+      )}
       <FieldFilters
         library={library}
         field={field}

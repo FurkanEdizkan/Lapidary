@@ -1,9 +1,11 @@
+import { Link } from '@tanstack/react-router'
 import { annotationsOf, labelsFor } from '../lib/annotations'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   addPartSource,
   blobUrl,
+  DEFAULT_LIBRARY_ID,
   downloadUrl,
   exportUrl,
   fetchBatchStatus,
@@ -351,6 +353,29 @@ const SOURCE_FIELDS = [
  * `<dl>` would be one refactor away from dropping that.
  */
 /**
+ * One tag, as a link to its page: the same grid narrowed to it, with the tags most often beside it.
+ *
+ * The library rides along, left off only for the default one exactly as `AppFrame`'s places leave it
+ * off — without it a tag on a model in the second library would open the first library's tag page,
+ * which is the same word about a different set of models.
+ *
+ * No `aria-label`. The accessible name is the visible text, which is the tag, so WCAG 2.5.3 holds by
+ * construction rather than by our remembering to repeat the word.
+ */
+function TagLink({ library, tag }: { library: PartDetailData['library']; tag: string }) {
+  return (
+    <Link
+      to="/tags/$tag"
+      params={{ tag }}
+      search={library === DEFAULT_LIBRARY_ID ? {} : { library }}
+      className="ease-mechanical rounded-sm duration-[var(--duration-fast)] hover:text-[var(--color-bright)]"
+    >
+      {tag}
+    </Link>
+  )
+}
+
+/**
  * A list of words a person gives the part: its tags, or its materials. Listed wherever the part is
  * shown, and edited only where `recordable` is on, for the reason `Detail` gives: a tag half-typed
  * into a dialog that closes on Escape is a tag somebody loses.
@@ -365,6 +390,7 @@ function WordList({
   text,
   save: send,
   note = null,
+  chip,
 }: {
   part: PartDetailData
   recordable: boolean
@@ -373,6 +399,12 @@ function WordList({
   save: (part: PartDetailData['id'], values: readonly string[]) => Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }>
   /** A line under the list, such as where its values came from. */
   note?: string | null
+  /**
+   * How one value is drawn, when the value is a place you can go. Tags have a page of their own —
+   * every model in this library carrying it, and the tags usually beside it — and materials do not, so
+   * this is a slot rather than a flag: nothing here knows what a tag is.
+   */
+  chip?: (value: string) => ReactNode
 }) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
@@ -406,7 +438,7 @@ function WordList({
               key={tag}
               className="flex items-center gap-1 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-sm"
             >
-              {tag}
+              {chip === undefined ? tag : chip(tag)}
               {recordable ? (
                 <button
                   type="button"
@@ -925,7 +957,19 @@ export function Detail({
   const about = (
     <>
       {/* `?? []` for a server from before tags or materials, which sends a part without them. */}
-      <WordList part={part} recordable={recordable} values={part.tags ?? []} text={strings.tags} save={setPartTags} />
+      <WordList
+        part={part}
+        recordable={recordable}
+        values={part.tags ?? []}
+        text={strings.tags}
+        save={setPartTags}
+        /*
+          A tag leads somewhere, here and in the quick look both — this is the one `about` that draws
+          them, so the chip is a link wherever a model is shown. Materials get no chip: there is no
+          page of a library's materials, and a link that went to one would be a promise we do not keep.
+        */
+        chip={(value) => <TagLink library={part.library} tag={value} />}
+      />
       <WordList
         part={part}
         recordable={recordable}

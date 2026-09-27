@@ -722,7 +722,7 @@ export class RefusedError extends Error {
  * both come off `folders.rs`'s one `refused` helper, and a client that reads the field on
  * one route and discards it on the other reports "already deleted" as a server outage.
  */
-async function refusalReason(response: Response): Promise<string | undefined> {
+export async function refusalReason(response: Response): Promise<string | undefined> {
   try {
     const body: unknown = await response.json()
     const reason =

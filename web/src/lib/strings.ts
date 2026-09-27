@@ -2173,4 +2173,73 @@ export const strings = {
     pullFrom: (share: string) => `${share}, from somebody you removed or who gave no name`,
     pullImportingPlain: 'Importing what was fetched…',
   },
+  /**
+   * The tag index: `/tags`, and one tag's own page (P3 — "tags as places").
+   *
+   * **Its own block, not the `tags` one above.** That block is the part page's tag *editor* — a
+   * field, an Add button, a remove label — and belongs to whoever wrote it. Nothing here is read
+   * from another block, and nothing here is read by another screen.
+   *
+   * The word on screen is **model**, not part: these two pages are the browsing half of the
+   * application, and a person scanning a library of miniatures and terrain calls them models. The
+   * grid and the part page keep saying "part", which is what the data calls them.
+   */
+  tagIndex: {
+    /** The tab, for `/tags`. Subject first, product last, as every other title is. */
+    title: 'Tags — Lapidary',
+    /**
+     * The tab, for one tag's page. The tag first and nothing before it: somebody with six tabs open
+     * reads twelve characters, and "Tags — dragon" spends all twelve saying the same word six times.
+     */
+    tagTitle: (tag: string) => `${tag} — Lapidary`,
+    heading: 'Tags',
+    /**
+     * Under the heading. It says where tags come from, because the answer is "somebody typed it" and
+     * a library nobody has tagged is an empty page that would otherwise read as a broken one.
+     */
+    lead: 'Every tag in this library, and how many models carry it. Tags are typed on a model by hand — nothing reads one off a file.',
+    /** The count beside a tag, with its unit, so the link reads whole and needs no label of its own. */
+    models: (parts: number) =>
+      `${parts.toLocaleString('en-US')} ${parts === 1 ? 'model' : 'models'}`,
+    /** The two orders. A group of radios, because they are two views of one list. */
+    order: 'Order',
+    byCount: 'Most used',
+    byName: 'A to Z',
+    /** The letter jump, drawn only once the list is long enough to need one. */
+    jump: 'Jump to a letter',
+    /** The heading a tag starting with something other than a letter is filed under. */
+    otherInitial: 'Numbers and symbols',
+    /** A library nobody has tagged yet. Not a failure, and it says what to do about it. */
+    none: 'No model in this library is tagged yet. Open a model and add a tag to it — a project, a use, a shelf — and it will be here.',
+    failed: 'Could not load this library’s tags. Check that the api service is running, then reload.',
+    /** The link out of the grid’s filter panel, into the whole library’s tags. */
+    all: 'All tags…',
+    /** The link back, from one tag’s page. */
+    back: 'All tags',
+
+    /** One tag's page: the grid narrowed to it, with what else is on those models beside it. */
+    related: 'Often together with',
+    /**
+     * How the floor is stated. The number is the server's (`RelatedTags.floor`) and not written here
+     * twice: a tag sharing one model is a coincidence, and a panel that does not say where the line
+     * is invites the reader to guess it.
+     */
+    relatedNote: (floor: number) =>
+      `Tags on at least ${floor.toLocaleString('en-US')} of the same models.`,
+    /** How many models a related tag shares. Not that tag's own total, which is why it says "shared". */
+    shared: (parts: number) =>
+      `${parts.toLocaleString('en-US')} shared`,
+    /** Nothing shares enough models to be worth offering. */
+    relatedNone: 'Nothing else is tagged on enough of these models to be worth following.',
+    relatedFailed: 'Could not load the tags near this one. The models below are unaffected.',
+    /**
+     * A tag no live model carries any more. Removal is soft here as everywhere, so the honest
+     * sentence is that the models went, not that the tag was deleted — there is no tag to delete.
+     */
+    gone: (tag: string) =>
+      `No model in this library carries “${tag}” any more. The last model with it was removed, or the tag was taken off it.`,
+    /** How many models a tag's own page is showing, beside its name. */
+    counted: (parts: number) =>
+      `${parts.toLocaleString('en-US')} ${parts === 1 ? 'model carries this tag' : 'models carry this tag'}`,
+  },
 } as const
