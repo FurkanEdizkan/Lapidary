@@ -628,6 +628,39 @@ material, keyed by the material exactly as parts hold it, and removed with its l
 - **What it is for:** a part's mass, worked out when read from its volume and the density of its one
   material, and always approximate (goal 5).
 
+### 3.8 Shape profiles, and what somebody decided about a pair (Phase 6)
+
+`part_shape(part_id PK, library_id, revision_id, l0_blake3, version smallint, size_mm float8,
+descriptor real[35], computed_at)` (`0047`) and
+`part_link(part_id, other_id, library_id, kind, created_at, PK (part_id, other_id))` (`0048`).
+
+- **The profile is derived, never authored.** The worker computes it from the part's stored **L0
+  tessellation** — never the source file, never the kernel — in line inside the ingest job, so a batch
+  that reports finished has its profiles. 35 floats: 32 D2-distribution bins stored as **square roots**
+  of their probabilities (which makes Euclidean distance Hellinger distance), then λ2/λ1, λ3/λ1 and
+  `ln(area/m²)`; `size_mm` is the mean distance between two points on the surface, so an open mesh has one.
+- **A row is stale, not wrong.** `version` is `lapidary_core::SHAPE_VERSION` and `l0_blake3` is the rung
+  it was computed from; either being out of date, or a newer revision existing, makes the row ignored and
+  recomputed. Readers define "current" as **this build's version and no newer revision** — deliberately
+  *not* the L0 hash, which would cost a second lateral on a 50 ms path (G3, 2026-09-27).
+- **No pgvector** (owner, 2026-09-21): a plain `real[]` compared exactly in Rust. The ceiling is about
+  100k parts a library; the upgrade is one statement,
+  `ALTER TABLE part_shape ALTER descriptor TYPE vector(35) USING descriptor::vector`.
+- **Known limit, measured** (G2 and T1, 2026-09-26/27): `ln(area/m²)` carries a re-tessellation, so an
+  off-axis rotation or a finer triangulation of the *same* surface moves the descriptor — 0.09 against a
+  0.04 threshold on dense meshes — and `size_mm` itself moved 1.55 % under a rigid turn, which it cannot
+  legitimately do. The hypothesis on record is that L0's mesh depends on orientation. Simple parts are
+  unaffected. Accepted for now, with the cost of the alternatives recorded in the ROADMAP.
+- **`part_link` is a decision, not a derivation.** `variant` and `distinct` take a pair out of the
+  duplicates queue for good; `folded_into` records that a part was soft-removed **as a duplicate of**
+  another, and is the roadmap's "merge" renamed, because CLAUDE.md keeps "no merge" for versioning.
+  Nothing is moved and nothing is deleted: Restore undoes a fold, and a fold's removal shares its link's
+  transaction stamp so that an ordinary later removal cannot masquerade as one.
+- A `variant`/`distinct` pair is stored once with the smaller id first; `folded_into` keeps its direction.
+  Both tables are deleted with the part by `PgParts::purge`, before `revision`, and the catalogue test
+  knows them. Purging the part something was folded *into* removes that row too, leaving an ordinary
+  removed part — expected, not an orphan.
+
 ---
 
 ## 4. Source links and images
