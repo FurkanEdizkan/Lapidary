@@ -227,8 +227,9 @@ pub struct DuplicateSummary {
 ///
 /// ponytail: a key stopped by `statement_timeout` rather than by `lock_timeout` — a read that is
 /// genuinely slow instead of blocked — is reported at [`PER_KEY`] and its statement runs on for up to
-/// three seconds more, still holding its connection. Bounded, where it used to be open-ended, and no
-/// read in this file has ever been measured within an order of magnitude of either number. Closing it
+/// two seconds more (five less three), still holding its connection. Bounded, where it used to be
+/// open-ended, and no read in this file has ever been measured within an order of magnitude of either
+/// number. Closing it
 /// would mean the resolve setting its own `statement_timeout` per key, which needs the resolvers to
 /// hold a connection rather than take the pool, and that is `repo.rs`'s signature rather than this
 /// file's.

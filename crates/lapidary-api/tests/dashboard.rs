@@ -762,7 +762,9 @@ async fn a_keys_own_budget_starts_when_it_starts_and_not_when_it_was_asked(pool:
 
 /// Four keys at a time, and the semaphore is what makes that true. Twelve keys all blocked on one lock
 /// go in three rounds of four, each round spending its own two seconds — about six seconds in all.
-/// Without the permit limit every key would start at once and the whole thing would be over in two.
+/// Without the permit limit every key would start at once: eight of them would take the pool's eight
+/// connections and be cancelled at two seconds, the last four would take their place and be cancelled
+/// two seconds after that, and the whole thing would be over in about three (3.00 s, measured).
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn twelve_blocked_keys_go_four_at_a_time(pool: sqlx::PgPool) {
     corpus(&pool).await;
