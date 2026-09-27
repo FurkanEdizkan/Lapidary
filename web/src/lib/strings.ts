@@ -2068,6 +2068,8 @@ export const strings = {
     /** Parts leave this list when the sharer stops offering them; nothing of this installation's goes with them. */
     libraryLead:
       'This is what they offer. A part they stop offering leaves this list; nothing of yours goes with it.',
+    libraryAsksFirst:
+      'Its owner asks first: a pull waits until they let you have its files, and says so while it waits.',
     libraryGone:
       'This shared library is not here any more: its sharer stopped offering it, or you removed them.',
     libraryLoadFailed: 'Could not load this shared library. Reload to try again.',

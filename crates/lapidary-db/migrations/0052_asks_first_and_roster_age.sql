@@ -1,0 +1,35 @@
+-- Sharing S4, the last of it: a held folder says whether pulling it needs its owner's leave, and the ceiling
+-- `0044` recorded is closed.
+--
+-- **Asks first, on the wire.** `GET /peer/v1/shares` carries `asksFirst` now, so the page for a folder
+-- somebody else owns can say that pulling it waits for them rather than letting a person press Pull and read
+-- "Waiting for Ayşe" as though something had gone wrong. The field is additive: an installation from before it
+-- sends no field, which reads as `false` — open — which is what every folder shared before asking first
+-- existed was.
+--
+-- It is a **hint, never authorization.** What decides whether these bytes may be fetched is the owner's own
+-- answer to `POST /peer/v1/shares/{share}/request`, and the roster's `may_fetch` for the other holders. A copy
+-- of this column that is stale, or a relay that lies about it, changes nothing about who gets a file: it only
+-- changes what a page says before anybody asks. That is why a relayed offer may seed the column on a folder
+-- this installation has just heard of, and may not overwrite what the folder's own owner last said — an older
+-- member, which sends no field, would otherwise reset an ask-first folder to open on every hello round.
+ALTER TABLE peer_share ADD COLUMN asks_first boolean NOT NULL DEFAULT false;
+
+-- **The ceiling `0044` recorded, closed.** Whether a folder may be passed on, and whether its files may be
+-- served to one of its people, is decided by the roster its owner published — and that roster can only be read
+-- from that owner. So an owner who takes somebody off a folder and then goes offline used to leave every other
+-- holder serving them for ever.
+--
+-- A roster read longer ago than `lapidary_db::mirror::ROSTER_TRUSTED_FOR_SECS` (**7 days**, the owner's
+-- decision of 2026-09-21) is no longer an answer: `relayable_to`, `relayed_to` and `serves` all require
+-- `peer_share_member.seen_at` inside it, so a folder whose owner has been unreachable for a week stops being
+-- passed on and stops being served, and one hello round from that owner restores both.
+--
+-- Nothing is deleted and nothing expires in the table: `seen_at` moves forward every time the owner answers,
+-- and the reads above are what refuse a stale one. So the rows a page shows — who is in a folder, who is
+-- introduced, who declined — read the same as they always did, and a week of silence costs the people in a
+-- folder the relay, not their history.
+--
+-- Those three reads all ask "this folder's roster row for this device, recently enough", so the index carries
+-- `seen_at` alongside the key they look it up by.
+CREATE INDEX peer_share_member_fresh ON peer_share_member (device_id, seen_at);

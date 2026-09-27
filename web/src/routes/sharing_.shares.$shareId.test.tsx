@@ -25,6 +25,7 @@ const TERRAIN: MirroredShare = {
   readFromName: null,
   asOf: '2026-09-17T01:40:00Z',
   seeding: true,
+  asksFirst: false,
   heldFiles: 1,
   listedFiles: 2,
 }
@@ -331,4 +332,19 @@ test('a pull waiting its turn says how many are ahead of it', async () => {
   renderPage()
 
   await screen.findByText(strings.sharing.pullQueuedBehind(2))
+})
+
+test('a folder whose owner asks first says so before anybody presses Pull', async () => {
+  stub({ share: { status: 200, body: { ...TERRAIN, asksFirst: true } } })
+  renderPage()
+
+  expect(await screen.findByText(strings.sharing.libraryAsksFirst)).toBeTruthy()
+})
+
+test('a folder anybody in it may pull says nothing about asking', async () => {
+  stub()
+  renderPage()
+
+  await screen.findByText(strings.sharing.libraryLead)
+  expect(screen.queryByText(strings.sharing.libraryAsksFirst)).toBeNull()
 })

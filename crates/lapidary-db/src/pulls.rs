@@ -4,6 +4,24 @@ use crate::DbError;
 use lapidary_core::{BatchId, DeviceId, LibraryId, PartId, PeerShareId, PullId, ShareId};
 use sqlx::PgPool;
 
+/// The states a pull is not finished in, for `state IN …`. A macro rather than a `const`, as `reaches!` in
+/// `crate::shares` is, because `concat!` takes literals and not constants.
+///
+/// `paused` is not among them: a paused pull is not picked up. It **is** among `unfinished_or_paused!`'s,
+/// because what a paused pull staged stays, which is what pausing promises.
+macro_rules! unfinished {
+    () => {
+        "('queued', 'fetching', 'waiting', 'importing')"
+    };
+}
+
+/// The same, with `paused`: what still has a claim on a staged file.
+macro_rules! unfinished_or_paused {
+    () => {
+        "('queued', 'fetching', 'waiting', 'importing', 'paused')"
+    };
+}
+
 /// One pull, as the peer role works it and a page shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PullRow {
@@ -32,23 +50,28 @@ pub struct PullRow {
     /// The one part this pull is for, by its path in the folder it came from. `None` is the whole folder,
     /// which is every pull before S9 and every "Pull all" since.
     pub source_path: Option<String>,
-    /// How many unfinished pulls were started before this one. One pull runs at a time, so a part opened
-    /// while another pull is fetching waits its turn, and a page can say how long the queue is.
+    /// How many unfinished pulls **of the same sharer's folders** were started before this one. One pull runs
+    /// at a time per sharer, so a part opened while another pull from that sharer is fetching waits its turn,
+    /// and a page can say how long the queue is. A pull from somebody else is not ahead of it: those run beside
+    /// each other, so counting them would tell the person to wait for something that is not in their way.
     pub queued_behind: i64,
 }
 
 macro_rules! pull_columns {
     () => {
+        concat!(
         "SELECT pu.id AS id, pu.peer_share_id AS share, ps.remote_id AS remote, \
          pu.device_id AS device, pe.name AS sharer, pe.address AS address, \
          (pe.removed_at IS NOT NULL) AS removed, pu.share_name AS share_name, \
          pu.library_id AS library, pu.state AS state, pu.files_total AS files_total, \
          pu.files_done AS files_done, pu.bytes_total AS bytes_total, pu.bytes_done AS bytes_done, \
          pu.batch_id AS batch, pu.error AS error, pu.source_path AS source_path, \
-         (SELECT count(*) FROM pull q WHERE q.state IN ('queued', 'fetching', 'waiting', 'importing') \
+         (SELECT count(*) FROM pull q WHERE q.state IN ", unfinished!(), " \
+           AND q.device_id = pu.device_id \
            AND (q.created_at, q.id) < (pu.created_at, pu.id)) AS queued_behind \
          FROM pull pu JOIN peer pe ON pe.device_id = pu.device_id \
          LEFT JOIN peer_share ps ON ps.id = pu.peer_share_id"
+        )
     };
 }
 
@@ -137,17 +160,72 @@ impl PgPulls {
         Ok(Some(id))
     }
 
-    /// The oldest unfinished pull, paused ones aside: what the peer role works next, and what it picks up again after a
-    /// restart. A pull whose sharer was removed here is picked up too, so that it is told so rather than left waiting.
+    /// The oldest unfinished pull of anybody, paused ones aside.
     pub async fn next(&self) -> Result<Option<PullRow>, DbError> {
+        self.oldest(None).await
+    }
+
+    /// The oldest unfinished pull of one sharer's folders: what the peer role works next for them, and what it
+    /// picks up again after a restart. One sharer at a time, and the sharers beside each other — a pull waiting
+    /// on Ayşe's leave is no reason for Burak's to sit still.
+    pub async fn next_of(&self, sharer: DeviceId) -> Result<Option<PullRow>, DbError> {
+        self.oldest(Some(sharer)).await
+    }
+
+    /// A pull whose sharer was removed here is picked up too, so that it is told so rather than left waiting.
+    async fn oldest(&self, sharer: Option<DeviceId>) -> Result<Option<PullRow>, DbError> {
         let row: Option<PullTuple> = sqlx::query_as(concat!(
             pull_columns!(),
-            " WHERE pu.state IN ('queued', 'fetching', 'waiting', 'importing') \
+            " WHERE pu.state IN ",
+            unfinished!(),
+            " AND ($1::bytea IS NULL OR pu.device_id = $1) \
              ORDER BY pu.created_at, pu.id LIMIT 1"
         ))
+        .bind(sharer.map(|device| device.as_bytes().to_vec()))
         .fetch_optional(&self.0)
         .await?;
         row.map(pull_row).transpose()
+    }
+
+    /// Whose folders have a pull waiting: one task each, in the order they were asked for.
+    pub async fn sharers_waiting(&self) -> Result<Vec<DeviceId>, DbError> {
+        let rows: Vec<Vec<u8>> = sqlx::query_scalar(concat!(
+            "SELECT pu.device_id FROM pull pu WHERE pu.state IN ",
+            unfinished!(),
+            " GROUP BY pu.device_id ORDER BY min(pu.created_at)"
+        ))
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(|device| {
+                let length = device.len();
+                <[u8; 32]>::try_from(device)
+                    .map(DeviceId::from_bytes)
+                    .map_err(|_| DbError::CorruptDeviceId {
+                        column: "pull.device_id",
+                        length,
+                    })
+            })
+            .collect()
+    }
+
+    /// Every file some unfinished pull still wants, by its BLAKE3: what may not be swept out of the staging
+    /// volume. A paused pull counts — pausing promises that what is staged stays — and so does a pull of one
+    /// part, for that part alone.
+    ///
+    /// A superset on purpose. It does not ask which of these the destination library already holds, so it keeps
+    /// a file a pull will turn out not to need; the other way round would delete what a pull is resuming from.
+    pub async fn staged_wanted(&self) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar(concat!(
+            "SELECT DISTINCT psp.blake3 FROM pull pu \
+             JOIN peer_share_part psp ON psp.peer_share_id = pu.peer_share_id \
+             WHERE pu.state IN ",
+            unfinished_or_paused!(),
+            " AND psp.blake3 IS NOT NULL \
+             AND (pu.source_path IS NULL OR psp.source_path = pu.source_path)"
+        ))
+        .fetch_all(&self.0)
+        .await?)
     }
 
     /// One pull.

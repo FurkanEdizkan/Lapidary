@@ -20,17 +20,27 @@ fn sharers_library() -> LibraryId {
     LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid"))
 }
 
-/// An ASCII STL of a cliff face, a real mesh for the worker to import.
-fn cliff_face() -> Vec<u8> {
-    let mut stl = b"solid cliff-face-lp-tr-0112\n".to_vec();
-    for step in 0..400 {
+/// An ASCII STL, a real mesh for the worker to import. Two meshes of different facet counts are two different
+/// files, which is what keeps two sharers' folders from offering the same bytes under the same staged name.
+fn mesh(solid: &str, facets: u32) -> Vec<u8> {
+    let mut stl = format!("solid {solid}\n").into_bytes();
+    for step in 0..facets {
         let x = f64::from(step) * 0.25;
         stl.extend_from_slice(
             format!("facet normal 0 0 1\n outer loop\n  vertex {x:.2} 0 0\n  vertex {:.2} 0 0\n  vertex {x:.2} 18.5 4\n endloop\nendfacet\n", x + 0.25).as_bytes(),
         );
     }
-    stl.extend_from_slice(b"endsolid cliff-face-lp-tr-0112\n");
+    stl.extend_from_slice(format!("endsolid {solid}\n").as_bytes());
     stl
+}
+
+fn cliff_face() -> Vec<u8> {
+    mesh("cliff-face-lp-tr-0112", 400)
+}
+
+/// A hexagonal base, Burak's folder's one part: a different mesh, so it stages under a name of its own.
+fn hex_base() -> Vec<u8> {
+    mesh("hex-base-28mm-hb-0031", 260)
 }
 
 /// Store `bytes` in the sharer's store and file a part for them at `source_path`, under `folder`.
@@ -39,6 +49,7 @@ async fn filed(
     root: &std::path::Path,
     folder: FolderId,
     source_path: &str,
+    name: &str,
     bytes: &[u8],
 ) -> PartId {
     let staged = root.join("staged.stl");
@@ -53,7 +64,7 @@ async fn filed(
             folder: Some(folder),
             storage_path: None,
             library: sharers_library(),
-            name: "Cliff face, LP-TR-0112",
+            name,
             source_path,
             blob: &StoredBlobRow {
                 hash: stored.hash,
@@ -122,6 +133,7 @@ async fn terrain(pool: &sqlx::PgPool) -> Terrain {
         sharer_store.path(),
         rocks,
         "Terrain/Rocks/cliff-face-lp-tr-0112.stl",
+        "Cliff face, LP-TR-0112",
         &cliff_face(),
     )
     .await;
@@ -777,4 +789,238 @@ async fn a_folder_whose_owner_is_away_is_pulled_from_another_holder(pool: sqlx::
 
     shutdown.cancel();
     let _ = worker.await;
+}
+
+/// A second sharer, on the same database as the first for `peer_mirror.rs`'s reason, with a folder of their own
+/// over a store of their own: Burak's Bases, holding one hexagonal base, shared and mirrored here.
+struct Burak {
+    /// Bases, as this installation mirrors it.
+    share: lapidary_core::PeerShareId,
+    _store: tempfile::TempDir,
+}
+
+async fn burak(pool: &sqlx::PgPool, here: &Arc<PeerIdentity>) -> Burak {
+    let store = tempfile::tempdir().expect("Burak's store");
+    let identity = PeerIdentity::generate().expect("Burak's identity");
+    let device = identity.device_id().expect("his id");
+    let here_id = here.device_id().expect("this installation's id");
+    let bases = PgFolders(pool.clone())
+        .get_or_create(sharers_library(), None, "Bases", "Bases")
+        .await
+        .expect("Bases");
+    filed(
+        pool,
+        store.path(),
+        bases,
+        "Bases/hex-base-28mm-hb-0031.stl",
+        "Hex base, 28 mm, HB-0031",
+        &hex_base(),
+    )
+    .await;
+    PgShares(pool.clone())
+        .create(sharers_library(), bases)
+        .await
+        .expect("shares")
+        .expect("live");
+
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a port on the loopback");
+    let address = tcp.local_addr().expect("the port it took").to_string();
+    let roster = Roster::new(vec![here_id], Some("Burak/Bench".to_owned()));
+    let config = server_config(&identity, &roster).expect("Burak's side");
+    let routes = router(device, roster)
+        .merge(lapidary_peer::shares::shares_router(pool.clone()))
+        .merge(lapidary_peer::blob::blob_router(
+            pool.clone(),
+            store.path().to_path_buf(),
+        ));
+    tokio::spawn(serve(tcp, config, routes));
+    PgSharing(pool.clone())
+        .add_peer(device, &address)
+        .await
+        .expect("this installation pairs with Burak");
+    sync::round(pool, here, &Roster::default())
+        .await
+        .expect("says hello");
+    sync::mirror(pool, here, device, &address, &[])
+        .await
+        .expect("mirrors what Burak shares");
+    let share = PgMirror(pool.clone())
+        .shares_of(device)
+        .await
+        .expect("lists")
+        .into_iter()
+        .find(|share| share.name == "Bases")
+        .expect("Bases, mirrored")
+        .id;
+    Burak {
+        share,
+        _store: store,
+    }
+}
+
+/// Wait for a pull to stop moving, and answer it.
+async fn settled(pulls: &PgPulls, pull: lapidary_core::PullId) -> lapidary_db::PullRow {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let row = pulls
+                .get(pull)
+                .await
+                .expect("reads")
+                .expect("the pull is recorded");
+            if row.state == "done" || row.state == "failed" {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the pull finishes within a minute")
+}
+
+/// Somebody's machine being asleep, or their not having answered a request yet, is the ordinary case — and it
+/// must not be a reason for a pull of somebody else's folder to stand still behind it.
+///
+/// Ayşe's Terrain asks first and is asked for **first**, so the scheduler this replaces — one pull in all, oldest
+/// first — would pick it up, get told to wait, and never reach Burak's.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_pull_waiting_on_one_sharer_does_not_hold_another_sharers_pull(pool: sqlx::PgPool) {
+    let ayse = terrain(&pool).await;
+    let burak = burak(&pool, &ayse.here).await;
+    PgShares(pool.clone())
+        .set_asks_first(ayse.sharer_share, true)
+        .await
+        .expect("Ayşe asks first");
+    let pulls = PgPulls(pool.clone());
+    let waiting = pulls
+        .start(ayse.share, ayse.ours, None)
+        .await
+        .expect("records")
+        .expect("Terrain is mirrored");
+    let open = pulls
+        .start(burak.share, ayse.ours, None)
+        .await
+        .expect("records")
+        .expect("Bases is mirrored");
+
+    let runner = tokio::spawn(pull::run(
+        pool.clone(),
+        ayse.here.clone(),
+        ayse.staging.path().to_path_buf(),
+        ayse.our_store.path().to_path_buf(),
+        ayse.shutdown.clone(),
+    ));
+    let done = settled(&pulls, open).await;
+    assert_eq!(
+        (done.state.as_str(), done.files_total, done.error.as_deref()),
+        ("done", 1, None),
+        "Burak's pull ran beside Ayşe's wait: {done:?}"
+    );
+    assert_eq!(
+        done.queued_behind, 0,
+        "and Ayşe's wait was never in its queue: what is ahead of a pull is that sharer's own pulls"
+    );
+    let held = pulls
+        .get(waiting)
+        .await
+        .expect("reads")
+        .expect("Ayşe's pull");
+    assert_eq!(
+        (held.state.as_str(), held.queued_behind),
+        ("waiting", 0),
+        "and Ayşe's is still waiting for her leave, with nothing of hers ahead of it: {held:?}"
+    );
+
+    ayse.shutdown.cancel();
+    let _ = runner.await;
+    let _ = ayse.worker.await;
+}
+
+/// A pull that fails leaves nothing of its own in the staging volume — and takes nothing another unfinished pull
+/// is resuming from. The two are one rule: what is staged belongs to whoever still wants it.
+///
+/// The other pull here is **paused**, which is the case worth pinning: pausing promises that what is staged stays,
+/// and until there was a sweep at all that promise held by there being nothing to break it.
+#[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
+async fn a_failed_pull_clears_staging_and_leaves_what_another_pull_is_resuming_from(
+    pool: sqlx::PgPool,
+) {
+    let ayse = terrain(&pool).await;
+    let pulls = PgPulls(pool.clone());
+    // Half the cliff face, as a transfer stopped part-way leaves it.
+    let hash = BlobHash::from_bytes(*blake3::hash(&cliff_face()).as_bytes());
+    let partial = ayse.staging.path().join(format!("{}.part", hash.to_hex()));
+    std::fs::write(&partial, &cliff_face()[..1024]).expect("stages half the file");
+    let again = PgParts(pool.clone())
+        .create_library("Terrain, second copy", "hobby")
+        .await
+        .expect("a second library to pull into");
+    let failing = pulls
+        .start(ayse.share, ayse.ours, None)
+        .await
+        .expect("records")
+        .expect("mirrored");
+    let other = pulls
+        .start(ayse.share, again, None)
+        .await
+        .expect("records")
+        .expect("mirrored");
+    assert!(
+        pulls.pause(other).await.expect("pauses"),
+        "the second pull is paused, so what it is resuming from must stay"
+    );
+    // Removing the sharer fails a pull by name, without a byte moving: the one failure this test can make
+    // happen without taking a server away.
+    assert!(
+        PgSharing(pool.clone())
+            .remove_peer(ayse.sharer)
+            .await
+            .expect("removes")
+    );
+
+    let work = |pull: lapidary_db::PullRow| {
+        let (pool, here) = (pool.clone(), ayse.here.clone());
+        let (staging, store) = (
+            ayse.staging.path().to_path_buf(),
+            ayse.our_store.path().to_path_buf(),
+        );
+        async move {
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                pull::work(&pool, &here, &staging, &store, &pull),
+            )
+            .await
+            .expect("settles within a minute")
+            .expect("finishes")
+        }
+    };
+    work(pulls.get(failing).await.expect("reads").expect("the pull")).await;
+    assert_eq!(
+        pulls
+            .get(failing)
+            .await
+            .expect("reads")
+            .expect("the pull")
+            .state,
+        "failed"
+    );
+    assert_eq!(
+        std::fs::metadata(&partial).map(|meta| meta.len()).ok(),
+        Some(1024),
+        "the other pull of those files has not finished, so it is still resuming from what is staged"
+    );
+
+    assert!(pulls.resume(other).await.expect("resumes"));
+    work(pulls.get(other).await.expect("reads").expect("the pull")).await;
+    assert_eq!(
+        std::fs::read_dir(ayse.staging.path())
+            .expect("lists staging")
+            .count(),
+        0,
+        "with nobody left wanting them, the staged files go"
+    );
+
+    ayse.shutdown.cancel();
+    let _ = ayse.worker.await;
 }

@@ -156,6 +156,13 @@ export function SharedLibraryPage({ share }: { share: PeerShareId }) {
                   : strings.sharing.librarySynced(library.data.syncedAt)}
             </p>
             <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.libraryLead}</p>
+            {/* Said before Pull is pressed, not after: a pull of a folder that asks first sits in `waiting`, and
+                a person who was not told reads that as something having gone wrong. */}
+            {library.data.asksFirst ? (
+              <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+                {strings.sharing.libraryAsksFirst}
+              </p>
+            ) : null}
             <Seeding share={share} folder={library.data} />
             <PullPanel share={share} chosen={chosen} onChoose={setChosen} />
             {parts.isPending ? (

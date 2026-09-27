@@ -232,6 +232,7 @@ pub async fn mirror(
             // read is left as the answering installation's own, which is what protocol 1 meant by no owner.
             owner: share.owner.as_deref().and_then(|owner| owner.parse().ok()),
             as_of: share.as_of,
+            asks_first: share.asks_first,
         })
         .collect();
     let mirror = PgMirror(db.clone());

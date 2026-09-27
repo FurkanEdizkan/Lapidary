@@ -37,6 +37,7 @@ fn offer<'a>(
         digest,
         owner: None,
         as_of: None,
+        asks_first: false,
     }
 }
 
@@ -56,6 +57,7 @@ fn relayed<'a>(
         digest,
         owner: Some(owner),
         as_of: Some(as_of),
+        asks_first: false,
     }
 }
 
@@ -628,5 +630,178 @@ async fn a_folder_is_passed_on_only_to_the_people_its_owner_named(pool: sqlx::Pg
             .expect("answers"),
         None,
         "a folder this installation does not mirror"
+    );
+}
+
+/// Age every roster row this installation holds, as a week of its owner's silence does.
+async fn roster_read_days_ago(pool: &sqlx::PgPool, days: f64) {
+    sqlx::query("UPDATE peer_share_member SET seen_at = now() - make_interval(secs => $1::float8)")
+        .bind(days * 24.0 * 60.0 * 60.0)
+        .execute(pool)
+        .await
+        .expect("ages the roster");
+}
+
+/// Mira is on Terrain's roster, so this installation passes Terrain on to her and serves her its files. Both
+/// rest on the roster Ayşe published, and Ayşe is the only installation that can publish it — so after
+/// `ROSTER_TRUSTED_FOR_SECS` of her silence, neither stands, and one answer from her restores both.
+///
+/// The ceiling `0044` recorded, and the test that pins **7 days** rather than any cutoff at all: 6 days still
+/// relays and still serves.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_roster_a_week_old_is_no_longer_an_answer(pool: sqlx::PgPool) {
+    let mirror = paired(&pool).await;
+    PgSharing(pool.clone())
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs with Mira");
+    let stale = mirror
+        .take_offer(ayse(), &[offer(terrain(), "Terrain", 1, "1-1")])
+        .await
+        .expect("takes Ayşe's offer");
+    let held = stale[0].id;
+    mirror
+        .replace_catalogue(
+            held,
+            "1-1",
+            &[part(
+                "Terrain/Rocks/standing-stone-lp-tr-0140.stl",
+                "Standing stone, LP-TR-0140",
+                None,
+            )],
+        )
+        .await
+        .expect("reads it");
+    let roster = |days: Option<f64>| {
+        let pool = pool.clone();
+        async move {
+            if let Some(days) = days {
+                roster_read_days_ago(&pool, days).await;
+            } else {
+                PgMirror(pool.clone())
+                    .take_roster(
+                        ayse(),
+                        terrain(),
+                        &[RemoteMember {
+                            device: mira(),
+                            name: Some("Mira’s studio"),
+                            address: "192.168.1.31:8082",
+                            may_fetch: true,
+                        }],
+                    )
+                    .await
+                    .expect("takes the roster");
+            }
+            let mirror = PgMirror(pool.clone());
+            (
+                mirror.relayable_to(mira()).await.expect("lists").len(),
+                mirror
+                    .relayed_to(ayse(), terrain(), mira())
+                    .await
+                    .expect("answers"),
+                mirror
+                    .serves(ayse(), terrain(), mira())
+                    .await
+                    .expect("answers"),
+            )
+        }
+    };
+
+    assert_eq!(
+        roster(None).await,
+        (1, Some(held), lapidary_db::Serving::Yes(held)),
+        "read just now, Terrain is passed on to Mira and served to her"
+    );
+    assert_eq!(
+        roster(Some(6.0)).await,
+        (1, Some(held), lapidary_db::Serving::Yes(held)),
+        "six days is inside the window, so both still stand"
+    );
+    assert_eq!(
+        roster(Some(8.0)).await,
+        (0, None, lapidary_db::Serving::NotShared),
+        "eight days is not an answer: Terrain is neither passed on to Mira nor served to her, and the refusal is \
+         the one a stranger gets rather than one that says she was once in it"
+    );
+    assert_eq!(
+        roster(None).await,
+        (1, Some(held), lapidary_db::Serving::Yes(held)),
+        "one hello round from Ayşe restores both"
+    );
+}
+
+/// Whether a folder asks first is its owner's word. A member passing the folder on may say it for a folder this
+/// installation has never heard of, and may never change it afterwards — a member running a build from before the
+/// field sends none, which reads as open, and would otherwise turn an ask-first folder open on every round.
+#[sqlx::test(migrations = "./migrations")]
+async fn only_a_folders_owner_says_whether_it_asks_first(pool: sqlx::PgPool) {
+    let mirror = paired(&pool).await;
+    PgSharing(pool.clone())
+        .add_peer(mira(), "192.168.1.31:8082")
+        .await
+        .expect("pairs with Mira");
+    let asking = OfferedRemote {
+        asks_first: true,
+        ..offer(terrain(), "Terrain", 1, "1-1")
+    };
+    mirror
+        .take_offer(ayse(), &[asking])
+        .await
+        .expect("takes Ayşe's offer");
+    let asks_first = || {
+        let pool = pool.clone();
+        async move {
+            PgMirror(pool)
+                .shares_of(ayse())
+                .await
+                .expect("lists")
+                .first()
+                .expect("Terrain")
+                .asks_first
+        }
+    };
+    assert!(asks_first().await, "Ayşe says Terrain asks first");
+
+    // Mira passes Terrain on, on a build from before the field: no word about it at all.
+    let ahead = jiff::Timestamp::now();
+    mirror
+        .take_offer(
+            mira(),
+            &[relayed(ayse(), terrain(), "Terrain", 1, "1-1", ahead)],
+        )
+        .await
+        .expect("takes Mira's list");
+    assert!(
+        asks_first().await,
+        "and Mira relaying it does not turn it open"
+    );
+
+    // Ayşe herself stops asking first, which is the one list that may say so.
+    mirror
+        .take_offer(ayse(), &[offer(terrain(), "Terrain", 1, "1-1")])
+        .await
+        .expect("takes Ayşe's offer again");
+    assert!(!asks_first().await, "her own list does");
+
+    // A folder nobody here has heard of, offered by a member who does know its owner's answer: the relay seeds it.
+    mirror
+        .take_offer(
+            mira(),
+            &[OfferedRemote {
+                asks_first: true,
+                ..relayed(ayse(), bases(), "Bases", 1, "1-2", ahead)
+            }],
+        )
+        .await
+        .expect("takes Mira's list");
+    assert_eq!(
+        mirror
+            .shares_of(ayse())
+            .await
+            .expect("lists")
+            .iter()
+            .map(|share| (share.name.clone(), share.asks_first))
+            .collect::<Vec<_>>(),
+        vec![("Bases".to_owned(), true), ("Terrain".to_owned(), false)],
     );
 }

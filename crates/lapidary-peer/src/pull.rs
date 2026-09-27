@@ -12,6 +12,11 @@
 //! puller writes each one's as `Shared/<sharer's name> (<first group of their device id>)/<their source path>`
 //! ([`shared_path`]). The device id's group keeps two sharers with one name apart.
 //!
+//! **Whose pull runs when.** One pull at a time per sharer, and one sharer's pulls beside another's: a pull waiting on
+//! Ayşe to grant it is no reason for a pull of Burak's folder to stand still. Staging is keyed by the file's hash and
+//! shared by every pull, so a fetch claims a hash while it stages it, and every attempt ends by clearing out the files
+//! no unfinished pull still wants ([`sweep`]).
+//!
 //! **What a pull again does.** A file this library holds at that place with those bytes is not fetched at all. A changed
 //! file is fetched and imported as the destination's rules say: a hobby library keeps no revisions and counts it
 //! unkept. A controlled destination refuses it, because a bundle carries only the sharer's current revision and import
@@ -24,12 +29,14 @@ use lapidary_db::{
     DbError, Holder, MirroredPartRow, PgBlobs, PgJobs, PgMirror, PgPool, PgPulls, PullRow,
     StoredBlobRow,
 };
+
 use lapidary_storage::{Compression, SourceWriter};
 use lapidary_targets::bundle::{
     self, Manifest, ManifestLibrary, ManifestPart, ManifestRevision, ManifestSource, StoreZip,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -76,6 +83,87 @@ pub fn shared_path(
     }
 }
 
+/// The hashes being staged right now. Staging is keyed by the file's hash and shared by every pull, so two
+/// sharers who offer the same file — which two people in one hobby scene very often do — would otherwise have
+/// one pull truncating `<hash>.part` while the other appends to it, and the loser's BLAKE3 check would fail and
+/// blame the sharer's store for a file that was never wrong.
+///
+/// ponytail: one process's set, which is what one peer role needs. Two peer processes over one staging volume
+/// would want a lock file per hash instead.
+static STAGING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+
+/// Held while one fetch stages a file, and released however that fetch ends.
+struct Claim(PathBuf);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        STAGING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// Claim `<staging>/<hash>` — the file, and with it the `.part` beside it — for this fetch. `None` when another
+/// fetch is already staging it. Keyed by the whole path rather than by the hash, because two staging volumes are
+/// two files: one peer role has one, and a test rig stands several side by side.
+fn claim(whole: &Path) -> Option<Claim> {
+    STAGING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(whole.to_path_buf())
+        .then(|| Claim(whole.to_path_buf()))
+}
+
+/// Sweep the staging volume of every file no unfinished pull still wants: what a pull that failed, or was told
+/// its folder is gone, leaves behind.
+///
+/// Run after every attempt at a pull, not only a failed one, because the question it asks is about the pulls
+/// that remain rather than about the one that just ended. A pull that stalled is still unfinished, so what it
+/// staged is still wanted and stays for the resume; a pull that finished has no claim on anything, and a file
+/// nobody else wants goes.
+///
+/// Only names that are a hash, or a hash and `.part`: anything else in that directory was not put there by a
+/// fetch, and a sweep is no place to guess.
+pub async fn sweep(db: &PgPool, staging: &Path) -> Result<usize, String> {
+    let wanted: HashSet<String> = PgPulls(db.clone())
+        .staged_wanted()
+        .await
+        .map_err(db_error)?
+        .into_iter()
+        .collect();
+    let mut entries = tokio::fs::read_dir(staging)
+        .await
+        .map_err(|err| format!("Could not read the staging volume: {err}."))?;
+    let mut swept = 0;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|err| format!("Could not read the staging volume: {err}."))?
+    {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let hex = name.strip_suffix(".part").unwrap_or(name);
+        if BlobHash::parse_hex(hex).is_err() || wanted.contains(hex) {
+            continue;
+        }
+        // Not while somebody is writing it: a claim is held across a fetch, and a fetch belongs to a pull that
+        // is still unfinished, so this is belt and braces rather than the rule. Held until the file is gone,
+        // which is why it is bound rather than asked about.
+        let Some(_held) = claim(&staging.join(hex)) else {
+            continue;
+        };
+        match tokio::fs::remove_file(entry.path()).await {
+            Ok(()) => swept += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(%error, file = %name, "could not clear a staged file no pull wants");
+            }
+        }
+    }
+    Ok(swept)
+}
+
 /// A file fetched whole and checked: where it is staged, and how many bytes crossed the network for it this time.
 #[derive(Debug)]
 pub struct Fetched {
@@ -107,6 +195,20 @@ pub async fn fetch(
 ) -> Result<Fetched, FetchError> {
     let hex = hash.to_hex();
     let whole = staging.join(&hex);
+    if tokio::fs::try_exists(&whole).await.unwrap_or(false) {
+        return Ok(Fetched {
+            path: whole,
+            sent: 0,
+        });
+    }
+    // Two pulls of the same file, one from each of two sharers: the second waits a round rather than writing
+    // into the first one's `.part`. Asked after the whole-file check, so the common case — a file already
+    // staged and wanted by both — costs nothing and stalls nobody.
+    let Some(_claim) = claim(&whole) else {
+        return Err(FetchError::Stalled(format!(
+            "Another pull is fetching {hex} now. This one takes it up once that finishes."
+        )));
+    };
     if tokio::fs::try_exists(&whole).await.unwrap_or(false) {
         return Ok(Fetched {
             path: whole,
@@ -248,11 +350,17 @@ fn hash_file(path: &Path) -> std::io::Result<BlobHash> {
     Ok(BlobHash::from_bytes(*hasher.finalize().as_bytes()))
 }
 
-/// Pulls, oldest first, until `shutdown`: at start, when the api records one, and on the hello round's tick, which is
-/// when a pull that stalled tries again.
+/// Pulls until `shutdown`: at start, when the api records one, and on the hello round's tick, which is when a pull
+/// that stalled tries again.
 ///
-/// ponytail: one pull at a time, so a pull whose sharer is away holds the ones behind it until they answer. Work pulls
-/// per sharer if people pull from several at once.
+/// **One pull at a time per sharer, and the sharers beside each other.** Somebody's machine being asleep is the
+/// ordinary case, and a pull of their folder waits for them by design — it must not be a reason for a pull of
+/// somebody else's folder to sit in the queue behind it. Their folders' pulls are still worked oldest first, one
+/// at a time, because they are all asking the same machine for bytes.
+///
+/// The shape is [`crate::sync::run`]'s mirror: a task a device, a set of who has one running, and each task
+/// stopping when there is nothing left of theirs to do. The in-flight limits on the **sending** side are
+/// untouched; this is about who this installation asks, and when.
 pub async fn run(
     db: PgPool,
     identity: Arc<PeerIdentity>,
@@ -265,9 +373,45 @@ pub async fn run(
         return;
     }
     let mut listener = listen(&db).await;
+    let pulling: Arc<Mutex<HashSet<lapidary_core::DeviceId>>> = Arc::default();
     loop {
+        match PgPulls(db.clone()).sharers_waiting().await {
+            Ok(sharers) => {
+                for sharer in sharers {
+                    start_pulling(&db, &identity, &staging, &blob_root, &pulling, sharer);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read whose pulls are waiting; the next round tries again");
+            }
+        }
+        if !wait(&mut listener, &shutdown).await {
+            return;
+        }
+    }
+}
+
+/// Start working one sharer's pulls, unless one of theirs is already running.
+fn start_pulling(
+    db: &PgPool,
+    identity: &Arc<PeerIdentity>,
+    staging: &Path,
+    blob_root: &Path,
+    pulling: &Arc<Mutex<HashSet<lapidary_core::DeviceId>>>,
+    sharer: lapidary_core::DeviceId,
+) {
+    if !pulling
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(sharer)
+    {
+        return;
+    }
+    let (db, identity, pulling) = (db.clone(), identity.clone(), pulling.clone());
+    let (staging, blob_root) = (staging.to_path_buf(), blob_root.to_path_buf());
+    tokio::spawn(async move {
         loop {
-            let pull = match PgPulls(db.clone()).next().await {
+            let pull = match PgPulls(db.clone()).next_of(sharer).await {
                 Ok(Some(pull)) => pull,
                 Ok(None) => break,
                 Err(error) => {
@@ -275,21 +419,19 @@ pub async fn run(
                     break;
                 }
             };
-            match work(&db, &identity, &staging, &blob_root, &pull).await {
-                Ok(()) => {}
-                Err(why) => {
-                    tracing::warn!(pull = %pull.id.as_uuid(), %why, "a pull stalled; the next round tries again");
-                    if let Err(error) = PgPulls(db.clone()).stalled(pull.id, &why).await {
-                        tracing::warn!(%error, "could not record why a pull stalled");
-                    }
-                    break;
+            if let Err(why) = work(&db, &identity, &staging, &blob_root, &pull).await {
+                tracing::warn!(pull = %pull.id.as_uuid(), %why, "a pull stalled; the next round tries again");
+                if let Err(error) = PgPulls(db.clone()).stalled(pull.id, &why).await {
+                    tracing::warn!(%error, "could not record why a pull stalled");
                 }
+                break;
             }
         }
-        if !wait(&mut listener, &shutdown).await {
-            return;
-        }
-    }
+        pulling
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&sharer);
+    });
 }
 
 /// One file of a pull: the mirrored part, where it lands here, and its bytes' hash and size.
@@ -304,8 +446,33 @@ fn db_error(err: DbError) -> String {
     err.to_string()
 }
 
-/// Work one pull as far as it goes. `Ok` once it is finished, done or failed; `Err` when it stalled, with why.
+/// Work one pull as far as it goes, then clear the staging volume of what no unfinished pull wants.
+///
+/// `Ok` once the pull is finished, done or failed; `Err` when it stalled, with why.
+///
+/// The sweep is here rather than at each of the five places a pull can finish, because what it asks is not "how
+/// did this one end" but "what does anybody still want". A pull that stalled is unfinished, so its files stay
+/// and its next attempt resumes from them; a pull that failed, or whose folder is gone, has no claim on
+/// anything, and its files go unless another pull is resuming from them too. A sweep that cannot read the
+/// directory is logged and never fails the pull: the pull's own outcome is the answer, and a full staging volume
+/// is already said in the fetch's own words.
 pub async fn work(
+    db: &PgPool,
+    identity: &PeerIdentity,
+    staging: &Path,
+    blob_root: &Path,
+    pull: &PullRow,
+) -> Result<(), String> {
+    let outcome = attempt(db, identity, staging, blob_root, pull).await;
+    match sweep(db, staging).await {
+        Ok(0) => {}
+        Ok(swept) => tracing::info!(swept, "cleared staged files no pull wants"),
+        Err(why) => tracing::warn!(%why, "could not clear the staging volume"),
+    }
+    outcome
+}
+
+async fn attempt(
     db: &PgPool,
     identity: &PeerIdentity,
     staging: &Path,
@@ -467,7 +634,6 @@ pub async fn work(
         return Ok(());
     }
     let (mut files_done, mut bytes_done, mut sent) = (0i32, 0i64, 0u64);
-    let mut staged = Vec::with_capacity(wanted.len());
     for file in &wanted {
         // Asked one at a time, in the order the holders came in, and the first yes is the one fetched from. A
         // holder that stalls or is busy is passed over for the next; nobody reachable leaves the pull to say so.
@@ -498,7 +664,6 @@ pub async fn work(
                 files_done += 1;
                 bytes_done =
                     bytes_done.saturating_add(i64::try_from(file.size).unwrap_or(i64::MAX));
-                staged.push(fetched.path);
                 if !pulls
                     .progress(pull.id, files_done, bytes_done)
                     .await
@@ -571,10 +736,9 @@ pub async fn work(
         .await
         .map_err(db_error)?;
     pulls.importing(pull.id, batch).await.map_err(db_error)?;
-    // Only once the batch is recorded: a restart before this fetches nothing again, and bundles once more.
-    for path in staged {
-        let _ = tokio::fs::remove_file(path).await;
-    }
+    // The staged files are not deleted here. They belong to whoever still wants them: a second pull of this
+    // same folder into another library resumes from them, and this one's claim on them ended with the batch
+    // being recorded — so [`sweep`], at the end of every attempt, is what takes them.
     settle(db, pull, batch, &places).await
 }
 
@@ -811,6 +975,38 @@ mod tests {
         assert_eq!(
             shared_path(None, ayse, "cliff-face.stl"),
             format!("Shared/{group}/cliff-face.stl")
+        );
+    }
+
+    /// Staging is keyed by the file's hash, and two sharers' pulls now run beside each other, so a hash being
+    /// staged is claimed until that fetch ends however it ends.
+    #[test]
+    fn one_fetch_at_a_time_stages_a_hash() {
+        let staging = Path::new("/var/lib/lapidary/staging");
+        let cliff =
+            staging.join(BlobHash::from_bytes(*blake3::hash(b"a cliff face").as_bytes()).to_hex());
+        let held = claim(&cliff).expect("the first fetch claims it");
+        assert!(claim(&cliff).is_none(), "the second is turned away");
+        assert!(
+            claim(
+                &staging
+                    .join(BlobHash::from_bytes(*blake3::hash(b"a hex base").as_bytes()).to_hex())
+            )
+            .is_some(),
+            "and another file is nobody's business"
+        );
+        assert!(
+            claim(
+                &Path::new("/mnt/other/staging")
+                    .join(BlobHash::from_bytes(*blake3::hash(b"a cliff face").as_bytes()).to_hex())
+            )
+            .is_some(),
+            "and the same file in another staging volume is another file"
+        );
+        drop(held);
+        assert!(
+            claim(&cliff).is_some(),
+            "released when the fetch ends, whether it finished or stalled"
         );
     }
 

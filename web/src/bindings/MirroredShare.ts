@@ -27,6 +27,12 @@ asOf: string | null,
  */
 seeding: boolean, 
 /**
+ * Whether its owner says pulling its files needs their leave, as this installation last read the list it
+ * was offered in. What the page says before anybody presses Pull; the owner's own answer to the request is
+ * what decides, so a copy of this that is behind costs a sentence and never a file.
+ */
+asksFirst: boolean, 
+/**
  * How many of the folder's files this installation holds, and how many the folder lists — what the
  * folder's own page says can be served from here. Left out of a list of folders, which does not count
  * them: a list of ten folders is not worth ten counting queries.

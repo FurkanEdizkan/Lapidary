@@ -12,6 +12,21 @@ use jiff::Timestamp;
 use lapidary_core::{DeviceId, PartId, PeerShareId, ShareId};
 use sqlx::PgPool;
 
+/// How long a mirrored folder's roster stays an answer: **7 days** (owner's decision, 2026-09-21).
+///
+/// Who a folder may be passed on to, and whose files this installation may serve, is decided by the roster its
+/// owner published — and only that owner can publish it. So an owner who takes somebody off a folder and then
+/// goes offline would leave every other holder relaying and serving to them for ever; `0044` recorded that as a
+/// known ceiling. Past this, the roster is no longer an answer: [`PgMirror::relayable_to`],
+/// [`PgMirror::relayed_to`] and [`PgMirror::serves`] all refuse a row older than it.
+///
+/// Compared on the database's clock, the one clock the api and the peer role share, as [`crate::ONLINE_WITHIN_SECS`]
+/// is. Long beside that one — a week against 45 seconds — because the two answer different questions: online is
+/// "can they be reached now", and this is "does what their owner last said still stand". A folder's people keep
+/// browsing and fetching through a week of their owner's silence, which is the whole point of relaying; what they
+/// lose after it is a second-hand answer nobody can refresh.
+pub const ROSTER_TRUSTED_FOR_SECS: i64 = 7 * 24 * 60 * 60;
+
 /// One share as another installation's list names it now.
 #[derive(Debug, Clone, Copy)]
 pub struct OfferedRemote<'a> {
@@ -25,6 +40,10 @@ pub struct OfferedRemote<'a> {
     /// When the offering installation read this catalogue from its owner, for a folder it does not own. What
     /// decides between two copies of the same folder; `None` is a relay that cannot say, and is never taken.
     pub as_of: Option<Timestamp>,
+    /// Whether its owner says fetching its files needs their leave. A **hint** for the page that offers to pull
+    /// it, never authorization: the owner's answer to the request is what decides. An installation from before
+    /// the field sends none, which reads as open — what every folder was before asking first existed.
+    pub asks_first: bool,
 }
 
 /// A mirrored share whose catalogue must be read again, and the digest to record once it has been.
@@ -108,6 +127,8 @@ pub struct RelayedShare {
     pub digest: String,
     /// When this copy was read from the folder's owner.
     pub as_of: Option<Timestamp>,
+    /// Whether its owner says fetching its files needs their leave, as this installation last read it.
+    pub asks_first: bool,
 }
 
 /// A mirrored share, as a page lists it.
@@ -129,6 +150,10 @@ pub struct MirroredShareRow {
     pub as_of: Option<Timestamp>,
     /// Whether this installation passes the folder's files on to its other people (S8).
     pub seeding: bool,
+    /// Whether its owner says pulling its files needs their leave, as this installation last read the list it
+    /// was offered in. What the folder's page says before anybody presses Pull; the owner's own answer to the
+    /// request is what decides.
+    pub asks_first: bool,
 }
 
 /// A mirrored part, as a page shows it.
@@ -155,7 +180,7 @@ macro_rules! share_columns {
         "ps.id, ps.device_id, pe.name, ps.name, ps.part_count, \
          (extract(epoch FROM ps.synced_at) * 1000000)::bigint, \
          ps.catalogue_from, relay.name, \
-         (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint, ps.seeding \
+         (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint, ps.seeding, ps.asks_first \
          FROM peer_share ps JOIN peer pe ON pe.device_id = ps.device_id \
          LEFT JOIN peer relay ON relay.device_id = ps.catalogue_from"
     };
@@ -172,6 +197,7 @@ type ShareTuple = (
     Option<String>,
     Option<i64>,
     bool,
+    bool,
 );
 
 type IntroductionTuple = (
@@ -184,7 +210,7 @@ type IntroductionTuple = (
     Option<String>,
 );
 
-type RelayedTuple = (Vec<u8>, uuid::Uuid, String, i64, String, Option<i64>);
+type RelayedTuple = (Vec<u8>, uuid::Uuid, String, i64, String, Option<i64>, bool);
 
 type PartTuple = (
     String,
@@ -201,7 +227,19 @@ type PartTuple = (
 );
 
 fn share_row(
-    (id, device, sharer, name, part_count, synced_us, read_from, read_from_name, as_of_us, seeding): ShareTuple,
+    (
+        id,
+        device,
+        sharer,
+        name,
+        part_count,
+        synced_us,
+        read_from,
+        read_from_name,
+        as_of_us,
+        seeding,
+        asks_first,
+    ): ShareTuple,
 ) -> Result<MirroredShareRow, DbError> {
     Ok(MirroredShareRow {
         id: PeerShareId::from_uuid(id),
@@ -220,6 +258,7 @@ fn share_row(
             .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
             .transpose()?,
         seeding,
+        asks_first,
     })
 }
 
@@ -239,6 +278,12 @@ impl PgMirror {
     /// A folder is read again when its digest has moved — and, for a relayed one, only when the relay read it
     /// from its owner later than the copy held here was read. Freshness alone decides, in both directions: a
     /// relayed copy that is newer wins, and a relay that is behind is left alone.
+    ///
+    /// **Whether a folder asks first is taken from its owner alone.** A relay may seed it on a folder this
+    /// installation is hearing of for the first time, and may never change it afterwards: a member running a
+    /// build from before the field sends none, which reads as open, and would otherwise turn an ask-first
+    /// folder open again on every hello round. It is a hint for a page either way — the owner's answer to the
+    /// request is what decides whether any bytes move.
     pub async fn take_offer(
         &self,
         device: DeviceId,
@@ -261,6 +306,7 @@ impl PgMirror {
             .iter()
             .map(|o| o.as_of.map(|at| at.as_microsecond()))
             .collect();
+        let asks_first: Vec<bool> = offered.iter().map(|o| o.asks_first).collect();
         let own: Vec<uuid::Uuid> = offered
             .iter()
             .filter(|o| o.owner.is_none_or(|owner| owner == device))
@@ -269,17 +315,20 @@ impl PgMirror {
         let device_bytes = device.as_bytes().as_slice();
         let mut tx = self.0.begin().await?;
         sqlx::query(
-            "INSERT INTO peer_share (id, device_id, remote_id, name, part_count) \
-             SELECT o.id, o.owner, o.remote, o.name, o.part_count \
-             FROM UNNEST($1::uuid[], $2::bytea[], $3::uuid[], $4::text[], $5::int8[]) \
-             AS o(id, owner, remote, name, part_count) \
-             ON CONFLICT (device_id, remote_id) DO UPDATE SET name = EXCLUDED.name, part_count = EXCLUDED.part_count",
+            "INSERT INTO peer_share (id, device_id, remote_id, name, part_count, asks_first) \
+             SELECT o.id, o.owner, o.remote, o.name, o.part_count, o.asks_first \
+             FROM UNNEST($1::uuid[], $2::bytea[], $3::uuid[], $4::text[], $5::int8[], $6::bool[]) \
+             AS o(id, owner, remote, name, part_count, asks_first) \
+             ON CONFLICT (device_id, remote_id) DO UPDATE SET name = EXCLUDED.name, part_count = EXCLUDED.part_count, \
+             asks_first = CASE WHEN peer_share.device_id = $7 THEN EXCLUDED.asks_first ELSE peer_share.asks_first END",
         )
         .bind(&ids)
         .bind(&owners)
         .bind(&remotes)
         .bind(&names)
         .bind(&counts)
+        .bind(&asks_first)
+        .bind(device_bytes)
         .execute(&mut *tx)
         .await?;
         sqlx::query("DELETE FROM peer_share WHERE device_id = $1 AND NOT (remote_id = ANY($2))")
@@ -538,31 +587,39 @@ impl PgMirror {
     /// This is what lets a folder stay browsable while its owner is away. It says nothing a member could not
     /// read from the owner: the roster the owner published is what decides, and this installation is only
     /// repeating a catalogue it was given.
+    ///
+    /// A roster older than [`ROSTER_TRUSTED_FOR_SECS`] is not that decision any more, and the folder is passed
+    /// on to nobody until its owner answers again.
     pub async fn relayable_to(&self, caller: DeviceId) -> Result<Vec<RelayedShare>, DbError> {
         let rows: Vec<RelayedTuple> = sqlx::query_as(
             "SELECT ps.device_id, ps.remote_id, ps.name, ps.part_count, ps.digest, \
-             (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint \
+             (extract(epoch FROM ps.catalogue_as_of) * 1000000)::bigint, ps.asks_first \
              FROM peer_share ps JOIN peer_share_member m ON m.peer_share_id = ps.id \
+             AND m.seen_at > now() - make_interval(secs => $2::float8) \
              JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
              WHERE m.device_id = $1 AND ps.device_id <> $1 AND ps.synced_at IS NOT NULL \
              ORDER BY ps.name, ps.id",
         )
         .bind(caller.as_bytes().as_slice())
+        .bind(ROSTER_TRUSTED_FOR_SECS)
         .fetch_all(&self.0)
         .await?;
         rows.into_iter()
-            .map(|(owner, remote, name, part_count, digest, as_of_us)| {
-                Ok(RelayedShare {
-                    owner: stored_device("peer_share.device_id", owner)?,
-                    remote: ShareId::from_uuid(remote),
-                    name,
-                    part_count,
-                    digest,
-                    as_of: as_of_us
-                        .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
-                        .transpose()?,
-                })
-            })
+            .map(
+                |(owner, remote, name, part_count, digest, as_of_us, asks_first)| {
+                    Ok(RelayedShare {
+                        owner: stored_device("peer_share.device_id", owner)?,
+                        remote: ShareId::from_uuid(remote),
+                        name,
+                        part_count,
+                        digest,
+                        as_of: as_of_us
+                            .map(|us| detail_stamp("peer_share.catalogue_as_of", us))
+                            .transpose()?,
+                        asks_first,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -570,8 +627,13 @@ impl PgMirror {
     ///
     /// Four things, and all four: this installation mirrors that folder, its owner is somebody it is still
     /// paired with, it is seeding that folder, and the caller is on the roster the folder's owner published
-    /// **with the owner's leave to fetch**. The roster is the authorization, exactly as it is for the
-    /// catalogue: holding a file is not what entitles anybody to it.
+    /// **with the owner's leave to fetch**, read within [`ROSTER_TRUSTED_FOR_SECS`]. The roster is the
+    /// authorization, exactly as it is for the catalogue: holding a file is not what entitles anybody to it,
+    /// and an answer a week old is not an answer.
+    ///
+    /// The age goes in the join rather than beside it, so a roster row too old reads exactly as no roster row
+    /// does — [`Serving::NotShared`], the refusal a stranger gets. An answer that told those two apart would
+    /// say that this installation once held a list with the caller on it.
     pub async fn serves(
         &self,
         owner: DeviceId,
@@ -583,11 +645,13 @@ impl PgMirror {
              FROM peer_share ps \
              JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
              LEFT JOIN peer_share_member m ON m.peer_share_id = ps.id AND m.device_id = $3 \
+             AND m.seen_at > now() - make_interval(secs => $4::float8) \
              WHERE ps.device_id = $1 AND ps.remote_id = $2 AND ps.synced_at IS NOT NULL",
         )
         .bind(owner.as_bytes().as_slice())
         .bind(remote.as_uuid())
         .bind(caller.as_bytes().as_slice())
+        .bind(ROSTER_TRUSTED_FOR_SECS)
         .fetch_optional(&self.0)
         .await?;
         Ok(match row {
@@ -666,8 +730,8 @@ impl PgMirror {
     /// — the one question every relayed read asks first (S7).
     ///
     /// `None` is the refusal a stranger gets: this installation does not mirror that folder, or the folder's
-    /// owner never said it goes to them. Holding a folder's bytes is not what entitles anybody to them; being
-    /// on its owner's list is.
+    /// owner never said it goes to them, or said so longer ago than [`ROSTER_TRUSTED_FOR_SECS`]. Holding a
+    /// folder's bytes is not what entitles anybody to them; being on its owner's recent list is.
     pub async fn relayed_to(
         &self,
         owner: DeviceId,
@@ -676,6 +740,7 @@ impl PgMirror {
     ) -> Result<Option<PeerShareId>, DbError> {
         let row: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT ps.id FROM peer_share ps JOIN peer_share_member m ON m.peer_share_id = ps.id \
+             AND m.seen_at > now() - make_interval(secs => $4::float8) \
              JOIN peer owner ON owner.device_id = ps.device_id AND owner.removed_at IS NULL \
              WHERE ps.device_id = $1 AND ps.remote_id = $2 AND m.device_id = $3 \
              AND ps.synced_at IS NOT NULL",
@@ -683,6 +748,7 @@ impl PgMirror {
         .bind(owner.as_bytes().as_slice())
         .bind(remote.as_uuid())
         .bind(caller.as_bytes().as_slice())
+        .bind(ROSTER_TRUSTED_FOR_SECS)
         .fetch_optional(&self.0)
         .await?;
         Ok(row.map(PeerShareId::from_uuid))
