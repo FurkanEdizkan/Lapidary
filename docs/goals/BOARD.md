@@ -23,7 +23,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | merged `bac30be` | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | merged `3866a62` | `fix/mass-and-materials` |
 | [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | claimed (lane 1) | `fix/statement-timeouts` |
-| [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | claimed (lane 3) | `feat/tag-browse` |
+| [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | merged `bd362e4` | `feat/tag-browse` |
 | [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
 | [P4](P4.md) | The explore landing | 5 | web | G3, G4, G5, P2, P3 | `web/src/routes/explore.tsx`, `explore` strings block | — | open | `feat/explore-landing` |
@@ -72,6 +72,13 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
   nothing, so it queued behind four `cargo test --workspace` runs, each wait longer than the 7 s of work. The
   `/duplicates` queue uses the left ~800 px of a 1440 viewport while wrapping long path headings onto three lines inside
   that column. A 1,000-part sweep is `CORPUS_SLICE=1000` away, and the backlog's UI-sweep row is now cheap.
+- **Nothing writes a tag but a person and a bundle import** (P3, 2026-09-27): no migration seeds one, ingest reads none
+  off a file, the rig writes none — so `/tags` is empty on any library nobody has hand-tagged, and the discovery half
+  has nothing to discover until P1 carries tags in with a release. **A product decision for the owner**, and it shapes
+  P1: tags from a pack's own structure, from folder names at ingest, or only ever typed.
+- **Choosing a tag unmounts the grid** (P3, 2026-09-27): `/` and `/tags/{tag}` are two routes, so a bulk selection in
+  progress and a scan the page started are lost when somebody picks a tag from the facet panel. A batch in the URL
+  survives. Wants the selection lifted out of the component's local state.
 - **A phone-width screenshot taken with `--window-size` is not one** (P3, confirmed by the lead 2026-09-28): headless
   Chrome floors its window at 500 CSS px, so `--window-size=390` renders at 500 and scales the image down — the file is
   390 wide and the page never was. `Emulation.setDeviceMetricsOverride` is the only way, and `scripts/e2e/cdp.mjs`'s

@@ -3795,6 +3795,33 @@ on the board.
   - **Left for later:** a bridge-8 STEP revision whose warn-only centre write failed is now reachable by neither sweep
     (rare and log-visible); mass only for a part of exactly one material; `part.materials` unbounded while a density key
     stops at 200.
+- **P3, tags as places** (merged `%s`, gate 14 green in 367.46 s on the merged tree; the merge took three conflicts,
+  every one of them two goals adding something different in the same spot, and all three kept both sides). The first of
+  the discovery goals: `PgTags::index` and `::related` (**no tag table** — tags live on the part and an index is a
+  read), two handlers in a router of their own so `lib.rs`'s chain gains one line, `/tags?library=&order=` by count or
+  A to Z with a letter jump past 40, and `/tags/{tag}` which **is `<Index>` itself** with the tag arriving through the
+  same prop `?tag=` feeds. Web tests 539 → **573**; 28 mutations, all caught, three of which survived first and had the
+  *tests* strengthened.
+  - **The read is not the facet, deliberately:** the facet counts within the grid a person has narrowed and withholds
+    counts past `EXACT_FACET_ROWS`, while an index wants the whole library and cannot drop the number its order is
+    built on. That diverges from `DATA.md` §3.4 and is marked with a `ponytail:` naming the rollup as the upgrade.
+  - **One URL for one view.** Choosing a tag in the facet panel now goes to that tag's page, carrying the query,
+    category, format and field filters with it; `?tag=` on `/` still works, for the links people have already sent and
+    for saved filters, but it is no longer what the app writes. **It costs a remount**, so a bulk selection in progress
+    and a scan this page started are lost — a batch in the URL survives. Kept, with the loss filed.
+  - **`related` takes `?tag=` rather than a path segment**, because a tag may hold a slash and a slash inside a path
+    segment is a fight with every proxy in between. Five awkward tags were driven through a real URL — `28 mm`,
+    `jig/fixture`, `100% infill`, `d&d 5e`, `#wip` — and the one in doubt survived. `.` and `..` have no page, measured
+    and recorded: a dot segment is stripped before any router sees it.
+  - **The screens were looked at, at a true 390** — and that is how the phone-width problem above came to light.
+  - **The empty room, which is the finding that matters.** Nothing in this product writes `part.tags` except the tags
+    editor and the bundle importer: no migration seeds one, ingest never reads one off a file, the rig writes none. So
+    on a stack built from `main` today, every library's `/tags` correctly says nobody has tagged anything. The pages,
+    the reads and the chips are right and empty. **The discovery half has no data until a release import brings tags in
+    with a pack (P1), or somebody types them** — which is the owner's call, and it shapes what P1 should do.
+  - **Left for later:** no paging on `/tags`; the related read is not shared between tag pages; no tag rename or merge,
+    and this page makes `dragon` and `Dragon` being two tags visible for the first time; nothing here has met a running
+    server, since every web test mocks `fetch` and the Rust read is exercised only through the router.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
