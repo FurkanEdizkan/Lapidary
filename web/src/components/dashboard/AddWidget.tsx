@@ -180,11 +180,18 @@ export function AddWidget({
   layout,
   onLayout,
   library,
+  taken,
 }: {
   layout: StoredLayout
   onLayout: (next: StoredLayout) => void
   /** The library the page is about, as the form's first offer. */
   library: LibraryId
+  /**
+   * Every key already spoken for — on the board *and* in the answer still cached. Wider than the
+   * layout on purpose: a key reused after its widget was removed would draw that widget's cached
+   * result under the new one's heading.
+   */
+  taken: readonly string[]
 }) {
   const [open, setOpen] = useState(false)
   const full = layout.widgets.length >= MAX_WIDGETS
@@ -207,7 +214,7 @@ export function AddWidget({
           onAdd={(widget, group, libraryName) => {
             const spec = registry[widget.kind]
             const stored: StoredWidget = {
-              key: nextKey(layout.widgets.map((entry) => entry.key), 'w'),
+              key: nextKey(taken, 'w'),
               widget,
               group,
               x: 0,

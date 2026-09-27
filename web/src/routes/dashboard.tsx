@@ -134,12 +134,18 @@ export function DashboardPage({ library }: { library: LibraryId }) {
     writeLayout(settled)
     setLayout(settled)
     /*
-      Nothing to ask for when the board was empty. The query was disabled with no widgets and is
-      about to become enabled, which resolves the whole layout by itself — so asking here as well
-      would make the very first widget somebody adds cost two requests, which is the one number
-      this page is about.
+      Nothing to ask for when the board was empty **and nothing has ever answered**. The query is
+      disabled with no widgets and becomes enabled by this same change, which resolves the whole
+      layout by itself — so asking here as well would make the very first widget somebody adds cost
+      two requests, which is the one number this page is about.
+
+      Both halves are needed. Somebody who removes every widget and then adds one has an empty
+      layout *and* a cached answer under this key, and a cached query that is not stale
+      (`staleTime: Infinity`) does not refetch when it is re-enabled. Without `asked.data`, the new
+      widget would draw the removed one's figures under its own heading — the same reason its key
+      is taken from what the cache holds as well as from the layout.
     */
-    if (layout.widgets.length === 0) return
+    if (layout.widgets.length === 0 && asked.data === undefined) return
     askFor(
       settled.widgets
         .filter((widget) => {
@@ -174,7 +180,18 @@ export function DashboardPage({ library }: { library: LibraryId }) {
       current="dashboard"
       library={library}
       skipTo={{ href: '#dashboard', label: strings.dashboard.title }}
-      actions={<AddWidget layout={layout} onLayout={save} library={library} />}
+      actions={
+        <AddWidget
+          layout={layout}
+          onLayout={save}
+          library={library}
+          /*
+            Keys already spoken for: the ones on the board, and the ones the answer still holds.
+            A key handed out twice inside one page would show the removed widget's cached result.
+          */
+          taken={[...layout.widgets.map((widget) => widget.key), ...results.keys()]}
+        />
+      }
     >
       {/* Rendered, not assigned: React 19 hoists it, so the route that owns the page owns its title. */}
       <title>{strings.titles.dashboard}</title>

@@ -665,6 +665,91 @@ test('the first widget on an empty dashboard costs one resolve', async () => {
 })
 
 /**
+ * Emptying the board and starting again.
+ *
+ * The one path where "the board was empty, so the query will ask for everything" is false: the
+ * query holds an answer under this key already, and a cached query that is not stale — which
+ * `staleTime: Infinity` makes it — does not refetch when it is re-enabled. So the new widget would
+ * show the removed one's figures under its own heading, for as long as it took an event to arrive.
+ * Two things stop it: `askFor` runs when there is cached data, and the new key is chosen against
+ * what the answer still holds as well as against the board.
+ */
+test('a widget added after the board was emptied is asked for, under a key of its own', async () => {
+  seed([TWELVE[9] as StoredWidget])
+  const calls = stub(TWELVE)
+  renderPage()
+  await screen.findByText(strings.dashboard.queueLine(3, 1, 0))
+  expect(resolves(calls)).toHaveLength(1)
+
+  const title = strings.dashboard.inLibrary(strings.dashboard.queueLabel, NAME)
+  const menu = await openMenu(strings.dashboard.widgetMenu(title))
+  fireEvent.click(within(menu).getByRole('button', { name: strings.dashboard.removeWidget }))
+  await screen.findByText(strings.dashboard.empty)
+  expect(resolves(calls)).toHaveLength(1)
+
+  fireEvent.click(screen.getByRole('button', { name: strings.dashboard.add }))
+  const dialog = await screen.findByRole('dialog')
+  // The library list has to have landed, or the form stores the id as the name and the heading
+  // below is about a library called `01931b6e-…`.
+  await within(dialog).findByRole('option', { name: NAME })
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.dashboard.addConfirm }))
+
+  await waitFor(() => expect(resolves(calls)).toHaveLength(2))
+  const asked = resolves(calls)[1]?.body?.widgets ?? []
+  expect(asked).toHaveLength(1)
+  // Not `w10` again: that key's result is still in the answer, and reusing it would draw the
+  // removed widget's figures under the new widget's heading.
+  expect(asked[0]?.key).not.toBe('w10')
+  expect(stored().widgets[0]?.key).toBe(asked[0]?.key)
+  await waitFor(() => expect(screen.queryByText(strings.dashboard.loading)).toBeNull())
+  // And what is on the page is the new widget's kind, not the removed one's.
+  screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, NAME) })
+  expect(screen.queryByRole('heading', { name: title })).toBeNull()
+})
+
+/**
+ * And the key still matters when the second ask does not arrive.
+ *
+ * A fresh answer overwrites a reused key, so on the happy path the collision lasts one round trip.
+ * When that round trip fails — the api has just gone away — a reused key leaves the *removed*
+ * widget's figures on screen under the new widget's heading, indefinitely: a queue's counts titled
+ * "Library storage", or one library's bytes labelled with another's name. So the key is taken from
+ * what the answer holds as well as from the board, and the honest state is a panel still loading.
+ */
+test('a key is never reused, so a failed ask cannot leave the old widget on screen', async () => {
+  // `w1` deliberately: it is the key a board emptied of everything would hand out next, so this is
+  // the arrangement where the collision actually happens rather than one where it cannot.
+  seed([{ ...(TWELVE[0] as StoredWidget), widget: { kind: 'storage', library: OTHER }, libraryName: OTHER_NAME }])
+  const calls = stub(TWELVE)
+  renderPage()
+  await screen.findAllByText(/on disk/)
+
+  const title = strings.dashboard.inLibrary(strings.dashboard.storageLabel, OTHER_NAME)
+  const menu = await openMenu(strings.dashboard.widgetMenu(title))
+  fireEvent.click(within(menu).getByRole('button', { name: strings.dashboard.removeWidget }))
+  await screen.findByText(strings.dashboard.empty)
+
+  fireEvent.click(screen.getByRole('button', { name: strings.dashboard.add }))
+  const dialog = await screen.findByRole('dialog')
+  await within(dialog).findByRole('option', { name: NAME })
+  // From here the api is gone. The widget being added can have no value of its own.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({ ok: false, status: 503, url, json: async () => ({}) })),
+  )
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.dashboard.addConfirm }))
+
+  await screen.findByRole('heading', {
+    name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, NAME),
+  })
+  // Still loading, which is true — and emphatically not the removed widget's figures, which under
+  // a reused key would be another library's bytes carrying this one's name.
+  screen.getByText(strings.dashboard.loading)
+  expect(screen.queryByText(/on disk/)).toBeNull()
+  expect(calls.length).toBeGreaterThan(0)
+})
+
+/**
  * The drag, which is the half of a hand-rolled grid no unit test reaches: the pointer's offset
  * inside the group's grid, turned into a column and a row by `layout.ts`.
  *

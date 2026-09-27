@@ -290,6 +290,10 @@ export function writeLayout(layout: StoredLayout): void {
  * air-gapped installation reached over plain `http://10.0.0.7:8080` — which is most of them —
  * has no `randomUUID`, and a dashboard that throws on Add on exactly the deployments this
  * product is for would be a poor trade for an identifier nobody sees.
+ *
+ * It only promises to avoid what it is *shown*, which is why the caller passes the keys the cached
+ * answer still holds as well as the ones on the board. Given `['w1']` it answers `w2`; given `[]`
+ * it answers `w1` again, and a page that had just removed `w1` would then draw its old result.
  */
 export function nextKey(taken: readonly string[], prefix: string): string {
   const highest = taken.reduce((top, key) => {
