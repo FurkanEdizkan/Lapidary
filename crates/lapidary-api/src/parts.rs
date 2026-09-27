@@ -17,6 +17,7 @@
 //! entirely rather than rejecting it as an invalid id.
 
 use crate::AppState;
+use crate::filters::FilterSearch;
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
@@ -325,55 +326,22 @@ pub async fn page(
         Shows::Live
     };
 
-    // Trimmed, then checked for emptiness: a box holding three spaces is a box nobody has
-    // typed in, and searching for them would answer an empty grid to somebody who thinks
-    // they cleared it.
-    let query = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
-    let format = format
-        .map(|format| format.trim().to_ascii_lowercase())
-        .filter(|format| !format.is_empty());
-    // Trimmed and nothing else: a material is named as its file names it, capitals included.
-    let material = material
-        .map(|material| material.trim().to_owned())
-        .filter(|material| !material.is_empty());
-    let tag = tag
-        .map(|tag| tag.trim().to_owned())
-        .filter(|tag| !tag.is_empty());
-    let field = match crate::fields::filter_of(
-        &app.db,
-        library,
-        field.as_deref(),
-        field_value.as_deref(),
-        field_min.as_deref(),
-        field_max.as_deref(),
-    )
-    .await
-    {
-        Ok(field) => field,
-        Err(refusal) => return refusal,
-    };
-    let grid = GridQuery {
-        library,
-        folder: folder_id,
-        after,
-        limit,
-        shows,
-        format: format.as_deref(),
-        material: material.as_deref(),
-        tag: tag.as_deref(),
-        field: field.exact.as_deref(),
-        field_range: field.range.as_deref(),
+    let search = FilterSearch {
+        q,
+        folder_id,
+        format,
+        material,
+        tag,
+        field,
+        field_value,
+        field_min,
+        field_max,
     };
     let sort = sort
         .as_deref()
         .and_then(Sort::parse)
         .unwrap_or(Sort::Newest);
-    let repository = PgParts(app.db);
-    let result = match query {
-        Some(q) => repository.search(&grid, q).await,
-        None => repository.page(&grid, sort).await,
-    };
-    match result {
+    match grid_rows(&app.db, library, &search, after, limit, shows, sort).await {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -386,8 +354,85 @@ pub async fn page(
             let parts = rows.into_iter().map(to_card).collect();
             Json(PartsPage { parts, next }).into_response()
         }
-        Err(err) => internal_error(&err, "grid page query failed"),
+        Err(GridRefusal::Field(refusal)) => refusal,
+        Err(GridRefusal::Db(err)) => internal_error(&err, "grid page query failed"),
     }
+}
+
+/// Why a grid read could not be answered.
+///
+/// Two shapes because the two halves fail differently: a custom-field filter is refused by
+/// `fields::filter_of`, which composes the whole response (its own status and remedy per reason), and
+/// the query itself fails with a [`DbError`]. A caller that is not a route — the dashboard's widgets —
+/// turns each into a message of its own.
+pub(crate) enum GridRefusal {
+    Field(Response),
+    Db(DbError),
+}
+
+/// The grid's one read, shared by [`page`] and the dashboard's `recent` and `savedFilter` widgets
+/// (`dashboard.rs`): the filters normalised, the custom-field filter resolved against this library,
+/// then `search` when there is a query and `page` otherwise.
+///
+/// It takes [`FilterSearch`] — the shape a saved filter stores — rather than the query string's own
+/// struct, because that is the one type both callers already hold.
+pub(crate) async fn grid_rows(
+    db: &lapidary_db::PgPool,
+    library: LibraryId,
+    search: &FilterSearch,
+    after: Option<PartId>,
+    limit: u16,
+    shows: Shows,
+    sort: Sort,
+) -> Result<Vec<PartRow>, GridRefusal> {
+    // Trimmed, then checked for emptiness: a box holding three spaces is a box nobody has
+    // typed in, and searching for them would answer an empty grid to somebody who thinks
+    // they cleared it.
+    let query = search.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let format = search
+        .format
+        .as_deref()
+        .map(|format| format.trim().to_ascii_lowercase())
+        .filter(|format| !format.is_empty());
+    // Trimmed and nothing else: a material is named as its file names it, capitals included.
+    let material = search
+        .material
+        .as_deref()
+        .map(str::trim)
+        .filter(|material| !material.is_empty());
+    let tag = search
+        .tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty());
+    let field = crate::fields::filter_of(
+        db,
+        library,
+        search.field.as_deref(),
+        search.field_value.as_deref(),
+        search.field_min.as_deref(),
+        search.field_max.as_deref(),
+    )
+    .await
+    .map_err(GridRefusal::Field)?;
+    let grid = GridQuery {
+        library,
+        folder: search.folder_id,
+        after,
+        limit,
+        shows,
+        format: format.as_deref(),
+        material,
+        tag,
+        field: field.exact.as_deref(),
+        field_range: field.range.as_deref(),
+    };
+    let repository = PgParts(db.clone());
+    match query {
+        Some(q) => repository.search(&grid, q).await,
+        None => repository.page(&grid, sort).await,
+    }
+    .map_err(GridRefusal::Db)
 }
 
 /// One source format, and how many of the grid's parts carry it. `count` is `null` past the
@@ -625,18 +670,24 @@ pub async fn facets(
 /// `0 B` for a mistyped id is a number a person would believe.
 pub async fn storage(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
     match PgParts(state.db).storage_totals(library).await {
-        Ok(Some(totals)) => Json(LibraryStorage {
-            source_bytes: totals.source_bytes,
-            derivative_bytes: totals.derivative_bytes,
-            removed_bytes: totals.removed_bytes,
-            // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
-            // library; a ratio is a display figure and does not need more than that.
-            derivative_ratio: (totals.source_bytes > 0)
-                .then(|| totals.derivative_bytes as f64 / totals.source_bytes as f64),
-        })
-        .into_response(),
+        Ok(Some(totals)) => Json(library_storage(totals)).into_response(),
         Ok(None) => no_such_library(),
         Err(err) => internal_error(&err, "library storage query failed"),
+    }
+}
+
+/// The totals as the wire carries them, for this route and the dashboard's `storage` widget. One
+/// function because the ratio is a derived figure and `StorageTotals` deliberately does not carry it:
+/// two callers dividing for themselves is the second place it could be computed differently.
+pub(crate) fn library_storage(totals: lapidary_db::StorageTotals) -> LibraryStorage {
+    LibraryStorage {
+        source_bytes: totals.source_bytes,
+        derivative_bytes: totals.derivative_bytes,
+        removed_bytes: totals.removed_bytes,
+        // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
+        // library; a ratio is a display figure and does not need more than that.
+        derivative_ratio: (totals.source_bytes > 0)
+            .then(|| totals.derivative_bytes as f64 / totals.source_bytes as f64),
     }
 }
 
@@ -736,17 +787,32 @@ pub async fn instance_storage(
         })
     });
 
-    Json(InstanceStorageView {
+    Json(instance_storage_view(
+        totals,
+        on_disk.flatten(),
+        state.host_storage_root.clone(),
+    ))
+    .into_response()
+}
+
+/// The instance figures as the wire carries them, for this route and the dashboard's `instanceStorage`
+/// widget. The widget passes `on_disk: None`: the walk costs a `stat` per file and a dashboard opens
+/// with twelve widgets at once.
+pub(crate) fn instance_storage_view(
+    totals: lapidary_db::InstanceStorage,
+    on_disk: Option<u64>,
+    host_storage_root: Option<String>,
+) -> InstanceStorageView {
+    InstanceStorageView {
         source_bytes: totals.source_bytes,
         derivative_bytes: totals.derivative_bytes,
         inline_preview_bytes: totals.inline_preview_bytes,
         removed_bytes: totals.removed_bytes,
         quarantined_bytes: totals.quarantined_bytes,
         render_cache_bytes: totals.render_cache_bytes,
-        on_disk_bytes: on_disk.flatten(),
-        host_storage_root: state.host_storage_root.clone(),
-    })
-    .into_response()
+        on_disk_bytes: on_disk,
+        host_storage_root,
+    }
 }
 
 /// What `POST /api/storage/render-cache` answers: the rungs it removed, and the bytes that entered

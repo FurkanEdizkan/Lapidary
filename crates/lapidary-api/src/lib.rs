@@ -2,8 +2,6 @@
 //! and never forked per distribution.
 
 mod blob;
-// Wire types only until goal G4 routes them; G4 removes this allow.
-#[allow(dead_code)]
 mod dashboard;
 mod densities;
 mod derive;
