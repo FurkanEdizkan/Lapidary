@@ -658,9 +658,13 @@ export const strings = {
      * Said instead for a centre of mass, where "not measured" would be the wrong word: one of these
      * revisions was read before Lapidary recorded centres, and a worker re-reads it in the
      * background. It never says *which* revision, because either of the two may be the one and the
-     * comparison takes them in any order. Worded as a thing already queued and not as a promise of
-     * when: only a mesh revision is swept, and a pre-bridge-8 CAD one waits on a worker that has a
-     * CAD kernel.
+     * comparison takes them in any order.
+     *
+     * **Only said where a job really is queued.** The page's test for that has to equal the worker
+     * sweep's (`PgRevisions::centreless_revisions`) — a mesh source and a volume above zero — or this
+     * becomes a promise nothing keeps: a STEP revision is the stale-derivative sweep's and waits on a
+     * worker that has a CAD kernel, and an open mesh has no volume and so never gets a centre at all.
+     * Those get `notInBoth`, which is the honest word for them.
      */
     centreQueued: 'Not recorded yet — a re-read is queued for it',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',

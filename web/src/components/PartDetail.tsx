@@ -753,6 +753,13 @@ export function Preview({
 /** The formats a slicer reads as they are, so a part in one downloads for a slicer as its own file (`lapidary-targets`). */
 const slicerReads = ['stl', '3mf']
 
+/**
+ * `lapidary_core::MESH_EXTENSIONS`, which is what the worker's centre-of-mass sweep takes
+ * (`PgRevisions::centreless_revisions`). Not `slicerReads`: that is what a slicer can open, a
+ * different question with a different answer for `obj`.
+ */
+const MESH_FORMATS = ['stl', 'obj', '3mf']
+
 const control =
   'ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px'
 
@@ -1789,16 +1796,24 @@ function Compare({
     </label>
   )
   const diff = compared.data
-  // Either revision has a volume to work a centre out from and no centre recorded, so a re-read of
-  // it is queued. `> 0` matches the sweep's own predicate: a closed mesh enclosing nothing has a
-  // volume of zero and no centre, and never will have one.
+  // Whether a re-read is actually queued for every revision here that is missing a centre, which is
+  // the only case the page may say so. **This predicate has to equal the worker sweep's**
+  // (`PgRevisions::centreless_revisions`): a mesh source, and a volume above zero. Say it of a STEP
+  // revision and the sentence is a promise nothing will keep — the sweep takes mesh formats only,
+  // deliberately. `every` and not `some`, because a pair of one fillable mesh and one open mesh would
+  // otherwise claim a job for the open one and then fall back to "not measured in both" the moment
+  // the real job finished.
   const later = revisions.find((revision) => revision.id === to)
-  const centreQueued = [earlier, later].some(
-    (revision) =>
-      revision !== undefined &&
-      revision.centreMm === null &&
-      (revision.volumeMm3?.value ?? 0) > 0,
+  const centreless = [earlier, later].filter(
+    (revision): revision is PartRevision => revision !== undefined && revision.centreMm === null,
   )
+  const centreQueued =
+    centreless.length > 0 &&
+    centreless.every(
+      (revision) =>
+        (revision.volumeMm3?.value ?? 0) > 0 &&
+        MESH_FORMATS.includes(revision.sourceFormat ?? ''),
+    )
   const rows =
     diff === undefined
       ? []

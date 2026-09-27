@@ -629,6 +629,94 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
   )
 })
 
+test('a centre nothing will re-read says so, rather than promising a job that is not queued', async () => {
+  // L3, item 1. The page may only say "a re-read is queued" where the worker sweep really queues one,
+  // and that sweep takes mesh formats with a volume above zero. A STEP revision is the
+  // stale-derivative sweep's and waits on a worker with a CAD kernel; an open mesh has no volume and
+  // never gets a centre at all. Both get the ordinary words.
+  const revision = (
+    id: string,
+    revLabel: string,
+    parent: string | null,
+    sourceFormat: string,
+    volumeMm3: number | null,
+  ): PartRevision => ({
+    id,
+    parent,
+    revLabel,
+    origin: parent === null ? 'ingest' : 'agent',
+    createdAt: '2026-09-15T13:00:00Z',
+    thumbnail: null,
+    triangleCount: 28576,
+    faceCount: null,
+    edgeCount: null,
+    bboxMm: null,
+    volumeMm3: volumeMm3 === null ? null : { value: volumeMm3, approximate: true },
+    surfaceAreaMm2: null,
+    massG: null,
+    centreMm: null,
+    sourceHash: null,
+    sourceFormat,
+    sourceBytes: 190356,
+    deltaFromParent: null,
+    tessellationL0: null,
+    tessellationL1: null,
+  })
+  const [first, second] = ['01931b6e-0000-7000-8000-0000000000f1', '01931b6e-0000-7000-8000-0000000000f2']
+  const pair = async (history: PartRevision[]) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url.endsWith('/revisions')
+            ? history
+            : url.includes('/diff?')
+              ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, centreMm: null, triangleCount: null, faceCount: null, edgeCount: null }
+              : [],
+      })),
+    )
+    const view = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <Detail part={BRACKET} />
+      </QueryClientProvider>,
+    )
+    const table = await screen.findByRole('table')
+    const said = [...table.querySelectorAll('tr')]
+      .find((tr) => tr.querySelector('th')?.textContent === strings.detail.centreAxis(0))
+      ?.querySelector('td')?.textContent
+    view.unmount()
+    vi.unstubAllGlobals()
+    return said
+  }
+
+  // Two STEP revisions with a volume and no centre: nothing this sweep will ever touch.
+  expect(
+    await pair([
+      revision(second, '2', first, 'step', 39424),
+      revision(first, '1', null, 'step', 35840),
+    ]),
+  ).toBe(strings.detail.notInBoth)
+
+  // A mesh the sweep will fill beside an open mesh it never can. `every`, not `some`: claiming a job
+  // for the pair would come true for one revision and never for the other.
+  expect(
+    await pair([
+      revision(second, '2', first, 'stl', null),
+      revision(first, '1', null, 'stl', 35840),
+    ]),
+  ).toBe(strings.detail.notInBoth)
+
+  // Both meshes with a volume: this is the pair the sweep does queue.
+  expect(
+    await pair([
+      revision(second, '2', first, 'stl', 39424),
+      revision(first, '1', null, 'stl', 35840),
+    ]),
+  ).toBe(strings.detail.centreQueued)
+})
+
 test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {
   const posts: { url: string; body: unknown }[] = []
   vi.stubGlobal(
