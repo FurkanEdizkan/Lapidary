@@ -565,6 +565,29 @@ export const strings = {
     watertight: 'Watertight',
     watertightYes: 'Closed',
     watertightNo: 'Open',
+    /**
+     * The part's own mass, on its page rather than only in its history — a hobby library keeps no
+     * revisions, so the history was the one place it appeared and there it never appeared at all.
+     * Always with the ≈: volume times a density somebody typed is never a measurement, whatever the
+     * volume was read from. `massSource` is what says so in words.
+     */
+    massValue: (grams: number) =>
+      grams < 1000
+        ? `${grams.toLocaleString('en-US', { maximumFractionDigits: 1 })} g`
+        : `${(grams / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })} kg`,
+    /** Under the mass, naming the material the density came from. */
+    massSource: (material: string) => `${material}, at the density set for this library`,
+    /**
+     * Why there is no mass, rather than a blank a reader would take for "weighs nothing". Four
+     * reasons and the page can tell them apart from what it already holds: the materials list and
+     * the volume.
+     */
+    massNoMaterial: 'Not available — give the part its material, then set that material’s density',
+    massSeveralMaterials:
+      'Not available — a part of several materials has no one density to work a mass out from',
+    massNoDensity: (material: string) =>
+      `Not available — no density is set for ${material} in this library`,
+    massNoVolume: 'Not available — without a volume there is nothing to multiply',
     format: 'Format',
     /** The path the part is known by, which since slice 6a is its identity in the
      *  library — two parts called `bracket` in two folders are told apart by this. */
@@ -628,6 +651,13 @@ export const strings = {
     centreAxis: (axis: 0 | 1 | 2) => `Centre of mass ${'XYZ'[axis]}`,
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',
+    /**
+     * Said instead for a centre of mass, where "not measured" would be the wrong word: one of these
+     * revisions was read before Lapidary recorded centres, and a worker re-reads it in the
+     * background. Worded as a thing already queued and not as a promise of when, because a worker
+     * built without a CAD kernel does not re-read STEP at all.
+     */
+    centreQueued: 'Not recorded yet — a re-read of the earlier file is queued for it',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
     /** The overlay: the From revision drawn as a grey ghost over the part (Phase 4 slice 2). */
     ghost: 'Show From as a ghost in the 3D view',
@@ -1760,7 +1790,16 @@ export const strings = {
     /** The remove button's whole name, so a screen reader hears which material goes. */
     remove: (material: string) => `Remove material ${material}`,
     /** Beside materials nobody typed. */
-    fromFile: 'As the file states. A list you change here is kept instead, until you remove every material.',
+    fromFile: 'As the file states. A list you set here is kept instead, and is kept even when it is empty.',
+    /**
+     * A part somebody has said holds no material — a machined blank whose file names the stock it was
+     * cut from, say. Its own state, not an empty list: before L3 removing the last material handed the
+     * part straight back to its file, which named the material again.
+     */
+    none: 'Holds no material. Nothing its file states will replace this.',
+    /** The undo: hand the part back to whatever its file states, now and at every later read. */
+    reset: 'Use what the file states',
+    resetting: 'Handing back…',
     /** A refusal that arrived without a sentence of its own. */
     refusedWithoutReason: 'Could not save these materials. Reload the part and try again.',
   },

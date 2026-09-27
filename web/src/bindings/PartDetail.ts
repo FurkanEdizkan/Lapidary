@@ -73,6 +73,17 @@ bboxMm: Approximate<[number, number, number]> | null,
  */
 volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | null, 
 /**
+ * This revision's volume times the density of the part's one material as it is today, worked out
+ * when read and never stored — the same figure the history and the comparison show, on the page
+ * itself, so a hobby library that keeps no revisions is not the one place mass is invisible.
+ *
+ * **Always approximate, whatever the volume was.** A density is typed by a person, never
+ * measured, so a mass worked out from one is approximate by construction even where the volume
+ * came from a B-rep. `None` without a volume, or unless the part holds exactly one material and
+ * its library has a density for it — the page says which of those it is.
+ */
+massG: Approximate<number> | null, 
+/**
  * What produced the derivatives — the kernel and its version, as ingest recorded it.
  * Two parts with different values here were measured by different code, which is the
  * first thing to look at when two figures disagree.

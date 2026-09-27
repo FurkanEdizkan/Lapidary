@@ -38,7 +38,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{Approximate, BlobHash, LibraryId, PartId, Provenance, RevisionId};
-use lapidary_db::{PartDetailRow, PgLocks, PgParts, PgPulls};
+use lapidary_db::{PartDetailRow, PgDensities, PgLocks, PgParts, PgPulls};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -90,6 +90,15 @@ pub struct PartDetail {
     /// "Measurement must not lie" includes declining to measure.
     pub volume_mm3: Option<Approximate<f64>>,
     pub surface_area_mm2: Option<Approximate<f64>>,
+    /// This revision's volume times the density of the part's one material as it is today, worked out
+    /// when read and never stored — the same figure the history and the comparison show, on the page
+    /// itself, so a hobby library that keeps no revisions is not the one place mass is invisible.
+    ///
+    /// **Always approximate, whatever the volume was.** A density is typed by a person, never
+    /// measured, so a mass worked out from one is approximate by construction even where the volume
+    /// came from a B-rep. `None` without a volume, or unless the part holds exactly one material and
+    /// its library has a density for it — the page says which of those it is.
+    pub mass_g: Option<Approximate<f64>>,
     /// What produced the derivatives — the kernel and its version, as ingest recorded it.
     /// Two parts with different values here were measured by different code, which is the
     /// first thing to look at when two figures disagree.
@@ -162,7 +171,7 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
         // its own table, and that query is already at its column ceiling.
         Ok(Some(row)) => match (
             PgLocks(state.db.clone()).active(part).await,
-            PgPulls(state.db).provenance(part).await,
+            PgPulls(state.db.clone()).provenance(part).await,
         ) {
             (Ok(lock), Ok(provenance)) => {
                 // Opening a part is using its previews. Rungs are served `immutable`, so a
@@ -183,7 +192,21 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
                     device_id: device.to_string(),
                     name,
                 });
-                Json(to_detail(row, lock.map(PartLock::from), shared_by)).into_response()
+                let mut detail = to_detail(row, lock.map(PartLock::from), shared_by);
+                // One more `part` row read, not a source file: still the open path. `of_part` answers
+                // only where the part holds exactly one material with a density, which is the only
+                // case a single mass means anything at all.
+                match PgDensities(state.db.clone()).of_part(part).await {
+                    Ok(density) => {
+                        detail.mass_g = density.zip(detail.volume_mm3).map(|(density, volume)| {
+                            // `tessellated`, never the volume's own provenance: a typed density is not
+                            // a measurement, so the product of the two is never exact.
+                            Approximate::tessellated(volume.value() * density * 1e-6)
+                        });
+                    }
+                    Err(err) => return internal_error(&err, "part density lookup failed"),
+                }
+                Json(detail).into_response()
             }
             (Err(err), _) => internal_error(&err, "part lock lookup failed"),
             (_, Err(err)) => internal_error(&err, "part provenance lookup failed"),
@@ -241,6 +264,8 @@ fn to_detail(
         }),
         volume_mm3: pair(row.volume_mm3, row.volume_source),
         surface_area_mm2: pair(row.surface_area_mm2, row.surface_area_source),
+        // Filled in once the part's density is read, as `revisions.rs` fills a revision's.
+        mass_g: None,
         kernel_version: row.kernel_version,
         source_hash: row.source_hash,
         source_format: row.source_format,
