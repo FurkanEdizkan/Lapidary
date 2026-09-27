@@ -24,7 +24,21 @@ import { reduced, tokens } from './motion'
  * a zero-width source produces a `scale(0)` that reads as the panel bursting out of nothing,
  * which is a worse answer than no movement at all.
  */
-export function flipFrom(el: HTMLElement, from: DOMRect): Animation | null {
+export function flipFrom(
+  el: HTMLElement,
+  from: DOMRect,
+  /**
+   * Which token times the move. `slow` — 280ms — is the panel's, and stays the default so every
+   * caller written before this argument existed is unchanged.
+   *
+   * `base` is the dashboard's. A widget changing places is a state change, which `DESIGN.md`
+   * caps at 180ms, and `phase-6.md` names 180ms for it explicitly. Passed rather than hard-coded
+   * because this is still the only FLIP in the application and a second copy of it under
+   * `components/dashboard/` would be a second place for the reduced-motion and zero-area
+   * declines to be forgotten.
+   */
+  duration: 'fast' | 'base' | 'slow' = 'slow',
+): Animation | null {
   // Capability first, and not only for the test renderer: the Web Animations API is the one
   // thing here a runtime can lack, and a decorative flight is never worth throwing inside a
   // layout effect that a panel's render depends on.
@@ -46,13 +60,14 @@ export function flipFrom(el: HTMLElement, from: DOMRect): Animation | null {
 
   // `--duration-slow` is 280ms and had no caller until this one. A view opening is not a
   // state change, which is what DESIGN.md caps at 180ms; it is the longest move the system
-  // makes, and this is the move it was declared for.
-  const { slow, ease } = tokens()
+  // makes, and this is the move it was declared for. A caller that *is* making a state change
+  // asks for `base` instead — the dashboard's widgets do.
+  const t = tokens()
   return el.animate(
     [
       { transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
       { transformOrigin: 'top left', transform: 'none' },
     ],
-    { duration: slow, easing: ease },
+    { duration: t[duration], easing: t.ease },
   )
 }
