@@ -324,6 +324,30 @@ test('a key that ran out of time offers its own retry while the rest render', as
   await waitFor(() => expect(screen.queryByText(strings.dashboard.timedOut)).toBeNull())
 })
 
+/**
+ * A saved filter whose category was deleted **fails its key**, and the tile has to say so.
+ *
+ * G4 decided it rather than answering an empty `FilteredParts`, because `filters.rs` already
+ * promises the grid says the category is gone instead of showing nothing, and an empty tile reads
+ * as "nothing matches" — a different claim about the same library. So the tile must show the
+ * server's sentence and must not draw the empty-list line, which is the thing it would be confused
+ * with.
+ */
+test('a saved filter whose category was deleted says so, and does not read as empty', async () => {
+  seed([TWELVE[5] as StoredWidget])
+  stub(TWELVE, {
+    w6: { status: 'failed', message: 'The category this filter names was deleted.' },
+  })
+  renderPage()
+  await screen.findByText(strings.dashboard.widgetFailed)
+  screen.getByText('The category this filter names was deleted.')
+  expect(screen.queryByText(strings.dashboard.noParts)).toBeNull()
+  // And the heading falls back to the kind, because no `FilteredParts` came to name it.
+  screen.getByRole('heading', {
+    name: strings.dashboard.inLibrary(strings.dashboard.savedFilterLabel, NAME),
+  })
+})
+
 test("a key that failed says so, and shows the server's reason", async () => {
   seed([TWELVE[0] as StoredWidget])
   stub(TWELVE, { w1: { status: 'failed', message: 'That library is not here any more.' } })

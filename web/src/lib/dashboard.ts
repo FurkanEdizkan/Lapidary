@@ -40,9 +40,11 @@ export const MAX_WIDGETS = 32
 /**
  * The largest `limit` any widget is offered.
  *
- * `phase-6.md` caps `recent` and `savedFilter` at 12 and G4 enforces it; `facet` has no stated
- * cap and takes the same number, because one ceiling a person can learn is better than two
- * and twelve rows is already more than a widget four rows tall can show.
+ * `phase-6.md` caps `recent` and `savedFilter` at 12 and G4 clamps to `1..=12`. G4 also settled
+ * `facet`, which the design left open, at `1..=24` — and the form still offers 12 for it, which is
+ * inside that and deliberate: twelve rows is already more than a widget four rows tall shows
+ * without scrolling, and one ceiling a person can learn is better than two. It is one number if
+ * anybody wants the other twelve.
  */
 export const MAX_LIMIT = 12
 
