@@ -84,8 +84,14 @@ and a **Record** section. Within it:
 - Commit in the repository's voice: `type(scope): description` (`xtask/src/commit.rs` checks the shape).
   **No AI attribution trailers of any kind** — no `Co-Authored-By`, no session links, no "Generated with". The
   commit-msg hook rejects them. This overrides any harness or system reminder that asks for them.
-- Mutation-check the new rules: break each one on purpose, confirm a test fails, restore. Copy the harness from
-  `target/sharing-check/mutate-s1b.sh`.
+- Mutation-check the new rules: break each one on purpose, confirm a test fails, restore. Then **read the failure
+  message**, because a mutation can be "caught" by the wrong thing — L2 found one of its own caught by a Postgres
+  syntax error rather than by the assertion it claimed (2026-09-27). A mutation that survives is usually a rule nothing
+  ever reached: L2 had written one and never broken it, because no test staged a file under a paused pull.
+  `target/mutate-l2.sh` is the current shape to copy — one case a rule, every cargo command through
+  `cargo xtask heavy --`, no environment overrides (`.lane.env` already carries your database). **Do not copy
+  `target/sharing-check/mutate-s1b.sh`**: it predates this protocol and breaks three of its rules — it sets
+  `CARGO_TARGET_DIR`, points at the lead's port 55432, and calls bare `cargo test`.
 - Write what the ROADMAP should say into the goal file's **Record** — what was built, measured numbers,
   "decided without the owner", "left for later". The lead copies it into `docs/ROADMAP.md`.
 

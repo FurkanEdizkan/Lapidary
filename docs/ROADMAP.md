@@ -3233,7 +3233,8 @@ rule — people who know each other only, no tracker, no public directory. Plan:
   published, and that roster can only be read from its owner. An owner who takes somebody off a folder and then
   goes offline leaves the other holders passing that folder on to them, and serving its catalogue, until the
   owner answers again. `peer_share_member.seen_at` says how old the answer is; nothing refuses an old one yet.
-  Bounding it belongs with S10, where taking a folder back is the subject.
+  Bounding it belongs with S10, where taking a folder back is the subject. **Closed by L2 on 2026-09-27:** seven days,
+  and a roster older than that is refused by all three reads.
 - **Left for later:** fetching a file from whoever holds it is S8's seeding switch and S9's discovery.
 
 **Seeding what you pulled** (stage S8).
@@ -3323,7 +3324,9 @@ rule — people who know each other only, no tracker, no public directory. Plan:
 - **Known ceiling, recorded twice** (here and in `0044`): who a folder may be passed on to is decided by the
   roster its owner published, and that roster can only be read from its owner. An owner who takes somebody off
   a folder and then goes offline leaves the other holders serving them until the owner answers again. Bounding
-  it wants a staleness window on `peer_share_member.seen_at`, and is not built.
+  it wants a staleness window on `peer_share_member.seen_at`. **Built by L2 on 2026-09-27** (`ROSTER_TRUSTED_FOR_SECS`,
+  seven days): `relayable_to`, `relayed_to` and `serves` each require the roster row to have been seen inside the
+  window, so an owner who goes offline stops being able to authorise relays through anybody else within a week.
 - **And in containers** (owner asked on 2026-09-18), three compose projects — `lapidary-group-a`, `-b`, `-c`,
   each with its own database, store, ingest directory and ports — from `deploy/`'s own images rebuilt from this
   goal's code (db 3 s, web 9 s, api 119 s, peer 4 s, worker 125 s; root 14 → 11 GB free). Harness:
