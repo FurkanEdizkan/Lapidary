@@ -3675,6 +3675,45 @@ and measured through containers; the first (a 12-widget dashboard in one round t
     resolve failure after the first load is silent; the board is one column under `md` with no touch-sized arrangement;
     `layout.ts` has no horizontal compaction; and a library renamed after a widget was added shows the old name until a
     library's name travels on the wire.
+
+### Phase 6's exits, measured on the merged `main` through containers (2026-09-27)
+
+A stack built from `main` at `1a7f1ab` — five images, the rig's own project and port block, 411 parts in `Sweep` from
+the corpus slice, plus `Governed`, `Empty` and the six untouched example parts. Both exits measured on the same stack,
+in the same session, and the scripts kept at `target/close/`.
+
+**Exit 1 — a 12-widget dashboard settles in one round trip: met.** Twelve widgets, every kind Phase 6 defines, across
+two named groups: **one `POST /api/dashboard/resolve`**, 12 widgets drawn, **settled 2.21 s** from navigation (22
+requests in all, the other 21 being the page's own assets). Repeated with the registry's own widget heights: the same
+one request, 2.21 s.
+
+- **Five browser tabs, one LISTEN backend.** `pg_stat_activity` reports 1 before the tabs, 1 with five dashboards open,
+  and 1 after they close — G1's fan-out doing what it claimed, now measured through containers rather than in process.
+- **A change reaches an open page in 206 ms**, measured from the POST that caused it to the browser's re-resolve. G1's
+  bound was one second; its own in-process figure was the 250 ms window's ceiling, and 206 ms is that window landing
+  mid-cycle.
+- **An upload is two or three re-resolves, not one, and that is the design.** A scan produces several events — the part
+  rows, then each job reaching `done` — spaced wider than the 250 ms coalescing window, so the page asks again for each,
+  each time only for the changed library's keys. G5 predicted this before it was measured. Every request the page made
+  after the change was a resolve: **no polling, at all.**
+
+**Exit 2 — uploading a known part surfaces its near-duplicates: met, again, with all of Wave 2 merged.** The bracket
+turned 37° off-axis and ingested at another path: **descriptor distance 0.000000** against the 0.04 threshold,
+`size_mm` 38.5639 mm against 38.5639 mm, band position 0.0 of 0.0198, listed under `nearDuplicates`, **0 unprofiled in
+the library and 0 profile jobs left behind**.
+
+**Two observations from the run, neither a failure:**
+
+- **The corpus holds a corrupt STL, and the application says so precisely:** "Could not read this STL — triangle 49957
+  has a non-finite x coordinate on vertex 1 — the file is likely corrupt. Re-export it from your CAD or slicing tool and
+  retry." That is the error rule working on a real file (`Creators/Wargames Crew/… /GotNML3_1_SUP.stl`) rather than on a
+  fixture.
+- **A permanently-failing file is re-attempted by every scan**, adding a `failed` job row each time — six rows for one
+  file across three scans. Defensible, since a corrected re-export should be picked up, but it means the dashboard's
+  "N failed" grows with each scan of an unchanged, unfixable file. Filed.
+
+**Phase 6 is met.** What remains before it is closed: the loose ends (L2, L3, L4) and the discovery goals (P1–P4), all
+on the board.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.

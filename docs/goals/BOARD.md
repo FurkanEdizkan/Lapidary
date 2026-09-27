@@ -70,6 +70,10 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
   nothing, so it queued behind four `cargo test --workspace` runs, each wait longer than the 7 s of work. The
   `/duplicates` queue uses the left ~800 px of a 1440 viewport while wrapping long path headings onto three lines inside
   that column. A 1,000-part sweep is `CORPUS_SLICE=1000` away, and the backlog's UI-sweep row is now cheap.
+- **A permanently-failing file is re-attempted by every scan** (the close's run, 2026-09-27): one corrupt STL in the
+  corpus produced six `failed` job rows across three scans, because nothing records that this path at this hash has
+  already been refused for good. The dashboard's "N failed" therefore climbs with every scan of a library that holds one.
+  A `skipped`-like outcome keyed on (path, hash) would settle it; a corrected re-export must still be picked up.
 - **From L1's three-installation run (2026-09-27), one line each.** `folders_in_common` never counts the owner of a
   folder this installation holds (`lapidary-db/src/sharing.rs`, `peer_columns!`), so every sharer reads zero — the page
   no longer shows the contradiction, the number is still wrong. A peer introduced but **not yet accepted by the other
