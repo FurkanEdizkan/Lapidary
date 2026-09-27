@@ -3573,6 +3573,41 @@ and measured through containers; the first (a 12-widget dashboard in one round t
     otherwise tell probe the library's existence, which is where G3's empty-for-a-missing-library trap was closed; that
     `instanceStorage` skips both the disk walk and the touches flush, so its render-cache figure is at most five minutes
     old; and that a saved filter whose category was deleted **fails its key** rather than showing an empty tile.
+- **G1, the app-wide event stream** (merged `8b9f94c`, gate 14 green in 762.21 s on the merged tree — the wall clock is lock
+  wait behind two other lanes, not work). Migration `0049` adds this repository's **first trigger function**,
+  `lapidary_changed()`, running `pg_notify('lapidary_events', library_id::text)` after each row change on `part` and on a
+  `job` reaching `done` or `failed`, so every writer notifies without remembering to. One `PgListener` a process fans out
+  over a `broadcast` through a hub that groups per library over 250 ms; `GET /api/events` is merged for the api role in
+  `bin/lapidary-server`, with `X-Accel-Buffering: no` and `Cache-Control: no-cache` on it and on the older batch stream.
+  - **Measured in process, and labelled as that:** insert to event on an open stream **250.7 / 251.4 / 251.5 / 251.9 /
+    252.3 ms** — the 250 ms window plus about 1.5 ms. The test writes immediately after the hub starts, so it lands just
+    after a tick and waits nearly a whole window: **that is the window's ceiling, not its average**, which is what makes
+    it the useful figure against the 1 s bound. And **five open streams, one LISTEN backend**, from `pg_stat_activity`.
+  - **Two of the goal's own stated tests would have passed on broken code, so the lane changed them.** "100 inserts in one
+    transaction gives exactly one event" does not test grouping at all — Postgres collapses that case itself, so it passes
+    with the hub's window deleted; the replacement uses ten *separate* transactions per library with the ceiling **timed
+    from the burst** rather than fixed, so a busy machine cannot turn it red. And the lagging-subscriber case became a
+    unit test, because overflowing the production buffer through an integration test would spend 256 windows of wall
+    time. It also added the seam nobody had covered: the header test builds the router **`bin/lapidary-server` actually
+    serves**, since axum panics at merge time on a claimed path and the first place that shows is a container that will
+    not start.
+  - **Decisions with reasons:** the hub holds a `broadcast::Receiver` and clones by `resubscribe()`, so the hub task owns
+    the only sender and its return on shutdown closes the channel and ends every stream — no second signal threaded
+    through the router. `Hub::spawn` is `async` and opens the first listener **before** it returns, or it races the
+    caller's next write. `try_recv`, never `recv`: `recv` reconnects silently and the notifications lost in that gap are
+    gone, and `Ok(None)` is what makes `Resync` possible — checked against sqlx 0.9's source, including that
+    `recv_unchecked` is written to be cancel-safe, which is what lets the timer and the listener share one `select!`.
+  - **The api now serves on seven of its eight connections:** `PgListener::connect_with` acquires from the pool and holds
+    that connection for the life of the process. G4's semaphore of four was sized against eight. Folded into
+    [`L4`](goals/L4.md)'s arithmetic rather than left as a surprise.
+  - **Its container measurement is deferred to the close, and that is an improvement.** `0049` means any image built from
+    an older `main` refuses to start against a migrated database (`sqlx::migrate!` runs for every role with no
+    `ignore_missing`), so the existing images cannot measure this goal; and "five tabs" needs G5's `EventSource`, which
+    was not merged, so the lane's own plan was five `curl` clients. Measuring it at the close with G5 in gives the real
+    thing instead of a proxy. `ARCHITECTURE.md` now says whether Caddy's `encode gzip zstd` holds an event stream is
+    **not yet measured** — the lane first wrote it as fact and corrected itself.
+  - **15 mutations, 15 caught**, including a listener opened late and a one-millisecond window. `0049` restates no
+    constraint on `job`, so `0047`'s `profiled` is untouched.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
