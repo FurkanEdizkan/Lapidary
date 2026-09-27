@@ -3152,7 +3152,13 @@ async fn a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_start
         "and the same read that rebuilt the rung recorded the same centre as ingest did"
     );
 
-    // It converges: the row now has one, so the next start leaves it alone.
+    // It converges: the row now has one, so the next start leaves it alone. The job table is emptied
+    // first, or `enqueue_if_absent` would decline for the job this test already dequeued and the leg
+    // would pass whatever the sweep's predicate said.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
     handler.enqueue_stale_derivatives().await;
     assert!(
         jobs.dequeue("worker-b", std::time::Duration::from_secs(60))
@@ -3164,6 +3170,10 @@ async fn a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_start
 
     // And a closed mesh enclosing nothing has a volume of 0 and no centre, for ever: queueing it
     // would be the board's "re-attempted by every scan" in a new place, so `volume > 0` is the test.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
     sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 0")
         .execute(&pool)
         .await
