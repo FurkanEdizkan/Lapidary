@@ -114,3 +114,21 @@ export type { FoldPart } from '../bindings/FoldPart'
 export type { Likeness } from '../bindings/Likeness'
 export type { PartLinkKind } from '../bindings/PartLinkKind'
 export type { SetLink } from '../bindings/SetLink'
+
+// Phase 6's dashboard and event wire types (W0's contracts, G4's resolve, G1's stream). One
+// contiguous block, appended the way G6 appended the likeness one: this is still the only file
+// that may import from `../bindings`, and G5.md does not name it, so it is a shared-file edit.
+// `Widget` is the config schema — the registry is keyed off `Widget['kind']`, so a kind added
+// in Rust fails `tsc` in the web until it is drawn.
+export type { AppEvent } from '../bindings/AppEvent'
+export type { DuplicateSummary } from '../bindings/DuplicateSummary'
+export type { FacetKind } from '../bindings/FacetKind'
+export type { FilteredParts } from '../bindings/FilteredParts'
+export type { KeyResult } from '../bindings/KeyResult'
+export type { QueueSummary } from '../bindings/QueueSummary'
+export type { ResolveRequest } from '../bindings/ResolveRequest'
+export type { ResolveResponse } from '../bindings/ResolveResponse'
+export type { Widget } from '../bindings/Widget'
+export type { WidgetRequest } from '../bindings/WidgetRequest'
+export type { WidgetResult } from '../bindings/WidgetResult'
+export type { WidgetValue } from '../bindings/WidgetValue'

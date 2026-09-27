@@ -204,8 +204,149 @@ export const strings = {
    * first part by keyboard means tabbing through every category first.
    */
   skipToParts: 'Skip to the parts',
-  /** The dashboard (Phase 6): its widgets, their settings, and moving them about. Goal G5's. */
-  dashboard: {},
+  /**
+   * The dashboard (Phase 6): its widgets, their settings, and moving them about. Goal G5's.
+   *
+   * Two things every string here has to keep true. **The page costs one request** — so nothing
+   * says "refreshing" or offers a reload of one panel, because there is no per-widget endpoint
+   * to reload it from; a widget that ran out of time offers a retry, which asks once more.
+   * And **the arrangement is this browser's**, not the library's and not the account's: there
+   * are no accounts until Phase 8, so the copy says browser wherever it says remembered.
+   */
+  dashboard: {
+    /** The nav's fourth place and the page's headline, one entry so the two cannot drift. */
+    title: 'Dashboard',
+    lead: 'What your libraries hold, what they occupy, and what the worker is still doing. Everything here arrives in one request, and updates when the server says something changed.',
+    /** Said once, under the lead. The honest scope, exactly as the grid's preferences say it. */
+    perBrowser: 'This arrangement is remembered by this browser.',
+    loading: 'Loading the dashboard…',
+    loadFailed:
+      'Could not load the dashboard. Check that the api service is running, then try again.',
+    /** One dashboard, one retry: there is no per-widget endpoint for a narrower one. */
+    retry: 'Try again',
+    /** WCAG 2.5.3 — the name a screen reader hears begins with the words on the button. */
+    retryLabel: (label: string) => `Try again — ${label}`,
+    empty: 'Nothing on this dashboard yet',
+    emptyLead:
+      'Add a widget for whatever you want in front of you: what a library holds, what it occupies, what the worker is still doing, or which parts look like duplicates of each other.',
+
+    /** The seven kinds, as the registry names them. A kind added in Rust needs a label here. */
+    storageLabel: 'Library storage',
+    instanceStorageLabel: 'All storage',
+    recentLabel: 'Recently added',
+    savedFilterLabel: 'Saved filter',
+    /**
+     * The kind, in the Add menu. Its *heading* names the facet instead — three of these on one
+     * board all read the same otherwise, which is what the 1440 pass found.
+     */
+    facetLabel: 'Value counts',
+    facetFormatLabel: 'Formats',
+    facetMaterialLabel: 'Materials',
+    facetTagLabel: 'Tags',
+    queueLabel: 'Jobs',
+    duplicatesLabel: 'Possible duplicates',
+    /**
+     * Which library a widget is about, in its heading.
+     *
+     * The name is the one stored when the widget was added, because no widget's value carries
+     * its library and two of these panels side by side would otherwise be indistinguishable.
+     * A saved filter's heading uses the name the server just sent instead, which is why that
+     * one is the only kind whose title can be renamed underneath it and still be right.
+     */
+    inLibrary: (label: string, library: string) => `${label} — ${library}`,
+
+    /** A widget with nothing to show. Said rather than left blank: blank reads as loading. */
+    noParts: 'No parts here yet.',
+    noValues: 'Nothing to count yet.',
+    /** A facet value's tally, or the word for one past the exact-count threshold. */
+    facetTally: (count: number | null) =>
+      count === null ? 'present' : count.toLocaleString('en-US'),
+    /**
+     * The worker's queue for one library. Only the clauses that are true, for the reason the
+     * storage line only shows removed bytes when there are some: a standing row of zeroes is
+     * noise, and the moment one is not zero it is the only thing on the widget worth reading.
+     */
+    queueLine: (pending: number, running: number, failed: number) => {
+      const clauses: string[] = []
+      if (running > 0) clauses.push(`${running.toLocaleString('en-US')} running`)
+      if (pending > 0) clauses.push(`${pending.toLocaleString('en-US')} waiting`)
+      if (failed > 0) clauses.push(`${failed.toLocaleString('en-US')} failed`)
+      return clauses.length === 0 ? 'Nothing queued.' : `${clauses.join(' · ')}.`
+    },
+    /** Groups of parts that look like each other, and the page that shows them. */
+    duplicatesLine: (clusters: number) =>
+      clusters === 1 ? '1 group looks alike.' : `${clusters.toLocaleString('en-US')} groups look alike.`,
+    duplicatesNone: 'Nothing looks alike.',
+    /**
+     * Parts the worker has not profiled yet, so nothing compared them. Said whether or not
+     * there are groups — a library with none and forty unprofiled parts is the case where
+     * leaving it out would be most misleading, which is the queue page's rule too.
+     */
+    duplicatesUnprofiled: (parts: number) =>
+      parts === 1 ? '1 part not compared yet.' : `${parts.toLocaleString('en-US')} parts not compared yet.`,
+    duplicatesReview: 'Review them',
+
+    /** A key that ran out of time or failed, while every other key on the page rendered. */
+    timedOut: 'This took longer than two seconds to work out.',
+    widgetFailed: 'This could not be worked out.',
+
+    /** The grip a widget is dragged by, and the control the arrow keys act on. */
+    moveLabel: (label: string) => `Move ${label}`,
+    moveHint: 'Drag to move. Arrow keys move it a column or a row; hold Shift to resize it.',
+    resizeLabel: (label: string) => `Resize ${label}`,
+    /** The live region every move and resize is announced in. */
+    positions: 'Widget positions',
+    moved: (label: string, group: string, column: number, row: number) =>
+      `${label} is now in ${group}, column ${column} of 12, row ${row}.`,
+    resized: (label: string, width: number, height: number) =>
+      `${label} is now ${width} of 12 columns wide and ${height} rows tall.`,
+
+    /** One widget's own menu: where it goes, what it is configured to show, and removing it. */
+    widgetMenu: (label: string) => `Options — ${label}`,
+    settings: 'Settings…',
+    settingsTitle: (label: string) => `${label} settings`,
+    settingsSave: 'Save',
+    removeWidget: 'Remove from the dashboard',
+    /** Nothing is deleted by removing a widget, and the wording has to keep that clear. */
+    removeWidgetDetail: 'Nothing is deleted — this only takes the panel off the page.',
+    moveToGroup: (group: string) => `Move to ${group}`,
+
+    /** Named groups: each a titled section with its own grid. */
+    defaultGroup: 'Overview',
+    groupMenu: (group: string) => `Options — ${group}`,
+    addGroup: 'Add a group',
+    addGroupTitle: 'Add a group',
+    groupNameLabel: 'Group name',
+    addGroupConfirm: 'Add the group',
+    newGroupName: (number: number) => `Group ${number}`,
+    renameGroup: (group: string) => `Rename ${group}`,
+    renameGroupTitle: (group: string) => `Rename ${group}`,
+    renameGroupConfirm: 'Rename',
+    groupUp: (group: string) => `Move ${group} up`,
+    groupDown: (group: string) => `Move ${group} down`,
+    removeGroup: (group: string) => `Remove ${group}`,
+    /** A group is never removed with its widgets inside it; they move to the first group. */
+    removeGroupKeeps: (group: string, into: string) =>
+      `Remove ${group}? Its widgets move to ${into}. Nothing is deleted.`,
+    removeGroupConfirm: 'Remove the group',
+    /** The last group cannot go: a widget has to be somewhere. */
+    lastGroup: 'A dashboard keeps at least one group.',
+
+    /** Adding a widget: which kind, then the two or three things that kind needs to know. */
+    add: 'Add a widget',
+    addTitle: 'Add a widget',
+    addKind: 'What to show',
+    addLibrary: 'Which library',
+    addFilter: 'Which saved filter',
+    addFacet: 'Count by',
+    addLimit: 'How many to show',
+    addGroupField: 'In which group',
+    addConfirm: 'Add it',
+    full: (most: number) =>
+      `A dashboard holds ${most} widgets, and this one is full. Remove one to add another.`,
+    noFilters: 'This library has no saved filters yet. Save one on the grid first.',
+    noLibraries: 'No libraries to show yet.',
+  },
   /**
    * The last thing the application can say. A crash inside a route unmounts everything
    * below it, so this replaces the page rather than annotating it — and it names the

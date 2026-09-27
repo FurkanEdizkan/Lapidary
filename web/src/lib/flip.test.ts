@@ -105,3 +105,19 @@ test('a runtime without the animations API degrades instead of throwing', () => 
   expect(() => flipFrom(el, rect({ left: 0, top: 0 }))).not.toThrow()
   expect(flipFrom(el, rect({ left: 0, top: 0 }))).toBeNull()
 })
+
+/**
+ * The dashboard's widgets move at 180ms, not 280: a widget changing places is a state change,
+ * which the design caps at `--duration-base`, and `phase-6.md` names that number for this move.
+ * The default is untouched, so the panel this module was written for still flies at 280.
+ */
+test('a caller making a state change can ask for the shorter duration', () => {
+  reducedMotion(false)
+  const { el, calls } = elementAt({ left: 400, top: 300 })
+
+  expect(flipFrom(el, rect({ left: 0, top: 0 }), 'base')).not.toBeNull()
+  expect((calls[0]!.options as { duration: number }).duration).toBe(180)
+
+  expect(flipFrom(el, rect({ left: 0, top: 0 }))).not.toBeNull()
+  expect((calls[1]!.options as { duration: number }).duration).toBe(280)
+})

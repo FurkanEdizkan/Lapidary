@@ -23,7 +23,7 @@ function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'removed' | 'sharing'
+export type Place = 'parts' | 'dashboard' | 'removed' | 'sharing'
 
 const PLACE =
   'ease-mechanical flex min-h-7 items-center rounded-[5px] px-3 text-xs duration-[var(--duration-fast)]'
@@ -33,7 +33,7 @@ const HERE = `${PLACE} bg-[var(--color-border)] font-semibold text-[var(--color-
 const THERE = `${PLACE} text-[var(--color-muted)] hover:text-[var(--color-text)]`
 
 /**
- * Where you are, among the three places the application has.
+ * Where you are, among the four places the application has.
  *
  * `current` is a prop rather than read from the router: the place is a fact the page knows,
  * and each page's tests mount it under a synthetic route tree where route matching would
@@ -43,6 +43,7 @@ const THERE = `${PLACE} text-[var(--color-muted)] hover:text-[var(--color-text)]
 function Places({ current, library, stacked = false }: { current?: Place; library?: LibraryId; stacked?: boolean }) {
   const search = library === undefined || library === DEFAULT_LIBRARY_ID ? undefined : { library }
   const inParts = current === 'parts'
+  const inDashboard = current === 'dashboard'
   const inRemoved = current === 'removed'
   const inSharing = current === 'sharing'
   return (
@@ -60,6 +61,21 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
         // Exact: the router marks a matching link `aria-current` itself, and `/` prefixes every path.
         <Link to="/" search={search} activeOptions={{ exact: true }} className={THERE}>
           {strings.frame.parts}
+        </Link>
+      )}
+      {/*
+        Second, not first: `/` is the grid and the grid is what this application is for. The
+        dashboard is the overview beside it, and it carries the library for the same reason
+        Parts and Removed do — leaving it and coming back keeps the library you were in, which
+        is the library the Add form offers first.
+      */}
+      {inDashboard ? (
+        <span aria-current="page" className={HERE}>
+          {strings.dashboard.title}
+        </span>
+      ) : (
+        <Link to="/dashboard" search={search} className={THERE}>
+          {strings.dashboard.title}
         </Link>
       )}
       {inRemoved ? (
