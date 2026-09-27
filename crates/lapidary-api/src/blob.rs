@@ -132,7 +132,7 @@ fn not_found() -> Response {
 }
 
 fn internal_error(err: &DbError) -> Response {
-    tracing::error!(error = %err, "blob reachability query failed");
+    crate::error::log_db_error(err, "blob reachability query failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         axum::Json(serde_json::json!({ "message": err.client_message() })),

@@ -238,7 +238,7 @@ fn no_such_batch() -> Response {
 /// gets the real error through the log, the client gets whatever `client_message` decides
 /// is safe to hand back.
 fn internal_error(err: &DbError) -> Response {
-    tracing::error!(error = %err, "job query failed");
+    crate::error::log_db_error(err, "job query failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

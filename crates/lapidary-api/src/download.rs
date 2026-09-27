@@ -632,7 +632,7 @@ fn bad_query(rejection: &QueryRejection) -> Response {
 /// Same asymmetry the other handlers keep: the operator gets the real error through the
 /// log, the client gets whatever `client_message` decides is safe to hand back.
 fn internal_error(err: &DbError) -> Response {
-    tracing::error!(error = %err, "download source lookup failed");
+    crate::error::log_db_error(err, "download source lookup failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "message": err.client_message() })),

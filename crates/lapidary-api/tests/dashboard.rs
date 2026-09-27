@@ -11,6 +11,11 @@
 //! waiting for a permit and waiting for a connection cannot be read off `#[sqlx::test]`'s default.
 //! Production is `max_connections(8)` (`lapidary_db::connect`), and the semaphore of 4 is set
 //! against it.
+//!
+//! Those pools also carry `lapidary_db::INTERACTIVE`, the api role's own `statement_timeout` and
+//! `lock_timeout` (goal L4) — so what ends a blocked widget here is what ends it in the api: the
+//! server, which gives the connection straight back. A pool built without them would still pass
+//! every test about ordering and refusals and would prove nothing at all about the pool.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -48,11 +53,15 @@ fn state(pool: sqlx::PgPool) -> AppState {
 }
 
 /// A pool of `connections` on this test's own database, so the test states the limit instead of
-/// inheriting one.
+/// inheriting one — and carrying the api role's ceiling, so a statement is stopped here the way it
+/// is in the api.
 async fn pool_of(pool: &sqlx::PgPool, connections: u32) -> sqlx::PgPool {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(connections)
-        .connect_with((*pool.connect_options()).clone())
+        // Two seconds under the semaphore's worst round, so a starved pool fails a test on the
+        // assertion rather than hanging it for sqlx's default half-minute.
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(lapidary_db::INTERACTIVE.applied_to((*pool.connect_options()).clone()))
         .await
         .expect("a pool of its own")
 }
@@ -710,25 +719,29 @@ async fn a_locked_queue_times_out_its_own_key_while_the_other_eleven_answer(pool
     );
 }
 
-/// Each key's two seconds start once it holds a permit. Four keys block on the lock and take every
-/// permit; the fifth gets one only when they give up, about two seconds in, and must still have its
-/// own two seconds then. Counted from when it was asked, it would report a timeout it never had.
+/// Each key's clock starts once it holds a permit. Eight keys block on the lock and take every permit
+/// for two rounds; the ninth gets one only when they have all given up, about four seconds in, and
+/// must still have its own [`PER_KEY`] then. Counted from when it was asked, it would report a timeout
+/// it never had.
+///
+/// **Eight blocked keys rather than the four this test was written with** (goal L4). The wait the
+/// ninth key survives has to be longer than one key's own budget, or a clock started at spawn would
+/// still have time left when the permit arrived and the test would pass on the mutation it exists to
+/// catch. With the lock ceiling at two seconds and `PER_KEY` at three, four blocked keys are a
+/// two-second wait and not enough; two rounds of four are four seconds and are.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_keys_two_seconds_start_when_it_starts_and_not_when_it_was_asked(pool: sqlx::PgPool) {
+async fn a_keys_own_budget_starts_when_it_starts_and_not_when_it_was_asked(pool: sqlx::PgPool) {
     corpus(&pool).await;
     queued(&pool).await;
-    // Eight connections, as production has: the four blocked keys must not be able to starve the fifth
+    // Eight connections, as production has: the blocked keys must not be able to starve the last one
     // of a connection, or this would be asserting the pool rather than the clock.
     let app = pool_of(&pool, 8).await;
     let held = lock_the_queue(&pool).await;
 
-    let widgets = vec![
-        ask("blocked-1", queue(SEEDED_LIBRARY)),
-        ask("blocked-2", queue(SEEDED_LIBRARY)),
-        ask("blocked-3", queue(SEEDED_LIBRARY)),
-        ask("blocked-4", queue(SEEDED_LIBRARY)),
-        ask("last", storage(SEEDED_LIBRARY)),
-    ];
+    let mut widgets: Vec<serde_json::Value> = (1..=8)
+        .map(|n| ask(&format!("blocked-{n}"), queue(SEEDED_LIBRARY)))
+        .collect();
+    widgets.push(ask("last", storage(SEEDED_LIBRARY)));
     let began = Instant::now();
     let json = resolved(app.clone(), widgets).await;
     let took = began.elapsed();
@@ -736,12 +749,14 @@ async fn a_keys_two_seconds_start_when_it_starts_and_not_when_it_was_asked(pool:
     held.rollback().await.expect("releases the lock");
     app.close().await;
 
+    let mut expected = vec!["timedOut"; 8];
+    expected.push("ok");
     assert_eq!(
         statuses(&json),
-        ["timedOut", "timedOut", "timedOut", "timedOut", "ok"],
-        "the fifth key waited about two seconds for a permit and still got its own two: {json}"
+        expected,
+        "the last key waited about four seconds for a permit and still got its own budget: {json}"
     );
-    assert!(took >= Duration::from_millis(1_900), "{took:?}");
+    assert!(took >= Duration::from_millis(3_900), "{took:?}");
     assert_eq!(value(&json, "last")["kind"], "storage");
 }
 
@@ -766,44 +781,129 @@ async fn twelve_blocked_keys_go_four_at_a_time(pool: sqlx::PgPool) {
     app.close().await;
 
     assert_eq!(statuses(&json), ["timedOut"; 12], "{json}");
+    // Five seconds rather than the 3.5 this was written with (goal L4). Without the permit limit the
+    // twelve keys race for eight connections, and where they used to all give up at two seconds —
+    // ours, on the pool — the four that wait now get a connection when the first eight are cancelled
+    // and block for two more, landing at about three. Six seconds against three wants a threshold
+    // between them with room on both sides, not one just under the lower number.
     assert!(
-        took >= Duration::from_millis(3_500),
+        took >= Duration::from_millis(5_000),
         "twelve keys four at a time is three rounds of two seconds, not one: {took:?}"
     );
 }
 
-/// What a key that ran out of time leaves behind, which is the ceiling on the whole mechanism: the
-/// permit limit bounds how many keys are waiting at once, not how many connections keys that gave up
-/// are still holding. Our two seconds cancel the future, but the statement is still running on the
-/// server, and sqlx cannot return the connection to the pool until the server answers.
+/// **G4's ceiling, closed.** `a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears`
+/// asserted the opposite of this on the same pool of one: our two seconds cancelled the future, the
+/// statement went on running on the server, and the next read had nowhere to go until the lock
+/// cleared.
 ///
-/// A pool of one makes that visible: the read blocks on the lock, is cancelled, and the next read has
-/// nowhere to go until the lock clears.
+/// Now the resolve itself is the thing being asked, on a pool of **one**, against a locked table: the
+/// widget times out and the connection is back in the pool immediately, so a second resolve of a
+/// widget that reads something else answers while the lock is *still held*. Before the ceiling the
+/// second resolve could only have timed out too — on the pool, not on the lock.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_key_that_gave_up_still_holds_its_connection_until_the_lock_clears(pool: sqlx::PgPool) {
+async fn a_widget_that_timed_out_leaves_the_pool_the_connection_it_was_using(pool: sqlx::PgPool) {
+    corpus(&pool).await;
+    queued(&pool).await;
     let one = pool_of(&pool, 1).await;
     let held = lock_the_queue(&pool).await;
 
-    let blocked = tokio::time::timeout(
-        Duration::from_millis(300),
-        sqlx::query("SELECT count(*) FROM job").fetch_one(&one),
-    )
-    .await;
-    let after = tokio::time::timeout(
-        Duration::from_millis(500),
-        sqlx::query("SELECT 1").fetch_one(&one),
-    )
-    .await;
+    let blocked = resolved(one.clone(), vec![ask("queue", queue(SEEDED_LIBRARY))]).await;
+
+    let began = Instant::now();
+    let after = resolved(one.clone(), vec![ask("storage", storage(SEEDED_LIBRARY))]).await;
+    let answered = began.elapsed();
 
     held.rollback().await.expect("releases the lock");
     one.close().await;
 
-    assert!(blocked.is_err(), "the locked read does not finish");
+    assert_eq!(statuses(&blocked), ["timedOut"], "{blocked}");
+    assert_eq!(
+        statuses(&after),
+        ["ok"],
+        "the one connection was free again while the lock was still held: {after}"
+    );
     assert!(
-        after.is_err(),
-        "the cancelled read's connection is not free again while the lock is held, so a long lock \
-         plus repeated resolves can drain the pool — a server-side `lock_timeout` is the fix, and it \
-         belongs in `lapidary_db::connect` rather than here"
+        answered < Duration::from_millis(1_500),
+        "and free immediately rather than at the next ceiling: {answered:?}"
+    );
+}
+
+/// **The thing that could not be tested before.** A locked table, resolve after resolve, and the
+/// pool still has connections in it at the end.
+///
+/// What the old arrangement did was *accumulate*: each key that gave up kept its connection until
+/// the lock cleared, so four keys a round became four, then eight, then twelve held at once, and the
+/// api ran out. So the shape of this test is rounds, not volume — one resolve of four blocked keys at
+/// a time, four times over, with somebody else reading throughout. Sixteen keys give up in all,
+/// against a pool of eight holding a stand-in for `events.rs`'s `PgListener`, which costs the api one
+/// of its eight for as long as the process runs (found by G1). Four of the seven usable connections
+/// are busy at any moment and three are not, and the probe asserts exactly that: a plain `SELECT 1`
+/// answers in milliseconds every time. On the old code it would have answered for the first round and
+/// then waited on the pool until its `acquire_timeout`.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn however_many_resolves_meet_a_locked_table_the_pool_still_has_connections(
+    pool: sqlx::PgPool,
+) {
+    corpus(&pool).await;
+    queued(&pool).await;
+    let app = pool_of(&pool, 8).await;
+    // The api's event listener, as a cost: one connection, held until the test is over.
+    let listener = app.acquire().await.expect("the listener's connection");
+    let held = lock_the_queue(&pool).await;
+
+    let probing = app.clone();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let until = stop.clone();
+    let probe = tokio::spawn(async move {
+        let mut worst = Duration::ZERO;
+        let mut taken = 0u32;
+        while !until.is_cancelled() {
+            let began = Instant::now();
+            let answered = sqlx::query("SELECT 1").fetch_one(&probing).await;
+            let took = began.elapsed();
+            assert!(
+                answered.is_ok(),
+                "the pool starved after {taken} answered probes: {answered:?}"
+            );
+            worst = worst.max(took);
+            taken += 1;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        (taken, worst)
+    });
+
+    const ROUNDS: usize = 4;
+    for round in 0..ROUNDS {
+        let widgets: Vec<serde_json::Value> = (0..4)
+            .map(|n| ask(&format!("tile-{round}-{n}"), queue(SEEDED_LIBRARY)))
+            .collect();
+        let json = resolved(app.clone(), widgets).await;
+        assert_eq!(
+            statuses(&json),
+            ["timedOut"; 4],
+            "round {round}: every key is blocked on the lock, and none of them failed on the \
+             pool: {json}"
+        );
+    }
+
+    stop.cancel();
+    let (probes, worst) = probe.await.expect("the probe did not panic");
+    drop(listener);
+    held.rollback().await.expect("releases the lock");
+    app.close().await;
+
+    assert!(
+        probes >= u32::try_from(ROUNDS).expect("four"),
+        "the probe should have run throughout every round, not {probes} times"
+    );
+    // The probe erroring is what the pool's 10 s `acquire_timeout` would turn starvation into, and it
+    // is asserted inside the loop. This says the pool was never even close: four cancelled lock waits
+    // at a time leave three of the seven connections free, so nobody else waits at all.
+    assert!(
+        worst < Duration::from_millis(500),
+        "somebody else's read waited {worst:?} for one of the three connections the resolves were \
+         not using"
     );
 }
 
