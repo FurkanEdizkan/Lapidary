@@ -49,6 +49,7 @@ const PART: PartDetail = {
   bboxMm: { value: [61, 42, 18.5], approximate: true },
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
+  massG: null,
   kernelVersion: 'mesh stl-1+cpu-1',
   lock: null,
   sharedBy: null,
@@ -200,6 +201,55 @@ test('a part whose figures are all analytic shows no approximate key', async () 
 
   await row(strings.detail.surfaceArea)
   expect(screen.queryByText(strings.detail.approximateKey)).toBeNull()
+})
+
+test('a mass carries the approximate key even where every measured figure is analytic', async () => {
+  // L3, item 3. A density is typed by a person and never measured, so the product is approximate
+  // however the volume was read. This is the case the key could be forgotten in: on a mesh the
+  // volume already prints a ≈, so a mesh page passes whether or not `massG` is counted.
+  stub({
+    ...PART,
+    materials: ['C93200 bronze'],
+    materialsTyped: true,
+    bboxMm: { value: [61, 42, 18.5], approximate: false },
+    volumeMm3: { value: 21478.5, approximate: false },
+    surfaceAreaMm2: { value: 9804.25, approximate: false },
+    massG: { value: 191.8, approximate: true },
+  })
+  renderPage()
+
+  const mass = await row(strings.detail.mass)
+  expect(within(mass).getByText(strings.detail.approximateSpoken.trim())).toBeDefined()
+  expect(within(mass).getByText(strings.detail.massSource('C93200 bronze'))).toBeDefined()
+  expect(screen.getByText(strings.detail.approximateKey)).toBeDefined()
+  const volume = await row(strings.detail.volume)
+  expect(within(volume).queryByText(strings.detail.approximateSpoken.trim())).toBeNull()
+})
+
+test('a part with no mass says which of the reasons it is', async () => {
+  // Four reasons, and a blank would read as "weighs nothing" for all four. Three of them are
+  // something the reader can act on, which is why each is said in its own words.
+  for (const [part, said] of [
+    // No volume first: an open mesh told to set a density would still have no mass after setting one.
+    [{ isWatertight: false, volumeMm3: null }, strings.detail.massNoVolume],
+    // And a part somebody has just said holds no material must not be told to give it one.
+    [{ materials: [], materialsTyped: true }, strings.detail.massHoldsNone],
+    [{ materials: [] }, strings.detail.massNoMaterial],
+    [
+      { materials: ['C93200 bronze', 'PTFE'], materialsTyped: true },
+      strings.detail.massSeveralMaterials,
+    ],
+    [
+      { materials: ['C93200 bronze'], materialsTyped: true },
+      strings.detail.massNoDensity('C93200 bronze'),
+    ],
+  ] satisfies [Partial<PartDetail>, string][]) {
+    stub({ ...PART, massG: null, ...part })
+    const view = renderPage()
+    const mass = await row(strings.detail.mass)
+    expect(within(mass).getByText(said)).toBeDefined()
+    view.unmount()
+  }
 })
 
 test('an open mesh says why it has no volume rather than showing a blank', async () => {

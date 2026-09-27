@@ -132,3 +132,53 @@ async fn a_density_is_replaced_by_setting_it_again_and_gone_once_removed(pool: s
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "no such library");
 }
+
+/// A material named as a CAD file names one — a grade with its standard and its condition, 71
+/// characters and a `/` in it — takes a density (L3, item 5). Past 200 characters it is refused by a
+/// message that says the number, and the table is what proves the limit moved: raising the API's
+/// constant alone would leave `material_density`'s own CHECK returning a 500.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_material_named_as_a_cad_file_names_one_takes_a_density(pool: sqlx::PgPool) {
+    let spelled_out = "Stainless steel, AISI 316L, annealed, cold drawn bar to ASTM A276/A276M";
+    assert_eq!(
+        spelled_out.chars().count(),
+        71,
+        "longer than the 64 characters a person typing a tag gets"
+    );
+    // Percent-encoded by hand, as this file's other names are: the `%2F` also proves a material with
+    // a slash survives the path segment it travels in, which `encodeURIComponent` is what produces.
+    let uri = format!(
+        "{}/Stainless%20steel%2C%20AISI%20316L%2C%20annealed%2C%20cold%20drawn%20bar%20to%20ASTM%20A276%2FA276M",
+        densities()
+    );
+    let (status, body) = send(&pool, "PUT", &uri, Some(json!({ "densityKgM3": 8000 }))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (_, list) = send(&pool, "GET", &densities(), None).await;
+    assert_eq!(
+        list,
+        json!([{ "material": spelled_out, "densityKgM3": 8000.0 }]),
+        "kept exactly as given, slash and all"
+    );
+
+    let pasted = "A".repeat(201);
+    let (status, refusal) = send(
+        &pool,
+        "PUT",
+        &format!("{}/{pasted}", densities()),
+        Some(json!({ "densityKgM3": 8000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refusal}");
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("1 to 200 characters")),
+        "the refusal says the limit: {refusal}"
+    );
+    let (_, list) = send(&pool, "GET", &densities(), None).await;
+    assert_eq!(
+        list.as_array().map(Vec::len),
+        Some(1),
+        "and nothing was written for the refused name"
+    );
+}

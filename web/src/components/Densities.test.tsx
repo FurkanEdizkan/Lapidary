@@ -37,8 +37,10 @@ test('the dialog lists materials held and materials with a density, and saves on
       }
     }),
   )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <DensitiesMenuItem library={LIBRARY} />
     </QueryClientProvider>,
   )
@@ -54,6 +56,11 @@ test('the dialog lists materials held and materials with a density, and saves on
   await waitFor(() =>
     expect(puts).toEqual([{ url: `/api/libraries/${LIBRARY}/densities/AISI%201045%20steel`, body: { densityKgM3: 7850 } }]),
   )
+  // A mass is worked out from its density when read, and since L3 the part's own page shows one — this
+  // dialog opens over that page, so the page reads again too, not only the history and the comparison.
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['part'] })
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['revisions'] })
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['diff'] })
   vi.unstubAllGlobals()
 })
 

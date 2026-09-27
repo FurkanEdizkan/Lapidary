@@ -1396,10 +1396,11 @@ async fn tags_request(
 }
 
 /// Materials are set as tags are and kept over what a file states: a typed list is marked typed,
-/// counted by the materials facet, and refused past 8 materials; an empty list hands the part back
-/// to its file.
+/// counted by the materials facet, refused past 8 materials, and allowed the 200 characters a CAD
+/// file's own name for a grade needs. **An empty list says the part holds none** and is kept; `DELETE`
+/// is what hands the part back to its file.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn materials_typed_through_the_api_are_counted_and_an_empty_list_hands_back_the_files(
+async fn materials_typed_through_the_api_are_counted_and_an_empty_list_means_none(
     pool: sqlx::PgPool,
 ) {
     seed_part(
@@ -1452,13 +1453,51 @@ async fn materials_typed_through_the_api_are_counted_and_an_empty_list_hands_bac
         "{refusal}"
     );
 
+    // A material named as a CAD file names one: past the 64 characters a tag gets, and kept (L3, item 5).
+    let spelled_out = "Stainless steel, AISI 316L, annealed, cold drawn bar to ASTM A276/A276M";
+    let (status, refusal) = tags_request(
+        pool.clone(),
+        "PUT",
+        uri.clone(),
+        Some(serde_json::json!({ "materials": [spelled_out] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{refusal}");
+    let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
+    assert_eq!(detail["materials"], serde_json::json!([spelled_out]));
+    let (status, refusal) = tags_request(
+        pool.clone(),
+        "PUT",
+        uri.clone(),
+        Some(serde_json::json!({ "materials": ["A".repeat(201)] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("at most 200 characters")),
+        "the refusal says the limit: {refusal}"
+    );
+
+    // L3, item 4: an empty list is a decision — this part holds no material — and it is kept.
     let (status, _) = tags_request(
         pool.clone(),
         "PUT",
-        uri,
+        uri.clone(),
         Some(serde_json::json!({ "materials": [] })),
     )
     .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
+    assert_eq!(detail["materials"], serde_json::json!([]));
+    assert_eq!(
+        detail["materialsTyped"], true,
+        "holds none, and says a person decided that"
+    );
+
+    // And `DELETE` is what hands it back to the file, which for a mesh states none.
+    let (status, _) = tags_request(pool.clone(), "DELETE", uri, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, detail) = tags_request(pool.clone(), "GET", format!("/api/parts/{id}"), None).await;
     assert_eq!(
@@ -1837,4 +1876,103 @@ async fn an_aged_part_with_previews(pool: &sqlx::PgPool) -> lapidary_core::PartI
     .await
     .expect("ages every blob");
     part
+}
+
+/// A part's own mass is on its page, worked out from its one material's density when the page is read
+/// (L3, item 3). **Always with the ≈**, even where the volume is analytic: a density is typed by a
+/// person, never measured, so the product of the two is never exact. And where there is no mass, the
+/// page is given what it needs to say which of the reasons it is.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_parts_own_mass_is_on_its_page_and_is_always_approximate(pool: sqlx::PgPool) {
+    seed_part(
+        &pool,
+        library(),
+        0xe7,
+        "sleeve-d20-lp-3120-01",
+        b"webp-sleeve",
+    )
+    .await;
+    // A B-rep's figures, so this part's volume carries no mark of its own and the mass's mark cannot
+    // be the volume's leaking through.
+    sqlx::query(
+        "UPDATE revision SET volume_source = 'analytic', surface_area_source = 'analytic', \
+         bbox_source = 'analytic'",
+    )
+    .execute(&pool)
+    .await
+    .expect("makes the figures analytic");
+    let (_, page) = get_page_with(pool.clone(), "q=sleeve").await;
+    let id = page["parts"][0]["id"]
+        .as_str()
+        .expect("the sleeve's id")
+        .to_owned();
+    let detail = |pool: sqlx::PgPool, id: String| async move {
+        tags_request(pool, "GET", format!("/api/parts/{id}"), None)
+            .await
+            .1
+    };
+
+    let before = detail(pool.clone(), id.clone()).await;
+    assert_eq!(
+        before["volumeMm3"],
+        serde_json::json!({ "value": 21_478.5, "approximate": false }),
+        "the volume is the B-rep's own"
+    );
+    assert_eq!(
+        before["massG"],
+        serde_json::Value::Null,
+        "and no material means no mass"
+    );
+
+    // One material, and a density for it in this library.
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        format!("/api/parts/{id}/materials"),
+        Some(serde_json::json!({ "materials": ["C93200 bronze"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let after_material = detail(pool.clone(), id.clone()).await;
+    assert_eq!(
+        after_material["massG"],
+        serde_json::Value::Null,
+        "a material with no density still has no mass to show"
+    );
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        format!("/api/libraries/{}/densities/C93200%20bronze", library()),
+        Some(serde_json::json!({ "densityKgM3": 8_930 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let with_mass = detail(pool.clone(), id.clone()).await;
+    let mass = with_mass["massG"]["value"].as_f64().expect("a mass");
+    // 21,478.5 mm³ × 8,930 kg/m³ = 191.8 g.
+    assert!(
+        (mass - 21_478.5 * 8_930.0 * 1e-6).abs() < 1e-6,
+        "the volume times the density, in grams: {mass}"
+    );
+    assert_eq!(
+        with_mass["massG"]["approximate"],
+        serde_json::json!(true),
+        "a mass from a typed density is approximate however the volume was measured"
+    );
+
+    // Two materials have no one density to work a mass out from.
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        format!("/api/parts/{id}/materials"),
+        Some(serde_json::json!({ "materials": ["C93200 bronze", "PTFE"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        detail(pool.clone(), id.clone()).await["massG"],
+        serde_json::Value::Null,
+        "a part of two materials has no mass"
+    );
 }

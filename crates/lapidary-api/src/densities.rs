@@ -6,6 +6,7 @@
 
 use crate::AppState;
 use crate::folders::{internal_error, refused};
+use crate::tags::MATERIAL_MAX;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -18,8 +19,6 @@ use ts_rs::TS;
 
 /// Above every material a part is made of: osmium, the densest element, is 22,590 kg/m³.
 const DENSITY_MAX_KG_M3: f64 = 25_000.0;
-/// The longest material name, in characters, as a part's list of materials allows.
-const MATERIAL_MAX: usize = 64;
 
 /// One material's density in a library.
 #[derive(Debug, Clone, Serialize, TS)]
@@ -119,6 +118,9 @@ fn bad_material() -> Response {
     refused(
         StatusCode::BAD_REQUEST,
         "badMaterial",
-        "A material is named as parts hold it: 1 to 64 characters, with no space at either end. Choose one from the library's list and try again.",
+        &format!(
+            "A material is named as parts hold it: 1 to {MATERIAL_MAX} characters, with no space at \
+             either end. Choose one from the library's list and try again."
+        ),
     )
 }

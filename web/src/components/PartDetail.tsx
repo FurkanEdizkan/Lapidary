@@ -23,6 +23,7 @@ import {
   setImageFraming,
   setPartMaterials,
   setPartTags,
+  unsetPartMaterials,
   uploadPartImage,
 } from '../lib/api'
 import { strings } from '../lib/strings'
@@ -365,6 +366,7 @@ function WordList({
   text,
   save: send,
   note = null,
+  reset,
 }: {
   part: PartDetailData
   recordable: boolean
@@ -373,27 +375,41 @@ function WordList({
   save: (part: PartDetailData['id'], values: readonly string[]) => Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }>
   /** A line under the list, such as where its values came from. */
   note?: string | null
+  /**
+   * Materials only: hand the part back to what its file states. Offered exactly while there is
+   * something to undo — a typed list, empty or not — and absent for tags, which no file ever states.
+   */
+  reset?: (part: PartDetailData['id']) => Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }>
 }) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
   const [refusal, setRefusal] = useState<string | null>(null)
+  const settle = (result: { kind: 'saved' } | { kind: 'refused'; message: string }) => {
+    if (result.kind === 'refused') {
+      setRefusal(result.message)
+      return
+    }
+    setDraft('')
+    void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
+    // A part's mass is worked out from its materials when read, so its history and comparison read again.
+    void queryClient.invalidateQueries({ queryKey: ['revisions', part.id] })
+    void queryClient.invalidateQueries({ queryKey: ['diff', part.id] })
+  }
   const save = useMutation({
     mutationFn: (next: readonly string[]) => send(part.id, next),
     onMutate: () => setRefusal(null),
-    onSuccess: (result) => {
-      if (result.kind === 'refused') {
-        setRefusal(result.message)
-        return
-      }
-      setDraft('')
-      void queryClient.invalidateQueries({ queryKey: ['part', part.id] })
-      // A part's mass is worked out from its materials when read, so its history and comparison read again.
-      void queryClient.invalidateQueries({ queryKey: ['revisions', part.id] })
-      void queryClient.invalidateQueries({ queryKey: ['diff', part.id] })
-    },
+    onSuccess: settle,
+  })
+  const hand = useMutation({
+    mutationFn: () => (reset as NonNullable<typeof reset>)(part.id),
+    onMutate: () => setRefusal(null),
+    onSuccess: settle,
   })
   const tags = values
-  if (tags.length === 0 && !recordable) return null
+  // A note is a fact about this list — "holds no material" — so an empty list that has one is still
+  // worth a section, read-only or not. Without it the one state the whole item exists for would show
+  // as nothing at all wherever the list cannot be edited.
+  if (tags.length === 0 && !recordable && note === null) return null
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -448,6 +464,16 @@ function WordList({
         </form>
       ) : null}
       {note === null ? null : <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{note}</p>}
+      {reset === undefined || !recordable ? null : (
+        <button
+          type="button"
+          disabled={hand.isPending}
+          onClick={() => hand.mutate()}
+          className="ease-mechanical mt-2 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        >
+          {hand.isPending ? strings.materials.resetting : strings.materials.reset}
+        </button>
+      )}
       {refusal === null ? null : (
         <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
           {refusal}
@@ -727,6 +753,13 @@ export function Preview({
 /** The formats a slicer reads as they are, so a part in one downloads for a slicer as its own file (`lapidary-targets`). */
 const slicerReads = ['stl', '3mf']
 
+/**
+ * `lapidary_core::MESH_EXTENSIONS`, which is what the worker's centre-of-mass sweep takes
+ * (`PgRevisions::centreless_revisions`). Not `slicerReads`: that is what a slicer can open, a
+ * different question with a different answer for `obj`.
+ */
+const MESH_FORMATS = ['stl', 'obj', '3mf']
+
 const control =
   'ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px'
 
@@ -858,6 +891,9 @@ export function Detail({
     libraries.data?.find((library) => library.id === part.library)?.mode === 'controlled' &&
     part.sourceHash !== null
   const page = layout === 'page'
+  // `?? []` for a server from before materials, as the list below does: read once, because both the
+  // list and the mass row have to agree about how many the part holds.
+  const materials = part.materials ?? []
   const preview = (
     <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} annotated={annotated} stage={page} />
   )
@@ -929,10 +965,20 @@ export function Detail({
       <WordList
         part={part}
         recordable={recordable}
-        values={part.materials ?? []}
+        values={materials}
         text={strings.materials}
         save={setPartMaterials}
-        note={part.materialsTyped === false && (part.materials ?? []).length > 0 ? strings.materials.fromFile : null}
+        // Three states, and the note is the only place two of them are visible at all. Typed and
+        // empty is a decision — "holds no material" — and it is said even where the list is not
+        // editable, because a reader is exactly who needs to know a blank was meant.
+        note={
+          part.materialsTyped === true && materials.length === 0
+            ? strings.materials.none
+            : part.materialsTyped === false && materials.length > 0
+              ? strings.materials.fromFile
+              : null
+        }
+        reset={part.materialsTyped === true ? unsetPartMaterials : undefined}
       />
       <Fields part={part} recordable={recordable} />
 
@@ -944,7 +990,10 @@ export function Detail({
         title={strings.detail.geometry}
         note={
           // The key explains the mark, so it is there exactly when a mark is.
-          [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2].some(
+          // `massG` among them: a STEP part's volume is analytic and carries no mark, so a page
+          // showing an analytic volume and an approximate mass would print the ≈ with nothing to
+          // explain it. A mass is always approximate — see `strings.detail.massSource`.
+          [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2, part.massG].some(
             (figure) => figure?.approximate === true,
           ) ? (
             <>
@@ -993,6 +1042,41 @@ export function Detail({
             strings.detail.unknown
           ) : (
             <Figure figure={part.surfaceAreaMm2} render={strings.detail.surfaceAreaValue} />
+          )}
+        </Row>
+        <Row label={strings.detail.mass} figure>
+          {/*
+            Volume times the density set for the part's one material. Where there is none, which of
+            the four reasons it is gets said: a blank here reads as "weighs nothing", and the reader
+            can do something about three of the four. The source sits inside this row's own `dd`
+            rather than in a row with an empty `dt`, which is what the `dl` would otherwise become.
+          */}
+          {/* Falsy and not `=== null`: a server from before L3 sends no `massG` at all, and `Figure`
+              cannot be handed `undefined` — it reads the flag off it.
+
+              The reasons are checked in the order a reader can act in. No volume first: an open mesh
+              told to set a density would still have no mass after setting one. Then a part somebody
+              has said holds no material, which must not be told to give it one — that is the decision
+              it just recorded. */}
+          {!part.massG ? (
+            part.volumeMm3 === null ? (
+              strings.detail.massNoVolume
+            ) : part.materialsTyped === true && materials.length === 0 ? (
+              strings.detail.massHoldsNone
+            ) : materials.length === 0 ? (
+              strings.detail.massNoMaterial
+            ) : materials.length > 1 ? (
+              strings.detail.massSeveralMaterials
+            ) : (
+              strings.detail.massNoDensity(materials[0] as string)
+            )
+          ) : (
+            <>
+              <Figure figure={part.massG} render={strings.detail.massValue} />
+              <span className="ml-2 text-xs text-[var(--color-muted)]">
+                {strings.detail.massSource(materials[0] as string)}
+              </span>
+            </>
           )}
         </Row>
         <Row label={strings.detail.watertight}>
@@ -1712,36 +1796,86 @@ function Compare({
     </label>
   )
   const diff = compared.data
+  // Whether a re-read is actually queued for every revision here that is missing a centre, which is
+  // the only case the page may say so. **This predicate has to equal the worker sweep's**
+  // (`PgRevisions::centreless_revisions`): a mesh source, and a volume above zero. Say it of a STEP
+  // revision and the sentence is a promise nothing will keep — the sweep takes mesh formats only,
+  // deliberately. `every` and not `some`, because a pair of one fillable mesh and one open mesh would
+  // otherwise claim a job for the open one and then fall back to "not measured in both" the moment
+  // the real job finished.
+  const later = revisions.find((revision) => revision.id === to)
+  const centreless = [earlier, later].filter(
+    (revision): revision is PartRevision => revision !== undefined && revision.centreMm === null,
+  )
+  const centreQueued =
+    centreless.length > 0 &&
+    centreless.every(
+      (revision) =>
+        (revision.volumeMm3?.value ?? 0) > 0 &&
+        MESH_FORMATS.includes(revision.sourceFormat ?? ''),
+    )
   const rows =
     diff === undefined
       ? []
       : [
-          { label: strings.detail.volume, delta: diff.volumeMm3, render: strings.detail.volumeChange },
+          {
+            label: strings.detail.volume,
+            delta: diff.volumeMm3,
+            render: strings.detail.volumeChange,
+            missing: strings.detail.notInBoth,
+          },
           // Only where there is one: a part without one material and its density has no mass to compare,
           // which is not a figure "not measured in both".
-          ...(diff.massG ? [{ label: strings.detail.mass, delta: diff.massG, render: strings.detail.massChange }] : []),
+          ...(diff.massG
+            ? [
+                {
+                  label: strings.detail.mass,
+                  delta: diff.massG,
+                  render: strings.detail.massChange,
+                  missing: strings.detail.notInBoth,
+                },
+              ]
+            : []),
           {
             label: strings.detail.surfaceArea,
             delta: diff.surfaceAreaMm2,
             render: strings.detail.areaChange,
+            missing: strings.detail.notInBoth,
           },
           ...([0, 1, 2] as const).map((axis) => ({
             label: strings.detail.boundingBoxAxis(axis),
             delta: diff.bboxMm?.[axis] ?? null,
             render: strings.detail.lengthChange,
+            missing: strings.detail.notInBoth,
           })),
           ...([0, 1, 2] as const).map((axis) => ({
             label: strings.detail.centreAxis(axis),
             delta: diff.centreMm?.[axis] ?? null,
             render: strings.detail.lengthChange,
+            // "Not measured in both" would be wrong here: a revision with a volume above zero has a
+            // centre to record, and a worker start queues a re-read of the file for exactly those
+            // (`PgRevisions::centreless_revisions`). Read off the two revisions themselves, which
+            // the page already holds, rather than off a flag the diff would have to carry.
+            missing: centreQueued ? strings.detail.centreQueued : strings.detail.notInBoth,
           })),
           {
             label: strings.detail.triangles,
             delta: diff.triangleCount,
             render: strings.detail.countChange,
+            missing: strings.detail.notInBoth,
           },
-          { label: strings.detail.faces, delta: diff.faceCount, render: strings.detail.countChange },
-          { label: strings.detail.edges, delta: diff.edgeCount, render: strings.detail.countChange },
+          {
+            label: strings.detail.faces,
+            delta: diff.faceCount,
+            render: strings.detail.countChange,
+            missing: strings.detail.notInBoth,
+          },
+          {
+            label: strings.detail.edges,
+            delta: diff.edgeCount,
+            render: strings.detail.countChange,
+            missing: strings.detail.notInBoth,
+          },
         ]
   return (
     <div className="mt-3 text-sm">
@@ -1792,7 +1926,7 @@ function Compare({
                   {row.delta ? (
                     <Change delta={row.delta} render={row.render} />
                   ) : (
-                    strings.detail.notInBoth
+                    row.missing
                   )}
                 </td>
               </tr>

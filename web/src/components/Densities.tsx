@@ -59,7 +59,10 @@ function DensitiesDialog({ library, onClose }: { library: LibraryId; onClose: ()
     }
     setNote(null)
     void queryClient.invalidateQueries({ queryKey: ['densities', library] })
-    // A mass is worked out from its density when read, so an open part's history and comparison read again.
+    // A mass is worked out from its density when read, so an open part's own page, history and
+    // comparison all read again. The page since L3: it shows the part's own mass, and this dialog
+    // opens over it.
+    void queryClient.invalidateQueries({ queryKey: ['part'] })
     void queryClient.invalidateQueries({ queryKey: ['revisions'] })
     void queryClient.invalidateQueries({ queryKey: ['diff'] })
     return true

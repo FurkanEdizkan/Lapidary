@@ -3107,6 +3107,113 @@ async fn a_closed_meshs_centre_of_mass_is_recorded_on_its_revision(pool: PgPool)
     );
 }
 
+/// A revision from before centres of mass were recorded gets one back: a worker start queues a rebuild
+/// of its L0 rung, and rebuilding the rung is what fills the centre in (L3, item 1).
+///
+/// The rung is left exactly as it was, which is why the sweep keys on the missing centre and not on the
+/// kernel version — the mesh kernel's version names its format, its GLB writer and its rasteriser, and
+/// nothing about how it measures, so the stale-derivative sweep never finds one of these.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_starts(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    let recorded: serde_json::Value = sqlx::query_scalar("SELECT mass_props_json FROM revision")
+        .fetch_one(&pool)
+        .await
+        .expect("the revision");
+    let jobs = lapidary_db::PgJobs(pool.clone());
+
+    // As a revision read before Lapidary recorded centres was left.
+    sqlx::query("UPDATE revision SET mass_props_json = NULL")
+        .execute(&pool)
+        .await
+        .expect("takes the centre away");
+
+    // What a worker does as it comes up.
+    handler.enqueue_stale_derivatives().await;
+    let job = jobs
+        .dequeue("worker-a", std::time::Duration::from_secs(60))
+        .await
+        .expect("dequeues")
+        .expect("a revision with no centre is queued");
+    assert_eq!(
+        handler.handle(&job).await.expect("rebuilds"),
+        Outcome::Rendered
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, serde_json::Value>("SELECT mass_props_json FROM revision")
+            .fetch_one(&pool)
+            .await
+            .expect("the revision"),
+        recorded,
+        "and the same read that rebuilt the rung recorded the same centre as ingest did"
+    );
+
+    // It converges: the row now has one, so the next start leaves it alone. The job table is emptied
+    // first, or `enqueue_if_absent` would decline for the job this test already dequeued and the leg
+    // would pass whatever the sweep's predicate said.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
+    handler.enqueue_stale_derivatives().await;
+    assert!(
+        jobs.dequeue("worker-b", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a revision that has a centre is not queued again"
+    );
+
+    // And a closed mesh enclosing nothing has a volume of 0 and no centre, for ever: queueing it
+    // would be the board's "re-attempted by every scan" in a new place, so `volume > 0` is the test.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
+    sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 0")
+        .execute(&pool)
+        .await
+        .expect("empties the revision");
+    handler.enqueue_stale_derivatives().await;
+    assert!(
+        jobs.dequeue("worker-c", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a revision with no volume has no centre to ask for"
+    );
+
+    // And a CAD revision is never this sweep's, whatever its row says. `handler_over` has no CAD
+    // kernel, so a `Derive` job for a STEP file would fail `Permanent` here and be queued again at
+    // every start — which is the very bug the sweep must not reintroduce. The stale-derivative sweep
+    // is what re-reads a pre-bridge-8 STEP revision, because the bridge version is inside the kernel
+    // version it keys on.
+    sqlx::query("DELETE FROM job")
+        .execute(&pool)
+        .await
+        .expect("empties the queue");
+    sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 35840")
+        .execute(&pool)
+        .await
+        .expect("gives the revision a volume and no centre again");
+    sqlx::query("UPDATE file SET format = 'step' WHERE role = 'source'")
+        .execute(&pool)
+        .await
+        .expect("makes it a CAD source");
+    handler.enqueue_stale_derivatives().await;
+    assert!(
+        jobs.dequeue("worker-d", std::time::Duration::from_secs(60))
+            .await
+            .expect("dequeues")
+            .is_none(),
+        "a CAD revision is the stale-derivative sweep's, never this one's"
+    );
+}
+
 /// The one part's materials, and whether a person typed them.
 async fn materials_of(pool: &PgPool) -> (Vec<String>, bool) {
     sqlx::query_as("SELECT materials, materials_typed FROM part")
@@ -3116,7 +3223,8 @@ async fn materials_of(pool: &PgPool) -> (Vec<String>, bool) {
 }
 
 /// A material a person typed is kept when a revised CAD file states another, while what the revised
-/// file says about itself is still recorded; clearing the typed list hands the part back to the file.
+/// file says about itself is still recorded. **An empty typed list is kept just as firmly** — it says the
+/// part holds no material — and `unset_materials` is the only way back to what the file states.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_typed_material_outlasts_a_revision_whose_file_states_another(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -3180,14 +3288,47 @@ async fn a_typed_material_outlasts_a_revision_whose_file_states_another(pool: Pg
         "while what the revised file says about itself is recorded"
     );
 
+    // L3, item 4: an empty typed list is "holds no material", and a file naming one does not undo it.
+    // This is the assertion the item exists for — the state is only worth having if it survives the
+    // next read of a file that states a material.
     lapidary_db::PgParts(pool.clone())
         .set_materials(part, &[])
         .await
-        .expect("the typed list is cleared");
+        .expect("the part is said to hold none");
+    assert_eq!(
+        materials_of(&pool).await,
+        (Vec::<String>::new(), true),
+        "holds none, and a person decided so"
+    );
+    sqlx::query(
+        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{cad,originating_system}', '\"CATIA V5\"')",
+    )
+    .execute(&pool)
+    .await
+    .expect("ages the header");
+    stage(ingest_dir.path(), FIXTURE_PLATE, BRACKET_FIXTURE);
+    assert_eq!(
+        handler
+            .handle(&job_for(FIXTURE_PLATE))
+            .await
+            .expect("revises"),
+        Outcome::Revised
+    );
+    assert_eq!(
+        materials_of(&pool).await,
+        (Vec::<String>::new(), true),
+        "and the file naming AISI 1045 steel again does not put it back"
+    );
+
+    // `unset_materials` is the way back, and only it.
+    lapidary_db::PgParts(pool.clone())
+        .unset_materials(part)
+        .await
+        .expect("the part is handed back to its file");
     assert_eq!(
         materials_of(&pool).await,
         (vec!["AISI 1045 steel".to_owned()], false),
-        "cleared, the part holds what its file states again"
+        "handed back, the part holds what its file states again"
     );
 }
 
