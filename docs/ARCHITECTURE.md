@@ -50,8 +50,9 @@ plus `X-Accel-Buffering: no` on the response. Default buffering holds progress e
 until the buffer fills and ingest appears frozen. This is the single most common
 "works in dev, breaks in prod" bug in this stack. Both streams send that header and
 `Cache-Control: no-cache`, from `no_buffering()` in `crates/lapidary-api/src/events.rs`.
-Caddy's `reverse_proxy` flushes a `text/event-stream` response as it arrives without being
-told to, which is what `deploy/web/Caddyfile` relies on.
+Whether `deploy/web/Caddyfile`'s `encode gzip zstd` holds an event stream anyway is **not
+yet measured** — G1 stage 5 measures it with `curl -N -H 'Accept-Encoding: gzip' -D -`, and
+adds an `@notsse` matcher to that directive if it does.
 
 **Version skew:** build all images from the same commit, tag identically, and expose
 `/api/version` returning the build SHA. The frontend compares against its own baked-in

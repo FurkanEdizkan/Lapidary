@@ -27,6 +27,11 @@ fn seeded() -> LibraryId {
 /// The measurement the goal asks for: a change reaches an open page inside a second.
 const WITHIN_A_SECOND: Duration = Duration::from_secs(1);
 
+/// The hub's grouping window — `WINDOW` in `crates/lapidary-api/src/events.rs`, which is private to it.
+/// Repeated here rather than exported, because a test that reads the value it is checking against would
+/// pass whatever that value became.
+const HUB_WINDOW: Duration = Duration::from_millis(250);
+
 /// Long enough for several of the hub's 250 ms windows to pass, for the assertions that nothing *more*
 /// arrives. Deliberately not tight: a false pass here is a grouping bug shipped, and the price of being
 /// generous is one second of test time.
@@ -303,13 +308,19 @@ async fn a_burst_of_separate_writes_is_grouped_per_library(pool: sqlx::PgPool) {
     // keeps that out of the count either way.
     let mut stream = Tab::of(open(&app).await);
 
+    let started = std::time::Instant::now();
     for number in 0..10 {
         add_part(&pool, seeded(), &format!("bracket-lp-1042-{number:02}")).await;
         add_part(&pool, other, &format!("jig-plate-lp-6110-{number:02}")).await;
     }
+    let burst = started.elapsed();
 
-    // Twenty commits become at most two events per library: the burst either lands inside one window or
-    // straddles the boundary between two. Never ten, which is what no grouping at all would give.
+    // Twenty commits become one event per library, or one per window the burst spanned plus the
+    // boundaries at either end. The ceiling is *timed* rather than assumed to be two: twenty round
+    // trips to a PostgreSQL every lane shares can outlast one window on a busy machine, and a test
+    // that assumed otherwise would go red for the load rather than for the code. Ten is what no
+    // grouping at all gives, and no burst short enough to run here spans eight windows.
+    let most = burst.as_millis() / HUB_WINDOW.as_millis() + 2;
     let mut seen = Vec::new();
     while let Next::Event(event) = stream.next(LONG_ENOUGH).await {
         seen.push(event);
@@ -319,9 +330,9 @@ async fn a_burst_of_separate_writes_is_grouped_per_library(pool: sqlx::PgPool) {
     let for_seeded = seen.iter().filter(|event| **event == one).count();
     let for_other = seen.iter().filter(|event| **event == another).count();
     assert!(
-        (1..=2).contains(&for_seeded) && (1..=2).contains(&for_other),
-        "ten writes a library, grouped over 250 ms, is one event each or two across a window \
-         boundary; got {seen:?}"
+        (1..=most).contains(&(for_seeded as u128)) && (1..=most).contains(&(for_other as u128)),
+        "ten writes a library, grouped over the hub's window, is at most {most} event(s) each for a \
+         burst of {burst:?}; got {seen:?}"
     );
     assert_eq!(
         seen.len(),
