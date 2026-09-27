@@ -8,6 +8,9 @@ mod derive;
 mod detail;
 mod download;
 mod error;
+// `pub` and its own router, unlike every module above: the hub is not a field on `AppState`, which is
+// built in 88 places. `bin/lapidary-server` merges `events::router(hub)` for the api role.
+pub mod events;
 mod fetch;
 mod fields;
 mod filters;

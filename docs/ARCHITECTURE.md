@@ -40,13 +40,19 @@ industrial and defence buyers are exactly those cases.
               └─────────────────────────────────────────────┘
 ```
 
-**Single origin is mandatory.** The `web` container reverse-proxies `/api` and `/events`
-to `api`. No CORS, no cookie-domain problems, no preflight per request.
+**Single origin is mandatory.** The `web` container reverse-proxies `/api` to `api`. No
+CORS, no cookie-domain problems, no preflight per request. There is no separate `/events`
+path: both streams live under `/api` — the app-wide one at `/api/events` and the per-batch
+one at `/api/libraries/{library}/jobs/{batch}/events` — so the one proxy rule covers them.
 
 **SSE through the proxy needs `proxy_buffering off`** (nginx) or the Caddy equivalent,
 plus `X-Accel-Buffering: no` on the response. Default buffering holds progress events
 until the buffer fills and ingest appears frozen. This is the single most common
-"works in dev, breaks in prod" bug in this stack.
+"works in dev, breaks in prod" bug in this stack. Both streams send that header and
+`Cache-Control: no-cache`, from `no_buffering()` in `crates/lapidary-api/src/events.rs`.
+Whether `deploy/web/Caddyfile`'s `encode gzip zstd` holds an event stream anyway is **not
+yet measured** — G1 stage 5 measures it with `curl -N -H 'Accept-Encoding: gzip' -D -`, and
+adds an `@notsse` matcher to that directive if it does.
 
 **Version skew:** build all images from the same commit, tag identically, and expose
 `/api/version` returning the build SHA. The frontend compares against its own baked-in
