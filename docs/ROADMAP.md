@@ -3642,6 +3642,39 @@ and measured through containers; the first (a 12-widget dashboard in one round t
     build step is `npm run build`, which is `tsc --noEmit && vite build`, so the gate has been type-checking all along.
   - Web tests 441 → **451**. Nothing was built, pulled or pruned: the captures are T1's images at `93b87eb` — verified
     byte-identical to current `main`'s application — plus this branch's bundle copied into the running web containers.
+- **G5, the dashboard that asks once** (merged `a20b3aa`, gate 14 green in 167.68 s on the merged tree). `lib/{dashboard,events}.ts`,
+  `components/dashboard/{layout.ts,registry.tsx,widgets.tsx,Board.tsx,AddWidget.tsx}`, `routes/dashboard.tsx`, a fourth
+  nav place, and the `dashboard` strings block at 71 entries. Web suite **527 in 39 files**, up from 441.
+  - **The assertion the goal exists for: twelve widgets, one `fetch`, to `/api/dashboard/resolve`, counted directly.**
+    Beside it, the tests that give it meaning: an empty dashboard makes **no** request; four moves and a resize make
+    none; returning to the tab makes none; the first widget on an empty board makes exactly one; a retry asks for one
+    key. The no-polling rule is now a test rather than a promise.
+  - **Vertical position is derived, never chosen.** `settle()` computes rows from order, so a board cannot hold a gap —
+    which turns arrow up and down into *reorderings*, since `y + 1` on a compacted board is undone by the next settle.
+  - **31 mutations, all caught, and two survivors were real test gaps** rather than harness noise: a focus test
+    dispatched `visibilitychange` on `document` while TanStack Query listens on `window`, so the "does not refetch on
+    focus" guarantee was never being tested; and `focus-lost-on-move-down` **jsdom cannot show at all**, because it does
+    not blur an element whose node React relocates — that one is checked in a real browser by a separate script. A third
+    is caught by the suite *never finishing*: `Number.MAX_SAFE_INTEGER` is how a caller says "last row", and before the
+    clamp the settle loop counted down from it one row at a time.
+  - **It answered G1's warning by reading the code.** Frames carry no event name, so they arrive as `message`; the
+    stream pushes nothing on connect, so a page load still costs exactly one resolve; and a re-resolve is a POST that
+    writes nothing and enqueues nothing — the feedback loop needs a POST that enqueues, which this is not.
+  - **Decided alone:** `flipFrom` gained an optional duration defaulting to what it had, because it hard-coded 280 ms
+    where `phase-6.md` names 180 for a widget changing places — one new test pins both and no existing caller moved. A
+    widget snapshots its library's **name** at add time, because no `WidgetValue` but `FilteredParts` carries one and
+    reading `/api/libraries` on load would be the second request this page does not have. A `changed{A}` re-resolves
+    A's keys **and** every whole-store widget, since a part added anywhere moves the instance figures. And a facet
+    widget's heading names its facet, found at 1440 where a board with all three read "Value counts" three times — the
+    screenshot kept at `target/dashboard-check/dashboard-1440.png` is the **before** of that finding, not the after.
+  - **Its heads-up for the exit, which is the honest shape of the thing:** one upload produces several events — the part
+    insert, then each job reaching `done` — spaced wider than the coalescing window, so "an upload updates the widgets
+    through one re-resolve" will read as *a few* re-resolves, each limited to that library's keys. That is the design
+    working, not polling.
+  - **Left for later:** a position is written to `localStorage` on every drag frame that changes a cell; a partial
+    resolve failure after the first load is silent; the board is one column under `md` with no touch-sized arrangement;
+    `layout.ts` has no horizontal compaction; and a library renamed after a widget was added shows the old name until a
+    library's name travels on the wire.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
