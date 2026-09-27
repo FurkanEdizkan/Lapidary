@@ -15,6 +15,8 @@
 // Tailwind's `@media (hover: hover)` utilities need — the category tree's own Share control is one of them.
 //
 // Views:
+//   ask-first        /sharing, after pressing one share's ask-first switch — needs --folder, and takes
+//                    the switch to whatever --ask says (on) or leaves out (off)
 //   sharing          /sharing whole, as it stands
 //   members-dialog   /sharing, with one share's "Change who it goes to" open
 //   shared-folder    /sharing/shares/<id> — needs --share
@@ -54,6 +56,8 @@ const CHANGE_MEMBERS = 'Change who it goes to'
 const SHARE_CONFIRM = 'Share'
 const SHARE_CANCEL = 'Cancel'
 const ASK_FIRST = 'Ask me before anyone pulls its files'
+// The per-row switch names its folder, because the page lists several and they must be told apart.
+const askFirstRow = (folder) => `Ask me before anyone pulls files from ${folder}`
 
 /** Press a button by its accessible name, inside an optional root. React's onClick needs no real event. */
 const pressNamed = (page, name, root = 'document') =>
@@ -101,7 +105,29 @@ async function capture(width) {
   const page = await session({ width, height: width >= 768 ? 900 : 844, base: args.base, shots: args.out })
   const name = `${args.tag}@${width}`
   try {
-    if (args.view === 'sharing' || args.view === 'members-dialog') {
+    if (args.view === 'ask-first') {
+      if (args.folder === undefined) throw new Error('--folder <name> is required for ask-first')
+      await page.go('/sharing', `document.querySelector('h2') !== null`)
+      await settled(page)
+      const want = args.ask === true
+      const pressed = await page.evaluate(`(() => {
+        const box = document.querySelector('input[aria-label=' + ${JSON.stringify(JSON.stringify(askFirstRow(args.folder)))} + ']')
+        if (!box) return 'no switch'
+        if (box.disabled) return 'disabled'
+        if (box.checked === ${want}) return 'already'
+        box.click()
+        return 'pressed'
+      })()`)
+      if (pressed !== 'pressed') throw new Error(`the ask-first switch for ${args.folder}: ${pressed}`)
+      // Its own state comes back from the server, not from the press: the row re-reads what this installation
+      // shares, so a switch that shows the new standing is a switch the api agreed with.
+      await page.waitFor(
+        `document.querySelector('input[aria-label=' + ${JSON.stringify(JSON.stringify(askFirstRow(args.folder)))} + ']').checked === ${want}`,
+        15_000,
+      )
+      await sleep(400)
+      await page.shot(name, { full: true })
+    } else if (args.view === 'sharing' || args.view === 'members-dialog') {
       await page.go('/sharing', `document.querySelector('h2') !== null`)
       await settled(page)
       if (args.view === 'members-dialog') {
@@ -111,12 +137,12 @@ async function capture(width) {
         await page.waitFor(`document.querySelector(${JSON.stringify(DIALOG)}) !== null`, 10_000)
         await sleep(500)
       }
-      await page.shot(name)
+      await page.shot(name, { full: args.view === 'sharing' })
     } else if (args.view === 'shared-folder') {
       if (args.share === undefined) throw new Error('--share <peerShareId> is required for shared-folder')
       await page.go(`/sharing/shares/${args.share}`, `document.querySelector('h2') !== null`)
       await settled(page)
-      await page.shot(name)
+      await page.shot(name, { full: true })
     } else if (args.view === 'share-dialog') {
       if (args.library === undefined || args.folder === undefined) {
         throw new Error('--library and --folder are required for share-dialog')
@@ -170,8 +196,10 @@ async function capture(width) {
         await sleep(300)
         await page.shot(`${args.tag}-chosen@${width}`)
       }
-      // Confirmed once, at the widest width only: the second width would share what the first already did.
-      if (args.confirm === true && width === widths[0]) {
+      // Confirmed once, and on the LAST width: sharing the folder changes what this dialog is — a folder
+      // already shared keeps who it goes to and offers no picker — so confirming on the first width would
+      // leave every later width photographing a different screen than the one under review.
+      if (args.confirm === true && width === widths[widths.length - 1]) {
         if ((await pressNamed(page, SHARE_CONFIRM, `document.querySelector(${JSON.stringify(DIALOG)})`)) === null) {
           throw new Error('no Share button in the dialog')
         }

@@ -149,9 +149,17 @@ export async function session({
     }
   }
 
-  const shot = async (name) => {
+  /**
+   * A screenshot, the viewport by default.
+   *
+   * `{ full: true }` takes the whole document instead. A flow wants the viewport — what a person sees
+   * without scrolling is the thing under test — but a screen *review* wants the page, and the sharing
+   * page is three screens tall at 390: everything below the fold was missing from the first set of
+   * captures, which is a poor way to find out that a list nobody could see reads badly.
+   */
+  const shot = async (name, { full = false } = {}) => {
     if (shots === undefined) throw new Error('session({ shots }) is where screenshots go')
-    const { data } = await send('Page.captureScreenshot')
+    const { data } = await send('Page.captureScreenshot', full ? { captureBeyondViewport: true } : {})
     const path = join(shots, `${name}.png`)
     writeFileSync(path, Buffer.from(data, 'base64'))
     return path

@@ -88,7 +88,8 @@ shoot() { # who, tag, --view … extra args
   shift 2
   say "  shot $tag (installation $who)"
   if node "$ROOT/scripts/e2e/sharing-shots.mjs" --base "$(web_of "$who")" --out "$SHOTS" --tag "$tag" "$@"; then
-    shots=$((shots + 2))
+    # Two widths unless the call named its own; this is a count for the log, not an assertion.
+    case " $* " in *' --widths '*) shots=$((shots + 1)) ;; *) shots=$((shots + 2)) ;; esac
   else
     shot_failures=$((shot_failures + 1))
   fi
@@ -102,11 +103,15 @@ build_a_tree() {
   local ingest=$ROOT/target/e2e/${LANE}a/ingest
   mkdir -p "$ingest/Terrain" "$ingest/Fasteners"
   find "$ingest" -mindepth 2 -type f -delete
+  # Mostly fixtures, and deliberately not `example/parts`: every installation's worker seeds those six into
+  # its own default library on first start, so a folder made of them arrives at the other two already held,
+  # every card reads *In your library*, and there is nothing left to press Download on. One example part is
+  # kept for exactly the opposite reason — it is the card that honestly says the file is already here.
+  cp "$ROOT/fixtures/bracket-lp-1042-03.stl" "$ingest/Terrain/"
+  cp "$ROOT/fixtures/planetary-carrier-lp-3480-02.3mf" "$ingest/Terrain/"
   cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$ingest/Terrain/"
-  cp "$ROOT/example/parts/vee-block-lp-3072-02.stl" "$ingest/Terrain/"
-  cp "$ROOT/example/parts/mounting-plate-lp-1180-01.stl" "$ingest/Terrain/"
-  cp "$ROOT/example/parts/hex-spacer-m4x20-lp-2145-01.stl" "$ingest/Fasteners/"
   cp "$ROOT/fixtures/spacer-lp-2001-00.stl" "$ingest/Fasteners/"
+  cp "$ROOT/fixtures/step/ball-knob-d20-lp-9020-00.step" "$ingest/Fasteners/"
   chmod -R a+rX "$ingest"
   say "  A's ingest tree: $(find "$ingest" -type f | wc -l) parts in $(find "$ingest" -mindepth 1 -type d | wc -l) categories"
 }
@@ -138,12 +143,15 @@ case "${1:-}" in
 esac
 
 KEEP=0
+DIST=''
 UP_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1; shift ;;
     --min-ram) UP_ARGS+=(--min-ram "${2:?--min-ram takes a number of GiB}"); shift 2 ;;
-    *) die "usage: group.sh [--keep] [--min-ram <gib>] | dist [<dir>] | down" ;;
+    # A bundle to serve instead of the one in the image, copied in before a single capture is taken.
+    --dist) DIST=${2:-$ROOT/web/dist}; shift 2 ;;
+    *) die "usage: group.sh [--keep] [--min-ram <gib>] [--dist <dir>] | dist [<dir>] | down" ;;
   esac
 done
 
@@ -160,6 +168,8 @@ for who in a b c; do
   inst "$who" up "${UP_ARGS[@]}" 2>&1 | sed 's/^/  /' ||
     die "installation $who would not come up. \`AS=$who scripts/e2e/stack.sh status\` says why."
 done
+
+[ -n "$DIST" ] && cmd_dist "$DIST"
 
 A=$(api a) B=$(api b) C=$(api c)
 A_ID=$(curl -sf "$A/api/sharing/identity" | field 'value["deviceId"]')
@@ -215,10 +225,18 @@ shoot a a-share-dialog --view share-dialog --library "$A_LIB" --folder Fasteners
   --drop 'Cem’s studio' --ask --confirm
 until_true "$A/api/shares" 'len([s for s in value if s["asksFirst"]]) == 1' \
   "Fasteners is shared, asking first" 60 || say "  (the dialog did not leave an ask-first share)"
+# And the same dialog for a folder already shared, which is a different screen: no picker, because this
+# dialog does not know who the folder goes to and everyone ticked here would widen a list somebody picked.
+shoot a a-share-dialog-again --view share-dialog --library "$A_LIB" --folder Fasteners
 FASTENERS=$(curl -sf "$A/api/shares" | field '([s["id"] for s in value if s["asksFirst"]] or [""])[0]')
 
 say "== B asks for Fasteners, and queues a part of Terrain behind it"
 B_LIB=$(curl -sf "$B/api/libraries" | field 'value[0]["id"]')
+# A new share reaches B on the next hello round, which is fifteen seconds away — and a pull started before
+# it arrives is a pull of nothing, which is how the first run of this scenario photographed an empty
+# "Nobody has asked to pull" and called it the requests screen.
+until_true "$B/api/sharing/peers/$A_ID/shares" '"Fasteners" in [s["name"] for s in value]' \
+  "Fasteners reached B" 120 || say "  (B was never offered Fasteners)"
 B_FASTENERS=$(curl -sf "$B/api/sharing/peers/$A_ID/shares" |
   field '([s["id"] for s in value if s["name"] == "Fasteners"] or [""])[0]')
 B_TERRAIN=$(curl -sf "$B/api/sharing/peers/$A_ID/shares" |
@@ -226,21 +244,41 @@ B_TERRAIN=$(curl -sf "$B/api/sharing/peers/$A_ID/shares" |
 if [ -n "$B_FASTENERS" ]; then
   json POST "$B/api/sharing/shares/$B_FASTENERS/pulls" "{\"libraryId\":\"$B_LIB\"}" > /dev/null
   until_true "$B/api/sharing/shares/$B_FASTENERS/pull" 'value["state"] == "waiting"' \
-    "B's pull of Fasteners is waiting for A's answer" 120 || true
+    "B's pull of Fasteners waits for A's answer" 120 || true
+  # The ask is what A's page is for. Without it there is a request row to photograph and no request.
+  until_true "$A/api/shares/requests" 'len(value) > 0' "B's ask reached A" 120 ||
+    say "  (nobody is asking on A; the requests screen will be its empty state)"
 fi
 PART=$(curl -sf "$B/api/sharing/shares/$B_TERRAIN/parts?limit=50" |
   field '([p["sourcePath"] for p in value["parts"] if not p["held"]] or [""])[0]')
 [ -n "$PART" ] && json POST "$B/api/sharing/shares/$B_TERRAIN/pulls" \
   "{\"libraryId\":\"$B_LIB\",\"sourcePath\":\"$PART\"}" > /dev/null
+say "  B pulls ${PART:-nothing}; Terrain's pull is $(curl -sf "$B/api/sharing/shares/$B_TERRAIN/pull" |
+  field '"%s, %s behind" % (value["state"], value["queuedBehind"])' 2> /dev/null || echo unknown)"
 # One pull runs at a time, so this one says where it is in the queue.
 shoot b b-queue-position --view shared-folder --share "$B_TERRAIN"
 # And on A: somebody asking, with the answer still to give — and the switch that turns asking off.
 shoot a a-requests --view sharing
 shoot a a-members-dialog --view members-dialog
 
+say "== A switches Fasteners off asking first, and back, from its own row"
+# The owner-side gap this goal exists to close, driven through the switch itself rather than asserted in a
+# test: the page had no way to change how an existing share is shared, and the web helper dropped
+# `asksFirst: false`, so switching back was unreachable from anywhere in the application.
+shoot a a-ask-first-off --view ask-first --folder Fasteners --widths 1440
+until_true "$A/api/shares" 'not [s["asksFirst"] for s in value if s["name"] == "Fasteners"][0]' \
+  "Fasteners is open again, said by the api" 60 || say "  (the switch did not reach the api)"
+say "  A's requests now: $(curl -sf "$A/api/shares/requests" | field 'len(value)') (this api image predates \
+the mode filter, so a stale ask here is expected; the db test is what proves it drops)"
+shoot a a-ask-first-on --view ask-first --folder Fasteners --ask --widths 1440
+until_true "$A/api/shares" '[s["asksFirst"] for s in value if s["name"] == "Fasteners"][0]' \
+  "and asking first again" 60 || say "  (the switch did not reach the api)"
+
 say "== A answers, and B's pulls run"
 [ -n "$FASTENERS" ] && json PUT "$A/api/shares/$FASTENERS/grants/$B_ID" '{"granted":true}' > /dev/null
-until_true "$B/api/sharing/shares/$B_TERRAIN/pull" 'value["state"] == "done"' "B's part arrived" 300 || true
+until_true "$B/api/sharing/shares/$B_TERRAIN/pull" 'value["state"] == "done"' "B's part arrived" 180 ||
+  say "  Terrain's pull is $(curl -sf "$B/api/sharing/shares/$B_TERRAIN/pull" |
+    field '"%s (%s of %s files): %s" % (value["state"], value["filesDone"], value["filesTotal"], value["error"])' 2> /dev/null)"
 until_true "$B/api/sharing/shares/$B_TERRAIN/parts?limit=50" 'any(p["held"] for p in value["parts"])' \
   "one of Terrain's parts is in B's library" 120 || true
 # Held and not held side by side: "In your library" where the file is here, Download where it is not.
@@ -252,7 +290,10 @@ cp "$ROOT/fixtures/idler-bracket-lp-2210-01.obj" "$ROOT/target/e2e/${LANE}a/inge
 chmod -R a+rX "$ROOT/target/e2e/${LANE}a/ingest"
 BATCH=$(json POST "$A/api/libraries/$A_LIB/scan" | field 'value["batchId"]')
 say "  scanned again: $(settle "$A" "$A_LIB" "$BATCH")"
-until_true "$B/api/sharing/peers/$A_ID/shares" 'value[0]["partCount"] >= 3' "B read the change" 180 || true
+# By name, not value[0]: B is offered two of A's folders by now, and the first in the list is whichever
+# the api returns first — a count asserted against the wrong folder waits three minutes and then lies.
+until_true "$B/api/sharing/peers/$A_ID/shares" \
+  '[s["partCount"] for s in value if s["name"] == "Terrain"] == [4]' "B read the change" 180 || true
 inst a peer stop > /dev/null 2>&1 || say "  (could not stop A's peer)"
 inst c peer start > /dev/null 2>&1 || say "  (could not start C's peer)"
 C_TERRAIN=$(curl -sf "$C/api/sharing/peers/$A_ID/shares" |

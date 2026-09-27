@@ -541,7 +541,8 @@ json.dump({
               "worker": $LAPIDARY_PORT_WORKER, "peer": $LAPIDARY_PORT_PEER},
     "extensions": """$extensions""", "migration": """$migration""",
     "deviceId": "$device",
-    # Which tree these images were built from, and which tree drove them. `--compare` is only meaningful
+    # Which tree these images were built from, and which tree drove them. A comparison is only meaningful
+    # (see drive --compare)
     # between reports that say so: a flow status that changed between two shas is a regression, and the
     # same change between two builds of one sha is flakiness. They differ whenever a stack is kept across
     # a merge, which is exactly when somebody would misread the comparison.
