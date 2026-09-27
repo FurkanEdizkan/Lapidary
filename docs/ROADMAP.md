@@ -1903,10 +1903,14 @@ stage's own build.
 
 **A part's material, editable** (`a7b4399`).
 - **The route:** `PUT /api/parts/{id}/materials` takes the whole list, cleaned as tags are: trimmed, blanks and
-  repeats dropped, at most 8 materials of at most 64 characters each.
-- **`part.materials_typed`** (`0033`) is set by the route. An empty list clears it and hands the part back to its
-  file at once: the materials its file stated when last read (`metadata_json.cad.materials`). The goal said "on the
-  next ingest"; handing them back at once is decided without the owner.
+  repeats dropped, at most 8 materials each. *(Amended by L3, 2026-09-27: a material now takes **200** characters
+  where a tag still takes 64 — "Stainless steel, AISI 316L, annealed, cold drawn bar to ASTM A276/A276M" is 71, and
+  a name that could not be stored could never have a density, so that part could never have a mass.)*
+- **`part.materials_typed`** (`0033`) is set by the route. *(Amended by L3, 2026-09-27: an empty list no longer
+  clears it — it now says **this part holds no material**, and is kept as firmly as any other answer.
+  `DELETE /api/parts/{id}/materials` is the reset that hands the part back to what its file stated
+  (`metadata_json.cad.materials`). The old conflation was the API's alone: typed-and-empty was already expressible
+  and `set_metadata` already respected it.)*
 - **The guard:** `set_metadata` fills `materials` from a file only while `materials_typed` is false.
 - **Found:** only a new part recorded what its file says. A revised CAD file's header and materials were never
   recorded, so the guard alone would never have been reached. A revision now records them too, under the same guard.
@@ -2079,6 +2083,7 @@ stage's own build.
 
 **Decided without the owner, across the goal.**
 - Clearing a part's typed materials hands it back to its file's at once, where the goal said on the next ingest.
+  *(Superseded by L3, 2026-09-27: clearing is `DELETE`; an empty `PUT` means the part holds none.)*
 - A revised CAD file records its header and materials, under the same guard, as a new part's always did.
 - The comparison's Mass row appears only when there is a mass to compare.
 - The kernel hands the centre of mass back beside its measurements, not inside `MeshMeasurements`.
