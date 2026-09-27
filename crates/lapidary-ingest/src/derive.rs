@@ -32,10 +32,17 @@
 use crate::handler::{CAD_FORMATS, WorkerHandler, classify_cad, classify_db, reap};
 use crate::scan::MESH_EXTENSIONS;
 use lapidary_cad::KernelParams;
-use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
-use lapidary_db::{DerivativeBytes, PgBlobs, PgIngest, PgJobs, PgParts, StoredBlobRow};
+use lapidary_core::{DerivativeKind, JobPayload, LibraryId, Outcome, RevisionId};
+use lapidary_db::{
+    DerivativeBytes, PgBlobs, PgIngest, PgJobs, PgParts, PgRevisions, StoredBlobRow,
+};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
+
+/// How many centreless revisions one worker start queues, as `shape.rs`'s `PER_START` caps profiles
+/// and for the same reason: the sweep runs again at the next start, so a corpus larger than this
+/// catches up over several.
+const CENTRES_PER_START: i64 = 5_000;
 
 impl WorkerHandler {
     /// Queue a rebuild of every rung, and every CAD read, an older kernel wrote. A worker runs this as
@@ -50,6 +57,9 @@ impl WorkerHandler {
         // Beside the rung sweep and not inside it: a part can be missing its shape profile while
         // every rung it has is current — every part ingested before Phase 6 is. See `shape.rs`.
         self.enqueue_stale_shapes().await;
+        // And for the same reason a revision can be missing its centre of mass while its rung is
+        // current: the mesh kernel's version string says nothing about how it measures.
+        self.enqueue_centreless_revisions().await;
         let jobs = PgJobs(self.db.clone());
         for format in MESH_EXTENSIONS.iter().chain(&CAD_FORMATS) {
             let Ok(kernel) = self.kernel_for(format) else {
@@ -80,6 +90,59 @@ impl WorkerHandler {
                      start tries again"
                 ),
             }
+        }
+    }
+
+    /// Queue a rebuild of the L0 rung of every revision whose volume says it has a centre of mass and
+    /// whose row holds none. A worker runs this as it starts, beside the stale-derivative sweep.
+    ///
+    /// The L0 rung and not the `structure` read, because a mesh has no structure and the mesh
+    /// revisions are the population this exists for ([`PgRevisions::centreless_revisions`] says why).
+    /// Both kernels measure on every `process`, whatever `produce` asked for, so rebuilding the rung
+    /// is what makes the centre arrive — see the L0 branch of [`derive_one`](Self::derive_one).
+    ///
+    /// Never fails, for the stale sweep's reason: a database that will not answer at startup costs a
+    /// backfill delayed to the next start, not a worker that never came up.
+    pub(crate) async fn enqueue_centreless_revisions(&self) {
+        let centreless = match PgRevisions(self.db.clone())
+            .centreless_revisions(CENTRES_PER_START)
+            .await
+        {
+            Ok(centreless) => centreless,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not check which revisions are missing a centre of mass; the next worker \
+                     start tries again"
+                );
+                return;
+            }
+        };
+        let jobs = PgJobs(self.db.clone());
+        let mut queued = 0usize;
+        for row in &centreless {
+            let payload = JobPayload::Derive {
+                revision: row.revision,
+                produce: DerivativeKind::TessellationL0,
+            };
+            // `running_counts`: the source bytes a running job is reading are immutable, so its
+            // answer cannot depend on when it read them. Same rule as a shape profile's.
+            match jobs.enqueue_if_absent(row.library, &payload, true).await {
+                Ok((_, true)) => queued += 1,
+                Ok((_, false)) => {}
+                Err(error) => tracing::warn!(
+                    revision = %row.revision,
+                    %error,
+                    "could not queue this revision's centre of mass; the next worker start tries again"
+                ),
+            }
+        }
+        if queued > 0 {
+            tracing::info!(
+                queued,
+                centreless = centreless.len(),
+                "queued rebuilds for revisions whose centre of mass was never recorded"
+            );
         }
     }
 
@@ -252,6 +315,17 @@ impl WorkerHandler {
                 if want == DerivativeKind::TessellationL0 {
                     self.record_shape(library, revision, &format!("revision {revision}"))
                         .await;
+                    // And the centre of the volume, which the same read already measured. This is
+                    // the only path that fills one for a **mesh** revision from before
+                    // `measure::measured` computed centres: a mesh has no `structure` rung, so the
+                    // branch above never runs for one. Warn-only, as the profile is.
+                    self.record_centre_of_mass(
+                        revision,
+                        output.centre_of_mass_mm,
+                        output.provenance.volume,
+                        &format!("revision {revision}"),
+                    )
+                    .await;
                 }
             }
         }

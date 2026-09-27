@@ -45,6 +45,14 @@ pub struct RevisionRequest<'a> {
     pub tessellations: &'a [TessellationRow<'a>],
 }
 
+/// A revision missing its centre of mass, and the library whose job queue a re-derive of it belongs in.
+/// See [`PgRevisions::centreless_revisions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CentrelessRevision {
+    pub library: LibraryId,
+    pub revision: RevisionId,
+}
+
 /// One revision in a part's history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RevisionRow {
@@ -360,6 +368,47 @@ impl PgRevisions {
         .execute(&self.0)
         .await?;
         Ok(())
+    }
+
+    /// Revisions whose centre of mass was never recorded although their volume says they have one, newest
+    /// first, at most `limit` — what a worker re-derives at startup (L3, item 1).
+    ///
+    /// Two populations. A STEP revision read by a bridge before 8, which wrote no centre: those the
+    /// stale-derivative sweep already re-reads, because the bridge version is inside the kernel version
+    /// it keys on. And a **mesh** revision from before `measure::measured` computed one — which that
+    /// sweep never finds, because the mesh kernel's version string names its format, its GLB writer and
+    /// its rasteriser, and nothing about how it measures. Those are the rows this exists for.
+    ///
+    /// `volume > 0`, not `volume IS NOT NULL`, and that is what makes the sweep terminate: the mesh
+    /// kernel gates its centre on `is_watertight && signed_volume != 0.0` and its volume on
+    /// `is_watertight` alone, so a closed mesh enclosing nothing has a volume of 0 and no centre, for
+    /// ever. Asking for one again at every worker start is the board's "re-attempted by every scan"
+    /// bug in a new place.
+    // ponytail: a CAD worker running a bridge older than 8 still writes no centre, so its revisions are
+    // queued again at each start — the same ceiling `PgShapes::stale_revisions` accepts, capped the same
+    // way by the caller's limit and by `enqueue_if_absent`. One row of "this kernel version has no
+    // centre for this revision" would settle it.
+    pub async fn centreless_revisions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<CentrelessRevision>, DbError> {
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT p.library_id, r.id FROM revision r \
+             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+             WHERE r.volume > 0 AND r.mass_props_json IS NULL \
+               AND EXISTS (SELECT 1 FROM file f WHERE f.revision_id = r.id AND f.role = 'source') \
+             ORDER BY r.created_at DESC, r.id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(library, revision)| CentrelessRevision {
+                library: LibraryId::from_uuid(library),
+                revision: RevisionId::from_uuid(revision),
+            })
+            .collect())
     }
 
     /// Every revision of `part`, newest first — the order the grid calls the first one current.

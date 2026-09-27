@@ -46,7 +46,9 @@ pub use repo::{
     ReapReport, RenderCacheFreed, RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
     TessellationRow,
 };
-pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
+pub use revisions::{
+    CentrelessRevision, CurrentRevision, PgRevisions, RevisionRequest, RevisionRow,
+};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use shapes::{PgShapes, ShapeRow, StaleShape};
 pub use shares::{
