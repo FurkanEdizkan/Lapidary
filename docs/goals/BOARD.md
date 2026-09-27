@@ -16,7 +16,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [G3](G3.md) | Likeness API | 1 | Rust | W0 | `lapidary-db/src/likeness.rs`, `lapidary-api/src/likeness.rs` handlers, `crates/lapidary-api/tests/likeness.rs` | — | merged `f18e0f0` | `feat/likeness-api` |
 | [G6](G6.md) | Likeness UI | 1 | web | W0, G3 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
 | [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | merged `9818ad2` | `test/e2e-rig` |
-| [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | claimed (lane 4) | `fix/sharing-screens` |
+| [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | merged `8602d52` | `fix/sharing-screens` |
 | [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | merged `36a0ad2` | `feat/dashboard-resolve` |
 | [G1](G1.md) | App-wide event stream | 2 | Rust | W0 | `lapidary-db/src/events.rs`, `lapidary-api/src/events.rs`, the headers in `jobs.rs`, `bin/lapidary-server/src/main.rs`, `deploy/web/Caddyfile` if needed | 0049 | merged `8b9f94c` | `feat/events-stream` |
 | [G5](G5.md) | Dashboard UI | 2 | web | W0 | `web/src/routes/dashboard.tsx`, `components/dashboard/*`, `lib/{dashboard,events}.ts`, the nav in `AppFrame.tsx`, `dashboard` strings block | — | claimed (lane 3) | `feat/dashboard-ui` |
@@ -64,12 +64,21 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
   a sharer's revisions; a grant or a new share waking the other side's peer role (deferred three times); progress
   moving a file at a time.
 - **From T1's two clean runs (2026-09-26), one line each.** `Permission denied (os error 13)` names the file and the
-  errno but not what to do, which is half the error rule. `scripts/e2e/check.sh` is not wired into any gate: its 69
-  assertions ran by hand on every commit, and wiring it in is **not** a one-liner, because `docker compose config` is
+  errno but not what to do, which is half the error rule. `scripts/e2e/check.sh` is not wired into any gate: its **83**
+  assertions over three shell files and two `.mjs` files ran by hand on every commit, and wiring it in is **not** a one-liner, because `docker compose config` is
   among them and CI has no docker — it needs a CI-safe subset first. `stack.sh up` takes the compile lock and compiles
   nothing, so it queued behind four `cargo test --workspace` runs, each wait longer than the 7 s of work. The
   `/duplicates` queue uses the left ~800 px of a 1440 viewport while wrapping long path headings onto three lines inside
   that column. A 1,000-part sweep is `CORPUS_SLICE=1000` away, and the backlog's UI-sweep row is now cheap.
+- **From L1's three-installation run (2026-09-27), one line each.** `folders_in_common` never counts the owner of a
+  folder this installation holds (`lapidary-db/src/sharing.rs`, `peer_columns!`), so every sharer reads zero — the page
+  no longer shows the contradiction, the number is still wrong. A peer introduced but **not yet accepted by the other
+  side reports a rejection** ("it has not added this installation's device id") for what is a normal transient step. A
+  peer introduced by name shows "No name given yet" until a hello succeeds. "In your library" is dead text where sibling
+  cards have a button — it wants a part id on `MirroredPart`. `/sharing` is `max-w-3xl`, so the right 45% of a 1440
+  viewport is empty, the same shape filed for `/duplicates`. **WCAG 2.5.3 on this page's older controls:** `removeLabel`
+  is "Stop sharing with Ayşe" on a button reading **Remove**, `grantLabel` is "Let Burak pull Terrain" on one reading
+  **Let them pull** — one string each.
 - **A decision cannot be taken back from any screen (G6, 2026-09-26).** `DELETE /api/parts/{id}/links/{other}` undoes
   a `variant` or `distinct`, and nothing offers it: the queue lists undecided pairs only, so a pair leaves it and never
   reappears. Wants either a "decided about" list per library or an undo on the row before it disappears. Also from the

@@ -3608,6 +3608,40 @@ and measured through containers; the first (a 12-widget dashboard in one round t
     **not yet measured** — the lane first wrote it as fact and corrected itself.
   - **15 mutations, 15 caught**, including a listener opened late and a one-millisecond window. `0049` restates no
     constraint on `job`, so `0047`'s `profiled` is untouched.
+- **L1, the sharing screens seen and finished** (merged `8602d52`, gate 14 green in 731.27 s on the merged tree). Goal 9
+  shipped a dozen sharing screens with component tests and nobody had ever looked at them rendered. Now somebody has,
+  through three installations on one machine, at 1440 and 390 widths, before and after — **the captures are kept at
+  `target/l1-captures/`**, because a worktree takes its `target/` with it.
+  - **The rig grew instead of being copied.** `scripts/e2e/` gained `AS=a|b|c` — project, work directory, images and
+    ports suffixed and shifted 100 a letter — and `group.sh`, which is goal 9's `run-group.sh` moved onto the committed
+    rig: three installations, the whole scenario, a capture wherever a screen exists, `peer stop|start` for the relay
+    case. Three installations healthy in 6–7 s each; the whole scenario with 24 captures in **1 min 41 s**. Widening the
+    project pattern meant the lane **narrowed the lane assertion to one digit**, so `LAPIDARY_LANE=4a` is refused where
+    it would have slipped through; `check.sh` went 69 → **83 assertions**. It also fixed a T1-era bug: `up` printed
+    `--compare: command not found` on every run, from an unquoted heredoc expanding a backticked word in a comment.
+  - **The impeccable detector found nothing on all three files**, so the ten fixes that followed are judgement rather
+    than lint. The sharpest: **a card whose "Download" does not download — it pulls** (`parts.download3d` and
+    `revisions.original` are the two strings in this product that really do hand a file over); a peer card that
+    contradicted itself, saying "No folder in common any more" directly above what that peer shares; three strings
+    promising "everyone you are paired with" beside a picker that chooses who it goes to; a pull status line set in the
+    mono face `styles.css` reserves for a part number or a dimension **rather than prose**; and Share enabled before the
+    people arrived, so a fast hand shared with everyone paired, silently.
+  - **Stage 3's gap was not where the goal said it was.** `shareCategory` sent `asksFirst` only when it was true, and
+    the api reads absent as *keep what it had* — so switching a share back to open was unreachable from every page while
+    the api was innocent all along. Each share's row now carries the switch; `PgShares::requests` filters
+    `s.mode = 'ask'` and **deletes nothing**, so asking first again brings every request back with what was answered.
+    Driven end to end through the three installations, not only tested: the api agreed within a second each way. Six
+    mutations, six caught. The lane also caught the regression its own fix created — once `false` can be sent, a
+    re-share from a dialog whose box starts unticked would silently turn an ask-first folder open — and closed it in the
+    same commit.
+  - **Decided without the owner:** Download became **Pull** on the shared-folder cards; the "Asks first" badge gave way
+    to the switch; the asking-to-pull section hides when no folder asks first; `--min-ram 3`, printed into the log of any
+    run that uses it. Seven reviewer findings were left undone **with reasons in the Record**, two of them copy
+    decisions the lane judged to be the owner's rather than a lane's.
+  - **One claim of its Record corrected here:** it says `tsc --noEmit` is run by nothing in the gate. The gate's web
+    build step is `npm run build`, which is `tsc --noEmit && vite build`, so the gate has been type-checking all along.
+  - Web tests 441 → **451**. Nothing was built, pulled or pruned: the captures are T1's images at `93b87eb` — verified
+    byte-identical to current `main`'s application — plus this branch's bundle copied into the running web containers.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
