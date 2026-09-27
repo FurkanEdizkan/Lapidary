@@ -347,8 +347,9 @@ function PeerRow({
  *
  * `GET /api/shares` is the owner's list of what is shared and says nothing about where each one lives, while
  * changing how a folder is shared is `POST /api/libraries/{id}/shares` — so the switch below needs the pair.
- * One query rather than one per row, under the key each library's tree already uses, so a page that has been
- * to a library pays nothing for it.
+ * One query holding the whole map rather than one per row, and a fresh read rather than whatever a library's
+ * tree left in the cache: a folder shared since that page was last open would be missing from a cached list,
+ * and its switch would sit there disabled with nothing to say why.
  */
 function useWhereSharesLive() {
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })

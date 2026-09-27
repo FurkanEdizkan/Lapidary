@@ -2003,8 +2003,12 @@ export const strings = {
     askFirstLabel: 'Ask me before anyone pulls its files',
     askFirstNote:
       'Everyone it goes to still sees what it holds. Its files go only to the people you let pull them.',
-    /** The same switch on the sharing page, where several folders have one each and each must say which. */
-    askFirstRowLabel: (folder: string) => `Ask me before anyone pulls files from ${folder}`,
+    /**
+     * The same switch on the sharing page, where several folders have one each and each must say which.
+     * It opens with the visible label, word for word, because an accessible name that does not contain the
+     * label a person can see is a name they cannot say out loud to a speech-input tool (WCAG 2.5.3).
+     */
+    askFirstRowLabel: (folder: string) => `Ask me before anyone pulls its files — ${folder}`,
     /** Switched off, the asks about that folder go: everybody it reaches may pull it, so there is nothing to decide. */
     askFirstOffNote:
       'Anyone you share it with can pull its files without asking. Switching this on again brings back who asked, and what you answered.',

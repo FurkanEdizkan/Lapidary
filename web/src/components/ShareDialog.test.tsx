@@ -246,3 +246,46 @@ test('unticking it on a folder that asks first switches that folder back to open
     asksFirst: false,
   })
 })
+
+/**
+ * Share was enabled as soon as the licence count arrived, while the people were still being read — and a
+ * share confirmed then sends no member list at all, which reaches everyone paired whatever the picker was
+ * about to show. So the count is not enough: the people have to be here too.
+ */
+test('share waits for the people, so a fast hand cannot share with everyone by accident', async () => {
+  let arrive = (_: Peer[]) => {}
+  const peers = new Promise<Peer[]>((resolve) => {
+    arrive = resolve
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (url.includes('/shares/preview')) {
+        return { ok: true, status: 200, json: async () => ({ parts: 34, unrecorded: 0, nonCommercial: 0 }) }
+      }
+      if (url.endsWith('/shares') && method === 'POST') return { ok: true, status: 200, json: async () => ({}) }
+      if (url.endsWith('/sharing/peers')) return { ok: true, status: 200, json: async () => await peers }
+      return { ok: true, status: 200, json: async () => [] }
+    }),
+  )
+  renderDialog()
+
+  await screen.findByText(strings.sharing.shareBody(34))
+  const share = screen.getByRole('button', { name: strings.sharing.shareConfirm })
+  expect((share as HTMLButtonElement).disabled).toBe(true)
+
+  arrive([WORKSHOP, BENCH])
+  await waitFor(() => expect((share as HTMLButtonElement).disabled).toBe(false))
+})
+
+/** Unticking everybody shares with nobody, which the dialog says before it is confirmed, not after. */
+test('a picker with nobody ticked says so', async () => {
+  stub({ parts: 34, unrecorded: 0, nonCommercial: 0 }, { status: 200, body: {} }, [WORKSHOP, BENCH])
+  renderDialog()
+
+  fireEvent.click(await screen.findByRole('checkbox', { name: /Ayşe/ }))
+  expect(screen.queryByText(strings.sharing.membersNone)).toBeNull()
+  fireEvent.click(screen.getByRole('checkbox', { name: /Mehmet/ }))
+  expect(screen.getByText(strings.sharing.membersNone)).toBeDefined()
+})

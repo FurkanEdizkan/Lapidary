@@ -57,7 +57,7 @@ const SHARE_CONFIRM = 'Share'
 const SHARE_CANCEL = 'Cancel'
 const ASK_FIRST = 'Ask me before anyone pulls its files'
 // The per-row switch names its folder, because the page lists several and they must be told apart.
-const askFirstRow = (folder) => `Ask me before anyone pulls files from ${folder}`
+const askFirstRow = (folder) => `${ASK_FIRST} — ${folder}`
 
 /** Press a button by its accessible name, inside an optional root. React's onClick needs no real event. */
 const pressNamed = (page, name, root = 'document') =>
