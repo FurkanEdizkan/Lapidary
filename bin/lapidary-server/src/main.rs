@@ -640,6 +640,12 @@ async fn main() -> Result<()> {
             // The last flush is `main`'s, once `serve` has drained every request that could still
             // record a read.
             let last = (touches.clone(), db.clone());
+            // One Postgres listener for this whole process, fanned out to every open tab
+            // (`crates/lapidary-api/src/events.rs`). Its own router merged below rather than a field
+            // on `AppState`, which is built in 88 places, none of which wants a hub. It holds one
+            // pooled connection for as long as the process runs, so the api serves on seven of its
+            // eight. `shutdown` ends it, and its end is what ends every open stream.
+            let hub = lapidary_api::events::Hub::spawn(db.clone(), shutdown.clone()).await;
             (
                 router(
                     AppState {
@@ -657,7 +663,8 @@ async fn main() -> Result<()> {
                             .map(|path| path.display().to_string()),
                     },
                     Role::Api,
-                ),
+                )
+                .merge(lapidary_api::events::router(hub)),
                 None,
                 Some((flusher, last)),
             )

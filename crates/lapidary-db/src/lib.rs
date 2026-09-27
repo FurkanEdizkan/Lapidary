@@ -3,6 +3,7 @@
 
 mod custom_fields;
 mod densities;
+mod events;
 mod folders;
 mod jobs;
 mod likeness;
@@ -22,6 +23,7 @@ pub use custom_fields::{
     CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields, ValueSet,
 };
 pub use densities::{DensityRow, PgDensities};
+pub use events::{CHANGE_CHANNEL, listen_for_changes};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use likeness::{

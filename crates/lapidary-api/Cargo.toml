@@ -31,7 +31,11 @@ thiserror.workspace = true
 # only -- this crate builds a Router and never starts a runtime; `bin/lapidary-server`
 # owns that.
 tokio = { workspace = true, features = ["rt", "sync", "time", "net"] }
-tokio-stream.workspace = true
+# `sync` is `BroadcastStream`: the app-wide event stream's fan-out from one listener to every tab.
+tokio-stream = { workspace = true, features = ["sync"] }
+# `CancellationToken`, and only that: what ends the event hub, the same signal the worker loop and
+# the peer role already take. Already linked into this crate's binaries through lapidary-jobs.
+tokio-util.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
