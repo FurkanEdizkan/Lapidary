@@ -125,7 +125,14 @@ pub async fn batch_events(
     });
     // Comments on an idle connection, which is what stops a proxy closing a stream that
     // has nothing to say. `TICK` is a second, so this only fires if a query hangs.
-    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+    //
+    // The headers are `events.rs`'s, shared with the app-wide stream: both are SSE through the
+    // same proxy, and a buffered progress line was the exact symptom `docs/ARCHITECTURE.md`
+    // warned about. This route had neither header until goal G1.
+    (
+        crate::events::no_buffering(),
+        Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()),
+    )
 }
 
 /// One page of a batch's failures, past the sample `BatchStatus` carries.

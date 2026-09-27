@@ -3540,6 +3540,39 @@ its job: every gate log carries `lock … another session is compiling; waiting`
 
 **Wave 1 closed** (2026-09-26). G3 `f18e0f0`, G6 `4479e1b`, G2 `5fdd5af`, T1 `9818ad2`. Phase 6's **second exit is met**
 and measured through containers; the first (a 12-widget dashboard in one round trip) waits on G4 and G5. Nothing pushed.
+
+### Wave 2 (2026-09-27)
+
+- **G4, the dashboard's one answer** (merged `36a0ad2`, gate 14 green in 533.08 s on the merged tree — slower than Wave 1's
+  because three lanes were competing for the compile lock). `POST /api/dashboard/resolve` fills W0's empty `routes()`:
+  1–32 widgets, each key once or 422 with nothing answered, always 200 once the body reads cleanly, one result a key in
+  the order asked, a panicking resolver failing only its key. A `JoinSet` spawns every key, a `Semaphore` of 4 says how
+  many run, and **each key's two seconds start after it has its permit** — without that a key would time out waiting for
+  the pool rather than for its own query. New `PgDashboard::queue`; in `parts.rs` the grid's row reader and the two
+  storage views were pulled out so the ratio and the instance figures have one definition each. **No wire type changed**,
+  so G5 kept building beside it.
+  - **Measured:** a **12-widget resolve at p50 122.3 ms** over 10,000 parts, each with a 3 KB inline preview and a
+    current profile. The corpus is deliberately duplicate-free — descriptors 0.05 apart against a 0.04 threshold, sizes
+    0.05 mm apart — so the near-duplicate sweep compares every neighbour in the band and finds nothing; that makes 122 ms
+    a **floor** for the duplicates tile and fair for the other eleven, and the Record says so rather than quoting it as
+    the number.
+  - **A locked table fails one key only:** `LOCK TABLE job IN ACCESS EXCLUSIVE MODE` on another connection leaves the
+    queue tile `timedOut` while eleven answer, the whole response in 1.9–4 s rather than eleven keys' worth. Twelve
+    blocked keys take at least 3.5 s — three rounds of four — which is the elapsed-time signature the semaphore mutation
+    breaks.
+  - **The hole it found, in a file it did not own** (now [`L4`](goals/L4.md)): **a Rust timeout bounds how long a key
+    waits, not how long its statement runs.** Cancelling the future cancels nothing on the server, and sqlx cannot
+    return that connection to the pool until Postgres answers — proved on a pool of one. So the semaphore bounds waiting
+    keys, not connections held by keys that already gave up, and a long-held lock plus repeated resolves can drain the
+    pool of eight and stall the grid, the open path and downloads with it. The fix is a server-side `statement_timeout`
+    and `lock_timeout` where the pool is built, which is why it is its own goal rather than a patch here.
+  - **Eight mutation checks**, each broken then restored, including one it refused to overstate: the semaphore's row is
+    measured as elapsed time, not as "a fast key times out on the pool", because the direct form cannot be made
+    deterministic — for the pinned-connection reason above. Nine decisions are in the Record with their reasons; the ones
+    worth knowing are that a limit past its cap is **clamped, not refused**; that only the four widgets which cannot
+    otherwise tell probe the library's existence, which is where G3's empty-for-a-missing-library trap was closed; that
+    `instanceStorage` skips both the disk walk and the touches flush, so its render-cache figure is at most five minutes
+    old; and that a saved filter whose category was deleted **fails its key** rather than showing an empty tile.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.

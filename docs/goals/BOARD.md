@@ -17,11 +17,12 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [G6](G6.md) | Likeness UI | 1 | web | W0, G3 | `web/src/lib/likeness.ts`, `routes/duplicates.tsx`, `components/Likeness.tsx`, its mount in `PartDetail.tsx`, "folded into" on `removed.tsx`, the look-alike line in `index.tsx`, `likeness` strings block | — | merged `4479e1b` | `feat/likeness-ui` |
 | [T1](T1.md) | The whole app, up and driven | 1 | tooling (Docker allowed) | B0 | `scripts/e2e/**` | — | merged `9818ad2` | `test/e2e-rig` |
 | [L1](L1.md) | Sharing screens, seen and finished | 2 | web (+ one db read) | B0, T1 | `routes/sharing*.tsx`, `components/ShareDialog.tsx`, `sharing` strings block, `PgShares::requests` | — | claimed (lane 4) | `fix/sharing-screens` |
-| [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | claimed (lane 1) | `feat/dashboard-resolve` |
+| [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | merged `36a0ad2` | `feat/dashboard-resolve` |
 | [G1](G1.md) | App-wide event stream | 2 | Rust | W0 | `lapidary-db/src/events.rs`, `lapidary-api/src/events.rs`, the headers in `jobs.rs`, `bin/lapidary-server/src/main.rs`, `deploy/web/Caddyfile` if needed | 0049 | claimed (lane 2) | `feat/events-stream` |
 | [G5](G5.md) | Dashboard UI | 2 | web | W0 | `web/src/routes/dashboard.tsx`, `components/dashboard/*`, `lib/{dashboard,events}.ts`, the nav in `AppFrame.tsx`, `dashboard` strings block | — | claimed (lane 3) | `feat/dashboard-ui` |
 | [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | open | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | open | `fix/mass-and-materials` |
+| [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | open | `fix/statement-timeouts` |
 | [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | open | `feat/tag-browse` |
 | [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
@@ -37,7 +38,7 @@ to measure through the rig once G4 and G5 are both merged. Read [`W0.md`](W0.md)
 against the contracts — it says where they differ from W0's stage text.
 
 Merge order the lead follows: B0 → W0 → **G3 → G2 → G6** (T1 whenever it is ready — it owns only new files) → G4 → G1
-→ G5 → L1 → L2 → L3 → P3 → P1 → P2 → P4 → close (W3).
+→ G5 → L1 → L2 → L3 → L4 → P3 → P1 → P2 → P4 → close (W3).
 
 **W3, the close (lead, after L3):** both Phase 6 exits measured on the merged `main` through a compose stack on a lane
 port block; the ROADMAP Phase 6 ledger; FEATURES rows for similarity and near-duplicates and §8 ("per browser until
