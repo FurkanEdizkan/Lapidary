@@ -18,6 +18,7 @@ mod saved_filters;
 mod shapes;
 mod shares;
 mod sharing;
+mod tags;
 mod touches;
 
 pub use custom_fields::{
@@ -55,6 +56,7 @@ pub use shares::{
 };
 pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;
+pub use tags::PgTags;
 pub use touches::Touches;
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
 // its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending

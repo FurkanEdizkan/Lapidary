@@ -443,6 +443,10 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // route is: nothing proxies a browser to the worker, and this URL is one a
                 // user clicks.
                 .route("/api/revisions/{id}/download", get(download::original))
+                // A library's tags as an index, and one tag's neighbours (P3). Its own router for the
+                // reason Phase 6's two below give. Not the facet panel: these count over the whole
+                // library and never withhold a count. See `tags.rs`.
+                .merge(tags::reads())
                 // Phase 6's two, each filling its own file so that goals G3 and G4 never edit this chain.
                 .merge(likeness::routes())
                 .merge(dashboard::routes()),
