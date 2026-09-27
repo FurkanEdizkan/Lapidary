@@ -40,6 +40,11 @@ Every rule below exists because one of those happened.
 3. Enter the worktree (Claude Code: `EnterWorktree` with its path). Work only there.
 4. Tell the lead: `ListAgents`, then `SendMessage` to `lapidary-lead`: "lane N holds <goal-id>". The lead marks the
    board. If the lead is not running, carry on — the branch is the claim; the board catches up.
+   **The lead may not be addressable at all.** When the lead is a session that has not been renamed, or the lanes are
+   background agents rather than sessions, `SendMessage` to `lapidary-lead` fails and `ListAgents` does not show it.
+   That is not a reason to stop or to guess: put what you would have sent into your hand-back, and say at the top that
+   you could not reach the lead, so the decision is the first thing it reads (G1 did exactly this on 2026-09-27, and
+   its blocking question arrived a whole goal late as a result).
 
 ## Your lane's resources
 
