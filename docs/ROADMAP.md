@@ -3717,6 +3717,49 @@ the library and 0 profile jobs left behind**.
 
 **Phase 6 is met.** What remains before it is closed: the loose ends (L2, L3, L4) and the discovery goals (P1–P4), all
 on the board.
+
+### Wave 3 (2026-09-27)
+
+- **L2, the sharing protocol's debt** (merged `bac30be`, gate 14 green in 480.48 s on the merged tree). Migration `0052`,
+  one column and one index. **The roster cutoff is seven days** (`ROSTER_TRUSTED_FOR_SECS`): `relayable_to`,
+  `relayed_to` and `serves` each require `peer_share_member.seen_at` inside it, so an owner who takes somebody off a
+  folder and goes offline stops authorising relays through everybody else within a week. In `serves` the age sits inside
+  the `LEFT JOIN`'s `ON`, so a stale row reads as `NotShared` — the refusal a stranger gets — rather than as a third
+  answer that would tell the caller they were once on the list. **Nothing expires in the table**: the reads refuse, so
+  the people, introductions and declined pages read exactly as before. The two "known ceiling" paragraphs above now say
+  when it was built.
+  - **One running pull per sharer**, so a waiting pull no longer holds the others (`pull.rs:254`'s ponytail, gone):
+    `sharers_waiting()`, a task a sharer guarded by a `HashSet<DeviceId>`, each working its own queue.
+  - **That change opened a data-corruption path, and the lane closed it in the same goal.** Staging was keyed by hash
+    and shared by every pull, so two sharers offering the same file meant one fetch truncating `<hash>.part` while
+    another appended — and the loser's BLAKE3 check would have told the person **the sharer's store needs checking**,
+    for a file that was never wrong. A fetch now claims `<staging>/<hash>` by path; the second stalls, which already
+    means "try again shortly". Found because two of three existing fetch tests failed on the hash key, and followed
+    rather than adjusted.
+  - **Staging cleanup** hangs off `work` as a wrapper rather than off the five places a pull can finish, because the
+    question is "what does anybody still want" and not "how did this one end". The old post-import delete loop is gone:
+    it took files that a second pull of the same folder into another library was resuming from.
+  - **Asks-first on the wire** (`Share.asks_first` with `serde(default)`, `peer_share.asks_first`,
+    `MirroredShare.asksFirst`). A relayed offer may **seed** the flag and never change it, because a member from before
+    the field sends none and last-writer-wins would flicker the line on the page every hello round. L1's web half was
+    not re-fixed.
+  - **12 mutations, 12 caught — after two corrections that are the point of doing this at all.** One mutation deleted a
+    whole SQL line, leaving a bare `\` in every query the macro built, so three tests "caught" a **Postgres syntax
+    error** rather than the number they claimed; it was rewritten to `AND TRUE` on the same line, and every other
+    mutation's failure message was then read rather than merely watched to go red. And one rule the lane had written
+    **survived** its mutation, because no test had ever staged a file under a paused pull — the test now pauses the
+    second pull before failing the first. `docs/goals/PROTOCOL.md` carries both lessons now, and stops pointing lanes at
+    `mutate-s1b.sh`, which predates these rules and breaks three of them.
+  - **`0044`'s comment was deliberately not edited** to close its ceiling note: sqlx records a checksum per applied
+    migration, so changing it would break the next start of every existing installation. `0052` closes it by name.
+  - **Reviewed and kept:** `Pull.queuedBehind` is now per sharer. It is a shipped number on a shipped screen, but with
+    pulls running per sharer a global count told a person to wait for something not in their way; the visible sentence
+    is unchanged and still true.
+  - **Left for later:** a bundle zip can leak up to 64 MB if the process dies between writing and storing it (the sweep
+    only knows names that are a hash); **nothing caps how many sharers are worked at once**, and the peer's pool is
+    `max_connections(8)` with two held for good by its own listeners — recorded for L4 rather than fixed here; a pull
+    stalled by another's claim waits a whole 15 s hello round; `peer_share.asks_first` is never cleared where a folder
+    survives only as a relay.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.

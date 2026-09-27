@@ -20,9 +20,9 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [G4](G4.md) | Dashboard resolve | 2 | Rust | W0, G3 | `lapidary-api/src/dashboard.rs` handler, the grid helper in `parts.rs`, `lapidary-db/src/dashboard.rs` | — | merged `36a0ad2` | `feat/dashboard-resolve` |
 | [G1](G1.md) | App-wide event stream | 2 | Rust | W0 | `lapidary-db/src/events.rs`, `lapidary-api/src/events.rs`, the headers in `jobs.rs`, `bin/lapidary-server/src/main.rs`, `deploy/web/Caddyfile` if needed | 0049 | merged `8b9f94c` | `feat/events-stream` |
 | [G5](G5.md) | Dashboard UI | 2 | web | W0 | `web/src/routes/dashboard.tsx`, `components/dashboard/*`, `lib/{dashboard,events}.ts`, the nav in `AppFrame.tsx`, `dashboard` strings block | — | merged `a20b3aa` | `feat/dashboard-ui` |
-| [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | claimed (lane 1) | `fix/sharing-protocol-debt` |
+| [L2](L2.md) | Sharing protocol debt | 3 | Rust | B0, L1 | `lapidary-peer/src/{pull,sync,shares}.rs`, `lapidary-db/src/{mirror,pulls}.rs`, `bin/lapidary-server/tests/peer_*.rs`, the asks-first line on the shared folder's page | 0052 | merged `bac30be` | `fix/sharing-protocol-debt` |
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | claimed (lane 2) | `fix/mass-and-materials` |
-| [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | open | `fix/statement-timeouts` |
+| [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | claimed (lane 1) | `fix/statement-timeouts` |
 | [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | claimed (lane 3) | `feat/tag-browse` |
 | [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
@@ -34,8 +34,7 @@ tree. Phase 6's second exit is met and measured through containers.
 **Wave 2 is closed** (2026-09-27): G4 `36a0ad2`, G1 `8b9f94c`, L1 `8602d52`, G5 `a20b3aa`. **Both Phase 6 exits are
 met**, measured on one stack built from `main` — see the ROADMAP.
 
-**Wave 3 is claimed** (2026-09-27): L2 lane 1, L3 lane 2, P3 lane 3. **L4 waits for a Rust lane to free up**, because
-the protocol allows two Rust goals claimed at once and L2 and L3 are both Rust. **Only one stack may be up at a time** — the machine has about 4 GiB of RAM free and `/` is at 9.6 GB, so G1 and
+**Wave 3 is claimed** (2026-09-27): L2 lane 1, L3 lane 2, P3 lane 3. L4 took lane 1 when L2 merged. **Only one stack may be up at a time** — the machine has about 4 GiB of RAM free and `/` is at 9.6 GB, so G1 and
 L1 ask the lead before `scripts/e2e/stack.sh up`. Phase 6's **first** exit (12 widgets in one round trip) is the lead's
 to measure through the rig once G4 and G5 are both merged. Read [`W0.md`](W0.md)'s Record before building
 against the contracts — it says where they differ from W0's stage text.
