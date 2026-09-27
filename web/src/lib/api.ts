@@ -1641,14 +1641,19 @@ export async function previewShare(library: LibraryId, folder: FolderId): Promis
 export async function shareCategory(
   library: LibraryId,
   folder: FolderId,
-  asksFirst = false,
+  /**
+   * Whether it asks first. `undefined` leaves the field out, which a new share reads as open and one already
+   * shared as "keep what it had" — so `false` has to be sent to switch one back, and a helper that dropped it
+   * (this one did) made switching back unreachable from any page, api or no api.
+   */
+  asksFirst?: boolean,
   memberDeviceIds?: string[],
 ): Promise<FieldWritten> {
   // Only said when asked for: left out, a new share is open, reaches everyone paired, and one already shared
   // keeps what it had.
   const body: ShareCategory = {
     folderId: folder,
-    ...(asksFirst ? { asksFirst } : {}),
+    ...(asksFirst === undefined ? {} : { asksFirst }),
     ...(memberDeviceIds === undefined ? {} : { memberDeviceIds }),
   }
   return fieldWritten(

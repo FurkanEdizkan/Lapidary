@@ -6,6 +6,8 @@ import {
   answerIntroduction,
   decideGrant,
   fetchIntroductions,
+  fetchLibraries,
+  fetchLibraryShares,
   fetchPeerShares,
   fetchPeers,
   fetchPulls,
@@ -14,6 +16,7 @@ import {
   fetchShares,
   fetchSharingIdentity,
   removePeer,
+  shareCategory,
   setShareMembers,
   setSharingName,
   stopSharing,
@@ -23,7 +26,15 @@ import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import { Dialog } from '../components/Dialog'
 import { breakable } from '../components/Card'
-import type { Introduction, Peer, Pull, ShareRequest, ShareSummary } from '../lib/types'
+import type {
+  FolderId,
+  Introduction,
+  LibraryId,
+  Peer,
+  Pull,
+  ShareRequest,
+  ShareSummary,
+} from '../lib/types'
 
 const CONTROL =
   'mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm'
@@ -314,15 +325,11 @@ function PeerRow({
       {introducer === null ? null : (
         <p className="mt-1 text-xs text-[var(--color-muted)]">{introducer}</p>
       )}
-      {peer.foldersInCommon > 0 ? null : (
-        <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
-          {strings.sharing.noFoldersInCommon}
-        </p>
-      )}
-      <p className="mt-1 font-mono text-xs break-all text-[var(--color-muted)]">
-        {peer.deviceId} · {peer.address}
-      </p>
-      <TheirShares deviceId={peer.deviceId} />
+      {/* Each on its own line: `break-all` on one string containing both cuts a port number in half, and a
+          port is the thing a person retypes. */}
+      <p className="mt-1 font-mono text-xs break-all text-[var(--color-muted)]">{peer.deviceId}</p>
+      <p className="font-mono text-xs break-all text-[var(--color-muted)]">{peer.address}</p>
+      <TheirShares deviceId={peer.deviceId} foldersInCommon={peer.foldersInCommon} />
       {peer.online || peer.lastError === null ? null : (
         <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{peer.lastError}</p>
       )}
@@ -335,10 +342,40 @@ function PeerRow({
   )
 }
 
+/**
+ * Which library's category each share is, by share id.
+ *
+ * `GET /api/shares` is the owner's list of what is shared and says nothing about where each one lives, while
+ * changing how a folder is shared is `POST /api/libraries/{id}/shares` — so the switch below needs the pair.
+ * One query holding the whole map rather than one per row, and a fresh read rather than whatever a library's
+ * tree left in the cache: a folder shared since that page was last open would be missing from a cached list,
+ * and its switch would sit there disabled with nothing to say why.
+ */
+function useWhereSharesLive() {
+  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
+  return useQuery({
+    queryKey: ['shares', 'where', (libraries.data ?? []).map((library) => library.id)],
+    enabled: libraries.isSuccess,
+    queryFn: async () => {
+      const lists = await Promise.all(
+        (libraries.data ?? []).map(
+          async (library) => [library.id, await fetchLibraryShares(library.id)] as const,
+        ),
+      )
+      return new Map(
+        lists.flatMap(([library, shares]) =>
+          shares.map((share) => [share.id, { library, folder: share.folderId }] as const),
+        ),
+      )
+    },
+  })
+}
+
 /** What this installation offers the people it is paired with, and the way to stop offering each one. */
 function OwnShares() {
   const queryClient = useQueryClient()
   const shares = useQuery({ queryKey: ['shares', 'own'], queryFn: fetchShares, refetchInterval: REFRESH_MS })
+  const where = useWhereSharesLive()
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['shares'] })
   return (
     <div className={SECTION}>
@@ -355,7 +392,12 @@ function OwnShares() {
       ) : (
         <ul role="list" className="mt-3 flex flex-col gap-2">
           {shares.data.map((share) => (
-            <OwnShareRow key={share.id} share={share} onStopped={refresh} />
+            <OwnShareRow
+              key={share.id}
+              share={share}
+              category={where.data?.get(share.id)}
+              onStopped={refresh}
+            />
           ))}
         </ul>
       )}
@@ -363,7 +405,16 @@ function OwnShares() {
   )
 }
 
-function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () => Promise<void> }) {
+function OwnShareRow({
+  share,
+  category,
+  onStopped,
+}: {
+  share: ShareSummary
+  /** Where it lives, once that has been read: without it the folder cannot be shared again to change this. */
+  category: { library: LibraryId; folder: FolderId } | undefined
+  onStopped: () => Promise<void>
+}) {
   const [note, setNote] = useState<string | null>(null)
   const [choosing, setChoosing] = useState(false)
   const stop = useMutation({
@@ -385,24 +436,26 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
           <span className="ml-2 text-xs text-[var(--color-muted)]">
             {strings.sharing.ownShareParts(share.partCount)}
           </span>
-          {share.asksFirst ? (
-            <span className="ml-2 text-xs text-[var(--color-muted)]">{strings.sharing.asksFirst}</span>
-          ) : null}
         </span>
-        <button type="button" onClick={() => setChoosing(true)} className={`${BUTTON} text-[var(--color-muted)]`}>
-          {strings.sharing.membersChange}
-        </button>
-        <button
-          type="button"
-          onClick={() => stop.mutate()}
-          disabled={stop.isPending}
-          aria-label={strings.sharing.stopSharingLabel(share.name)}
-          className={`${BUTTON} text-[var(--color-muted)]`}
-        >
-          {stop.isPending ? strings.sharing.stopping : strings.sharing.stopSharing}
-        </button>
+        {/* One group, so the two actions wrap together onto their own full-width line at phone width. Left
+            to wrap one button at a time, two rows of the same list took two different shapes. */}
+        <span className="flex gap-2 max-xs:w-full">
+          <button type="button" onClick={() => setChoosing(true)} className={`${BUTTON} text-[var(--color-muted)]`}>
+            {strings.sharing.membersChange}
+          </button>
+          <button
+            type="button"
+            onClick={() => stop.mutate()}
+            disabled={stop.isPending}
+            aria-label={strings.sharing.stopSharingLabel(share.name)}
+            className={`${BUTTON} text-[var(--color-muted)]`}
+          >
+            {stop.isPending ? strings.sharing.stopping : strings.sharing.stopSharing}
+          </button>
+        </span>
       </div>
       <Members share={share} />
+      <AskFirst share={share} category={category} />
       {choosing ? <ChooseMembers share={share} onClose={() => setChoosing(false)} /> : null}
       {note === null ? null : (
         <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
@@ -410,6 +463,75 @@ function OwnShareRow({ share, onStopped }: { share: ShareSummary; onStopped: () 
         </p>
       )}
     </li>
+  )
+}
+
+/**
+ * Whether a folder already shared asks before anybody pulls its files, and the way to change that either way.
+ *
+ * Changing it is sharing the folder again with a different standing — `POST /api/libraries/{id}/shares`, the
+ * only call there is — so the switch waits for the row to know which category that is, and shows where the
+ * folder stands meanwhile rather than hiding. Switching it off says so once, because the asks about that
+ * folder leave the list above: everybody it reaches may pull it, so there is nothing left to decide, and
+ * switching it on again brings them back with what was answered.
+ */
+function AskFirst({
+  share,
+  category,
+}: {
+  share: ShareSummary
+  category: { library: LibraryId; folder: FolderId } | undefined
+}) {
+  const queryClient = useQueryClient()
+  const [note, setNote] = useState<string | null>(null)
+  const set = useMutation({
+    mutationFn: ({
+      library,
+      folder,
+      asksFirst,
+    }: {
+      library: LibraryId
+      folder: FolderId
+      asksFirst: boolean
+    }) => shareCategory(library, folder, asksFirst),
+    onSuccess: (result) => {
+      if (result.kind === 'refused') {
+        setNote(result.message)
+        return
+      }
+      setNote(null)
+      void queryClient.invalidateQueries({ queryKey: ['shares'] })
+    },
+    onError: () => setNote(strings.sharing.askFirstFailed),
+  })
+  // Said at the moment it is switched off, where it answers "what happened to the people who asked?", and not
+  // on every folder that has never asked first.
+  const justOpened = set.isSuccess && set.variables.asksFirst === false
+  return (
+    <div className="mt-2">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={share.asksFirst}
+          disabled={category === undefined || set.isPending}
+          aria-label={strings.sharing.askFirstRowLabel(share.name)}
+          onChange={(event) => {
+            if (category !== undefined) set.mutate({ ...category, asksFirst: event.target.checked })
+          }}
+        />
+        {strings.sharing.askFirstLabel}
+      </label>
+      {share.asksFirst ? (
+        <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.askFirstNote}</p>
+      ) : justOpened ? (
+        <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.askFirstOffNote}</p>
+      ) : null}
+      {note === null ? null : (
+        <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -469,7 +591,7 @@ function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () =>
     onError: () => setNote(strings.sharing.membersFailed),
   })
   return (
-    <Dialog title={strings.sharing.membersLabel} onClose={onClose}>
+    <Dialog title={strings.sharing.membersTitle(share.name)} onClose={onClose}>
       {peers.data === undefined ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
       ) : peers.data.length === 0 ? (
@@ -489,8 +611,8 @@ function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () =>
                     setPicked(next)
                   }}
                 />
-                {peer.name ?? strings.sharing.unnamed}
-                <span className="tabular text-xs text-[var(--color-muted)]">{peer.address}</span>
+                <span className="min-w-0 shrink-0">{peer.name ?? strings.sharing.unnamed}</span>
+                <span className="tabular truncate text-xs text-[var(--color-muted)]">{peer.address}</span>
               </label>
             </li>
           ))}
@@ -516,7 +638,6 @@ function ChooseMembers({ share, onClose }: { share: ShareSummary; onClose: () =>
   )
 }
 
-/** Who asked to pull a share that asks first, with this installation's answer and the way to give or change it. */
 /**
  * Who the owners of the folders here have introduced (S6).
  *
@@ -582,24 +703,28 @@ function IntroductionRow({
           <span className="text-sm">
             {strings.sharing.introducedBy(who, introduction.shareName, introducer)}
           </span>
-          <span className="ml-2 text-xs text-[var(--color-muted)]">{introduction.address}</span>
+          <span className="ml-2 text-xs break-all text-[var(--color-muted)] max-xs:mt-0.5 max-xs:ml-0 max-xs:block">
+            {introduction.address}
+          </span>
         </span>
-        <button
-          type="button"
-          onClick={() => answer.mutate(true)}
-          disabled={answer.isPending}
-          className={BUTTON}
-        >
-          {answer.isPending ? strings.sharing.introductionAnswering : strings.sharing.introductionAccept}
-        </button>
-        <button
-          type="button"
-          onClick={() => answer.mutate(false)}
-          disabled={answer.isPending}
-          className={`${BUTTON} text-[var(--color-muted)]`}
-        >
-          {strings.sharing.introductionDecline}
-        </button>
+        <span className="flex gap-2 max-xs:w-full">
+          <button
+            type="button"
+            onClick={() => answer.mutate(true)}
+            disabled={answer.isPending}
+            className={BUTTON}
+          >
+            {answer.isPending ? strings.sharing.introductionAnswering : strings.sharing.introductionAccept}
+          </button>
+          <button
+            type="button"
+            onClick={() => answer.mutate(false)}
+            disabled={answer.isPending}
+            className={`${BUTTON} text-[var(--color-muted)]`}
+          >
+            {strings.sharing.introductionDecline}
+          </button>
+        </span>
       </div>
       <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
         {strings.sharing.introductionReaches(introduction.shareName)}
@@ -613,6 +738,13 @@ function IntroductionRow({
   )
 }
 
+/**
+ * Who asked to pull a share that asks first, with this installation's answer and the way to give or change it.
+ *
+ * Only for an installation that has a folder that asks first. Nothing here can ever happen without one, so on
+ * every other installation — which is most of them, since a folder is open unless somebody says otherwise —
+ * this was a heading, a note and an empty state about something that cannot occur.
+ */
 function Requests() {
   const queryClient = useQueryClient()
   const requests = useQuery({
@@ -620,7 +752,11 @@ function Requests() {
     queryFn: fetchShareRequests,
     refetchInterval: REFRESH_MS,
   })
+  // The same query the list of own shares above already made, so this costs no request.
+  const shares = useQuery({ queryKey: ['shares', 'own'], queryFn: fetchShares })
+  const asksFirst = (shares.data ?? []).some((share) => share.asksFirst)
   if (!requests.isSuccess) return null
+  if (!asksFirst && requests.data.length === 0) return null
   return (
     <div className={SECTION}>
       <h3 className={SECTION_TITLE}>{strings.sharing.requests}</h3>
@@ -667,26 +803,31 @@ function RequestRow({ request, onDecided }: { request: ShareRequest; onDecided: 
       <div className="flex flex-wrap items-center gap-3">
         <span className="grow">
           <span className="text-sm">{strings.sharing.requestLine(who, request.shareName)}</span>
-          <span className="ml-2 text-xs text-[var(--color-muted)]">{standing}</span>
+          {/* Its own line at phone width, where it otherwise wrapped mid-sentence and orphaned a word. */}
+          <span className="ml-2 text-xs text-[var(--color-muted)] max-xs:mt-0.5 max-xs:ml-0 max-xs:block">
+            {standing}
+          </span>
         </span>
-        <button
-          type="button"
-          onClick={() => decide.mutate(true)}
-          disabled={decide.isPending || request.state === 'granted'}
-          aria-label={strings.sharing.grantLabel(who, request.shareName)}
-          className={BUTTON}
-        >
-          {strings.sharing.grant}
-        </button>
-        <button
-          type="button"
-          onClick={() => decide.mutate(false)}
-          disabled={decide.isPending || request.state === 'denied'}
-          aria-label={strings.sharing.denyLabel(who, request.shareName)}
-          className={`${BUTTON} text-[var(--color-muted)]`}
-        >
-          {strings.sharing.deny}
-        </button>
+        <span className="flex gap-2 max-xs:w-full">
+          <button
+            type="button"
+            onClick={() => decide.mutate(true)}
+            disabled={decide.isPending || request.state === 'granted'}
+            aria-label={strings.sharing.grantLabel(who, request.shareName)}
+            className={BUTTON}
+          >
+            {strings.sharing.grant}
+          </button>
+          <button
+            type="button"
+            onClick={() => decide.mutate(false)}
+            disabled={decide.isPending || request.state === 'denied'}
+            aria-label={strings.sharing.denyLabel(who, request.shareName)}
+            className={`${BUTTON} text-[var(--color-muted)]`}
+          >
+            {strings.sharing.deny}
+          </button>
+        </span>
       </div>
       {note === null ? null : (
         <p role="alert" className="mt-1 text-xs text-[var(--color-muted)]">
@@ -745,8 +886,16 @@ function pullStanding(pull: Pull): string {
   }
 }
 
-/** What one person shares, each a link to the shared library — read from the mirror, so it lists while they are away. */
-function TheirShares({ deviceId }: { deviceId: string }) {
+/**
+ * What one person shares, each a link to the shared library — read from the mirror, so it lists while they
+ * are away — or, when they share nothing, why there is nothing.
+ *
+ * One slot with one answer, because the two used to be written by different components and could contradict
+ * each other: the taken-back line is decided by `foldersInCommon`, which does not count the owner of a folder
+ * this installation holds, so the person whose folder is listed immediately below was told there was no
+ * folder in common any more. What they share is read straight from the mirror here, and it wins.
+ */
+function TheirShares({ deviceId, foldersInCommon }: { deviceId: string; foldersInCommon: number }) {
   const shares = useQuery({
     queryKey: ['sharing', 'peers', deviceId, 'shares'],
     queryFn: () => fetchPeerShares(deviceId),
@@ -754,7 +903,14 @@ function TheirShares({ deviceId }: { deviceId: string }) {
   })
   if (!shares.isSuccess) return null
   if (shares.data.length === 0) {
-    return <p className="mt-1 text-xs text-[var(--color-muted)]">{strings.sharing.theirSharesNone}</p>
+    // Nothing from them and nothing of ours reaching them: paired, and reaching each other not at all (S10).
+    return foldersInCommon > 0 ? (
+      <p className="mt-1 text-xs text-[var(--color-muted)]">{strings.sharing.theirSharesNone}</p>
+    ) : (
+      <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
+        {strings.sharing.noFoldersInCommon}
+      </p>
+    )
   }
   return (
     <div className="mt-2">

@@ -12,6 +12,7 @@ import { strings } from '../lib/strings'
 import type {
   Introduction,
   LibraryId,
+  LibrarySummary,
   MirroredShare,
   Peer,
   Pull,
@@ -19,6 +20,7 @@ import type {
   ShareMember,
   ShareRequest,
   ShareSummary,
+  SharedCategory,
   SharingIdentity,
 } from '../lib/types'
 
@@ -71,6 +73,8 @@ function stub({
   peers = [AYSE, MAKERSPACE],
   pair = { status: 200, body: AYSE as unknown },
   shares = [],
+  libraries = [],
+  libraryShares = {},
   theirs = [],
   requests = [],
   pulls = [],
@@ -81,6 +85,9 @@ function stub({
   peers?: Peer[]
   pair?: { status: number; body: unknown }
   shares?: ShareSummary[]
+  /** This installation's own libraries, and what each one shares: where a row finds the category to re-share. */
+  libraries?: LibrarySummary[]
+  libraryShares?: Record<string, SharedCategory[]>
   theirs?: MirroredShare[]
   requests?: ShareRequest[]
   pulls?: Pull[]
@@ -102,6 +109,11 @@ function stub({
       if (url === '/api/sharing/peers' && method === 'POST') return answer(pair.status, pair.body)
       if (url === '/api/sharing/peers') return answer(200, peers)
       if (url === '/api/shares') return answer(200, shares)
+      if (url === '/api/libraries') return answer(200, libraries)
+      if (url.startsWith('/api/libraries/') && url.endsWith('/shares')) {
+        const library = url.slice('/api/libraries/'.length, -'/shares'.length)
+        return method === 'GET' ? answer(200, libraryShares[library] ?? []) : answer(200, {})
+      }
       if (url === '/api/shares/requests') return answer(200, requests)
       if (url === '/api/sharing/introductions') return answer(200, introductions)
       if (url.startsWith('/api/sharing/introductions/')) return answer(200, {})
@@ -240,7 +252,12 @@ test('what this installation shares is listed, and stopping one withdraws only t
 
   await screen.findByText(strings.sharing.ownShareParts(34))
   expect(screen.getByText(strings.sharing.ownShareParts(1))).toBeDefined()
-  expect(screen.getAllByText(strings.sharing.asksFirst)).toHaveLength(1)
+  // Where each one stands is the switch's own state, so it is read off the switch and not off a second badge
+  // saying the same thing beside it.
+  const terrain = screen.getByRole('checkbox', { name: strings.sharing.askFirstRowLabel('Terrain') })
+  const fasteners = screen.getByRole('checkbox', { name: strings.sharing.askFirstRowLabel('Fasteners') })
+  expect((terrain as HTMLInputElement).checked).toBe(true)
+  expect((fasteners as HTMLInputElement).checked).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: strings.sharing.stopSharingLabel('Fasteners') }))
 
   await waitFor(() =>
@@ -459,13 +476,157 @@ test('somebody introduced whose folders are gone says so, and can be removed', a
 
   const mira = (await screen.findByText('Mira’s studio')).closest('li') as HTMLElement
   expect(within(mira).getByText(strings.sharing.introducedBySomebody('Ayşe’s workshop'))).toBeDefined()
-  expect(within(mira).getByText(strings.sharing.noFoldersInCommon)).toBeDefined()
+  // Awaited, because this line and the list of what they share are now one slot with one answer: it is
+  // written once their catalogue has been read, so that it can never sit above a folder of theirs.
+  expect(await within(mira).findByText(strings.sharing.noFoldersInCommon)).toBeDefined()
 
   const ayse = (await screen.findByText('Ayşe’s workshop')).closest('li') as HTMLElement
+  await within(ayse).findByText(strings.sharing.theirSharesNone)
   expect(within(ayse).queryByText(strings.sharing.noFoldersInCommon)).toBeNull()
 
   fireEvent.click(within(mira).getByRole('button', { name: strings.sharing.removeLabel('Mira’s studio') }))
   await waitFor(() =>
     expect(calls.some((call) => call.method === 'DELETE' && call.url.includes(MAKERSPACE.deviceId))).toBe(true),
   )
+})
+
+const SWEEP: LibrarySummary = {
+  id: '01931b6e-0000-7000-8000-000000000001' as LibraryId,
+  name: 'Sweep',
+  mode: 'hobby',
+  partCount: 411,
+}
+
+const TERRAIN_OPEN: ShareSummary = {
+  id: '01a07c41-5d22-7b03-9014-7e2f6dab0001',
+  name: 'Terrain',
+  partCount: 34,
+  asksFirst: false,
+  reachesEveryone: true,
+}
+
+const TERRAIN_CATEGORY: SharedCategory = {
+  id: TERRAIN_OPEN.id,
+  folderId: '01a06b30-4c11-7a92-8f03-6d1e5c9a0001',
+  name: 'Terrain',
+  createdAt: '2026-09-17T10:00:00Z',
+  asksFirst: false,
+}
+
+/**
+ * Switching a folder already shared to asking first, and back (the owner-side half of S4).
+ *
+ * `GET /api/shares` says what is shared, not which library's category each one is, and switching is
+ * `POST /api/libraries/{id}/shares` — so the row finds its category first. Switching back has to send
+ * `asksFirst: false`: left out, the api keeps what the share had, which is how this was unreachable from
+ * every page.
+ */
+test('an open share switches to asking first from its own row', async () => {
+  const calls = stub({
+    shares: [TERRAIN_OPEN],
+    libraries: [SWEEP],
+    libraryShares: { [SWEEP.id]: [TERRAIN_CATEGORY] },
+  })
+  renderPage()
+
+  const box = await screen.findByRole('checkbox', { name: strings.sharing.askFirstRowLabel('Terrain') })
+  await waitFor(() => expect((box as HTMLInputElement).disabled).toBe(false))
+  expect((box as HTMLInputElement).checked).toBe(false)
+  fireEvent.click(box)
+
+  await waitFor(() =>
+    expect(calls.find((call) => call.method === 'POST' && call.url.endsWith('/shares'))).toEqual({
+      url: `/api/libraries/${SWEEP.id}/shares`,
+      method: 'POST',
+      body: { folderId: TERRAIN_CATEGORY.folderId, asksFirst: true },
+    }),
+  )
+})
+
+test('and a share that asks first switches back to open, which has to be said rather than left out', async () => {
+  const calls = stub({
+    shares: [{ ...TERRAIN_OPEN, asksFirst: true }],
+    libraries: [SWEEP],
+    libraryShares: { [SWEEP.id]: [{ ...TERRAIN_CATEGORY, asksFirst: true }] },
+  })
+  renderPage()
+
+  const box = await screen.findByRole('checkbox', { name: strings.sharing.askFirstRowLabel('Terrain') })
+  await waitFor(() => expect((box as HTMLInputElement).disabled).toBe(false))
+  expect((box as HTMLInputElement).checked).toBe(true)
+  fireEvent.click(box)
+
+  await waitFor(() =>
+    expect(calls.find((call) => call.method === 'POST' && call.url.endsWith('/shares'))?.body).toEqual({
+      folderId: TERRAIN_CATEGORY.folderId,
+      asksFirst: false,
+    }),
+  )
+})
+
+/** A share whose category cannot be found is still shown, with its standing, and cannot be switched blind. */
+test('a share with no category to re-share says where it stands and offers no switch', async () => {
+  stub({ shares: [{ ...TERRAIN_OPEN, asksFirst: true }], libraries: [SWEEP] })
+  renderPage()
+
+  const box = await screen.findByRole('checkbox', { name: strings.sharing.askFirstRowLabel('Terrain') })
+  expect((box as HTMLInputElement).checked).toBe(true)
+  expect((box as HTMLInputElement).disabled).toBe(true)
+})
+
+/**
+ * The taken-back line and the list of what somebody shares are one slot with one answer.
+ *
+ * `foldersInCommon` counts the folders this installation offers them plus the ones it holds whose roster
+ * names them — and never the folder's own owner. So the person whose folder you hold reads zero, and the row
+ * told them there was no folder in common any more directly above a link to that person's folder. Whichever
+ * is true, only one of the two may be said.
+ */
+test('somebody whose folder this installation holds is never told there is nothing in common', async () => {
+  stub({
+    peers: [{ ...AYSE, foldersInCommon: 0 }],
+    theirs: [
+      {
+        id: '01a0c7e2-4d11-7b20-9a31-7c2e5dab0009',
+        deviceId: AYSE.deviceId,
+        sharer: 'Ayşe’s workshop',
+        name: 'Terrain',
+        partCount: 34,
+        syncedAt: '2026-09-17T01:40:00Z',
+        readFrom: null,
+        readFromName: null,
+        asOf: '2026-09-17T01:40:00Z',
+        seeding: true,
+      },
+    ],
+  })
+  renderPage()
+
+  const ayse = (await screen.findByText('Ayşe’s workshop')).closest('li') as HTMLElement
+  await within(ayse).findByRole('link', { name: strings.sharing.theirShareParts('Terrain', 34) })
+  expect(within(ayse).queryByText(strings.sharing.noFoldersInCommon)).toBeNull()
+})
+
+/**
+ * Asking first is off unless somebody turned it on, so on most installations this section is a heading, a
+ * note and an empty state about something that cannot happen.
+ */
+test('the asking-to-pull section is there only when a folder asks first', async () => {
+  stub({ shares: [TERRAIN_OPEN], libraries: [SWEEP], libraryShares: { [SWEEP.id]: [TERRAIN_CATEGORY] } })
+  renderPage()
+
+  // The rest of the page is there, so this is the section being absent and not the page being unloaded.
+  await screen.findByText(strings.sharing.ownShareParts(34))
+  expect(screen.queryByText(strings.sharing.requests)).toBeNull()
+  expect(screen.queryByText(strings.sharing.requestsNone)).toBeNull()
+})
+
+test('and it is there, with its empty state, once one does', async () => {
+  stub({
+    shares: [{ ...TERRAIN_OPEN, asksFirst: true }],
+    libraries: [SWEEP],
+    libraryShares: { [SWEEP.id]: [{ ...TERRAIN_CATEGORY, asksFirst: true }] },
+  })
+  renderPage()
+  await screen.findByText(strings.sharing.requestsNone)
 })

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { fetchPeers, previewShare, shareCategory } from '../lib/api'
+import { fetchLibraryShares, fetchPeers, previewShare, shareCategory } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { FolderNode, LibraryId } from '../lib/types'
 import { Dialog } from './Dialog'
@@ -40,8 +40,20 @@ export function ShareDialog({
     queryFn: fetchPeers,
     enabled: !alreadyShared,
   })
+  // What this library already shares, under the tree's own key so this costs no second request: it is where the
+  // dialog learns whether this folder asks first already. Without it the box below would start unticked on a
+  // folder that asks first, and confirming — which is how the folder is re-shared — would turn it open.
+  const shared = useQuery({
+    queryKey: ['shares', library],
+    queryFn: () => fetchLibraryShares(library),
+  })
   const [note, setNote] = useState<string | null>(null)
-  const [asksFirst, setAsksFirst] = useState(false)
+  const [ticked, setTicked] = useState<boolean | null>(null)
+  const standing = shared.data?.find((share) => share.folderId === folder.id)?.asksFirst
+  const asksFirst = ticked ?? standing ?? false
+  // Left out until there is something to say: a folder nobody has shared is open, and one already shared keeps
+  // what it had — including while its standing is still being read, so a fast hand on Share changes nothing.
+  const sent = ticked ?? standing
   // Everybody, until somebody is unticked: sharing with the people you know is what this did before member
   // lists, and the dialog should not make a person choose to keep that. The list is sent only once the people
   // are known — naming nobody would share a folder with no one, so a dialog confirmed before they arrived, or
@@ -54,7 +66,7 @@ export function ShareDialog({
       ? peers.data.filter((peer) => !dropped.has(peer.deviceId)).map((peer) => peer.deviceId)
       : undefined
   const share = useMutation({
-    mutationFn: () => shareCategory(library, folder.id, asksFirst, chosen),
+    mutationFn: () => shareCategory(library, folder.id, sent, chosen),
     onSuccess: (result) => {
       if (result.kind === 'refused') {
         setNote(result.message)
@@ -120,16 +132,19 @@ export function ShareDialog({
                       })
                     }
                   />
-                  {peer.name ?? strings.sharing.unnamed}
-                  <span className="tabular text-xs text-[var(--color-muted)]">{peer.address}</span>
+                  <span className="min-w-0 shrink-0">{peer.name ?? strings.sharing.unnamed}</span>
+                  <span className="tabular truncate text-xs text-[var(--color-muted)]">{peer.address}</span>
                 </label>
               </li>
             ))}
           </ul>
         )}
+        {alreadyShared || chosen === undefined || chosen.length > 0 ? null : (
+          <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.membersNone}</p>
+        )}
       </fieldset>
       <label className="mt-4 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={asksFirst} onChange={(event) => setAsksFirst(event.target.checked)} />
+        <input type="checkbox" checked={asksFirst} onChange={(event) => setTicked(event.target.checked)} />
         {strings.sharing.askFirstLabel}
       </label>
       <p className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">{strings.sharing.askFirstNote}</p>
@@ -145,7 +160,7 @@ export function ShareDialog({
         <button
           type="button"
           onClick={() => share.mutate()}
-          disabled={share.isPending || !warning.isSuccess}
+          disabled={share.isPending || !warning.isSuccess || (!alreadyShared && peers.data === undefined)}
           className={BUTTON}
         >
           {share.isPending ? strings.sharing.sharingNow : strings.sharing.shareConfirm}

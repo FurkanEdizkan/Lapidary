@@ -82,6 +82,7 @@ docker_touched() {
 echo "== syntax"
 if bash -n "$HERE/stack.sh"; then ok "bash -n stack.sh"; else no "bash -n stack.sh"; fi
 if bash -n "$HERE/check.sh"; then ok "bash -n check.sh"; else no "bash -n check.sh"; fi
+if bash -n "$HERE/group.sh"; then ok "bash -n group.sh"; else no "bash -n group.sh"; fi
 for mjs in "$HERE"/*.mjs; do
   if node --check "$mjs" 2>/dev/null; then ok "node --check $(basename "$mjs")"; else
     no "node --check $(basename "$mjs")"; node --check "$mjs"
@@ -116,14 +117,15 @@ echo "== stack.sh still defines every function it needs"
 for fn in die refuse note ask_owner lane_var assert_project compose or_none free_gb ram_gib field json \
   sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
   build_ingest_tree check_worker_sees_ingest library_named upload_file \
-  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_exit2; do
+  tag_borrowed_images untag_borrowed_images \
+  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_exit2 cmd_peer; do
   if grep -qE "^$fn\(\) \{" "$HERE/stack.sh"; then
     pass=$((pass + 1))
   else
     no "stack.sh no longer defines $fn()"
   fi
 done
-ok "all 34 of stack.sh's functions are defined (counted individually above)"
+ok "all 37 of stack.sh's functions are defined (counted individually above)"
 
 echo "== skew-stl.py makes the geometry it claims to"
 # The two duplicate fixtures carry the whole meaning of the near-duplicate case, so their geometry is
@@ -283,6 +285,33 @@ if [ "$code" != 3 ]; then ok "lane 4 on its own block is accepted (exit $code)";
   no "lane 4 on its own block was refused — the checks above prove nothing"; fi
 if grep -q 'lapidary-e2e-4' "$WORK/out.txt"; then ok "and it names project lapidary-e2e-4"; else
   no "status did not name lapidary-e2e-4: $(head -3 "$WORK/out.txt")"; fi
+
+echo "== three installations on one lane: AS is a, b or c and nothing else"
+# The suffix widened the project pattern to `lapidary-e2e-<lane>[abc]`, so two things have to hold that did
+# not need saying before: only those three letters, and the lane itself still a single digit — otherwise
+# `LAPIDARY_LANE=4a` would spell a project this rig accepts and nobody owns.
+for bad in d aa A 1 ab; do
+  code=$(run_stack LAPIDARY_LANE=4 "AS=$bad" LAPIDARY_PORT_WEB=34000 LAPIDARY_PORT_API=34080 \
+    LAPIDARY_PORT_WORKER=34081 LAPIDARY_PORT_PEER=34082 -- status)
+  if [ "$code" = 3 ] && ! docker_touched; then ok "AS=$bad refused, no docker call"; else
+    no "AS=$bad: exit $code, docker touched: $(docker_touched && echo yes || echo no)"; fi
+done
+code=$(run_stack LAPIDARY_LANE=4a LAPIDARY_PORT_WEB=34000 LAPIDARY_PORT_API=34080 \
+  LAPIDARY_PORT_WORKER=34081 LAPIDARY_PORT_PEER=34082 -- status)
+if [ "$code" = 3 ] && ! docker_touched; then ok "a lane spelled \`4a\` refused, no docker call"; else
+  no "lane 4a: exit $code — the suffix has widened what counts as a lane"; fi
+# And the three that must be allowed through, each on its own ports, or the refusals prove nothing.
+for pair in 'a 34000 34080 34081 34082' 'b 34100 34180 34181 34182' 'c 34200 34280 34281 34282'; do
+  set -- $pair
+  code=$(run_stack LAPIDARY_LANE=4 "AS=$1" LAPIDARY_PORT_WEB=34000 LAPIDARY_PORT_API=34080 \
+    LAPIDARY_PORT_WORKER=34081 LAPIDARY_PORT_PEER=34082 -- status)
+  if [ "$code" != 3 ] && grep -q "lapidary-e2e-4$1" "$WORK/out.txt" &&
+    grep -q "web $2, api $3, worker $4, peer $5" "$WORK/out.txt"; then
+    ok "AS=$1 is project lapidary-e2e-4$1 on $2/$3/$4/$5"
+  else
+    no "AS=$1: exit $code, and status said $(grep -m1 '^ports' "$WORK/out.txt" || echo nothing)"
+  fi
+done
 
 echo "== no bare compose call anywhere in the rig"
 # These greps read *code*, not prose. Every command this file names on purpose — the prunes it forbids,

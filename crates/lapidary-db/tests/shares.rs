@@ -634,6 +634,41 @@ async fn a_share_that_asks_first_gives_files_only_to_whom_its_owner_granted(pool
         Some(Grant::Denied)
     );
 
+    // Switched back to open there is nothing left to decide, so the two asks leave the owner's list: granting
+    // one would change nothing, and denying one would not stop them. The rows stay in the database — switching
+    // back to asking first is exactly what they are for.
+    assert!(
+        shares
+            .set_asks_first(terrain.id, false)
+            .await
+            .expect("switches back")
+    );
+    assert!(
+        shares.requests().await.expect("lists").is_empty(),
+        "a share that no longer asks first has nothing to decide"
+    );
+    assert_eq!(
+        shares.grant(mira(), terrain.id).await.expect("reads"),
+        Grant::Open,
+        "open is open, a denial from while it asked first included"
+    );
+    assert!(
+        shares
+            .set_asks_first(terrain.id, true)
+            .await
+            .expect("asks first again")
+    );
+    let again = shares.requests().await.expect("lists");
+    assert_eq!(again.len(), 2, "and asking first again brings them back");
+    assert_eq!(
+        again
+            .iter()
+            .filter(|request| request.state == Grant::Granted)
+            .count(),
+        1,
+        "with what was decided before, not asked afresh"
+    );
+
     // Somebody removed, or a share stopped, is asked nothing and granted nothing.
     sharing.remove_peer(ayse()).await.expect("removes");
     assert_eq!(

@@ -10,6 +10,13 @@
 #   scripts/e2e/stack.sh down [--keep|--purge]   # reverse the chown, remove the project and the store
 #   scripts/e2e/stack.sh status
 #
+# Sharing needs more than one installation, and the introductions need three. `AS=a|b|c` is which of the
+# three this call is: it suffixes the compose project, the work directory and the images, and shifts this
+# lane's four ports by 100 per letter, so the three sit inside one lane's block and cannot reach another
+# lane's. `scripts/e2e/group.sh` is the three of them together.
+#
+#   AS=b scripts/e2e/stack.sh up            # the second installation, on this lane's block + 100
+#
 # Everything heavy belongs inside `cargo xtask heavy -- …`, which takes the machine-wide compile lock,
 # so a build here cannot coincide with another lane's `cargo build`:
 #
@@ -72,6 +79,37 @@ for key in "${LANE_KEYS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------------------------------
+# ONE LANE, THREE INSTALLATIONS.
+#
+# A lane owns one port block and this rig brought up one stack in it. Sharing takes two installations and
+# the introductions take three, so `AS` names which one this call is. It suffixes the compose project (and
+# so the volumes, the containers and the images), it suffixes the work directory (and so the store, the
+# ingest tree and the env file), and it shifts the four ports by 100 per letter. Everything else — both
+# refusals, the port verification, the reverse chown, the teardown assertions — applies unchanged, which
+# is the whole reason for extending this script rather than writing a fourth throwaway harness.
+#
+# Unset, nothing below changes and this is the single stack it has always been.
+AS=${AS:-}
+case "$AS" in
+  '' | a | b | c) ;;
+  *) refuse "AS is \`$AS\`, and this rig knows a, b and c — three installations inside one lane's port
+  block. Anything else would name a compose project nobody can predict, and a port block that may be
+  another lane's." ;;
+esac
+# Shifted here, before the refusals, so what they check is what compose will publish. A port that is not a
+# number is left exactly as it is for the refusal below to name: shifting it would turn `notaport` into 100
+# and blame the wrong thing.
+if [ -n "$AS" ]; then
+  case "$AS" in a) AS_OFFSET=0 ;; b) AS_OFFSET=100 ;; c) AS_OFFSET=200 ;; esac
+  for key in LAPIDARY_PORT_WEB LAPIDARY_PORT_API LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER; do
+    case "${!key:-}" in
+      '' | *[!0-9]*) continue ;;
+      *) export "$key=$((${!key} + AS_OFFSET))" ;;
+    esac
+  done
+fi
+
+# ---------------------------------------------------------------------------------------------------
 # REFUSAL ONE: the ports must be this lane's, and must not be deploy/'s literals.
 
 # 3000 and 8080 are `deploy/compose.yaml`'s own published ports — the owner's install, and the origin
@@ -105,24 +143,32 @@ done
 # ---------------------------------------------------------------------------------------------------
 # REFUSAL TWO: the compose project must be this rig's own, and no other.
 
-PROJECT=lapidary-e2e-${LAPIDARY_LANE:-}
-[[ $PROJECT =~ ^lapidary-e2e-[0-4]$ ]] || refuse "the compose project would be \`$PROJECT\`, and this
-  rig only ever speaks to \`lapidary-e2e-<lane 0-4>\`. LAPIDARY_LANE is \`${LAPIDARY_LANE:-}\`; it comes
+# The lane itself, checked before the name is built out of it. Without this the suffix would have widened
+# the project pattern: `LAPIDARY_LANE=4a` with no AS spells `lapidary-e2e-4a`, which the pattern below now
+# allows and which is nobody's lane. A lane is one digit, 0 to 4, and `scripts/claim-goal.sh` writes it.
+[[ ${LAPIDARY_LANE:-} =~ ^[0-4]$ ]] || refuse "LAPIDARY_LANE is \`${LAPIDARY_LANE:-}\`, and a lane is a
+  single digit 0-4. It comes from $LANE_FILE, which scripts/claim-goal.sh writes; the lead's own checkout
+  is lane 0. Which of three installations this is goes in AS, not in the lane."
+PROJECT=lapidary-e2e-${LAPIDARY_LANE:-}$AS
+[[ $PROJECT =~ ^lapidary-e2e-[0-4][abc]?$ ]] || refuse "the compose project would be \`$PROJECT\`, and this
+  rig only ever speaks to \`lapidary-e2e-<lane 0-4>[a|b|c]\`. LAPIDARY_LANE is \`${LAPIDARY_LANE:-}\`; it comes
   from $LANE_FILE, which scripts/claim-goal.sh writes. Anything else risks naming the owner's own
   \`lapidary\` project, whose volumes hold their real library."
 
 # Asserted again inside `compose` — so immediately before every `down`, every `up` and every `build` —
 # because the cost of this one being wrong is not a failed test, it is the owner's library.
 assert_project() {
-  [[ $PROJECT =~ ^lapidary-e2e-[0-4]$ ]] ||
-    die "compose project \`$PROJECT\` is not lapidary-e2e-<lane>. Refusing to run docker compose."
+  [[ $PROJECT =~ ^lapidary-e2e-[0-4][abc]?$ ]] ||
+    die "compose project \`$PROJECT\` is not lapidary-e2e-<lane>[a|b|c]. Refusing to run docker compose."
 }
 
 # ---------------------------------------------------------------------------------------------------
 # Paths, urls, and the one compose function.
 
 LANE=$LAPIDARY_LANE
-WORK=$ROOT/target/e2e/$LANE
+# One directory per installation: its own store, ingest tree and env file, since each is a whole
+# installation and they must not share a database password or a blob store.
+WORK=$ROOT/target/e2e/$LANE$AS
 ENVFILE=$WORK/e2e.env
 STORE=$WORK/store
 INGEST=$WORK/ingest
@@ -240,6 +286,38 @@ settle() { # library, batch, seconds
 # comes up owned by whoever made it, so it has to be handed over before `up` — and handed back before
 # `down` removes it, or the host user cannot delete it and `scripts/release-goal.sh` cannot remove the
 # worktree. `target/docker-check/group/a/store` is still root-owned proof of forgetting.
+# The five images belong to the lane, built once by `build` from the lane's own checkout. A suffixed
+# installation borrows them under its own project's names, because compose looks for `<project>-<service>`
+# when it is told not to build: `docker tag` names the same layers a second time, so three installations
+# cost one build and not a byte of disk. Never the other way round — `build` refuses a suffix.
+IMAGE_PROJECT=lapidary-e2e-$LANE
+
+tag_borrowed_images() {
+  [ -n "$AS" ] || return 0
+  local svc
+  for svc in db api worker web peer; do
+    docker image inspect "$IMAGE_PROJECT-$svc" > /dev/null 2>&1 || die "there is no \`$IMAGE_PROJECT-$svc\`
+  image for $PROJECT to borrow. Build this lane's five images first, with no AS set:
+  \`cargo xtask heavy -- scripts/e2e/stack.sh build\`."
+    docker tag "$IMAGE_PROJECT-$svc" "$PROJECT-$svc" ||
+      die "could not tag $IMAGE_PROJECT-$svc as $PROJECT-$svc."
+  done
+  echo "  $PROJECT's five images are tags of $IMAGE_PROJECT-*: same layers, nothing built"
+}
+
+# Only ever the tags this project put on, and only when there is a suffix — the lane's own five images are
+# what every installation is made of, and a `down` that removed them would cost the next one a rebuild.
+untag_borrowed_images() {
+  [ -n "$AS" ] || return 0
+  local svc removed=0
+  for svc in db api worker web peer; do
+    if docker image inspect "$PROJECT-$svc" > /dev/null 2>&1; then
+      docker rmi "$PROJECT-$svc" > /dev/null 2>&1 && removed=$((removed + 1))
+    fi
+  done
+  echo "  removed $removed of $PROJECT's borrowed image tags; $IMAGE_PROJECT-* kept"
+}
+
 chown_store() { # owner, e.g. 10001:10001
   local image=''
   for candidate in "$PROJECT-api" "$PROJECT-worker" docker.io/library/postgres:18; do
@@ -256,8 +334,8 @@ chown_store() { # owner, e.g. 10001:10001
 # variable that is set and wrong.
 remove_store() {
   case "$STORE" in
-    "$ROOT"/target/e2e/[0-4]/store) ;;
-    *) die "refusing to remove \`$STORE\`: that is not target/e2e/<lane>/store." ;;
+    "$ROOT"/target/e2e/[0-4]/store | "$ROOT"/target/e2e/[0-4][abc]/store) ;;
+    *) die "refusing to remove \`$STORE\`: that is not target/e2e/<lane>[a|b|c]/store." ;;
   esac
   [ -e "$STORE" ] || return 0
   rm -rf "$STORE" || die "could not remove $STORE. If it is still root-owned the reverse chown above
@@ -350,6 +428,9 @@ sys.exit(1 if problems else 0)
 }
 
 cmd_build() {
+  [ -z "$AS" ] || die "an installation with AS=$AS borrows the lane's images; it never builds its own.
+  Build once with no AS set (\`cargo xtask heavy -- scripts/e2e/stack.sh build\`), then bring each
+  installation up — \`up\` tags the lane's five images under this project's names."
   local services=${SERVICES:-db web api peer worker}
   write_env
   verify_ports
@@ -394,17 +475,38 @@ cmd_build() {
 # up
 
 cmd_up() {
+  # The RAM floor is a default, not a constant, and going under it is an argument somebody has to make out
+  # loud: `--min-ram <gib>` says so in the log of the run that used it. The default's premise is one stack
+  # whose declared ceilings total 4.3 GB; three installations that are never seeded are a different case,
+  # and the number they were brought up on belongs in whichever goal file quotes their captures.
+  local min_ram=5
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --min-ram)
+        min_ram=${2:-}
+        case "$min_ram" in
+          '' | *[!0-9]*) die "--min-ram takes a whole number of GiB; got \`$min_ram\`." ;;
+        esac
+        shift 2
+        ;;
+      *) die "\`up\` takes --min-ram <gib> and nothing else; got \`$1\`." ;;
+    esac
+  done
   [ "$(free_gb /)" -ge 6 ] || ask_owner "/ has $(free_gb /) GB free, under the 6 GB this stack needs."
+  [ "$min_ram" = 5 ] ||
+    note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
   # The declared ceilings in deploy/ total 4.3 GB. A stack brought up beside a cargo build is how a
   # session gets its processes killed; 5 GiB available is the floor that leaves the stack room.
-  [ "$(ram_gib)" -ge 5 ] || ask_owner "$(ram_gib) GiB of RAM is available, and this stack's declared
-  ceilings total 4.3 GB (db 1g, worker 2g, api 512m, peer 512m, web 256m). Wait until the other lanes
-  have stopped compiling, then run this again."
+  [ "$(ram_gib)" -ge "$min_ram" ] || ask_owner "$(ram_gib) GiB of RAM is available, under the $min_ram GiB
+  floor. This stack's declared ceilings total 4.3 GB (db 1g, worker 2g, api 512m, peer 512m, web 256m).
+  Wait until the other lanes have stopped compiling, then run this again — or, for installations that are
+  never seeded, say \`--min-ram <gib>\` and record the number you chose."
 
   write_env
   # Before the directories exist, so a wrong bind source is caught before docker creates it as root.
   verify_ports
   mkdir -p "$STORE" "$INGEST" "$RUNS"
+  tag_borrowed_images
   chown_store 10001:10001
 
   note "up"
@@ -439,7 +541,8 @@ json.dump({
               "worker": $LAPIDARY_PORT_WORKER, "peer": $LAPIDARY_PORT_PEER},
     "extensions": """$extensions""", "migration": """$migration""",
     "deviceId": "$device",
-    # Which tree these images were built from, and which tree drove them. `--compare` is only meaningful
+    # Which tree these images were built from, and which tree drove them. A comparison is only meaningful
+    # (see drive --compare)
     # between reports that say so: a flow status that changed between two shas is a regression, and the
     # same change between two builds of one sha is flakiness. They differ whenever a stack is kept across
     # a merge, which is exactly when somebody would misread the comparison.
@@ -1015,12 +1118,14 @@ cmd_down() {
     for doomed in "$RUNS" "$INGEST"; do
       case "$doomed" in
         "$ROOT"/target/e2e/[0-4]/runs | "$ROOT"/target/e2e/[0-4]/ingest) rm -rf "$doomed" ;;
-        *) die "refusing to remove \`$doomed\`: that is not target/e2e/<lane>/runs or /ingest." ;;
+        "$ROOT"/target/e2e/[0-4][abc]/runs | "$ROOT"/target/e2e/[0-4][abc]/ingest) rm -rf "$doomed" ;;
+        *) die "refusing to remove \`$doomed\`: that is not target/e2e/<lane>[a|b|c]/runs or /ingest." ;;
       esac
     done
     echo "  --purge: removed runs/ and ingest/ as well"
   fi
 
+  untag_borrowed_images
   echo "  removed: $(docker volume ls --format '{{.Name}}' | grep -c "^${PROJECT}_" || true) of this project's volumes remain, $(docker ps -a --format '{{.Names}}' | grep -c "^${PROJECT}-" || true) of its containers"
   echo "  the owner's volumes, untouched: $(docker volume ls --format '{{.Name}}' | grep -c '^lapidary_lapidary-' || true) of 2"
   # What survives, and how big it is. `runs/` is the regression record and `ingest/` is the corpus slice;
@@ -1050,8 +1155,21 @@ $rooted"
 # ---------------------------------------------------------------------------------------------------
 # status
 
+# One service stopped and started again, and only the peer.
+#
+# An installation whose peer role is down is the whole of the relay case: a folder read from one of its
+# other people while its owner is away can only be tested by taking the owner away, and stopping the
+# process is the only honest way to do that. Through `compose`, so it is this project's peer and not a
+# container named by hand.
+cmd_peer() {
+  case "${1:-}" in
+    stop | start) note "peer $1 for $PROJECT"; compose "$1" peer ;;
+    *) die "\`peer\` takes stop or start; got \`${1:-}\`." ;;
+  esac
+}
+
 cmd_status() {
-  echo "project  $PROJECT (lane $LANE)"
+  echo "project  $PROJECT (lane $LANE${AS:+, installation $AS})"
   echo "ports    web $LAPIDARY_PORT_WEB, api $LAPIDARY_PORT_API, worker $LAPIDARY_PORT_WORKER, peer $LAPIDARY_PORT_PEER"
   echo "work     $WORK"
   echo "disk     / $(free_gb /) GB, $ROOT $(free_gb "$ROOT") GB; RAM available $(ram_gib) GiB"
@@ -1077,11 +1195,14 @@ case "${1:-}" in
   seed) shift; cmd_seed "$@" ;;
   exit2) shift; cmd_exit2 "$@" ;;
   drive) shift; cmd_drive "$@" ;;
+  peer) shift; cmd_peer "$@" ;;
   down) shift; cmd_down "$@" ;;
   status) shift; cmd_status "$@" ;;
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
+    echo "  up [--min-ram <gib>]   peer <stop|start>" >&2
+    echo "  AS=a|b|c for one of three installations on this lane's block; scripts/e2e/group.sh runs three" >&2
     echo "  exit2 [<part.stl> …]   Phase 6 exit 2: a known part, then the same solid turned off-axis" >&2
     exit 2
     ;;

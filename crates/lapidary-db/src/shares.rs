@@ -454,13 +454,16 @@ impl PgShares {
     /// Everybody who asked for a live share's files and is still offered it, newest first, whatever was decided.
     ///
     /// A person taken off a folder's list drops out: their ask is about a folder that no longer reaches them, and an
-    /// owner asked to decide it would be deciding nothing.
+    /// owner asked to decide it would be deciding nothing. A share that no longer asks first drops out for the same
+    /// reason — `Grant::from_row` answers `Open` to everybody it reaches, so granting an old ask would change
+    /// nothing and denying one would not stop them. The `share_grant` rows stay: switching back to asking first
+    /// brings the asks back, with what was decided about each of them.
     pub async fn requests(&self) -> Result<Vec<GrantRow>, DbError> {
         let rows: Vec<GrantTuple> = sqlx::query_as(concat!(
             "SELECT s.id, f.name, g.device_id, pe.name, g.state, (extract(epoch FROM g.asked_at) * 1000000)::bigint \
              FROM share_grant g JOIN share s ON s.id = g.share_id JOIN folder f ON f.id = s.folder_id \
              JOIN peer pe ON pe.device_id = g.device_id \
-             WHERE s.removed_at IS NULL AND f.deleted_at IS NULL AND pe.removed_at IS NULL AND ",
+             WHERE s.mode = 'ask' AND s.removed_at IS NULL AND f.deleted_at IS NULL AND pe.removed_at IS NULL AND ",
             reaches!("g.device_id"),
             " ORDER BY g.asked_at DESC, s.id, g.device_id"
         ))
