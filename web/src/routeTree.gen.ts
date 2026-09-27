@@ -14,7 +14,9 @@ import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as DuplicatesRouteImport } from './routes/duplicates'
 import { Route as RemovedRouteImport } from './routes/removed'
 import { Route as SharingRouteImport } from './routes/sharing'
+import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
+import { Route as TagsTagRouteImport } from './routes/tags_.$tag'
 import { Route as SharingSharesShareIdRouteImport } from './routes/sharing_.shares.$shareId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -42,9 +44,19 @@ const SharingRoute = SharingRouteImport.update({
   path: '/sharing',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TagsRoute = TagsRouteImport.update({
+  id: '/tags',
+  path: '/tags',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PartsPartIdRoute = PartsPartIdRouteImport.update({
   id: '/parts/$partId',
   path: '/parts/$partId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TagsTagRoute = TagsTagRouteImport.update({
+  id: '/tags_/$tag',
+  path: '/tags/$tag',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SharingSharesShareIdRoute = SharingSharesShareIdRouteImport.update({
@@ -59,7 +71,9 @@ export interface FileRoutesByFullPath {
   '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
+  '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
+  '/tags/$tag': typeof TagsTagRoute
   '/sharing/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRoutesByTo {
@@ -68,7 +82,9 @@ export interface FileRoutesByTo {
   '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
+  '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
+  '/tags/$tag': typeof TagsTagRoute
   '/sharing/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRoutesById {
@@ -78,7 +94,9 @@ export interface FileRoutesById {
   '/duplicates': typeof DuplicatesRoute
   '/removed': typeof RemovedRoute
   '/sharing': typeof SharingRoute
+  '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
+  '/tags_/$tag': typeof TagsTagRoute
   '/sharing_/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRouteTypes {
@@ -89,7 +107,9 @@ export interface FileRouteTypes {
     | '/duplicates'
     | '/removed'
     | '/sharing'
+    | '/tags'
     | '/parts/$partId'
+    | '/tags/$tag'
     | '/sharing/shares/$shareId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -98,7 +118,9 @@ export interface FileRouteTypes {
     | '/duplicates'
     | '/removed'
     | '/sharing'
+    | '/tags'
     | '/parts/$partId'
+    | '/tags/$tag'
     | '/sharing/shares/$shareId'
   id:
     | '__root__'
@@ -107,7 +129,9 @@ export interface FileRouteTypes {
     | '/duplicates'
     | '/removed'
     | '/sharing'
+    | '/tags'
     | '/parts/$partId'
+    | '/tags_/$tag'
     | '/sharing_/shares/$shareId'
   fileRoutesById: FileRoutesById
 }
@@ -117,7 +141,9 @@ export interface RootRouteChildren {
   DuplicatesRoute: typeof DuplicatesRoute
   RemovedRoute: typeof RemovedRoute
   SharingRoute: typeof SharingRoute
+  TagsRoute: typeof TagsRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
+  TagsTagRoute: typeof TagsTagRoute
   SharingSharesShareIdRoute: typeof SharingSharesShareIdRoute
 }
 
@@ -158,11 +184,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SharingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tags': {
+      id: '/tags'
+      path: '/tags'
+      fullPath: '/tags'
+      preLoaderRoute: typeof TagsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/parts/$partId': {
       id: '/parts/$partId'
       path: '/parts/$partId'
       fullPath: '/parts/$partId'
       preLoaderRoute: typeof PartsPartIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tags_/$tag': {
+      id: '/tags_/$tag'
+      path: '/tags/$tag'
+      fullPath: '/tags/$tag'
+      preLoaderRoute: typeof TagsTagRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sharing_/shares/$shareId': {
@@ -181,7 +221,9 @@ const rootRouteChildren: RootRouteChildren = {
   DuplicatesRoute: DuplicatesRoute,
   RemovedRoute: RemovedRoute,
   SharingRoute: SharingRoute,
+  TagsRoute: TagsRoute,
   PartsPartIdRoute: PartsPartIdRoute,
+  TagsTagRoute: TagsTagRoute,
   SharingSharesShareIdRoute: SharingSharesShareIdRoute,
 }
 export const routeTree = rootRouteImport

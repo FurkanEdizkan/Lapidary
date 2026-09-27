@@ -1976,3 +1976,191 @@ async fn a_parts_own_mass_is_on_its_page_and_is_always_approximate(pool: sqlx::P
         "a part of two materials has no mass"
     );
 }
+
+/// P3's read: a library's tags as an index, and one tag's neighbours.
+///
+/// The counts agree with the facet's when the grid is unfiltered — the same question asked two ways,
+/// and the reason the index is a different read at all is the facet's other two answers (narrowed by
+/// the grid, and countless past `EXACT_FACET_ROWS`). Co-occurrence earns its floor: a tag sharing one
+/// part with another is a coincidence. A removed part's tags stop counting, a tag nothing carries is
+/// absent rather than zero, and a tag holding a slash survives the round trip.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(pool: sqlx::PgPool) {
+    let base = format!("/api/libraries/{}", library());
+    for (seed, name) in [
+        (0xd1, "basalt-cliff-face-lp-7710-c"),
+        (0xd2, "dragon-wyrmling-lp-7801-a"),
+        (0xd3, "dragon-ancient-red-lp-7802-a"),
+        (0xd4, "spacer-lp-2001-00"),
+    ] {
+        seed_part(&pool, library(), seed, name, b"webp").await;
+    }
+    // The tags a terrain-and-miniatures library actually carries, including one with a space and one
+    // with a slash — `PUT /api/parts/{id}/tags` accepts both, so both have to be reachable.
+    let tagged = |name: &'static str, tags: Vec<&'static str>| {
+        let pool = pool.clone();
+        async move {
+            let (_, found) = get_page_with(pool.clone(), &format!("q={name}")).await;
+            let id = found["parts"][0]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name} is in the grid: {found}"))
+                .to_owned();
+            let (status, _) = tags_request(
+                pool,
+                "PUT",
+                format!("/api/parts/{id}/tags"),
+                Some(serde_json::json!({ "tags": tags })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            id
+        }
+    };
+    tagged("basalt", vec!["terrain", "28 mm"]).await;
+    let wyrmling = tagged("wyrmling", vec!["dragon", "28 mm", "pre-supported"]).await;
+    let ancient = tagged("ancient", vec!["dragon", "28 mm", "pre-supported"]).await;
+    tagged("spacer", vec!["jig/fixture", "28 mm"]).await;
+
+    let index = |pool: sqlx::PgPool| {
+        let uri = format!("{base}/tags");
+        async move { tags_request(pool, "GET", uri, None).await }
+    };
+    let (status, tags) = index(pool.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        tags["tags"],
+        serde_json::json!([
+            { "value": "28 mm", "count": 4 },
+            { "value": "dragon", "count": 2 },
+            { "value": "pre-supported", "count": 2 },
+            { "value": "jig/fixture", "count": 1 },
+            { "value": "terrain", "count": 1 },
+        ]),
+        "every tag in the library, most-carried first then alphabetically"
+    );
+
+    // The same counts the facet gives when nothing narrows the grid. The facet orders alphabetically
+    // and this orders by count, so the comparison is of sorted lists rather than of the two answers.
+    let (_, facets) = tags_request(pool.clone(), "GET", format!("{base}/facets"), None).await;
+    let mut from_index = tags["tags"].as_array().expect("tags").clone();
+    from_index.sort_by_key(|row| row["value"].as_str().unwrap_or_default().to_owned());
+    assert_eq!(
+        serde_json::Value::Array(from_index),
+        facets["tags"],
+        "the index and the unfiltered facet are the same question asked twice"
+    );
+
+    let related = |pool: sqlx::PgPool, tag: &str| {
+        let uri = format!("{base}/tags/related?tag={}", urlencoding(tag));
+        async move { tags_request(pool, "GET", uri, None).await }
+    };
+    let (status, dragon) = related(pool.clone(), "dragon").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dragon["tag"], "dragon");
+    assert_eq!(dragon["parts"], 2);
+    assert_eq!(dragon["floor"], 2, "the floor is stated, not implied");
+    assert_eq!(
+        dragon["related"],
+        serde_json::json!([
+            { "value": "28 mm", "count": 2 },
+            { "value": "pre-supported", "count": 2 },
+        ]),
+        "the tags on both dragons, counted by the parts they share; never `dragon` itself"
+    );
+
+    let (_, terrain) = related(pool.clone(), "terrain").await;
+    assert_eq!(terrain["parts"], 1);
+    assert_eq!(
+        terrain["related"],
+        serde_json::json!([]),
+        "`28 mm` shares one part with `terrain`, which is below the floor"
+    );
+
+    // A tag with a slash, through the query parameter rather than a path segment.
+    let (_, jig) = related(pool.clone(), "jig/fixture").await;
+    assert_eq!(jig["tag"], "jig/fixture");
+    assert_eq!(jig["parts"], 1);
+
+    let (_, absent) = related(pool.clone(), "greebles").await;
+    assert_eq!(
+        absent["parts"], 0,
+        "a tag no live part carries: gone, not merely lonely"
+    );
+    let (status, refusal) = tags_request(
+        pool.clone(),
+        "GET",
+        format!("{base}/tags/related?tag=%20"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refusal["reason"], "noTag");
+
+    // A removed part's tags stop counting. Removal is soft — the row is still there — so this is the
+    // `deleted_at IS NULL` in both statements and not the row going away.
+    let (status, _) = tags_request(
+        pool.clone(),
+        "DELETE",
+        format!("/api/parts/{wyrmling}"),
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "the wyrmling is removed: {status}");
+    let (_, after) = index(pool.clone()).await;
+    assert_eq!(
+        after["tags"],
+        serde_json::json!([
+            { "value": "28 mm", "count": 3 },
+            { "value": "dragon", "count": 1 },
+            { "value": "jig/fixture", "count": 1 },
+            { "value": "pre-supported", "count": 1 },
+            { "value": "terrain", "count": 1 },
+        ]),
+        "three tags lost the removed part"
+    );
+    let (_, dragon) = related(pool.clone(), "dragon").await;
+    assert_eq!(dragon["parts"], 1);
+    assert_eq!(
+        dragon["related"],
+        serde_json::json!([]),
+        "one part left means nothing shares two"
+    );
+
+    // A tag on no live part is absent from the index, not a row with a zero.
+    let (status, _) = tags_request(
+        pool.clone(),
+        "PUT",
+        format!("/api/parts/{ancient}/tags"),
+        Some(serde_json::json!({ "tags": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, after) = index(pool).await;
+    let values: Vec<&str> = after["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .filter_map(|row| row["value"].as_str())
+        .collect();
+    assert_eq!(
+        values,
+        ["28 mm", "jig/fixture", "terrain"],
+        "`dragon` and `pre-supported` are on no live part and are gone"
+    );
+}
+
+/// Percent-encodes a tag for a query string. `urlencoding` the crate is not a dependency and one
+/// parameter does not earn one: the three characters a tag can hold that a query string reads
+/// differently are all that need escaping here.
+fn urlencoding(tag: &str) -> String {
+    tag.chars()
+        .map(|c| match c {
+            '/' => "%2F".to_owned(),
+            '&' => "%26".to_owned(),
+            '#' => "%23".to_owned(),
+            '+' => "%2B".to_owned(),
+            ' ' => "%20".to_owned(),
+            other => other.to_string(),
+        })
+        .collect()
+}

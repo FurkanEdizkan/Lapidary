@@ -132,3 +132,11 @@ export type { Widget } from '../bindings/Widget'
 export type { WidgetRequest } from '../bindings/WidgetRequest'
 export type { WidgetResult } from '../bindings/WidgetResult'
 export type { WidgetValue } from '../bindings/WidgetValue'
+
+// P3's tag index (`crates/lapidary-api/src/tags.rs`). One contiguous block, appended the way G6's
+// and G5's were: this is still the one file that may import from `../bindings`, and P3.md does not
+// name it, so it is a shared-file edit. `TagCount`'s count is a plain number, not `number | null` —
+// these two reads never withhold one, which is the whole reason they are not the facet.
+export type { RelatedTags } from '../bindings/RelatedTags'
+export type { TagCount } from '../bindings/TagCount'
+export type { TagIndex } from '../bindings/TagIndex'
