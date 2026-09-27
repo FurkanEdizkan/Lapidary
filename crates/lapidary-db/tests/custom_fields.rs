@@ -640,8 +640,9 @@ async fn removing_an_option_waits_for_a_value_being_written_and_then_counts_it(p
     );
 }
 
-/// A range narrows the grid, a sort, a search and a facet to the parts whose number lies in it, each bound
-/// inclusive. A part holding words under the same key is passed over rather than failing the query.
+/// A range narrows the grid, a sort, a search and **every** facet — format, material and tag — to the parts
+/// whose number lies in it, each bound inclusive. A part holding words under the same key is passed over
+/// rather than failing the query.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_number_range_narrows_the_grid_and_passes_over_words(pool: sqlx::PgPool) {
     let fields = PgCustomFields(pool.clone());
@@ -711,6 +712,91 @@ async fn a_number_range_narrows_the_grid_and_passes_over_words(pool: sqlx::PgPoo
     assert_eq!(
         formats.iter().filter_map(|value| value.count).sum::<u64>(),
         2
+    );
+
+    // L3, item 2: the material and tag facets take the same range, and until now nothing said so.
+    // Each part gets a material and a tag of its own, so a range that leaves one out has to show as a
+    // value gone from the list rather than only as a smaller total — a facet that ignored the range
+    // would still sum to three.
+    for (part, material, tag) in [
+        (bushing, "C93200 bronze", "bushings"),
+        (flange, "EN AW-6082 T6", "flanges"),
+        (sleeve, "PTFE", "sleeves"),
+    ] {
+        parts
+            .set_materials(part, &[material.to_owned()])
+            .await
+            .expect("a material is typed");
+        parts
+            .set_tags(part, &[tag.to_owned()])
+            .await
+            .expect("a tag is given");
+    }
+    let pairs = |rows: &[lapidary_db::FacetValue]| {
+        rows.iter()
+            .map(|row| (row.value.clone(), row.count))
+            .collect::<Vec<_>>()
+    };
+    let bore_to_twenty = r#"$."bore_mm" ? (@ <= 20)"#;
+    let materials = parts
+        .material_facet(
+            library(),
+            None,
+            None,
+            lapidary_db::Shows::Live,
+            None,
+            None,
+            None,
+            Some(bore_to_twenty),
+        )
+        .await
+        .expect("facets");
+    assert_eq!(
+        pairs(&materials),
+        [("C93200 bronze".to_owned(), Some(1))],
+        "only the bushing's bore is in range, so only its material is offered"
+    );
+    let tags = parts
+        .tag_facet(
+            library(),
+            None,
+            None,
+            lapidary_db::Shows::Live,
+            None,
+            None,
+            None,
+            Some(bore_to_twenty),
+        )
+        .await
+        .expect("facets");
+    assert_eq!(
+        pairs(&tags),
+        [("bushings".to_owned(), Some(1))],
+        "and only its tag"
+    );
+
+    // Without the range every part is counted, which is what makes the two assertions above a test
+    // of the range and not of the seeding.
+    let all_materials = parts
+        .material_facet(
+            library(),
+            None,
+            None,
+            lapidary_db::Shows::Live,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("facets");
+    assert_eq!(
+        pairs(&all_materials),
+        [
+            ("C93200 bronze".to_owned(), Some(1)),
+            ("EN AW-6082 T6".to_owned(), Some(1)),
+            ("PTFE".to_owned(), Some(1)),
+        ]
     );
 }
 
