@@ -358,12 +358,12 @@ The largest subsystem. Detailed spec below.
 
 | Feature | Phase |
 |---|---|
-| Widget registry with sizing constraints and config schema | 6 |
-| Drag-resize grid layout, persisted **per browser** until there are users (Phase 8), as the grid's own preferences are | 6 |
-| Named groups / sections | 6 |
-| Single batched `/api/dashboard/resolve` endpoint | 6 |
-| Live patches over the existing SSE stream | 6 |
-| Per-widget polling | **[—]** self-inflicted DoS |
+| Widget registry with sizing constraints and config schema. Built (`a20b3aa`): `Record<Widget['kind'], WidgetSpec>` keyed off the Rust union, so a kind added in Rust fails `tsc` until the web draws it | 6 |
+| Drag-resize grid layout, **hand-rolled** on a 12-column grid with arrow-key move and Shift+arrow resize, persisted **per browser** until there are users (Phase 8), as the grid's own preferences are. Built (`a20b3aa`) | 6 |
+| Named groups / sections. Built (`a20b3aa`) | 6 |
+| Single batched `/api/dashboard/resolve` endpoint. Built (`c686b46`): 1–32 keys, always 200, `ok`/`timedOut`/`failed` a key, four at a time with each key's two seconds starting after its permit | 6 |
+| Live patches over the existing SSE stream. Built (`8b9f94c`, `a20b3aa`) **as a re-resolve, not a patch**: the stream carries only a library id, so the browser is told which library changed and asks again for what it shows. One upload is several events — the part, then each job finishing — so a busy library re-resolves a few times, each time only its own keys | 6 |
+| Per-widget polling | **[—]** self-inflicted DoS — and enforced since `a20b3aa`: a test fails if `refetchInterval` appears under the dashboard's directory, and the page's one request on load is counted |
 
 ## 9. Server, fleet, enterprise
 

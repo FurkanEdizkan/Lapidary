@@ -210,7 +210,7 @@ unchanged part will show a phantom volume delta depending on which machine proce
 | 3D | three.js + glTF with `EXT_meshopt_compression` |
 | Grid | `@tanstack/react-virtual` |
 | Node editor | `@xyflow/react` (React Flow) |
-| Layout | `react-grid-layout` for the dashboard |
+| Layout | Hand-rolled, on a 12-column CSS grid (`web/src/components/dashboard/layout.ts`, pure and unit-tested). Not `react-grid-layout`: its CSS transitions fight the motion rules, and the keyboard move/resize WCAG needs is code we would write anyway (G5, 2026-09-27) |
 | Motion | CSS transitions + Web Animations API. **No anime.js** |
 
 ### Why not gRPC
