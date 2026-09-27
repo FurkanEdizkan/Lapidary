@@ -340,6 +340,10 @@ pub struct MirroredShare {
     pub as_of: Option<Timestamp>,
     /// Whether this installation passes the folder's files on to its other people (S8).
     pub seeding: bool,
+    /// Whether its owner says pulling its files needs their leave, as this installation last read the list it
+    /// was offered in. What the page says before anybody presses Pull; the owner's own answer to the request is
+    /// what decides, so a copy of this that is behind costs a sentence and never a file.
+    pub asks_first: bool,
     /// How many of the folder's files this installation holds, and how many the folder lists — what the
     /// folder's own page says can be served from here. Left out of a list of folders, which does not count
     /// them: a list of ten folders is not worth ten counting queries.
@@ -683,6 +687,7 @@ fn mirrored(row: MirroredShareRow, counted: Option<(i64, i64)>) -> MirroredShare
         read_from_name: row.read_from_name,
         as_of: row.as_of,
         seeding: row.seeding,
+        asks_first: row.asks_first,
         held_files: counted.map(|(held, _)| held),
         listed_files: counted.map(|(_, listed)| listed),
     }

@@ -261,6 +261,7 @@ async fn mirrored_terrain(pool: &sqlx::PgPool) -> String {
                 digest: "2-100",
                 owner: None,
                 as_of: None,
+                asks_first: false,
             }],
         )
         .await

@@ -280,6 +280,7 @@ test('what somebody shares is listed under them, each linking to it', async () =
         readFromName: null,
         asOf: '2026-09-17T01:40:00Z',
         seeding: true,
+        asksFirst: false,
       },
     ],
   })
@@ -597,6 +598,7 @@ test('somebody whose folder this installation holds is never told there is nothi
         readFromName: null,
         asOf: '2026-09-17T01:40:00Z',
         seeding: true,
+        asksFirst: false,
       },
     ],
   })

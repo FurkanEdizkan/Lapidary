@@ -37,6 +37,16 @@ pub struct Share {
     /// compares against the copy it holds: the newer reading is the one worth taking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of: Option<jiff::Timestamp>,
+    /// Whether fetching this folder's files needs its owner's leave, so the page that offers to pull it can say
+    /// so before anybody presses Pull and reads "Waiting for Ayşe" as though something had gone wrong.
+    ///
+    /// A **hint, not authorization.** What decides is the owner's own answer to
+    /// `POST /peer/v1/shares/{share}/request`, and the roster's `may_fetch` for the other holders; a reader that
+    /// ignored this field would learn exactly the same thing one round later. So a list from an installation
+    /// before this field, which sends none, reads as open — which is what every folder was before asking first
+    /// existed — and nothing is refused or granted by it either way.
+    #[serde(default)]
+    pub asks_first: bool,
 }
 
 /// One person a share goes to, as its owner publishes the folder's roster to the others in it.
@@ -137,6 +147,7 @@ async fn list(
                 digest: row.digest,
                 owner: None,
                 as_of: None,
+                asks_first: row.asks_first,
             })
             .collect::<Vec<_>>(),
         Err(err) => return failed(&err),
@@ -173,6 +184,9 @@ async fn relays(db: &PgPool, device: DeviceId) -> Result<Vec<Share>, DbError> {
             digest: row.digest,
             owner: Some(row.owner.to_string()),
             as_of: row.as_of,
+            // The owner's word, as this installation last read it from them. Passing it on is passing on what a
+            // page says, never what a file needs: the owner alone answers the request that moves bytes.
+            asks_first: row.asks_first,
         })
         .collect())
 }
@@ -466,4 +480,45 @@ pub(crate) fn failed(err: &DbError) -> Response {
         Json(serde_json::json!({ "message": err.client_message() })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Share;
+
+    /// Wire changes are additive: an installation from before a field sends none, and this one reads its list
+    /// rather than refusing it. The protocol number never moves, so this is the only thing keeping an older
+    /// installation's folders readable.
+    #[test]
+    fn a_list_from_before_asks_first_reads_as_open() {
+        let older = serde_json::json!([{
+            "id": "01a07c41-5d22-7b03-9014-7e2f6dab0001",
+            "name": "Terrain",
+            "partCount": 34,
+            "digest": "34-1758070800000000"
+        }]);
+        let read: Vec<Share> = serde_json::from_value(older).expect("an older list still reads");
+        assert_eq!(
+            (
+                read[0].name.as_str(),
+                read[0].asks_first,
+                read[0].owner.as_deref()
+            ),
+            ("Terrain", false, None),
+            "no word about asking first is open, which is what every folder was before asking first existed"
+        );
+
+        // And this build's own list says it, so a reader of this build knows before it presses Pull.
+        let mine = serde_json::to_value(Share {
+            id: read[0].id,
+            name: "Terrain".to_owned(),
+            part_count: 34,
+            digest: "34-1758070800000000".to_owned(),
+            owner: None,
+            as_of: None,
+            asks_first: true,
+        })
+        .expect("serializes");
+        assert_eq!(mine["asksFirst"], serde_json::Value::Bool(true));
+    }
 }

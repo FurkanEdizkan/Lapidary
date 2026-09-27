@@ -459,6 +459,7 @@ async fn mira_holds(pool: &sqlx::PgPool, hash: &str) -> (DeviceId, ShareId) {
                 digest: "1-1",
                 owner: None,
                 as_of: None,
+                asks_first: false,
             }],
         )
         .await
