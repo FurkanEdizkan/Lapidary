@@ -2238,8 +2238,14 @@ export const strings = {
      */
     gone: (tag: string) =>
       `No model in this library carries “${tag}” any more. The last model with it was removed, or the tag was taken off it.`,
-    /** How many models a tag's own page is showing, beside its name. */
+    /**
+     * How many models carry the tag. **In this library**, and it says so: the grid under it is the
+     * same models narrowed by whatever else is chosen, so "74 models carry this tag" over "Showing
+     * all 6 parts" reads as a contradiction rather than as two true counts of different things.
+     */
     counted: (parts: number) =>
-      `${parts.toLocaleString('en-US')} ${parts === 1 ? 'model carries this tag' : 'models carry this tag'}`,
+      parts === 1
+        ? '1 model in this library carries this tag'
+        : `${parts.toLocaleString('en-US')} models in this library carry this tag`,
   },
 } as const
