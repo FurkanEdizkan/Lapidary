@@ -17,6 +17,17 @@ use uuid::Uuid;
 pub struct PartRow {
     pub summary: PartSummary,
     pub thumbnail_webp: Option<Vec<u8>>,
+    /// `file.format` for the revision's source — `stl`, `obj`, `3mf`, `step`. Here rather
+    /// than on [`PartSummary`] for `thumbnail_webp`'s reason: it is what a card with no
+    /// picture says about the part instead of apologising for the picture it does not have,
+    /// and what decides whether the part has a **view** at all.
+    pub source_format: Option<String>,
+    /// The part's own first picture, in gallery order, or `None` for a part that has none.
+    ///
+    /// The picture the card shows, read in the page's one query rather than fetched per
+    /// card. Over the 64 KB line it carries a hash instead of bytes and the card addresses
+    /// `/api/blob/{hash}`; under it the bytes ride on the row, as a thumbnail always has.
+    pub image: Option<PartImageRow>,
     /// The model's own directory in the store, relative to the storage root — the parent
     /// of `file.storage_path`, never an absolute host path, because the api runs in a
     /// container and the path the container sees is not the path the user's file manager
@@ -1562,17 +1573,24 @@ struct DetailColumns {
     updated_us: i64,
 }
 
-/// The seventeen columns a card is made of, each aliased to its [`GridRow`] field.
+/// The columns a card is made of, each aliased to its [`GridRow`] field.
 ///
 /// A `const` and not two copies, because `page` and `search` must select the same list in
-/// the same order or [`to_part_row`]'s positional tuple decodes one query's columns into
-/// another query's fields — a failure that type-checks. `repo.rs`'s LATERAL comment already
-/// argues this about the joins; two hand-copied SELECT lists would be worse, because the
-/// tuple's safety would then *depend* on nobody editing one without the other.
+/// the same order or [`to_part_row`] decodes one query's columns into another query's
+/// fields — a failure that type-checks. `repo.rs`'s LATERAL comment already argues this
+/// about the joins; two hand-copied SELECT lists would be worse, because the safety would
+/// then *depend* on nobody editing one without the other.
 ///
 /// A macro rather than a `const`, and only because `concat!` takes literals: a `const &str`
 /// is not one. The effect is what a const would have given — one definition, spliced at
 /// compile time, no string building anywhere near a query.
+///
+/// The nine columns after the timestamps are the picture the card now shows: the source
+/// file's format, for a part with no picture at all, and the part's first `part_image`
+/// (`R1`). The grid carries only **inline** bytes, so an image over the 64 KB line arrives
+/// as its hash and the card addresses it at `/api/blob/{hash}` — which `blob.rs` serves with
+/// immutable caching after checking reachability, because content addressing is not
+/// authorization.
 macro_rules! grid_columns {
     () => {
         "p.id AS id, p.library_id AS library_id, r.id AS revision_id, p.name AS name, \
@@ -1582,26 +1600,40 @@ macro_rules! grid_columns {
      s.zstd_level AS zstd_level, s.storage_path AS storage_path, l0.blake3 AS l0_blake3, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
-     (extract(epoch FROM p.deleted_at) * 1000000)::bigint AS removed_us"
+     (extract(epoch FROM p.deleted_at) * 1000000)::bigint AS removed_us, \
+     s.format AS source_format, \
+     img.id AS image_id, img.image_webp AS image_webp, img.blake3 AS image_blake3, \
+     img.origin AS image_origin, img.source_url AS image_source_url, \
+     img.position AS image_position, img.fit AS image_fit, \
+     img.focus_x AS image_focus_x, img.focus_y AS image_focus_y"
     };
 }
 
-/// The four LATERALs behind those columns: the latest revision, its thumbnail, its L0 rung
-/// and its source file.
+/// The five LATERALs behind those columns: the latest revision, its thumbnail, its L0 rung,
+/// its source file and the part's own first picture.
 ///
 /// Shared for the same reason as [`grid_columns`], and named separately because search puts
 /// a join between the two — its candidates come from a CTE, and the LATERALs then run for
 /// the page it kept rather than for every row that matched.
+///
+/// The picture's `ORDER BY position, id LIMIT 1` is `part_images`' order, cut to one row, so
+/// the card shows the same picture the gallery shows first. It rides
+/// `part_image_part_id_position_idx`, which `0015` created for exactly this read.
 macro_rules! grid_laterals {
     () => {
         "\
      JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
      LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
      LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
-     LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
+     LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level, f.format \
                         FROM file f \
                         WHERE f.revision_id = r.id AND f.role = 'source' \
-                        ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true"
+                        ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
+     LEFT JOIN LATERAL (SELECT i.id, i.image_webp, i.blake3, i.origin, i.source_url, i.position, \
+                               i.fit, i.focus_x, i.focus_y \
+                        FROM part_image i \
+                        WHERE i.part_id = p.id \
+                        ORDER BY i.position, i.id LIMIT 1) img ON true"
     };
 }
 
@@ -3999,14 +4031,19 @@ pub struct NewPartImage<'a> {
     pub source_url: Option<&'a str>,
 }
 
-/// One grid row, decoded. `page`, `search` and the sorted pages select the same seventeen
-/// columns ([`grid_columns`]) and all end here, so a card cannot mean one thing on the grid and
+/// One grid row, decoded. `page`, `search` and the sorted pages select the same columns
+/// ([`grid_columns`]) and all end here, so a card cannot mean one thing on the grid and
 /// another in a set of results.
 ///
 /// A named `FromRow` struct since the seventeenth column (`removed_us`) went past sqlx's
-/// sixteen-tuple ceiling. The SELECT aliases every column, including the two `id`s and two
-/// `blake3`s that kept this positional before, so a column is decoded by what it is called
-/// rather than by where it sits.
+/// sixteen-tuple ceiling. The SELECT aliases every column, including the three `id`s and
+/// three `blake3`s that kept this positional before, so a column is decoded by what it is
+/// called rather than by where it sits — **which is also why adding a column here is a
+/// field and nothing more**, and why a card that ever needs one costs a field.
+///
+/// Decoded by name at run time, so a query that selects fewer columns than this struct
+/// declares still compiles and fails only when something reads it. Every grid query goes
+/// through [`grid_columns`] for that reason; do not hand-write a SELECT into `GridRow`.
 #[derive(sqlx::FromRow)]
 struct GridRow {
     id: Uuid,
@@ -4026,6 +4063,20 @@ struct GridRow {
     created_us: i64,
     updated_us: i64,
     removed_us: Option<i64>,
+    source_format: Option<String>,
+    /// The part's first picture, from the `img` LATERAL. Every column is optional because
+    /// the join is a LEFT one and a part may have no picture; `image_id` being present is
+    /// what says the row exists, and the four NOT NULL columns beside it are present
+    /// whenever it is.
+    image_id: Option<Uuid>,
+    image_webp: Option<Vec<u8>>,
+    image_blake3: Option<String>,
+    image_origin: Option<String>,
+    image_source_url: Option<String>,
+    image_position: Option<i32>,
+    image_fit: Option<String>,
+    image_focus_x: Option<f64>,
+    image_focus_y: Option<f64>,
 }
 
 fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
@@ -4051,6 +4102,16 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         created_us,
         updated_us,
         removed_us,
+        source_format,
+        image_id,
+        image_webp,
+        image_blake3,
+        image_origin,
+        image_source_url,
+        image_position,
+        image_fit,
+        image_focus_x,
+        image_focus_y,
     } = row;
     {
         // `as u32` previously turned a negative column value into a number
@@ -4099,6 +4160,35 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         // row this crate writes carries the level `put_at` reported for it,
         // including `link_existing`'s, which used to inherit whatever the
         // shared `blob` row said. See `PartSummary::compressed`.
+        // The card's picture, when the part has one. Refused rather than dropped on a
+        // corrupt hash, for the reason the two hashes above are: reporting it as "this part
+        // has no picture" would hide the corruption behind an ordinary-looking state.
+        //
+        // `unwrap_or` on the four NOT NULL columns, never `unwrap`: they are `Option` only
+        // because the join is a LEFT one, and `image_id` has already said the row is there.
+        // The fallbacks are `0019`'s own defaults, so a column that somehow arrived NULL
+        // frames the picture the way an unadjusted one is framed rather than failing.
+        let image = image_id
+            .map(|id| -> Result<PartImageRow, DbError> {
+                Ok(PartImageRow {
+                    id: PartImageId::from_uuid(id),
+                    inline_webp: image_webp,
+                    hash: image_blake3
+                        .map(|hex| {
+                            BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
+                                column: "part_image.blake3",
+                                value: hex,
+                            })
+                        })
+                        .transpose()?,
+                    origin: image_origin.unwrap_or_default(),
+                    source_url: image_source_url,
+                    position: image_position.unwrap_or(0),
+                    fit: image_fit.unwrap_or_else(|| "cover".to_owned()),
+                    focus: (image_focus_x.unwrap_or(0.5), image_focus_y.unwrap_or(0.5)),
+                })
+            })
+            .transpose()?;
         let compressed = source_hash
             .as_ref()
             .map(|_| zstd_level.is_some_and(|level| level != 0));
@@ -4146,6 +4236,8 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                     .transpose()?,
             },
             thumbnail_webp: thumb_bytes,
+            source_format,
+            image,
             directory: storage_path.as_deref().and_then(model_directory),
             storage_path,
         })

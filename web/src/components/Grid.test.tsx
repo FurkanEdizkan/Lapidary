@@ -4,43 +4,55 @@ import { act, useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
 import { breakable } from './Card'
 import { Grid } from './Grid'
-import type { PartCard, PartId } from '../lib/types'
+import { strings } from '../lib/strings'
+import type { PartCard, PartId, PartImage, PartImageId } from '../lib/types'
 
-const { arrive, reduced, spin, stop } = vi.hoisted(() => {
-  const stop = vi.fn()
-  return {
-    arrive: vi.fn((_elements: readonly HTMLElement[]) => () => {}),
-    reduced: vi.fn(() => false),
-    spin: vi.fn((_well: HTMLElement, _hash: string) => stop),
-    stop,
-  }
-})
-vi.mock('../lib/motion', () => ({ arrive, reduced }))
-vi.mock('./turntable', () => ({ spin }))
-vi.mock('../lib/viewer-math', async (original) => ({
-  ...(await original<typeof import('../lib/viewer-math')>()),
-  hasWebGL: () => true,
+const { arrive, reduced } = vi.hoisted(() => ({
+  arrive: vi.fn((_elements: readonly HTMLElement[]) => () => {}),
+  reduced: vi.fn(() => false),
 }))
+vi.mock('../lib/motion', () => ({ arrive, reduced }))
 
 afterEach(() => {
   arrive.mockClear()
-  spin.mockClear()
-  stop.mockClear()
   reduced.mockReturnValue(false)
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
-function card(id: string, name: string): PartCard {
+/** A tiny real WebP, as `part_image.image_webp` arrives on the row: under the 64 KB line. */
+const WEBP = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQ1LrVv/+BiOh/AAA='
+
+/** A rendered thumbnail, deliberately different bytes: the fallback the picture has to beat. */
+const RENDER = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQvJoXpf+BiOh/AAA='
+
+/** One picture, framed the way `0019_image_framing.sql` stores a framing. */
+function picture(src: string, framing: Partial<PartImage> = {}): PartImage {
+  return {
+    id: '01931b6e-0000-7000-8000-0000000c0001' as PartImageId,
+    src,
+    origin: 'uploaded',
+    sourceUrl: null,
+    fit: 'cover',
+    focusX: 0.5,
+    focusY: 0.5,
+    ...framing,
+  }
+}
+
+function card(id: string, name: string, extra: Partial<PartCard> = {}): PartCard {
   return {
     id: id as PartId,
     name,
     partNumber: null,
     thumbnail: null,
+    sourceFormat: 'stl',
+    image: null,
     tessellationL0: `b3${id.slice(-4)}`,
     triangleCount: 784,
     approximate: true,
     directory: 'flanges',
+    ...extra,
   } as unknown as PartCard
 }
 
@@ -50,8 +62,8 @@ const VEE = card('01931b6e-0000-7000-8000-0000000b0003', 'vee-block-lp-3072-02')
 
 let setParts: (parts: PartCard[]) => void = () => {}
 
-function Harness() {
-  const [parts, set] = useState<PartCard[]>([FLANGE, GEAR])
+function Harness({ initial = [FLANGE, GEAR] }: { initial?: PartCard[] }) {
+  const [parts, set] = useState<PartCard[]>(initial)
   setParts = set
   return (
     <Grid
@@ -65,19 +77,18 @@ function Harness() {
       onToggle={() => {}}
       onSelectAll={() => {}}
       onOpen={() => {}}
-      onHover={() => {}}
-      spins
     />
   )
 }
 
-async function renderGrid() {
+async function renderGrid(initial?: PartCard[]) {
+  const first = (initial ?? [FLANGE, GEAR])[0]!
   const router = createRouter({
-    routeTree: createRootRoute({ component: Harness }),
+    routeTree: createRootRoute({ component: () => <Harness initial={initial} /> }),
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
   render(<RouterProvider router={router as never} />)
-  await screen.findByRole('article', { name: FLANGE.name })
+  await screen.findByRole('article', { name: first.name })
 }
 
 /**
@@ -107,84 +118,122 @@ test('a name breaks after its separators and reads exactly as before', () => {
   expect(container.innerHTML).toBe('<span>flange-<wbr>dn40_<wbr>lp.<wbr>3310-<wbr>02</span>')
 })
 
-/** A screen that can hover, for the pointer's half of these tests. */
-function hoverable() {
+/**
+ * **The card's picture, in the three states a row can be in** (R1).
+ *
+ * `part_image` keeps bytes on the row under 64 KB and a blob hash above it
+ * (`part_image_inline_or_blob`), and the card has to show both without knowing which is which —
+ * so the two are asserted on the same page, beside a part that has neither. Three cards together
+ * rather than three tests, because the failure worth catching is the wiring one: a card reading
+ * the *first* part's picture passes every single-card test there is.
+ */
+test('a card shows its own picture, inline or addressed, and names the format when it has none', async () => {
+  const BLOB = '/api/blob/9f2c4a8e1d6b05734cfe82a0d1945b6e73c8af20e51d9b4c6a3f0827de15bc49'
+  const inline = card('01931b6e-0000-7000-8000-0000000b0011', 'flange-dn40-lp-3310-02', {
+    image: picture(WEBP),
+  })
+  const addressed = card('01931b6e-0000-7000-8000-0000000b0012', 'spur-gear-m2-20t-lp-5140-00', {
+    image: picture(BLOB),
+  })
+  const bare = card('01931b6e-0000-7000-8000-0000000b0013', 'vee-block-lp-3072-02', {
+    sourceFormat: '3mf',
+  })
+  // **A part with both**, which is every part today and the one case the precedence can be wrong
+  // in. The thumbnail is a fallback for the window before R4 purges the renders, so the picture has
+  // to win — and without this card the two orders are indistinguishable, which is how the first
+  // version of this test passed against `thumbnail ?? image`.
+  const both = card('01931b6e-0000-7000-8000-0000000b0015', 'hex-spacer-m4x20-lp-2145-01', {
+    image: picture(WEBP),
+    thumbnail: RENDER,
+  })
+  const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+  vi.stubGlobal('fetch', fetchMock)
+  await renderGrid([inline, addressed, bare, both])
+
+  // **No request per card.** The picture arrives with the page, inline or as an address, and the
+  // grid's own code asks for nothing — which is the rule a gallery of a thousand parts rests on.
+  // jsdom does not load an `<img src>`, so this is about `fetch` and not about the browser's own
+  // image request: the blob URL below is one cached, immutable image load, never an API round trip.
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  const shown = (part: PartCard) =>
+    screen.getByRole('article', { name: part.name }).querySelector('img')
+
+  expect(shown(inline)?.getAttribute('src')).toBe(WEBP)
+  // Over the inline line, so the card addresses the bytes rather than carrying them. One `<img>`
+  // request, cached immutably by `blob.rs` — never a second API call for the card.
+  expect(shown(addressed)?.getAttribute('src')).toBe(BLOB)
+  expect(shown(bare)).toBeNull()
+  expect(
+    shown(both)?.getAttribute('src') === WEBP,
+    'a part with both shows its picture, not the render it still has',
+  ).toBe(true)
+
+  // Alt text as a literal, not read back from strings.ts: an alt of '' satisfies the constant form
+  // and tells a screen-reader user nothing.
+  expect(shown(inline)?.getAttribute('alt')).toBe('Picture of flange-dn40-lp-3310-02')
+
+  // And the empty state names the format rather than apologising for a render nobody asked for.
+  const well = screen.getByRole('article', { name: bare.name })
+  expect(well.textContent).toContain(strings.parts.noPicture('3mf'))
+  expect(well.textContent).not.toContain(strings.parts.noPicture(null))
+  expect(fetchMock).not.toHaveBeenCalled()
+  vi.unstubAllGlobals()
+})
+
+/**
+ * `fit` and `focus_x`/`focus_y` are three columns the browser applies at display time — nothing is
+ * re-encoded — so the only thing that can be wrong is whether they reach the element. Asserted on
+ * the element's own style, and with a framing nobody would have reached by accident: `cover` at
+ * 0.5/0.5 is the stored default, so asserting that would pass against a card that read no columns.
+ */
+test('a picture is framed the way its row says', async () => {
+  const framed = card('01931b6e-0000-7000-8000-0000000b0014', 'flange-dn40-lp-3310-02', {
+    image: picture(WEBP, { fit: 'contain', focusX: 0.25, focusY: 0.8 }),
+  })
+  await renderGrid([framed])
+  const img = screen.getByRole('article', { name: framed.name }).querySelector('img')
+  expect(img?.style.objectFit).toBe('contain')
+  expect(img?.style.objectPosition).toBe('25% 80%')
+})
+
+/**
+ * **Nothing draws, loads or fetches because a pointer crossed a card** (R1).
+ *
+ * A hover used to rest for 150 ms and then put a turning model in the card's well, which fetched
+ * that part's mesh. Fifty cards hovered on the way down a grid were fifty fetches, and with the
+ * viewer reading **original** files they would be fifty whole models. So there is no hover
+ * behaviour left, at any setting.
+ *
+ * The assertions are deliberately about the *mechanisms*, not about three.js: in jsdom there is no
+ * WebGL, so `new WebGLRenderer()` throws before it appends anything and "no canvas" alone would
+ * pass against a card that tried. A `fetch` count and a dynamic-import count are what actually
+ * fail when something starts loading again — this test was written by putting a canvas and a
+ * `fetch` back into `onMouseEnter` and watching both halves fail.
+ */
+test('resting on a card, and focusing its name, start nothing at all', async () => {
+  const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+  vi.stubGlobal('fetch', fetchMock)
+  // A screen that *can* hover, which is the setting the spin needed; and reduced motion off, so
+  // nothing here passes because a reader asked for less of it.
   vi.stubGlobal(
     'matchMedia',
     vi.fn((query: string) => ({ matches: query === '(hover: hover)' })),
   )
-}
-
-/** Past the intent delay, and past the dynamic import of the turntable's chunk. */
-async function wait(ms: number) {
-  await act(async () => {
-    vi.advanceTimersByTime(ms)
-  })
-  await act(async () => {
-    await vi.dynamicImportSettled()
-  })
-}
-
-test('a card turns once the pointer has rested on it, and stops when it leaves', async () => {
-  hoverable()
   await renderGrid()
-  vi.useFakeTimers()
   const article = screen.getByRole('article', { name: GEAR.name })
 
   fireEvent.mouseEnter(article)
-  await wait(149)
-  expect(spin).not.toHaveBeenCalled()
+  fireEvent.focus(screen.getByRole('link', { name: GEAR.name }))
+  // Well past the 150 ms of hover intent the spin waited for, and past any dynamic import it
+  // would have started.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await vi.dynamicImportSettled()
+  })
 
-  await wait(1)
-  expect(spin).toHaveBeenCalledTimes(1)
-  expect(spin.mock.calls[0]![1]).toBe(GEAR.tessellationL0)
-  expect(article.contains(spin.mock.calls[0]![0])).toBe(true)
-
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(document.querySelector('canvas')).toBeNull()
   fireEvent.mouseLeave(article)
-  expect(stop).toHaveBeenCalledTimes(1)
-})
-
-test('a pointer sweeping across a card does not start it', async () => {
-  hoverable()
-  await renderGrid()
-  vi.useFakeTimers()
-  const article = screen.getByRole('article', { name: FLANGE.name })
-  fireEvent.mouseEnter(article)
-  await wait(80)
-  fireEvent.mouseLeave(article)
-  await wait(200)
-  expect(spin).not.toHaveBeenCalled()
-})
-
-/** The keyboard path to a turning part: focus on the card's name, which is its one tab stop. */
-test('focus on the name turns the part, and moving on stops it', async () => {
-  hoverable()
-  await renderGrid()
-  vi.useFakeTimers()
-  const link = screen.getByRole('link', { name: FLANGE.name })
-  fireEvent.focus(link)
-  await wait(150)
-  expect(spin).toHaveBeenCalledTimes(1)
-  fireEvent.blur(link)
-  expect(stop).toHaveBeenCalledTimes(1)
-})
-
-test('a reader who asked for less motion gets the still picture', async () => {
-  hoverable()
-  reduced.mockReturnValue(true)
-  await renderGrid()
-  vi.useFakeTimers()
-  fireEvent.mouseEnter(screen.getByRole('article', { name: GEAR.name }))
-  await wait(300)
-  expect(spin).not.toHaveBeenCalled()
-})
-
-/** A tap on a touch screen fires `mouseenter` on its way to opening the part. */
-test('a screen that cannot hover does not turn a tapped card', async () => {
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
-  await renderGrid()
-  vi.useFakeTimers()
-  fireEvent.mouseEnter(screen.getByRole('article', { name: GEAR.name }))
-  await wait(300)
-  expect(spin).not.toHaveBeenCalled()
+  expect(fetchMock).not.toHaveBeenCalled()
 })

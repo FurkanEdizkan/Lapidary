@@ -28,7 +28,6 @@ import {
   startScan,
   UploadRefused,
 } from '../lib/api'
-import { loadViewerWhenIdle, warmViewer } from '../components/PartDetail'
 import { FieldFilters } from '../components/Fields'
 import {
   densityFor,
@@ -46,7 +45,6 @@ import {
 } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { eachAtMost } from '../lib/bulk'
-import { createPrefetch } from '../lib/prefetch'
 import { importBundle, uploadFiles } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import { FolderTree, MovePartDialog, PickCategoryDialog, refusalMessage, useFolders } from '../components/FolderTree'
@@ -73,7 +71,6 @@ import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
-import { ReviewOffer } from '../components/Likeness'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -509,31 +506,15 @@ export function Index({
   // than the grid has reached opens once its page arrives.
   const looking = openPart === undefined ? undefined : loaded.find((card) => card.id === openPart)
 
-  /**
-   * Prefetch on intent (`DATA.md` §2.4): a hovered card warms its L0 rung and the viewer itself, and
-   * an opened part warms its neighbours' — the parts a person looks at next. L0 and not L1 for the neighbours, because a
-   * card carries only its L0 hash and fetching two more details to learn the L1s would cost more
-   * than the prefetch saves. Everything in flight is dropped when the grid changes under it.
-   */
-  const [prefetch] = useState(() => createPrefetch(2))
-  const warm = (card: PartCard | undefined) => {
-    if (card === undefined || card.tessellationL0 === null) return
-    prefetch.request(blobUrl(card.tessellationL0))
-    void warmViewer()
-  }
-  // A tap, or a press with no hover first, gives the hover nothing to warm on, so the grid loads the
-  // viewer's code as soon as the browser is idle; its renderer waits for a hover or an open.
-  useEffect(loadViewerWhenIdle, [])
+  /*
+    **Nothing is prefetched on intent any more** (R1). The warm that stood here fetched each hovered
+    card's L0 rung and loaded the renderer, which was a mesh per hovered card — fifty files for one
+    sweep down a grid — for a view nobody had asked for. A card's picture arrives with the page, and
+    the model is fetched when somebody presses **view**.
+  */
   const lookingIndex = looking === undefined ? -1 : loaded.indexOf(looking)
   // Gone from the list (removed, or filtered out) closes the stage rather than showing another part.
   const staged = stagedId === null ? -1 : loaded.findIndex((card) => card.id === stagedId)
-  useEffect(() => {
-    if (lookingIndex === -1) return
-    warm(loaded[lookingIndex - 1])
-    warm(loaded[lookingIndex + 1])
-    // Keyed on where the look is, not on `loaded`'s identity, which changes on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookingIndex])
   const setOpenPart = (id: PartId | null) => {
     if (onOpenPart === undefined) setOwnPart(id ?? undefined)
     else onOpenPart(id)
@@ -563,7 +544,6 @@ export function Index({
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
   const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? ''].join('\u0000')
   const [selectionScope, setSelectionScope] = useState(scope)
-  useEffect(() => () => prefetch.cancel(), [scope, prefetch])
   if (scope !== selectionScope) {
     setSelectionScope(scope)
     setSelected(new Set())
@@ -1069,15 +1049,6 @@ export function Index({
             batch={activeBatch}
           />
         )}
-        {/*
-          Under the finished line rather than inside it: what a batch did is one sentence, and
-          whether any of it was already here is a different question with a different answer and
-          its own request. `ReviewOffer` draws nothing — and asks nothing — until the batch is
-          finished and something actually looks alike (Phase 6, G6).
-        */}
-        {activeBatch === undefined ? null : (
-          <ReviewOffer status={scan.data} kind={kind} library={library} />
-        )}
         {health.isError ? (
           <p role="alert" className="mb-4 rounded-[var(--radius-ctl)] border border-[var(--color-bad)] px-3 py-2 text-sm text-[var(--color-text)]">
             {strings.health.failed}
@@ -1121,7 +1092,6 @@ export function Index({
                   // No flight on a step: the part changes in place.
                   setStageFrom(DEFAULT_ORIGIN)
                   setStagedId(loaded[next]?.id ?? null)
-                  warm(loaded[next + 1])
                 }}
                 onClose={() => setStagedId(null)}
               />
@@ -1166,8 +1136,6 @@ export function Index({
               selected={selected}
               onToggle={toggle}
               onSelectAll={() => setSelected(new Set(loaded.map((part) => part.id)))}
-              onHover={warm}
-              spins={looking === undefined && staged === -1 && !selecting}
               onLook={(card, from) => {
                 setStageFrom(from)
                 setStagedId(card.id)

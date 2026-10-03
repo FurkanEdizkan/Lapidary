@@ -3,10 +3,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { DashboardPage } from './dashboard'
-import { DASHBOARD_KEY, DASHBOARD_VERSION, type StoredLayout, type StoredWidget } from '../lib/dashboard'
+import {
+  DASHBOARD_KEY,
+  DASHBOARD_VERSION,
+  type DrawnWidget,
+  type StoredLayout,
+  type StoredWidget,
+} from '../lib/dashboard'
 import { strings } from '../lib/strings'
 import { openMenu } from '../test-menu'
-import type { KeyResult, LibraryId, PartCard, PartId, Widget, WidgetResult } from '../lib/types'
+import type { KeyResult, LibraryId, PartCard, PartId, WidgetResult } from '../lib/types'
 
 /**
  * The dashboard, whole.
@@ -43,7 +49,7 @@ class FakeSource {
   }
 }
 
-function widget(key: string, config: Widget, at: { x: number; y: number; w: number; h: number }, group = 'g1'): StoredWidget {
+function widget(key: string, config: DrawnWidget, at: { x: number; y: number; w: number; h: number }, group = 'g1'): StoredWidget {
   return {
     key,
     widget: config,
@@ -66,6 +72,8 @@ function card(suffix: string, name: string, path: string): PartCard {
     partNumber: name.slice(name.lastIndexOf(' ') + 1),
     sourcePath: path,
     thumbnail: null,
+    sourceFormat: 'stl',
+    image: null,
     triangleCount: 48112,
     approximate: true,
     tessellationL0: null,
@@ -84,7 +92,14 @@ function card(suffix: string, name: string, path: string): PartCard {
 const BRACKET = card('0001', 'Bracket, LP-1042-03', 'mounting/LP-1042-03.stl')
 const HOUSING = card('0002', 'Housing, LP-2201-07', 'housings/LP-2201-07.step')
 
-/** Twelve widgets, as the phase exit measures them: every kind, and five kinds twice. */
+/**
+ * Twelve widgets, as the phase exit measures them: every kind the web draws, and six of them twice.
+ *
+ * Six kinds since R1, not seven: the duplicates widget is gone with the duplicates queue, so
+ * `w12` is the second library's saved filter. Its name is the one figure on this board that only
+ * exists once the resolve has answered and appears exactly once, which is what the awaits below
+ * wait on — a heading from the stored layout is on the page before the request lands.
+ */
 const TWELVE: StoredWidget[] = [
   widget('w1', { kind: 'storage', library: LIBRARY }, { x: 0, y: 0, w: 4, h: 2 }),
   widget('w2', { kind: 'storage', library: OTHER }, { x: 4, y: 0, w: 4, h: 2 }),
@@ -97,11 +112,11 @@ const TWELVE: StoredWidget[] = [
   widget('w9', { kind: 'facet', library: LIBRARY, facet: 'tag', limit: 6 }, { x: 6, y: 8, w: 3, h: 4 }),
   widget('w10', { kind: 'queue', library: LIBRARY }, { x: 9, y: 8, w: 3, h: 2 }),
   widget('w11', { kind: 'queue', library: OTHER }, { x: 0, y: 12, w: 4, h: 2 }),
-  widget('w12', { kind: 'duplicates', library: LIBRARY }, { x: 4, y: 12, w: 4, h: 2 }),
+  widget('w12', { kind: 'savedFilter', library: OTHER, filter: 'f2', limit: 6 }, { x: 4, y: 12, w: 4, h: 2 }),
 ]
 
 /** The `ok` value each kind answers with, so every one of the twelve has something to draw. */
-function valueFor(config: Widget): WidgetResult {
+function valueFor(config: DrawnWidget): WidgetResult {
   switch (config.kind) {
     case 'storage':
       return {
@@ -131,7 +146,14 @@ function valueFor(config: Widget): WidgetResult {
     case 'recent':
       return { status: 'ok', value: { kind: 'recent', value: [BRACKET, HOUSING] } }
     case 'savedFilter':
-      return { status: 'ok', value: { kind: 'savedFilter', value: { name: 'Brackets over 40 mm', parts: [BRACKET] } } }
+      // Named per library, so the second one is a figure that appears once on the board.
+      return {
+        status: 'ok',
+        value: {
+          kind: 'savedFilter',
+          value: { name: config.library === LIBRARY ? FILTER_NAME : OTHER_FILTER_NAME, parts: [BRACKET] },
+        },
+      }
     case 'facet':
       return {
         status: 'ok',
@@ -139,10 +161,22 @@ function valueFor(config: Widget): WidgetResult {
       }
     case 'queue':
       return { status: 'ok', value: { kind: 'queue', value: { pending: 3, running: 1, failed: 0 } } }
-    case 'duplicates':
-      return { status: 'ok', value: { kind: 'duplicates', value: { clusters: 2, unprofiled: 7 } } }
   }
 }
+
+/** The saved filters' names, as the server answers them: one per library, both on the board. */
+const FILTER_NAME = 'Brackets over 40 mm'
+const OTHER_FILTER_NAME = 'Housings in steel'
+
+/**
+ * A figure on the board that exists only once the resolve has answered, and exists once.
+ *
+ * Every panel's heading is drawn from the stored layout before the request lands, so waiting on
+ * one proves nothing; a saved filter's heading is the exception, because it is the name the server
+ * just sent (`FilteredParts.name`). Two filters in two libraries make it unambiguous.
+ */
+const settled = () =>
+  screen.findByRole('heading', { name: strings.dashboard.inLibrary(OTHER_FILTER_NAME, OTHER_NAME) })
 
 type Call = { url: string; method: string; body: { widgets?: { key: string }[] } | undefined }
 
@@ -261,7 +295,7 @@ test('twelve widgets settle in exactly one request', async () => {
   // Waited on a figure from the answer, not on a heading: the twelve panels are drawn from the
   // stored layout before the resolve lands, so a heading is on the page while every body still
   // says it is loading.
-  await screen.findByText(strings.dashboard.duplicatesLine(2))
+  await settled()
 
   expect(calls).toHaveLength(1)
   expect(calls[0]?.url).toBe('/api/dashboard/resolve')
@@ -271,11 +305,9 @@ test('twelve widgets settle in exactly one request', async () => {
   // Twelve panels, each named, and every kind's value on the page.
   expect(screen.getAllByRole('article')).toHaveLength(12)
   expect(screen.getAllByText(strings.dashboard.queueLine(3, 1, 0))).toHaveLength(2)
-  screen.getByText(strings.dashboard.duplicatesLine(2))
-  screen.getByText(strings.dashboard.duplicatesUnprofiled(7))
   expect(screen.getAllByRole('link', { name: BRACKET.name }).length).toBeGreaterThan(0)
   // A saved filter is titled by the name the server just sent, not by the kind's label.
-  screen.getByRole('heading', { name: strings.dashboard.inLibrary('Brackets over 40 mm', NAME) })
+  screen.getByRole('heading', { name: strings.dashboard.inLibrary(FILTER_NAME, NAME) })
   // Two libraries, two storage panels, told apart by the name stored beside each widget.
   screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, NAME) })
   screen.getByRole('heading', { name: strings.dashboard.inLibrary(strings.dashboard.storageLabel, OTHER_NAME) })
@@ -290,7 +322,7 @@ test('every list on the page carries a role', async () => {
   seed(TWELVE)
   stub(TWELVE)
   renderPage()
-  await screen.findByText(strings.dashboard.duplicatesLine(2))
+  await settled()
   for (const list of Array.from(document.querySelectorAll('article ul, article ol'))) {
     expect(list.getAttribute('role')).toBe('list')
   }
@@ -308,7 +340,6 @@ test('a key that ran out of time offers its own retry while the rest render', as
   renderPage()
   await screen.findByText(strings.dashboard.timedOut)
   // The other eleven are fine.
-  screen.getByText(strings.dashboard.duplicatesLine(2))
   expect(screen.getAllByRole('article')).toHaveLength(12)
 
   const title = strings.dashboard.inLibrary(strings.dashboard.queueLabel, NAME)
@@ -375,7 +406,7 @@ test('a resolve that was refused outright says so once, for the page', async () 
 test('the arrow keys move a widget, say where it went, and cost no request', async () => {
   const two = [
     widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 4, h: 2 }),
-    widget('w2', { kind: 'duplicates', library: LIBRARY }, { x: 0, y: 2, w: 4, h: 2 }),
+    widget('w2', { kind: 'storage', library: LIBRARY }, { x: 0, y: 2, w: 4, h: 2 }),
   ]
   seed(two)
   const calls = stub(two)
@@ -416,7 +447,7 @@ test('the arrow keys move a widget, say where it went, and cost no request', asy
 test('the grip keeps focus after moving down, which is where it would be lost', async () => {
   const two = [
     widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 12, h: 2 }),
-    widget('w2', { kind: 'duplicates', library: LIBRARY }, { x: 0, y: 2, w: 12, h: 2 }),
+    widget('w2', { kind: 'storage', library: LIBRARY }, { x: 0, y: 2, w: 12, h: 2 }),
   ]
   seed(two)
   stub(two)
@@ -506,7 +537,7 @@ test('a resync asks for everything, once', async () => {
   seed(TWELVE)
   const calls = stub(TWELVE)
   renderPage()
-  await screen.findByText(strings.dashboard.duplicatesLine(2))
+  await settled()
   FakeSource.made[0]?.send(JSON.stringify({ type: 'resync' }))
   await waitFor(() => expect(resolves(calls)).toHaveLength(2), { timeout: 3000 })
   expect(resolves(calls)[1]?.body?.widgets).toHaveLength(12)
@@ -602,7 +633,7 @@ test('coming back to the tab does not re-resolve the dashboard', async () => {
   seed(TWELVE)
   const calls = stub(TWELVE)
   renderPage()
-  await screen.findByText(strings.dashboard.duplicatesLine(2))
+  await settled()
   // On `window`, which is where TanStack Query's focus manager listens. An `Event` dispatched on
   // `document` does not reach it, and the mutation that turns the two options back on survived
   // this test until it was sent to the right target.
@@ -760,7 +791,7 @@ test('a key is never reused, so a failed ask cannot leave the old widget on scre
 test('dragging the grip puts the widget in the cell under the pointer', async () => {
   const two = [
     widget('w1', { kind: 'queue', library: LIBRARY }, { x: 0, y: 0, w: 4, h: 2 }),
-    widget('w2', { kind: 'duplicates', library: LIBRARY }, { x: 4, y: 0, w: 4, h: 2 }),
+    widget('w2', { kind: 'storage', library: LIBRARY }, { x: 4, y: 0, w: 4, h: 2 }),
   ]
   seed(two)
   const calls = stub(two)
@@ -826,6 +857,6 @@ test('nothing on the page asks for a per-widget endpoint', async () => {
   seed(TWELVE)
   const calls = stub(TWELVE)
   renderPage()
-  await screen.findByText(strings.dashboard.duplicatesLine(2))
+  await settled()
   expect(calls.every((call) => call.url === '/api/dashboard/resolve')).toBe(true)
 })

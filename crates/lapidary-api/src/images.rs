@@ -474,29 +474,33 @@ async fn store(
 /// cached immutably and shared between every part that points at it.
 pub async fn list(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
     match PgParts(state.db).part_images(part).await {
-        Ok(rows) => Json(
-            rows.into_iter()
-                .map(|row| PartImage {
-                    id: row.id,
-                    src: match (row.inline_webp, row.hash) {
-                        (Some(bytes), _) => {
-                            format!("data:image/webp;base64,{}", BASE64.encode(bytes))
-                        }
-                        (None, Some(hash)) => format!("/api/blob/{}", hash.to_hex()),
-                        // The CHECK constraint makes this unreachable; an empty string is
-                        // what an `<img>` renders as nothing rather than as a broken box.
-                        (None, None) => String::new(),
-                    },
-                    origin: row.origin,
-                    source_url: row.source_url,
-                    fit: row.fit,
-                    focus_x: row.focus.0,
-                    focus_y: row.focus.1,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
+        Ok(rows) => Json(rows.into_iter().map(part_image).collect::<Vec<_>>()).into_response(),
         Err(err) => internal_error(&err, "reading a part's gallery failed"),
+    }
+}
+
+/// One stored row as a reader gets it, bytes or hash resolved to something an `<img src>`
+/// takes.
+///
+/// Shared by the gallery and by the grid card (`parts::to_card`), so "inline rides as a
+/// `data:` URL, a blob is addressed at `/api/blob/{hash}`" is decided once. A card showing a
+/// picture a different way from the gallery showing the same picture would be two answers to
+/// the same question.
+pub(crate) fn part_image(row: lapidary_db::PartImageRow) -> PartImage {
+    PartImage {
+        id: row.id,
+        src: match (row.inline_webp, row.hash) {
+            (Some(bytes), _) => format!("data:image/webp;base64,{}", BASE64.encode(bytes)),
+            (None, Some(hash)) => format!("/api/blob/{}", hash.to_hex()),
+            // The CHECK constraint makes this unreachable; an empty string is what an
+            // `<img>` renders as nothing rather than as a broken box.
+            (None, None) => String::new(),
+        },
+        origin: row.origin,
+        source_url: row.source_url,
+        fit: row.fit,
+        focus_x: row.focus.0,
+        focus_y: row.focus.1,
     }
 }
 
@@ -517,7 +521,9 @@ pub struct StoredImage {
 /// One image, ready to render. `src` is a `data:` URL or a blob route — the caller does not
 /// need to know which, and the distinction is a storage decision rather than a fact about
 /// the picture.
-#[derive(Debug, Serialize, TS)]
+// `Clone` and `Deserialize` because `PartCard` carries one and is itself both — a card is
+// deserialized in tests and cloned by the grid handler.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PartImage {

@@ -25,6 +25,8 @@ const BASALT: PartCard = {
   partNumber: 'LP-7710-C',
   sourcePath: 'Terrain/Rocks/basalt-cliff-face.stl',
   thumbnail: null,
+  sourceFormat: 'stl',
+  image: null,
   triangleCount: 184_320,
   approximate: true,
   sourceHash: null,

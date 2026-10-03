@@ -298,4 +298,65 @@ mod tests {
         let volume = m.volume_mm3.expect("a closed mesh has a volume");
         assert!((volume - 1.0).abs() < 1e-3, "unit cube volume was {volume}");
     }
+    /// **The contract the browser has to meet.** `fixtures/bbox-mm.json` holds each mesh
+    /// fixture's extent in millimetres; this is the half of it that says those numbers are
+    /// what *we* report, which is what makes them `PartDetail.bboxMm`.
+    ///
+    /// The other half is `web/src/components/mesh.test.ts`, which loads the same three files
+    /// with three's own loaders and asserts the same extents. Since R1 the viewer draws the
+    /// original file rather than a rung we wrote, so the two parsers have to agree about
+    /// axes, units and 3MF build transforms — and that agreement has no compiler to enforce
+    /// it. One shared file is what makes correcting one side break the other side's test
+    /// instead of quietly disagreeing with it.
+    #[test]
+    fn the_fixtures_measure_the_extents_the_shared_contract_states() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/bbox-mm.json"))
+                .expect("fixtures/bbox-mm.json is JSON");
+        let stated = |name: &str| -> [f64; 3] {
+            let value = &contract["fixtures"][name];
+            [0, 1, 2].map(|axis| {
+                value[axis]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("{name} states three numbers, not {value}"))
+            })
+        };
+
+        /// A fixture: its name in the contract, its bytes, and the parser for its format.
+        /// Named because clippy counts the tuple as a complex type, and it is right to.
+        type Fixture = (
+            &'static str,
+            &'static [u8],
+            fn(&[u8]) -> Result<Mesh, crate::CadError>,
+        );
+
+        let files: [Fixture; 3] = [
+            (
+                "bracket-lp-1042-03.stl",
+                include_bytes!("../../../fixtures/bracket-lp-1042-03.stl"),
+                crate::parse_stl,
+            ),
+            (
+                "idler-bracket-lp-2210-01.obj",
+                include_bytes!("../../../fixtures/idler-bracket-lp-2210-01.obj"),
+                crate::parse_obj,
+            ),
+            (
+                "planetary-carrier-lp-3480-02.3mf",
+                include_bytes!("../../../fixtures/planetary-carrier-lp-3480-02.3mf"),
+                crate::parse_3mf,
+            ),
+        ];
+        for (name, bytes, parse) in files {
+            let mesh = parse(bytes).unwrap_or_else(|err| panic!("{name} parses: {err}"));
+            let got = measure(&mesh).bbox_mm;
+            let want = stated(name);
+            for axis in 0..3 {
+                assert!(
+                    (got[axis] - want[axis]).abs() < 0.01,
+                    "{name} axis {axis}: measured {got:?}, bbox-mm.json states {want:?}"
+                );
+            }
+        }
+    }
 }

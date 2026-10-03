@@ -205,15 +205,6 @@ function stubFetch(routes: {
   blob?: () => Promise<StubResponse>;
   /** The library's saved filters: listed by GET, saved by POST, removed by DELETE. */
   filters?: (url: string, init?: { method?: string; body?: string }) => Promise<StubResponse>;
-  /**
-   * `GET /api/libraries/{id}/duplicates`, which the finished batch line asks for once (Phase 6).
-   *
-   * Unstubbed it is no groups, not `pending`. It fell through to the bare-library rule before
-   * this route existed, so it hung — which is why nothing crashed on a `LibrarySettings` body and
-   * also why the line the grid draws was tested by nothing. A library where nothing looks alike is
-   * what every test here but one means.
-   */
-  duplicates?: () => Promise<StubResponse>;
 }) {
   const fetchMock = vi.fn((url: string, init?: { method?: string; body?: string }) => {
     if (url.startsWith("/api/healthz")) return (routes.healthz ?? pending)();
@@ -294,8 +285,6 @@ function stubFetch(routes: {
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith("/storage")) return (routes.storage ?? pending)();
     // Same, and it carries a `since` parameter, so `includes` rather than `endsWith`.
-    if (url.includes("/duplicates"))
-      return (routes.duplicates ?? ok({ clusters: [], unprofiled: 0 }))();
     if (url.includes("/jobs/")) return (routes.batch ?? pending)();
     // Last of the library routes, because the settings read is the bare path every one of
     // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
@@ -367,6 +356,8 @@ const MOTOR_MOUNT: PartCard = {
   sourcePath: "motors/nema17/LP-3105-A-mount.stl",
   partNumber: "LP-3105-A",
   thumbnail: WEBP_BLUE,
+  sourceFormat: "stl",
+  image: null,
   triangleCount: 12486,
   approximate: true,
   tessellationL0: null,
@@ -390,6 +381,8 @@ const HEX_NUT: PartCard = {
   sourcePath: "fasteners/nuts/DIN934-M8-A2.stl",
   partNumber: "DIN934-M8-A2",
   thumbnail: WEBP_ORANGE,
+  sourceFormat: "stl",
+  image: null,
   triangleCount: 1984,
   approximate: true,
   tessellationL0: null,
@@ -420,6 +413,8 @@ const SHAFT_COUPLER: PartCard = {
   sourcePath: "couplers/LP-4420-B.stl",
   partNumber: "LP-4420-B",
   thumbnail: null,
+  sourceFormat: "3mf",
+  image: null,
   triangleCount: 7320,
   approximate: true,
   tessellationL0: null,
@@ -578,20 +573,41 @@ test("renders an actionable message when the server is unreachable", async () =>
 // next changes and the component does not follow — a wiring test, not a content pin.
 // Provenance itself is enforced at the source level, in no-bare-strings.test.ts.
 /**
- * A card tapped, or pressed with no hover first, has nothing to warm on (`DATA.md` §2.4), so the
- * grid warms the viewer once the browser is idle — once for the screen, not once per render.
+ * **Nothing happens because a pointer crossed a card** (R1).
+ *
+ * What stood here was the opposite test: the grid warmed the viewer when the browser went idle,
+ * and hovering a card fetched its L0 rung and compiled the renderer's shaders. The owner's
+ * decision makes all of that wrong — a card shows a picture, and a mesh is fetched when somebody
+ * presses **view**. Fifty hovered cards were fifty original files.
+ *
+ * Asserted as "no further request of any kind", not "no blob request": the reason this is cheap to
+ * get wrong again is that the next warm would be a prefetch of something else. `requestIdleCallback`
+ * is stubbed and must stay unasked for the same reason — that was the other half of the warm.
  */
-test("the grid warms the viewer when the browser is idle, once", async () => {
+test("hovering a card fetches nothing and starts no renderer", async () => {
   const idle = vi.fn(() => 1);
   vi.stubGlobal("requestIdleCallback", idle);
   vi.stubGlobal("cancelIdleCallback", vi.fn());
-  stubFetch({ parts: ok(page([])) });
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    folders: ok([]),
+    storage: ok(LIBRARY_STORAGE),
+  });
   renderIndex();
-  await waitFor(() => expect(idle).toHaveBeenCalled());
-  const asked = idle.mock.calls.length;
-  // The empty state is a render of its own, after the page arrives.
-  expect(await screen.findByText(strings.emptyLibrary.title)).toBeDefined();
-  expect(idle.mock.calls.length).toBe(asked);
+
+  const mount = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0));
+  const settled = fetchMock.mock.calls.length;
+
+  fireEvent.mouseEnter(mount);
+  fireEvent.focus(within(mount).getByRole("link", { name: MOTOR_MOUNT.name }));
+  // Past the 150 ms the spin used to wait for, so this is not simply testing that it is early.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  expect(fetchMock.mock.calls.length).toBe(settled);
+  expect(idle).not.toHaveBeenCalled();
+  expect(document.querySelector("canvas")).toBeNull();
   vi.unstubAllGlobals();
 });
 
@@ -957,7 +973,7 @@ test("shows a placeholder instead of an empty image when a part has no thumbnail
   renderIndex();
   const card = await screen.findByRole("article", { name: SHAFT_COUPLER.name });
   expect(within(card).queryByRole("img")).toBeNull();
-  expect(within(card).getByText(strings.parts.noThumbnail)).toBeDefined();
+  expect(within(card).getByText(strings.parts.noPicture("3mf"))).toBeDefined();
 });
 
 // A page is a mix in practice — the worker rasterizes as it goes — and the two cases were
@@ -972,9 +988,9 @@ test("renders a thumbnailed part and a thumbnail-less part side by side", async 
   });
   const nut = screen.getByRole("article", { name: HEX_NUT.name });
   expect(within(coupler).queryByRole("img")).toBeNull();
-  expect(within(coupler).getByText(strings.parts.noThumbnail)).toBeDefined();
+  expect(within(coupler).getByText(strings.parts.noPicture("3mf"))).toBeDefined();
   expect(within(nut).getByRole("img").getAttribute("src")).toBe(WEBP_ORANGE);
-  expect(within(nut).queryByText(strings.parts.noThumbnail)).toBeNull();
+  expect(within(nut).queryByText(strings.parts.noPicture("3mf"))).toBeNull();
   expect(screen.getAllByRole("img")).toHaveLength(1);
 });
 
@@ -1439,56 +1455,6 @@ test("showing more lists the failures past the sample", async () => {
   expect(screen.queryByRole("button", { name: strings.failure.more(1) })).toBeNull();
 });
 
-/**
- * Phase 6's second exit, from the grid's side: upload a part that is already here and the page
- * says so, where the person is standing.
- *
- * Mounted here and not only in `Likeness.test.tsx`, because the component passing on its own says
- * nothing about whether this page draws it — deleting the mount from `index.tsx` left every other
- * test in both files green.
- */
-test("a finished upload says how much of it was already here, and offers a review", async () => {
-  // The mount that was here in August, and the copy this batch just added under another folder.
-  const already = MOTOR_MOUNT;
-  const justAdded: PartCard = {
-    ...MOTOR_MOUNT,
-    id: "01931b6e-0000-7000-8000-0000000a0009",
-    revision: "01931b6e-0000-7000-8000-0000000b0009",
-    sourcePath: "printables/LP-3105-A-mount.stl",
-    createdAt: "2026-09-03T23:29:10.000000Z",
-    updatedAt: "2026-09-03T23:29:10.000000Z",
-  };
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([already, justAdded])),
-    batch: ok(
-      batchStatus({
-        pending: 0,
-        ingested: 1,
-        skipped: 0,
-        total: 1,
-        finishedAt: "2026-09-03T23:29:20.086374Z",
-      }),
-    ),
-    duplicates: ok({
-      clusters: [{ parts: [already, justAdded], identical: true }],
-      unprofiled: 0,
-    }),
-  });
-  renderIndex({ batch: BATCH_ID });
-
-  // One part just added, in a group with one that was already here.
-  const line = await screen.findByText(strings.likeness.reviewOffer(1), undefined, {
-    timeout: 3000,
-  });
-  expect(line.closest("[role=status]")).not.toBeNull();
-  const review = screen.getByRole("link", { name: strings.likeness.review });
-  // This batch's own queue, so eleven files do not land on the whole library's.
-  expect(review.getAttribute("href")).toContain(
-    `since=${encodeURIComponent("2026-09-03T23:28:56.014618Z")}`,
-  );
-});
-
 test("stops polling once the batch reports it finished", async () => {
   // Mutation guard for spec §11's last risk. With `refetchInterval` left as a constant
   // instead of returning false on `finishedAt`, the count keeps climbing after the batch
@@ -1653,7 +1619,7 @@ test("a batch whose jobs all settle as rendered refetches the grid exactly once"
   const before = await screen.findByRole("article", {
     name: SHAFT_COUPLER.name,
   });
-  expect(within(before).getByText(strings.parts.noThumbnail)).toBeDefined();
+  expect(within(before).getByText(strings.parts.noPicture("3mf"))).toBeDefined();
   expect(partsCalls).toBe(1);
 
   // The second poll reports four renders, and the preview arrives with no reload.
@@ -2798,6 +2764,8 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   sourcePath: "Terrain/Rocks/basalt-cliff-face.stl",
   partNumber: "LP-7710-C",
   thumbnail: WEBP_BLUE,
+  sourceFormat: "stl",
+  image: null,
   triangleCount: 148_302,
   approximate: true,
   tessellationL0: null,
@@ -2822,6 +2790,8 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   sourcePath: "brackets/corner-bracket-40x40.stl",
   partNumber: "LP-2280-A",
   thumbnail: WEBP_ORANGE,
+  sourceFormat: "stl",
+  image: null,
   triangleCount: 3204,
   approximate: true,
   tessellationL0: null,
@@ -4280,24 +4250,7 @@ test("the material facet lists what files declare, and a chosen material narrows
   expect(onSelectMaterial).toHaveBeenCalledWith(null);
 });
 
-/** DATA.md §2.4: hovering a card warms its L0 rung, once, so opening the part paints from cache. */
-test("hovering a card warms its L0 rung once", async () => {
-  const l0 = "7".repeat(64);
-  const card = { ...MOTOR_MOUNT, tessellationL0: l0 };
-  const fetchMock = stubFetch({ healthz: ok(HEALTHY), parts: ok(page([card])), blob: ok({}) });
-  renderIndex();
-  const article = await screen.findByRole("article", { name: card.name });
-
-  fireEvent.mouseEnter(article);
-  fireEvent.mouseEnter(article);
-
-  const blobCalls = () =>
-    fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/blob/"));
-  await waitFor(() => expect(blobCalls()).toHaveLength(1));
-  expect(String(blobCalls()[0]?.[0])).toBe(`/api/blob/${l0}`);
-});
-
-/** Where the browser cannot draw 3D, the rendered preview stays and says why. */
+/** Where the browser cannot draw 3D, the picture stays and the missing view is explained. */
 test("without WebGL the quick look keeps the rendered preview and says why", async () => {
   stubFetch({
     healthz: ok(HEALTHY),

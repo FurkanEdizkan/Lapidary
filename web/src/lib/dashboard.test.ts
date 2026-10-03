@@ -119,7 +119,6 @@ test('every kind says which library it is about', () => {
   expect(libraryOf({ kind: 'savedFilter', library: LIBRARY, filter: 'f', limit: 6 })).toBe(LIBRARY)
   expect(libraryOf({ kind: 'facet', library: LIBRARY, facet: 'tag', limit: 6 })).toBe(LIBRARY)
   expect(libraryOf({ kind: 'queue', library: LIBRARY })).toBe(LIBRARY)
-  expect(libraryOf({ kind: 'duplicates', library: LIBRARY })).toBe(LIBRARY)
   expect(libraryOf({ kind: 'instanceStorage' })).toBeNull()
 })
 
@@ -169,7 +168,7 @@ test('what was stored comes back, group and place and all', () => {
     widgets: [
       {
         key: 'w1',
-        widget: { kind: 'duplicates', library: LIBRARY },
+        widget: { kind: 'queue', library: LIBRARY },
         group: 'g1',
         x: 4,
         y: 2,
@@ -182,6 +181,34 @@ test('what was stored comes back, group and place and all', () => {
   writeLayout(stored)
   expect(window.localStorage.getItem(DASHBOARD_KEY)).not.toBeNull()
   expect(readLayout(GROUP)).toEqual(stored)
+})
+
+/**
+ * **A board saved before R1 still loads.** The duplicates widget is gone — the owner's decision
+ * that duplicates are not a feature — and somebody's `localStorage` has one in it with a place on
+ * the grid. The rule `localStorage` is held to here is the one it has always been held to: a
+ * widget this build cannot read is dropped, and the rest of the board loads where it was.
+ *
+ * Through `readLayout` and not `widgetFrom`: the throw this guards against would happen later,
+ * when `registry[kind]` is indexed for a kind the table has no entry for, so the assertion has to
+ * be that nothing with that kind comes *out* of the read.
+ */
+test('a board saved with the duplicates widget loads without it, and keeps the rest', () => {
+  window.localStorage.setItem(
+    DASHBOARD_KEY,
+    JSON.stringify({
+      version: DASHBOARD_VERSION,
+      groups: [{ id: 'g1', name: GROUP }],
+      widgets: [
+        { key: 'w1', widget: { kind: 'duplicates', library: LIBRARY }, group: 'g1', x: 0, y: 0, w: 4, h: 2 },
+        { key: 'w2', widget: { kind: 'queue', library: LIBRARY }, group: 'g1', x: 4, y: 0, w: 4, h: 2 },
+      ],
+    }),
+  )
+  const read = readLayout(GROUP)
+  expect(read.widgets.map((entry) => entry.key)).toEqual(['w2'])
+  expect(read.widgets.map((entry) => entry.widget.kind)).toEqual(['queue'])
+  expect(read.groups).toHaveLength(1)
 })
 
 /**
