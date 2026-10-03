@@ -45,14 +45,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      # No OCCT in this image: see the two targets at the end of deploy/Containerfile.
+      # No ingest half in this image: see the two targets at the end of deploy/Containerfile.
       target: api
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8080
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
       # Serves the grid and the open path. Never the scan route — this image deliberately
-      # does not link the CAD kernel (no SERVER_FEATURES build arg below).
+      # is built without the ingest half (no SERVER_FEATURES build arg below).
       LAPIDARY_ROLE: api
       # Names the mount below. Required for the api role as of the LOD ladder: this is
       # where GET /api/blob/{blake3} reads a rung from, and a router with that route and
@@ -128,11 +128,13 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      # OCCT and occt-bridge ride in this target, and only in this one.
+      # The worker target. It differs from `api` only by the build arg below, since the CAD
+      # kernel came out, but every service still names its target: an untargeted build takes
+      # the file's last stage, whatever that becomes.
       target: worker
       args:
-        # Only the worker links the CAD kernel — the open path (api) never invokes it.
-        SERVER_FEATURES: mock-kernel,occt-kernel
+        # Only the worker links a kernel and the scan route — the open path (api) never does.
+        SERVER_FEATURES: mock-kernel
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8081

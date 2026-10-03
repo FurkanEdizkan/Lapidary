@@ -26,6 +26,7 @@ import {
   saveFilter,
   setAutoThumbnail,
   startScan,
+  UploadRefused,
 } from '../lib/api'
 import { FieldFilters } from '../components/Fields'
 import {
@@ -759,9 +760,11 @@ export function Index({
       )
       watch(accepted, 'upload')
     },
-    onError: () => {
+    onError: (error) => {
       setUploading(undefined)
-      setUploadNote(strings.upload.failed)
+      // A refusal carries the server's own sentence — which format it refused and what this
+      // library takes. Anything else is a transport failure, and the generic line is right for it.
+      setUploadNote(error instanceof UploadRefused ? error.message : strings.upload.failed)
     },
   })
   // A bundle follows the same batch line an upload does, once its import job is queued.

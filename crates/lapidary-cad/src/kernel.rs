@@ -153,7 +153,7 @@ pub enum CadError {
     Unrenderable { detail: String },
 
     #[error(
-        "This build has no parser for the {format} format. The mesh kernel reads STL, OBJ and 3MF, and STEP and IGES go to the CAD kernel; export to one of those and retry."
+        "This build has no parser for the {format} format. Lapidary reads STL, OBJ and 3MF; export the part as one of those and retry."
     )]
     UnsupportedFormat { format: String },
 

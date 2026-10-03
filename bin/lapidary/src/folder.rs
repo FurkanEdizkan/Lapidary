@@ -179,11 +179,16 @@ fn batches(paths: Vec<String>, listing: &BTreeMap<String, Seen>) -> Vec<Vec<Stri
     groups
 }
 
-/// Every model file under the folder that the ignore list lets through, by source path. A symlinked model file
-/// is followed, as the scan follows one, and a symlinked directory is not descended, which keeps a loop
-/// unreachable. An entry that cannot be read is left out of this round rather than stopping it.
-fn list(root: &Path) -> BTreeMap<String, Seen> {
+/// Every **mesh** under the folder that the ignore list lets through, by source path, and the B-rep files
+/// it will not send. A symlinked model file is followed, as the scan follows one, and a symlinked directory
+/// is not descended, which keeps a loop unreachable. An entry that cannot be read is left out of this round
+/// rather than stopping it.
+///
+/// The B-rep files come back rather than being dropped here, because the caller is the one that can say so
+/// once instead of every round. A silent skip is the thing this whole area exists not to do.
+fn list(root: &Path) -> (BTreeMap<String, Seen>, Vec<String>) {
     let mut found = BTreeMap::new();
+    let mut unreadable = Vec::new();
     let mut folders = vec![root.to_path_buf()];
     while let Some(folder) = folders.pop() {
         let Ok(entries) = std::fs::read_dir(&folder) else {
@@ -209,6 +214,17 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
             if !lapidary_core::is_model_file(name) {
                 continue;
             }
+            // A B-rep file is deliberately still a model file, so a *scan* refuses it by name rather
+            // than skipping it in silence. An unattended watch is the one place that answer does not
+            // work: the upload route refuses a manifest with no mesh in it, so a lone `.step` file
+            // settling on its own would be re-read, re-hashed and re-probed every BACKOFF seconds for
+            // ever. Left out of the manifest and said once by the caller instead.
+            if lapidary_core::CAD_FORMATS.contains(&lapidary_core::source_format(name).as_str()) {
+                if let Some(source) = source_path(root, &path) {
+                    unreadable.push(source);
+                }
+                continue;
+            }
             // `std::fs::metadata` does follow one, so a symlinked model file is read as the file it names.
             let (Ok(metadata), Some(source)) = (std::fs::metadata(&path), source_path(root, &path))
             else {
@@ -229,7 +245,7 @@ fn list(root: &Path) -> BTreeMap<String, Seen> {
             );
         }
     }
-    found
+    (found, unreadable)
 }
 
 /// `$XDG_STATE_HOME/lapidary/<state_name>`, falling back to `~/.local/state`. Nothing is ever written
@@ -287,8 +303,19 @@ pub async fn watch(folder: &Path, library: &str) -> Result<()> {
     let mut watches: HashMap<String, Watch> = HashMap::new();
     let mut refused: HashMap<String, Instant> = HashMap::new();
     let mut following: Vec<Following> = Vec::new();
+    // Paths already refused out loud. Said once rather than every round: the watch lists the folder
+    // on a POLL timer, and a line per B-rep file per poll is a log nobody reads.
+    let mut said: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
-        let listing = list(&root);
+        let (listing, unreadable) = list(&root);
+        for path in unreadable {
+            if said.insert(path.clone()) {
+                eprintln!(
+                    "{path} is not sent: {}",
+                    lapidary_core::cad_refusal(&lapidary_core::source_format(&path))
+                );
+            }
+        }
         let round = plan(&known, &listing, &mut watches, &mut refused, Instant::now());
         let mut dirty = false;
         for path in &round.deleted {
@@ -790,7 +817,7 @@ mod tests {
         )
         .expect("links the folder");
 
-        let listed = list(folder.path());
+        let (listed, _) = list(folder.path());
         assert_eq!(
             listed.keys().collect::<Vec<_>>(),
             ["flange-dn40-lp-3310-02.stl"]
@@ -799,6 +826,38 @@ mod tests {
             listed["flange-dn40-lp-3310-02.stl"].size,
             FLANGE.len() as u64,
             "the linked file's own size, not the link's"
+        );
+    }
+
+    /// A B-rep file is listed as one this watch will not send, never silently left out and never
+    /// put in the manifest.
+    ///
+    /// Both halves matter. In the manifest, the upload route refuses a manifest with no mesh in it,
+    /// so a `.step` file settling on its own would be re-read, re-hashed and re-probed every 30
+    /// seconds for ever. Left out with no word, it is a file the owner put in a watched folder that
+    /// never appears and never explains itself.
+    #[test]
+    fn a_b_rep_file_is_not_sent_and_is_reported_rather_than_skipped() {
+        const FLANGE: &[u8] = b"solid flange-dn40-lp-3310-02\n";
+        let folder = tempfile::tempdir().expect("the watched folder");
+        std::fs::write(folder.path().join("flange-dn40-lp-3310-02.stl"), FLANGE).expect("the mesh");
+        std::fs::create_dir(folder.path().join("assemblies")).expect("a subfolder");
+        std::fs::write(
+            folder.path().join("assemblies/gearbox-lp-7700-00.STEP"),
+            b"ISO-10303-21;\n",
+        )
+        .expect("the B-rep file");
+
+        let (listed, unreadable) = list(folder.path());
+        assert_eq!(
+            listed.keys().collect::<Vec<_>>(),
+            ["flange-dn40-lp-3310-02.stl"],
+            "the mesh is sent and the B-rep file is not"
+        );
+        assert_eq!(
+            unreadable,
+            ["assemblies/gearbox-lp-7700-00.STEP"],
+            "and it comes back to be said out loud, in any case, at any depth"
         );
     }
 }

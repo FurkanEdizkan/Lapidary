@@ -28,7 +28,6 @@ volumes/
 /storage/
 
 # Generated
-sidecar/occt-bridge/build/
 crates/*/bindings/
 
 # OS

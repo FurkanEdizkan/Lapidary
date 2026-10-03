@@ -8,8 +8,10 @@
 //! Measured on 2026-09-06, warm, on a 12-core machine: the ten gates of that day were
 //! **39.7 s**, of which `cargo test` was 27.1 s and the four text checks 0.56 s *combined*.
 //! There are fourteen now — [`steps`] is the list, and this paragraph is a measurement
-//! rather than a count to keep in step with it. The bar was never slow. It was paid too often, and the part that is nearly free was welded to
-//! the part that is not.
+//! rather than a count to keep in step with it. What left with the CAD kernel was never one of
+//! them: an `occt` tier, outside the bar, that built OCCT from source in a container stage.
+//! The bar was never slow. It was paid too often, and the part that is nearly free was welded
+//! to the part that is not.
 //!
 //! So the tiers split on cost, not on importance:
 //!
@@ -19,10 +21,6 @@
 //!   string literal *contents*, which fmt, clippy and every test are blind to.
 //! - [`Tier::Task`] — the whole bar, paid once per task rather than once per commit.
 //! - [`Tier::Slice`] — the same, with the change-gated gates forced on, for a merge.
-//! - [`Tier::Occt`] — not a tier of the bar but the CAD kernel's own check: builds the
-//!   `occt-test` stage of `deploy/Containerfile`, which runs `OcctKernel` against the real
-//!   bridge and OCCT and times the Phase 0 exit. Minutes the first time, since it builds
-//!   OCCT, so it is run when the kernel or the bridge changes, not per task.
 //!
 //! **Nothing is weakened.** No gate is dropped from `Tier::Task`; two are skipped when the
 //! diff proves they cannot have anything to say. `cargo deny check` answers a question
@@ -49,8 +47,6 @@ pub enum Tier {
     Task,
     /// Before a merge. The whole bar, nothing gated.
     Slice,
-    /// The CAD kernel against real OCCT, inside the `occt-test` container stage.
-    Occt,
 }
 
 impl Tier {
@@ -61,11 +57,9 @@ impl Tier {
             None | Some("task") => Ok(Tier::Task),
             Some("fast") => Ok(Tier::Fast),
             Some("slice") => Ok(Tier::Slice),
-            Some("occt") => Ok(Tier::Occt),
             Some(other) => Err(format!(
                 "Unknown verify tier '{other}'. Use `fast` (every commit), `task` (the \
-                 whole bar, the default), `slice` (the whole bar with nothing gated) or \
-                 `occt` (the CAD kernel against real OCCT, in a container)."
+                 whole bar, the default) or `slice` (the whole bar with nothing gated)."
             )),
         }
     }
@@ -148,23 +142,6 @@ fn touches_web(path: &str) -> bool {
 /// which compiles and links every test target — placing it *after* `cargo test` makes both
 /// of its invocations cache hits instead of a third build.
 pub fn steps(tier: Tier, changed: Option<&[String]>) -> Vec<Step> {
-    if tier == Tier::Occt {
-        // `docker`, which Podman users alias; the stage is the whole check, and its own
-        // `RUN cargo test` is what fails.
-        return vec![Step::Command {
-            name: "occt-test stage",
-            program: "docker",
-            args: &[
-                "build",
-                "--progress=plain",
-                "-f",
-                "deploy/Containerfile",
-                "--target",
-                "occt-test",
-                ".",
-            ],
-        }];
-    }
     let mut steps = vec![
         Step::Command {
             name: "fmt",
@@ -422,20 +399,5 @@ mod tests {
             })
             .collect();
         assert_eq!(locked, ["clippy", "test", "export-bindings"]);
-    }
-
-    #[test]
-    fn the_occt_tier_builds_the_occt_test_stage_and_nothing_else() {
-        assert_eq!(Tier::parse(Some("occt")), Ok(Tier::Occt));
-        let got = steps(Tier::Occt, None);
-        assert_eq!(names(&got), vec!["occt-test stage"]);
-        match &got[0] {
-            Step::Command { args, .. } => assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["--target", "occt-test"]),
-                "builds the occt-test stage: {args:?}"
-            ),
-            other => panic!("expected a command, got {other:?}"),
-        }
     }
 }

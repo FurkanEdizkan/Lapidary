@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, expect, test, vi } from 'vitest'
-import { DEFAULT_LIBRARY_ID } from './api'
+import { DEFAULT_LIBRARY_ID, UploadRefused } from './api'
 import { filesFromDrop, hashFile, importBundle, uploadFiles } from './upload'
 import type { PickedFile } from './upload'
 
@@ -130,6 +130,28 @@ test('a drop of many files is committed in one call, not one per file', async ()
 
   expect(calls.filter((call) => call.url.includes('/uploads/commit'))).toHaveLength(1)
   expect(calls.filter((call) => call.url.includes('/uploads/probe'))).toHaveLength(1)
+})
+
+test('a drop the probe refuses carries the server\'s own sentence, and sends nothing', async () => {
+  // The refusal that replaced the CAD kernel. The probe runs before the transfer, so this is
+  // what saves a 2 GB STEP assembly from being moved and then failed per file — and the message
+  // has to reach the person, because "upload probe returned 400" tells them nothing to do next.
+  const picked = [pick('fixture-plate-lp-9000-00.step', 'x'.repeat(64))]
+  const sentence =
+    'Refused "fixture-plate-lp-9000-00.step": Lapidary is a visual library of meshes and does ' +
+    'not read STEP files. Export the part as STL, OBJ or 3MF from your CAD tool and add it again.'
+  const calls: string[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      calls.push(url)
+      return new Response(JSON.stringify({ message: sentence }), { status: 400 })
+    }),
+  )
+
+  await expect(uploadFiles(DEFAULT_LIBRARY_ID, picked, () => {})).rejects.toThrow(UploadRefused)
+  await expect(uploadFiles(DEFAULT_LIBRARY_ID, picked, () => {})).rejects.toThrow(/STL, OBJ or 3MF/)
+  expect(calls.every((url) => url.includes('/uploads/probe'))).toBe(true)
 })
 
 test('a chunk the server already holds resumes from where the server is', async () => {

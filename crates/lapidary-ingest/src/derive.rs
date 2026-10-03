@@ -49,10 +49,10 @@ impl WorkerHandler {
     /// it starts.
     ///
     /// The version is asked per format exactly as [`derive_one`](Self::derive_one) asks it, so
-    /// a rung is stale when rebuilding it here would record a different version. A CAD format on
-    /// a worker without a CAD kernel is skipped, since this worker could not rebuild it. Never
-    /// fails: a database that will not answer at startup costs a rebuild delayed to the next
-    /// start, not a worker that never came up.
+    /// a rung is stale when rebuilding it here would record a different version. The B-rep formats
+    /// are walked and skipped: `kernel_for` refuses them, so there is no version to compare and
+    /// nothing this worker could rebuild. Never fails: a database that will not answer at startup
+    /// costs a rebuild delayed to the next start, not a worker that never came up.
     pub async fn enqueue_stale_derivatives(&self) {
         // Beside the rung sweep and not inside it: a part can be missing its shape profile while
         // every rung it has is current — every part ingested before Phase 6 is. See `shape.rs`.

@@ -33,9 +33,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      # The `api` target, deliberately: the peer role links no CAD kernel, so it must not build
-      # the `worker` target that carries OCCT. `cargo xtask check-deploy` requires exactly this
-      # of every lapidary-server service that is not kernel-linked.
+      # The `api` target, deliberately: the peer role runs no ingest, so it must not build the
+      # `worker` target. `cargo xtask check-deploy` requires exactly this of every
+      # lapidary-server service that is not kernel-linked.
       target: api
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}

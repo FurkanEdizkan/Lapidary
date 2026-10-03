@@ -138,11 +138,15 @@ pub struct WorkerHandler {
     /// Root of the blob store. This crate is the one place in the workspace allowed to
     /// construct a `SourceStore` over it — see `lib.rs`'s module doc.
     pub blob_root: PathBuf,
-    /// Where STEP and IGES files go. `None` on a build or a test with no CAD kernel, where
-    /// such a file fails saying so instead of reaching the mesh parser. A trait object, not
-    /// `OcctKernel`, so this crate needs no feature flag and a test can hand it a kernel
-    /// with no OCCT behind it.
-    pub cad: Option<Arc<dyn Kernel>>,
+    /// A kernel to use instead of [`MeshKernel`]. `None` everywhere a worker really runs —
+    /// there is one kernel and it is in-process.
+    ///
+    /// The seam is kept because it is the only place a test can suspend a job mid-parse, which
+    /// is how the two races over one new path in `tests/handler.rs` are staged at all. It was
+    /// `cad: Option<Arc<dyn Kernel>>`, the OCCT sidecar STEP and IGES went to; those formats are
+    /// refused by name now (see [`kernel_for`](Self::kernel_for)), so a field named for them
+    /// would name something that no longer exists.
+    pub kernel: Option<Arc<dyn Kernel>>,
 }
 
 impl JobHandler for WorkerHandler {
@@ -196,8 +200,9 @@ impl JobHandler for WorkerHandler {
     }
 }
 
-/// The formats that go to the CAD kernel, as `source_format` spells them. The scan walk
-/// accepts these beside the mesh extensions, so the two cannot disagree.
+/// The formats this library refuses, as `source_format` spells them. The scan walk accepts these
+/// beside the mesh extensions, so a `.step` file is refused by name rather than skipped in
+/// silence — see [`lapidary_core::CAD_FORMATS`].
 pub(crate) use lapidary_core::CAD_FORMATS;
 
 impl WorkerHandler {
@@ -302,22 +307,21 @@ impl WorkerHandler {
         }
     }
 
-    /// The kernel for a file of `format`. STEP and IGES go to the CAD kernel, and without
-    /// one they fail here: the mesh parser's "no parser for step" would blame a file for
-    /// what is the build's gap. Everything else goes to the mesh kernel, which answers an
-    /// unknown format itself.
+    /// The kernel for a file of `format`, or the refusal a STEP or IGES file gets.
+    ///
+    /// `Permanent`, and that is the point: the bytes are immutable and there is no longer a
+    /// feature to build in, so a retry would reach exactly the same answer. The sentence names the
+    /// format and what this library does take; it lives in `lapidary-core` because the upload
+    /// route refuses the same files before a byte moves and must say the same thing.
+    ///
+    /// Everything else goes to the mesh kernel, which answers an unknown format itself.
     pub(crate) fn kernel_for(&self, format: &str) -> Result<&dyn Kernel, HandlerError> {
-        if !CAD_FORMATS.contains(&format) {
-            return Ok(&MeshKernel);
+        if CAD_FORMATS.contains(&format) {
+            return Err(HandlerError::Permanent {
+                message: lapidary_core::cad_refusal(format),
+            });
         }
-        self.cad.as_deref().ok_or_else(|| HandlerError::Permanent {
-            message: format!(
-                "This worker was built without a CAD kernel, so it cannot read {} files. \
-                 Rebuild the worker with `--features occt-kernel`; deploy/compose.yaml does \
-                 this for the worker service.",
-                format.to_ascii_uppercase()
-            ),
-        })
+        Ok(self.kernel.as_deref().unwrap_or(&MeshKernel))
     }
 
     /// One file on the ingest mount, start to finish. See this module's doc for the

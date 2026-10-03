@@ -37,7 +37,7 @@ fn handler_over(pool: &PgPool, store: &Path) -> WorkerHandler {
         // source file would find the blob tree there and nothing it could use.
         ingest_dir: store.to_path_buf(),
         blob_root: store.to_path_buf(),
-        cad: None,
+        kernel: None,
     }
 }
 
