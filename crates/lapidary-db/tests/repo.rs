@@ -3899,6 +3899,50 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "and so does a search"
     );
 
+    // **The material filter and the tag filter are both `::text`, and they are adjacent
+    // binds in all three grid queries** (`page`, `sorted_page!` and `search`). Swapping the
+    // two is the one renumbering mistake Postgres cannot catch, so each is asserted to
+    // narrow by its own value and to find nothing under the other's — in every query.
+    let steel_only = GridQuery {
+        material: Some(steel),
+        ..GridQuery::new(library(), 50)
+    };
+    for (sort, what) in [(Sort::Newest, "page"), (Sort::Volume, "sorted")] {
+        assert_eq!(
+            ids(parts.page(&steel_only, sort).await.expect("page")),
+            vec![cylinder.as_uuid()],
+            "the material filter narrows the {what} query by a material"
+        );
+    }
+    assert_eq!(
+        ids(parts.search(&steel_only, "lp").await.expect("search")),
+        vec![cylinder.as_uuid()],
+        "and a search too"
+    );
+    let tag_as_material = GridQuery {
+        material: Some(jig),
+        ..GridQuery::new(library(), 50)
+    };
+    let material_as_tag = GridQuery {
+        tag: Some(steel),
+        ..GridQuery::new(library(), 50)
+    };
+    for (query, what) in [
+        (&tag_as_material, "a tag read as a material"),
+        (&material_as_tag, "a material read as a tag"),
+    ] {
+        for (sort, where_) in [(Sort::Newest, "page"), (Sort::Volume, "sorted")] {
+            assert!(
+                parts.page(query, sort).await.expect("page").is_empty(),
+                "{what} matches nothing on the {where_} query"
+            );
+        }
+        assert!(
+            parts.search(query, "lp").await.expect("search").is_empty(),
+            "{what} matches nothing on a search"
+        );
+    }
+
     let everything = GridQuery::new(library(), 50);
     assert_eq!(
         ids(parts.search(&everything, "welding").await.expect("search")),

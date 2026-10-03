@@ -2639,6 +2639,141 @@ async fn every_b_rep_format_is_refused_by_name_and_ingests_nothing(pool: PgPool)
     assert_eq!(parts, 0, "and no part is added for any of them");
 }
 
+/// **The test R3 exists for: a worker start queues nothing for work nothing can do.**
+///
+/// Four mechanisms used to queue a render for ever, and all four ran from this one call
+/// (`derive.rs`'s `enqueue_stale_derivatives`, which sweeps stale derivatives, stale shape
+/// profiles and centreless revisions in turn). Seeded here with exactly the shapes that
+/// triggered them:
+///
+/// - a `thumbnail` row, which `revisions_missing` would report missing for ever once nothing
+///   fills one;
+/// - `tessellation_l0`/`l1`/`l2`, `structure`, `entities` and `pmi` rows at a kernel version
+///   no build reports, which the per-format `produce` ladder would re-queue for ever;
+/// - a mesh revision with a volume and no centre of mass, which the centre backfill would
+///   queue an L0 rebuild for at every start;
+/// - a part with no L0 at all, which the shape sweep's inner join made invisible — the
+///   silent one.
+///
+/// **Twice**, because once proves only that the first run drained something. The job table
+/// must gain zero rows both times.
+///
+/// The last leg is the positive control, and it is not decoration: `enqueue_stale_derivatives`
+/// logs and swallows every database error, so a sweep whose SQL no longer parses also queues
+/// nothing. An export row at a stale version must still queue exactly one rebuild — without
+/// that leg this test passes on a sweep that does nothing at all.
+///
+/// Written against `derivative.kind` and `job.kind` as strings rather than through
+/// `DerivativeKind`, because the point is rows this build can no longer name: the strings are
+/// in the database on every row ever written, and R4 is what deletes them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    handler.handle(&job_for(CARRIER)).await.expect("ingests");
+
+    // Every dead kind, on every revision, at a version no build reports. Inline rather than
+    // hash-addressed so the seed needs no `blob` rows: `derivative_storage_is_exclusive`
+    // (0004) asks for exactly one of the two, and says nothing about which kind uses which.
+    for kind in [
+        "thumbnail",
+        "tessellation_l0",
+        "tessellation_l1",
+        "tessellation_l2",
+        "structure",
+        "entities",
+        "pmi",
+    ] {
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+             SELECT uuidv7(), r.id, $1, '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+               FROM revision r \
+             ON CONFLICT (revision_id, kind) DO UPDATE \
+                SET kernel_version = 'mesh stl-1+glb-1+cpu-1'",
+        )
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .expect("seeds a derivative of a kind nothing builds any more");
+    }
+    // A mesh revision that has a volume and no centre of mass: what every revision read
+    // before L3 recorded centres looks like.
+    sqlx::query("UPDATE revision SET mass_props_json = NULL")
+        .execute(&pool)
+        .await
+        .expect("takes the centres away");
+    // And the silent one: a part whose latest revision has no L0 at all.
+    sqlx::query("DELETE FROM derivative WHERE kind = 'tessellation_l0'")
+        .execute(&pool)
+        .await
+        .expect("leaves a part with no viewer mesh");
+
+    let queued = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM job")
+            .fetch_one(&pool)
+            .await
+            .expect("counts the queue")
+    };
+    assert_eq!(queued(pool.clone()).await, 0, "the queue starts empty");
+    handler.enqueue_stale_derivatives().await;
+    assert_eq!(
+        queued(pool.clone()).await,
+        0,
+        "a worker start queues nothing for derivatives nothing produces"
+    );
+    handler.enqueue_stale_derivatives().await;
+    assert_eq!(
+        queued(pool.clone()).await,
+        0,
+        "and the second start queues nothing either — a sweep that re-queues for ever is \
+         what this asserts against"
+    );
+
+    // The positive control. An export is still built on demand, so an export row an older
+    // writer left is still swept — and this is what proves the sweep ran at all.
+    let version = MeshKernel.version(&KernelParams {
+        linear_deflection_mm: None,
+        format: "stl".to_owned(),
+        produce: Vec::new(),
+    });
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+         SELECT uuidv7(), r.id, 'export_stl', '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+           FROM revision r JOIN part p ON p.id = r.part_id WHERE p.source_path = $1",
+    )
+    .bind(BRACKET)
+    .execute(&pool)
+    .await
+    .expect("seeds a stale export");
+    handler.enqueue_stale_derivatives().await;
+    let swept: Vec<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT kind, payload FROM job ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("reads the queue");
+    assert_eq!(
+        swept.len(),
+        1,
+        "the sweep is alive: a stale export is queued, and exactly once — {swept:?}"
+    );
+    assert_eq!(swept[0].0, "derive");
+    assert_eq!(swept[0].1["produce"], "export_stl");
+    assert_ne!(
+        version.version, "stl-1+glb-1+cpu-1",
+        "and the seed is stale against what this build reports"
+    );
+    handler.enqueue_stale_derivatives().await;
+    assert_eq!(
+        queued(pool.clone()).await,
+        1,
+        "a rebuild already queued is left to the job that holds it"
+    );
+}
+
 /// A rung an older pipeline wrote is queued when the worker starts and rebuilt at the version
 /// this worker's kernel reports, and nothing current is queued beside it.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
