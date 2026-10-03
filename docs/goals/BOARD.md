@@ -27,6 +27,12 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
 | [P4](P4.md) | The explore landing | 5 | web | G3, G4, G5, P2, P3 | `web/src/routes/explore.tsx`, `explore` strings block | — | open | `feat/explore-landing` |
+| [R1](R1.md) | The card shows a picture; the viewer loads the original | 4 | web (+ one db read) | — | the page query's card picture, `Card.tsx`, `Viewer.tsx`, the engine half of the frontend | — | claimed (lane 1) | `feat/picture-first` |
+| [R2](R2.md) | OCCT out, STEP and IGES refused by name | 4 | Rust + deploy | — | `sidecar/`, `lapidary-cad/src/occt.rs`, `deploy/Containerfile`, `xtask/src/{verify,deploy}.rs`, `kernel_for` | — | claimed (lane 2) | `chore/remove-occt` |
+| [R3](R3.md) | Production stops, and similarity goes with it | 4 | Rust | R1, R2 | `DerivativeKind`, the four producers, `shapes.rs`/`likeness.rs` and their api | 0054 | open | `chore/stop-rendering` |
+| [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | open | `chore/purge-renders` |
+| [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | open | `refactor/mesh-facts-only` |
+| [R6](R6.md) | The rig, and the documents | 5 | tooling + lead | R1, R2, R3 | `scripts/e2e/`, `CLAUDE.md`, `PRODUCT.md`, `FEATURES.md`, `DATA.md`, `ARCHITECTURE.md` | — | open | `docs/visual-library` |
 
 **Wave 1 is closed** (2026-09-26): G3 `f18e0f0`, G6 `4479e1b`, G2 `5fdd5af`, T1 `9818ad2`, each gated on its merged
 tree. Phase 6's second exit is met and measured through containers.
@@ -34,7 +40,19 @@ tree. Phase 6's second exit is met and measured through containers.
 **Wave 2 is closed** (2026-09-27): G4 `36a0ad2`, G1 `8b9f94c`, L1 `8602d52`, G5 `a20b3aa`. **Both Phase 6 exits are
 met**, measured on one stack built from `main` — see the ROADMAP.
 
-**Wave 3 is claimed** (2026-09-27): L2 lane 1, L3 lane 2, P3 lane 3. L4 took lane 1 when L2 merged. **Only one stack may be up at a time** — the machine has about 4 GiB of RAM free and `/` is at 9.6 GB, so G1 and
+**Wave 3 is closed** (2026-09-28): L2 `bac30be`, L3 `3866a62`, P3 `bd362e4`, L4 `fd5c7dd`.
+
+**Wave 4 — the pivot** (owner, 2026-10-03). Lapidary becomes a **visual library**: you look through pictures
+and search metadata, and the 3D view is something you ask for. The render pipeline, the CAD kernel, the
+measurement and assembly machinery and shape similarity all come out — about 10,000 lines and 250 tests. The
+plan and the owner's decisions are in the goal files R1–R6; `docs/ROADMAP.md` carries the ledger.
+
+**The ordering trap, read it before claiming R3:** the viewer must stop needing rungs (R1) *before* rung
+production stops (R3). A part with no rung is **silently un-viewable** — `Viewer.tsx`'s rung effect returns
+early on a null hash, with no error and no spinner.
+
+R1 lane 1 and R2 lane 2 are claimed and disjoint. R3 waits for both. **P1, P2 and P4 stay open**, and R6
+re-scopes P1 (it loses its dependency on shape profiles) and P4 (it loses the near-duplicate line). **Only one stack may be up at a time** — the machine has about 4 GiB of RAM free and `/` is at 9.6 GB, so G1 and
 L1 ask the lead before `scripts/e2e/stack.sh up`. Phase 6's **first** exit (12 widgets in one round trip) is the lead's
 to measure through the rig once G4 and G5 are both merged. Read [`W0.md`](W0.md)'s Record before building
 against the contracts — it says where they differ from W0's stage text.
@@ -46,7 +64,7 @@ Merge order the lead follows: B0 → W0 → **G3 → G2 → G6** (T1 whenever it
 port block; the ROADMAP Phase 6 ledger; FEATURES rows for similarity and near-duplicates and §8 ("per browser until
 auth"); DATA.md §3.8 (`part_shape`, `part_link`, the profile version rule); ARCHITECTURE's layout and events rows.
 
-**Migration numbers:** 0047–0048 W0 · 0049 G1 · 0050 spare (lead) · 0051 L3 · 0052 L2 · 0053 P1. Nobody takes the next free
+**Migration numbers:** 0047–0048 W0 · 0049 G1 · 0050 spare (lead) · 0051 L3 · 0052 L2 · 0053 P1 · 0054 R3 · 0055 R4. Nobody takes the next free
 number. `0047` restated `job_outcome_known` to add `profiled`: a later migration that restates it again keeps
 `profiled` and every value before it.
 
