@@ -128,7 +128,6 @@ export const strings = {
     removed: 'Removed parts — Lapidary',
     sharing: 'Shared libraries — Lapidary',
     dashboard: 'Dashboard — Lapidary',
-    duplicates: 'Possible duplicates — Lapidary',
   },
   /**
    * The bar above the grid: where you are, what you are looking for, how it is laid out, and
@@ -228,7 +227,7 @@ export const strings = {
     retryLabel: (label: string) => `Try again — ${label}`,
     empty: 'Nothing on this dashboard yet',
     emptyLead:
-      'Add a widget for whatever you want in front of you: what a library holds, what it occupies, what the worker is still doing, or which parts look like duplicates of each other.',
+      'Add a widget for whatever you want in front of you: what a library holds, what it occupies, what the worker is still doing, or the parts added most recently.',
 
     /** The seven kinds, as the registry names them. A kind added in Rust needs a label here. */
     storageLabel: 'Library storage',
@@ -244,7 +243,6 @@ export const strings = {
     facetMaterialLabel: 'Materials',
     facetTagLabel: 'Tags',
     queueLabel: 'Jobs',
-    duplicatesLabel: 'Possible duplicates',
     /**
      * Which library a widget is about, in its heading.
      *
@@ -273,18 +271,6 @@ export const strings = {
       if (failed > 0) clauses.push(`${failed.toLocaleString('en-US')} failed`)
       return clauses.length === 0 ? 'Nothing queued.' : `${clauses.join(' · ')}.`
     },
-    /** Groups of parts that look like each other, and the page that shows them. */
-    duplicatesLine: (clusters: number) =>
-      clusters === 1 ? '1 group looks alike.' : `${clusters.toLocaleString('en-US')} groups look alike.`,
-    duplicatesNone: 'Nothing looks alike.',
-    /**
-     * Parts the worker has not profiled yet, so nothing compared them. Said whether or not
-     * there are groups — a library with none and forty unprofiled parts is the case where
-     * leaving it out would be most misleading, which is the queue page's rule too.
-     */
-    duplicatesUnprofiled: (parts: number) =>
-      parts === 1 ? '1 part not compared yet.' : `${parts.toLocaleString('en-US')} parts not compared yet.`,
-    duplicatesReview: 'Review them',
 
     /** A key that ran out of time or failed, while every other key on the page rendered. */
     timedOut: 'This took longer than two seconds to work out.',
@@ -366,7 +352,18 @@ export const strings = {
     loading: 'Loading parts…',
     failed: 'Could not load the parts in this library. Check that the api service is running, then reload.',
     thumbnailAlt: (name: string) => `Rendered preview of ${name}`,
-    noThumbnail: 'No preview yet',
+    /** The part's own picture, which is what a card shows since R1. */
+    pictureAlt: (name: string) => `Picture of ${name}`,
+    /**
+     * A card for a part nobody has given a picture to.
+     *
+     * **It names the format rather than apologising.** "No preview yet" was true of a render
+     * that had not been drawn; nothing renders now, so a picture is something a person adds, and
+     * a well that says "not yet" about it is a well that blames us for a decision nobody made.
+     * The format is the one useful thing we know about a part with no picture — it says what the
+     * file is and what will open it.
+     */
+    noPicture: (format: string | null) => (format === null ? 'No picture' : format.toUpperCase()),
     triangles: (count: number) =>
       count === 1 ? '1 triangle' : `${count.toLocaleString('en-US')} triangles`,
     /**
@@ -616,15 +613,6 @@ export const strings = {
     assemblyCounts: (parts: number, prototypes: number) =>
       `${parts.toLocaleString('en-US')} ${parts === 1 ? 'part' : 'parts'}, ${prototypes.toLocaleString('en-US')} distinct`,
     assemblyFailed: 'Could not load the assembly tree. Reload the page to try again.',
-    /** A part, or a branch of parts, taken out of the 3D view and put back. */
-    hide: 'Hide',
-    show: 'Show',
-    isolate: 'Isolate',
-    showAll: 'Show all parts',
-    /** The buttons' whole names, so a screen reader hears which part each acts on. */
-    hidePart: (name: string) => `Hide ${name}`,
-    showPart: (name: string) => `Show ${name}`,
-    isolatePart: (name: string) => `Show only ${name}`,
     /** A part's revisions, shown once it has more than one (Phase 4 slice 1). */
     history: 'History',
     historyRevision: (label: string) => `Revision ${label}`,
@@ -668,11 +656,6 @@ export const strings = {
      */
     centreQueued: 'Not recorded yet — a re-read is queued for it',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
-    /** The overlay: the From revision drawn as a grey ghost over the part (Phase 4 slice 2). */
-    ghost: 'Show From as a ghost in the 3D view',
-    ghostNoMesh: (label: string) => `Revision ${label} has no mesh to draw as a ghost.`,
-    ghostCoarse:
-      'The ghost is that revision’s coarse preview, so a small difference along its outline may be the preview rather than the part.',
     /** Who has the part checked out, and since when (Phase 4 slice 1). */
     checkedOut: 'Checked out',
     /** A part pulled from somebody's shared library (sharing S3): who it came from. */
@@ -688,135 +671,6 @@ export const strings = {
     /** Recorded as who released a lock. The page has no signed-in person to name yet. */
     releasedBy: 'the part page',
   },
-  /**
-   * Parts that look alike (Phase 6): identical, near-duplicate, similar, and what a person decides about a
-   * pair. Goal G6's. "Fold into", never "merge": CLAUDE.md keeps "no merge" for versioning.
-   */
-  likeness: {
-    /** The part page's one section, and what the review queue calls the same thing. */
-    title: 'Looks alike',
-    loading: 'Looking for parts that look like this one…',
-    failed:
-      'Could not look for parts that look like this one. Check that the api service is running, then reload.',
-    /**
-     * `Likeness.profiled === false`. Said instead of the lists, because four empty lists read
-     * as "nothing here is alike" when the truth is that nothing has been compared yet — which is
-     * the difference between an answer and the absence of one.
-     */
-    unprofiled:
-      'This part has no shape profile yet, so its shape has not been compared with anything. One is made shortly after a part is added — reload then.',
-    /**
-     * The three kinds of alike, exactly as `phase-6.md` fixes them. A person reads one of these
-     * words and never a number: there is no similarity score in the interface, on purpose, because
-     * a figure like 0.038 invites a judgement nobody can calibrate.
-     */
-    identical: 'Identical',
-    identicalNote: 'The same bytes as this part — their source files have one hash.',
-    nearDuplicates: 'Near-duplicates',
-    nearNote: 'Alike in shape and within 2% in size, and nobody has decided about them yet.',
-    variants: 'Variants',
-    variantsNote: 'Parts somebody said belong with this one.',
-    similar: 'Similar',
-    similarNote: 'The closest shapes in this library, whatever their size.',
-    /** Profiled, compared, and nothing came back. Distinct from `unprofiled`, which is "not asked yet". */
-    nothing: 'Nothing else in this library looks like this part.',
-    /**
-     * The three decisions, and the only three. Each button names its own part in its accessible
-     * label: a list of five rows whose buttons all read "Fold into this" tells a screen reader
-     * nothing about which row it is on. Named by path, because parts that look alike are exactly
-     * the parts that share a name.
-     *
-     * **Each label begins with the button's visible words**, which is WCAG 2.5.3 (Label in Name,
-     * Level A) and not a style: somebody driving this by voice says "click Fold into this", and a
-     * name that reads "Fold spares/LP-1042-03.stl into this part" matches nothing they said. The
-     * pattern is `failure.retryOne`'s — a visible "Retry", a name of "Retry <path>".
-     */
-    fold: 'Fold into this',
-    foldLabel: (path: string) => `Fold into this — ${path}`,
-    variant: 'Link as variant',
-    variantLabel: (path: string) => `Link as variant — ${path}`,
-    distinct: 'Not the same',
-    distinctLabel: (path: string) => `Not the same — ${path}`,
-    working: 'Working…',
-    actionFailed: 'That did not go through. Nothing changed — try again.',
-    /**
-     * The fold dialog. "Fold into", never "merge" — `CLAUDE.md` keeps "merge" out of this product
-     * entirely, and versioning is where it is reserved from.
-     */
-    foldTitle: 'Fold one part into the other?',
-    /**
-     * Three facts, all of them required. Which part goes and which is kept, by *path*: two
-     * near-duplicates usually carry the same name, and a confirmation that cannot be answered
-     * correctly is worse than none — `removal.purgeConfirm` names a part by path for the same
-     * reason. That the fold takes nothing away: this is the soft delete, so the part keeps its
-     * tags, sources, images and revisions, and none of its bytes move. And that Restore undoes
-     * it, which is the sentence that makes the decision cheap enough to make.
-     */
-    foldConfirm: (from: string, into: string) =>
-      `Fold “${from}” into “${into}”? “${from}” is hidden from the library, the way Remove hides a part. Nothing is deleted and nothing moves — it keeps its tags, files and history, the Removed list says where it went, and Restore brings it back.`,
-    foldConfirmAction: 'Fold into this part',
-    /**
-     * On the Removed list: where a folded part went, as a link to the part that was kept, so
-     * a fold is never a dead end. The whole sentence is the link rather than the name alone —
-     * a fragment around a name is not a sentence a translator can move.
-     */
-    foldedInto: (name: string) => `Folded into ${name}`,
-    /**
-     * The finished upload or scan line's offer. It counts *parts just added that are in a group
-     * with something else*, not groups: a person who just uploaded eleven files wants to know how
-     * many of them are already here, and the number of groups is not that number.
-     */
-    reviewOffer: (count: number) =>
-      count === 1
-        ? '1 part just added looks like another part in this library.'
-        : `${count.toLocaleString('en-US')} parts just added look like other parts in this library.`,
-    review: 'Review',
-    /** `/duplicates`, the review queue. Its title is `titles.duplicates`. */
-    queueTitle: 'Possible duplicates',
-    queueLead:
-      'Parts in this library that look like each other, worked out when this page is opened and never stored anywhere. Decide about a pair and it leaves this list for good.',
-    queueEmpty: 'No two parts in this library look like duplicates of each other.',
-    /**
-     * Said whenever `DuplicateClusters.unprofiled` is not zero, so the page never implies it
-     * checked a library it only partly checked.
-     */
-    queueUnprofiled: (count: number) =>
-      count === 1
-        ? '1 part has no shape profile yet and was not compared.'
-        : `${count.toLocaleString('en-US')} parts have no shape profile yet and were not compared.`,
-    queueCount: (count: number) =>
-      count === 1 ? '1 group to look at' : `${count.toLocaleString('en-US')} groups to look at`,
-    /**
-     * A group's heading. Every action in the group is relative to this one part — the largest of
-     * them, which is the order the wire sends — so the heading has to name it before the buttons
-     * say "into this part".
-     */
-    clusterKept: (path: string) => `These look like “${path}”`,
-    /** Which kind of alike the group is. Byte-identical carries no shape judgement at all. */
-    sameBytes: 'The same bytes',
-    alikeShape: 'Alike in shape',
-  },
-  /**
-   * The three-step removal, and the wording rules `CLAUDE.md` makes non-negotiable:
-   * *"We never delete user data implicitly. Delete is soft. Purge is separate and
-   * explicit. Blobs quarantine 30 days before removal. Derivative cache eviction is a
-   * different action with different wording and must never read as data loss."*
-   *
-   * Three actions with three vocabularies, and the differences are load-bearing:
-   *
-   * - **Remove** never says "delete". It is reversible indefinitely and touches no bytes,
-   *   so language that implies destruction would make people hesitate over an action that
-   *   costs nothing — and would spend the alarm that purge actually needs.
-   * - **Purge** says "permanently", names the part, and is never reachable in one click
-   *   from the library. It is the only word here that means what it says.
-   * - **Eviction** (Phase 4, with the tiering job) says "free cache space" and never
-   *   "delete": it removes only bytes we produced and can reproduce, which is why it is
-   *   the one of the three that needs no undo. Its strings live here when it ships;
-   *   the boundary is written down now so the second one does not borrow the first one's
-   *   words.
-   *
-   * No number here is ever labelled "freed". A purge frees nothing on the day it runs.
-   */
   removal: {
     remove: 'Remove from library',
     /** Said before the click, so the reassurance arrives when the hesitation does. */
@@ -1758,15 +1612,6 @@ export const strings = {
       return `${symbol} ${name} ${zone}${from}`.trim()
     },
     datum: (name: string) => `Datum ${name}`,
-    /** The toggle beside the list that draws each annotation beside its face in the 3D view. */
-    showInView: 'Show in the 3D view',
-    /** Beside an annotation the view cannot place, once the list is shown in the view. */
-    notDrawn: (wholePart: boolean) =>
-      wholePart
-        ? 'not in the view: it applies to the whole part'
-        : 'not in the view: its face is not a plane, cylinder, cone, sphere or torus',
-    /** In place of those reasons when the faces themselves could not be read, so no face is blamed. */
-    facesUnread: 'The view draws none of these: the faces of this part could not be read. Reload the page to try again.',
     /** Where an annotation applies: the kind of face measurement reads there, or the whole part. */
     face: (surface: string | null) =>
       surface === null
@@ -1917,65 +1762,29 @@ export const strings = {
   },
 
   /** The 3D view in the quick look and on the part's page. */
+  /**
+   * The 3D view — **asked for, never arriving on its own** (R1). Lapidary is a visual library:
+   * a card and a part's page show the part's picture, and the view is what somebody presses
+   * **view** for, at which point the browser loads the original file itself.
+   */
   viewer: {
     label: (name: string) => `3D view of ${name}`,
-    /** Under the rendered preview where the browser cannot draw 3D, so its absence is explained. */
-    noWebGL: 'This browser cannot draw the 3D view here, so this is the rendered preview.',
-    refining: 'Loading more detail…',
-    failed: 'The 3D view could not load. The rendered preview is shown instead.',
-    ghostFailed: 'The earlier revision’s mesh could not load, so no ghost is drawn.',
-  },
-  /**
-   * The measuring tools under the 3D view. A value is exact only where it was read from an
-   * analytic CAD entity — a cylinder's radius, a plane's equation — and every other one carries
-   * `detail.approximate` through `Figure`, the same mark the part's own figures carry.
-   */
-  measure: {
-    label: 'Measure',
-    tools: {
-      distance: 'Point to point',
-      edge: 'Edge length',
-      diameter: 'Diameter',
-      angle: 'Angle',
-      wall: 'Wall thickness',
-    },
-    prompts: {
-      distance: 'Click two points on the part.',
-      edge: 'Click the corner at each end of the edge.',
-      diameter: 'Click a round face, or three points around a round edge.',
-      angle: 'Click two faces, or a cone for its included angle.',
-      wall: 'Click a wall. Its thickness is measured straight through it.',
-    },
-    /** Picks wait for the finest mesh, so no value is read off a coarser one than the part has. */
-    loading: 'Loading the full-detail mesh to measure on…',
-    unavailable:
-      'The full-detail mesh could not be built, so this part cannot be measured here. Reopen the part to try again.',
-    noWall: 'Nothing is opposite that point, so there is no wall to measure. The mesh may be open there.',
-    millimetres: (value: number) => `${fixed(value)} mm`,
-    degrees: (value: number) => `${fixed(value)}°`,
-  },
-  /**
-   * The section plane, beside the measuring tools. A cut changes what is drawn and what a click can
-   * meet, never a reading taken from what is left, and it is open: it shows the part's inside
-   * surfaces rather than a filled face.
-   */
-  section: {
-    label: 'Section',
-    off: 'Off',
-    axes: { x: 'X', y: 'Y', z: 'Z' },
-    position: 'Where the cut is',
-    flip: 'Flip',
-    /** Beside a cut through a mesh measured open: it has no inside, so nothing is filled. */
-    open: 'This mesh is open, so the cut shows no filled face.',
-    /** Beside a cut through a mesh nobody measured: it might be open, so nothing is filled. */
-    unknown: 'Whether this mesh is closed was not measured, so the cut shows no filled face.',
-  },
-  /** Drawing an assembly's parts apart, under the section controls. */
-  explode: {
-    label: 'Explode',
-    /** In place of the measuring line while the parts are apart. */
-    measuringOff:
-      'Measuring is off, and so are PMI labels, while the parts are apart: a distance between moved parts is not one on the assembly, and a label would stay where its face was. Slide back to measure.',
+    /** The press that loads the model. Named for what it does, not for the technology. */
+    view: 'View in 3D',
+    /** While the original file is on its way and being read. */
+    loading: 'Loading the model…',
+    /** Beside the picture where the browser cannot draw 3D, so the missing button is explained. */
+    noWebGL: 'This browser cannot draw 3D here, so there is no view. The download is unaffected.',
+    failed:
+      'This model could not be drawn in the browser. Download it and open it in your own tool — the file itself is unaffected, and large or unusual meshes are the common reason.',
+    /**
+     * A format with no loader in the browser. STEP parts never offer **view** at all, so this is
+     * reached by a bookmark or a format added to the button's list before its loader — and it
+     * names the format, because "could not be drawn" without it sends somebody to look at the
+     * file rather than at us.
+     */
+    unviewable: (format: string) =>
+      `Lapidary cannot draw ${format.toUpperCase()} in the browser. Download the file and open it in a tool that reads it.`,
   },
   quickLook: {
     /**

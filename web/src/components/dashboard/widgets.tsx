@@ -1,9 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import { strings } from '../../lib/strings'
-import { breakable } from '../Card'
+import { breakable, pictureStyle } from '../Card'
 import { StorageTotals } from '../Storage'
 import type {
-  DuplicateSummary,
   FacetKind,
   FacetValue,
   InstanceStorageView,
@@ -13,12 +12,11 @@ import type {
 import type { QueueSummary } from '../../lib/types'
 
 /**
- * What each of the seven widgets draws, once its value has arrived.
+ * What each of the six widgets draws, once its value has arrived.
  *
  * One module rather than a file per kind: every one of these is a paragraph or a short list,
- * and seven files of eight lines would put the shared row — a thumbnail, a name, a path — in
- * whichever of them was written first and import it sideways. `Likeness.tsx` made the same
- * call for the same reason and said so.
+ * and six files of eight lines would put the shared row — a picture, a name, a path — in
+ * whichever of them was written first and import it sideways.
  *
  * Nothing here fetches. Every value on this page came out of the one resolve, and a widget
  * that read anything of its own would be the per-widget request `FEATURES.md` §8 refuses.
@@ -75,8 +73,14 @@ export function PartsBody({ parts }: { parts: readonly PartCard[] }) {
       {parts.map((part) => (
         <li key={part.id} className="flex items-center gap-2.5 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
           <span className="grid size-8 flex-none place-items-center overflow-hidden rounded-[3px] bg-[var(--color-raised)] p-[2px]">
-            {part.thumbnail === null ? null : (
-              <img src={part.thumbnail} alt="" className="h-full w-full object-contain" />
+            {/* The part's own picture, with the render behind it while there still is one. */}
+            {(part.image?.src ?? part.thumbnail) === null ? null : (
+              <img
+                src={part.image?.src ?? part.thumbnail ?? undefined}
+                alt=""
+                className="h-full w-full"
+                style={pictureStyle(part.image)}
+              />
             )}
           </span>
           <span className="min-w-0 grow">
@@ -134,27 +138,3 @@ export function QueueBody({ value }: { value: QueueSummary }) {
   return <p className={FIGURE}>{strings.dashboard.queueLine(value.pending, value.running, value.failed)}</p>
 }
 
-/**
- * How many groups of look-alikes there are, and how many parts nothing compared.
- *
- * No score, here or anywhere: `phase-6.md` settles it, and the wire carries none. The count of
- * unprofiled parts is shown even when there are no groups, because that is the case where a
- * bare "nothing looks alike" would be a claim about a library nobody has finished checking.
- */
-export function DuplicatesBody({ value, library }: { value: DuplicateSummary; library: string }) {
-  return (
-    <div className={`${FIGURE} flex flex-col gap-1`}>
-      <p>{value.clusters === 0 ? strings.dashboard.duplicatesNone : strings.dashboard.duplicatesLine(value.clusters)}</p>
-      {value.unprofiled === 0 ? null : <p>{strings.dashboard.duplicatesUnprofiled(value.unprofiled)}</p>}
-      {value.clusters === 0 ? null : (
-        <Link
-          to="/duplicates"
-          search={{ library }}
-          className="ease-mechanical self-start text-[var(--color-accent)] duration-[var(--duration-fast)] hover:underline"
-        >
-          {strings.dashboard.duplicatesReview}
-        </Link>
-      )}
-    </div>
-  )
-}

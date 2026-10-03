@@ -2,9 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { fetchLibraries, fetchSavedFilters } from '../../lib/api'
 import { MAX_LIMIT, MAX_WIDGETS, nextKey, widgetFrom } from '../../lib/dashboard'
-import type { StoredLayout, StoredWidget } from '../../lib/dashboard'
+import type { DrawnWidget, StoredLayout, StoredWidget } from '../../lib/dashboard'
 import { strings } from '../../lib/strings'
-import type { FacetKind, LibraryId, SavedFilterId, Widget } from '../../lib/types'
+import type { FacetKind, LibraryId, SavedFilterId } from '../../lib/types'
 import { Dialog } from '../Dialog'
 import { KINDS, registry, type Field } from './registry'
 
@@ -35,7 +35,7 @@ const OPENER =
 
 /** What the form is holding, before it is a `Widget`. Loose on purpose: {@link widgetFrom} judges it. */
 type Draft = {
-  kind: Widget['kind']
+  kind: DrawnWidget['kind']
   library: LibraryId
   filter: SavedFilterId | ''
   facet: FacetKind
@@ -243,7 +243,7 @@ function AddWidgetDialog({
   layout: StoredLayout
   library: LibraryId
   onClose: () => void
-  onAdd: (widget: Widget, group: string, libraryName: string | null) => void
+  onAdd: (widget: DrawnWidget, group: string, libraryName: string | null) => void
 }) {
   const libraries = useLibraries(library)
   const [group, setGroup] = useState(layout.groups[0]?.id ?? '')
@@ -262,7 +262,7 @@ function AddWidgetDialog({
         <select
           className={INPUT}
           value={draft.kind}
-          onChange={(event) => setDraft({ ...draft, kind: event.target.value as Widget['kind'] })}
+          onChange={(event) => setDraft({ ...draft, kind: event.target.value as DrawnWidget['kind'] })}
         >
           {KINDS.map((kind) => (
             <option key={kind} value={kind}>
@@ -310,7 +310,7 @@ export function WidgetSettings({
 }: {
   stored: StoredWidget
   onClose: () => void
-  onSave: (widget: Widget) => void
+  onSave: (widget: DrawnWidget) => void
 }) {
   const configured = stored.widget
   const libraryOf = configured.kind === 'instanceStorage' ? '' : configured.library

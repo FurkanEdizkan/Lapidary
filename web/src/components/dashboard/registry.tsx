@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react'
 import { strings } from '../../lib/strings'
-import type { StoredWidget } from '../../lib/dashboard'
+import type { DrawnWidget, StoredWidget } from '../../lib/dashboard'
 import type { FacetKind, Widget, WidgetResult, WidgetValue } from '../../lib/types'
 import type { Limits, Size } from './layout'
 import {
-  DuplicatesBody,
   FacetBody,
   InstanceStorageBody,
   PartsBody,
@@ -36,10 +35,10 @@ import {
 /** A control a kind's settings form offers. */
 export type Field = 'library' | 'filter' | 'facet' | 'limit'
 
-type ValueOf<K extends Widget['kind']> = Extract<WidgetValue, { kind: K }>['value']
-type WidgetOf<K extends Widget['kind']> = Extract<Widget, { kind: K }>
+type ValueOf<K extends DrawnWidget['kind']> = Extract<WidgetValue, { kind: K }>['value']
+type WidgetOf<K extends DrawnWidget['kind']> = Extract<DrawnWidget, { kind: K }>
 
-export type WidgetSpec<K extends Widget['kind'] = Widget['kind']> = Limits & {
+export type WidgetSpec<K extends DrawnWidget['kind'] = DrawnWidget['kind']> = Limits & {
   /** What the kind is called, in its heading and in the Add menu. */
   label: string
   /** The size a new one of these is added at. */
@@ -48,7 +47,7 @@ export type WidgetSpec<K extends Widget['kind'] = Widget['kind']> = Limits & {
   body: (value: ValueOf<K>, widget: WidgetOf<K>) => ReactNode
 }
 
-export const registry: { [K in Widget['kind']]: WidgetSpec<K> } = {
+export const registry: { [K in DrawnWidget['kind']]: WidgetSpec<K> } = {
   storage: {
     label: strings.dashboard.storageLabel,
     min: { w: 3, h: 2 },
@@ -97,21 +96,13 @@ export const registry: { [K in Widget['kind']]: WidgetSpec<K> } = {
     fields: ['library'],
     body: (value) => <QueueBody value={value} />,
   },
-  duplicates: {
-    label: strings.dashboard.duplicatesLabel,
-    min: { w: 3, h: 2 },
-    max: { w: 6, h: 4 },
-    size: { w: 4, h: 2 },
-    fields: ['library'],
-    body: (value, widget) => <DuplicatesBody value={value} library={widget.library} />,
-  },
 }
 
 /** The kinds in the order the Add menu offers them: the two cheapest first. */
-export const KINDS = Object.keys(registry) as Widget['kind'][]
+export const KINDS = Object.keys(registry) as DrawnWidget['kind'][]
 
 /** A kind's limits, for `layout.ts`, which is given them rather than reading this table. */
-export function limitsOf(widget: Widget): Limits {
+export function limitsOf(widget: DrawnWidget): Limits {
   const spec = registry[widget.kind]
   return { min: spec.min, max: spec.max }
 }
@@ -123,7 +114,9 @@ export function limitsOf(widget: Widget): Limits {
  * nested one, so a `switch` on `pair.widget.kind` would leave `pair.value` the whole union and
  * every renderer would need a cast. With the kind here, one `switch` narrows both.
  */
-type Drawable = { [K in Widget['kind']]: { kind: K; widget: WidgetOf<K>; value: ValueOf<K> } }[Widget['kind']]
+type Drawable = {
+  [K in DrawnWidget['kind']]: { kind: K; widget: WidgetOf<K>; value: ValueOf<K> }
+}[DrawnWidget['kind']]
 
 /**
  * Draw one widget's value.
@@ -133,7 +126,7 @@ type Drawable = { [K in Widget['kind']]: { kind: K; widget: WidgetOf<K>; value: 
  * is a server that broke that promise — drawn as nothing rather than handed to the wrong
  * renderer, which would read `value.parts` off a `QueueSummary`.
  */
-export function drawValue(widget: Widget, value: WidgetValue): ReactNode {
+export function drawValue(widget: DrawnWidget, value: WidgetValue): ReactNode {
   if (widget.kind !== value.kind) return null
   const pair = { kind: widget.kind, widget, value: value.value } as Drawable
   switch (pair.kind) {
@@ -149,11 +142,9 @@ export function drawValue(widget: Widget, value: WidgetValue): ReactNode {
       return registry.facet.body(pair.value, pair.widget)
     case 'queue':
       return registry.queue.body(pair.value, pair.widget)
-    case 'duplicates':
-      return registry.duplicates.body(pair.value, pair.widget)
   }
-  // Exhaustive: an eighth kind in Rust makes `pair` something other than `never` here, and this
-  // line is the second place — after the table above — that refuses to compile until it is drawn.
+  // Exhaustive: another drawn kind makes `pair` something other than `never` here, and this line
+  // is the second place — after the table above — that refuses to compile until it is drawn.
   const unhandled: never = pair
   return unhandled
 }

@@ -89,8 +89,6 @@ export function Grid({
   onToggle,
   onSelectAll,
   onOpen,
-  onHover,
-  spins = false,
   onLook,
 }: {
   parts: readonly PartCard[]
@@ -105,12 +103,8 @@ export function Grid({
   /** `range` is a shift-click: everything from the last part toggled to this one. */
   onToggle: (part: PartId, range: boolean) => void
   onSelectAll: () => void
-  /** A card asks to be looked at, from where its render sits. */
+  /** A card asks to be looked at, from where its picture sits. */
   onOpen: (part: PartCard, from: DOMRect) => void
-  /** The pointer is over a card: the moment to warm its rung. */
-  onHover: (part: PartCard) => void
-  /** Whether a card turns its part under a resting pointer or focus. See `turntable.ts`. */
-  spins?: boolean
   /** Space on a card's name. See `StageLook`. */
   onLook?: (part: PartCard, from: DOMRect) => void
 }) {
@@ -229,8 +223,6 @@ export function Grid({
             selected={selected.has(part.id)}
             onToggle={onToggle}
             onOpen={onOpen}
-            onHover={onHover}
-            spins={spins && layout !== 'list'}
             onLook={onLook}
           />
         </li>

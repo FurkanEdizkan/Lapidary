@@ -1,16 +1,14 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useRef, type ReactNode } from 'react'
-import { reduced } from '../lib/motion'
-import { hasWebGL } from '../lib/viewer-math'
+import { useRef, type CSSProperties, type ReactNode } from 'react'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
-import type { BlobHash, PartCard, PartId } from '../lib/types'
+import type { PartCard, PartId, PartImage } from '../lib/types'
 
 /**
- * The origin for a tile with no render yet. `flipFrom` declines on a zero-area rectangle, so
- * a part still waiting on the worker opens its panel without a flight rather than bursting
- * out of a point.
+ * The origin for a tile with no picture. `flipFrom` declines on a zero-area rectangle, so a
+ * part nobody has given a picture opens its panel without a flight rather than bursting out
+ * of a point.
  */
 export const DEFAULT_ORIGIN = new DOMRect(0, 0, 0, 0)
 
@@ -76,28 +74,19 @@ const FOOTER: Record<Layout, string> = {
   list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
 }
 
-/** How long the pointer rests on a card before it turns: long enough that sweeping past starts nothing. */
-const SPIN_INTENT_MS = 150
-
 /**
- * Start the turntable in `well`, unless this reader or this browser should not have it: reduced
- * motion (the thumbnail already is the still, lit picture), no WebGL, or — for a pointer — a screen
- * that cannot hover, where a tap fires `mouseenter` on its way to opening the part. The three.js
- * chunk is fetched here, on the first spin, and never for a visitor who does not hover a card.
+ * A stored framing as the two CSS properties that apply it (`0019_image_framing.sql`).
+ *
+ * **The browser does the framing**, here and in the gallery's `Framed` alike, so this is one
+ * definition rather than two: a picture cropped one way on a card and another way on the part's
+ * own page would be two answers to the same question. `null` is the rendered thumbnail, which
+ * has no framing of its own and is shown whole.
  */
-function turn(well: HTMLElement, hash: BlobHash, fromPointer: boolean): () => void {
-  if (reduced() || !hasWebGL()) return () => {}
-  if (fromPointer && !window.matchMedia('(hover: hover)').matches) return () => {}
-  let stop: (() => void) | null = null
-  let cancelled = false
-  void import('./turntable')
-    .then((turntable) => {
-      if (!cancelled) stop = turntable.spin(well, hash)
-    })
-    .catch(() => undefined)
-  return () => {
-    cancelled = true
-    stop?.()
+export function pictureStyle(image: PartImage | null): CSSProperties {
+  if (image === null) return { objectFit: 'contain' }
+  return {
+    objectFit: image.fit === 'contain' ? 'contain' : 'cover',
+    objectPosition: `${image.focusX * 100}% ${image.focusY * 100}%`,
   }
 }
 
@@ -111,8 +100,6 @@ export function Card({
   selected,
   onToggle,
   onOpen,
-  onHover,
-  spins = false,
   onLook,
 }: {
   part: PartCard
@@ -124,38 +111,11 @@ export function Card({
   selected: boolean
   onToggle: (part: PartId, range: boolean) => void
   onOpen: (part: PartCard, from: DOMRect) => void
-  onHover: (part: PartCard) => void
-  /** Whether resting on this card turns its part. Off while a quick look is open or parts are being picked. */
-  spins?: boolean
-  /** Space on the name: the part on the quick look's stage, from where its render sits. */
+  /** Space on the name: the part on the quick look's stage, from where its picture sits. */
   onLook?: (part: PartCard, from: DOMRect) => void
 }) {
   const nameId = `part-name-${part.id}`
   const well = useRef<HTMLDivElement>(null)
-  const turning = useRef<{ timer: ReturnType<typeof setTimeout> | null; stop: (() => void) | null }>({
-    timer: null,
-    stop: null,
-  })
-  const halt = () => {
-    const { timer, stop } = turning.current
-    if (timer !== null) clearTimeout(timer)
-    stop?.()
-    turning.current = { timer: null, stop: null }
-  }
-  const intend = (fromPointer: boolean) => {
-    const hash = part.tessellationL0
-    if (!spins || hash === null) return
-    halt()
-    turning.current.timer = setTimeout(() => {
-      turning.current.timer = null
-      if (well.current !== null) turning.current.stop = turn(well.current, hash, fromPointer)
-    }, SPIN_INTENT_MS)
-  }
-  // A quick look opening, or selection starting, stops a card already turning.
-  useEffect(() => {
-    if (!spins) halt()
-  }, [spins])
-  useEffect(() => halt, [])
   const directory = part.directory
   // A model still in the shared store has no directory to rename, and the move route
   // refuses it. The card withholds the move rather than letting the user discover that
@@ -167,14 +127,22 @@ export function Card({
   // in the attribute, because a literal inside a user-visible attribute reads to the
   // bare-strings gate as copy.
   const clampedName = layout === 'list' ? undefined : part.name
+  /*
+    **The part's own picture, and the rendered thumbnail only as a fallback.** R1 turns the card
+    from a render into a picture, and R3 then stops rendering; until the renders are purged a part
+    nobody has photographed still has one, and showing it is better than an empty well. Once they
+    are gone this is the part's image or the honest placeholder, with nothing in between.
+  */
+  const src = part.image?.src ?? part.thumbnail
   return (
     <article
       aria-labelledby={nameId}
-      onMouseEnter={() => {
-        onHover(part)
-        intend(true)
-      }}
-      onMouseLeave={halt}
+      /*
+        **No hover handler at all, and that is a rule rather than an omission** (R1). A card's
+        picture is the picture; nothing loads, fetches, draws or warms because a pointer crossed a
+        tile. The spin that used to live here fetched a mesh per hovered card, which is fifty
+        original files for one sweep down a grid — and `Grid.test.tsx` asserts the absence.
+      */
       /*
         The whole card opens the panel. It stays a handler rather than an anchor because the
         name inside it is itself a link, and an anchor inside an anchor is invalid HTML that
@@ -244,19 +212,20 @@ export function Card({
         />
       ) : null}
       <div ref={well} className={WELL[layout]}>
-        {part.thumbnail === null ? (
-          // Never an <img> with an empty src: a broken-image glyph reads as a failure,
-          // and "the worker has not rasterized this yet" is not one.
-          // A 46px list well cannot hold the sentence, and the row's name already says which
-          // part this is — so there it is read, not drawn.
+        {src === null ? (
+          // Never an <img> with an empty src: a broken-image glyph reads as a failure, and
+          // "nobody has given this part a picture" is not one. It names the format instead —
+          // a 46px list well cannot hold even that, and the row's name already says which
+          // part this is, so there it is read rather than drawn.
           <span className={layout === 'list' ? 'sr-only' : 'text-xs text-[var(--color-muted)]'}>
-            {strings.parts.noThumbnail}
+            {strings.parts.noPicture(part.sourceFormat)}
           </span>
         ) : (
           <img
-            src={part.thumbnail}
-            alt={strings.parts.thumbnailAlt(part.name)}
-            className="h-full w-full object-contain"
+            src={src}
+            alt={part.image === null ? strings.parts.thumbnailAlt(part.name) : strings.parts.pictureAlt(part.name)}
+            className="h-full w-full"
+            style={pictureStyle(part.image)}
           />
         )}
       </div>
@@ -286,15 +255,12 @@ export function Card({
               to="/parts/$partId"
               params={{ partId: part.id }}
               title={clampedName}
-              onFocus={() => intend(false)}
-              onBlur={halt}
               onKeyDown={(event) => {
                 // Space, which on a link would only scroll the page. Enter still follows the link.
                 if (event.key !== ' ' || onLook === undefined) return
                 event.preventDefault()
-                halt()
-                const render = well.current?.querySelector('img')
-                onLook(part, render == null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
+                const picture = well.current?.querySelector('img')
+                onLook(part, picture == null ? DEFAULT_ORIGIN : picture.getBoundingClientRect())
               }}
               className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
             >

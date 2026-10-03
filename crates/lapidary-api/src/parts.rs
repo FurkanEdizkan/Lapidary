@@ -104,6 +104,20 @@ pub struct PartCard {
     /// Whether the stored bytes are a zstd frame. `Some(false)` covers both "stored
     /// raw" and "level unrecorded" — see `PartSummary.compressed`.
     pub compressed: Option<bool>,
+    /// `stl`, `obj`, `3mf`, `step` — what the ingested file actually is, not what its name
+    /// says. A card with no picture names this instead of apologising for the picture it
+    /// does not have.
+    pub source_format: Option<String>,
+    /// **The card's picture**, and the reason this is not the thumbnail: Lapidary is a
+    /// visual library, so what a card shows is the part's own image rather than something
+    /// we rendered (the owner's call, 2026-10-03).
+    ///
+    /// The part's first `part_image` in gallery order, read in the same query as the rest of
+    /// the page — no request per card. `src` is a `data:` URL for an image under the 64 KB
+    /// line and `/api/blob/{hash}` for one over it; the card does not need to know which,
+    /// and holding that hash is not authorization, because `blob.rs` checks reachability
+    /// before it serves anything.
+    pub image: Option<crate::images::PartImage>,
     /// The model's own directory in the store, relative to the storage root:
     /// `libraries/default/Terrain/rock`. Shown, never opened — no browser can navigate a
     /// `file://` URL from a page, and the api runs in a container where an absolute path
@@ -954,6 +968,8 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         source_bytes: summary.source_bytes,
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,
+        source_format: row.source_format,
+        image: row.image.map(crate::images::part_image),
         directory: row.directory,
         storage_path: row.storage_path,
         created_at: summary.created_at,

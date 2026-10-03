@@ -1,5 +1,4 @@
 import { Link } from '@tanstack/react-router'
-import { annotationsOf, labelsFor } from '../lib/annotations'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
@@ -31,10 +30,9 @@ import {
 import { strings } from '../lib/strings'
 import { Dialog } from './Dialog'
 import { Figure } from './Figure'
-import { Likeness } from './Likeness'
 import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
-import { breakable } from './Card'
+import { breakable, pictureStyle } from './Card'
 import type {
   AssemblyNode,
   BatchId,
@@ -46,6 +44,7 @@ import type {
   PartImage,
   PartLock,
   PartRevision,
+  Pmi,
   PmiFace,
   RevisionId,
 } from '../lib/types'
@@ -678,107 +677,86 @@ function FieldValue({
 }
 
 /** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
-const loadViewer = () => import('./Viewer')
-const Viewer = lazy(loadViewer)
-
-/**
- * Fetch the viewer's chunk and compile its shaders ahead of an open; the grid calls this on hover and a
- * part's page as it mounts (`DATA.md` §2.4). Nothing happens where the browser cannot draw, and a failure
- * is left for the open itself to meet and report.
- */
-export function warmViewer(): Promise<void> {
-  if (!hasWebGL()) return Promise.resolve()
-  return loadViewer()
-    .then((viewer) => viewer.prepare())
-    .catch(() => undefined)
-}
-
-/**
- * The viewer's chunk once the browser is idle, for a screen a part can be opened from with no hover first:
- * a tap on a touch screen, or a press before the pointer rested. Its code only, no renderer, so a visitor
- * who never opens a part holds no WebGL context; a part opened with no hover compiles as it opens. Returns
- * what calls it off. `setTimeout` stands in where there is no `requestIdleCallback`.
- */
-export function loadViewerWhenIdle(): () => void {
-  const load = () => {
-    if (hasWebGL()) void loadViewer().catch(() => undefined)
-  }
-  if (typeof requestIdleCallback === 'function') {
-    // The pair taken together: the call-off can run after whoever supplied the request is gone.
-    const cancel = cancelIdleCallback.bind(globalThis)
-    const id = requestIdleCallback(load, { timeout: 2000 })
-    return () => cancel(id)
-  }
-  const id = setTimeout(load, 1)
-  return () => clearTimeout(id)
-}
+const Viewer = lazy(() => import('./Viewer'))
 
 const FRAME =
   'relative h-40 w-40 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'
 
 /**
- * The part's picture. The 3D view where the browser can draw one and the part has a rung to draw;
- * the rendered thumbnail otherwise, and as the poster the view replaces once its first frame is
- * drawn. The thumbnail is the first thing on screen either way, which is what the quick look's
- * flight moves (`flipFrom` finds the image).
+ * **The part's picture, and a button that asks for 3D.**
+ *
+ * Since R1 nothing loads a mesh because a page opened. The picture is the part's own first
+ * gallery image — the same one the card shows, off the request `Gallery` below already makes —
+ * and **view** is what replaces it with the model, read from the original file in the browser.
+ *
+ * The thumbnail is still the fallback, for the window between this goal and R4's purge: a part
+ * nobody has photographed has a render, and showing it beats an empty frame. After the purge
+ * this is the picture or nothing.
+ *
+ * The button appears only where there is something to draw and something to draw it with: one of
+ * the three mesh formats, and WebGL. A STEP part has no **view** — `mesh.ts` has no loader for it
+ * — and keeps its figures and its download, which is what it had before.
  */
 export function Preview({
   part,
-  hidden,
-  onParts,
-  ghost,
-  annotated,
   stage = false,
 }: {
   part: PartDetailData
-  hidden?: ReadonlySet<number>
-  onParts?: (parts: number | null) => void
-  ghost?: BlobHash | null
-  annotated?: boolean
   /** The quick look's stage: the view fills its parent instead of a 10rem frame. */
   stage?: boolean
 }) {
+  const [viewing, setViewing] = useState(false)
+  // A different part in the same Preview — the quick look steps through the grid without
+  // unmounting — closes the view rather than carrying one part's model to the next.
+  const [viewedPart, setViewedPart] = useState(part.id)
+  if (viewedPart !== part.id) {
+    setViewedPart(part.id)
+    setViewing(false)
+  }
+  // The same query key `Gallery` uses, so this costs no second request: react-query hands both
+  // the one answer. The first image in gallery order, which is the card's as well.
+  const images = useQuery({
+    queryKey: ['part-images', part.id],
+    queryFn: () => fetchPartImages(part.id),
+  })
+  const image = images.data?.[0] ?? null
   const frame = stage ? 'stage-lamp relative h-full min-h-[16rem] w-full overflow-hidden rounded-md' : FRAME
+  const src = image?.src ?? part.thumbnail
   const poster =
-    part.thumbnail === null ? null : (
+    src === null ? null : (
       <img
-        src={part.thumbnail}
-        alt={strings.parts.thumbnailAlt(part.name)}
-        className="h-full w-full object-contain"
+        src={src}
+        alt={image === null ? strings.parts.thumbnailAlt(part.name) : strings.parts.pictureAlt(part.name)}
+        className="h-full w-full"
+        style={pictureStyle(image)}
       />
     )
-  if (part.tessellationL0 === null) {
-    return poster === null ? null : <div className={frame}>{poster}</div>
-  }
-  if (!hasWebGL()) {
+  const viewable = part.sourceFormat !== null && MESH_FORMATS.includes(part.sourceFormat)
+  const drawable = hasWebGL()
+  if (viewing && viewable && drawable) {
     return (
-      <figure>
-        {poster === null ? null : <div className={frame}>{poster}</div>}
-        <figcaption className="mt-1 max-w-40 text-xs text-[var(--color-muted)]">
-          {strings.viewer.noWebGL}
-        </figcaption>
-      </figure>
+      <Suspense fallback={<div className={frame}>{poster}</div>}>
+        {/*
+          Keyed by part: the quick look and the part page both hand the same Preview a different
+          part without unmounting it, and a view kept across parts keeps the last part's framing.
+        */}
+        <Viewer key={part.id} part={part} poster={poster} stage={stage} />
+      </Suspense>
     )
   }
   return (
-    <Suspense fallback={<div className={frame}>{poster}</div>}>
-      {/*
-        Keyed by part: the quick look and the part page both hand the same Preview a different
-        part without unmounting it, and a view kept across parts keeps the last part's framing,
-        its measuring tool and its picks, which would then be measured against the new part's
-        entities. A new rung of the same part keeps the key, so it swaps in without a jump.
-      */}
-      <Viewer
-        key={part.id}
-        part={part}
-        poster={poster}
-        hidden={hidden}
-        onParts={onParts}
-        ghost={ghost}
-        annotated={annotated}
-        stage={stage}
-      />
-    </Suspense>
+    <figure className={stage ? 'flex h-full min-h-0 w-full flex-col' : undefined}>
+      {poster === null ? null : <div className={frame}>{poster}</div>}
+      {!viewable ? null : drawable ? (
+        <button type="button" onClick={() => setViewing(true)} className={`${control} mt-2 flex-none`}>
+          {strings.viewer.view}
+        </button>
+      ) : (
+        <figcaption className="mt-1 max-w-40 text-xs text-[var(--color-muted)]">
+          {strings.viewer.noWebGL}
+        </figcaption>
+      )}
+    </figure>
   )
 }
 
@@ -894,28 +872,6 @@ export function Detail({
     const blocks = [head.current, ...Array.from(info.current?.children ?? [])]
     arrive(blocks.filter((block): block is HTMLElement => block instanceof HTMLElement))
   }, [part.id])
-  // Which parts are out of the view, and how many the view drew. Both belong to one part, so a
-  // choice made on one assembly never carries to the next one shown in the same place.
-  const [hiddenFor, setHiddenFor] = useState({ part: part.id, hidden: NONE })
-  const hidden = hiddenFor.part === part.id ? hiddenFor.hidden : NONE
-  const setHidden = (next: ReadonlySet<number>) => setHiddenFor({ part: part.id, hidden: next })
-  const [drawnFor, setDrawnFor] = useState<{ part: PartId; parts: number | null }>({
-    part: part.id,
-    parts: null,
-  })
-  const drawn = drawnFor.part === part.id ? drawnFor.parts : null
-  const onParts = useCallback((parts: number | null) => setDrawnFor({ part: part.id, parts }), [part.id])
-  // The earlier revision the comparison draws as a ghost. For this part only, as `hidden` is.
-  const [ghostFor, setGhostFor] = useState<{ part: PartId; hash: BlobHash | null }>({
-    part: part.id,
-    hash: null,
-  })
-  const ghost = ghostFor.part === part.id ? ghostFor.hash : null
-  const onGhost = useCallback((hash: BlobHash | null) => setGhostFor({ part: part.id, hash }), [part.id])
-  // Whether the file's PMI is drawn in the view. For this part only, as `hidden` is, and off until asked.
-  const [annotatedFor, setAnnotatedFor] = useState({ part: part.id, on: false })
-  const annotated = annotatedFor.part === part.id && annotatedFor.on
-  const setAnnotated = (on: boolean) => setAnnotatedFor({ part: part.id, on })
   // Opening in a desktop app is a checkout, which only a controlled library takes: a hobby library
   // keeps no revision for the save to come back as.
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
@@ -926,9 +882,7 @@ export function Detail({
   // `?? []` for a server from before materials, as the list below does: read once, because both the
   // list and the mass row have to agree about how many the part holds.
   const materials = part.materials ?? []
-  const preview = (
-    <Preview part={part} hidden={hidden} onParts={onParts} ghost={ghost} annotated={annotated} stage={page} />
-  )
+  const preview = <Preview part={part} stage={page} />
   const heading = (
     <>
       {titled ? null : (
@@ -1134,19 +1088,9 @@ export function Detail({
   )
   const rest = (
     <>
-      {part.structure === null ? null : (
-        <Assembly hash={part.structure} hidden={hidden} onHide={setHidden} drawn={drawn} />
-      )}
+      {part.structure === null ? null : <Assembly hash={part.structure} />}
 
-      <Specified part={part} annotated={annotated} onAnnotate={setAnnotated} />
-
-      {/*
-        What else in this library looks like this part (Phase 6). On the part's own page only:
-        the quick look is for scanning a grid, and its `Dialog` is already a modal — a fold
-        confirmation opening inside it would be a dialog in a dialog, two focus traps deep, for
-        a decision nobody makes while flicking through cards.
-      */}
-      {page ? <Likeness part={part} /> : null}
+      <Specified part={part} />
 
       <Section id="part-file" title={strings.detail.file}>
         <Row label={strings.detail.format}>
@@ -1218,7 +1162,7 @@ export function Detail({
         </Row>
       </Section>
 
-      <History part={part.id} onGhost={onGhost} />
+      <History part={part.id} />
     </>
   )
 
@@ -1355,15 +1299,7 @@ function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) 
  * nor approximate, and the ≈ mark would claim it was one or the other. Each annotation says which
  * face it is on by the entity measurement reads there, when the part has entities.
  */
-function Specified({
-  part,
-  annotated,
-  onAnnotate,
-}: {
-  part: PartDetailData
-  annotated: boolean
-  onAnnotate: (on: boolean) => void
-}) {
+function Specified({ part }: { part: PartDetailData }) {
   const pmi = useQuery({
     queryKey: ['pmi', part.pmi],
     queryFn: () => fetchPmi(part.pmi as BlobHash),
@@ -1401,34 +1337,14 @@ function Specified({
         return strings.pmi.face(face.face === null ? null : (entity?.type ?? ''))
       })
       .join(', ')
-  const annotations = annotationsOf(pmi.data)
-  // Which annotations the view can place: those on a face measurement reads as an entity. Asked of the
-  // entities unplaced, since which faces exist does not depend on where they were drawn. Nothing is said
-  // until they arrive, and faces that could not be read are said once below rather than blamed on each.
-  const { undrawn } = entities.data === undefined ? { undrawn: new Set<number>() } : labelsFor(annotations, entities.data)
-  // A view to draw in: a rung, WebGL, and entities to say where each face is.
-  const drawable = part.tessellationL0 !== null && part.entities !== null && hasWebGL()
-  const rows = annotations.map((annotation, index) => ({
+  const rows = annotationsOf(pmi.data).map((annotation) => ({
     what: annotation.text,
     on: where(annotation.faces),
-    undrawn: undrawn.has(index) ? strings.pmi.notDrawn(annotation.faces.every((face) => face.face === null)) : null,
   }))
   return (
     <section id="part-specified" className="mb-6 scroll-mt-20">
       {heading}
-      <p className="mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted)]">
-        {strings.pmi.note}
-        {drawable ? (
-          <button type="button" aria-pressed={annotated} onClick={() => onAnnotate(!annotated)} className={CONTROL}>
-            {strings.pmi.showInView}
-          </button>
-        ) : null}
-      </p>
-      {annotated && drawable && entities.isError ? (
-        <p role="alert" className="mb-2 max-w-prose text-xs text-[var(--color-muted)]">
-          {strings.pmi.facesUnread}
-        </p>
-      ) : null}
+      <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.pmi.note}</p>
       <ul role="list" className="space-y-0.5 text-sm">
         {rows.map((row, index) => (
           <li key={index}>
@@ -1439,12 +1355,6 @@ function Specified({
                 {row.on}
               </span>
             )}
-            {annotated && drawable && row.undrawn !== null ? (
-              <span className="text-[var(--color-muted)]">
-                {' · '}
-                {row.undrawn}
-              </span>
-            ) : null}
           </li>
         ))}
       </ul>
@@ -1452,50 +1362,35 @@ function Specified({
   )
 }
 
-const NONE: ReadonlySet<number> = new Set()
+/** One annotation as the list says it, and the faces it names. */
+type Annotation = { text: string; faces: readonly PmiFace[] }
 
-const CONTROL =
-  'rounded-sm px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-bright)]'
-
-/** What the tree may do to the view: which parts are out of it, how many there are, and the setter. */
-type Visibility = {
-  hidden: ReadonlySet<number>
-  parts: number
-  onHide: (hidden: ReadonlySet<number>) => void
-}
-
-/** How many placed parts are under a node, counting itself when it is one. */
-function leaves(node: AssemblyNode): number {
-  return node.children.length === 0 ? 1 : node.children.reduce((sum, child) => sum + leaves(child), 0)
-}
-
-/** Each node's first placed part, in the depth-first order the view counts triangles in. */
-function firstLeaves(nodes: readonly AssemblyNode[], from = 0): number[] {
-  let at = from
-  return nodes.map((node) => {
-    const first = at
-    at += leaves(node)
-    return first
-  })
+/**
+ * The file's annotations in the order the list shows them: dimensions, then tolerances, then datums.
+ *
+ * Here rather than in `lib/annotations.ts`, which R1 deleted: the rest of that module existed to
+ * place a label beside the face it names **in the 3D view**, which needed the analytic entities
+ * placed by the assembly tree — geometry we produced and no longer do. The list is what is left,
+ * and it is the honest surface for PMI anyway: it says what the file specifies, and never implies
+ * we worked out where on the part that is.
+ */
+function annotationsOf(pmi: Pmi): Annotation[] {
+  return [
+    ...pmi.dimensions.map((d) => ({ text: strings.pmi.dimension(d.type, d.value, d.upper, d.lower), faces: d.faces })),
+    ...pmi.tolerances.map((t) => ({ text: strings.pmi.tolerance(t.type, t.value, t.datums), faces: t.faces })),
+    ...pmi.datums.map((d) => ({ text: strings.pmi.datum(d.name), faces: d.faces })),
+  ]
 }
 
 /**
- * The assembly tree, and where the view drew the same parts, a way to hide them. `drawn` is how
- * many placed parts the view's rung counts; the buttons appear only when that is this tree's
- * count. A mesh, a rung from before parts were counted, or a browser that draws no 3D has nothing
- * to hide a part in.
+ * The assembly tree a CAD kernel read, as a list.
+ *
+ * **Reading only, since R1.** Hiding and isolating a part needed `extras.parts` — the per-part
+ * triangle runs `glb.rs` wrote into the rung — so that a mesh could be drawn with one part left
+ * out. The viewer draws the original file now and no stock loader carries that, so there is
+ * nothing to hide a part *in*. What the tree says about the assembly is unchanged.
  */
-function Assembly({
-  hash,
-  hidden,
-  onHide,
-  drawn,
-}: {
-  hash: BlobHash
-  hidden: ReadonlySet<number>
-  onHide: (hidden: ReadonlySet<number>) => void
-  drawn: number | null
-}) {
+function Assembly({ hash }: { hash: BlobHash }) {
   const tree = useQuery({ queryKey: ['structure', hash], queryFn: () => fetchStructure(hash) })
   const heading = (
     <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
@@ -1515,118 +1410,36 @@ function Assembly({
   if (tree.data === undefined) return null
   const { roots, parts, prototypes } = tree.data
   if (roots.length === 1 && roots[0]?.children.length === 0) return null
-  const visibility = drawn === parts ? { hidden, parts, onHide } : null
-  const firsts = firstLeaves(roots)
   return (
     <section id="part-assembly" className="mb-6 scroll-mt-20">
       {heading}
-      <p className="mb-2 flex items-center gap-2 text-xs text-[var(--color-muted)]">
+      <p className="mb-2 text-xs text-[var(--color-muted)]">
         {strings.detail.assemblyCounts(parts, prototypes)}
-        {visibility === null || hidden.size === 0 ? null : (
-          <button type="button" onClick={() => onHide(NONE)} className={CONTROL}>
-            {strings.detail.showAll}
-          </button>
-        )}
       </p>
       <ul role="list" className="text-sm">
         {roots.map((node, index) => (
-          <AssemblyBranch
-            key={index}
-            node={node}
-            first={firsts[index] ?? 0}
-            visibility={visibility}
-            open
-          />
+          <AssemblyBranch key={index} node={node} open />
         ))}
       </ul>
     </section>
   )
 }
 
-function AssemblyBranch({
-  node,
-  first,
-  visibility,
-  open = false,
-}: {
-  node: AssemblyNode
-  first: number
-  visibility: Visibility | null
-  open?: boolean
-}) {
+function AssemblyBranch({ node, open = false }: { node: AssemblyNode; open?: boolean }) {
   // Whether the branch's rows are drawn: only once it has been opened, so a closed branch of a large
   // assembly is one row and not every part under it.
   const [expanded, setExpanded] = useState(open)
-  const count = leaves(node)
-  const mine = (part: number) => part >= first && part < first + count
-  const allHidden =
-    visibility !== null &&
-    Array.from({ length: count }, (_, offset) => first + offset).every((part) =>
-      visibility.hidden.has(part),
-    )
-  const controls =
-    visibility === null ? null : (
-      <span className="ml-2 inline-flex gap-1">
-        <button
-          type="button"
-          aria-label={allHidden ? strings.detail.showPart(node.name) : strings.detail.hidePart(node.name)}
-          onClick={(event) => {
-            // Inside a `summary` a click would also open or close the branch.
-            event.preventDefault()
-            const next = new Set(visibility.hidden)
-            for (let part = first; part < first + count; part++) {
-              if (allHidden) next.delete(part)
-              else next.add(part)
-            }
-            visibility.onHide(next)
-          }}
-          className={CONTROL}
-        >
-          {allHidden ? strings.detail.show : strings.detail.hide}
-        </button>
-        <button
-          type="button"
-          aria-label={strings.detail.isolatePart(node.name)}
-          onClick={(event) => {
-            event.preventDefault()
-            const others = Array.from({ length: visibility.parts }, (_, part) => part).filter(
-              (part) => !mine(part),
-            )
-            visibility.onHide(new Set(others))
-          }}
-          className={CONTROL}
-        >
-          {strings.detail.isolate}
-        </button>
-      </span>
-    )
-  // A part out of the view is named in the muted colour, so the tree shows what is hidden.
-  const muted = allHidden ? ' text-[var(--color-muted)]' : ''
   if (node.children.length === 0) {
-    return (
-      <li className={`py-0.5 pl-4${muted}`}>
-        {node.name}
-        {controls}
-      </li>
-    )
+    return <li className="py-0.5 pl-4">{node.name}</li>
   }
-  const firsts = firstLeaves(node.children, first)
   return (
     <li>
       <details open={open} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-        <summary className={`cursor-pointer py-0.5${muted}`}>
-          {node.name}
-          {controls}
-        </summary>
+        <summary className="cursor-pointer py-0.5">{node.name}</summary>
         {expanded ? (
           <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
             {node.children.map((child, index) => (
-              <AssemblyBranch
-                key={index}
-                node={child}
-                first={firsts[index] ?? first}
-                visibility={visibility}
-              />
+              <AssemblyBranch key={index} node={child} />
             ))}
           </ul>
         ) : null}
@@ -1643,7 +1456,7 @@ function AssemblyBranch({
  * mesh-derived figure keeps its ≈ here as everywhere, and each revision's original is a plain
  * download link, byte-identical to what that revision ingested.
  */
-function History({ part, onGhost }: { part: PartId; onGhost: (hash: BlobHash | null) => void }) {
+function History({ part }: { part: PartId }) {
   const revisions = useQuery({
     queryKey: ['revisions', part],
     queryFn: () => fetchRevisions(part),
@@ -1700,7 +1513,7 @@ function History({ part, onGhost }: { part: PartId; onGhost: (hash: BlobHash | n
         ))}
       </ol>
       {/* Keyed: its picks are revision ids of this part, and another part's would be refused. */}
-      <Compare key={part} part={part} revisions={all} onGhost={onGhost} />
+      <Compare key={part} part={part} revisions={all} />
     </section>
   )
 }
@@ -1792,28 +1605,9 @@ function Change({
  * a person most likely came for, and asks the server, which keeps the ≈ rule in one place
  * instead of a second copy of the arithmetic here.
  */
-function Compare({
-  part,
-  revisions,
-  onGhost,
-}: {
-  part: PartId
-  revisions: PartRevision[]
-  onGhost: (hash: BlobHash | null) => void
-}) {
+function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] }) {
   const [from, setFrom] = useState<RevisionId | undefined>(revisions[1]?.id)
   const [to, setTo] = useState<RevisionId | undefined>(revisions[0]?.id)
-  const [ghosted, setGhosted] = useState(false)
-  // From's own mesh: the L1 somebody opened while it was current, else the L0 ingest wrote. Handed
-  // to the 3D view only while the box is ticked, and taken back when this comparison goes away.
-  const earlier = revisions.find((revision) => revision.id === from)
-  const ghost = earlier?.tessellationL1 ?? earlier?.tessellationL0 ?? null
-  useEffect(() => {
-    onGhost(ghosted ? ghost : null)
-  }, [ghosted, ghost, onGhost])
-  useEffect(() => () => onGhost(null), [onGhost])
-  // A coarse outline beside a finer part must not read as a change of shape.
-  const coarse = earlier?.tessellationL1 == null && revisions[0]?.tessellationL1 != null
   const compared = useQuery({
     queryKey: ['diff', part, from, to],
     queryFn: () => fetchDiff(part, from as RevisionId, to as RevisionId),
@@ -1847,6 +1641,7 @@ function Compare({
   // deliberately. `every` and not `some`, because a pair of one fillable mesh and one open mesh would
   // otherwise claim a job for the open one and then fall back to "not measured in both" the moment
   // the real job finished.
+  const earlier = revisions.find((revision) => revision.id === from)
   const later = revisions.find((revision) => revision.id === to)
   const centreless = [earlier, later].filter(
     (revision): revision is PartRevision => revision !== undefined && revision.centreMm === null,
@@ -1927,22 +1722,7 @@ function Compare({
         {strings.detail.compare}
         {pick(strings.detail.compareFrom, from, setFrom)}
         {pick(strings.detail.compareTo, to, setTo)}
-        {earlier === undefined ? null : ghost === null ? (
-          <span>{strings.detail.ghostNoMesh(earlier.revLabel)}</span>
-        ) : (
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={ghosted}
-              onChange={(event) => setGhosted(event.target.checked)}
-            />
-            {strings.detail.ghost}
-          </label>
-        )}
       </div>
-      {ghosted && ghost !== null && coarse ? (
-        <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.detail.ghostCoarse}</p>
-      ) : null}
       {compared.isError ? (
         <p role="alert" className="text-[var(--color-muted)]">
           {strings.detail.compareFailed}

@@ -38,6 +38,8 @@ const MOUNTING: PartCard = {
   sourcePath: "mounting/LP-1042-03.stl",
   partNumber: "LP-1042-03",
   thumbnail: null,
+  sourceFormat: 'stl',
+  image: null,
   triangleCount: 48112,
   approximate: true,
   tessellationL0: null,

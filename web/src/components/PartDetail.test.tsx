@@ -6,14 +6,11 @@ import { Detail } from './PartDetail'
 import { strings } from '../lib/strings'
 import type { AssemblyNode, AssemblyTree, PartDetail, PartRevision } from '../lib/types'
 
-const { mounts, prepare, drawn } = vi.hoisted(() => ({
-  mounts: [] as string[],
-  prepare: vi.fn(async () => {}),
-  // What the stand-in view reports drawing, and the parts it was last told to hide.
-  drawn: { parts: 3 as number | null, hidden: [] as number[], ghost: null as string | null, annotated: false },
-}))
+const { mounts } = vi.hoisted(() => ({ mounts: [] as string[] }))
 
-// jsdom draws no WebGL, so the view is a stand-in that records each time it is mounted.
+// jsdom draws no WebGL, so the view is a stand-in that records each part it is mounted for. Since
+// R1 that list is also the assertion that matters most: the view is mounted when somebody presses
+// **view** and at no other time, so an empty `mounts` is a page that loaded no mesh.
 vi.mock('../lib/viewer-math', async (original) => ({
   ...(await original<typeof import('../lib/viewer-math')>()),
   hasWebGL: () => true,
@@ -21,31 +18,12 @@ vi.mock('../lib/viewer-math', async (original) => ({
 vi.mock('./Viewer', async () => {
   const { useEffect } = await import('react')
   return {
-    default: function Viewer({
-      part,
-      hidden,
-      onParts,
-      ghost,
-      annotated,
-    }: {
-      part: PartDetail
-      hidden?: ReadonlySet<number>
-      onParts?: (parts: number | null) => void
-      ghost?: string | null
-      annotated?: boolean
-    }) {
+    default: function Viewer({ part }: { part: PartDetail }) {
       useEffect(() => {
         mounts.push(part.id)
-      }, [])
-      useEffect(() => {
-        onParts?.(drawn.parts)
-      }, [onParts])
-      drawn.hidden = [...(hidden ?? [])].sort((a, b) => a - b)
-      drawn.ghost = ghost ?? null
-      drawn.annotated = annotated ?? false
+      }, [part.id])
       return null
     },
-    prepare,
   }
 })
 
@@ -95,7 +73,19 @@ const PIN: PartDetail = {
   tessellationL0: '5555555555555555555555555555555555555555555555555555555555555555',
 }
 
-test('the 3D view starts over for another part, and keeps its place for a finer rung of the same one', async () => {
+/**
+ * **The 3D view is asked for, and a part that nothing can draw does not offer it** (R1).
+ *
+ * Opening a part reads metadata and the gallery; the model is fetched when somebody presses
+ * **view**, and `mounts` staying empty until then is the assertion. The part the page shows
+ * changing — which is what the quick look does, in place, without unmounting — closes the view
+ * rather than carrying one part's model to the next.
+ *
+ * `BRACKET` is an IGES part, so it is also the other half: `mesh.ts` has no loader for B-rep and
+ * the button is not offered at all. Its download and its figures are untouched, which is what it
+ * had before.
+ */
+test('the view is offered for a mesh, mounted only when pressed, and closed when the part changes', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const page = (part: PartDetail) => (
@@ -103,12 +93,28 @@ test('the 3D view starts over for another part, and keeps its place for a finer 
       <Detail part={part} />
     </QueryClientProvider>
   )
-  const { rerender } = render(page(BRACKET))
-  await waitFor(() => expect(mounts).toEqual([BRACKET.id]))
+  const mesh = { ...BRACKET, sourceFormat: 'stl' }
+  const otherMesh = { ...PIN, sourceFormat: '3mf' }
 
-  rerender(page({ ...BRACKET, tessellationL1: '4444444444444444444444444444444444444444444444444444444444444444' }))
-  rerender(page(PIN))
-  await waitFor(() => expect(mounts).toEqual([BRACKET.id, PIN.id]))
+  const { rerender } = render(page(mesh))
+  const view = await screen.findByRole('button', { name: strings.viewer.view })
+  expect(mounts).toEqual([])
+
+  fireEvent.click(view)
+  await waitFor(() => expect(mounts).toEqual([mesh.id]))
+
+  // Another part in the same Preview: the view closes rather than drawing the last part's model.
+  rerender(page(otherMesh))
+  expect(await screen.findByRole('button', { name: strings.viewer.view })).toBeTruthy()
+  expect(mounts).toEqual([mesh.id])
+  fireEvent.click(screen.getByRole('button', { name: strings.viewer.view }))
+  await waitFor(() => expect(mounts).toEqual([mesh.id, otherMesh.id]))
+
+  // And a B-rep part is never offered one, because nothing in the browser reads it.
+  cleanup()
+  render(page(BRACKET))
+  await waitFor(() => expect(screen.getByText(BRACKET.name)).toBeTruthy())
+  expect(screen.queryByRole('button', { name: strings.viewer.view })).toBeNull()
   vi.unstubAllGlobals()
 })
 
@@ -326,35 +332,34 @@ function renderAssembly() {
   )
 }
 
-/** A branch hides and shows all of its parts, Isolate hides every other, and Show all undoes either. */
-test('the assembly tree hides, shows and isolates parts in the view', async () => {
-  drawn.parts = 3
+/**
+ * **The tree reads, and no longer hides** (R1).
+ *
+ * Hiding and isolating a part needed `extras.parts` — the per-part triangle runs `glb.rs` wrote
+ * into a rung — so the viewer could draw the mesh with one part left out. It draws the original
+ * file now, which carries no such thing, so there is nothing to hide a part *in*. Two tests stood
+ * here, one driving the hide buttons and one asserting they were absent for a rung that counted no
+ * parts; the second would now pass against anything at all.
+ *
+ * What the tree says about the assembly is unchanged, and that is what this asserts: the counts,
+ * the nesting, and a branch whose rows are drawn only once it is opened.
+ */
+test('an assembly lists its tree, each branch a disclosure, and offers nothing to hide', async () => {
   renderAssembly()
+  const section = (await screen.findByRole('heading', { name: strings.detail.assembly })).closest('section')
+  expect(section).not.toBeNull()
+  expect(section!.textContent).toContain(strings.detail.assemblyCounts(3, 3))
+
   const station = 'bracket-station-lp-9002-00'
-
-  fireEvent.click(await screen.findByRole('button', { name: strings.detail.hidePart(station) }))
-  await waitFor(() => expect(drawn.hidden).toEqual([1, 2]))
-  fireEvent.click(screen.getByRole('button', { name: strings.detail.showPart(station) }))
-  await waitFor(() => expect(drawn.hidden).toEqual([]))
-
-  // The pin is in the station's branch, whose rows are drawn once it is opened.
   const branch = screen.getByText(station).closest('details') as HTMLDetailsElement
+  // Closed, so the station's own two parts are not rows yet.
+  expect(screen.queryByText('stop-pin-d10x20-lp-9007-00')).toBeNull()
   branch.open = true
   fireEvent(branch, new Event('toggle'))
-  fireEvent.click(await screen.findByRole('button', { name: strings.detail.isolatePart('stop-pin-d10x20-lp-9007-00') }))
-  await waitFor(() => expect(drawn.hidden).toEqual([0, 1]))
-  fireEvent.click(screen.getByRole('button', { name: strings.detail.showAll }))
-  await waitFor(() => expect(drawn.hidden).toEqual([]))
-  vi.unstubAllGlobals()
-})
+  expect(await screen.findByText('stop-pin-d10x20-lp-9007-00')).toBeTruthy()
 
-/** A view that drew no parts to hide, such as an older rung, leaves the tree without the buttons. */
-test('the tree offers no hiding when the view did not draw its parts', async () => {
-  drawn.parts = null
-  renderAssembly()
-  expect(await screen.findByText('bracket-station-lp-9002-00')).toBeTruthy()
-  expect(screen.queryByRole('button', { name: strings.detail.hidePart('bracket-station-lp-9002-00') })).toBeNull()
-  drawn.parts = 3
+  // No control in the section: the words below are what the hide, isolate and show-all buttons said.
+  expect(section!.querySelectorAll('button')).toHaveLength(0)
   vi.unstubAllGlobals()
 })
 
@@ -403,12 +408,22 @@ test('a part lists the dimensions and tolerances its file specifies, labelled as
   vi.unstubAllGlobals()
 })
 
-/** The list can be drawn in the view, and says which annotations the view has no face to put beside. */
-test('dimensions and tolerances can be shown in the 3D view, and say which the view cannot place', async () => {
+/**
+ * **PMI is a list and not an overlay** (R1).
+ *
+ * Two tests stood here: one toggling the annotations into the 3D view, one about faces that could
+ * not be read. Both needed the analytic entities placed by the assembly tree — geometry we
+ * produced — to know where on the part a face is. The viewer draws the original file now and has
+ * no entities, so there is no "show in view" and nothing to say about which annotations it could
+ * not place. The list above says what the file specifies, which was always the honest surface.
+ *
+ * What is asserted here is the absence, because the list and the overlay shared a section and a
+ * leftover control would be a press that does nothing.
+ */
+test('the specified list offers nothing to draw in the view', async () => {
   const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
   const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
   const cylinder = { prototype: '0:1:1:1', face: 1 }
-  const freeform = { prototype: '0:1:1:1', face: 9 }
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => ({
@@ -418,7 +433,7 @@ test('dimensions and tolerances can be shown in the 3D view, and say which the v
         url.endsWith(pmiHash)
           ? {
               dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }],
-              tolerances: [{ type: 'profile_of_surface', value: 0.1, datums: [], faces: [freeform] }],
+              tolerances: [],
               datums: [],
             }
           : url.endsWith(entitiesHash)
@@ -426,58 +441,16 @@ test('dimensions and tolerances can be shown in the 3D view, and say which the v
             : [],
     })),
   )
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={client}>
-      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, tessellationL0: 'a0'.repeat(32) }} />
-    </QueryClientProvider>,
-  )
-
-  const toggle = await screen.findByRole('button', { name: strings.pmi.showInView })
-  expect(toggle.getAttribute('aria-pressed')).toBe('false')
-  expect(drawn.annotated).toBe(false)
-  const item = (text: string) => screen.getByText(text).closest('li')?.textContent ?? ''
-  await waitFor(() => expect(item(strings.pmi.dimension('diameter', 22, 0.05, 0))).toContain(strings.pmi.face('cylinder')))
-  expect(item(strings.pmi.tolerance('profile_of_surface', 0.1, []))).not.toContain(strings.pmi.notDrawn(false))
-
-  fireEvent.click(toggle)
-  expect(toggle.getAttribute('aria-pressed')).toBe('true')
-  await waitFor(() => expect(drawn.annotated).toBe(true))
-  expect(item(strings.pmi.tolerance('profile_of_surface', 0.1, []))).toContain(strings.pmi.notDrawn(false))
-  expect(item(strings.pmi.dimension('diameter', 22, 0.05, 0))).not.toContain(strings.pmi.notDrawn(false))
-  vi.unstubAllGlobals()
-})
-
-/** Faces that could not be read are said once, not blamed on each annotation as a face the view cannot place. */
-test('when the faces cannot be read, the list says so once rather than calling every annotation undrawable', async () => {
-  const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
-  const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
-  const cylinder = { prototype: '0:1:1:1', face: 1 }
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) =>
-      url.endsWith(entitiesHash)
-        ? { ok: false, status: 500, json: async () => ({ message: 'The entities blob is missing from the store.' }) }
-        : {
-            ok: true,
-            status: 200,
-            json: async () =>
-              url.endsWith(pmiHash)
-                ? { dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }], tolerances: [], datums: [] }
-                : [],
-          },
-    ),
-  )
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, tessellationL0: 'a0'.repeat(32) }} />
+      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, sourceFormat: 'stl' }} />
     </QueryClientProvider>,
   )
 
-  fireEvent.click(await screen.findByRole('button', { name: strings.pmi.showInView }))
-  expect(await screen.findByText(strings.pmi.facesUnread)).toBeTruthy()
-  const item = screen.getByText(strings.pmi.dimension('diameter', 22, 0.05, 0)).closest('li')?.textContent ?? ''
-  expect(item).not.toContain(strings.pmi.notDrawn(false))
+  const row = await screen.findByText(strings.pmi.dimension('diameter', 22, 0.05, 0))
+  expect(row.closest('li')?.textContent).toContain(strings.pmi.face('cylinder'))
+  const section = row.closest('section')
+  expect(section?.querySelectorAll('button')).toHaveLength(0)
   vi.unstubAllGlobals()
 })
 
@@ -876,14 +849,20 @@ test('the comparison follows the part on screen instead of keeping the last part
   vi.unstubAllGlobals()
 })
 
-/** The comparison's From revision, drawn as a ghost in the 3D view, and said plainly when it cannot be. */
-test('the comparison draws its From revision as a ghost, and says when that revision has only a coarse mesh or none', async () => {
-  const revision = (
-    id: string,
-    revLabel: string,
-    parent: string | null,
-    rungs: { l0: string | null; l1: string | null },
-  ): PartRevision => ({
+/**
+ * **The comparison compares figures, and draws no ghost** (R1).
+ *
+ * The ghost was an earlier revision's rung drawn over the current part in grey, so a shape change
+ * was visible rather than only tabulated. It needed a rung per revision; nothing produces rungs,
+ * and a revision's *original* file is not a substitute — two full meshes in one scene for a
+ * comparison somebody reached through a disclosure is not a trade worth making, and R3 takes the
+ * hashes the checkbox read away regardless.
+ *
+ * Asserted as an absence beside the figures that stayed, because the checkbox sat in the same row
+ * as the two revision pickers and would otherwise be a control that quietly stopped doing anything.
+ */
+test('the comparison keeps its pickers and offers no ghost', async () => {
+  const revision = (id: string, revLabel: string, parent: string | null): PartRevision => ({
     id,
     parent,
     revLabel,
@@ -902,13 +881,11 @@ test('the comparison draws its From revision as a ghost, and says when that revi
     sourceFormat: 'stl',
     sourceBytes: 20124,
     deltaFromParent: null,
-    tessellationL0: rungs.l0,
-    tessellationL1: rungs.l1,
+    tessellationL0: 'a0'.repeat(32),
+    tessellationL1: null,
   })
   const [first, second] = ['01931b6e-0000-7000-8000-0000000000d1', '01931b6e-0000-7000-8000-0000000000d2']
-  const [coarse, fine0, fine1] = ['a0'.repeat(32), 'b0'.repeat(32), 'b1'.repeat(32)]
-  const newest = revision(second, '2', first, { l0: fine0, l1: fine1 })
-  let history = [newest, revision(first, '1', null, { l0: coarse, l1: null })]
+  const history = [revision(second, '2', first), revision(first, '1', null)]
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => ({
@@ -922,28 +899,20 @@ test('the comparison draws its From revision as a ghost, and says when that revi
             : [],
     })),
   )
-  const page = () => (
+  render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <Detail part={BRACKET} />
-    </QueryClientProvider>
+    </QueryClientProvider>,
   )
 
-  const view = render(page())
-  const box = await screen.findByLabelText(strings.detail.ghost)
-  expect(drawn.ghost).toBeNull()
-  fireEvent.click(box)
-  // Revision 1 was not opened again after revision 2 arrived: its ghost is the L0 ingest wrote.
-  await waitFor(() => expect(drawn.ghost).toBe(coarse))
-  expect(screen.getByText(strings.detail.ghostCoarse)).toBeTruthy()
-  fireEvent.click(box)
-  await waitFor(() => expect(drawn.ghost).toBeNull())
-  view.unmount()
-
-  // A From revision with no mesh at all offers no ghost, and says why.
-  history = [newest, revision(first, '1', null, { l0: null, l1: null })]
-  render(page())
-  expect(await screen.findByText(strings.detail.ghostNoMesh('1'))).toBeTruthy()
-  expect(screen.queryByLabelText(strings.detail.ghost)).toBeNull()
+  // The pickers are still there, which is what says this row was kept rather than emptied.
+  const from = await screen.findByLabelText(strings.detail.compareFrom)
+  expect(screen.getByLabelText(strings.detail.compareTo)).toBeTruthy()
+  // Structurally, not by its old copy: the ghost's strings are gone from `strings.ts`, and a test
+  // that kept one alive only to assert its absence would be the one reason the copy still existed.
+  // The checkbox stood in this row beside the two pickers, so the row holding none is the assertion.
+  const row = from.closest('div')
+  expect(row?.querySelectorAll('input[type=checkbox]')).toHaveLength(0)
   vi.unstubAllGlobals()
 })
 

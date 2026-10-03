@@ -4037,3 +4037,138 @@ async fn a_part_with_no_revision_does_not_end_a_sorted_grid_early(pool: sqlx::Pg
     }
     assert_eq!(seen, [clip, duct]);
 }
+
+/// **The card's picture, read in the page's own query** (R1).
+///
+/// Lapidary is a visual library: what a card shows is the part's own image. So `page` reads
+/// `part_image` through the `img` LATERAL, in gallery order, cut to one row — and this is the
+/// test that pins which row that is. Two images on one part, the second written over the 64 KB
+/// line, so this covers both halves of `part_image_inline_or_blob` at once:
+///
+/// - the **first** image wins, because `position` then `id` is the gallery's order and a card
+///   showing the gallery's second picture would be a card disagreeing with the part's own page;
+/// - inline bytes arrive **on the row**, because the grid is one query and a request per card is
+///   the thing this whole shape exists to avoid;
+/// - a blob-backed image arrives as its **hash** and no bytes, which is what makes the card emit
+///   `/api/blob/{hash}` instead;
+/// - the framing columns `0019` added ride along, because `Card.tsx` applies them and a picture
+///   framed one way in the gallery and another way on the card is the same disagreement again.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_cards_picture_is_the_parts_first_image_with_its_framing(pool: sqlx::PgPool) {
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            folder: None,
+            storage_path: None,
+            library: library(),
+            name: "Planetary carrier, LP-3480-02",
+            source_path: "planetary-carrier-lp-3480-02.3mf",
+            blob: &blob_row(0x5e),
+            measurements: &watertight(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            kernel_version: "mesh 3mf-1+cpu-1",
+            format: "3mf",
+            tessellations: &[],
+            thumbnail_webp: Some(b"webp"),
+        })
+        .await
+        .expect("records");
+
+    let first = PgParts(pool.clone())
+        .add_part_image(
+            part,
+            lapidary_db::NewPartImage {
+                bytes: lapidary_db::ImageBytes::Inline(b"the photograph on the card"),
+                origin: "uploaded",
+                source_url: None,
+            },
+        )
+        .await
+        .expect("the first image is attached");
+    // Framed by hand, as `PATCH /api/parts/{id}/images/{imageId}` would: the default is
+    // `cover` at 0.5/0.5, so asserting on the default would pass against a query that never
+    // selected these columns at all.
+    PgParts(pool.clone())
+        .set_image_framing(
+            part,
+            first,
+            lapidary_db::Framing {
+                fit: "contain",
+                focus: (0.25, 0.75),
+            },
+        )
+        .await
+        .expect("reframes");
+
+    // Over the inline line, so this one is a blob. Recorded unreferenced first, exactly as
+    // `images::store` does, or the foreign key refuses the row.
+    let blob = blob_row(0x5f);
+    PgBlobs(pool.clone())
+        .record_unreferenced(&blob)
+        .await
+        .expect("records the blob");
+    PgParts(pool.clone())
+        .add_part_image(
+            part,
+            lapidary_db::NewPartImage {
+                bytes: lapidary_db::ImageBytes::Blob(&blob.hash),
+                origin: "uploaded",
+                source_url: None,
+            },
+        )
+        .await
+        .expect("the second image is attached");
+
+    let page = PgParts(pool.clone())
+        .page(&GridQuery::new(library(), 10), Sort::Newest)
+        .await
+        .expect("page");
+    let row = page
+        .iter()
+        .find(|row| row.summary.id == part)
+        .expect("the part is on the page");
+    let image = row.image.as_ref().expect("the card carries a picture");
+    assert_eq!(
+        image.id, first,
+        "the gallery's first picture is the card's, not whichever one the heap returned"
+    );
+    assert_eq!(
+        image.inline_webp.as_deref(),
+        Some(&b"the photograph on the card"[..]),
+        "under the inline line, so the bytes ride on the row and the card costs no request"
+    );
+    assert_eq!(image.hash, None, "inline bytes and a hash are never both");
+    assert_eq!(image.fit, "contain");
+    assert_eq!(image.focus, (0.25, 0.75), "0019's framing reaches the card");
+    assert_eq!(
+        row.source_format.as_deref(),
+        Some("3mf"),
+        "the format a card with no picture would name, and what decides whether it has a view"
+    );
+
+    // The other half of the CHECK: the blob-backed image, which the card must address rather
+    // than carry. Reframed to nothing — this asserts the *hash* path, which is the one that
+    // would otherwise reach the browser as an empty `<img src>`.
+    sqlx::query("DELETE FROM part_image WHERE id = $1")
+        .bind(first.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("the first picture is removed");
+    let page = PgParts(pool)
+        .page(&GridQuery::new(library(), 10), Sort::Newest)
+        .await
+        .expect("page");
+    let image = page
+        .iter()
+        .find(|row| row.summary.id == part)
+        .expect("the part is still on the page")
+        .image
+        .as_ref()
+        .expect("the second picture is the card's now");
+    assert_eq!(
+        image.hash,
+        Some(blob.hash),
+        "over the inline line, so the card gets a hash to address and no bytes"
+    );
+    assert_eq!(image.inline_webp, None);
+}

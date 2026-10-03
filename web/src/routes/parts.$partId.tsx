@@ -9,7 +9,7 @@ import {
   removePart,
   renderPartThumbnail,
 } from '../lib/api'
-import { Detail, warmViewer } from '../components/PartDetail'
+import { Detail } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Menu } from '../components/Menu'
@@ -52,10 +52,6 @@ export function PartPage({ partId }: { partId: string }) {
     queryKey: ['part', partId],
     queryFn: () => fetchPartDetail(partId),
   })
-  // Reached from a link, with no grid hover before it: the viewer's chunk and shaders load
-  // alongside the detail fetch rather than after it.
-  useEffect(() => void warmViewer(), [])
-
   return (
     <AppFrame>
       <section>

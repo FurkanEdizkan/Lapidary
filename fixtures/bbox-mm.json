@@ -1,0 +1,8 @@
+{
+  "about": "Each mesh fixture's extent in millimetres on x, y and z - the figure PartDetail.bboxMm states, and the figure the browser must arrive at from the same file. Read by two tests: lapidary-cad/src/measure.rs (the Rust parsers, which are where bboxMm comes from) and web/src/components/mesh.test.ts (three's loaders, which are what the viewer draws). One file rather than two sets of literals, so correcting what one side reports breaks the other side's test instead of quietly disagreeing with it. 3MF is the one that bites: parse_3mf applies the unit scale and the build transforms, and three's 3MFLoader applies the transforms but ignores the unit - mesh.ts is where that is put back.",
+  "fixtures": {
+    "bracket-lp-1042-03.stl": [88.0, 40.0, 25.0],
+    "idler-bracket-lp-2210-01.obj": [40.0, 35.0, 12.0],
+    "planetary-carrier-lp-3480-02.3mf": [108.0, 48.0, 15.0]
+  }
+}

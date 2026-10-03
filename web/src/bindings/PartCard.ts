@@ -2,6 +2,7 @@
 import type { BlobHash } from "./BlobHash";
 import type { LibraryId } from "./LibraryId";
 import type { PartId } from "./PartId";
+import type { PartImage } from "./PartImage";
 import type { RevisionId } from "./RevisionId";
 
 /**
@@ -65,6 +66,24 @@ sourceBytes: number | null, storedBytes: number | null,
  * raw" and "level unrecorded" — see `PartSummary.compressed`.
  */
 compressed: boolean | null, 
+/**
+ * `stl`, `obj`, `3mf`, `step` — what the ingested file actually is, not what its name
+ * says. A card with no picture names this instead of apologising for the picture it
+ * does not have.
+ */
+sourceFormat: string | null, 
+/**
+ * **The card's picture**, and the reason this is not the thumbnail: Lapidary is a
+ * visual library, so what a card shows is the part's own image rather than something
+ * we rendered (the owner's call, 2026-10-03).
+ *
+ * The part's first `part_image` in gallery order, read in the same query as the rest of
+ * the page — no request per card. `src` is a `data:` URL for an image under the 64 KB
+ * line and `/api/blob/{hash}` for one over it; the card does not need to know which,
+ * and holding that hash is not authorization, because `blob.rs` checks reachability
+ * before it serves anything.
+ */
+image: PartImage | null, 
 /**
  * The model's own directory in the store, relative to the storage root:
  * `libraries/default/Terrain/rock`. Shown, never opened — no browser can navigate a

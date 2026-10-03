@@ -10,8 +10,8 @@ import type {
 /**
  * The dashboard's one request, and the layout this browser remembers.
  *
- * Its own module rather than more of `lib/api.ts`, for the reason `lib/likeness.ts` is:
- * one feature, one vocabulary, and here a rule that has to be kept in one place. **The
+ * Its own module rather than more of `lib/api.ts`: one feature, one vocabulary, and here a rule
+ * that has to be kept in one place. **The
  * dashboard costs one request.** There is no per-widget endpoint and there is no polling —
  * `FEATURES.md` §8 calls per-widget polling a self-inflicted DoS, and with twelve widgets on a
  * page it would be one. Twelve widgets settle in one resolve; a key that ran out of time
@@ -48,6 +48,20 @@ export const MAX_WIDGETS = 32
  */
 export const MAX_LIMIT = 12
 
+/**
+ * **A widget kind the web draws**, which is fewer than Rust offers.
+ *
+ * `duplicates` is still in the api's `Widget` union and is no longer one of these: the owner's
+ * decision (2026-10-03) is that duplicates are not a feature — identity is the content hash in
+ * the background — so the queue it linked to is gone, and R3 deletes the backend behind it. The
+ * kind is **excluded by type** rather than left out of a table, so `registry` stays a mapped type
+ * over exactly the kinds that have a renderer and every `registry[kind]` keeps compiling.
+ *
+ * `widgetFrom` is the one gate: a saved layout holding a `duplicates` widget drops it, which is
+ * how a board saved before this goal still loads, with its other widgets where they were.
+ */
+export type DrawnWidget = Exclude<Widget, { kind: 'duplicates' }>
+
 /** A named group of widgets: one titled `<section>` with its own grid. */
 export type Group = { id: string; name: string }
 
@@ -66,7 +80,7 @@ export type Group = { id: string; name: string }
  */
 export type StoredWidget = {
   key: string
-  widget: Widget
+  widget: DrawnWidget
   group: string
   x: number
   y: number
@@ -121,7 +135,7 @@ export function byKey(response: ResolveResponse | undefined): Map<string, Widget
  * registry. `lib/events.ts` reads this to re-resolve only the keys of the library that
  * changed.
  */
-export function libraryOf(widget: Widget): LibraryId | null {
+export function libraryOf(widget: DrawnWidget): LibraryId | null {
   switch (widget.kind) {
     case 'instanceStorage':
       return null
@@ -130,7 +144,6 @@ export function libraryOf(widget: Widget): LibraryId | null {
     case 'savedFilter':
     case 'facet':
     case 'queue':
-    case 'duplicates':
       return widget.library
   }
 }
@@ -170,7 +183,7 @@ const FACETS = ['format', 'material', 'tag'] as const
  * A `switch` and not a table: it is exhaustive over `Widget['kind']`, so a kind added in Rust
  * fails to compile here until the web can store it.
  */
-export function widgetFrom(raw: unknown): Widget | null {
+export function widgetFrom(raw: unknown): DrawnWidget | null {
   if (!isRecord(raw)) return null
   const library = text(raw.library)
   const kind = raw.kind
@@ -179,7 +192,6 @@ export function widgetFrom(raw: unknown): Widget | null {
       return { kind }
     case 'storage':
     case 'queue':
-    case 'duplicates':
       return library === null ? null : { kind, library }
     case 'recent':
       return library === null ? null : { kind, library, limit: clampLimit(raw.limit) }
