@@ -13,18 +13,30 @@ area — these encode decisions that are expensive to reverse.
 
 ## Non-negotiable product rules
 
+> **What this product is (owner, 2026-10-03):** a **visual library** — you look through pictures, search
+> metadata, and download the file. It is not a renderer and not a CAD tool. The render pipeline, the CAD
+> kernel, measurement, the assembly tree and shape similarity were built, measured, and then deliberately
+> removed; `docs/ROADMAP.md` § "The pivot" carries the ledger and the shas. Goals **R3–R6** on
+> `docs/goals/BOARD.md` are still finishing that removal, so some of it is in flight as you read this.
+
+
 - **We never edit geometry.** Editing happens in Rhino, Fusion, FreeCAD, Blender, Orca.
-  We visualize, measure, route, version.
+  We catalogue, picture, search, route, version. *(Was "we visualize, measure, route, version"
+  until the pivot of 2026-10-03 — measuring B-rep geometry is no longer a thing this product does.)*
 - **We never delete user data implicitly.** Delete is soft. Purge is separate and
   explicit. Blobs quarantine 30 days before removal. Derivative cache eviction is a
   different action with different wording and must never read as data loss.
-- **Format negotiation is automatic.** Slicers get 3MF/STL, CAD gets STEP, viewer gets
-  glTF. Never hand a mesh to someone who needed B-rep.
-- **Measurement must not lie.** Analytic values from B-rep entities where available.
-  Mesh-derived measurements are labelled "approximate" in the UI, always.
-- **Versioning is Perforce-shaped, not Git-shaped.** Immutable content-addressed
-  snapshots, lineage DAG, pessimistic locks. No merge, no branches, no textual diff.
-  Geometric diff replaces textual diff.
+- **Meshes in, meshes out.** The library takes `stl`, `obj` and `3mf`. A STEP or IGES file is
+  **refused at ingest, by name**, in a sentence that says what to export instead — never skipped in
+  silence. Slicers still get 3MF or STL through the `Target` negotiation. *(Until 2026-10-03 this read
+  "CAD gets STEP"; the kernel that made that true is gone.)*
+- **Figures must not lie.** Every figure now comes from reading a mesh — bounding box, volume,
+  surface area, triangle count — so every one of them is **approximate and labelled so in the UI,
+  always**. There is no analytic half any more, which makes this rule simpler rather than weaker: if a
+  number reaches a person without its ≈, that is a bug.
+- **Versioning is Perforce-shaped, not Git-shaped.** Immutable content-addressed snapshots,
+  lineage DAG, pessimistic locks. No merge, no branches, no textual diff. A revision's figures are
+  compared; the geometric diff that compared *shapes* went with the render pipeline.
 - **Governance is opt-in per library.** Hobby libraries have no revisions, states or
   approvals. Flipping a library to `controlled` turns that machinery on.
 - **The application is free and complete.** No gated features in the app. Revenue is the
@@ -35,11 +47,12 @@ area — these encode decisions that are expensive to reverse.
 ## Non-negotiable technical rules
 
 - **Container-first.** Podman and Docker. The Tauri app is a later phase and bundles
-  **only our own binaries** — never Postgres, never OCCT.
+  **only our own binaries** — never Postgres.
 - **No SQL outside `lapidary-db`.** Everything goes through repository traits.
-- **The open path never touches a source file and never invokes the CAD kernel.** Opening
-  a part reads metadata + derivatives only. If you find yourself parsing STEP on open,
-  stop.
+- **Opening a part reads metadata and pictures, never a model file.** The one exception is
+  deliberate and asked for: pressing **view** hands the browser the original mesh to draw, which is the
+  whole point of the button. Nothing loads a model because a page opened or a pointer moved. *(This rule
+  used to end "and never invokes the CAD kernel" — there is no kernel now.)*
 - **Hash first, always.** BLAKE3 before anything else in ingest. A known hash
   short-circuits the whole pipeline.
 - **Generated columns are explicitly `STORED`.** PG 18 defaults to virtual, and virtual
