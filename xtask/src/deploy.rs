@@ -56,15 +56,18 @@ const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
 /// key is present.
 const WORKER_ROLE: &str = "worker";
 
-/// The two build targets `deploy/Containerfile` ends in, and the stage OCCT is built in.
+/// The two build targets `deploy/Containerfile` ends in.
 ///
-/// The `api` target must never carry OCCT, through any stage it builds on; the `worker` target
-/// must. Named here rather than inferred from the file, because a Containerfile whose services
-/// forget to pick a target builds its *last* stage for every one of them — the worker's, OCCT
-/// and all — and nothing about that build fails.
+/// Named here rather than inferred from the file, because a Containerfile whose services forget
+/// to pick a target builds its *last* stage for every one of them, around a binary built with
+/// whatever `SERVER_FEATURES` that service passed, and nothing about that build fails.
+///
+/// There were three rules here until the CAD kernel came out: the `api` target must never carry
+/// OCCT, the `worker` target must, and `occt` is the stage it was built in. That stage has gone,
+/// so what separates the two images is the build arg alone — [`check_compose`] and
+/// [`check_workflow`] are the rules for that.
 const API_TARGET: &str = "api";
 const WORKER_TARGET: &str = "worker";
-const OCCT_STAGE: &str = "occt";
 
 /// The exact expansion `deploy/Containerfile`'s `cargo build` line must contain so the
 /// `SERVER_FEATURES` arg actually reaches the build. Kept as one constant so the check and
@@ -114,8 +117,8 @@ pub enum Violation {
     /// deployment has nothing that mounts the ingest routes.
     NoWorkerService,
     /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` without a
-    /// `target:`, so the runtime builds the file's last stage — the `worker` target, OCCT
-    /// included — whatever the service is.
+    /// `target:`, so the runtime builds the file's last stage — the `worker` target —
+    /// whatever the service is.
     MissingBuildTarget { service: String },
     /// A `deploy/compose.yaml` service builds a target other than the one its place in
     /// `KERNEL_LINKED_SERVICES` calls for: `worker` for a kernel-linked service, `api` for
@@ -125,12 +128,6 @@ pub enum Violation {
         target: String,
         expected: &'static str,
     },
-    /// The `api` target of `deploy/Containerfile`, or a stage it builds on, copies from the
-    /// `occt` stage or is that stage. OCCT is the CAD kernel, and the open path never links it.
-    ApiTargetCarriesOcct { stage: String },
-    /// The `worker` target of `deploy/Containerfile`, and every stage it builds on, copies
-    /// nothing from the `occt` stage, so the kernel-linked image ships without its kernel.
-    WorkerTargetMissingOcct,
     /// Parse-stale: `deploy/Containerfile` has no stage named `target`.
     ContainerfileMissingTarget { target: &'static str },
     /// `deploy/Containerfile`'s `cargo build` line does not contain the
@@ -167,8 +164,9 @@ pub enum Violation {
     /// A `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` names no `--target`, so it builds
     /// the file's last stage around whatever binary its arguments give.
     WorkflowBuildWithoutTarget { line: String },
-    /// A workflow build of the `worker` target without both kernel features.
-    WorkflowWorkerWithoutKernels { line: String },
+    /// A workflow build of the `worker` target without the feature that compiles its ingest
+    /// half in. It read "without both kernel features" until the CAD kernel came out.
+    WorkflowWorkerWithoutKernel { line: String },
     /// A workflow build of the `api` target that passes `SERVER_FEATURES`.
     WorkflowApiWithKernel { line: String },
     /// A workflow build of a target that is not an image compose runs.
@@ -248,7 +246,8 @@ impl std::fmt::Display for Violation {
                 f,
                 "deploy/compose.yaml service '{service}' builds {LAPIDARY_SERVER_DOCKERFILE} \
                  without a `target:`, so Docker and Podman build the file's last stage — the \
-                 `{WORKER_TARGET}` target, which carries OCCT — whatever {service} is. Add \
+                 `{WORKER_TARGET}` target — whatever {service} is, around a binary built with \
+                 whatever SERVER_FEATURES that service passed. Add \
                  `target: {API_TARGET}` (or `target: {WORKER_TARGET}` for a kernel-linked \
                  service) under {service}'s build: block in deploy/compose.yaml."
             ),
@@ -261,24 +260,9 @@ impl std::fmt::Display for Violation {
                 "deploy/compose.yaml service '{service}' builds the `{target}` target of \
                  {LAPIDARY_SERVER_DOCKERFILE}, but should build `{expected}`: kernel-linked \
                  services (KERNEL_LINKED_SERVICES in xtask/src/deploy.rs) build \
-                 `{WORKER_TARGET}`, which carries OCCT, and every other lapidary-server service \
-                 builds `{API_TARGET}`, which must not. Set `target: {expected}` under \
+                 `{WORKER_TARGET}`, and every other lapidary-server service builds \
+                 `{API_TARGET}`. Set `target: {expected}` under \
                  {service}'s build: block in deploy/compose.yaml."
-            ),
-            Violation::ApiTargetCarriesOcct { stage } => write!(
-                f,
-                "deploy/Containerfile's `{API_TARGET}` target carries OCCT: stage '{stage}', \
-                 which that target is or builds on, copies from the `{OCCT_STAGE}` stage or is \
-                 that stage. The api image serves the open path, which must never link the CAD \
-                 kernel. Move every COPY --from={OCCT_STAGE} into the `{WORKER_TARGET}` stage, \
-                 below the shared stage both targets start from."
-            ),
-            Violation::WorkerTargetMissingOcct => write!(
-                f,
-                "deploy/Containerfile's `{WORKER_TARGET}` target copies nothing from the \
-                 `{OCCT_STAGE}` stage, through itself or any stage it builds on, so the image \
-                 that runs ingest would ship without OCCT and occt-bridge. Add the COPY \
-                 --from={OCCT_STAGE} lines to the `{WORKER_TARGET}` stage."
             ),
             Violation::ContainerfileMissingTarget { target } => write!(
                 f,
@@ -359,17 +343,17 @@ impl std::fmt::Display for Violation {
                 ".github/workflows/containers.yml builds deploy/Containerfile with no --target: `{line}`. That takes \
                  the file's last stage, the worker, around a binary built with whatever SERVER_FEATURES the line \
                  passes, and with none it refuses to start as a worker. Build `--target api`, and `--target worker \
-                 --build-arg SERVER_FEATURES=mock-kernel,occt-kernel`, as deploy/compose.yaml does."
+                 --build-arg SERVER_FEATURES=mock-kernel`, as deploy/compose.yaml does."
             ),
-            Violation::WorkflowWorkerWithoutKernels { line } => write!(
+            Violation::WorkflowWorkerWithoutKernel { line } => write!(
                 f,
-                ".github/workflows/containers.yml builds the worker target without both kernels: `{line}`. Pass \
-                 `--build-arg SERVER_FEATURES=mock-kernel,occt-kernel`, as deploy/compose.yaml's worker does."
+                ".github/workflows/containers.yml builds the worker target without its kernel: `{line}`. Pass \
+                 `--build-arg SERVER_FEATURES=mock-kernel`, as deploy/compose.yaml's worker does."
             ),
             Violation::WorkflowApiWithKernel { line } => write!(
                 f,
                 ".github/workflows/containers.yml builds the api target with SERVER_FEATURES: `{line}`. The api image \
-                 serves the open path and never links the CAD kernel; drop the build argument."
+                 serves the open path and carries no worker; drop the build argument."
             ),
             Violation::WorkflowBuildTarget { line, target } => write!(
                 f,
@@ -751,8 +735,8 @@ fn per_service(services: &[ServiceBlock]) -> Vec<Violation> {
 /// came second.
 ///
 /// What this does still catch is what matters about an overlay: a service that builds
-/// `deploy/Containerfile` without `LAPIDARY_ROLE`, one that builds the `worker` target and would
-/// therefore carry OCCT, and one that sets `SERVER_FEATURES` without being kernel-linked.
+/// `deploy/Containerfile` without `LAPIDARY_ROLE`, one that builds the `worker` target when it runs
+/// no worker, and one that sets `SERVER_FEATURES` without being kernel-linked.
 pub fn check_overlay(contents: &str) -> Vec<Violation> {
     match parse_services(contents) {
         Ok(services) => per_service(&services),
@@ -1019,96 +1003,40 @@ fn is_module(path: &str, module: &str) -> bool {
     std::path::Path::new(path).ends_with(module)
 }
 
-/// Rules for the two build targets: the `api` target never carries OCCT, the `worker` target
-/// does, and both exist.
+/// Both build targets `deploy/compose.yaml` names exist in `deploy/Containerfile`.
 ///
-/// A target carries whatever any stage it is built from carries, so each target is followed
-/// down its `FROM` chain — `FROM runtime AS api` reaches `runtime`, and whatever `runtime` came
-/// from — until the base is an image rather than a stage. Keywords are matched
-/// case-insensitively, as the builder matches them.
+/// All that is left of a rule that also followed each target down its `FROM` chain looking for
+/// OCCT. With the kernel out, the two targets differ only by the `SERVER_FEATURES` a service
+/// passes — but they must still both be *there*, or a service naming one gets a build failure
+/// instead of an image. Keywords are matched case-insensitively, as the builder matches them.
 pub fn check_targets(containerfile: &str) -> Vec<Violation> {
-    struct Stage {
-        name: Option<String>,
-        base: String,
-        copies_from_occt: bool,
-    }
-    let mut stages: Vec<Stage> = Vec::new();
-    for line in logical_lines(containerfile) {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
-        let Some(instruction) = words.first() else {
-            continue;
-        };
-        if instruction.eq_ignore_ascii_case("FROM") {
+    let named: Vec<String> = logical_lines(containerfile)
+        .iter()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if !words.first()?.eq_ignore_ascii_case("FROM") {
+                return None;
+            }
             // `FROM [--platform=…] <image or stage> [AS <name>]`
             let rest: Vec<&str> = words[1..]
                 .iter()
                 .copied()
                 .filter(|word| !word.starts_with("--"))
                 .collect();
-            let name = match rest.as_slice() {
+            match rest.as_slice() {
                 [_, keyword, name, ..] if keyword.eq_ignore_ascii_case("AS") => {
                     Some(name.to_ascii_lowercase())
                 }
                 _ => None,
-            };
-            stages.push(Stage {
-                name,
-                base: rest
-                    .first()
-                    .map(|w| w.to_ascii_lowercase())
-                    .unwrap_or_default(),
-                copies_from_occt: false,
-            });
-        } else if let Some(stage) = stages.last_mut() {
-            // `COPY --from=occt …`, or a `RUN --mount=type=bind,from=occt,…`.
-            let copy_flag = format!("--from={OCCT_STAGE}");
-            let mount_part = format!("from={OCCT_STAGE}");
-            stage.copies_from_occt |= words.iter().any(|word| {
-                let word = word.to_ascii_lowercase();
-                word == copy_flag || word.split(',').any(|part| part == mount_part)
-            });
-        }
-    }
-
-    let find = |name: &str| stages.iter().find(|s| s.name.as_deref() == Some(name));
-    let chain = |target: &str| {
-        let mut chain: Vec<&Stage> = Vec::new();
-        let mut next = find(target);
-        while let Some(stage) = next {
-            // A stage built from itself is the builder's error to report, not a loop to hang in.
-            if chain.iter().any(|seen| std::ptr::eq(*seen, stage)) {
-                break;
             }
-            chain.push(stage);
-            next = find(&stage.base);
-        }
-        chain
-    };
-    let carries_occt =
-        |stage: &Stage| stage.copies_from_occt || stage.name.as_deref() == Some(OCCT_STAGE);
-
-    let mut violations = Vec::new();
-    for target in [API_TARGET, WORKER_TARGET] {
-        if find(target).is_none() {
-            violations.push(Violation::ContainerfileMissingTarget { target });
-        }
-    }
-    for stage in chain(API_TARGET) {
-        if carries_occt(stage) {
-            violations.push(Violation::ApiTargetCarriesOcct {
-                stage: stage.name.clone().unwrap_or_default(),
-            });
-        }
-    }
-    let worker = chain(WORKER_TARGET);
-    if !worker.is_empty() && !worker.iter().any(|stage| carries_occt(stage)) {
-        violations.push(Violation::WorkerTargetMissingOcct);
-    }
-    violations
+        })
+        .collect();
+    [API_TARGET, WORKER_TARGET]
+        .into_iter()
+        .filter(|target| !named.iter().any(|name| name == target))
+        .map(|target| Violation::ContainerfileMissingTarget { target })
+        .collect()
 }
 
 /// Run every rule over both files and collect the violations, in the order `main.rs`
@@ -1153,7 +1081,7 @@ pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Ve
 }
 
 /// Every `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` builds what compose builds: `--target
-/// api` with no `SERVER_FEATURES`, or `--target worker` with both kernels. Line-wise, with `\`-continued lines joined.
+/// api` with no `SERVER_FEATURES`, or `--target worker` with `mock-kernel`. Line-wise, with `\`-continued lines joined.
 pub fn check_workflow(contents: &str) -> Vec<Violation> {
     logical_lines(contents)
         .iter()
@@ -1182,11 +1110,8 @@ pub fn check_workflow(contents: &str) -> Vec<Violation> {
                 .unwrap_or_default();
             match target.as_deref() {
                 None => Some(Violation::WorkflowBuildWithoutTarget { line }),
-                Some("worker")
-                    if !(features.split(',').any(|f| f == "mock-kernel")
-                        && features.split(',').any(|f| f == "occt-kernel")) =>
-                {
-                    Some(Violation::WorkflowWorkerWithoutKernels { line })
+                Some("worker") if !features.split(',').any(|f| f == "mock-kernel") => {
+                    Some(Violation::WorkflowWorkerWithoutKernel { line })
                 }
                 Some("api") if !features.is_empty() => {
                     Some(Violation::WorkflowApiWithKernel { line })
@@ -1334,16 +1259,12 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
 
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt
-RUN cmake --build build && cmake --install build
 FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime
 COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
 EXPOSE 8080 8081
 ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
 FROM runtime AS api
 FROM runtime AS worker
-COPY --from=occt /opt/occt/lib/ /opt/occt/lib/
-COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
 ";
 
     #[test]
@@ -1626,8 +1547,8 @@ COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
         let bad = CORRECT_CONTAINERFILE
             .replacen("ARG SERVER_FEATURES=\n", "", 1)
             .replacen(
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt\n",
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt\nARG SERVER_FEATURES=\n",
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime\n",
+                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime\nARG SERVER_FEATURES=\n",
                 1,
             );
         let violations = check_containerfile(&bad);
@@ -1984,8 +1905,8 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
     }
     #[test]
     fn a_lapidary_server_service_with_no_build_target_fails_and_names_it() {
-        // No `target:` builds the file's last stage, which is the worker's — OCCT and all —
-        // and nothing about that build fails.
+        // No `target:` builds the file's last stage, which is the worker's, and nothing about
+        // that build fails.
         let bad = CORRECT_COMPOSE.replacen("      target: api\n", "", 1);
         let violations = check_compose(&bad);
         assert_eq!(
@@ -2020,65 +1941,6 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
                 target: "api".to_owned(),
                 expected: WORKER_TARGET,
             }]
-        );
-    }
-
-    #[test]
-    fn the_api_target_copying_from_occt_fails_and_names_the_stage() {
-        let bad = CORRECT_CONTAINERFILE.replacen(
-            "FROM runtime AS api\n",
-            "FROM runtime AS api\nCOPY --from=occt /opt/occt/lib/ /opt/occt/lib/\n",
-            1,
-        );
-        assert_eq!(
-            check_targets(&bad),
-            vec![Violation::ApiTargetCarriesOcct {
-                stage: "api".to_owned()
-            }]
-        );
-    }
-
-    #[test]
-    fn a_stage_the_api_target_builds_on_carrying_occt_fails_and_names_that_stage() {
-        // The runtime stage is shared, so OCCT copied there reaches the api image without the
-        // api stage mentioning it — the shape a tidy-up that "deduplicates" the two targets
-        // would take.
-        let bad = CORRECT_CONTAINERFILE.replacen(
-            "EXPOSE 8080 8081\n",
-            "COPY --from=occt /opt/occt/lib/ /opt/occt/lib/\nEXPOSE 8080 8081\n",
-            1,
-        );
-        assert_eq!(
-            check_targets(&bad),
-            vec![Violation::ApiTargetCarriesOcct {
-                stage: "runtime".to_owned()
-            }]
-        );
-    }
-
-    #[test]
-    fn an_api_target_built_straight_from_the_occt_stage_fails() {
-        let bad = CORRECT_CONTAINERFILE.replacen("FROM runtime AS api\n", "FROM occt AS api\n", 1);
-        assert_eq!(
-            check_targets(&bad),
-            vec![Violation::ApiTargetCarriesOcct {
-                stage: "occt".to_owned()
-            }]
-        );
-    }
-
-    #[test]
-    fn a_worker_target_that_copies_nothing_from_occt_fails() {
-        let bad = CORRECT_CONTAINERFILE
-            .replacen("COPY --from=occt /opt/occt/lib/ /opt/occt/lib/\n", "", 1)
-            .replacen(
-                "COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge\n",
-                "",
-                1,
-            );
-        assert_eq!(
-            check_targets(&bad),
-            vec![Violation::WorkerTargetMissingOcct]
         );
     }
 
@@ -2249,18 +2111,18 @@ RUN install -d -m 0755 /var/lib/lapidary-peer-staging
 
         let right = workflow(&[
             "docker build -f deploy/Containerfile --target api -t lapidary-api:1 .",
-            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel,occt-kernel -t lapidary-worker:1 .",
+            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel -t lapidary-worker:1 .",
             "docker build -f deploy/web/Containerfile -t lapidary-web:1 .",
         ]);
         assert_eq!(check_workflow(&right), vec![]);
 
-        let kernel_less_worker = "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel -t w .";
+        let kernel_less_worker = "docker build -f deploy/Containerfile --target worker -t w .";
         let kernel_api = "docker build -f deploy/Containerfile --target api --build-arg SERVER_FEATURES=mock-kernel -t a .";
-        let test_stage = "docker build -f deploy/Containerfile --target occt-test -t t .";
+        let test_stage = "docker build -f deploy/Containerfile --target runtime -t t .";
         assert_eq!(
             check_workflow(&workflow(&[kernel_less_worker, kernel_api, test_stage])),
             vec![
-                Violation::WorkflowWorkerWithoutKernels {
+                Violation::WorkflowWorkerWithoutKernel {
                     line: kernel_less_worker.to_owned()
                 },
                 Violation::WorkflowApiWithKernel {
@@ -2268,7 +2130,7 @@ RUN install -d -m 0755 /var/lib/lapidary-peer-staging
                 },
                 Violation::WorkflowBuildTarget {
                     line: test_stage.to_owned(),
-                    target: "occt-test".to_owned()
+                    target: "runtime".to_owned()
                 },
             ]
         );

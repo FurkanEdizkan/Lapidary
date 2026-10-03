@@ -1,5 +1,5 @@
-//! The CAD kernel boundary. One shipped implementation (OCCT, native, in the worker
-//! container) plus a test double. The open path never invokes this crate.
+//! The mesh kernel boundary. One shipped implementation (`MeshKernel`, which reads STL, OBJ
+//! and 3MF) plus a test double. The open path never invokes this crate.
 
 mod cluster;
 mod glb;
@@ -9,8 +9,6 @@ mod mesh_kernel;
 #[cfg(feature = "mock-kernel")]
 mod mock;
 mod obj;
-#[cfg(feature = "occt-kernel")]
-mod occt;
 mod raster;
 mod shape;
 mod stl;
@@ -27,8 +25,6 @@ pub use mesh_kernel::MeshKernel;
 #[cfg(feature = "mock-kernel")]
 pub use mock::MockKernel;
 pub use obj::parse_obj;
-#[cfg(feature = "occt-kernel")]
-pub use occt::OcctKernel;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
 pub use shape::profile;
 pub use stl::{Mesh, parse_stl, write_stl};

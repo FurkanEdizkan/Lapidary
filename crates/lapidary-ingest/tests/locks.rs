@@ -66,7 +66,7 @@ async fn checked_out(
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
-        cad: None,
+        kernel: None,
     };
     std::fs::write(ingest_dir.join(BRACKET), BRACKET_FIXTURE).expect("stages the scan");
     assert_eq!(

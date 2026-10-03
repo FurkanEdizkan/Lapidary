@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         ),
         None => {
             bail!(
-                "Usage: cargo xtask <verify [fast|task|slice|occt]|heavy -- <command>|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
+                "Usage: cargo xtask <verify [fast|task|slice]|heavy -- <command>|check-layers|check-deploy|check-strings|check-commit-msg|export-bindings|export-agents-md|setup>"
             )
         }
     }
@@ -571,7 +571,7 @@ fn check_deploy() -> Result<()> {
              services link the CAD kernel (static check: configuration only, not built images), \
              every service that runs lapidary-server sets LAPIDARY_ROLE, every kernel-linked \
              service sets it to worker and something does, each builds its own Containerfile target \
-             and only the worker target carries OCCT, and lapidary-api never names \
+             and both targets exist, and lapidary-api never names \
              SourceStore, names SourceReader only in crates/lapidary-api/src/download.rs, and \
              names SourceRelocator only in crates/lapidary-api/src/moves.rs, and lapidary-peer \
              reads the store only in blob.rs and writes it only in pull.rs, every named volume is a \

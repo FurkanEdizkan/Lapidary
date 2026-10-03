@@ -96,11 +96,6 @@ struct Config {
     #[cfg(feature = "mock-kernel")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     worker_id: Option<String>,
-    // Seconds one STEP or IGES file may hold the CAD kernel. Only a build with the kernel
-    // reads it; its default and its limit are at `kernel_timeout`.
-    #[cfg(feature = "occt-kernel")]
-    #[serde(default, deserialize_with = "empty_str_as_none")]
-    kernel_timeout: Option<u64>,
 }
 
 /// Treats an environment variable that is present but empty the same as one that is
@@ -179,7 +174,8 @@ fn default_bind() -> String {
 /// the `worker` service — so only `worker`'s image links a kernel and prints this branch;
 /// `api` prints the `not(feature = "mock-kernel")` line below instead. This is the only way
 /// an operator can tell from `podman logs` whether that feature chain actually held, so it
-/// names the kernels files really go to: the mesh kernel, and OCCT when it is linked.
+/// names the kernel files really go to and the formats it reads. There is one: STEP and IGES
+/// are refused by name (`lapidary_core::cad_refusal`).
 #[cfg(feature = "mock-kernel")]
 fn kernel_description() -> String {
     use lapidary_cad::{Kernel, KernelParams, MeshKernel};
@@ -194,11 +190,7 @@ fn kernel_description() -> String {
         produce: Vec::new(),
     };
     let mesh = MeshKernel.version(&params).implementation;
-    if cfg!(feature = "occt-kernel") {
-        format!("{mesh}, and occt for STEP and IGES")
-    } else {
-        format!("{mesh} only; STEP and IGES need --features occt-kernel")
-    }
+    format!("{mesh}, for stl, obj and 3mf")
 }
 
 #[cfg(not(feature = "mock-kernel"))]
@@ -388,7 +380,7 @@ fn spawn_worker(
         db: db.clone(),
         ingest_dir,
         blob_root: blob_root.clone(),
-        cad: cad_kernel(config, worker_config.lease)?,
+        kernel: None,
     });
 
     // The quarantine sweep rides along with the worker rather than getting a process or a
@@ -419,62 +411,6 @@ fn spawn_worker(
             tracing::error!(%error, "the job worker stopped");
         }
     }))
-}
-
-/// How long one file may hold the CAD kernel when `LAPIDARY_KERNEL_TIMEOUT` is unset: under
-/// `WorkerConfig`'s default 60-second lease, for the reason at [`kernel_timeout`].
-#[cfg(feature = "occt-kernel")]
-const DEFAULT_KERNEL_TIMEOUT_SECS: u64 = 45;
-
-/// The kernel timeout. One set at or past the lease is refused: leases are not renewed yet,
-/// so a file still in the kernel when its lease runs out is handed to a second worker,
-/// which starts converting it again.
-#[cfg(feature = "occt-kernel")]
-fn kernel_timeout(
-    configured: Option<u64>,
-    lease: std::time::Duration,
-) -> Result<std::time::Duration> {
-    let Some(seconds) = configured else {
-        // Unset: the default, or three quarters of a lease shorter than it. Refusing to boot
-        // over a variable the operator never set is the wrong answer to a shorter lease.
-        return Ok(std::time::Duration::from_secs(DEFAULT_KERNEL_TIMEOUT_SECS).min(lease * 3 / 4));
-    };
-    if seconds >= lease.as_secs() {
-        bail!(
-            "Could not start the worker loop: LAPIDARY_KERNEL_TIMEOUT ({seconds}s) must be \
-             below LAPIDARY_JOB_LEASE_SECS ({}s). Leases are not renewed yet, so a file still \
-             in the kernel when its lease runs out would be started again by another worker. \
-             Lower the timeout or raise the lease.",
-            lease.as_secs()
-        );
-    }
-    Ok(std::time::Duration::from_secs(seconds))
-}
-
-/// The CAD kernel STEP and IGES files go to, or a refusal to start. An image built with
-/// this feature whose bridge will not run is a broken image, and every STEP file failing
-/// on its own is a worse way to learn that.
-#[cfg(feature = "occt-kernel")]
-fn cad_kernel(
-    config: &Config,
-    lease: std::time::Duration,
-) -> Result<Option<std::sync::Arc<dyn lapidary_cad::Kernel>>> {
-    let timeout = kernel_timeout(config.kernel_timeout, lease)?;
-    // By name, from PATH: the worker target installs it as /usr/local/bin/occt-bridge.
-    let kernel = lapidary_cad::OcctKernel::new("occt-bridge", timeout)
-        .context("Could not start the worker loop: the CAD kernel is unavailable.")?;
-    tracing::info!(timeout_secs = timeout.as_secs(), "CAD kernel ready");
-    Ok(Some(std::sync::Arc::new(kernel)))
-}
-
-/// No CAD kernel in this build. STEP and IGES files fail one at a time, each saying which
-/// build reads them.
-#[cfg(all(feature = "mock-kernel", not(feature = "occt-kernel")))]
-fn cad_kernel(
-    _config: &Config,
-    _lease: std::time::Duration,
-) -> Result<Option<std::sync::Arc<dyn lapidary_cad::Kernel>>> {
-    Ok(None)
 }
 
 /// Unreachable in practice — `worker_router` bails on this same build before `main` gets
@@ -595,7 +531,7 @@ async fn main() -> Result<()> {
     // 8081) and only the router differs between them — this line is what lets `podman
     // logs` tell an operator which one a given container actually took.
     tracing::info!(role = %role_str, "role");
-    tracing::info!(kernel = %kernel_description(), "CAD kernel");
+    tracing::info!(kernel = %kernel_description(), "kernel");
     let shutdown = tokio_util::sync::CancellationToken::new();
     // Set by the `Role::Peer` arm alone, and read at the one `serve` below. A variable rather than
     // a fourth element on the match's tuple: the api and worker arms have nothing to say about
@@ -854,33 +790,6 @@ mod tests {
 
     const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
-    #[cfg(feature = "occt-kernel")]
-    #[test]
-    fn a_kernel_timeout_that_outlasts_the_lease_refuses_to_start() {
-        let lease = std::time::Duration::from_secs(60);
-        assert_eq!(
-            kernel_timeout(None, lease).expect("the default fits the default lease"),
-            std::time::Duration::from_secs(DEFAULT_KERNEL_TIMEOUT_SECS)
-        );
-        assert_eq!(
-            kernel_timeout(Some(30), lease).expect("a shorter one is kept"),
-            std::time::Duration::from_secs(30)
-        );
-        assert_eq!(
-            kernel_timeout(None, std::time::Duration::from_secs(30))
-                .expect("an unset timeout fits itself under a shorter lease"),
-            std::time::Duration::from_millis(22_500)
-        );
-        let refused = kernel_timeout(Some(60), lease)
-            .expect_err("one equal to the lease is refused")
-            .to_string();
-        assert!(
-            refused.contains("LAPIDARY_KERNEL_TIMEOUT")
-                && refused.contains("LAPIDARY_JOB_LEASE_SECS"),
-            "names both knobs: {refused}"
-        );
-    }
-
     #[test]
     fn an_empty_worker_variable_is_treated_as_unset_rather_than_as_a_bad_value() {
         // deploy/compose.yaml writes `${LAPIDARY_WORKER_CONCURRENCY:-}`, which produces a
@@ -922,14 +831,15 @@ mod tests {
     }
 
     #[test]
-    fn kernel_description_names_the_kernels_this_build_links() {
+    fn kernel_description_names_the_kernel_this_build_links_and_what_it_reads() {
         let description = kernel_description();
         assert!(description.starts_with("mesh"), "got: {description}");
-        assert_eq!(
-            description.contains("occt for STEP"),
-            cfg!(feature = "occt-kernel"),
-            "names OCCT exactly when it is linked, got: {description}"
-        );
+        for format in lapidary_core::MESH_EXTENSIONS {
+            assert!(
+                description.contains(format),
+                "names the formats a person may hand this worker, got: {description}"
+            );
+        }
     }
 
     // worker_router is what actually runs in the worker container, and it's the thing

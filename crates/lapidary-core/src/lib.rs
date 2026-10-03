@@ -34,8 +34,8 @@ pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccept
 pub use link::PartLinkKind;
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
-    CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, is_ignored,
-    is_model_file, path_escapes, source_format,
+    CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal,
+    is_ignored, is_model_file, path_escapes, source_format,
 };
 pub use pmi::{Pmi, PmiDatum, PmiDimension, PmiFace, PmiTolerance};
 pub use shape::{DESCRIPTOR_LEN, SHAPE_VERSION, ShapeProfile};

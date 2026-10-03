@@ -1267,6 +1267,29 @@ async function accepted(response: Response): Promise<ScanAccepted> {
 }
 
 /**
+ * A `400` from an upload route, carrying the server's own sentence.
+ *
+ * A distinct type because the caller has to tell the two apart: `upload probe returned 500` is
+ * for a log, and "Lapidary is a visual library of meshes and does not read STEP files…" is for
+ * the person who just dropped one. The drop UI shows this one and its own generic line for
+ * anything else.
+ */
+export class UploadRefused extends Error {}
+
+/** The refusal's message, if this response is one. */
+async function refusal(response: Response): Promise<UploadRefused | undefined> {
+  if (response.status !== 400) {
+    return undefined
+  }
+  const parsed: unknown = await response.json().catch(() => null)
+  const message =
+    parsed !== null && typeof parsed === 'object'
+      ? (parsed as { message?: unknown }).message
+      : undefined
+  return typeof message === 'string' && message !== '' ? new UploadRefused(message) : undefined
+}
+
+/**
  * `POST /api/libraries/{id}/uploads/probe` — which of these files this library still
  * needs, and which of those need their bytes.
  *
@@ -1287,7 +1310,7 @@ export async function probeUpload(
     body: JSON.stringify({ files } satisfies UploadManifest),
   })
   if (!response.ok) {
-    throw new Error(`upload probe returned ${response.status}`)
+    throw (await refusal(response)) ?? new Error(`upload probe returned ${response.status}`)
   }
   return (await response.json()) as UploadPlan
 }
@@ -1332,13 +1355,18 @@ export async function commitUpload(
   library: LibraryId,
   files: UploadFile[],
 ): Promise<ScanAccepted> {
-  return accepted(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/commit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files } satisfies UploadManifest),
-    }),
-  )
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files } satisfies UploadManifest),
+  })
+  // `refusal` reads the body only on a 400, which it then throws, so `accepted` still has one
+  // to read on every other answer.
+  const refused = await refusal(response)
+  if (refused !== undefined) {
+    throw refused
+  }
+  return accepted(response)
 }
 
 /**
