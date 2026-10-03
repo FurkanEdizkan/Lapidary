@@ -1,5 +1,5 @@
 use lapidary_core::{BatchId, DerivativeKind, JobId, JobPayload, LibraryId, Outcome, RevisionId};
-use lapidary_db::{IngestRequest, JobRow, PgIngest, PgJobs, StoredBlobRow, TessellationRow};
+use lapidary_db::{IngestRequest, JobRow, PgIngest, PgJobs, StoredBlobRow};
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -1115,7 +1115,7 @@ async fn a_failed_derive_job_reports_the_parts_name_not_a_missing_path(pool: PgP
             seeded(),
             &[JobPayload::Derive {
                 revision,
-                produce: DerivativeKind::TessellationL2,
+                produce: DerivativeKind::Export3mf,
             }],
         )
         .await
@@ -1131,7 +1131,7 @@ async fn a_failed_derive_job_reports_the_parts_name_not_a_missing_path(pool: PgP
 
     jobs.fail(
         job.id,
-        "Could not tessellate this revision - the kernel returned no output.",
+        "Could not write this revision's 3MF - the kernel returned no output.",
     )
     .await
     .expect("fails");
@@ -1170,15 +1170,15 @@ async fn a_mixed_batchs_total_is_the_sum_of_its_per_state_counts(pool: PgPool) {
         },
         JobPayload::Derive {
             revision: RevisionId::new(),
-            produce: DerivativeKind::Thumbnail,
+            produce: DerivativeKind::ExportStl,
         },
         JobPayload::Derive {
             revision: RevisionId::new(),
-            produce: DerivativeKind::TessellationL0,
+            produce: DerivativeKind::Export3mf,
         },
         JobPayload::Derive {
             revision: RevisionId::new(),
-            produce: DerivativeKind::TessellationL1,
+            produce: DerivativeKind::ExportStl,
         },
     ];
     let (batch, queued) = jobs.enqueue(seeded(), &payloads).await.expect("enqueues");
@@ -1294,7 +1294,7 @@ async fn a_derive_job_naming_another_librarys_revision_does_not_leak_its_name(po
 
     let payload = JobPayload::Derive {
         revision,
-        produce: DerivativeKind::Thumbnail,
+        produce: DerivativeKind::ExportStl,
     };
     let batch = BatchId::new();
     sqlx::query(
@@ -1489,20 +1489,21 @@ async fn a_waiting_description_is_not_queued_twice_and_a_running_one_does_not_co
     );
 }
 
-/// A rung asked for twice while its build is pending or running is built once, and the second
-/// ask is handed the batch already building it. Another rung of the same revision is its own job.
+/// An export asked for twice while its build is pending or running is built once, and the second
+/// ask is handed the batch already building it. The other export of the same revision is its own
+/// job.
 #[sqlx::test(migrations = "./migrations")]
-async fn a_rung_already_queued_hands_back_its_batch_and_queues_nothing(pool: PgPool) {
+async fn an_export_already_queued_hands_back_its_batch_and_queues_nothing(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
     let revision = RevisionId::new();
     let (batch, queued) = jobs
-        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::ExportStl)
         .await
         .expect("enqueues");
     assert!(queued);
 
     let again = jobs
-        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::ExportStl)
         .await
         .expect("a pending build is not an error");
     assert_eq!(again, (batch, false), "pending");
@@ -1512,13 +1513,13 @@ async fn a_rung_already_queued_hands_back_its_batch_and_queues_nothing(pool: PgP
         .expect("dequeues")
         .expect("the build is claimable");
     let again = jobs
-        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL1)
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::ExportStl)
         .await
         .expect("a running build is not an error");
     assert_eq!(again, (batch, false), "running");
 
     let (other, queued) = jobs
-        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::TessellationL2)
+        .enqueue_derive_if_absent(seeded(), revision, DerivativeKind::Export3mf)
         .await
         .expect("enqueues");
     assert!(
@@ -1533,8 +1534,11 @@ async fn a_rung_already_queued_hands_back_its_batch_and_queues_nothing(pool: PgP
     assert_eq!(total, 2);
 }
 
-/// Records a part from one `format` source whose L0 and thumbnail were written by
-/// `kernel_version`, and returns its revision.
+/// Records a part from one `format` source whose STL export was written by `kernel_version`, and
+/// returns its revision.
+///
+/// Two steps since R3: ingest writes no derivative, so the export is filed afterwards exactly as
+/// a `derive` job files one.
 async fn part_written_by(
     pool: &PgPool,
     seed: u8,
@@ -1564,19 +1568,7 @@ async fn part_written_by(
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version,
             format,
-            tessellations: &[TessellationRow {
-                kind: "tessellation_l0",
-                blob: StoredBlobRow {
-                    hash: lapidary_core::BlobHash::from_bytes([seed.wrapping_add(1); 32]),
-                    size_bytes: 11_264,
-                    stored_bytes: 11_264,
-                    zstd_level: 0,
-                },
-                grid: Some(32),
-            }],
         })
         .await
         .expect("records");
@@ -1585,14 +1577,30 @@ async fn part_written_by(
         .fetch_one(pool)
         .await
         .expect("one revision");
-    RevisionId::from_uuid(revision)
+    let revision = RevisionId::from_uuid(revision);
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            revision,
+            DerivativeKind::ExportStl,
+            &StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([seed.wrapping_add(1); 32]),
+                size_bytes: 11_264,
+                stored_bytes: 11_264,
+                zstd_level: 0,
+            },
+            None,
+            kernel_version,
+        )
+        .await
+        .expect("the export lands");
+    revision
 }
 
-/// The sweep queues exactly the rungs a different version wrote from the named format -- not
-/// the thumbnail beside them, not a current rung, not another format's -- and queues nothing
-/// the second time while those builds are still pending.
+/// The sweep queues exactly the exports a different version wrote from the named format -- not a
+/// current one, not another format's -- and queues nothing the second time while those builds are
+/// still pending.
 #[sqlx::test(migrations = "./migrations")]
-async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) {
+async fn the_stale_sweep_queues_only_old_exports_of_its_format_once(pool: PgPool) {
     let stale = part_written_by(
         &pool,
         0x10,
@@ -1634,7 +1642,7 @@ async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) 
         vec![
             JobPayload::Derive {
                 revision: stale,
-                produce: DerivativeKind::TessellationL0,
+                produce: DerivativeKind::ExportStl,
             }
             .to_json()
         ]
@@ -1647,57 +1655,69 @@ async fn the_stale_sweep_queues_only_old_rungs_of_its_format_once(pool: PgPool) 
     assert_eq!(again, 0, "the rebuild is already queued");
 }
 
-/// A CAD source's tree an older bridge wrote is queued beside its old rung, by its `structure` row: a
-/// derive of that row reads the tree, the entities and the PMI again. Entities and PMI rows are never
-/// queued on their own, since a file may specify neither.
+/// **A render-kind row at any version is never swept.** Those rows are still in the table until
+/// migration `0055` (R4), and nothing can rebuild one — a sweep that queued one would queue it
+/// again at every worker start, for ever, for a job that fails every time. Written as raw SQL,
+/// because this build cannot name those kinds.
 #[sqlx::test(migrations = "./migrations")]
-async fn the_stale_sweep_queues_an_old_cad_read_by_its_structure_row(pool: PgPool) {
-    const OLD: &str = "occt-8.0.1-bridge-5+deflection-0.1+glb-2+cpu-1";
+async fn the_stale_sweep_never_queues_a_kind_nothing_builds(pool: PgPool) {
     let revision = part_written_by(
         &pool,
-        0x40,
-        "fixture-plate-assembly-lp-9000-00.step",
-        "step",
-        OLD,
+        0x50,
+        "bracket-lp-1042-03.stl",
+        "stl",
+        "mesh stl-1+glb-2+cpu-1",
     )
     .await;
-    let ingest = lapidary_db::PgIngest(pool.clone());
-    for (seed, kind) in [
-        (0x42, DerivativeKind::Structure),
-        (0x43, DerivativeKind::Entities),
+    for kind in [
+        "thumbnail",
+        "tessellation_l0",
+        "tessellation_l1",
+        "tessellation_l2",
+        "structure",
+        "entities",
+        "pmi",
     ] {
-        let blob = StoredBlobRow {
-            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
-            size_bytes: 2_048,
-            stored_bytes: 2_048,
-            zstd_level: 0,
-        };
-        ingest
-            .upsert_derivative(
-                revision,
-                kind,
-                lapidary_db::DerivativeBytes::Hashed {
-                    blob: &blob,
-                    grid: None,
-                },
-                OLD,
-            )
-            .await
-            .expect("records the read");
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+             VALUES (uuidv7(), $1, $2, '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb)",
+        )
+        .bind(revision.as_uuid())
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .expect("a row of a kind nothing builds");
     }
 
-    let queued = PgJobs(pool.clone())
-        .enqueue_stale_derivatives("step", "occt-8.0.1-bridge-6+deflection-0.1+glb-2+cpu-1")
-        .await
-        .expect("sweeps");
-    assert_eq!(queued, 2);
-    let mut produced: Vec<String> = sqlx::query_scalar(
-        "SELECT payload->>'produce' FROM job WHERE kind = 'derive' AND payload->>'revision' = $1",
+    let jobs = PgJobs(pool.clone());
+    assert_eq!(
+        jobs.enqueue_stale_derivatives("stl", "mesh stl-1+glb-2+cpu-1")
+            .await
+            .expect("sweeps"),
+        0,
+        "seven stale rows of six dead kinds, and not one of them is queued"
+    );
+
+    // The positive control, in the same library: without it this test passes on a sweep whose SQL
+    // no longer matches anything at all.
+    sqlx::query(
+        "UPDATE derivative SET kernel_version = 'mesh stl-1+glb-1+cpu-1' \
+                 WHERE kind = 'export_stl'",
     )
-    .bind(revision.to_string())
-    .fetch_all(&pool)
+    .execute(&pool)
     .await
-    .expect("derive jobs");
-    produced.sort();
-    assert_eq!(produced, ["structure", "tessellation_l0"]);
+    .expect("ages the export");
+    assert_eq!(
+        jobs.enqueue_stale_derivatives("stl", "mesh stl-1+glb-2+cpu-1")
+            .await
+            .expect("sweeps"),
+        1,
+        "the sweep is alive, and the export is what it finds"
+    );
+    let produced: Vec<String> =
+        sqlx::query_scalar("SELECT payload->>'produce' FROM job WHERE kind = 'derive'")
+            .fetch_all(&pool)
+            .await
+            .expect("derive jobs");
+    assert_eq!(produced, ["export_stl"]);
 }

@@ -2196,11 +2196,6 @@ impl PgParts {
             // Who a pulled part came from (sharing S3), for `part_source`'s reason: after a purge there is no part for
             // it to be about.
             "DELETE FROM part_provenance WHERE part_id = $1",
-            // The shape profile (Phase 6): a derived value, and it references `revision`, so it goes before it.
-            "DELETE FROM part_shape WHERE part_id = $1",
-            // What a person decided about this part and another, from either side: "these two are variants"
-            // means nothing once one of them is gone.
-            "DELETE FROM part_link WHERE part_id = $1 OR other_id = $1",
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",

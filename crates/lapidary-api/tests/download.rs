@@ -114,10 +114,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -169,10 +166,7 @@ async fn seed_at_path(
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -478,10 +472,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -1158,15 +1149,13 @@ async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_me
         .upsert_derivative(
             seeded.revision,
             lapidary_core::DerivativeKind::Export3mf,
-            lapidary_db::DerivativeBytes::Hashed {
-                blob: &StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid: None,
+            &StoredBlobRow {
+                hash: stored.hash,
+                size_bytes: stored.size_bytes,
+                stored_bytes: stored.stored_bytes,
+                zstd_level: stored.zstd_level,
             },
+            None,
             "mesh stl-1+cpu-1",
         )
         .await

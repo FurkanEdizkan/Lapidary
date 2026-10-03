@@ -47,10 +47,7 @@ async fn seed(pool: &sqlx::PgPool) -> PartId {
             blob: &blob_row(0x31),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seeds the part")
@@ -70,10 +67,7 @@ fn request<'a>(
         blob,
         measurements,
         provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-        thumbnail_webp: None,
-        kernel_version: "mesh stl-1+cpu-1",
         format: "stl",
-        tessellations: &[],
     }
 }
 
@@ -189,10 +183,7 @@ async fn a_revision_moves_its_part_in_the_grids_order(pool: sqlx::PgPool) {
                     ..measurements()
                 },
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                thumbnail_webp: None,
-                kernel_version: "mesh stl-1+cpu-1",
                 format: "stl",
-                tessellations: &[],
             })
             .await
             .expect("seeds the part");
@@ -291,7 +282,6 @@ async fn a_revision_goes_on_top_and_the_previous_file_is_set_aside_under_its_own
     assert_eq!(history[1].origin, RevisionOrigin::Ingest);
     assert_eq!(history[0].storage_path.as_deref(), Some(STORED));
     assert_eq!(history[1].storage_path.as_deref(), Some(ASIDE));
-    assert_eq!(history[1].thumbnail.as_deref(), Some(&b"webp-preview"[..]));
 
     let now = revisions
         .current(library(), PATH)

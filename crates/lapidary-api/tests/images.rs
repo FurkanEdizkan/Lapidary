@@ -70,10 +70,7 @@ async fn seed_part(pool: &sqlx::PgPool) -> PartId {
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
-            thumbnail_webp: None,
         })
         .await
         .expect("a part to hang a gallery on")

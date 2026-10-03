@@ -65,10 +65,7 @@ async fn filed(
             blob: &row(bytes),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records")
@@ -92,10 +89,7 @@ async fn revise(pool: &sqlx::PgPool, root: &Path, part: PartId, bytes: &[u8]) {
                 blob: &row(bytes),
                 measurements: &measurements(),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                thumbnail_webp: None,
-                kernel_version: "mesh stl-1+glb-1+cpu-1",
                 format: "stl",
-                tessellations: &[],
             },
             |current, aside| {
                 let aside = root.join(aside);
@@ -471,10 +465,7 @@ async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
             blob: &row(b"solid toggle-clamp-lp-4120-01\n"),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records");

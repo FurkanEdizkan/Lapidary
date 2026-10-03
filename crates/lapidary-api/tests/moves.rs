@@ -65,10 +65,7 @@ async fn seed_model(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed model");
@@ -266,10 +263,7 @@ async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPo
             blob: &row(FIRST),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("revision 1");
@@ -294,10 +288,7 @@ async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPo
                 blob: &row(SECOND),
                 measurements: &measurements(),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                thumbnail_webp: None,
-                kernel_version: "mesh stl-1+cpu-1",
                 format: "stl",
-                tessellations: &[],
             },
             // The filesystem half as the worker does it: the current file set aside, the new
             // bytes written where it was.
@@ -548,10 +539,7 @@ async fn a_model_the_storage_migration_has_not_reached_cannot_be_moved(pool: sql
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed unmigrated part");

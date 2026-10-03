@@ -33,7 +33,7 @@ async fn record(
     thumbnail: Option<&[u8]>,
 ) -> PartId {
     let source_path = format!("{}.stl", name.to_lowercase().replace([' ', ','], "-"));
-    PgIngest(pool.clone())
+    let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: Some(folder),
@@ -55,13 +55,14 @@ async fn record(
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
-            thumbnail_webp: thumbnail,
         })
         .await
-        .expect("records")
+        .expect("records");
+    if let Some(bytes) = thumbnail {
+        stored_thumbnail(pool, part, bytes).await;
+    }
+    part
 }
 
 struct Shared {
@@ -475,4 +476,23 @@ async fn a_folder_held_here_is_passed_on_to_the_people_its_owner_named(pool: sql
         .expect("an older hello");
     let (_, _, body) = get(&pool, Some(ayse()), "/peer/v1/shares").await;
     assert_eq!(json(&body).as_array().map(Vec::len), Some(1));
+}
+
+/// A `thumbnail` derivative on a part's latest revision, written as raw SQL.
+///
+/// **Nothing in Lapidary writes one any more** (R3: nothing renders), and the sharing protocol
+/// still offers whatever the table holds — which, in a library that pre-dates the pivot, is a
+/// thumbnail per part until migration `0055` (R4) deletes them. So the fixture writes the row the
+/// way the database holds it rather than through a type this build no longer has.
+async fn stored_thumbnail(pool: &sqlx::PgPool, part: PartId, bytes: &[u8]) {
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+         SELECT uuidv7(), r.id, 'thumbnail', $2, 'mesh stl-1+glb-2+cpu-1', '{}'::jsonb \
+           FROM revision r WHERE r.part_id = $1 ORDER BY r.id DESC LIMIT 1",
+    )
+    .bind(part.as_uuid())
+    .bind(bytes)
+    .execute(pool)
+    .await
+    .expect("a stored thumbnail");
 }

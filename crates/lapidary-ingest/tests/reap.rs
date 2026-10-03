@@ -67,10 +67,7 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part")
@@ -370,10 +367,7 @@ async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed a migrated part")
@@ -600,8 +594,8 @@ async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
 
 /// The double count the purge-removes-the-model-directory design recorded and left open (its §6):
 /// a filed source was counted once as the model file and again as a content-addressed copy that no
-/// longer exists. One filed source and one rung: purge, the instance figure and the sweep must all
-/// say the same number, and it must be the number that actually leaves the disk.
+/// longer exists. One filed source and one derivative: purge, the instance figure and the sweep
+/// must all say the same number, and it must be the number that actually leaves the disk.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_filed_source_and_its_rung_are_counted_once_by_purge_the_instance_figure_and_the_sweep(
     pool: PgPool,
@@ -630,22 +624,33 @@ async fn a_filed_source_and_its_rung_are_counted_once_by_purge_the_instance_figu
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[lapidary_db::TessellationRow {
-                kind: "tessellation_l0",
-                blob: StoredBlobRow {
-                    hash: rung.hash,
-                    size_bytes: rung.size_bytes,
-                    stored_bytes: rung.stored_bytes,
-                    zstd_level: rung.zstd_level,
-                },
-                grid: Some(32),
-            }],
         })
         .await
-        .expect("a filed part with a rung");
+        .expect("a filed part");
+    // The derivative is written after the part now: ingest carries none since R3, and a derive
+    // job is the only thing that files one. An export rather than a rung, because an export is
+    // what a worker still builds.
+    let revision: uuid::Uuid = sqlx::query_scalar("SELECT id FROM revision WHERE part_id = $1")
+        .bind(part.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("the revision");
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            lapidary_core::RevisionId::from_uuid(revision),
+            lapidary_core::DerivativeKind::ExportStl,
+            &StoredBlobRow {
+                hash: rung.hash,
+                size_bytes: rung.size_bytes,
+                stored_bytes: rung.stored_bytes,
+                zstd_level: rung.zstd_level,
+            },
+            None,
+            "mesh stl-1+glb-1+cpu-1",
+        )
+        .await
+        .expect("the export lands");
     let on_disk = 4_096 + rung.stored_bytes;
 
     let parts = PgParts(pool.clone());

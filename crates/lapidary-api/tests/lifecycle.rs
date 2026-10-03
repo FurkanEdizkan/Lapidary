@@ -87,10 +87,7 @@ async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part")
@@ -328,10 +325,7 @@ async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> 
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed sharing part")

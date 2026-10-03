@@ -1,30 +1,17 @@
-//! "Free cache space" (Phase 4 slice 2 spec §4, `DATA.md` §1.5): which rungs are cache, and what
-//! removing them does to the blobs they named.
+//! "Free cache space" (Phase 4 slice 2 spec §4, `DATA.md` §1.5): which derivatives are cache, and
+//! what removing them does to the blobs they named.
+//!
+//! **The exports alone since R3.** `cache_kinds` named the L1 and L2 rungs too, and after the
+//! pivot nothing can rebuild a rung — so evicting one would be data loss dressed as a cache sweep,
+//! and the wording of that button is a product rule: eviction must never read as data loss. The
+//! rung rows are still in the table; R4's migration deletes them.
 
-use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId};
-use lapidary_db::{IngestRequest, PgIngest, PgParts, StoredBlobRow, TessellationRow};
+use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, RevisionId};
+use lapidary_db::{IngestRequest, PgIngest, PgParts, StoredBlobRow};
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
-fn rung(kind: &'static str, seed: u8, stored: u64) -> TessellationRow<'static> {
-    TessellationRow {
-        kind,
-        blob: StoredBlobRow {
-            hash: BlobHash::from_bytes([seed; 32]),
-            size_bytes: stored,
-            stored_bytes: stored,
-            zstd_level: 0,
-        },
-        grid: Some(64),
-    }
-}
-
-async fn part(
-    pool: &sqlx::PgPool,
-    name: &str,
-    source: u8,
-    rungs: &[TessellationRow<'_>],
-) -> PartId {
+async fn part(pool: &sqlx::PgPool, name: &str, source: u8) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
@@ -47,13 +34,64 @@ async fn part(
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: rungs,
         })
         .await
         .expect("records")
+}
+
+/// One export onto a part's latest revision, as a `derive` job files one. Ingest writes none.
+async fn export(pool: &sqlx::PgPool, part: PartId, kind: DerivativeKind, seed: u8, stored: u64) {
+    let revision: sqlx::types::Uuid =
+        sqlx::query_scalar("SELECT id FROM revision WHERE part_id = $1 ORDER BY id DESC LIMIT 1")
+            .bind(part.as_uuid())
+            .fetch_one(pool)
+            .await
+            .expect("the revision");
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            RevisionId::from_uuid(revision),
+            kind,
+            &StoredBlobRow {
+                hash: BlobHash::from_bytes([seed; 32]),
+                size_bytes: stored,
+                stored_bytes: stored,
+                zstd_level: 0,
+            },
+            None,
+            "mesh stl-1+glb-2+cpu-1",
+        )
+        .await
+        .expect("the export lands");
+}
+
+/// A rung a pre-pivot pipeline left behind, written as raw SQL because nothing in this build can
+/// name its kind. It must be left exactly where it is by every sweep: unrebuildable bytes are the
+/// user's data now, not our cache.
+async fn stale_rung(pool: &sqlx::PgPool, part: PartId, kind: &str, seed: u8, stored: u64) {
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($2, $3, $3, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
+    )
+    .bind(part.as_uuid())
+    .bind(BlobHash::from_bytes([seed; 32]).to_hex())
+    .bind(stored as i64)
+    .execute(pool)
+    .await
+    .expect("the rung's blob row");
+    sqlx::query(
+        "WITH r AS (SELECT id FROM revision WHERE part_id = $1 ORDER BY id DESC LIMIT 1), \
+         ins AS (INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
+                 SELECT uuidv7(), r.id, $2, $3, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb FROM r \
+                 RETURNING blake3) \
+         UPDATE blob SET ref_count = ref_count + 1 WHERE blake3 = (SELECT blake3 FROM ins)",
+    )
+    .bind(part.as_uuid())
+    .bind(kind)
+    .bind(BlobHash::from_bytes([seed; 32]).to_hex())
+    .execute(pool)
+    .await
+    .expect("the rung's row");
 }
 
 async fn kinds(pool: &sqlx::PgPool, part: PartId) -> Vec<String> {
@@ -75,35 +113,16 @@ async fn blob(pool: &sqlx::PgPool, seed: u8) -> (i32, bool) {
         .expect("the blob row is still there")
 }
 
-/// A bracket nobody has opened in months, whose L2 is the same bytes as its L0 (a small part's
-/// rungs often are) and whose 3MF was written for a slicer, beside a spacer whose L1 somebody
-/// read yesterday.
+/// A bracket nobody has opened in months, carrying both exports and an L1 rung a pre-pivot
+/// pipeline left, beside a spacer whose 3MF somebody downloaded yesterday.
 #[sqlx::test(migrations = "./migrations")]
-async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine(
-    pool: sqlx::PgPool,
-) {
-    let bracket = part(
-        &pool,
-        "bracket-lp-1042-03.stl",
-        0xa9,
-        &[
-            rung("tessellation_l0", 0xa0, 9_140),
-            rung("tessellation_l1", 0xa1, 48_210),
-            rung("tessellation_l2", 0xa0, 9_140),
-            rung("export_3mf", 0xa2, 12_405),
-        ],
-    )
-    .await;
-    let spacer = part(
-        &pool,
-        "hex-spacer-m4x20-lp-2145-01.stl",
-        0xb9,
-        &[
-            rung("tessellation_l0", 0xb0, 3_016),
-            rung("tessellation_l1", 0xb1, 51_002),
-        ],
-    )
-    .await;
+async fn only_old_exports_are_cache_and_an_unrebuildable_rung_is_left_alone(pool: sqlx::PgPool) {
+    let bracket = part(&pool, "bracket-lp-1042-03.stl", 0xa9).await;
+    export(&pool, bracket, DerivativeKind::ExportStl, 0xa1, 48_210).await;
+    export(&pool, bracket, DerivativeKind::Export3mf, 0xa2, 12_405).await;
+    stale_rung(&pool, bracket, "tessellation_l1", 0xa0, 9_140).await;
+    let spacer = part(&pool, "hex-spacer-m4x20-lp-2145-01.stl", 0xb9).await;
+    export(&pool, spacer, DerivativeKind::Export3mf, 0xb1, 51_002).await;
     sqlx::query(
         "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
     )
@@ -114,7 +133,7 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
         .bind(BlobHash::from_bytes([0xb1; 32]).to_hex())
         .execute(&pool)
         .await
-        .expect("somebody opened the spacer yesterday");
+        .expect("somebody downloaded the spacer's 3MF yesterday");
 
     let parts = PgParts(pool.clone());
     assert_eq!(
@@ -124,24 +143,21 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
             .expect("reads")
             .render_cache_bytes,
         48_210 + 12_405,
-        "the bracket's L1 and 3MF only: its L2 shares L0's blob, and the spacer's L1 was read yesterday"
+        "the bracket's two exports only: its rung is not cache, and the spacer's export was read \
+         yesterday"
     );
 
     let freed = parts.free_render_cache().await.expect("frees");
-    assert_eq!(
-        freed.rungs, 2,
-        "the bracket's L1 and 3MF only: its L2 shares L0's blob, which the figure never counted, so it stays"
-    );
+    assert_eq!(freed.rungs, 2, "the bracket's two exports");
     assert_eq!(freed.quarantined_bytes, 48_210 + 12_405);
 
     assert_eq!(
         kinds(&pool, bracket).await,
-        ["tessellation_l0", "tessellation_l2", "thumbnail"]
+        ["tessellation_l1"],
+        "**the rung stays.** Nothing can rebuild it, so a sweep that took it would be deleting \
+         the only copy of something a person might still hold the hash of"
     );
-    assert_eq!(
-        kinds(&pool, spacer).await,
-        ["tessellation_l0", "tessellation_l1", "thumbnail"]
-    );
+    assert_eq!(kinds(&pool, spacer).await, ["export_3mf"]);
     assert_eq!(
         blob(&pool, 0xa1).await,
         (0, true),
@@ -150,12 +166,12 @@ async fn only_old_rungs_nothing_else_needs_are_cache_and_they_go_into_quarantine
     assert_eq!(
         blob(&pool, 0xa2).await,
         (0, true),
-        "the export too: it is written again when next asked for"
+        "the other export too: it is written again when next asked for"
     );
     assert_eq!(
         blob(&pool, 0xa0).await,
-        (2, false),
-        "L0 and the L2 that shares its bytes both still point at it"
+        (1, false),
+        "and the rung's blob is neither counted down nor quarantined"
     );
     assert_eq!(
         blob(&pool, 0xa9).await,

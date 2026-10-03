@@ -130,10 +130,7 @@ async fn seed_cas_part(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "lapidary-mesh 0.1.0",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seeds a part whose bytes are still content-addressed");
@@ -1228,10 +1225,7 @@ async fn one_runner_holds_a_hash_and_the_next_one_is_told_so(pool: PgPool) {
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "lapidary-mesh 0.1.0",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("ingests a part that shares the blob being migrated");

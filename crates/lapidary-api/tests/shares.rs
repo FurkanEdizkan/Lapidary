@@ -81,10 +81,7 @@ async fn record(
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
-            thumbnail_webp: None,
         })
         .await
         .expect("records");

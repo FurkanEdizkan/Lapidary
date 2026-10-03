@@ -67,11 +67,9 @@ mod tests {
             name: "Bearing block, 608ZZ".to_owned(),
             part_number: Some("LP-1042-03".to_owned()),
             source_path: "bearings/608ZZ-block.stl".to_owned(),
-            thumbnail: Some(BlobHash::from_bytes([0x11; 32])),
             triangle_count: Some(48_112),
             approximate: true,
             source_hash: Some(BlobHash::from_bytes([0x22; 32])),
-            tessellation_l0: Some(BlobHash::from_bytes([0x33; 32])),
             source_bytes: Some(204_800),
             stored_bytes: Some(91_204),
             compressed: Some(true),
@@ -84,7 +82,7 @@ mod tests {
         assert!(json.get("part_number").is_none());
         assert!(json.get("createdAt").is_some());
         assert_eq!(
-            json["thumbnail"], "1111111111111111111111111111111111111111111111111111111111111111",
+            json["sourceHash"], "2222222222222222222222222222222222222222222222222222222222222222",
             "a blob hash must go over the wire as hex, never as a byte array"
         );
         assert!(

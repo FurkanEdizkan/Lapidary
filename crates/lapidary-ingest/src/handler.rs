@@ -1320,29 +1320,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_refused_derivative_shape_is_permanent_not_a_retry() {
-        let revision = lapidary_core::RevisionId::new();
-        let refusals = [
-            DbError::ThumbnailNotInline { revision },
-            DbError::EmptyDerivative {
-                kind: "thumbnail",
-                revision,
-            },
-        ];
-        for refusal in refusals {
-            let text = refusal.to_string();
-            match classify_db(refusal) {
-                // The operator's remedy has to survive the classification: it is the only
-                // place the reason for the refusal is written down.
-                HandlerError::Permanent { message } => assert_eq!(message, text),
-                other => panic!("a guard refusal must not be retried, got {other:?}"),
-            }
-        }
-    }
-
-    /// The other direction, so the match above cannot quietly become a blanket
-    /// `Permanent` and strand a job the next attempt would have run.
+    /// Every `DbError` is a retry now. The two that were not — `ThumbnailNotInline` and
+    /// `EmptyDerivative`, both about the inline thumbnail shape — went with the renders, and the
+    /// case that pinned them went with them rather than being bent to a different error.
     #[test]
     fn a_query_failure_is_still_transient() {
         let err = DbError::Query(sqlx::Error::PoolClosed);
