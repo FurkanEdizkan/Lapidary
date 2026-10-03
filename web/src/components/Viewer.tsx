@@ -14,7 +14,7 @@ import { downloadUrl } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { PartDetail } from '../lib/types'
 import { frameBox, type Vec3 } from '../lib/viewer-math'
-import { parseMesh } from './mesh'
+import { Unviewable, parseMesh } from './mesh'
 import { contactShadow, disposeModel, partMaterial, shadowMaterial, studioLights } from './studio'
 
 /** What a view can be told. One part, shown once; everything else about it is the pointer's. */
@@ -101,7 +101,16 @@ export default function Viewer({
   const revision = part.revision
   useEffect(() => {
     const node = host.current
-    if (node === null || format === null) return
+    if (node === null) return
+    // A revision with no source row has no file to read. `Preview` offers **view** only for a
+    // known mesh format, so nothing reaches this — but it is said rather than returned from,
+    // because a silent return is exactly the failure this goal exists to remove: the rung effect
+    // this replaced returned early on a part with no L0 and left no spinner, no error and
+    // nothing to diagnose.
+    if (format === null) {
+      setFailed(strings.viewer.failed)
+      return
+    }
     if (view.current === null) view.current = createView(node, () => setPainted(true))
     const current = view.current
     const aborter = new AbortController()
@@ -121,9 +130,12 @@ export default function Viewer({
       .catch((error: unknown) => {
         // An abort is this effect being replaced, not a failure anyone needs told about.
         if (stale || (error instanceof DOMException && error.name === 'AbortError')) return
-        // The parser's own sentence where it has one — it names the format — and the general
-        // one otherwise, since a 404 or a truncated download says nothing a reader can use.
-        setFailed(error instanceof Error && error.message.length > 3 ? error.message : strings.viewer.failed)
+        // **Only our own sentences reach the screen.** `Unviewable` is the one failure with
+        // something useful to say — it names the format — and everything else is three's loader
+        // text or the browser's `Failed to fetch`, which tell a reader nothing and come from no
+        // `strings.ts`. Both are the same thing to somebody looking at it: this did not draw, so
+        // download the file and open it in a tool that will.
+        setFailed(error instanceof Unviewable ? error.message : strings.viewer.failed)
       })
     return () => {
       stale = true

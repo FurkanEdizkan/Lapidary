@@ -6,6 +6,18 @@ import { unzipSync } from 'three/addons/libs/fflate.module.js'
 import { strings } from '../lib/strings'
 
 /**
+ * A refusal with a sentence somebody can act on, which is the only kind of message the viewer
+ * puts on screen.
+ *
+ * Its own type because everything else that can go wrong here says something nobody can use:
+ * three's loaders throw `THREE.ThreeMFLoader: Cannot find relationship file …` and a failed
+ * download throws `Failed to fetch`. `CLAUDE.md` wants an error that says what broke and what to
+ * do, and `no-bare-strings` wants it to come from `strings.ts` — so the viewer shows this one's
+ * message and maps everything else to `strings.viewer.failed`.
+ */
+export class Unviewable extends Error {}
+
+/**
  * The original file, read in the browser.
  *
  * Since R1 the viewer draws the ingested bytes rather than a tessellation rung we wrote, so
@@ -44,7 +56,7 @@ export function parseMesh(format: string, bytes: ArrayBuffer): Object3D {
       return group
     }
     default:
-      throw new Error(strings.viewer.unviewable(format))
+      throw new Unviewable(strings.viewer.unviewable(format))
   }
 }
 

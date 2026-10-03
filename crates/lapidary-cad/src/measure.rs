@@ -322,7 +322,15 @@ mod tests {
             })
         };
 
-        let files: [(&str, &[u8], fn(&[u8]) -> Result<Mesh, crate::CadError>); 3] = [
+        /// A fixture: its name in the contract, its bytes, and the parser for its format.
+        /// Named because clippy counts the tuple as a complex type, and it is right to.
+        type Fixture = (
+            &'static str,
+            &'static [u8],
+            fn(&[u8]) -> Result<Mesh, crate::CadError>,
+        );
+
+        let files: [Fixture; 3] = [
             (
                 "bracket-lp-1042-03.stl",
                 include_bytes!("../../../fixtures/bracket-lp-1042-03.stl"),
