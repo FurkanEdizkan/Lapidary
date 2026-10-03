@@ -23,6 +23,9 @@ afterEach(() => {
 /** A tiny real WebP, as `part_image.image_webp` arrives on the row: under the 64 KB line. */
 const WEBP = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQ1LrVv/+BiOh/AAA='
 
+/** A rendered thumbnail, deliberately different bytes: the fallback the picture has to beat. */
+const RENDER = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQvJoXpf+BiOh/AAA='
+
 /** One picture, framed the way `0019_image_framing.sql` stores a framing. */
 function picture(src: string, framing: Partial<PartImage> = {}): PartImage {
   return {
@@ -135,9 +138,17 @@ test('a card shows its own picture, inline or addressed, and names the format wh
   const bare = card('01931b6e-0000-7000-8000-0000000b0013', 'vee-block-lp-3072-02', {
     sourceFormat: '3mf',
   })
+  // **A part with both**, which is every part today and the one case the precedence can be wrong
+  // in. The thumbnail is a fallback for the window before R4 purges the renders, so the picture has
+  // to win — and without this card the two orders are indistinguishable, which is how the first
+  // version of this test passed against `thumbnail ?? image`.
+  const both = card('01931b6e-0000-7000-8000-0000000b0015', 'hex-spacer-m4x20-lp-2145-01', {
+    image: picture(WEBP),
+    thumbnail: RENDER,
+  })
   const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
   vi.stubGlobal('fetch', fetchMock)
-  await renderGrid([inline, addressed, bare])
+  await renderGrid([inline, addressed, bare, both])
 
   // **No request per card.** The picture arrives with the page, inline or as an address, and the
   // grid's own code asks for nothing — which is the rule a gallery of a thousand parts rests on.
@@ -153,6 +164,10 @@ test('a card shows its own picture, inline or addressed, and names the format wh
   // request, cached immutably by `blob.rs` — never a second API call for the card.
   expect(shown(addressed)?.getAttribute('src')).toBe(BLOB)
   expect(shown(bare)).toBeNull()
+  expect(
+    shown(both)?.getAttribute('src') === WEBP,
+    'a part with both shows its picture, not the render it still has',
+  ).toBe(true)
 
   // Alt text as a literal, not read back from strings.ts: an alt of '' satisfies the constant form
   // and tells a screen-reader user nothing.
