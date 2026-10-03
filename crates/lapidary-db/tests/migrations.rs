@@ -1,6 +1,8 @@
 //! The schema constraints slice 2 adds are load-bearing, not decoration: one of them is
 //! what makes at-least-once job delivery safe. Each is tested by trying to violate it.
 
+use lapidary_core::{BatchId, LibraryId};
+use lapidary_db::PgJobs;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -860,9 +862,10 @@ async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) 
         };
         sqlx::query(
             "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome, \
-                              leased_by, lease_expires_at) \
+                              last_error, leased_by, lease_expires_at) \
              VALUES ($1, $2, $3, $4, $5, $6, \
                      CASE WHEN $6 = 'done' THEN $7 END, \
+                     CASE WHEN $6 = 'failed' THEN 'the reason this job gave' END, \
                      CASE WHEN $6 = 'running' THEN 'worker-a' END, \
                      CASE WHEN $6 = 'running' THEN now() + interval '60 seconds' END)",
         )
@@ -890,8 +893,13 @@ async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) 
     let pending_thumb = queued("pending", "derive", Some("thumbnail")).await;
     let done_profile = queued("done", "profile_shape", None).await;
     let done_rung = queued("done", "derive", Some("tessellation_l2")).await;
+    // **Failed rows of a dead kind stay**, deliberately: deleting them would change the totals of
+    // a batch somebody already read. `PgJobs::retry` is what must not put them back — see below.
+    let failed_profile = queued("failed", "profile_shape", None).await;
+    let failed_thumb = queued("failed", "derive", Some("thumbnail")).await;
     // Live work, and it must survive: the exports are still built on demand.
     let pending_export = queued("pending", "derive", Some("export_stl")).await;
+    let failed_export = queued("failed", "derive", Some("export_3mf")).await;
     let pending_ingest = queued("pending", "ingest_file", None).await;
 
     sqlx::query(
@@ -943,7 +951,10 @@ async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) 
     for (id, what) in [
         (done_profile, "a finished profile_shape"),
         (done_rung, "a finished rung rebuild"),
+        (failed_profile, "a failed profile_shape"),
+        (failed_thumb, "a failed thumbnail rebuild"),
         (pending_export, "a pending export"),
+        (failed_export, "a failed export"),
         (pending_ingest, "a pending ingest"),
     ] {
         assert!(surviving.contains(&id), "{what} must survive");
@@ -964,19 +975,60 @@ async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) 
         .execute(&pool)
         .await
         .expect("`profiled` is still a value `job_outcome_known` admits");
+    // Put back, because the counts below are about this row: writing `profiled` over its
+    // `rendered` is a probe of the constraint, not a fact about the batch.
+    sqlx::query("UPDATE job SET outcome = 'rendered' WHERE id = $1")
+        .bind(done_rung)
+        .execute(&pool)
+        .await
+        .expect("restores what the row said");
 
-    // And the batch still adds up: four rows left in it, two of them finished, which is what
-    // `PgJobs::batch_status` aggregates with `count(*) FILTER` per outcome name.
-    let (total, done, pending): (i64, i64, i64) = sqlx::query_as(
-        "SELECT count(*), count(*) FILTER (WHERE state = 'done'), \
-                count(*) FILTER (WHERE state = 'pending') \
-         FROM job WHERE batch_id = $1",
-    )
-    .bind(batch)
-    .fetch_one(&pool)
-    .await
-    .expect("aggregates");
-    assert_eq!((total, done, pending), (4, 2, 2));
+    // **And the batch still adds up, read through `PgJobs::batch_status` itself** rather than
+    // through a copy of its SQL — a copy would pass just as happily if the real aggregate were
+    // broken. Seven rows left: two finished, two pending, three failed.
+    let library = LibraryId::from_uuid(library);
+    let status = PgJobs(pool.clone())
+        .batch_status(library, BatchId::from_uuid(batch))
+        .await
+        .expect("the batch reads")
+        .expect("the batch is there");
+    assert_eq!(status.total, 7);
+    assert_eq!(status.pending, 2);
+    assert_eq!(status.failed_total, 3);
+    assert_eq!(
+        status.rendered, 1,
+        "the finished rung rebuild still counts as a render"
+    );
+    // Every failure is listed, including the two of kinds this build cannot name: `failures` is
+    // pure SQL and never parses a payload, so an old row is a row and not a 500.
+    assert_eq!(status.failed.len(), 3);
+
+    // **And `retry` leaves the dead ones where they are.** Retrying one would put it back in the
+    // queue for a handler that cannot parse its payload, and hand the person who pressed Retry
+    // "this job's payload is malformed" about work that was removed from the product.
+    let retried = PgJobs(pool.clone())
+        .retry(library, BatchId::from_uuid(batch), None)
+        .await
+        .expect("retries");
+    assert_eq!(retried, 1, "the failed export, and nothing else");
+    let back: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM job WHERE state = 'pending' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("reads the queue");
+    assert!(
+        back.contains(&failed_export),
+        "the export is runnable again"
+    );
+    for (id, what) in [
+        (failed_profile, "a failed profile_shape"),
+        (failed_thumb, "a failed thumbnail rebuild"),
+    ] {
+        assert!(
+            !back.contains(&id),
+            "{what} must stay failed: nothing can run it"
+        );
+    }
 
     for table in ["part_shape", "part_link"] {
         let exists: bool = sqlx::query_scalar(

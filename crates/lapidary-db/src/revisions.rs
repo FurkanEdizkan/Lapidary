@@ -40,14 +40,6 @@ pub struct RevisionRequest<'a> {
     pub format: &'a str,
 }
 
-/// A revision missing its centre of mass, and the library whose job queue a re-derive of it belongs in.
-/// See [`PgRevisions::centreless_revisions`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CentrelessRevision {
-    pub library: LibraryId,
-    pub revision: RevisionId,
-}
-
 /// One revision in a part's history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RevisionRow {
@@ -313,25 +305,6 @@ impl PgRevisions {
         Ok(RevisionId::from_uuid(revision))
     }
 
-    /// The faces and edges a CAD kernel counted on `revision`'s B-rep, written after the revision commits, as
-    /// a file's header is. A mesh revision never gets any.
-    pub async fn set_topology(
-        &self,
-        revision: RevisionId,
-        topology: lapidary_core::Topology,
-    ) -> Result<(), DbError> {
-        let count = |column: &'static str, value: u32| {
-            i32::try_from(value).map_err(|_| DbError::TriangleCountTooLarge { column, value })
-        };
-        sqlx::query("UPDATE revision SET face_count = $2, edge_count = $3 WHERE id = $1")
-            .bind(revision.as_uuid())
-            .bind(count("revision.face_count", topology.faces)?)
-            .bind(count("revision.edge_count", topology.edges)?)
-            .execute(&self.0)
-            .await?;
-        Ok(())
-    }
-
     /// The centre of `revision`'s volume and where it came from, written after the revision commits as its
     /// counts are: `mass_props_json = {"centre_mm": [x, y, z], "source": "analytic" | "tessellated"}`. It
     /// needs no density. A revision with no volume never gets one.
@@ -351,51 +324,6 @@ impl PgRevisions {
         .execute(&self.0)
         .await?;
         Ok(())
-    }
-
-    /// Revisions of a file in `formats` whose centre of mass was never recorded although their volume
-    /// says they have one, newest first, at most `limit` — what a worker re-derives at startup (L3,
-    /// item 1).
-    ///
-    /// **`formats` is the mesh formats, and a CAD format must never be in it.** A mesh revision from
-    /// before `measure::measured` computed centres is the whole population this exists for: the
-    /// stale-derivative sweep never finds one, because `MeshKernel::version` names the format, the GLB
-    /// writer and the rasteriser and nothing about how it measures, so the rung is current. A STEP
-    /// revision read by a bridge before 8 wrote no centre either, but that sweep *does* find it — the
-    /// bridge version is inside the kernel version it keys on, and the `Structure` branch has always
-    /// recorded a centre. Queueing STEP here would re-read it twice on a worker that has a CAD kernel,
-    /// and on a worker that has none it would queue a job that fails `Permanent` at every start, for
-    /// ever: the board's "permanently-failing file re-attempted by every scan", in a new place.
-    ///
-    /// `volume > 0`, not `volume IS NOT NULL`, is the other half of what makes the sweep terminate: the
-    /// mesh kernel gates its centre on `is_watertight && signed_volume != 0.0` and its volume on
-    /// `is_watertight` alone, so a closed mesh enclosing nothing has a volume of 0 and no centre, for
-    /// ever.
-    pub async fn centreless_revisions(
-        &self,
-        limit: i64,
-        formats: &[&str],
-    ) -> Result<Vec<CentrelessRevision>, DbError> {
-        let formats: Vec<&str> = formats.to_vec();
-        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT p.library_id, r.id FROM revision r \
-             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
-             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
-             WHERE r.volume > 0 AND r.mass_props_json IS NULL AND s.format = ANY($2) \
-             ORDER BY r.created_at DESC, r.id DESC LIMIT $1",
-        )
-        .bind(limit)
-        .bind(&formats)
-        .fetch_all(&self.0)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(library, revision)| CentrelessRevision {
-                library: LibraryId::from_uuid(library),
-                revision: RevisionId::from_uuid(revision),
-            })
-            .collect())
     }
 
     /// Every revision of `part`, newest first — the order the grid calls the first one current.

@@ -4,7 +4,9 @@
 //! Leases are NOT heartbeated yet. A single-file mesh ingest measures roughly 200 ms
 //! against a 60-second lease, so a renewal task would be ceremony that still has to be
 //! tested and can still be wrong. `renew_lease` arrives when a job can realistically
-//! outlive its lease -- STEP ingest through the OCCT sidecar in Phase 2.
+//! outlive its lease — and nothing in this product does any more: the OCCT sidecar that
+//! sentence named is gone (R2), and so is every job that rendered (R3). A `derive` of a
+//! mesh export is the longest thing left and it is measured in milliseconds.
 
 use thiserror::Error;
 

@@ -549,3 +549,87 @@ async fn a_missing_export_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPoo
         "one rebuild of the lost export"
     );
 }
+
+/// **A rung's bytes are not rebuildable, and the route must not promise they are.**
+///
+/// `rebuild` asked `rungs_for_blob` before R3. Keep that and a lost rung is answered "that file
+/// is being rebuilt" by a pipeline that no longer exists — the viewer waits for a job that
+/// cannot run, and `enqueue_derive_if_absent` leaves a `derive` row naming a kind nothing builds.
+/// So the other sentence, and no job at all.
+///
+/// The row is written as raw SQL: `tessellation_l0` is not a kind this build can name, and it is
+/// what a library that pre-dates the pivot is full of until migration `0055` (R4) deletes them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_missing_rung_is_not_promised_a_rebuild_and_queues_nothing(pool: sqlx::PgPool) {
+    let elsewhere = tempfile::tempdir().expect("temp dir");
+    let served = tempfile::tempdir().expect("temp dir");
+    // A part with a real revision, and a rung row pointing at bytes only `elsewhere` holds.
+    let hash = seed_reachable_export(&pool, elsewhere.path()).await;
+    let rung = DerivativeStore::open(elsewhere.path())
+        .put(b"glTF\x02\x00\x00\x00 a rung an older pipeline wrote")
+        .expect("stores the rung");
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($1, $2, $2, NULL, 1) ON CONFLICT (blake3) DO NOTHING",
+    )
+    .bind(rung.hash.to_hex())
+    .bind(rung.size_bytes as i64)
+    .execute(&pool)
+    .await
+    .expect("the rung's blob row");
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
+         SELECT uuidv7(), id, 'tessellation_l0', $1, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+           FROM revision ORDER BY id DESC LIMIT 1",
+    )
+    .bind(rung.hash.to_hex())
+    .execute(&pool)
+    .await
+    .expect("the rung's row");
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: served.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
+        touches: Default::default(),
+    };
+
+    let (status, _, body) = get(router(state.clone(), Role::Api), &rung.hash.to_hex()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+    let message = json["message"].as_str().expect("a sentence");
+    assert!(
+        message.contains("cannot be rebuilt on its own"),
+        "a rung is not rebuildable and the sentence has to say so: {message}"
+    );
+    assert!(
+        !message.contains("being rebuilt"),
+        "and must not promise a rebuild nothing will do: {message}"
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
+        .fetch_one(&pool)
+        .await
+        .expect("counts the queue");
+    assert_eq!(
+        queued, 0,
+        "and queues nothing, because nothing could run it"
+    );
+
+    // The export beside it, same part, is rebuildable — so this is a discrimination assertion
+    // and not merely the absence of a feature.
+    let (status, _, body) = get(router(state, Role::Api), &hash.to_hex()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        message_of(&body).contains("being rebuilt"),
+        "{}",
+        message_of(&body)
+    );
+}
+
+fn message_of(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| json["message"].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}

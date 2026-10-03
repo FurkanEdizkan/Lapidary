@@ -3329,37 +3329,6 @@ impl PartRepository for PgParts {
 }
 
 impl PgParts {
-    /// The grid's rows for these parts, in the order asked — for a caller that has ranked a set
-    /// of part ids itself. An id not in `library`, or on the other side of `shows`, is
-    /// left out rather than refused; so is one purged since it was named.
-    ///
-    /// Its one caller was the duplicates queue, which R3 deleted with shape similarity. Kept
-    /// because it is the only read that answers "these parts, in this order" and the dashboard's
-    /// widget resolver is the shape that wants it next; `W0` owns it on the board.
-    pub async fn rows_by_id(
-        &self,
-        library: LibraryId,
-        ids: &[PartId],
-        shows: Shows,
-    ) -> Result<Vec<PartRow>, DbError> {
-        let ids: Vec<Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
-        let rows: Vec<GridRow> = sqlx::query_as(concat!(
-            "SELECT ",
-            grid_columns!(),
-            " FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted (id, n) \
-              JOIN part p ON p.id = wanted.id ",
-            grid_laterals!(),
-            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $3 \
-             ORDER BY wanted.n",
-        ))
-        .bind(library.as_uuid())
-        .bind(&ids)
-        .bind(shows == Shows::Removed)
-        .fetch_all(&self.0)
-        .await?;
-        rows.into_iter().map(to_part_row).collect()
-    }
-
     /// [`PartRepository::page`] in an order other than newest: `query` is [`sorted_page!`] for
     /// one key.
     ///

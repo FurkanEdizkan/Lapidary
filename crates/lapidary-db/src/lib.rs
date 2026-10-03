@@ -41,9 +41,7 @@ pub use repo::{
     PartSourceRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, RenderCacheFreed,
     RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
 };
-pub use revisions::{
-    CentrelessRevision, CurrentRevision, PgRevisions, RevisionRequest, RevisionRow,
-};
+pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use shares::{
     BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,

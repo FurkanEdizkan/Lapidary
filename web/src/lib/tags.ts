@@ -4,8 +4,8 @@ import { RefusedError, refusalReason } from './api'
 /**
  * The tag index's two reads, and the sorting the pages do with the answer.
  *
- * Its own module rather than more of `lib/api.ts`, for the reason `lib/likeness.ts` and
- * `lib/dashboard.ts` are: one feature, one vocabulary. **These are not the facet.**
+ * Its own module rather than more of `lib/api.ts`, for the reason `lib/dashboard.ts` is: one
+ * feature, one vocabulary. **These are not the facet.**
  * `fetchFacets` counts within the grid a person has narrowed and withholds its counts past the
  * server's exact-count threshold (`docs/DATA.md` §3.4); an index of a library's tags wants the whole
  * library and cannot drop the counts, because the count is what it is ordered by. So there are two

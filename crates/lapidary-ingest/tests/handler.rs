@@ -1404,15 +1404,6 @@ async fn an_ingest_job_for_a_library_that_does_not_exist_fails_permanently_namin
     );
 }
 
-/// The L0 rung's blob hash and recorded kernel version — between them, the whole of what
-/// "a lazily-built rung must not differ from an eager one" is a claim about.
-async fn l0_row(pool: &PgPool) -> (String, String) {
-    sqlx::query_as("SELECT blake3, kernel_version FROM derivative WHERE kind = 'tessellation_l0'")
-        .fetch_one(pool)
-        .await
-        .expect("exactly one L0 row, with bytes and a version on it")
-}
-
 /// Every `blob` row, source and derivative alike — unlike `blob_rows` above, which is
 /// scoped to source bytes. A derive that reproduces bytes already stored must add none.
 async fn all_blob_rows(pool: &PgPool) -> i64 {

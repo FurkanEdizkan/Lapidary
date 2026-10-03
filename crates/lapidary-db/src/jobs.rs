@@ -798,21 +798,45 @@ impl PgJobs {
     /// `migrate_storage` is left out. `job_migrate_storage_pending_per_library` allows one
     /// pending migration per library, migrations re-enqueue themselves
     /// (`reenqueue_migration_if_absent`), and a retry here would collide with that successor.
+    ///
+    /// **And a row no handler can run is left out, which R3 is why.** Migration `0054` deleted the
+    /// *pending and running* `profile_shape` and render-kind `derive` rows, deliberately leaving
+    /// the **failed** ones where they are — a finished batch keeps its totals. Retrying one would
+    /// put it back in the queue for a handler that cannot parse its payload, and the person who
+    /// pressed Retry would be handed "this job's payload is malformed" about work that was
+    /// removed from the product. So the filter is positive: a kind `JobPayload` still names, and
+    /// for a `derive`, a `produce` `DerivativeKind` still names. Both lists come off the types,
+    /// so deleting another variant is a compile error here rather than a row set pending that
+    /// nothing can run.
     pub async fn retry(
         &self,
         library: LibraryId,
         batch: BatchId,
         job: Option<JobId>,
     ) -> Result<u64, DbError> {
+        let runnable: Vec<&str> = vec![
+            JobPayload::INGEST_FILE,
+            JobPayload::DERIVE,
+            JobPayload::SCAN_DIRECTORY,
+            JobPayload::INGEST_BLOB,
+            JobPayload::IMPORT_BUNDLE,
+            JobPayload::IMPORT_PART,
+            JobPayload::DESCRIBE_PART,
+        ];
+        let buildable: Vec<&str> = DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec();
         let retried = sqlx::query(
             "UPDATE job SET state = 'pending', attempts = 0, run_after = now(), \
                             leased_by = NULL, lease_expires_at = NULL, updated_at = now() \
              WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
-               AND kind <> 'migrate_storage' AND ($3::uuid IS NULL OR id = $3)",
+               AND kind = ANY($4) \
+               AND (kind <> 'derive' OR payload->>'produce' = ANY($5)) \
+               AND ($3::uuid IS NULL OR id = $3)",
         )
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
         .bind(job.map(|job| job.as_uuid()))
+        .bind(&runnable)
+        .bind(&buildable)
         .execute(&self.0)
         .await?
         .rows_affected();
