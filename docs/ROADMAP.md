@@ -3917,6 +3917,35 @@ goal lands, so the history stays legible. The plan is the goal files R1–R6 on 
     ingest directory in two places (`stack.sh`, `group.sh`) and those now produce refused jobs, which is R6's to
     retarget. **For the owner:** a `refused` list on the upload probe, so a folder drop can be told which files will
     not be taken before their bytes are transferred.
+- **R1, the card shows a picture and the viewer loads the original** (merged `c96a5a1`, gate 14 green in 237.09 s on
+  the merged tree). **56 files, +1,537 / −5,640.** `Viewer.tsx` goes from **1,034 lines to 294** and fetches
+  `?variant=original`, parsed by a new `mesh.ts`; the grid query gained one LATERAL for the part's first `part_image`,
+  and the card draws it with `0019`'s `fit`/`focus`, the render behind it only until R4, and an empty state naming the
+  format. **view** is offered for the three mesh formats where WebGL exists. Gone: the rung ladder, `requestRung`,
+  measurement, section, explode, hide, the ghost overlay, PMI labels, the hover turntable, likeness, the duplicates page
+  and widget, every prefetch and warm-up, and the first-run bench.
+  - **It found a bug in three.js, not in us.** `ThreeMFLoader` reads a 3MF's `<model unit>` attribute **and then
+    ignores it**, so a centimetre file loaded **ten times too small** while every figure printed beside it read
+    correctly — those come from our own Rust parser, which honours the unit. `mesh.ts` puts the scale back for all six
+    units. The orientation guard is `fixtures/bbox-mm.json`, asserted from **both** sides — `lapidary-cad/src/measure.rs`
+    and `web/src/components/mesh.test.ts` — so correcting one side breaks the other's test.
+  - **The goal file's own stated test would have passed on that bug**, because the committed 3MF fixture is in
+    millimetres. The lane replaced it with one that builds a plate in four units inline, and said so. That is the
+    thirteenth goal in this effort to find a test that proved nothing — this time one the lead had specified.
+  - **15 mutations, 15 caught.** One survived its first valid run: the card's "picture first, render as fallback" rule,
+    because every card in the test had `thumbnail: null`, so `image ?? thumbnail` and `thumbnail ?? image` were
+    indistinguishable. Two more exist only because `PartDetail.test.tsx` mocks the viewer out — swapping
+    `?variant=original` back to a rung's blob URL survived the whole suite until `Viewer.test.tsx` was written.
+  - **A warning now in `PROTOCOL.md`:** its first mutation script restored files with `git checkout --`, which restores
+    to HEAD and so **destroyed the goal's own uncommitted work in four files mid-run**. A mutation script restores from
+    a copy it made and checks the sha256 back, never from git.
+  - **Said plainly, not glossed:** nothing has painted in a browser yet. The evidence stops at `fetch` → `parseMesh` →
+    `show()` with the renderer stubbed, because a lane cannot bring a stack up. First real paint is the lead's stack or
+    R6's rig. And a large mesh is now a large download with nothing to paint first — there is no coarse rung, so a
+    200 MB STL is 200 MB before anything appears; the picture holds the frame and a failure says to download the file
+    and open it in a real tool.
+  - **`FEATURES.md`'s "a 17th column" line is corrected** where it was written: the premise died when `GridRow` became a
+    named `FromRow` struct, and the grid now carries nine more fields than it did.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
