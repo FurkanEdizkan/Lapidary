@@ -65,11 +65,16 @@ impl RevisionOrigin {
     }
 }
 
-/// The grid row, in the shape the spec calls for: identity, part number, thumbnail
-/// reference, approximate flag, storage figures, timestamps. Still narrow — the open
-/// path reads metadata and derivatives only, and never a source file. The storage
+/// The grid row, in the shape the spec calls for: identity, part number, the part's own
+/// picture, approximate flag, storage figures, timestamps. Still narrow — the open path
+/// reads metadata and derivatives only, and never a source file. The storage
 /// fields below are `blob` and `file` *rows*, not bytes: describing a source file is
 /// not opening one, and spec §4 wants the cost of a part legible on its card.
+///
+/// **No `thumbnail` and no `tessellation_l0` since R3.** Nothing renders, so a card shows the
+/// part's own first image or an honest placeholder; the rows those two hashes addressed are
+/// still in the table until migration `0055` (R4) deletes them, and nothing carries them to a
+/// client any more.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -93,9 +98,6 @@ pub struct PartSummary {
     /// against two identically named parts is a confirmation that cannot be answered
     /// correctly.
     pub source_path: String,
-    /// The thumbnail derivative's content hash, not a URL. Holding it is not
-    /// authorization to read it — the API still checks tenant and part reachability.
-    pub thumbnail: Option<BlobHash>,
     pub triangle_count: Option<u32>,
     /// True when any geometric figure on this part is mesh-derived.
     pub approximate: bool,
@@ -108,19 +110,6 @@ pub struct PartSummary {
     /// in the grid, which is why these are optional rather than zeroed. A part the grid
     /// silently omits is a part its owner cannot find, delete or re-scan.
     pub source_hash: Option<BlobHash>,
-    /// The L0 tessellation's content hash — the rung the viewer paints first, and today
-    /// the only thing that makes those bytes addressable at all.
-    ///
-    /// Every ingest writes an L0 glTF, reference-counted and never read, because nothing
-    /// carried its hash: `GET /api/blob/{blake3}` had no possible caller and roughly
-    /// 7.5 MB per 1,000 parts was written and unreachable. That is the whole reason this
-    /// field lands before the viewer that will use it.
-    ///
-    /// A hash, not a URL, and holding one is not authorization — `blob::by_hash` asks
-    /// `PgBlobs::derivative_is_reachable` before serving a byte, exactly as it does for
-    /// `thumbnail` above. `None` means this revision has no L0 rung: a part ingested
-    /// before the LOD ladder, or one whose derive job has not run.
-    pub tessellation_l0: Option<BlobHash>,
     /// The ingested file's size. `u64` here, `number | null` on the wire: serde writes
     /// a JSON number, and ts-rs 12 would otherwise type a 64-bit integer as `bigint`,
     /// which is something `JSON.parse` never produces. The override has to spell the

@@ -1,6 +1,5 @@
-use crate::cluster::{Lod, Tessellation};
 use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion};
-use lapidary_core::{DerivativeKind, MeshMeasurements};
+use lapidary_core::MeshMeasurements;
 
 /// Returns canned output for known formats. Phase 0b replaces this in production with
 /// `OcctKernel`; this stays for tests.
@@ -22,29 +21,6 @@ impl Default for MockKernel {
     }
 }
 
-/// One canned rung, deliberately distinguishable from the other two so a test cannot pass
-/// by returning the same rung three times.
-///
-/// The bytes are markers, not glTF. This is a double; the only thing that produces a real
-/// `.glb` is `MeshKernel`, and a mock that returned plausible-looking glTF would invite
-/// someone to trust it.
-fn canned_rung(lod: Lod) -> Tessellation {
-    Tessellation {
-        lod,
-        glb: format!("mock-{}", lod.as_kind()).into_bytes(),
-        triangle_count: match lod {
-            Lod::L0 => 500,
-            Lod::L1 => 5_000,
-            Lod::L2 => 12_940,
-        },
-        grid: match lod {
-            Lod::L0 => Some(32),
-            Lod::L1 => Some(96),
-            Lod::L2 => None,
-        },
-    }
-}
-
 #[async_trait::async_trait]
 impl Kernel for MockKernel {
     /// The same for every format: a double has one set of canned bytes, so nothing
@@ -57,8 +33,8 @@ impl Kernel for MockKernel {
     }
 
     /// Selective, for the same reason `MeshKernel::process` is: measurements
-    /// unconditionally, then one entry per rung `params.produce` asked for, in the order
-    /// asked for. A double that handed back the full ladder regardless of `produce` would
+    /// unconditionally, then one entry per export `params.produce` asked for, in the order
+    /// asked for. A double that handed back every export regardless of `produce` would
     /// let a test of selectivity pass without proving anything — the canned bytes are
     /// allowed to be fake, the contract is not.
     async fn process(
@@ -87,36 +63,16 @@ impl Kernel for MockKernel {
                 });
             }
         };
-        let mut tessellations = Vec::new();
-        let mut thumbnail_webp = None;
-        let mut exports = Vec::new();
-        for want in &params.produce {
-            match want {
-                DerivativeKind::Thumbnail => thumbnail_webp = Some(b"mock-thumbnail".to_vec()),
-                DerivativeKind::TessellationL0 => tessellations.push(canned_rung(Lod::L0)),
-                DerivativeKind::TessellationL1 => tessellations.push(canned_rung(Lod::L1)),
-                DerivativeKind::TessellationL2 => tessellations.push(canned_rung(Lod::L2)),
-                DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => {}
-                DerivativeKind::ExportStl | DerivativeKind::Export3mf => {
-                    exports.push((*want, format!("mock-{}", want.as_str()).into_bytes()));
-                }
-            }
-        }
+        let exports = params
+            .produce
+            .iter()
+            .map(|want| (*want, format!("mock-{}", want.as_str()).into_bytes()))
+            .collect();
         Ok(KernelOutput {
-            topology: None,
             centre_of_mass_mm: None,
             exports,
             measurements,
-            thumbnail_webp,
-            tessellations,
-            // Empty, and not because this is a mock: `Entity` is uninhabited until
-            // Phase 2's STEP ingest gives it variants, so no kernel can return one.
-            entities: Vec::new(),
-            provenance: crate::MeasurementProvenance::TESSELLATED,
-            structure: None,
-            metadata: None,
-            pmi: None,
-            // The mock's fixtures are chosen to be renderable, so nothing here refuses.
+            // The mock's fixtures are chosen to be writable, so nothing here refuses.
             // A test that wants a refusal wants the real kernel and a degenerate mesh —
             // `mesh_kernel.rs` has that fixture, because inventing one here would prove
             // only that the mock can be told to lie.

@@ -1,29 +1,22 @@
 //! Domain types shared by every Lapidary crate. Depends on no other Lapidary crate.
 
 mod approximate;
-mod assembly;
 mod derivative;
 mod device;
 mod diff;
-mod entity;
 mod error;
 mod event;
 mod ids;
 mod job;
-mod link;
 pub mod manifest;
 mod measurement;
 mod part;
-mod pmi;
-pub mod shape;
 pub mod slug;
 
 pub use approximate::Approximate;
-pub use assembly::{AssemblyNode, AssemblyTree};
 pub use derivative::DerivativeKind;
 pub use device::DeviceId;
 pub use diff::{Delta, RevisionDiff};
-pub use entity::Entity;
 pub use error::CoreError;
 pub use event::AppEvent;
 pub use ids::{
@@ -31,14 +24,11 @@ pub use ids::{
     PeerShareId, PullId, RevisionId, SavedFilterId, ShareId,
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
-pub use link::PartLinkKind;
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
     CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal,
     is_ignored, is_model_file, path_escapes, source_format,
 };
-pub use pmi::{Pmi, PmiDatum, PmiDimension, PmiFace, PmiTolerance};
-pub use shape::{DESCRIPTOR_LEN, SHAPE_VERSION, ShapeProfile};
 
 #[cfg(test)]
 mod tests {

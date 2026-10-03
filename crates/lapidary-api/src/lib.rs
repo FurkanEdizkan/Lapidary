@@ -19,7 +19,6 @@ mod health;
 mod images;
 mod jobs;
 mod lifecycle;
-mod likeness;
 mod locks;
 mod moves;
 mod part_number;
@@ -184,17 +183,6 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{library}/jobs/{batch}/retry",
                     post(jobs::retry),
                 )
-                // The library's own settings and the two trigger routes. `Role::Api` out of
-                // necessity, not preference: nothing proxies a browser to the worker, so
-                // mounting these there would make them unreachable from the UI that exists to
-                // call them. See `derive.rs`'s module doc and design section 3.5.
-                //
-                // Read and write are one `.route` on one path rather than two entries axum
-                // would have to be trusted to merge, and they answer the same type.
-                .route(
-                    "/api/libraries/{id}",
-                    get(derive::get_library).patch(derive::set_library),
-                )
                 // The scan trigger, on `Role::Api` for the same reason the three below it
                 // are: nothing proxies a browser to the worker, so a scan button needs a
                 // route the api serves. It enqueues a `scan_directory` job and walks
@@ -246,10 +234,11 @@ pub fn router(state: AppState, role: Role) -> Router {
                 )
                 .route("/api/parts/{id}/restore", post(lifecycle::restore))
                 .route("/api/parts/{id}/purge", post(lifecycle::purge))
-                .route("/api/parts/{id}/thumbnail", post(derive::part_thumbnail))
-                // The finer tessellations, built when the viewer first asks. See `derive.rs`.
-                .route("/api/parts/{id}/rungs/{level}", post(derive::part_rung))
                 // A part's mesh as a 3MF or an STL, for a slicer, built when first asked for.
+                // The only thing a worker still builds on demand. `Role::Api` out of necessity
+                // rather than preference: nothing proxies a browser to the worker, so a route
+                // mounted there would be unreachable from the UI that exists to call it. See
+                // `derive.rs`'s module doc and design section 3.5.
                 .route(
                     "/api/parts/{id}/exports/{format}",
                     post(derive::part_export),
@@ -433,10 +422,6 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/parts/{id}/sources",
                     get(sources::list).post(sources::create),
                 )
-                .route(
-                    "/api/libraries/{id}/thumbnails",
-                    post(derive::library_thumbnails),
-                )
                 // Not in `shared`: the worker has no business serving bytes to anyone, and a
                 // route mounted unconditionally is served by both images.
                 .route("/api/blob/{blake3}", get(blob::by_hash))
@@ -449,8 +434,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // reason Phase 6's two below give. Not the facet panel: these count over the whole
                 // library and never withhold a count. See `tags.rs`.
                 .merge(tags::reads())
-                // Phase 6's two, each filling its own file so that goals G3 and G4 never edit this chain.
-                .merge(likeness::routes())
+                // Its own file so that the dashboard goal never edits this chain. Phase 6's other
+                // router was `likeness`, and it went with shape similarity (R3).
                 .merge(dashboard::routes()),
             Role::Worker => Router::new(),
             // Empty for `Role::Worker`'s reason, and one of its own: the peer protocol is

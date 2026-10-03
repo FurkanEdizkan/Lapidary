@@ -23,8 +23,6 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{BlobHash, FolderId, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, GridQuery, PartRepository, PartRow, PgParts, Shows, Sort};
@@ -36,28 +34,28 @@ const DEFAULT_LIMIT: u16 = 50;
 
 /// The hard ceiling on `limit`, regardless of what the query string asks for. Trusting
 /// an unbounded `limit` is a trivial way to make one request materialise an entire
-/// library — thumbnails and all — into memory.
+/// library — pictures and all — into memory.
 ///
 /// Raised from 100 to 500 so the grid can offer the page sizes `FEATURES.md` names:
 /// 50, 100, 250 and 500. The ceiling is still a ceiling — 500 is a number somebody chose,
 /// not the absence of one — and it is what bounds the cost of a single request.
 ///
 /// **What 500 actually costs, since the point of the limit is the memory:** a page carries
-/// its thumbnails inline as `data:` URLs, and a thumbnail is capped at `MAX_THUMB_BYTES`
-/// (64 KB) by the rasterizer. So the worst case is around 32 MB of preview bytes in one
-/// response, base64'd to roughly 43 MB on the wire — inside the api container's 512 MB
-/// limit, and slow enough on a bad connection that it is a choice a user makes rather than
-/// a default they get.
+/// each card's picture inline as a `data:` URL when it is under `INLINE_LIMIT` (64 KB,
+/// `images.rs`) and as a hash when it is over. So the worst case is around 32 MB of picture
+/// bytes in one response, base64'd to roughly 43 MB on the wire — inside the api container's
+/// 512 MB limit, and slow enough on a bad connection that it is a choice a user makes rather
+/// than a default they get.
 const MAX_LIMIT: u16 = 500;
 
 /// One grid card — the wire shape, deliberately not `PartSummary`.
 ///
-/// `PartSummary.thumbnail` is `Option<BlobHash>`: a content hash for a hash-addressed
-/// thumbnail endpoint that arrives with the viewer. Slice 1 has no such endpoint — it
-/// stores the WebP inline as `bytea` so a grid page costs one query, not a round trip
-/// per card — so this type carries the decoded bytes themselves, as a `data:` URL a
-/// browser can drop straight into an `<img src>`. Widening `PartSummary` instead would
-/// put a transport concern into a domain type the viewer will reuse differently.
+/// `PartSummary` is the domain shape the detail page shares; a card additionally carries the
+/// picture, the source format and where the file sits, which are the grid's own transport
+/// concerns. Widening `PartSummary` instead would put them into a type read for other reasons.
+///
+/// **No `thumbnail` since R3** — the field was `data:image/webp;base64,…` off the rendered
+/// thumbnail derivative, and nothing renders. `image` below is the picture now.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -75,9 +73,6 @@ pub struct PartCard {
     /// confirmation, because two parts can share a name and only one of them is the one
     /// being destroyed.
     pub source_path: String,
-    /// `data:image/webp;base64,<...>`. `None` when the part's latest revision has no
-    /// thumbnail derivative.
-    pub thumbnail: Option<String>,
     pub triangle_count: Option<u32>,
     /// True when *any* geometric figure on this part is mesh-derived — carried
     /// verbatim from `PartSummary.approximate`, not narrowed to "every". Every figure
@@ -88,13 +83,8 @@ pub struct PartCard {
     /// The source file's hash, `None` when the revision has no source row. Rendered as
     /// a short hash beside the download link so a user can check what they got against
     /// what the card claimed (`DATA.md` §5.1) — holding it is not authorization to read
-    /// it, exactly as `PartSummary.thumbnail` is not.
+    /// it, as `blob.rs` says of every hash this application hands out.
     pub source_hash: Option<BlobHash>,
-    /// The L0 tessellation's hash, carried verbatim from `PartSummary` for the reason
-    /// `source_hash` is: it is the only thing that makes those bytes addressable, and
-    /// `GET /api/blob/{blake3}` had no possible caller without it. Holding it is not
-    /// authorization — that route checks reachability before serving.
-    pub tessellation_l0: Option<BlobHash>,
     /// Ingested size and size on disk, from `PartSummary`. `number | null`, not
     /// `bigint`, for the reason given there: it is what serde puts on the wire.
     #[ts(type = "number | null")]
@@ -958,13 +948,9 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         name: summary.name,
         part_number: summary.part_number,
         source_path: summary.source_path,
-        thumbnail: row
-            .thumbnail_webp
-            .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),
         triangle_count: summary.triangle_count,
         approximate: summary.approximate,
         source_hash: summary.source_hash,
-        tessellation_l0: summary.tessellation_l0,
         source_bytes: summary.source_bytes,
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,

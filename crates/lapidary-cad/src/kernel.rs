@@ -1,6 +1,5 @@
-use crate::cluster::Tessellation;
-pub use lapidary_core::{AssemblyNode, AssemblyTree, Entity, MeasurementProvenance, Pmi};
-use lapidary_core::{DerivativeKind, MeshMeasurements, Topology};
+pub use lapidary_core::MeasurementProvenance;
+use lapidary_core::{DerivativeKind, MeshMeasurements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,23 +33,6 @@ pub struct KernelParams {
     pub produce: Vec<DerivativeKind>,
 }
 
-/// What a CAD file says about itself: its STEP header or IGES global section, and the
-/// materials it names. Stage 4 of `docs/DATA.md` §3.1, stored on `part.metadata_json` under
-/// `cad`. Each field is what the file wrote, and empty when it wrote nothing; none is inferred.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct CadMetadata {
-    pub file_name: Option<String>,
-    pub time_stamp: Option<String>,
-    pub authors: Vec<String>,
-    pub organizations: Vec<String>,
-    pub originating_system: Option<String>,
-    pub preprocessor: Option<String>,
-    pub descriptions: Vec<String>,
-    pub schemas: Vec<String>,
-    pub materials: Vec<String>,
-}
-
 /// Everything one kernel call produces for one file.
 ///
 /// Replaces both the placeholder `{ triangle_count, bbox_mm, entities: Vec<String> }` that
@@ -64,27 +46,8 @@ pub struct CadMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelOutput {
     pub measurements: MeshMeasurements,
-    /// `None` when `params.produce` did not ask for `DerivativeKind::Thumbnail`.
-    pub thumbnail_webp: Option<Vec<u8>>,
-    /// One entry per tessellation rung `params.produce` asked for, in the order requested.
-    /// No longer always three: slice 3 typed this `[Tessellation; 3]` so consumers could
-    /// index rather than search, but that guarantee is spent the moment a call may ask for
-    /// one rung. Consumers search by `.lod` now.
-    pub tessellations: Vec<Tessellation>,
-    pub entities: Vec<Entity>,
-    /// Where each figure in `measurements` came from.
-    pub provenance: MeasurementProvenance,
-    /// The assembly tree, for a CAD file that has one.
-    pub structure: Option<AssemblyTree>,
-    /// What a CAD file says about itself. `None` for a mesh, which says nothing.
-    pub metadata: Option<CadMetadata>,
-    /// The dimensions, tolerances and datums a CAD file specifies. `None` for a mesh, and for a
-    /// CAD file that specifies none.
-    pub pmi: Option<Pmi>,
-    /// The faces and edges a CAD kernel counted on the B-rep. `None` for a mesh.
-    pub topology: Option<Topology>,
-    /// The centre of the solid's volume, in the part's own millimetres. Its provenance is
-    /// `provenance.volume`'s. `None` where there is no volume: an open mesh, or no closed solid.
+    /// The centre of the solid's volume, in the part's own millimetres. Tessellated, as every
+    /// figure a mesh gives is. `None` where there is no volume: an open mesh, or no closed solid.
     pub centre_of_mass_mm: Option<[f64; 3]>,
     /// Files for other tools, written from the mesh: one for each export `params.produce` asked for.
     pub exports: Vec<(DerivativeKind, Vec<u8>)>,

@@ -2,13 +2,11 @@
 //! and the history. See `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md`.
 
 use crate::DbError;
-use crate::repo::{
-    RevisionWrite, StoredBlobRow, TessellationRow, detail_hash, detail_stamp, insert_revision_chain,
-};
+use crate::repo::{RevisionWrite, StoredBlobRow, detail_hash, detail_stamp, insert_revision_chain};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::{
-    BlobHash, DerivativeKind, LibraryId, LibraryMode, LockId, MeasurementProvenance,
-    MeshMeasurements, PartId, RevisionId, RevisionOrigin,
+    BlobHash, LibraryId, LibraryMode, LockId, MeasurementProvenance, MeshMeasurements, PartId,
+    RevisionId, RevisionOrigin,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -39,10 +37,7 @@ pub struct RevisionRequest<'a> {
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
-    pub thumbnail_webp: Option<&'a [u8]>,
-    pub kernel_version: &'a str,
     pub format: &'a str,
-    pub tessellations: &'a [TessellationRow<'a>],
 }
 
 /// A revision missing its centre of mass, and the library whose job queue a re-derive of it belongs in.
@@ -77,16 +72,10 @@ pub struct RevisionRow {
     pub centre_source: Option<String>,
     pub is_watertight: Option<bool>,
     pub units: Option<String>,
-    /// The inline preview, as the grid serves it. Rows only — the open path reads no file.
-    pub thumbnail: Option<Vec<u8>>,
     pub format: Option<String>,
     pub source_hash: Option<BlobHash>,
     pub size_bytes: Option<i64>,
     pub storage_path: Option<String>,
-    /// This revision's own rungs, for the overlay's ghost. Ingest writes L0; L1 exists only once
-    /// somebody opened the part while this revision was current.
-    pub tessellation_l0: Option<BlobHash>,
-    pub tessellation_l1: Option<BlobHash>,
 }
 
 /// Matched by column name, for `DetailColumns`' reason: more columns than sqlx implements
@@ -115,13 +104,10 @@ struct HistoryColumns {
     centre_source: Option<String>,
     is_watertight: Option<bool>,
     units: Option<String>,
-    thumb_bytes: Option<Vec<u8>>,
     format: Option<String>,
     blake3: Option<String>,
     size_bytes: Option<i64>,
     storage_path: Option<String>,
-    l0_blake3: Option<String>,
-    l1_blake3: Option<String>,
 }
 
 pub struct PgRevisions(pub PgPool);
@@ -313,10 +299,7 @@ impl PgRevisions {
                 blob: req.blob,
                 measurements: req.measurements,
                 provenance: req.provenance,
-                thumbnail_webp: req.thumbnail_webp,
-                kernel_version: req.kernel_version,
                 format: req.format,
-                tessellations: req.tessellations,
             },
         )
         .await?;
@@ -435,18 +418,8 @@ impl PgRevisions {
                     (r.mass_props_json->'centre_mm'->>1)::float8 AS centre_y, \
                     (r.mass_props_json->'centre_mm'->>2)::float8 AS centre_z, \
                     r.mass_props_json->>'source' AS centre_source, \
-                    t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path, \
-                    l0.blake3 AS l0_blake3, l1.blake3 AS l1_blake3 \
+                    f.format, f.blake3, f.size_bytes, f.storage_path \
              FROM revision r \
-             LEFT JOIN LATERAL (SELECT thumb_bytes FROM derivative \
-                                WHERE revision_id = r.id AND kind = $2 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) t ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
-                                WHERE revision_id = r.id AND kind = $3 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
-                                WHERE revision_id = r.id AND kind = $4 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l1 ON true \
              LEFT JOIN LATERAL (SELECT format, blake3, size_bytes, storage_path FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY id LIMIT 1) f ON true \
@@ -454,9 +427,6 @@ impl PgRevisions {
              ORDER BY r.created_at DESC, r.id DESC",
         )
         .bind(part.as_uuid())
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
-        .bind(DerivativeKind::TessellationL1.as_str())
         .fetch_all(&mut *conn)
         .await?;
 
@@ -493,13 +463,10 @@ impl PgRevisions {
                     centre_source: c.centre_source,
                     is_watertight: c.is_watertight,
                     units: c.units,
-                    thumbnail: c.thumb_bytes,
                     format: c.format,
                     source_hash: detail_hash("file.blake3", c.blake3)?,
                     size_bytes: c.size_bytes,
                     storage_path: c.storage_path,
-                    tessellation_l0: detail_hash("derivative.blake3", c.l0_blake3)?,
-                    tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
                 })
             })
             .collect()

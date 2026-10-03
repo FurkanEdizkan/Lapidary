@@ -571,11 +571,11 @@ pub async fn start_pull(
         );
     };
     match PgParts(state.db.clone())
-        .auto_thumbnail(body.library_id)
+        .library_exists(body.library_id)
         .await
     {
-        Ok(Some(_)) => {}
-        Ok(None) => {
+        Ok(true) => {}
+        Ok(false) => {
             return refused(
                 StatusCode::NOT_FOUND,
                 "noSuchLibrary",

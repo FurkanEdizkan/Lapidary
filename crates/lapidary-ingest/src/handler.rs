@@ -1,5 +1,10 @@
 //! One file's worth of ingest, as a job. The pipeline below is slice 1's, moved rather
-//! than rewritten: read, BLAKE3, library_holds, kernel, write, record.
+//! than rewritten: read, BLAKE3, library_holds, measure, write, record.
+//!
+//! **R3 took every derivative out of it.** Nothing renders, so step 4 asks the kernel for
+//! measurements only and there is no step 5: no thumbnail, no L0 rung, no CAD read. The
+//! centre of mass is still recorded here, from the same measurement output, which is what
+//! let the historical backfill job go.
 //!
 //! # Ordering
 //!
@@ -13,10 +18,9 @@
 //!    3b. `revisions.current(library, source_path)` — a part already here, with other bytes:
 //!    deleted -> `Skipped`, hobby library -> `Unkept`, controlled -> on to 5a. Nothing is
 //!    written before either refusal
-//!    3a. `parts.auto_thumbnail(library)` — what this library wants produced;
+//!    3a. `parts.library_exists(library)` — the library is still there;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
-//! 4. `kernel.process(bytes, params)` — parse + measure + rasterize + cluster
-//! 5. the LOD rungs go to the derivative store
+//! 4. `kernel.process(bytes, params)` — parse + measure, and nothing else: `produce` is empty
 //!    5a. a controlled part's next revision: `revisions.record_revision(...)` locks the part,
 //!    sets its current file aside under `revisions/<label>/` and writes these bytes where it
 //!    was, then `metadata.json` is rewritten from the rows -> `Revised`. Steps 6 to 10 are
@@ -30,7 +34,7 @@
 //!    under its own name, *before* the transaction, and never over a file already there:
 //!    other bytes there are another job's, and this job is retried to decide again
 //! 9. `ingest.record(...)`, or `ingest.link_existing(...)` when step 6 said the row is
-//!    there; on a genuine failure the file, the directory and the rungs this job wrote
+//!    there; on a genuine failure the file and the directory this job wrote
 //!    are reaped and the failure is returned
 //! 10. `metadata.json` beside the file, from the ids the transaction generated
 //!
@@ -42,11 +46,12 @@
 //! at this path, and reaping it would be silent data loss. That is why the reap is inside
 //! an `is_err()` and not on every `Err` arm. For the *source* file that is now settled by
 //! step 8: a file this job wrote is its own, and a lost race with other bytes reaps it and
-//! is retried, where it used to settle as `Skipped` beside an orphan copy. The **rungs** have no
-//! disambiguation and are the guard's live exposure: two workers meshing one file produce
-//! the same rung bytes, both see `blobs.exists` answer false for them, and a loser that
-//! reaped on its way to `Skipped` would take the derivatives the winner's committed rows
-//! serve.
+//! is retried, where it used to settle as `Skipped` beside an orphan copy. The rungs used to be
+//! this guard's live exposure — two workers meshing one file produced the same rung bytes, both
+//! saw `blobs.exists` answer false for them, and a loser that reaped on its way to `Skipped`
+//! would have taken the derivatives the winner's committed rows served. Ingest writes no
+//! derivative now; the same rule still holds in `derive.rs`'s `store_hashed`, which is the one
+//! place left that files derivative bytes.
 //!
 //! # Where the bytes go, and why both branches write them
 //!
@@ -114,12 +119,12 @@
 use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
 use lapidary_core::slug::{disambiguate, disambiguate_with, slugify};
 use lapidary_core::{
-    BlobHash, DerivativeKind, FolderId, JobPayload, LibraryId, LibraryMode, Outcome, RevisionId,
-    RevisionOrigin, Topology, source_format,
+    BlobHash, FolderId, JobPayload, LibraryId, LibraryMode, MeasurementProvenance, Outcome,
+    Provenance, RevisionId, RevisionOrigin, source_format,
 };
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, PgRevisions,
-    RevisionRequest, StoredBlobRow, TessellationRow,
+    RevisionRequest, StoredBlobRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
 use lapidary_storage::{
@@ -191,11 +196,6 @@ impl JobHandler for WorkerHandler {
                 self.import_part(job.library_id, bundle, part, &path).await
             }
             JobPayload::DescribePart { part } => self.describe_part(job.library_id, part).await,
-            // The revision comes from the payload and the library from the row, as a derive's do:
-            // nothing here resolves "latest" a second time. See `shape.rs`.
-            JobPayload::ProfileShape { revision } => {
-                self.profile_shape(job.library_id, revision).await
-            }
         }
     }
 }
@@ -260,31 +260,14 @@ impl WorkerHandler {
         Ok(Outcome::Described)
     }
 
-    /// The faces and edges a CAD kernel counted, onto the revision just committed. Warn-only, as the header
-    /// is: the revision is committed and measured, and a count it lacks leaves its diff without one.
-    pub(crate) async fn record_topology(
-        &self,
-        revision: RevisionId,
-        topology: Option<Topology>,
-        source_path: &str,
-    ) {
-        let Some(topology) = topology else {
-            return;
-        };
-        if let Err(error) = PgRevisions(self.db.clone())
-            .set_topology(revision, topology)
-            .await
-        {
-            tracing::warn!(
-                source_path,
-                %error,
-                "could not record the file's face and edge counts; its revision diff leaves them out"
-            );
-        }
-    }
-
     /// The centre of the volume the kernel measured, onto the revision just committed, marked with the
-    /// volume's provenance. Warn-only, as the counts are.
+    /// volume's provenance. Warn-only: the revision is committed and measured, and a centre it
+    /// lacks leaves its diff without one.
+    ///
+    /// **This is why R3 could delete the centre-of-mass backfill.** It runs on the ingest path
+    /// from the same measurement output, so every part ingested from here on has its centre
+    /// without a job; only the historical sweep died, and that sweep worked by rebuilding an L0
+    /// rung to obtain one float.
     pub(crate) async fn record_centre_of_mass(
         &self,
         revision: RevisionId,
@@ -534,10 +517,6 @@ impl WorkerHandler {
             }
         })?;
         let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
-        // First production use. No `WorkerRole` proof: derivatives are readable by both
-        // roles, which is what lets `lapidary-api` serve a rung without ever being able
-        // to name `SourceStore`.
-        let derivatives = DerivativeStore::open(&self.blob_root);
         let blobs = PgBlobs(self.db.clone());
         let ingest = PgIngest(self.db.clone());
         let name = part_name(source_path);
@@ -588,39 +567,39 @@ impl WorkerHandler {
             }
         }
 
-        // 3a. What this library wants made. Read *after* the short-circuit, so a re-scan
-        // still costs exactly one query -- L1 and L2 are no longer ingest's to produce
-        // (design section 3.1), and the thumbnail is the library's choice (section 3.2).
+        // 3a. The library has to exist. Read *after* the short-circuit, so a re-scan still
+        // costs exactly one query. This was `auto_thumbnail`, which was the setting *and* the
+        // existence probe; R3 dropped the setting and kept the probe (`library_exists`).
         // A library that does not exist is Permanent: the row will not reappear, and
         // three retries reporting a bare row-count error tell an operator nothing.
-        let auto_thumbnail = PgParts(self.db.clone())
-            .auto_thumbnail(library)
+        if !PgParts(self.db.clone())
+            .library_exists(library)
             .await
             .map_err(classify_db)?
-            .ok_or_else(|| HandlerError::Permanent {
+        {
+            return Err(HandlerError::Permanent {
                 message: format!(
                     "There is no library {library} to ingest {source_path} into. The library \
                      may have been removed after this job was queued; re-scan the library \
                      you meant."
                 ),
-            })?;
-        let mut produce = Vec::with_capacity(2);
-        if auto_thumbnail {
-            produce.push(DerivativeKind::Thumbnail);
+            });
         }
-        produce.push(DerivativeKind::TessellationL0);
+        // **Nothing to produce.** Empty `produce` is legal and means measurements only
+        // (`KernelParams::produce`), and measurements are the whole of what ingest needs: the
+        // card shows the part's own picture, the viewer loads the original file when somebody
+        // asks, and the two exports are built on demand. Ingest used to write an L0 rung always
+        // and a thumbnail if the library wanted one.
         let params = KernelParams {
             linear_deflection_mm: None,
             format: source_format(source_path),
-            produce,
+            produce: Vec::new(),
         };
         let kernel = self.kernel_for(&params.format)?;
-        let version = kernel.version(&params);
-        let kernel_version = format!("{} {}", version.implementation, version.version);
 
-        // 4. Parse + measure + rasterize. Nothing has been written yet, so a failure here
+        // 4. Parse + measure. Nothing has been written yet, so a failure here
         // needs no cleanup. This runs even when the bytes are already in the blob store,
-        // because the new part needs its own measurements and its own thumbnail; only the
+        // because the new part needs its own measurements; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
         // immutable, so a refusal is the final answer about them; a kernel that crashed or
         // ran out of time says nothing about the file and is retried (`classify_cad`).
@@ -628,103 +607,6 @@ impl WorkerHandler {
             .process(&bytes, &params)
             .await
             .map_err(classify_cad)?;
-
-        // 4a. What could not be made, said out loud.
-        //
-        // The mesh parsed, so there is a part; one of the pictures of it could not be drawn.
-        // That used to fail the whole ingest — a file in 1,095 of the owner's own corpus
-        // clusters to zero triangles, and the model was absent from the library rather than
-        // present with no preview, which is the opposite of what `ROADMAP.md`'s exit
-        // criterion asks for.
-        //
-        // `warn`, not `error`: nothing is broken and nothing needs attention tonight. It is
-        // a fact about one file that an operator should be able to find when they wonder why
-        // one card has no picture. `POST /api/libraries/{id}/thumbnails` is how they ask for
-        // another go, and it is the same route a library with `auto_thumbnail = false`
-        // already uses.
-        for refused in &output.unproduced {
-            tracing::warn!(
-                source_path,
-                derivative = refused.kind.as_str(),
-                reason = refused.reason,
-                "could not produce a derivative; the part is ingested without it"
-            );
-        }
-
-        // 5. The rungs go to disk before either branch's transaction, for the same reason
-        // the source blob does: a filesystem write cannot be rolled back by Postgres, so
-        // the bytes must be there before a row is allowed to point at them.
-        //
-        // The assembly tree and the analytic entities a CAD kernel read go the same way, as
-        // JSON beside the rungs. A mesh has neither, and a CAD part with no analytic surface
-        // has no entities row rather than an empty one.
-        let unserializable = |e: serde_json::Error| HandlerError::Permanent {
-            message: format!(
-                "Could not store what the CAD kernel read from {source_path} — {e}. This is a \
-                 bug in Lapidary; please report it with the file."
-            ),
-        };
-        let structure = output
-            .structure
-            .as_ref()
-            .map(serde_json::to_vec)
-            .transpose()
-            .map_err(unserializable)?;
-        let entities = (!output.entities.is_empty())
-            .then(|| serde_json::to_vec(&output.entities))
-            .transpose()
-            .map_err(unserializable)?;
-        let pmi = output
-            .pmi
-            .as_ref()
-            .map(serde_json::to_vec)
-            .transpose()
-            .map_err(unserializable)?;
-        let hashed = output
-            .tessellations
-            .iter()
-            .map(|rung| (rung.lod.as_kind(), rung.glb.as_slice(), rung.grid))
-            .chain(
-                structure
-                    .as_deref()
-                    .map(|json| (DerivativeKind::Structure.as_str(), json, None)),
-            )
-            .chain(
-                entities
-                    .as_deref()
-                    .map(|json| (DerivativeKind::Entities.as_str(), json, None)),
-            )
-            .chain(
-                pmi.as_deref()
-                    .map(|json| (DerivativeKind::Pmi.as_str(), json, None)),
-            );
-        let mut rungs = Vec::with_capacity(output.tessellations.len() + 3);
-        let mut reapable = Vec::new();
-        for (kind, bytes, grid) in hashed {
-            let stored = derivatives
-                .put(bytes)
-                .map_err(|e| HandlerError::Transient {
-                    message: e.to_string(),
-                })?;
-            // Only bytes this job introduced may be reaped if the transaction fails. A
-            // rung whose bytes some revision already stores is bytes that revision is
-            // still serving -- the same rule the source blob follows above, asked of the
-            // same authority. `put` is content-addressed, so writing them again was a
-            // no-op rather than a second copy.
-            if !blobs.exists(&stored.hash).await.map_err(classify_db)? {
-                reapable.push(stored.hash);
-            }
-            rungs.push(TessellationRow {
-                kind,
-                blob: StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid,
-            });
-        }
 
         // 5a. The next revision of the part at step 3b (spec §3.1). It has its folder and its
         // directory already, and its transaction writes the blob row itself, so steps 6 to 9
@@ -749,11 +631,11 @@ impl WorkerHandler {
                         lock,
                         blob: &blob,
                         measurements: &output.measurements,
-                        provenance: output.provenance,
-                        thumbnail_webp: output.thumbnail_webp.as_deref(),
-                        kernel_version: &kernel_version,
+                        // Every figure a mesh gives is tessellated, and a mesh is all this
+                        // library takes (R2). The kernel used to report this per figure
+                        // because a B-rep read some of them off the solid.
+                        provenance: MeasurementProvenance::TESSELLATED,
                         format: &params.format,
-                        tessellations: &rungs,
                     },
                     |current, aside| {
                         set_aside(&relocator, &source, &self.blob_root, current, aside, &bytes)?;
@@ -763,18 +645,13 @@ impl WorkerHandler {
                 )
                 .await;
             if let Ok(revision) = &recorded {
-                self.record_topology(*revision, output.topology, source_path)
-                    .await;
                 self.record_centre_of_mass(
                     *revision,
                     output.centre_of_mass_mm,
-                    output.provenance.volume,
+                    Provenance::Tessellated,
                     source_path,
                 )
                 .await;
-                // The new revision's L0 is what the part's shape is now, so the row the previous
-                // revision wrote is stale. Warn-only, as the counts are; see `shape.rs`.
-                self.record_shape(library, *revision, source_path).await;
             }
             if let Err(error) = recorded {
                 // Never `classify_write`: a unique violation here is a lost race for a label,
@@ -783,7 +660,6 @@ impl WorkerHandler {
                 if let Some((current, aside)) = &moved {
                     put_back(&relocator, &source, current, aside);
                 }
-                reap(&derivatives, &reapable);
                 // Except a check-out's refusal: these bytes, under this lock or none, are refused
                 // the same way on every attempt until somebody acts on what the message says.
                 let message = error.to_string();
@@ -793,25 +669,6 @@ impl WorkerHandler {
                     | DbError::UnknownLock => HandlerError::Permanent { message },
                     _ => HandlerError::Transient { message },
                 });
-            }
-
-            // 9a for a revision: what the newer file says about itself replaces what the older one
-            // said, its materials too unless a person typed the part's. Before the manifest, which is
-            // written from the rows.
-            if let Some(cad) = &output.metadata
-                && let Err(error) = PgParts(self.db.clone())
-                    .set_metadata(
-                        existing.part,
-                        &serde_json::json!({ "cad": cad }),
-                        &cad.materials,
-                    )
-                    .await
-            {
-                tracing::warn!(
-                    source_path,
-                    %error,
-                    "could not record what the revised file says about itself; the part keeps what the previous revision's file said"
-                );
             }
 
             // `metadata.json` from the rows, every revision listed. Warn-only, for step 10's
@@ -950,7 +807,6 @@ impl WorkerHandler {
                     storage_path = format!("{model_dir}/{file_name}");
                 }
                 Err(e) => {
-                    reap(&derivatives, &reapable);
                     return Err(HandlerError::Transient {
                         message: e.to_string(),
                     });
@@ -973,11 +829,9 @@ impl WorkerHandler {
             storage_path: Some(&storage_path),
             blob: &blob,
             measurements: &output.measurements,
-            provenance: output.provenance,
-            thumbnail_webp: output.thumbnail_webp.as_deref(),
-            kernel_version: &kernel_version,
+            // Tessellated, for the revision branch's reason: a mesh is all this library takes.
+            provenance: MeasurementProvenance::TESSELLATED,
             format: &params.format,
-            tessellations: &rungs,
         };
 
         // 9. One transaction, and nothing fallible between it and the write above. The
@@ -1015,7 +869,6 @@ impl WorkerHandler {
                     {
                         reap_source(&source, &storage_path, &model_dir);
                     }
-                    reap(&derivatives, &reapable);
                     return settled;
                 }
                 // A lost race for this path. The rungs stay either way, because the winner may
@@ -1068,21 +921,6 @@ impl WorkerHandler {
             );
         }
 
-        // 9a. Stage 4 of `docs/DATA.md` §3.1, semantic: what the file says about itself. Its own
-        // statement after the part's transaction, so a refusal leaves a part that is already
-        // measured and searchable, and is logged rather than failing the file.
-        if let Some(cad) = &output.metadata
-            && let Err(error) = PgParts(self.db.clone())
-                .set_metadata(part, &serde_json::json!({ "cad": cad }), &cad.materials)
-                .await
-        {
-            tracing::warn!(
-                source_path,
-                %error,
-                "could not record what the file says about itself; the part is ingested without it"
-            );
-        }
-
         // 10. `metadata.json`, beside the file it describes. This is the whole of
         // re-adoption: delete the database and each directory still says what it is.
         //
@@ -1094,17 +932,13 @@ impl WorkerHandler {
         // ingest when it did.
         match PgParts(self.db.clone()).latest_revision(part).await {
             Ok(Some(revision)) => {
-                self.record_topology(revision, output.topology, source_path)
-                    .await;
                 self.record_centre_of_mass(
                     revision,
                     output.centre_of_mass_mm,
-                    output.provenance.volume,
+                    Provenance::Tessellated,
                     source_path,
                 )
                 .await;
-                // And its shape, from the L0 rung this ingest just wrote. Warn-only; see `shape.rs`.
-                self.record_shape(library, revision, source_path).await;
                 // From the rows, while the part's row is held, as a revision and a custom value write theirs:
                 // a value committed meanwhile waits for this file rather than being written over by it.
                 let written = PgRevisions(self.db.clone())
@@ -1388,24 +1222,19 @@ pub(crate) fn part_name(file_name: &str) -> &str {
         .unwrap_or(file_name)
 }
 
-/// A database error, sorted into "try again" and "never". Almost every `DbError` a
-/// handler can see is a connection or a query that may work on the next attempt, so
-/// `Transient` is the default -- but two of them are refusals, not failures.
+/// A database error, sorted into "try again" and "never". Every `DbError` a handler can see
+/// now is a connection or a query that may work on the next attempt, so every one is
+/// `Transient`.
 ///
-/// `ThumbnailNotInline` and `EmptyDerivative` are `PgIngest::upsert_derivative` rejecting
-/// a derivative shape before it writes anything. Nothing about the next attempt is
-/// different: the same handler will offer the same bytes in the same shape and be refused
-/// again, so `Transient` would have the queue retry a job that cannot succeed three times
-/// and only then record a failure whose text has been true since the first try. That is
-/// the bug ruling T7-B named in the old unknown-kind path, and it is `Permanent` here for
-/// the same reason `classify_write` below is not a blanket mapping either.
+/// **It had two exceptions and R3 took both with their errors.** `ThumbnailNotInline` and
+/// `EmptyDerivative` were `PgIngest::upsert_derivative` refusing a derivative shape before it
+/// wrote anything, and both described the inline `thumb_bytes` path — which no longer has a
+/// producer. The function stays, rather than collapsing into `HandlerError::Transient { .. }`
+/// at every call site, because this is where that judgement belongs: the next `DbError` worth
+/// refusing permanently gets one arm here instead of a decision at each of nineteen callers.
 pub(crate) fn classify_db(error: DbError) -> HandlerError {
-    let message = error.to_string();
-    match error {
-        DbError::ThumbnailNotInline { .. } | DbError::EmptyDerivative { .. } => {
-            HandlerError::Permanent { message }
-        }
-        _ => HandlerError::Transient { message },
+    HandlerError::Transient {
+        message: error.to_string(),
     }
 }
 

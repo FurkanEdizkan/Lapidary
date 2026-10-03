@@ -16,7 +16,7 @@ pub enum JobState {
     Failed,
 }
 
-/// How a job finished. All five are successes: `Skipped` means this library already
+/// How a job finished. All eight are successes: `Skipped` means this library already
 /// held this exact file, which is slice 1's hash short-circuit doing its job; `Rendered`
 /// means a `derive` job upserted the derivative it was asked to produce; `Scanned` means
 /// a `scan_directory` job walked the ingest mount and enqueued what it found; `Migrated`
@@ -39,6 +39,16 @@ pub enum JobState {
 /// new revision; a hobby library keeps no revisions and says so. `Unkept` is a notice, not a
 /// failure: nothing broke, the new bytes are still where they came from, and a retry could
 /// not change the answer — so it is counted here rather than listed as a failed job.
+///
+/// **`Profiled` is gone from this enum and must stay out of `job_outcome_known`.** R3 deleted
+/// shape similarity, so nothing writes it; migration `0047` added the value and finished rows
+/// still hold it, and the board's rule is that a later restatement of that constraint keeps
+/// every value already in it. Finished history keeps its word. Nothing counts it — `batch_status`
+/// aggregates outcomes with `count(*) FILTER` per name and never had a `profiled` column — so
+/// such a row still totals correctly in the batch it belongs to.
+///
+/// `Rendered` is **not** dead with the renders: it is the common tail of every `derive` job and
+/// the exports are still built on demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -52,11 +62,6 @@ pub enum Outcome {
     Unkept,
     /// A part's `metadata.json` written again from its rows.
     Described,
-    /// A part's shape profile computed from its stored L0 tessellation and recorded (Phase 6).
-    /// Its own outcome for `Scanned`'s reason: a `profile_shape` job indexes nothing, renders
-    /// nothing and skips nothing, and reporting it as `Rendered` would make a batch read as a
-    /// preview rebuild of parts nobody asked to rebuild.
-    Profiled,
 }
 
 /// What a job carries, without its kind.
@@ -126,31 +131,12 @@ pub enum JobPayload {
         part: u32,
         path: String,
     },
-    /// Compute a part's shape profile from the L0 tessellation of `revision`, and record it
-    /// (Phase 6; design in `docs/goals/phase-6.md` § Shape profile).
-    ///
-    /// The revision, never the part, for `Derive`'s reason: a job queued against revision A while
-    /// a second revision lands must not profile B and report success. The part and the library
-    /// come from the row and from the revision, and `PgShapes::record` refuses a profile of an
-    /// older revision than the one already stored, so the two cannot race the wrong way round.
-    ///
-    /// Ingest and a rebuilt L0 profile in line, warn-only, because the profile is not what the
-    /// part is for; this kind is how a backfill queues the parts that were ingested before Phase
-    /// 6, or whose rung or `SHAPE_VERSION` moved since.
-    ProfileShape {
-        revision: RevisionId,
-    },
     /// Write a part's `metadata.json` again from its rows, after something only the rows held changed:
     /// a custom field's value. The api queues it, because the worker is what writes into a model's
     /// directory.
     DescribePart {
         part: crate::PartId,
     },
-}
-
-#[derive(Deserialize)]
-struct ProfileShapePayload {
-    revision: RevisionId,
 }
 
 #[derive(Deserialize)]
@@ -200,7 +186,6 @@ impl JobPayload {
     pub const IMPORT_BUNDLE: &'static str = "import_bundle";
     pub const IMPORT_PART: &'static str = "import_part";
     pub const DESCRIBE_PART: &'static str = "describe_part";
-    pub const PROFILE_SHAPE: &'static str = "profile_shape";
 
     pub fn kind(&self) -> &'static str {
         match self {
@@ -212,7 +197,6 @@ impl JobPayload {
             JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
             JobPayload::ImportPart { .. } => Self::IMPORT_PART,
             JobPayload::DescribePart { .. } => Self::DESCRIBE_PART,
-            JobPayload::ProfileShape { .. } => Self::PROFILE_SHAPE,
         }
     }
 
@@ -247,7 +231,6 @@ impl JobPayload {
                 serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
             JobPayload::DescribePart { part } => serde_json::json!({ "part": part }),
-            JobPayload::ProfileShape { revision } => serde_json::json!({ "revision": revision }),
         }
     }
 
@@ -312,14 +295,6 @@ impl JobPayload {
                 }),
             Self::DESCRIBE_PART => serde_json::from_value::<DescribePartPayload>(payload.clone())
                 .map(|p| JobPayload::DescribePart { part: p.part })
-                .map_err(|source| CoreError::MalformedJobPayload {
-                    kind: kind.to_owned(),
-                    detail: source.to_string(),
-                }),
-            Self::PROFILE_SHAPE => serde_json::from_value::<ProfileShapePayload>(payload.clone())
-                .map(|p| JobPayload::ProfileShape {
-                    revision: p.revision,
-                })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),
@@ -567,21 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_shape_payload_round_trips_through_its_row_and_names_its_revision() {
-        let payload = JobPayload::ProfileShape {
-            revision: RevisionId::new(),
-        };
-        assert_eq!(payload.kind(), "profile_shape");
-        assert_eq!(
-            JobPayload::from_row(payload.kind(), &payload.to_json()).expect("parses"),
-            payload
-        );
-        // A row with no revision names no rung to read, and no retry can give it one.
-        JobPayload::from_row("profile_shape", &serde_json::json!({}))
-            .expect_err("a profile_shape row without a revision is malformed");
-    }
-
-    #[test]
     fn an_ingest_blob_payload_round_trips_through_its_row() {
         let payload = JobPayload::IngestBlob {
             blake3: BlobHash::from_bytes([0x5c; 32]),
@@ -650,14 +610,20 @@ mod tests {
         let rev = RevisionId::new();
         let p = JobPayload::Derive {
             revision: rev,
-            produce: DerivativeKind::TessellationL2,
+            produce: DerivativeKind::Export3mf,
         };
         assert_eq!(p.kind(), "derive");
         assert_eq!(
             JobPayload::from_row("derive", &p.to_json()).expect("round trips"),
             p
         );
-        assert_eq!(p.to_json()["produce"], "tessellation_l2");
+        assert_eq!(p.to_json()["produce"], "export_3mf");
+        // A `derive` row naming a kind nothing builds any more is malformed, not silently
+        // taken as something else: those rows exist from before the pivot, and migration
+        // `0054` deletes the pending and running ones precisely so none is ever read here.
+        let dead = serde_json::json!({ "revision": rev, "produce": "tessellation_l0" });
+        JobPayload::from_row("derive", &dead)
+            .expect_err("a rung is not a derivative this build can produce");
     }
 
     /// The payload is empty by design, and `from_row` must not start caring what is in

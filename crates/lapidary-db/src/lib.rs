@@ -7,7 +7,6 @@ mod densities;
 mod events;
 mod folders;
 mod jobs;
-mod likeness;
 mod locks;
 mod migrate;
 mod mirror;
@@ -15,7 +14,6 @@ mod pulls;
 mod repo;
 mod revisions;
 mod saved_filters;
-mod shapes;
 mod shares;
 mod sharing;
 mod tags;
@@ -29,9 +27,6 @@ pub use densities::{DensityRow, PgDensities};
 pub use events::{CHANGE_CHANNEL, listen_for_changes};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
-pub use likeness::{
-    Alike, Cluster, Folded, LinkRow, LivePart, PgLikeness, Shaped, alike, clusters,
-};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use mirror::{
@@ -40,18 +35,16 @@ pub use mirror::{
 };
 pub use pulls::{PgPulls, PullRow};
 pub use repo::{
-    BundlePartRow, BundleRevisionRow, BundleSource, DerivativeBytes, DownloadSource,
-    EXACT_FACET_ROWS, FacetValue, Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage,
-    LibraryRow, MoveRow, MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow,
-    PartRepository, PartRow, PartSourceRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged,
-    ReapReport, RenderCacheFreed, RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
-    TessellationRow,
+    BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS, FacetValue,
+    Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage, LibraryRow, MoveRow,
+    MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow, PartRepository, PartRow,
+    PartSourceRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, RenderCacheFreed,
+    RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
 };
 pub use revisions::{
     CentrelessRevision, CurrentRevision, PgRevisions, RevisionRequest, RevisionRow,
 };
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
-pub use shapes::{PgShapes, ShapeRow, StaleShape};
 pub use shares::{
     BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
     RosterRow, ShareRow,
@@ -65,7 +58,7 @@ pub use touches::Touches;
 // on sqlx at all, not only about not writing queries.
 pub use sqlx::postgres::PgListener;
 
-use lapidary_core::{FolderId, LibraryId, PartId, RevisionId};
+use lapidary_core::{FolderId, LibraryId, PartId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -134,15 +127,6 @@ pub enum DbError {
     )]
     UnknownProvenance { value: String },
 
-    /// The two derivative shapes nothing can display. Both are refused by
-    /// [`PgIngest::upsert_derivative`] before it opens a transaction, because both write
-    /// a row that is valid, invisible and — since a row exists — invisible to
-    /// [`PgParts::revisions_missing`]'s sweep as well, so nothing ever heals it.
-    #[error(
-        "A thumbnail for revision {revision} was offered as hash-addressed bytes, and nothing can read one back: the grid serves thumbnails inline out of the row it already reads. Store the thumbnail inline, or wait for the hash-addressed thumbnail endpoint that arrives with the viewer."
-    )]
-    ThumbnailNotInline { revision: RevisionId },
-
     /// The reaper could not unlink a blob it had already removed the row for.
     ///
     /// Aborts the sweep, which rolls the row deletion back — so the row and the bytes both
@@ -153,14 +137,6 @@ pub enum DbError {
         "Quarantined blob {hash} could not be removed from the blob store: {message}. Nothing was deleted — the sweep was rolled back and will try again. Check the blob store's permissions and free space."
     )]
     ReapRemove { hash: String, message: String },
-
-    #[error(
-        "The {kind} for revision {revision} was offered as zero bytes, and an empty derivative is worse than none: it reaches the grid as a broken image where \"no preview yet\" belongs. Write no derivative at all, or re-render and write the bytes that produces."
-    )]
-    EmptyDerivative {
-        kind: &'static str,
-        revision: RevisionId,
-    },
 
     /// `saved_filter_name_unique_per_library`: a library's saved filters are picked by name.
     #[error(
@@ -375,8 +351,6 @@ impl DbError {
             | DbError::NegativeByteCount { .. }
             | DbError::CorruptBlobHash { .. }
             | DbError::UnknownProvenance { .. }
-            | DbError::ThumbnailNotInline { .. }
-            | DbError::EmptyDerivative { .. }
             | DbError::WouldCreateCycle { .. }
             | DbError::FolderNameTaken { .. }
             | DbError::FolderSlugTaken { .. }
