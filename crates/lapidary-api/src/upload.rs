@@ -51,7 +51,10 @@ use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, JobPayload, LibraryId, path_escapes, source_format};
+use lapidary_core::{
+    BlobHash, CAD_FORMATS, JobPayload, LibraryId, MESH_EXTENSIONS, cad_refusal, path_escapes,
+    source_format,
+};
 use lapidary_db::{PgBlobs, PgParts, StoredBlobRow};
 use lapidary_storage::{Compression, SourceWriter};
 use serde::{Deserialize, Serialize};
@@ -144,6 +147,58 @@ pub struct ChunkQuery {
     offset: u64,
 }
 
+/// A manifest with nothing in it this library reads, refused before a byte moves.
+///
+/// Both routes call this, and the probe is the one that matters: it runs before a single byte is
+/// transferred, so somebody who drops a folder of STEP assemblies is told at once rather than
+/// after moving gigabytes and reading a failed job per file. The commit checks it again because
+/// the probe is a courtesy a client can skip and this is the trust boundary.
+///
+/// **Only when the manifest holds no mesh at all**, which is the whole of this function's design.
+/// Two wrong shapes were tried on the way here and both passed their tests.
+///
+/// Refusing a manifest that merely *contains* a B-rep file would upload nothing for a hobby corpus
+/// of 400 meshes with one `.step` in it, and — worse — `bin/lapidary`'s folder agent sends every
+/// settled file in one manifest, so one `.step` file in a watched folder would have failed every
+/// sync of that folder.
+///
+/// Refusing only when *every* file is a B-rep file then never fires for a real folder drop:
+/// `filesFromDrop` and `filesFromInput` (`web/src/lib/upload.ts`) send every file the browser
+/// hands them, with no extension filter anywhere, so one `README.md` beside the assemblies is
+/// enough to make a manifest "mixed" — and the up-front refusal this exists for would be skipped
+/// in exactly the case it was written for.
+///
+/// So the question is whether there is a mesh to take. If there is, the manifest is taken and any
+/// B-rep file in it is refused by its own job, with this same sentence, exactly as a scan refuses
+/// one. If there is not, there is nothing to transfer and the refusal comes before the bytes do.
+fn refuse_b_rep(manifest: &UploadManifest) -> Option<Response> {
+    if manifest
+        .files
+        .iter()
+        .any(|file| MESH_EXTENSIONS.contains(&source_format(&file.path).as_str()))
+    {
+        return None;
+    }
+    let mut b_rep = manifest
+        .files
+        .iter()
+        .filter(|file| CAD_FORMATS.contains(&source_format(&file.path).as_str()));
+    let first = b_rep.next()?;
+    let others = b_rep.count();
+    let subject = if others == 0 {
+        format!("Refused {:?}", first.path)
+    } else {
+        format!(
+            "Refused {:?} and the {others} other file(s) in it this library cannot read",
+            first.path
+        )
+    };
+    Some(bad_request(format!(
+        "{subject}: {}",
+        cad_refusal(&source_format(&first.path))
+    )))
+}
+
 /// `POST /api/libraries/{id}/uploads/probe` — which of these files does this library
 /// still need, and which of those need their bytes.
 pub async fn probe(
@@ -153,6 +208,10 @@ pub async fn probe(
 ) -> Response {
     if let Err(response) = library_exists(&state, library).await {
         return response;
+    }
+    // Before the two queries, and long before a byte moves.
+    if let Some(refusal) = refuse_b_rep(&manifest) {
+        return refusal;
     }
     let blobs = PgBlobs(state.db.clone());
     // Two queries for the whole manifest, however many files it names.
@@ -382,6 +441,10 @@ pub async fn commit(
              dropped, and may not be absolute or contain `..`.",
             bad.path
         ));
+    }
+    // Again, for a client that did not probe.
+    if let Some(refusal) = refuse_b_rep(&manifest) {
+        return refusal;
     }
 
     let hashes: Vec<BlobHash> = manifest.files.iter().map(|file| file.blake3).collect();

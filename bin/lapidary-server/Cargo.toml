@@ -25,10 +25,6 @@ mock-kernel = [
     "dep:lapidary-jobs",
     "lapidary-cad/mock-kernel",
 ]
-# The real CAD kernel: STEP and IGES go to occt-bridge, which only the `worker` target of
-# deploy/Containerfile installs. Implies `mock-kernel`, the feature that compiles a worker
-# in at all, so a build with this one alone is never a kernel with no worker to drive it.
-occt-kernel = ["mock-kernel", "lapidary-cad/occt-kernel"]
 
 [dependencies]
 lapidary-api.workspace = true

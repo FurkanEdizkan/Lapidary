@@ -93,11 +93,6 @@ pub fn digest(content: &str) -> String {
 
 pub const EXEMPT: &[Exemption] = &[
     Exemption {
-        file: "crates/lapidary-cad/src/occt.rs",
-        content: "e3a8fc86dcebb8ad",
-        reason: "the fake occt-bridge shell script OcctKernel's tests execute; its indentation is the script's own, not a mangled continuation",
-    },
-    Exemption {
         file: "crates/lapidary-cad/src/stl.rs",
         content: "fe88bef97b896b65",
         reason: "ASCII STL fixture text: real STL syntax, conventionally indented by facet/loop nesting depth",

@@ -1,11 +1,14 @@
 # syntax=docker/dockerfile:1
-# Rust workspace -> lapidary-server. OCCT is Phase 0b and is deliberately absent.
+# Rust workspace -> lapidary-server. No CAD kernel: Lapidary is a visual index of meshes, and STEP
+# and IGES are refused by name (`lapidary_core::cad_refusal`). The `occt` and `occt-test` stages
+# that built OCCT V8.0.1 from source were 766 s of an 849 s cold build and a 2.92 GB test image;
+# they were removed with the kernel.
 
 FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
 # Feature list for the lapidary-server build, threaded in by deploy/compose.yaml. Declared
 # here, inside the stage — an ARG before the first FROM lives in a different scope and is
-# not visible to the RUN below. Empty by default so the api image never links the CAD
-# kernel; deploy/compose.yaml sets this to `mock-kernel` only for the worker service.
+# not visible to the RUN below. Empty by default so the api image carries no worker;
+# deploy/compose.yaml sets this to `mock-kernel` only for the worker service.
 ARG SERVER_FEATURES=
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -45,76 +48,6 @@ RUN set -eu; \
 # this form never asks it to.
 RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features "$SERVER_FEATURES"}
 
-# ---------------------------------------------------------------------------------------
-# OCCT and occt-bridge — Phase 0b.
-#
-# Built from source and pinned twice, by tag and by the archive's SHA256: `ARCHITECTURE.md`
-# says OCCT is built from source in our own CI, and a tag alone is a name GitHub can serve
-# different bytes under. Bump both lines together, from the release's own archive.
-#
-# Shared libraries (`BUILD_LIBRARY_TYPE` defaults to Shared), because OCCT is LGPL-2.1 and
-# `ARCHITECTURE.md` requires its output to stay separately replaceable files.
-#
-# Every module except Draw, and that is not generosity: `TKDESTEP` and `TKDEIGES` link
-# `TKXCAF`, which links `TKService`, `TKV3d` and `TKVCAF` from Visualization. What can be cut
-# is Visualization's third-party half — Tk, FreeType, OpenGL and X11 are on by default on
-# Linux, and a headless worker that never draws a window needs none of them.
-#
-# `--parallel 6` rather than every core: an OCCT translation unit can take over a gigabyte
-# to compile, and a build that OOMs halfway is slower than one that never tried.
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS occt
-ARG OCCT_TAG=V8.0.1
-ARG OCCT_SHA256=6297cc55a1720523a437c54d07dc16b9da8c5f5ab5800da3c6ebded568d53c18
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl cmake g++ make \
- && rm -rf /var/lib/apt/lists/*
-WORKDIR /occt
-RUN curl -fsSL -o occt.tar.gz "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/${OCCT_TAG}.tar.gz" \
- && echo "${OCCT_SHA256}  occt.tar.gz" | sha256sum -c - \
- && tar -xzf occt.tar.gz --strip-components=1 \
- && rm occt.tar.gz
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DINSTALL_DIR=/opt/occt \
-      -DBUILD_MODULE_Draw=OFF \
-      -DUSE_TK=OFF -DUSE_FREETYPE=OFF -DUSE_OPENGL=OFF -DUSE_GLES2=OFF -DUSE_XLIB=OFF \
- && cmake --build build --parallel 6 \
- && cmake --install build \
- && rm -rf build
-# The bridge builds against the installed OCCT and proves itself before the stage is done:
-# `selftest` writes a STEP through XCAF, reads it back and checks the volume, so a toolkit
-# missing from the link or the runtime fails the image build, not a user's first ingest.
-# OCCT installs its shared libraries to /opt/occt/lib, which the loader does not search. Said
-# with the environment rather than `ldconfig`, so this stage and the worker target reach them
-# the same way — the worker runs as `lapidary` and could not run `ldconfig` anyway.
-ENV LD_LIBRARY_PATH=/opt/occt/lib
-COPY sidecar/occt-bridge /bridge
-RUN cmake -S /bridge -B /bridge/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/occt \
- && cmake --build /bridge/build --parallel 6 \
- && /bridge/build/occt-bridge version \
- && /bridge/build/occt-bridge selftest /tmp
-
-# ---------------------------------------------------------------------------------------
-# `cargo xtask verify occt` — OcctKernel against this bridge and real OCCT, and the Phase 0
-# exit: the 200-part fixture converted to glTF, tree and entities in under 30 s.
-#
-# A stage rather than a script, so the tests run beside the same libraries and the same
-# `LD_LIBRARY_PATH` the worker target carries. Release, because the exit is a timing and the
-# worker runs release; one test thread, so the timing is not shared with the other tests.
-# Nothing copies from this stage, and `check-deploy` would fail the `api` target if anything
-# it is built from did. It sits above the runtime stages so `worker` stays the file's last.
-FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS occt-test
-WORKDIR /src
-COPY --from=occt /opt/occt/lib/ /opt/occt/lib/
-COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
-ENV LD_LIBRARY_PATH=/opt/occt/lib
-ENV LAPIDARY_OCCT_BRIDGE=/usr/local/bin/occt-bridge
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates ./crates
-COPY bin ./bin
-COPY xtask ./xtask
-COPY fixtures ./fixtures
-RUN cargo test --locked --release -p lapidary-cad --features occt-kernel --test occt_bridge \
-      -- --ignored --nocapture --test-threads 1
-
 FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
@@ -141,23 +74,22 @@ RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \
 COPY example/parts/*.stl /usr/share/lapidary/example-parts/
 COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
 USER lapidary
-# This Containerfile now produces two different images via SERVER_FEATURES — api without
-# the CAD kernel, worker with it — bound to different ports in deploy/compose.yaml: api
-# 8080, worker 8081. EXPOSE documents both regardless of which image is built, rather than
+# This Containerfile produces two different images via SERVER_FEATURES — api without the
+# ingest half, worker with it — bound to different ports in deploy/compose.yaml: api 8080,
+# worker 8081. EXPOSE documents both regardless of which image is built, rather than
 # naming only the port that's wrong for the other one.
 EXPOSE 8080 8081
 ENTRYPOINT ["/usr/local/bin/lapidary-server"]
 
 # The two targets deploy/compose.yaml builds, and why there are two.
 #
-# `api` is the runtime above and nothing else. It serves the open path, which never invokes the
-# CAD kernel, so it never carries OCCT either. `worker` adds OCCT's shared libraries and
-# occt-bridge. Every lapidary-server service must name one: an untargeted build takes the last
-# stage in this file, which is the worker's. `cargo xtask check-deploy` fails if a service picks
-# none or the wrong one, or if anything the `api` target is built from copies from `occt`.
+# Both are the runtime above, and since the CAD kernel came out neither adds a layer to it: what
+# separates the two images is the SERVER_FEATURES build arg, which is what compiles the worker's
+# ingest half in (`mock-kernel`) and leaves the api without it. They stay two named targets
+# because every lapidary-server service must name one — an untargeted build takes the last stage
+# in this file — and `cargo xtask check-deploy` fails a service that picks none or the wrong one.
+# That matters for the build arg as much as for the stage: an untargeted build takes `worker`'s
+# stage around a binary built with SERVER_FEATURES empty, which refuses to start as a worker.
 FROM runtime AS api
 
 FROM runtime AS worker
-COPY --from=occt /opt/occt/lib/ /opt/occt/lib/
-COPY --from=occt /bridge/build/occt-bridge /usr/local/bin/occt-bridge
-ENV LD_LIBRARY_PATH=/opt/occt/lib

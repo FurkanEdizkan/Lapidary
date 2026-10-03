@@ -415,6 +415,72 @@ async fn a_path_that_escapes_is_refused_before_anything_is_written(pool: sqlx::P
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_drop_with_no_mesh_in_it_is_refused_before_a_byte_is_transferred(pool: sqlx::PgPool) {
+    // The probe is the point: it runs before the transfer, so a folder of STEP assemblies is
+    // refused rather than moved and then failed a job at a time. The sentence is the worker's own
+    // — one definition, in `lapidary_core::cad_refusal`, so a person who meets both meets the
+    // same words.
+    //
+    // The `README.md` is not decoration. Nothing in `web/src/lib/upload.ts` filters a drop by
+    // extension, so a real folder of assemblies arrives with its notes and drawings in the
+    // manifest — and a rule that fired only when *every* file was a B-rep file would never fire
+    // here, which is the one case it is for.
+    let server = server(pool.clone());
+    let (status, json) = server
+        .probe(serde_json::json!([
+            { "path": "fixtures/fixture-plate-lp-9000-00.STEP", "blake3": "a".repeat(64) },
+            { "path": "assemblies/gearbox-lp-7700-00.iges", "blake3": "b".repeat(64) },
+            { "path": "README.md", "blake3": "c".repeat(64) },
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = json["message"].as_str().expect("a message");
+    assert!(
+        message.contains("fixture-plate-lp-9000-00.STEP"),
+        "names the file it refused: {message}"
+    );
+    assert!(
+        message.contains("STEP") && message.contains("STL, OBJ or 3MF"),
+        "names the format and what this library takes: {message}"
+    );
+    assert!(
+        !message.contains("occt") && !message.contains("--features"),
+        "and never a build flag: {message}"
+    );
+
+    // And again at the commit, for a client that never probed: nothing is stored.
+    let good = server.upload(BRACKET).await;
+    let (status, _) = server
+        .commit(serde_json::json!([
+            { "path": "assemblies/gearbox-lp-7700-00.iges", "blake3": good.to_hex() },
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+    assert_eq!(parts, 0, "and no part is indexed");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_drop_with_one_b_rep_file_among_meshes_still_takes_the_meshes(pool: sqlx::PgPool) {
+    // There is a mesh to take, so the drop is taken and the `.step` file is refused by its own job
+    // — the same answer a scan gives, and the batch carries the same sentence. A whole-manifest
+    // refusal here would upload nothing for a hobby corpus of 400 meshes with one `.step` in it.
+    let server = server(pool.clone());
+    let good = server.upload(BRACKET).await;
+    let (status, json) = server
+        .commit(serde_json::json!([
+            { "path": "brackets/bracket-lp-1042-03.stl", "blake3": good.to_hex() },
+            { "path": "fixtures/fixture-plate-lp-9000-00.step", "blake3": good.to_hex() },
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    assert_eq!(json["queued"], 2, "both files are queued: {json}");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_hash_that_is_not_a_hash_never_reaches_the_filesystem(pool: sqlx::PgPool) {
     let server = server(pool);
     let (status, json) = server

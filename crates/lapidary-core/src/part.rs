@@ -218,8 +218,29 @@ pub fn source_format(source_path: &str) -> String {
 /// watches a folder all read this one list.
 pub const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
 
-/// The extensions a CAD kernel reads, lowercase. A worker built without one refuses them by name.
+/// The B-rep extensions this library refuses by name, lowercase.
+///
+/// Still chained into [`is_model_file`] below, deliberately. Lapidary does not read these, but a
+/// scan that did not recognise them at all would *skip* a `.step` file silently, and a file that
+/// vanishes without a word is worse than one refused with a sentence. They are recognised here so
+/// that [`cad_refusal`] can be the answer.
 pub const CAD_FORMATS: [&str; 4] = ["step", "stp", "iges", "igs"];
+
+/// Why a B-rep file is refused, named by its format.
+///
+/// Here rather than at either call site because two places refuse: `lapidary-api`'s upload route,
+/// before a byte is transferred, and the worker's `kernel_for`, for a file a scan found. A person
+/// who meets both must meet the same sentence, and it has to say what this library takes rather
+/// than how to rebuild it — Lapidary is a visual index of meshes, and there is no feature to turn
+/// on.
+pub fn cad_refusal(format: &str) -> String {
+    format!(
+        "Lapidary is a visual library of meshes and does not read {} files. Export the part as \
+         STL, OBJ or 3MF from your CAD tool and add it again; the same file is refused the same \
+         way every time.",
+        format.to_ascii_uppercase()
+    )
+}
 
 /// Whether a file's name makes it a model file: its extension, in any case, is a mesh's or a CAD
 /// kernel's. Not a byte sniff: the extension is what an owner sees, so a file skipped is skipped for a
@@ -300,6 +321,36 @@ mod format_tests {
         ] {
             assert!(!is_model_file(name), "{name}");
         }
+    }
+
+    /// Every B-rep extension is still a model file, and that is deliberate.
+    ///
+    /// Lapidary does not read them. Taking them out of this list would make a scan walk past a
+    /// `.step` file without a word — the owner would see a part missing from their library and
+    /// nothing anywhere would say why. Recognised here, the file gets a job, and the job gets
+    /// [`cad_refusal`]'s sentence.
+    #[test]
+    fn a_b_rep_file_is_still_a_model_file_so_it_can_be_refused_out_loud() {
+        for format in super::CAD_FORMATS {
+            let name = format!("fixture-plate-lp-9000-00.{format}");
+            assert!(
+                is_model_file(&name),
+                "{name} must be recognised, or a scan skips it in silence"
+            );
+        }
+    }
+
+    /// The refusal names the format and what this library takes. Both halves: a sentence that
+    /// only says "no" leaves a person with nothing to do next.
+    #[test]
+    fn the_refusal_names_the_format_and_what_this_library_takes() {
+        let message = super::cad_refusal("step");
+        assert!(message.contains("STEP"), "{message}");
+        assert!(message.contains("STL, OBJ or 3MF"), "{message}");
+        assert!(
+            !message.contains("occt") && !message.contains("--features"),
+            "and never a build flag: {message}"
+        );
     }
 }
 
