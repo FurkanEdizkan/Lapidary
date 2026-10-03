@@ -88,6 +88,9 @@ and a **Record** section. Within it:
   message**, because a mutation can be "caught" by the wrong thing — L2 found one of its own caught by a Postgres
   syntax error rather than by the assertion it claimed (2026-09-27). A mutation that survives is usually a rule nothing
   ever reached: L2 had written one and never broken it, because no test staged a file under a paused pull.
+  **A mutation script restores from a copy it made, never from git.** R1's first one used
+  `git checkout --`, which restores to HEAD — and so destroyed that goal's own uncommitted work in four
+  files mid-run. Copy the file aside, mutate, restore the copy, and check the sha256 back.
   `target/mutate-l2.sh` is the current shape to copy — one case a rule, every cargo command through
   `cargo xtask heavy --`, no environment overrides (`.lane.env` already carries your database). **Do not copy
   `target/sharing-check/mutate-s1b.sh`**: it predates this protocol and breaks three of its rules — it sets

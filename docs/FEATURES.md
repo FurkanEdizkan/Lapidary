@@ -331,9 +331,12 @@ Three rows changed meaning rather than only phase, and each is a decision:
   adding it later stays additive. Phase 5's exit was rewritten to match on 2026-09-15 (`ROADMAP.md`,
   Phase 5).
 
-A user image does not yet win over the render on a grid card. A blob-backed image cannot
-reach the grid without either a 17th column or a card-sized second copy on the row, and
-neither is worth it for a picture the gallery already shows one click away.
+A grid card shows the part's **own first image** since R1 (2026-10-03), framed as its row says, with
+the rendered thumbnail behind it until R4 purges the renders. The grid carries only inline bytes, so an
+image over `INLINE_LIMIT` arrives as a hash and the card emits `/api/blob/{hash}` — one immutable image
+load, never a second API request. *(The line here used to say this needed "a 17th column". That premise
+died when `GridRow` became a named `FromRow` struct: a column is a field, and the grid now carries nine
+more than it did.)*
 
 ## 7. Build graph (blueprint board)
 
