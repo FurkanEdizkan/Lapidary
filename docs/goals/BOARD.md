@@ -28,7 +28,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
 | [P4](P4.md) | The explore landing | 5 | web | G3, G4, G5, P2, P3 | `web/src/routes/explore.tsx`, `explore` strings block | — | open | `feat/explore-landing` |
 | [R1](R1.md) | The card shows a picture; the viewer loads the original | 4 | web (+ one db read) | — | the page query's card picture, `Card.tsx`, `Viewer.tsx`, the engine half of the frontend | — | claimed (lane 1) | `feat/picture-first` |
-| [R2](R2.md) | OCCT out, STEP and IGES refused by name | 4 | Rust + deploy | — | `sidecar/`, `lapidary-cad/src/occt.rs`, `deploy/Containerfile`, `xtask/src/{verify,deploy}.rs`, `kernel_for` | — | claimed (lane 2) | `chore/remove-occt` |
+| [R2](R2.md) | OCCT out, STEP and IGES refused by name | 4 | Rust + deploy | — | `sidecar/`, `lapidary-cad/src/occt.rs`, `deploy/Containerfile`, `xtask/src/{verify,deploy}.rs`, `kernel_for` | — | merged `43e7932` | `chore/remove-occt` |
 | [R3](R3.md) | Production stops, and similarity goes with it | 4 | Rust | R1, R2 | `DerivativeKind`, the four producers, `shapes.rs`/`likeness.rs` and their api | 0054 | open | `chore/stop-rendering` |
 | [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | open | `chore/purge-renders` |
 | [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | open | `refactor/mesh-facts-only` |

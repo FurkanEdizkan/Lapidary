@@ -3864,6 +3864,59 @@ on the board.
 **Wave 3 closed** (2026-09-28): L2 `bac30be`, L3 `3866a62`, P3 `bd362e4`, L4 `fd5c7dd`. Thirteen goals merged since the
 board was written; what remains is the discovery half — P1, P2 and P4 — and P1's shape waits on the owner, because
 nothing in this product writes a tag today.
+
+## The pivot: Lapidary becomes a visual library (2026-10-03)
+
+**The owner's call.** Lapidary grew a CAD-grade middle — a tessellation ladder, a CPU rasteriser making a thumbnail per
+part, a three.js viewer with measurement, section planes, explode, PMI and an assembly tree, an OCCT kernel in a sidecar
+to feed all of it, and near-duplicate detection computed from the stored meshes. That middle is not what the product is
+for. The aim is **a library you can look through and search**: pictures, metadata, downloads. Rendering a preview of
+every model is complexity bought for a picture we can simply store.
+
+Decided with the owner: the viewer stays but **only when somebody presses view**, loading the original mesh in the
+browser; pictures are uploaded or fetched from the source link, and ingest just makes the card; similarity is removed
+entirely and **identity stays the content hash** — no file is ever refused for sharing a name; **the kernel goes** and
+STEP and IGES are refused at ingest; the cheap mesh facts (size, volume, area, triangles) are kept, because the size in
+millimetres is what decides whether something is 28 mm scale; the old renders are purged; sharing stays, off by default.
+
+About **10,000 lines and 250 tests** come out. Phase 3's measurement, Phase 4's geometric diff and overlay, and Phase 6's
+similarity exit were built, measured and recorded, and are now deliberately removed — the shas are recorded as each
+goal lands, so the history stays legible. The plan is the goal files R1–R6 on [`BOARD.md`](goals/BOARD.md).
+
+- **R2, the kernel goes** (merged `43e7932`, gate 14 green in 242.26 s on the merged tree). OCCT, the 1,092-line
+  `occt-bridge` sidecar, the `occt-kernel` feature in three manifests, both Containerfile stages, and the four
+  `check-deploy` rules that policed them: **39 files, +494 / −3,386**.
+  - **Measured in one unit — content bytes (`du -sbx` inside the image) — because Docker's reported size runs about
+    1.37 times that here, and mixing the two overstated an earlier draft by 30 MB.** The worker image goes from
+    **177,756,182 B to at most 100,351,564 B: a saving of at least 77,404,618 B, or 43.5 per cent**, of which OCCT's
+    libraries were 77,171,690 B across 64 files and the bridge 232,928 B. The cold worker build goes from **916 s to
+    about 155 s**, since 861 s of it was OCCT compiling itself. The `occt-test` image was **2.92 GB**; its stage no
+    longer exists. The before-figures check out exactly: the worker-minus-api content gap was 79,949,258 B =
+    77,171,690 + 232,928 + 2,544,640.
+  - **Half of "builds and starts" is proven, half is owed.** Building the image to weigh it needs the pinned
+    `rust:1.95-trixie` and a release layer — about 7 GB against 8.4 GB free — so the lane stopped at the disk floor
+    rather than risk filling `/`, which on this machine loses all tool output. The kernel-less binary **was** built and
+    **does** start as a worker, logging `kernel=mesh, for stl, obj and 3mf`. The image goes on the scale at the next
+    container run.
+  - **The refusal is the product change, and where it fires took three tries — two wrong shapes passed every test.**
+    Refusing a manifest that *contains* a B-rep file wedges `bin/lapidary`'s folder agent into retrying a `.step` file
+    **every 30 seconds for ever, unattended**; refusing only when *every* file is a B-rep file never fires, because a
+    folder drop sends everything the browser hands it and one `README.md` makes the manifest mixed. Shipped: **refuse
+    when there is no mesh to take**, and otherwise let the B-rep file's own job refuse it. One sentence in
+    `lapidary_core::cad_refusal` serves all four paths; the folder agent leaves such files out of its manifest and says
+    so once per path rather than skipping in silence; and `CAD_FORMATS` stays inside `is_model_file`, so a scan
+    *reports* a `.step` file instead of quietly passing over it. 13 mutations, 13 caught, including all three upload
+    shapes and both agent failure modes.
+  - **It corrected the lead twice.** The gate is **14, not 13**: `Tier::Occt` was never part of the bar — `verify.rs`'s
+    own doc said so and `steps()` returned early for it — so it refused to delete a real gate to make the lead's number
+    come true. And it weighed nothing it could not weigh, deriving the "after" from the api image's layers and saying
+    plainly which figure is a bound and why.
+  - **Nothing was left to delete:** goal 9's prune had already taken every `lapidary-occt` and `occt-test` image, and
+    `docker buildx du` holds no OCCT cache record. This goal's saving is every future build, not reclaimed disk.
+  - **Left for the lead:** weigh the worker image on the next container run; the rig stages `fixtures/step/` into its
+    ingest directory in two places (`stack.sh`, `group.sh`) and those now produce refused jobs, which is R6's to
+    retarget. **For the owner:** a `refused` list on the upload probe, so a folder drop can be told which files will
+    not be taken before their bytes are transferred.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
