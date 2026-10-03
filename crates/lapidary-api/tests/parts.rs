@@ -422,7 +422,7 @@ async fn seed_sized_part(
     format: &str,
     blob: StoredBlobRow,
     storage_path: &str,
-) {
+) -> lapidary_core::PartId {
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
@@ -438,7 +438,7 @@ async fn seed_sized_part(
             format,
         })
         .await
-        .expect("seed part");
+        .expect("seed part")
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -448,7 +448,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     // could not produce 266,094. Both are shaped as ingest writes them since the store
     // became a folder tree: one file per part at its own path, uncompressed, so
     // `size_bytes` is what the file occupies.
-    seed_sized_part(
+    let bracket = seed_sized_part(
         &pool,
         0xe1,
         "Bracket, LP-1042-03",
@@ -476,6 +476,16 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
         "libraries/default/impeller-lp-5501-02/impeller-lp-5501-02.3mf",
     )
     .await;
+    // One export, so the derivative total and the ratio are figures rather than zeroes. The
+    // derivative half of this panel is the exports now: ingest writes no derivative at all.
+    file_export(
+        &pool,
+        bracket,
+        lapidary_core::DerivativeKind::ExportStl,
+        0xe3,
+        12_405,
+    )
+    .await;
 
     let (status, json) = get_storage(pool, Role::Api, SEEDED_LIBRARY).await;
     assert_eq!(status, StatusCode::OK);
@@ -483,9 +493,8 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     let derivative = json["derivativeBytes"].as_u64().expect("a JSON number");
     assert_eq!(source, 204_800 + 61_294);
     assert_eq!(
-        derivative,
-        ("webp-bracket".len() + "webp-impeller".len()) as u64,
-        "both previews, counted where they are actually stored"
+        derivative, 12_405,
+        "the one export, counted where it is actually stored"
     );
 
     // Numbers, not strings: `u64` would reach ts-rs as `bigint` and serde as a number,
@@ -499,7 +508,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     );
     assert!(
         ratio < 1.0,
-        "two previews against 260 KB of sources is a small fraction; a ratio above 1 \
+        "12 KB of export against 260 KB of sources is a small fraction; a ratio above 1 \
          here would mean the division is inverted: {ratio}"
     );
 }

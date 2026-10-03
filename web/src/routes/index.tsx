@@ -10,7 +10,6 @@ import {
   fetchFacets,
   fetchHealth,
   fetchInstanceStorage,
-  fetchLibrarySettings,
   fetchLibraryStorage,
   fetchParts,
   fetchSavedFilters,
@@ -21,10 +20,7 @@ import {
   removePart,
   removeSavedFilter,
   renameSavedFilter,
-  renderLibraryThumbnails,
-  renderPartThumbnail,
   saveFilter,
-  setAutoThumbnail,
   startScan,
   UploadRefused,
 } from '../lib/api'
@@ -684,23 +680,8 @@ export function Index({
     return () => source.close()
   }, [activeBatch, library, queryClient])
 
-  const kind: BatchKind =
-    mine?.kind ??
-    ((scan.data?.migrating ?? 0) > 0
-      ? 'migrate'
-      : (scan.data?.rendered ?? 0) > 0
-        ? 'render'
-        : 'scan')
+  const kind: BatchKind = mine?.kind ?? ((scan.data?.migrating ?? 0) > 0 ? 'migrate' : 'scan')
 
-  /**
-   * What this library is actually set to. Its own query rather than a field on the grid's
-   * page, because the two answer different questions and a settings read must not be
-   * invalidated every time the worker commits a part.
-   */
-  const librarySettings = useQuery({
-    queryKey: ['library', library],
-    queryFn: () => fetchLibrarySettings(library),
-  })
   /**
    * What this library occupies. Its own query for the reason the settings read is one:
    * it answers a different question from the grid's page, and it answers it about the
@@ -709,9 +690,6 @@ export function Index({
   const storage = useQuery({
     queryKey: ['storage', library],
     queryFn: () => fetchLibraryStorage(library),
-  })
-  const settings = useMutation({
-    mutationFn: (on: boolean) => setAutoThumbnail(library, on),
   })
   /**
    * `queued: 0` is a success with nothing to watch — such a batch has no status resource
@@ -730,14 +708,6 @@ export function Index({
   const scanNow = useMutation({
     mutationFn: () => startScan(library),
     onSuccess: (accepted) => watch(accepted, 'scan'),
-  })
-  const sweep = useMutation({
-    mutationFn: () => renderLibraryThumbnails(library),
-    onSuccess: (accepted) => watch(accepted, 'render'),
-  })
-  const renderPart = useMutation({
-    mutationFn: (part: PartId) => renderPartThumbnail(part),
-    onSuccess: (accepted) => watch(accepted, 'render'),
   })
   /**
    * The upload's own progress, which the batch poll cannot carry: the batch does not
@@ -819,13 +789,7 @@ export function Index({
     void queryClient.invalidateQueries({ queryKey: ['facets', library] })
   }, [settled, pagesLoaded, batchFinished, queryClient])
 
-  const note = scanNow.isError
-    ? strings.scan.startFailed
-    : sweep.isError || renderPart.isError
-      ? strings.render.queueFailed
-      : sweep.data?.queued === 0
-        ? strings.render.nothingMissing
-        : null
+  const note = scanNow.isError ? strings.scan.startFailed : null
 
   const look =
     looking === undefined ? null : (
@@ -833,8 +797,6 @@ export function Index({
         part={looking}
         from={openFrom}
         hostRoot={instance.data?.hostStorageRoot ?? null}
-        busy={renderPart.isPending && renderPart.variables === looking.id}
-        onRender={(id) => renderPart.mutate(id)}
         onMove={looking.directory === null ? null : () => setMoving(looking)}
         onClose={closeLook}
         pane={wide}
@@ -859,27 +821,8 @@ export function Index({
         <>
           <LibraryMenu
             library={library}
-            // Three sources, most authoritative first, and `undefined` when none of them has
-            // an answer. The server's echo is the truth once it lands; `variables` is what this
-            // click asked for and covers the round trip, since react-query clears `data` the
-            // moment a mutation goes pending — without it the box springs back to its old
-            // position and sits there, disabled, for as long as the request takes, which reads
-            // as the click having been ignored. A click the server refused is dropped, because
-            // a value it rejected is not a position this library is in and there is now
-            // something true to fall back to: the `GET`, which is the starting position and
-            // the reason design §3.2's default is not. The default is what a library is set to
-            // until someone changes it, not what this one is set to.
-            autoThumbnail={
-              settings.data?.autoThumbnail ??
-              (settings.isError ? undefined : settings.variables) ??
-              librarySettings.data?.autoThumbnail
-            }
-            onAutoThumbnail={(on) => settings.mutate(on)}
-            settingsBusy={settings.isPending}
             onScan={() => scanNow.mutate()}
             scanBusy={scanNow.isPending}
-            onSweep={() => sweep.mutate()}
-            sweepBusy={sweep.isPending}
             onSelectLibrary={onSelectLibrary}
             onImport={() => bundlePicker.current?.click()}
             importBusy={importing.isPending}
@@ -975,13 +918,6 @@ export function Index({
                 </p>
               ) : null}
             </>
-          }
-          settingsNote={
-            settings.isError
-              ? strings.library.autoThumbnailFailed
-              : librarySettings.isError
-                ? strings.library.autoThumbnailUnknown
-                : null
           }
           note={note}
           pageSize={pageSize}
@@ -1127,8 +1063,6 @@ export function Index({
             ) : null}
             <Grid
               parts={loaded}
-              onRender={(part) => renderPart.mutate(part)}
-              busyPart={renderPart.isPending ? renderPart.variables : undefined}
               hostRoot={instance.data?.hostStorageRoot ?? null}
               density={density}
               layout={layout}

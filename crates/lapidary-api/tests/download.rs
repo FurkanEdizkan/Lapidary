@@ -1086,16 +1086,22 @@ async fn a_rung_variant_is_refused_in_words_that_no_longer_offer_a_rung(pool: sq
             body.contains(&format!("`{level}` is not a download variant")),
             "and the refusal names what was asked for: {body}"
         );
-        // The whole point: the sentence that refuses `l0` must not go on to offer `l0`.
-        for rung in ["`l0`", "`l1`", "`l2`", "tessellation"] {
+        // **The whole point**, and it has to be asserted on what the sentence *offers* rather
+        // than on the whole sentence: the refusal quotes `l0` back, legitimately, so a bare
+        // `!contains("l0")` would be unsatisfiable. What must not name a rung is everything
+        // after "This server serves".
+        let (_, offers) = body
+            .split_once("This server serves")
+            .unwrap_or_else(|| panic!("the refusal says what is served: {body}"));
+        for rung in ["l0", "l1", "l2", "tessellation"] {
             assert!(
-                !body.contains(rung),
-                "the refusal still advertises {rung}: {body}"
+                !offers.contains(rung),
+                "the refusal still advertises {rung}: {offers}"
             );
         }
         assert!(
-            body.contains("variant=original"),
-            "and it still says what does work: {body}"
+            offers.contains("variant=original"),
+            "and it still says what does work: {offers}"
         );
     }
 }

@@ -6,4 +6,4 @@ import type { SavedFilterId } from "./SavedFilterId";
 /**
  * One widget, as a layout stores it and a resolve asks for it.
  */
-export type Widget = { "kind": "storage", library: LibraryId, } | { "kind": "instanceStorage" } | { "kind": "recent", library: LibraryId, limit: number, } | { "kind": "savedFilter", library: LibraryId, filter: SavedFilterId, limit: number, } | { "kind": "facet", library: LibraryId, facet: FacetKind, limit: number, } | { "kind": "queue", library: LibraryId, } | { "kind": "duplicates", library: LibraryId, };
+export type Widget = { "kind": "storage", library: LibraryId, } | { "kind": "instanceStorage" } | { "kind": "recent", library: LibraryId, limit: number, } | { "kind": "savedFilter", library: LibraryId, filter: SavedFilterId, limit: number, } | { "kind": "facet", library: LibraryId, facet: FacetKind, limit: number, } | { "kind": "queue", library: LibraryId, };

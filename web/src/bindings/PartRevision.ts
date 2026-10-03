@@ -12,11 +12,7 @@ export type PartRevision = { id: RevisionId,
 /**
  * The revision this one was recorded on top of. `None` for a part's first.
  */
-parent: RevisionId | null, revLabel: string, origin: RevisionOrigin, createdAt: string, 
-/**
- * `data:image/webp;base64,…`, as `PartDetail.thumbnail` is.
- */
-thumbnail: string | null, triangleCount: number | null, 
+parent: RevisionId | null, revLabel: string, origin: RevisionOrigin, createdAt: string, triangleCount: number | null, 
 /**
  * The B-rep's faces and edges, counted exactly by the CAD kernel. `None` for a mesh.
  */
@@ -36,10 +32,4 @@ centreMm: Approximate<[number, number, number]> | null, sourceHash: BlobHash | n
  * What changed from the revision this one was recorded on top of. `None` for a part's
  * first revision.
  */
-deltaFromParent: RevisionDiff | null, 
-/**
- * This revision's own rungs, which the overlay draws as a ghost behind the current part.
- * Ingest writes L0; an L1 exists only if somebody opened the part while this revision was
- * current, so an earlier revision usually has L0 alone.
- */
-tessellationL0: BlobHash | null, tessellationL1: BlobHash | null, };
+deltaFromParent: RevisionDiff | null, };

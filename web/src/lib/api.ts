@@ -1,11 +1,9 @@
 import type { Sort } from './preferences'
 import type {
-  AssemblyTree,
   BatchId,
   BatchStatus,
   BlobHash,
   ChunkAccepted,
-  Entity,
   Facets,
   FailurePage,
   FetchImageRequest,
@@ -18,7 +16,6 @@ import type {
   JobId,
   LibraryId,
   MaterialDensity,
-  LibrarySettings,
   LibraryStorage,
   LibrarySummary,
   MovePart,
@@ -33,13 +30,12 @@ import type {
   PartImageId,
   PartSource,
   PartsPage,
-  Pmi,
   PurgeResult,
   ReleaseLock,
   RetryAccepted,
   RevisionDiff,
   RevisionId,
-  RungReady,
+  ExportReady,
   SavedFilter,
   SavedFilterId,
   MoveDirection,
@@ -491,49 +487,6 @@ export async function retryFailed(
 }
 
 /**
- * `GET /api/libraries/{id}` — what this library's settings actually are.
- *
- * The toggle's starting position, and the reason it is not design §3.2's documented
- * default: a library already switched off used to render as on until somebody changed it,
- * which is a control misreporting the state it controls.
- *
- * A 404 is a real answer: no library with that id. It is deliberately not softened into
- * the default here — the toggle would then be confidently wrong about a library that does
- * not exist, which is the same lie one level down.
- */
-export async function fetchLibrarySettings(library: LibraryId): Promise<LibrarySettings> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}`)
-  if (!response.ok) {
-    throw new Error(`library settings returned ${response.status}`)
-  }
-  return (await response.json()) as LibrarySettings
-}
-
-/**
- * `PATCH /api/libraries/{id}` — whether ingest renders a preview for this library.
- *
- * The response echoes the setting that landed, so the toggle reflects what the server
- * now holds rather than what the click assumed. It answers the very type
- * `fetchLibrarySettings` reads, so the two cannot disagree about the shape.
- *
- * A 404 is a real answer: no library with that id.
- */
-export async function setAutoThumbnail(
-  library: LibraryId,
-  autoThumbnail: boolean,
-): Promise<LibrarySettings> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ autoThumbnail } satisfies LibrarySettings),
-  })
-  if (!response.ok) {
-    throw new Error(`library settings returned ${response.status}`)
-  }
-  return (await response.json()) as LibrarySettings
-}
-
-/**
  * `POST /api/libraries/{id}/scan` — walk the directory mounted on the worker and ingest
  * every model in it.
  *
@@ -548,27 +501,6 @@ export async function setAutoThumbnail(
 export async function startScan(library: LibraryId): Promise<ScanAccepted> {
   return accepted(
     await fetch(`/api/libraries/${encodeURIComponent(library)}/scan`, { method: 'POST' }),
-  )
-}
-
-/**
- * `POST /api/libraries/{id}/thumbnails` — render every preview this library is missing.
- *
- * Answers `202` with the same `ScanAccepted` a scan answers with, which is why the batch
- * poll above needs no change to watch a sweep drain. `queued: 0` is a success, not an
- * error — every part already has a preview — and such a batch has no status resource, so
- * the caller must not poll it.
- */
-export async function renderLibraryThumbnails(library: LibraryId): Promise<ScanAccepted> {
-  return accepted(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/thumbnails`, { method: 'POST' }),
-  )
-}
-
-/** `POST /api/parts/{id}/thumbnail` — render one part's preview. A batch of one. */
-export async function renderPartThumbnail(part: PartId): Promise<ScanAccepted> {
-  return accepted(
-    await fetch(`/api/parts/${encodeURIComponent(part)}/thumbnail`, { method: 'POST' }),
   )
 }
 
@@ -1464,19 +1396,11 @@ export async function makeControlled(library: LibraryId): Promise<void> {
 }
 
 /**
- * `POST /api/parts/{id}/rungs/{level}` — ask for a finer tessellation. The server answers with the
- * rung's hash when it already exists, and otherwise queues it and answers with the batch to watch.
- */
-export async function requestRung(
-  part: PartId,
-  level: 'l1' | 'l2',
-): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
-  return requestBuilt(`/api/parts/${encodeURIComponent(part)}/rungs/${level}`)
-}
-
-/**
- * `POST /api/parts/{id}/exports/3mf` — ask for a part's mesh written as a 3MF, for a slicer. Answered as a rung
- * request is; the file downloads from `exportUrl`.
+ * `POST /api/parts/{id}/exports/3mf` — ask for a part's mesh written as a 3MF, for a slicer.
+ *
+ * The one thing a worker still builds on demand. The server answers with the file's hash when it
+ * already exists, and otherwise queues it and answers with the batch to watch; the file downloads
+ * from `exportUrl`.
  */
 export async function requestExport(
   part: PartId,
@@ -1490,7 +1414,7 @@ async function requestBuilt(
 ): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
   const response = await fetch(path, { method: 'POST' })
   if (response.status === 200) {
-    return { kind: 'ready', hash: ((await response.json()) as RungReady).hash }
+    return { kind: 'ready', hash: ((await response.json()) as ExportReady).hash }
   }
   if (response.status === 202) {
     return { kind: 'queued', queued: (await response.json()) as ScanAccepted }
@@ -1511,43 +1435,6 @@ async function requestBuilt(
  */
 export function blobUrl(hash: BlobHash): string {
   return `/api/blob/${encodeURIComponent(hash)}`
-}
-
-/**
- * The assembly tree a CAD kernel read, from `GET /api/blob/{blake3}`: the JSON ingest stored
- * beside the part's rungs. A fetch rather than a URL, unlike the download links, because the
- * page draws the tree instead of handing the bytes to the browser.
- */
-export async function fetchStructure(hash: BlobHash): Promise<AssemblyTree> {
-  const response = await fetch(blobUrl(hash))
-  if (!response.ok) {
-    throw new Error(`assembly tree returned ${response.status}`)
-  }
-  return (await response.json()) as AssemblyTree
-}
-
-/**
- * `GET /api/blob/{hash}` for a CAD part's entities: the analytic surfaces and edges measurement
- * snaps to, each in its prototype's own coordinates. `placeEntities` in `measure.ts` places them.
- */
-export async function fetchEntities(hash: BlobHash): Promise<Entity[]> {
-  const response = await fetch(blobUrl(hash))
-  if (!response.ok) {
-    throw new Error(`entities returned ${response.status}`)
-  }
-  return (await response.json()) as Entity[]
-}
-
-/**
- * `GET /api/blob/{hash}` for a CAD part's PMI: the dimensions, tolerances and datums its file
- * specifies, each naming the prototype and face it applies to as `Entity` does.
- */
-export async function fetchPmi(hash: BlobHash): Promise<Pmi> {
-  const response = await fetch(blobUrl(hash))
-  if (!response.ok) {
-    throw new Error(`pmi returned ${response.status}`)
-  }
-  return (await response.json()) as Pmi
 }
 
 /**

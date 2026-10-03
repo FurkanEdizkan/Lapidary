@@ -351,6 +351,11 @@ export const strings = {
   parts: {
     loading: 'Loading parts…',
     failed: 'Could not load the parts in this library. Check that the api service is running, then reload.',
+    /**
+     * A render a sharer's installation made, on the shared-library page. The only place a
+     * rendered preview is still named: nothing in this installation makes one (R3), and the
+     * sharing protocol offers whatever the sharer's own table holds.
+     */
     thumbnailAlt: (name: string) => `Rendered preview of ${name}`,
     /** The part's own picture, which is what a card shows since R1. */
     pictureAlt: (name: string) => `Picture of ${name}`,
@@ -593,26 +598,9 @@ export const strings = {
      *  library — two parts called `bracket` in two folders are told apart by this. */
     sourcePath: 'Path',
     revision: 'Revision',
-    kernel: 'Measured by',
     sourceHash: 'Source hash',
-    /**
-     * The L0 tessellation. Named for what it is to a user — the thing a viewer will
-     * paint — rather than "tessellation_l0", which is a column name.
-     */
-    preview3d: '3D preview data',
-    download3d: 'Download',
-    /** With the size, when it is known — a rung is worth knowing the weight of
-     *  before clicking, and it is the one figure that says how detailed it is. */
-    download3dSized: (stored: number) => `Download · ${bytes(stored)}`,
-    /** No rung: a part ingested before the LOD ladder, or one still in the queue. */
-    noPreview3d: 'Not generated yet',
     /** A figure the database has no value for. Distinct from a refusal to measure. */
     unknown: 'Unknown',
-    assembly: 'Assembly',
-    /** Leaves counted with every instance, beside the distinct part definitions they place. */
-    assemblyCounts: (parts: number, prototypes: number) =>
-      `${parts.toLocaleString('en-US')} ${parts === 1 ? 'part' : 'parts'}, ${prototypes.toLocaleString('en-US')} distinct`,
-    assemblyFailed: 'Could not load the assembly tree. Reload the page to try again.',
     /** A part's revisions, shown once it has more than one (Phase 4 slice 1). */
     history: 'History',
     historyRevision: (label: string) => `Revision ${label}`,
@@ -642,19 +630,6 @@ export const strings = {
     centreAxis: (axis: 0 | 1 | 2) => `Centre of mass ${'XYZ'[axis]}`,
     /** A figure one of the two revisions did not record: no change can be read off it. */
     notInBoth: 'Not measured in both',
-    /**
-     * Said instead for a centre of mass, where "not measured" would be the wrong word: one of these
-     * revisions was read before Lapidary recorded centres, and a worker re-reads it in the
-     * background. It never says *which* revision, because either of the two may be the one and the
-     * comparison takes them in any order.
-     *
-     * **Only said where a job really is queued.** The page's test for that has to equal the worker
-     * sweep's (`PgRevisions::centreless_revisions`) — a mesh source and a volume above zero — or this
-     * becomes a promise nothing keeps: a STEP revision is the stale-derivative sweep's and waits on a
-     * worker that has a CAD kernel, and an open mesh has no volume and so never gets a centre at all.
-     * Those get `notInBoth`, which is the honest word for them.
-     */
-    centreQueued: 'Not recorded yet — a re-read is queued for it',
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
     /** Who has the part checked out, and since when (Phase 4 slice 1). */
     checkedOut: 'Checked out',
@@ -764,71 +739,13 @@ export const strings = {
       'No scan with that id has run in this library. It may belong to another library, or have found no files to queue.',
   },
   /**
-   * The library-wide settings the action bar can change. One today.
-   */
-  library: {
-    autoThumbnail: 'Render previews automatically as parts are ingested',
-    autoThumbnailDetail:
-      'Turning this off leaves existing previews alone. Parts ingested afterwards arrive without one until you generate them.',
-    autoThumbnailFailed:
-      'Could not change this setting. Check that the api service is running, then try again.',
-    /**
-     * The `GET` did not answer, so the toggle has no position to take. It stays in the
-     * mixed state rather than falling back to the documented default: the default is what
-     * a library is set to until someone changes it, not what this one is, and a control
-     * that shows a confident "on" for a library that is off is the mistake this read
-     * exists to close.
-     */
-    autoThumbnailUnknown:
-      'Could not read whether previews are generated automatically here. Check that the api service is running, then reload.',
-  },
-  /**
-   * Rendering previews for parts that are already here — the sweep and the per-card
-   * action. Deliberately its own copy rather than `scan`'s: a thumbnail batch that
-   * finishes ingests nothing and skips nothing, so `scan.finished` would report "Scan
-   * complete — 0 added." over 151 successful renders, which reads as a failure.
-   */
-  render: {
-    sweep: 'Generate missing previews',
-    part: 'Render preview',
-    partFor: (name: string) => `Render the preview for ${name}`,
-    /**
-     * `queued: 0` from the sweep. A success — every part already has a preview — and
-     * the one wording mistake worth guarding against is reporting it as an error.
-     */
-    nothingMissing: 'Every part in this library already has a preview.',
-    queueFailed:
-      'Could not queue the preview render. Check that the api service is running, then try again.',
-    running: (done: number, total: number) =>
-      `Rendering previews — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')}.`,
-    finished: (rendered: number) =>
-      rendered === 1
-        ? 'Preview rendering complete — 1 preview rendered.'
-        : `Preview rendering complete — ${rendered.toLocaleString('en-US')} previews rendered.`,
-    /**
-     * Named `failed` to match `scan.failed`, so the progress line can pick one copy
-     * object by batch kind instead of branching on the kind inside JSX for every field.
-     */
-    failed: (count: number) =>
-      count === 1
-        ? '1 preview could not be rendered. That part keeps the preview it had.'
-        : `${count.toLocaleString('en-US')} previews could not be rendered. Those parts keep the previews they had.`,
-    /**
-     * The render batch this page started cannot be read back. Unlike `scan.unknown`
-     * this is never a mistyped id — the id came from the `202` — so the advice is to
-     * retry rather than to check what was typed.
-     */
-    unknown:
-      'Could not read how the preview rendering is going. The work is queued and continues on the server; reload to pick it up again.',
-  },
-  /**
    * Moving a library's source files out of the shared content-addressed store and into
    * each part's own directory. The worker queues this itself on startup for a library
    * upgraded from before folders existed — nothing on this page starts one — so this
    * copy exists to make a batch already running, watched by its id in the URL, read as
    * what it is rather than as a scan of the mounted directory.
    *
-   * Its own copy for the same reason `render`'s is: a migration ingests nothing and
+   * Its own copy, and not `scan`'s: a migration ingests nothing and
    * skips nothing, so `scan.finished` would report "Scan complete — 0 added." over a
    * corpus that just moved, and an operator watching their own files get relocated
    * deserves a line that says so.
@@ -1562,67 +1479,6 @@ export const strings = {
     /** What clicking the picture does, for a screen reader that cannot see the crop. */
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,
-  },
-  /**
-   * What a CAD file specifies about the part's sizes and form. These are a designer's values, so
-   * they are said as specified rather than as measured, and carry no ≈.
-   */
-  pmi: {
-    title: 'Dimensions and tolerances',
-    note: 'As the file specifies them: the designer’s values, not measurements.',
-    failed: 'Could not load the dimensions and tolerances. Reload the page to try again.',
-    /** A size and its bounds, e.g. `⌀22 mm +0.05 / 0`. */
-    dimension: (kind: string, value: number, upper: number | null, lower: number | null) => {
-      const symbol: Record<string, string> = {
-        diameter: '⌀',
-        radius: 'R',
-        spherical_diameter: 'S⌀',
-        spherical_radius: 'SR',
-        angle: '∠',
-      }
-      const unit = kind === 'angle' ? '°' : ' mm'
-      const size = `${symbol[kind] ?? ''}${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}${unit}`
-      if (upper === null || lower === null) return size
-      const bound = (deviation: number) =>
-        deviation === 0 ? '0' : `${deviation > 0 ? '+' : '−'}${Math.abs(deviation).toLocaleString('en-US', { maximumFractionDigits: 4 })}`
-      return `${size} ${bound(upper)} / ${bound(lower)}`
-    },
-    /** A geometric tolerance by its ISO 1101 symbol and name, its zone, and the datums it is measured from. */
-    tolerance: (kind: string, value: number, datums: readonly string[]) => {
-      const named: Record<string, [string, string]> = {
-        flatness: ['⏥', 'Flatness'],
-        straightness: ['⏤', 'Straightness'],
-        circularity: ['○', 'Circularity'],
-        cylindricity: ['⌭', 'Cylindricity'],
-        profile_of_line: ['⌒', 'Profile of a line'],
-        profile_of_surface: ['⌓', 'Profile of a surface'],
-        parallelism: ['∥', 'Parallelism'],
-        perpendicularity: ['⟂', 'Perpendicularity'],
-        angularity: ['∠', 'Angularity'],
-        position: ['⌖', 'Position'],
-        concentricity: ['◎', 'Concentricity'],
-        coaxiality: ['◎', 'Coaxiality'],
-        symmetry: ['⌯', 'Symmetry'],
-        circular_runout: ['↗', 'Circular run-out'],
-        total_runout: ['⌰', 'Total run-out'],
-      }
-      const [symbol, name] = named[kind] ?? ['', 'Tolerance']
-      const zone = `${value.toLocaleString('en-US', { maximumFractionDigits: 4 })} mm`
-      const from = datums.length === 0 ? '' : ` to ${datums.join(', ')}`
-      return `${symbol} ${name} ${zone}${from}`.trim()
-    },
-    datum: (name: string) => `Datum ${name}`,
-    /** Where an annotation applies: the kind of face measurement reads there, or the whole part. */
-    face: (surface: string | null) =>
-      surface === null
-        ? 'the whole part'
-        : ({
-            plane: 'a planar face',
-            cylinder: 'a cylindrical face',
-            cone: 'a conical face',
-            sphere: 'a spherical face',
-            torus: 'a toroidal face',
-          }[surface] ?? 'a face'),
   },
   tags: {
     /** What people call a part beyond its name: a project, a use, a shelf. */

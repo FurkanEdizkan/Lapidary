@@ -79,8 +79,6 @@ export function MorePages({
 
 export function Grid({
   parts,
-  onRender,
-  busyPart,
   hostRoot,
   density,
   layout,
@@ -92,8 +90,6 @@ export function Grid({
   onLook,
 }: {
   parts: readonly PartCard[]
-  onRender: (part: PartId) => void
-  busyPart?: PartId
   /** Passed down rather than fetched per card: it is one fact about the deployment. */
   hostRoot: string | null
   density: Density
@@ -215,8 +211,6 @@ export function Grid({
         <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
           <Card
             part={part}
-            onRender={onRender}
-            busy={part.id === busyPart}
             hostRoot={hostRoot}
             layout={layout}
             selecting={selecting}

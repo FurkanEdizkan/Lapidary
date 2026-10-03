@@ -73,10 +73,10 @@ export function PartsBody({ parts }: { parts: readonly PartCard[] }) {
       {parts.map((part) => (
         <li key={part.id} className="flex items-center gap-2.5 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
           <span className="grid size-8 flex-none place-items-center overflow-hidden rounded-[3px] bg-[var(--color-raised)] p-[2px]">
-            {/* The part's own picture, with the render behind it while there still is one. */}
-            {(part.image?.src ?? part.thumbnail) === null ? null : (
+            {/* The part's own picture, or nothing: there is no render behind it since R3. */}
+            {part.image === null ? null : (
               <img
-                src={part.image?.src ?? part.thumbnail ?? undefined}
+                src={part.image.src}
                 alt=""
                 className="h-full w-full"
                 style={pictureStyle(part.image)}

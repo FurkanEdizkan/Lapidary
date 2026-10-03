@@ -10,7 +10,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { PartPage } from './parts.$partId'
 import { openMenu } from '../test-menu'
 import { strings } from '../lib/strings'
-import type { AssemblyNode, AssemblyTree, PartDetail } from '../lib/types'
+import type { PartDetail } from '../lib/types'
 
 /**
  * The part page, which is where `CLAUDE.md`'s measurement rules actually reach a screen.
@@ -34,16 +34,13 @@ const PART: PartDetail = {
   materials: [],
   materialsTyped: false,
   custom: {},
-  pmi: null,
   sourcePath: 'brackets/steel/LP-1042-03.stl',
-  thumbnail: null,
   triangleCount: 48112,
   isWatertight: true,
   bboxMm: { value: [61, 42, 18.5], approximate: true },
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
   massG: null,
-  kernelVersion: 'mesh stl-1+cpu-1',
   lock: null,
   sharedBy: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
@@ -51,12 +48,6 @@ const PART: PartDetail = {
   sourceBytes: 204800,
   storedBytes: 91204,
   compressed: true,
-  tessellationL0: '3333333333333333333333333333333333333333333333333333333333333333',
-  tessellationL0Bytes: 7500,
-  structure: null,
-  tessellationL1: null,
-  tessellationL2: null,
-  entities: null,
   directory: 'libraries/default/Brackets/nema-17-motor-mount',
   storagePath: 'libraries/default/Brackets/nema-17-motor-mount/nema-17-motor-mount.stl',
   createdAt: '2026-09-06T10:00:00Z',
@@ -247,26 +238,6 @@ test('a missing volume on a closed mesh is unknown, not a refusal to measure', a
   const volume = await row(strings.detail.volume)
   expect(within(volume).getByText(strings.detail.unknown)).toBeDefined()
   expect(within(volume).queryByText(strings.detail.volumeUnavailable)).toBeNull()
-})
-
-test('the L0 rung is offered by hash, which is what makes those bytes reachable', async () => {
-  // Until this link existed, every ingest wrote a rung that nothing could address:
-  // `GET /api/blob/{blake3}` had no possible caller.
-  stub(PART)
-  renderPage()
-
-  const preview = await row(strings.detail.preview3d)
-  const link = within(preview).getByRole('link')
-  expect(link.getAttribute('href')).toBe(`/api/blob/${PART.tessellationL0}`)
-})
-
-test('a part with no rung says so instead of linking to bytes that do not exist', async () => {
-  stub({ ...PART, tessellationL0: null, tessellationL0Bytes: null })
-  renderPage()
-
-  const preview = await row(strings.detail.preview3d)
-  expect(within(preview).getByText(strings.detail.noPreview3d)).toBeDefined()
-  expect(within(preview).queryByRole('link')).toBeNull()
 })
 
 test('the path is shown, because it is what tells two parts of the same name apart', async () => {
@@ -641,7 +612,6 @@ test('every per-part action is reachable on the page a keyboard can get to', asy
   const download = await screen.findByRole('link', { name: strings.download.original })
   const menu = await openMenu(strings.detail.more)
   for (const name of [
-    strings.render.part,
     strings.folders.moveTo,
     strings.folders.showInFolderFor(PART.name),
     strings.removal.remove,
@@ -658,7 +628,7 @@ test('Download is the only standing action, and the rest wait in the menu', asyn
   stub(PART)
   renderPage()
   await screen.findByRole('link', { name: strings.download.original })
-  for (const name of [strings.render.part, strings.folders.moveTo, strings.removal.remove]) {
+  for (const name of [strings.folders.moveTo, strings.removal.remove]) {
     expect(screen.queryByRole('button', { name })).toBeNull()
   }
 })
@@ -718,77 +688,9 @@ test('a gallery that could not be loaded does not read as a part with no picture
   await screen.findByText(strings.images.galleryFailed)
 })
 
-const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as AssemblyNode['transform']
-
-/** A leaf: one placed part. */
-const leaf = (name: string, prototype: string): AssemblyNode => ({
-  name,
-  prototype,
-  transform: IDENTITY,
-  children: [],
-})
-
-test('an assembly shows its tree, each branch a disclosure the keyboard can open, its rows drawn once opened', async () => {
-  const structure = '4444444444444444444444444444444444444444444444444444444444444444'
-  const tree: AssemblyTree = {
-    roots: [
-      {
-        name: 'fixture-plate-assembly-lp-9000-00',
-        prototype: '0:1:1:1',
-        transform: IDENTITY,
-        children: [
-          leaf('base-plate-lp-9001-00', '0:1:1:2'),
-          {
-            name: 'rail-lp-9002-00',
-            prototype: '0:1:1:3',
-            transform: IDENTITY,
-            children: [leaf('m6-screw-lp-9005-00', '0:1:1:4')],
-          },
-        ],
-      },
-    ],
-    parts: 2,
-    prototypes: 2,
-  }
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => {
-      if (url === `/api/blob/${structure}`) return { ok: true, status: 200, json: async () => tree }
-      if (url.endsWith('/images') || url.endsWith('/sources') || url.endsWith('/revisions') || url.endsWith('/api/libraries') || url.endsWith('/fields')) {
-        return { ok: true, status: 200, json: async () => [] }
-      }
-      return { ok: true, status: 200, json: async () => ({ ...PART, structure }) }
-    }),
-  )
-  renderPage()
-
-  const heading = await screen.findByRole('heading', { name: strings.detail.assembly })
-  const section = heading.closest('section') as HTMLElement
-  expect(within(section).getByText(strings.detail.assemblyCounts(2, 2))).toBeTruthy()
-
-  // A branch is a native disclosure: its summary takes focus, and Enter or Space opens it.
-  const rail = within(section).getByText('rail-lp-9002-00')
-  expect(rail.tagName).toBe('SUMMARY')
-  const root = within(section).getByText('fixture-plate-assembly-lp-9000-00').closest('details')
-  expect(root?.open).toBe(true)
-  const branch = rail.closest('details') as HTMLDetailsElement
-  expect(branch.open).toBe(false)
-
-  // A closed branch draws none of its rows, and opening it draws them inside it.
-  expect(within(section).queryByText('m6-screw-lp-9005-00')).toBeNull()
-  branch.open = true
-  fireEvent(branch, new Event('toggle'))
-  const screw = await within(section).findByText('m6-screw-lp-9005-00')
-  expect(screw.closest('details')).toBe(branch)
-
-  // The tree arrived after the page did, and the section index took it in when it rendered.
-  const index = screen.getByRole('navigation', { name: strings.detail.sections })
-  expect(within(index).getByRole('link', { name: strings.detail.assembly }).getAttribute('href')).toBe('#part-assembly')
-})
-
 /**
  * The index under the studio links only sections that rendered, each to its own heading's words:
- * a mesh with one revision and no PMI has a file and an identity and nothing else to link.
+ * a mesh with one revision has a file and an identity and nothing else to link.
  */
 test('the section index links the sections that are on the page, and only those', async () => {
   stub(PART)
@@ -803,15 +705,6 @@ test('the section index links the sections that are on the page, and only those'
     const target = document.getElementById((link.getAttribute('href') ?? '').slice(1))
     expect(target?.querySelector('h3')?.textContent).toBe(link.textContent)
   }
-})
-
-test('a mesh has no assembly section and never asks for one', async () => {
-  stub(PART)
-  renderPage()
-  await screen.findByRole('heading', { name: strings.detail.geometry })
-  expect(screen.queryByRole('heading', { name: strings.detail.assembly })).toBeNull()
-  const asked = vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/api/blob/'))
-  expect(asked).toBe(false)
 })
 
 test('a field value that is not a number is refused in the server’s words, and a number is kept', async () => {

@@ -8,12 +8,12 @@ import type { RevisionId } from "./RevisionId";
 /**
  * One grid card — the wire shape, deliberately not `PartSummary`.
  *
- * `PartSummary.thumbnail` is `Option<BlobHash>`: a content hash for a hash-addressed
- * thumbnail endpoint that arrives with the viewer. Slice 1 has no such endpoint — it
- * stores the WebP inline as `bytea` so a grid page costs one query, not a round trip
- * per card — so this type carries the decoded bytes themselves, as a `data:` URL a
- * browser can drop straight into an `<img src>`. Widening `PartSummary` instead would
- * put a transport concern into a domain type the viewer will reuse differently.
+ * `PartSummary` is the domain shape the detail page shares; a card additionally carries the
+ * picture, the source format and where the file sits, which are the grid's own transport
+ * concerns. Widening `PartSummary` instead would put them into a type read for other reasons.
+ *
+ * **No `thumbnail` since R3** — the field was `data:image/webp;base64,…` off the rendered
+ * thumbnail derivative, and nothing renders. `image` below is the picture now.
  */
 export type PartCard = { id: PartId, library: LibraryId, 
 /**
@@ -28,12 +28,7 @@ revision: RevisionId, name: string, partNumber: string | null,
  * confirmation, because two parts can share a name and only one of them is the one
  * being destroyed.
  */
-sourcePath: string, 
-/**
- * `data:image/webp;base64,<...>`. `None` when the part's latest revision has no
- * thumbnail derivative.
- */
-thumbnail: string | null, triangleCount: number | null, 
+sourcePath: string, triangleCount: number | null, 
 /**
  * True when *any* geometric figure on this part is mesh-derived — carried
  * verbatim from `PartSummary.approximate`, not narrowed to "every". Every figure
@@ -46,16 +41,9 @@ approximate: boolean,
  * The source file's hash, `None` when the revision has no source row. Rendered as
  * a short hash beside the download link so a user can check what they got against
  * what the card claimed (`DATA.md` §5.1) — holding it is not authorization to read
- * it, exactly as `PartSummary.thumbnail` is not.
+ * it, as `blob.rs` says of every hash this application hands out.
  */
 sourceHash: BlobHash | null, 
-/**
- * The L0 tessellation's hash, carried verbatim from `PartSummary` for the reason
- * `source_hash` is: it is the only thing that makes those bytes addressable, and
- * `GET /api/blob/{blake3}` had no possible caller without it. Holding it is not
- * authorization — that route checks reachability before serving.
- */
-tessellationL0: BlobHash | null, 
 /**
  * Ingested size and size on disk, from `PartSummary`. `number | null`, not
  * `bigint`, for the reason given there: it is what serde puts on the wire.

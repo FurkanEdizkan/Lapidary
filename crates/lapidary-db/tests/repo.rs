@@ -62,13 +62,17 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
         "SELECT (SELECT count(*) FROM part WHERE id = $1),
                 (SELECT count(*) FROM revision r WHERE r.part_id = $1),
                 (SELECT count(*) FROM file f JOIN revision r ON f.revision_id = r.id WHERE r.part_id = $1),
-                (SELECT count(*) FROM derivative d JOIN revision r ON d.revision_id = r.id WHERE r.part_id = $1 AND d.kind = 'thumbnail')",
+                (SELECT count(*) FROM derivative d JOIN revision r ON d.revision_id = r.id WHERE r.part_id = $1)",
     )
     .bind(id.as_uuid())
     .fetch_one(&pool)
     .await
     .expect("counts");
-    assert_eq!(counts, (1, 1, 1, 1));
+    assert_eq!(
+        counts,
+        (1, 1, 1, 0),
+        "a part, its revision and its source file — and no derivative: ingest writes none"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -477,14 +481,16 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
         .await
         .expect("records");
 
-    let err = sqlx::query(
-        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json, created_at) SELECT gen_random_uuid(), revision_id, 'thumbnail', $2, kernel_version, params_json, created_at + interval '1 hour' FROM derivative WHERE revision_id = (SELECT id FROM revision WHERE part_id = $1)",
-    )
-    .bind(id.as_uuid())
-    .bind(b"second-thumbnail".as_slice())
-    .execute(&pool)
-    .await
-    .expect_err("a second thumbnail derivative for the same revision must be refused");
+    // Written by hand, because ingest writes no derivative at all since R3 — and the kind is
+    // one this build cannot name either. The constraint is the schema's, and it still guards
+    // the two kinds something does write.
+    insert_derivative(&pool, id, "thumbnail", None, Some(b"first-thumbnail"))
+        .await
+        .expect("a pre-pivot thumbnail row, as a library that has one holds it");
+
+    let err = insert_derivative(&pool, id, "thumbnail", None, Some(b"second-thumbnail"))
+        .await
+        .expect_err("a second thumbnail derivative for the same revision must be refused");
 
     assert!(
         err.to_string()
@@ -1533,9 +1539,7 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at_all(
-    pool: sqlx::PgPool,
-) {
+async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) {
     // Three things this fixture is built to catch, and no single-part library shows any
     // of them: derivative bytes two parts share counted twice, inline previews left out
     // of the derivative total entirely, and another library's bytes swept into this
@@ -1619,18 +1623,9 @@ async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at
         "one blob row, two parts, two files: source bytes are path-addressed now, so the \
          old blob-shaped sum would report one part's worth for a library holding two"
     );
-    let inline = i64::try_from("webp-bracket".len() + "webp-spare".len()).expect("fits");
     assert_eq!(
-        totals.derivative_bytes,
-        40_960 + u64::try_from(inline).expect("fits"),
-        "the rung on disk plus both inline previews: thumbnails live in Postgres by \
-         DATA.md §1.5's deliberate exception, which is where they are stored and not an \
-         exemption from being counted"
-    );
-    assert!(
-        totals.derivative_bytes > 0,
-        "a derivative total that omitted the inline half would read 0 for a library \
-         whose every part has a preview"
+        totals.derivative_bytes, 40_960,
+        "the one export on disk, charged once however many parts point at it"
     );
 
     // And the other tenant's own total, read back the same way, is the proof the filter
@@ -1644,8 +1639,8 @@ async fn the_library_total_shares_derivative_bytes_and_counts_inline_previews_at
     // than at the length it decompresses to.
     assert_eq!(theirs.source_bytes, blob_row(0xd9).stored_bytes);
     assert_eq!(
-        theirs.derivative_bytes,
-        u64::try_from("webp-impeller".len()).expect("fits")
+        theirs.derivative_bytes, 0,
+        "their part has no export built, so they are charged for none"
     );
 }
 
@@ -1865,11 +1860,9 @@ async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: 
         "derivative",
         "file",
         "part_image",
-        "part_link",
         "part_lock",
         "part_move",
         "part_provenance",
-        "part_shape",
         "part_source",
         "revision",
     ];

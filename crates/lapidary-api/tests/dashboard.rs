@@ -311,8 +311,9 @@ fn queue(library: &str) -> serde_json::Value {
 /// carries more than one facet tile.
 ///
 /// It was seven kinds until R3 deleted the duplicates tile with shape similarity. Twelve tiles is
-/// kept, because twelve in one round trip is Phase 6's measured exit criterion; the seventh tile is
-/// a second `queue`.
+/// kept, because twelve in one round trip is Phase 6's measured exit criterion; the twelfth is a
+/// second `savedFilter`, and deliberately not a second `queue` — `eleven_that_never_read_the_queue`
+/// below filters by kind, so two queue tiles would leave it ten.
 fn twelve(filter: &str) -> Vec<serde_json::Value> {
     let library = SEEDED_LIBRARY;
     vec![
@@ -324,7 +325,7 @@ fn twelve(filter: &str) -> Vec<serde_json::Value> {
         ask("f", facet(library, "material", 5)),
         ask("g", facet(library, "tag", 5)),
         ask("h", queue(library)),
-        ask("i", queue(library)),
+        ask("i", saved_filter(library, filter, 3)),
         ask("j", storage(library)),
         ask("k", recent(library, 3)),
         ask("l", facet(library, "format", 1)),
@@ -417,10 +418,10 @@ async fn twelve_widgets_answer_in_the_order_they_were_asked(pool: sqlx::PgPool) 
         value(&json, "h")["value"],
         serde_json::json!({ "pending": 1, "running": 1, "failed": 1 })
     );
-    assert_eq!(value(&json, "i")["kind"], "queue");
+    assert_eq!(value(&json, "i")["kind"], "savedFilter");
     assert_eq!(
-        value(&json, "i")["value"],
-        serde_json::json!({ "pending": 1, "running": 1, "failed": 1 }),
+        value(&json, "i")["value"]["name"],
+        "PETG, printed",
         "the same kind asked twice answers twice, under each key"
     );
     assert_eq!(
@@ -978,9 +979,9 @@ async fn ten_thousand_parts_resolve_twelve_widgets_inside_the_budget(pool: sqlx:
     let first = resolved(app.clone(), twelve(&filter.to_string())).await;
     assert_eq!(statuses(&first), ["ok"; 12], "{first}");
     println!(
-        "seeded {PARTS} parts in {:.1?}; queue tile {}, savedFilter cards {}",
+        "seeded {PARTS} parts in {:.1?}; the second savedFilter {}, savedFilter cards {}",
         seeded,
-        value(&first, "i")["value"],
+        value(&first, "i")["value"]["name"],
         value(&first, "d")["value"]["parts"]
             .as_array()
             .expect("cards")
