@@ -715,26 +715,29 @@ pub struct InstanceStorageView {
     /// Every live model file across every library. One file per model, no deduplication.
     #[ts(type = "number")]
     pub source_bytes: u64,
-    /// Rungs **on the storage volume**, each blob counted once however many libraries point
-    /// at it — where the per-library figure charges it to each of them in full.
+    /// What Lapidary wrote **on the storage volume** — the slicer exports — each blob counted
+    /// once however many libraries point at it, where the per-library figure charges it to
+    /// each of them in full.
+    ///
+    /// **There is no inline figure beside it since R4.** `inlinePreviewBytes` carried the
+    /// thumbnails, which were in Postgres and not on the volume, and had to be kept apart so
+    /// that the figures here could be compared with `on_disk_bytes` and add up — folded in,
+    /// the tracked total exceeded a walk of the storage root by exactly that amount, measured
+    /// at 5,745,760 bytes on the library it was written against. Migration `0055` deleted
+    /// every one of those rows, so the field could only ever report zero and the panel was
+    /// printing a row that said nothing.
     #[ts(type = "number")]
     pub derivative_bytes: u64,
-    /// Thumbnails, which are in Postgres and not on the volume.
-    ///
-    /// Separate so that the figures above can be compared with `on_disk_bytes` and add up.
-    /// Folded in, the tracked total exceeds a walk of the storage root by exactly this
-    /// amount — measured at 5,745,760 bytes on the library this was written against — and
-    /// a panel reporting more tracked than present reads as bytes having gone missing.
-    #[ts(type = "number")]
-    pub inline_preview_bytes: u64,
     /// Soft-deleted parts. On the disk, and back the moment somebody restores them.
     #[ts(type = "number")]
     pub removed_bytes: u64,
-    /// Purged and inside the thirty-day hold. Bytes no per-library panel can admit to.
+    /// Inside the thirty-day hold. Bytes no per-library panel can admit to — a purged part's,
+    /// or a blob that lost its last reference, which since `0055` includes the render
+    /// derivatives Lapidary deleted on its own behalf.
     #[ts(type = "number")]
     pub quarantined_bytes: u64,
-    /// Rendered previews nobody has opened in 90 days, which "free cache space" would put into
-    /// quarantine. Lapidary rebuilds each one when its part is next opened.
+    /// Slicer exports nobody has downloaded in 90 days, which "free cache space" would put
+    /// into quarantine. Lapidary writes each one again when it is next asked for.
     #[ts(type = "number")]
     pub render_cache_bytes: u64,
     /// A real walk of the storage root, or `None` when one was not asked for.
@@ -810,7 +813,6 @@ pub(crate) fn instance_storage_view(
     InstanceStorageView {
         source_bytes: totals.source_bytes,
         derivative_bytes: totals.derivative_bytes,
-        inline_preview_bytes: totals.inline_preview_bytes,
         removed_bytes: totals.removed_bytes,
         quarantined_bytes: totals.quarantined_bytes,
         render_cache_bytes: totals.render_cache_bytes,
@@ -819,7 +821,7 @@ pub(crate) fn instance_storage_view(
     }
 }
 
-/// What `POST /api/storage/render-cache` answers: the rungs it removed, and the bytes that entered
+/// What `POST /api/storage/render-cache` answers: the rows it removed, and the bytes that entered
 /// the thirty-day quarantine. Named for what happened, never "freed".
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
@@ -844,7 +846,7 @@ pub async fn free_render_cache(State(state): State<AppState>) -> Response {
     }
     match PgParts(state.db).free_render_cache().await {
         Ok(freed) => Json(RenderCacheFreedView {
-            removed: freed.rungs,
+            removed: freed.removed,
             quarantined_bytes: freed.quarantined_bytes,
         })
         .into_response(),

@@ -174,6 +174,13 @@ pub struct StorageTotals {
 /// if the part is restored, and `quarantined_bytes` is on the disk *and* belongs to no
 /// library, so it appears in no other panel in the application.
 ///
+/// **There is no inline figure since R4.** `derivative.thumb_bytes` held the one kind that
+/// was ever stored in Postgres rather than on the volume, migration `0055` deleted every
+/// such row, and `upsert_derivative` writes the column `NULL`. A field that could only ever
+/// report zero was a row on the panel saying nothing, and the arithmetic it needed keeping
+/// apart from — tracked bytes exceeding a walk of the storage root, which reads as bytes
+/// having gone missing — cannot happen now that every tracked byte is on the volume.
+///
 /// See [`PgParts::instance_storage`] for what is deliberately not counted, and why the
 /// route serves a real directory walk beside these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,49 +188,44 @@ pub struct InstanceStorage {
     /// Every live model file, at what it occupies. One file per model, never deduplicated —
     /// source dedup ended with the folder tree (`DATA.md` §1.1).
     pub source_bytes: u64,
-    /// Rungs **on the storage volume**, each blob counted once however many revisions or
-    /// libraries point at it.
-    ///
-    /// Kept apart from `inline_preview_bytes` below, and the reason is arithmetic rather
-    /// than taste: adding the two gives a figure that is larger than the storage folder,
-    /// because half of it is not in the storage folder. A caller comparing that against a
-    /// directory walk finds the tracked total exceeding the disk, which reads as bytes
-    /// having gone missing.
+    /// What Lapidary wrote **on the storage volume** — the slicer exports, since R3 — each
+    /// blob counted once however many revisions or libraries point at it.
     pub derivative_bytes: u64,
-    /// Thumbnails, which live in Postgres as `bytea` and not on the volume at all.
-    ///
-    /// A deliberate exception (`DATA.md` §1.5): a page of cards is one query and no
-    /// per-card round trip because the previews come back with the row. They are real bytes
-    /// and they cost real space — just not the space a `du` of the storage root measures.
-    pub inline_preview_bytes: u64,
     /// What soft-deleted parts still occupy. Nothing has left the disk; a restore brings
     /// them back, and only a purge starts the clock that removes them.
     pub removed_bytes: u64,
-    /// Purged, inside the thirty-day hold, on the disk and belonging to no library. The one
-    /// figure this application can report nowhere else.
+    /// Inside the thirty-day hold, on the disk and belonging to no library. The one figure
+    /// this application can report nowhere else.
+    ///
+    /// Two things reach it, and the panel must not name only the first: a part somebody
+    /// purged, and a blob that lost its last reference — which after `0055` includes the
+    /// render derivatives this application deleted on its own behalf.
     pub quarantined_bytes: u64,
-    /// Rungs and exports Lapidary can rebuild and nobody has read in 90 days: what "free cache
-    /// space" would put into quarantine (`DATA.md` §1.5). Only blobs no other row points at,
-    /// so a small part whose L0, L1 and L2 are one blob counts nothing here.
+    /// Slicer exports Lapidary can write again and nobody has read in 90 days: what "free
+    /// cache space" would put into quarantine (`DATA.md` §1.5). Only blobs no other row
+    /// points at, so an export two revisions share counts nothing here.
     pub render_cache_bytes: u64,
 }
 
-/// What "free cache space" did: how many rung rows it removed, and how many bytes entered the
+/// What "free cache space" did: how many rows it removed, and how many bytes entered the
 /// thirty-day quarantine because nothing else pointed at them. Never "freed": the bytes stay
 /// on the disk until the quarantine ends and the sweep takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderCacheFreed {
-    pub rungs: u64,
+    /// Rows, and they were called rungs until R3 — there is no rung in the product now, and a
+    /// field named for one would have the panel count something that cannot exist.
+    pub removed: u64,
     pub quarantined_bytes: u64,
 }
 
-/// The rungs and exports "free cache space" may remove: a derive job writes any of them again from
-/// the source when asked. Never L0, which keeps the open path drawing, and never structure,
-/// entities or PMI, which nothing can rebuild (`lapidary-ingest`'s `derive.rs`).
+/// What "free cache space" may remove: a derive job writes any of them again from the source
+/// when asked.
 fn cache_kinds() -> Vec<&'static str> {
     // The exports, and nothing else, since R3: the L1 and L2 rungs that used to be here are
     // not rebuildable any more, so evicting one would be data loss dressed as a cache sweep.
-    // The rows themselves are R4's to delete (migration `0055`).
+    // Migration `0055` then deleted the rows themselves, so this list is now the whole of
+    // what `derivative` can hold — and it stays a filter rather than becoming "every row",
+    // because what makes a row cache is that something can rebuild it, not that it is there.
     DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec()
 }
 
@@ -961,8 +963,10 @@ impl PgIngest {
     ///
     /// Hash-addressed, always: both remaining kinds are a file for another tool, and the
     /// inline `thumb_bytes` shape had exactly one producer — the thumbnail renderer that left
-    /// with the pivot. The column and the rows in it stay until migration `0055` (R4);
-    /// nothing in this crate writes one.
+    /// with the pivot. Migration `0055` deleted every row that used it and the column is
+    /// written `NULL` below, so nothing in the store is stored inline any more. The column
+    /// itself stays: dropping it would need `derivative_storage_is_exclusive` restated and
+    /// would return no space without the `VACUUM FULL` that the deleted rows need anyway.
     pub async fn upsert_derivative(
         &self,
         revision: RevisionId,
@@ -2674,12 +2678,14 @@ impl PgParts {
     /// stored size — written by something outside `insert_part_chain`, and over-reporting
     /// it beats counting it as zero.
     ///
-    /// Inline thumbnails are added to the derivative total from `octet_length`, because
-    /// they are derivative bytes this library costs whatever holds them — `DATA.md` §1.5
-    /// makes Postgres their deliberate exception to "blobs never live in Postgres", not
-    /// an exemption from being counted. Leaving them out would report `0 B` of
-    /// derivatives over a library holding megabytes of previews, which is the omission
-    /// `CLAUDE.md`'s measurement rule forbids.
+    /// **Inline thumbnails were added to the derivative total from `octet_length` and are
+    /// not any more.** They were real bytes a library cost, `DATA.md` §1.5's deliberate
+    /// exception to "blobs never live in Postgres", and leaving them out would have reported
+    /// `0 B` of derivatives over a library holding megabytes of previews. Migration `0055`
+    /// deleted every such row and nothing writes `thumb_bytes` now, so what is left of that
+    /// clause is `+ 0` over every library in every installation — arithmetic that cannot
+    /// move, in a figure somebody will one day have to check. The omission the rule forbids
+    /// is a figure that under-reports what is there; there is nothing there.
     ///
     /// `f.role = 'source'` is not decoration either, and it was missing until a review
     /// measured its absence: one `role = 'export'` row moved a library's source total
@@ -2723,11 +2729,7 @@ impl PgParts {
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL)) \
-             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
-             FROM derivative d JOIN revision r ON r.id = d.revision_id \
-             JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL), \
+             WHERE p.library_id = l.id AND p.deleted_at IS NULL)), \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
              FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
@@ -2738,10 +2740,6 @@ impl PgParts {
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
              WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
              AND d.blake3 IS NOT NULL)) \
-             + (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint \
-             FROM derivative d JOIN revision r ON r.id = d.revision_id \
-             JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL) \
              FROM library l WHERE l.id = $1",
         )
         .bind(library.as_uuid())
@@ -2779,26 +2777,18 @@ impl PgParts {
     /// move), and neither is anything a person dropped into the store themselves. The
     /// route pairs this with a real walk of the root for exactly that reason.
     pub async fn instance_storage(&self) -> Result<InstanceStorage, DbError> {
-        // One row, four scalar subqueries, same `::bigint` casts as `storage_totals` and
+        // One row, five scalar subqueries, same `::bigint` casts as `storage_totals` and
         // for the same reason: `sum()` over bigint is `numeric`, which sqlx will not decode
         // into i64.
-        #[allow(clippy::type_complexity)]
-        let (source, derivative, inline, removed, quarantined, cache): (
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-        ) = sqlx::query_as(
-            "SELECT \
+        let (source, derivative, removed, quarantined, cache): (i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
               JOIN part p ON p.id = r.part_id \
               WHERE p.deleted_at IS NULL AND f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
               WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)), \
-             (SELECT coalesce(sum(octet_length(d.thumb_bytes)), 0)::bigint FROM derivative d), \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
               JOIN part p ON p.id = r.part_id \
@@ -2814,33 +2804,39 @@ impl PgParts {
                 AND NOT EXISTS (SELECT 1 FROM derivative d \
                                 WHERE d.blake3 = b.blake3 AND NOT d.kind = ANY($1)) \
                 AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3))",
-        )
-        .bind(cache_kinds())
-        .fetch_one(&self.0)
-        .await?;
+            )
+            .bind(cache_kinds())
+            .fetch_one(&self.0)
+            .await?;
 
         Ok(InstanceStorage {
             source_bytes: bytes_column("file.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
-            inline_preview_bytes: bytes_column("derivative.thumb_bytes", inline)?,
             removed_bytes: bytes_column("file.stored_bytes", removed)?,
             quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
             render_cache_bytes: bytes_column("blob.stored_bytes", cache)?,
         })
     }
 
-    /// "Free cache space" (`DATA.md` §1.5): remove every L1 and L2 rung row, and every export
-    /// row, whose blob nobody has read in 90 days, then recount those blobs as purge does, so a
-    /// blob nothing else points at enters the thirty-day quarantine and the hourly sweep takes
-    /// its bytes after.
+    /// "Free cache space" (`DATA.md` §1.5): remove every slicer export row whose blob nobody
+    /// has read in 90 days, then recount those blobs as purge does, so a blob nothing else
+    /// points at enters the thirty-day quarantine and the hourly sweep takes its bytes after.
     ///
-    /// Rows, not only bytes. The blob route rebuilds a rung whose bytes are missing, but a row
-    /// naming bytes that are gone would answer 404 for good; an export whose row is gone is
-    /// written again when it is next asked for. L0, thumbnails, structure,
-    /// entities, PMI and every source file stay, so a part opened afterwards draws at once and
-    /// asks for its L1 again, as a freshly ingested part does.
+    /// Rows, not only bytes: a row naming bytes that are gone would answer 404 for good, where
+    /// an export whose row is gone is written again when it is next asked for. **Every source
+    /// file stays**, and so does anything of a kind nothing can rebuild — the predicate is
+    /// `cache_kinds`, not "every derivative", because what makes a row cache is that something
+    /// can write it again. Nothing a person opens is touched: a part's picture is a
+    /// `part_image` row and **view** hands the browser the original mesh.
     pub async fn free_render_cache(&self) -> Result<RenderCacheFreed, DbError> {
         let mut tx = self.0.begin().await?;
+        // **Two clauses name a kind, and the second one is the guard.** Measured by mutation
+        // (R4): widening `d.kind = ANY($1)` to match every row still evicts nothing of a kind
+        // nothing can rebuild, because such a row is itself an `o` the `NOT EXISTS` below finds
+        // on its own blob. So the first clause chooses what to sweep and the second is what
+        // keeps an unrebuildable row — and the bytes it is the only copy of — out of a cache
+        // sweep. Dropping either on its own changes nothing, which is exactly how both come to
+        // be dropped. Neither is redundant.
         let mut hashes: Vec<String> = sqlx::query_scalar(
             "DELETE FROM derivative d USING blob b \
              WHERE b.blake3 = d.blake3 AND d.kind = ANY($1) \
@@ -2853,7 +2849,7 @@ impl PgParts {
         .bind(cache_kinds())
         .fetch_all(&mut *tx)
         .await?;
-        let rungs = hashes.len() as u64;
+        let removed = hashes.len() as u64;
         hashes.sort_unstable();
         hashes.dedup();
         let sizes = recount(&mut tx, &hashes).await?;
@@ -2864,7 +2860,7 @@ impl PgParts {
             quarantined_bytes += bytes_column("blob.stored_bytes", stored)?;
         }
         Ok(RenderCacheFreed {
-            rungs,
+            removed,
             quarantined_bytes,
         })
     }

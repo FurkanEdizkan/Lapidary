@@ -38,8 +38,8 @@ export function StorageBody({ value }: { value: LibraryStorage }) {
 
 /**
  * What the whole store holds, in the one sentence that can name the bytes no per-library
- * figure admits to — quarantined ones belong to no library, because the part that said which
- * one is the part that was purged.
+ * figure admits to — quarantined ones belong to no library, because whatever said which one is
+ * gone: a purged part, or, since R4's `0055`, a render derivative Lapidary deleted itself.
  */
 export function InstanceStorageBody({ value }: { value: InstanceStorageView }) {
   return (
@@ -47,7 +47,6 @@ export function InstanceStorageBody({ value }: { value: InstanceStorageView }) {
       {strings.storage.everything(
         value.sourceBytes,
         value.derivativeBytes,
-        value.inlinePreviewBytes,
         value.removedBytes,
         value.quarantinedBytes,
       )}
