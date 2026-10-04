@@ -1,9 +1,12 @@
 //! Parse a mesh file, say how big it is, write one back out for another tool.
 //!
 //! Three parsers (`stl`, `obj`, `tmf`), one measurer, two export writers. Free functions, no
-//! trait: there was a `Kernel` trait with one shipped implementation and one test double, and
-//! `handler.rs` named the implementation directly — see this crate's commit for why that was
-//! the thing to delete rather than the thing to keep.
+//! trait: `Kernel` had one shipped implementation and one test double, `handler.rs` named the
+//! implementation directly, and its last live purpose was to be an await point two race tests
+//! could suspend a job at. That await point is `WorkerHandler::pause` now, which is two `Notify`
+//! handles; an interface with one implementation, for one caller, is not worth keeping to get
+//! one. Do not add it back to make a second parser fit — a second `match` arm in `parse` is
+//! what that costs.
 //!
 //! The open path never calls this crate. `lapidary-api` may not even link it
 //! (`cargo xtask check-layers`), because the `api` image must not carry a parser it never runs.
@@ -16,9 +19,14 @@ mod tmf;
 
 pub use error::CadError;
 pub use measure::measure;
-pub use obj::parse_obj;
-pub use stl::{Mesh, parse_stl, write_stl};
-pub use tmf::{parse_3mf, write_3mf};
+pub use stl::{Mesh, write_stl};
+pub use tmf::write_3mf;
+
+// The three parsers are reached through `parse` and nowhere else. Exported one by one they were
+// three more ways for a caller to pick the wrong one from an extension it had not lowercased.
+use obj::parse_obj;
+use stl::parse_stl;
+use tmf::parse_3mf;
 
 /// What `derivative.kernel_version`'s first word says. One parser set, so one name.
 pub const IMPLEMENTATION: &str = "mesh";

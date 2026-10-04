@@ -1293,6 +1293,49 @@ async fn a_derive_job_reads_the_source_blob_and_reports_rendered(pool: PgPool) {
     assert_eq!(count, 20, "the bracket's own triangles, in a binary STL");
 }
 
+/// **An old STEP revision asked for an export is refused in the same words a scan refuses one.**
+///
+/// This is why `derive_one` checks the format at all, and the check is not belt-and-braces: a
+/// STEP file cannot be ingested any more, but an install upgraded across the pivot still holds
+/// the revisions one ingested before it — R2 kept `revision.face_count` and `edge_count` for
+/// exactly those rows. `POST /api/parts/{id}/exports/{kind}` queues a `derive` job against
+/// whatever revision it is given, so this path is reachable by one click on a part that has
+/// been in the library for a year.
+///
+/// Seeded by ingesting an STL and then restating its format, which is what such a row looks
+/// like from here: a readable source blob, a `file.format` no parser answers for.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_export_of_a_pre_pivot_step_revision_is_refused_in_the_same_words(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    let revision = only_revision(&pool).await;
+    sqlx::query("UPDATE file SET format = 'step'")
+        .execute(&pool)
+        .await
+        .expect("restates the format, as a revision ingested before the pivot holds it");
+
+    match handler
+        .handle(&derive_job(revision, DerivativeKind::ExportStl))
+        .await
+    {
+        Err(HandlerError::Permanent { message }) => {
+            assert_eq!(
+                message,
+                lapidary_core::cad_refusal("step"),
+                "a person who meets this twice must read the same sentence both times"
+            );
+        }
+        other => panic!("a STEP revision must be refused permanently, got {other:?}"),
+    }
+    assert!(
+        derivatives(&pool).await.is_empty(),
+        "and nothing is written for it"
+    );
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn an_unknown_job_kind_fails_permanently_naming_the_kind(pool: PgPool) {
     // What an operator reads when something puts a job this build does not know into the

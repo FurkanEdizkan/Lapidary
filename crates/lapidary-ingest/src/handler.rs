@@ -156,8 +156,9 @@ pub struct WorkerHandler {
 }
 
 /// The await point above, and nothing else. A test holds a job here, lets another job run to
-/// completion, and then releases this one — see `a_job_that_loses_a_new_path_to_other_bytes_is_
-/// decided_again`, which cannot be written without it.
+/// completion, and then releases this one. The two races in `tests/handler.rs` that need it are
+/// the ones over a new path: one with other bytes already there, one with the same bytes. Neither
+/// can be written without an instant at which the loser is suspended.
 pub struct Pause {
     /// Notified when the job reaches the parse.
     pub reached: Arc<tokio::sync::Notify>,
