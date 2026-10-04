@@ -4041,8 +4041,9 @@ goal lands, so the history stays legible. The plan is the goal files R1–R6 on 
   - **Measured on a fixture and labelled as one** — the owner's installation was not this lane's to touch. 500 inline
     thumbnails and 500 hash-addressed rungs: `derivative` **11,739,136 B → 11,739,136 after the migration** (the
     delete returns nothing) **→ 32,768 after `VACUUM FULL derivative`**, with 500 blobs / **102,400,000 B**
-    quarantined. The five queries for the owner's real figure are in the Record.  is a post-deploy
-    command — it cannot run in a transaction and takes `ACCESS EXCLUSIVE`.
+    quarantined. The five queries for the owner's real figure are in the Record. `VACUUM FULL derivative`
+    is a post-deploy command — it cannot run in a transaction and takes `ACCESS EXCLUSIVE`, so export reads and writes
+    wait while it runs.
   - **A latent trap, named after being overstated once and corrected.** `recount` and `reap` count `file` and
     `derivative` references, but `part_image.blake3` also references `blob`. **No reachable path today** — nothing
     has ever written a picture from a render, and `purge`'s doomed set cannot contain a picture's hash. But if such a
