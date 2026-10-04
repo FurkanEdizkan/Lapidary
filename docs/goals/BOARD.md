@@ -30,7 +30,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [R1](R1.md) | The card shows a picture; the viewer loads the original | 4 | web (+ one db read) | — | the page query's card picture, `Card.tsx`, `Viewer.tsx`, the engine half of the frontend | — | merged `c96a5a1` | `feat/picture-first` |
 | [R2](R2.md) | OCCT out, STEP and IGES refused by name | 4 | Rust + deploy | — | `sidecar/`, `lapidary-cad/src/occt.rs`, `deploy/Containerfile`, `xtask/src/{verify,deploy}.rs`, `kernel_for` | — | merged `43e7932` | `chore/remove-occt` |
 | [R3](R3.md) | Production stops, and similarity goes with it | 4 | Rust | R1, R2 | `DerivativeKind`, the four producers, `shapes.rs`/`likeness.rs` and their api | 0054 | merged `76eec33` | `chore/stop-rendering` |
-| [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | claimed (lane 1) | `chore/purge-renders` |
+| [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | merged `4b9f856` | `chore/purge-renders` |
 | [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | merged `270309a` | `refactor/mesh-facts-only` |
 | [R6](R6.md) | The rig, and the documents | 5 | tooling + lead | R1, R2, R3 | `scripts/e2e/`, `CLAUDE.md`, `PRODUCT.md`, `FEATURES.md`, `DATA.md`, `ARCHITECTURE.md` | — | open | `docs/visual-library` |
 
@@ -94,6 +94,14 @@ Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a
   `moves`'s rename, `blob`'s reachability sweep) and so still log a *cancelled* statement at error rather than warn —
   over-loud, never silent, and documented where it happens (`error.rs`'s `log_db_error`). L4 offered to wire `tags`
   alone; doing one of five would be less consistent than doing none. Wants one pass over all five.
+- **A shared library's page has no pictures** (R4, 2026-10-04): `PgShares::catalogue` and `::thumbnail` read
+  `kind = 'thumbnail'`, and `0055` deleted every such row. Nothing breaks — the part is listed with
+  `thumbnail: false` and the route 404s — but **sharing should mirror `part_image`** for a remote catalogue to be
+  worth browsing. New work, not a regression.
+- **A blob a picture references can be quarantined by a future caller** (R4, 2026-10-04): `recount` and `reap` count
+  `file` and `derivative` only, while `part_image.blake3` also references `blob`. Unreachable today; if it is ever
+  reached, the reaper's foreign-key refusal rolls back **the whole hourly sweep, every hour, for ever**. Whoever adds a
+  remove-a-picture route or widens `purge`'s doomed set meets it first.
 - **Nothing writes a tag but a person and a bundle import** (P3, 2026-09-27): no migration seeds one, ingest reads none
   off a file, the rig writes none — so `/tags` is empty on any library nobody has hand-tagged, and the discovery half
   has nothing to discover until P1 carries tags in with a release. **A product decision for the owner**, and it shapes

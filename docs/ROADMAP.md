@@ -4018,6 +4018,49 @@ goal lands, so the history stays legible. The plan is the goal files R1–R6 on 
     exists. Two one-token staleness bugs are left named rather than fixed, because each would cost a full gate and a
     turn of the compile lock: a test comment in `xtask/src/layers.rs` and a changed-file fixture string in
     `verify.rs` naming `raster.rs`, a path that is gone (it is only ever treated as text).
+- **R4, the dead derivatives go and their blobs go on hold** (merged `4b9f856`, gate 14 green in 239.78 s on the
+  merged tree). Migration **0055** deletes every row of a kind nothing can rebuild and quarantines the blobs that
+  leaves orphaned; the hourly reaper unlinks them thirty days later with no new code.
+  - **The migration is two statements and it cannot be one — measured, not assumed.** Every sub-statement of a query
+    sees one snapshot, so a data-modifying CTE's deletions are invisible to the counting subqueries beside it. Folded
+    into one, the recount reads the four rows it has just deleted, the orphan comes back at `ref_count = 4`,
+    **nothing is quarantined at all, and the migration reports success.** So: a temp table, a `DELETE … RETURNING`,
+    then `recount`'s own statement with one line changed.
+  - **The exports stay, decided against the goal file's assumption and checked both ways.** Deleting them would *not*
+    have triggered R3's corpus-wide re-queue — `enqueue_stale_derivatives` selects `FROM derivative`, so a deleted
+    row is never swept. They were kept anyway: `free_render_cache` already exists to evict one *with a promise
+    attached*, and an unconditional sweep of rebuildable rows is that button without the wording that makes it honest.
+    The predicate is `kind NOT IN ('export_stl', 'export_3mf')`, which states the invariant rather than listing seven
+    kinds somebody must keep in step.
+  - **A mutation survived and taught it something it wrote into the SQL.** Widening `free_render_cache`'s kind filter
+    alone changed nothing, because a row of an unrebuildable kind is itself a row the `NOT EXISTS` guard finds on its
+    own blob — so the second clause declines it whatever the first matches. **Two clauses name a kind there, and
+    dropping either alone is a no-op, which is exactly how both come to be dropped.** The mutation replaces both now.
+    6 of 6 caught; a seventh was **not written rather than padded**, because no case in this build can reach
+    `coalesce(b.quarantined_at, now())` and it is `recount`'s own clause, held by `recount`'s tests.
+  - **Measured on a fixture and labelled as one** — the owner's installation was not this lane's to touch. 500 inline
+    thumbnails and 500 hash-addressed rungs: `derivative` **11,739,136 B → 11,739,136 after the migration** (the
+    delete returns nothing) **→ 32,768 after `VACUUM FULL derivative`**, with 500 blobs / **102,400,000 B**
+    quarantined. The five queries for the owner's real figure are in the Record.  is a post-deploy
+    command — it cannot run in a transaction and takes `ACCESS EXCLUSIVE`.
+  - **A latent trap, named after being overstated once and corrected.** `recount` and `reap` count `file` and
+    `derivative` references, but `part_image.blake3` also references `blob`. **No reachable path today** — nothing
+    has ever written a picture from a render, and `purge`'s doomed set cannot contain a picture's hash. But if such a
+    blob were ever quarantined, the reaper's delete is *refused* by the foreign key rather than declined, and since the
+    sweep is one transaction **the whole hourly sweep would roll back every hour, for ever**. A trap for whoever adds a
+    remove-a-picture route or widens `purge`.
+  - **`inlinePreviewBytes` is gone from `GET /api/storage`** — field, binding, panel, widget and string. It read
+    `derivative.thumb_bytes`, `0055` deleted every row, and the string printed it unconditionally: every
+    installation would have read "0 B of thumbnails in the database" for ever. Four more strings were reworded, three
+    of them false since R3.
+  - **A shared library's page now has no pictures at all.** `PgShares::catalogue` and `::thumbnail` read
+    `kind = 'thumbnail'` as a SQL literal. Nothing breaks — the lateral is a `LEFT JOIN`, so a part is still listed
+    and the route 404s rather than 500s — but **sharing should mirror `part_image`**, which is new work rather than a
+    regression to patch.
+
+**The pivot's removals are complete** (2026-10-04): R1 `c96a5a1`, R2 `43e7932`, R3 `76eec33`, R5 `270309a`,
+R4 `4b9f856`. Roughly **19,000 lines** and the whole render-and-kernel column of the stack. R6 — the rig and the
+documents — closes it.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
