@@ -49,10 +49,6 @@ custom: Record<string, unknown>,
  */
 sourcePath: string, 
 /**
- * `data:image/webp;base64,<...>`, as on the card.
- */
-thumbnail: string | null, 
-/**
  * Mesh facts. `None` on a revision whose measurements were never written.
  */
 triangleCount: number | null, 
@@ -82,43 +78,11 @@ volumeMm3: Approximate<number> | null, surfaceAreaMm2: Approximate<number> | nul
  * came from a B-rep. `None` without a volume, or unless the part holds exactly one material and
  * its library has a density for it — the page says which of those it is.
  */
-massG: Approximate<number> | null, 
-/**
- * What produced the derivatives — the kernel and its version, as ingest recorded it.
- * Two parts with different values here were measured by different code, which is the
- * first thing to look at when two figures disagree.
- */
-kernelVersion: string | null, sourceHash: BlobHash | null, 
+massG: Approximate<number> | null, sourceHash: BlobHash | null, 
 /**
  * `stl`, `3mf`, `obj` — what the ingested file actually is, not what its name says.
  */
 sourceFormat: string | null, sourceBytes: number | null, storedBytes: number | null, compressed: boolean | null, 
-/**
- * The L0 tessellation, and what it occupies. The first honest caller of
- * `GET /api/blob/{blake3}`: until this page, every ingest wrote a rung nothing could
- * address. Showing its hash and size is what tells a user their part has a usable
- * derivative at all.
- */
-tessellationL0: BlobHash | null, tessellationL0Bytes: number | null, 
-/**
- * The assembly tree a CAD kernel read, as JSON at `GET /api/blob/{blake3}`. `None` for a
- * mesh, which has no assembly.
- */
-structure: BlobHash | null, 
-/**
- * The finer rungs, `None` until `POST /api/parts/{id}/rungs/{level}` has had them built.
- */
-tessellationL1: BlobHash | null, tessellationL2: BlobHash | null, 
-/**
- * The analytic faces and edges a CAD kernel read, which measurement snaps to. `None` for a
- * mesh, which has none.
- */
-entities: BlobHash | null, 
-/**
- * The dimensions, tolerances and datums the file specifies, as JSON at `GET /api/blob/{blake3}`.
- * `None` for a mesh, and for a CAD file whose exporter wrote only geometry.
- */
-pmi: BlobHash | null, 
 /**
  * The model's own directory in the store, relative to the storage root.
  *

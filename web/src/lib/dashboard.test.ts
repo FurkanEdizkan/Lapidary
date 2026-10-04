@@ -184,10 +184,11 @@ test('what was stored comes back, group and place and all', () => {
 })
 
 /**
- * **A board saved before R1 still loads.** The duplicates widget is gone — the owner's decision
- * that duplicates are not a feature — and somebody's `localStorage` has one in it with a place on
- * the grid. The rule `localStorage` is held to here is the one it has always been held to: a
- * widget this build cannot read is dropped, and the rest of the board loads where it was.
+ * **A board saved before the pivot still loads.** The duplicates widget is gone — the owner's
+ * decision that duplicates are not a feature — out of the web first (R1) and out of Rust with the
+ * rest of shape similarity (R3), and somebody's `localStorage` has one in it with a place on the
+ * grid. The rule `localStorage` is held to here is the one it has always been held to: a widget
+ * this build cannot read is dropped, and the rest of the board loads where it was.
  *
  * Through `readLayout` and not `widgetFrom`: the throw this guards against would happen later,
  * when `registry[kind]` is indexed for a kind the table has no entry for, so the assertion has to

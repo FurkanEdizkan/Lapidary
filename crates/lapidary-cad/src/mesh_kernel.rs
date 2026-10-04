@@ -1,11 +1,10 @@
 //! The mesh implementation of the kernel boundary. Ingest invokes this; the open path
 //! never does — that separation is what keeps `lapidary-api` free of this crate.
 
-use crate::cluster::{Lod, cluster};
 use crate::glb::GLB_VERSION;
 use crate::kernel::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, Unproduced};
 use crate::stl::Mesh;
-use crate::{RASTER_VERSION, parse_3mf, parse_obj, parse_stl, render_thumbnail};
+use crate::{RASTER_VERSION, parse_3mf, parse_obj, parse_stl};
 use lapidary_core::DerivativeKind;
 
 pub struct MeshKernel;
@@ -72,28 +71,11 @@ impl Kernel for MeshKernel {
 /// a plain STL.
 pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
     let (measurements, centre_of_mass_mm) = crate::measure::measured(mesh);
-    let mut tessellations = Vec::new();
-    let mut thumbnail_webp = None;
     let mut unproduced = Vec::new();
     let mut exports = Vec::new();
     for want in &params.produce {
+        // Written from the mesh as it was read, never from a rung — there are no rungs.
         let made = match want {
-            DerivativeKind::Thumbnail => render_thumbnail(mesh).map(|webp| {
-                thumbnail_webp = Some(webp);
-            }),
-            DerivativeKind::TessellationL0 => cluster(mesh, Lod::L0).map(|rung| {
-                tessellations.push(rung);
-            }),
-            DerivativeKind::TessellationL1 => cluster(mesh, Lod::L1).map(|rung| {
-                tessellations.push(rung);
-            }),
-            DerivativeKind::TessellationL2 => cluster(mesh, Lod::L2).map(|rung| {
-                tessellations.push(rung);
-            }),
-            // A mesh has no assembly and no analytic surfaces: nothing to make, and
-            // nothing that went wrong.
-            DerivativeKind::Structure | DerivativeKind::Entities | DerivativeKind::Pmi => Ok(()),
-            // Written from the mesh as it was read, the bridge's own for a CAD file, never from a rung.
             DerivativeKind::ExportStl => crate::stl::write_stl(mesh).map(|bytes| {
                 exports.push((DerivativeKind::ExportStl, bytes));
             }),
@@ -109,20 +91,10 @@ pub(crate) fn produce(mesh: &Mesh, params: &KernelParams) -> KernelOutput {
         }
     }
     KernelOutput {
-        topology: None,
         centre_of_mass_mm,
         exports,
         measurements,
-        thumbnail_webp,
-        tessellations,
         unproduced,
-        // Uninhabited until Phase 2's STEP ingest gives `Entity` variants. A mesh has
-        // no analytic surfaces to recover, so this is the truthful answer, not a stub.
-        entities: Vec::new(),
-        provenance: crate::MeasurementProvenance::TESSELLATED,
-        structure: None,
-        metadata: None,
-        pmi: None,
     }
 }
 
@@ -145,7 +117,7 @@ mod tests {
     /// A binary STL of one degenerate triangle: three vertices at the same point.
     ///
     /// Parses perfectly — the header, the count and the record are all well formed — and has
-    /// no extent, so nothing can be drawn of it. That is the shape of the file that failed
+    /// no extent, so nothing can be made of it. That is the shape of the file that failed
     /// in the owner's corpus, built here rather than committed so it can be read.
     fn zero_extent_stl() -> Vec<u8> {
         let mut bytes = vec![0u8; 80];
@@ -158,53 +130,22 @@ mod tests {
         bytes
     }
 
-    /// **A mesh that parses is a model, even when no picture of it can be drawn.**
+    /// **A mesh that parses is a model, even when nothing can be built from it.**
     ///
     /// This used to be an error, and the caller's only option was to fail the ingest — so a
     /// file like this was absent from the library rather than present with no preview.
     /// `ROADMAP.md`'s Phase 1 exit criterion asks for the opposite in as many words, and a
     /// measured run over 1,095 real files found exactly one of these.
     #[tokio::test]
-    async fn a_mesh_no_picture_can_be_made_of_still_yields_its_measurements() {
+    async fn a_mesh_nothing_can_be_built_from_still_yields_its_measurements() {
         let out = MeshKernel
             .process(&zero_extent_stl(), &stl_params())
             .await
-            .expect("a file that parses is not an error, whatever can be drawn of it");
+            .expect("a file that parses is not an error, whatever can be made of it");
 
         assert_eq!(
             out.measurements.triangle_count, 1,
             "the geometry is real and measured, which is what makes it a part"
-        );
-        assert!(out.thumbnail_webp.is_none(), "and no picture was made");
-        assert!(out.tessellations.is_empty(), "nor any rung");
-    }
-
-    /// What could not be made is reported rather than dropped, with the kind and the reason —
-    /// so an operator wondering why one card has no picture can find out.
-    #[tokio::test]
-    async fn what_could_not_be_produced_is_named_along_with_why() {
-        let out = MeshKernel
-            .process(&zero_extent_stl(), &stl_params())
-            .await
-            .expect("parses");
-
-        let kinds: Vec<_> = out.unproduced.iter().map(|u| u.kind).collect();
-        assert!(
-            kinds.contains(&DerivativeKind::Thumbnail),
-            "the thumbnail is named: {kinds:?}"
-        );
-        assert!(
-            out.unproduced.iter().all(|u| !u.reason.is_empty()),
-            "and each carries the kernel's own sentence about it"
-        );
-        // The message no longer claims "thumbnail" for a rung that could not be written:
-        // `Unrenderable` is raised by the glTF writer too, and said so for years.
-        assert!(
-            out.unproduced
-                .iter()
-                .all(|u| !u.reason.contains("Could not render a thumbnail")),
-            "the wording is about a view of the mesh, and the kind says which: {:?}",
-            out.unproduced
         );
     }
 
@@ -221,59 +162,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingesting_a_real_stl_yields_measurements_and_a_thumbnail() {
+    async fn ingesting_a_real_stl_yields_its_measurements() {
         let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
         let out = MeshKernel
             .process(bytes, &stl_params())
             .await
             .expect("ingests");
         assert!(out.measurements.triangle_count > 0);
-        assert!(out.thumbnail_webp.is_some_and(|w| !w.is_empty()));
     }
 
+    /// `produce` is honoured one export at a time. The bug the selectivity rule removed was a
+    /// kernel that built everything regardless; with two kinds left, asking for one must still
+    /// return one.
     #[tokio::test]
-    async fn one_call_produces_the_whole_ladder_in_ascending_detail() {
-        let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
-        let out = MeshKernel
-            .process(bytes, &stl_params())
-            .await
-            .expect("ingests");
-        // Every rung is a real glTF file, not a placeholder: the ladder is what the
-        // viewer fetches, and an empty rung is a rung that cannot be opened.
-        for rung in &out.tessellations {
-            assert!(!rung.glb.is_empty(), "{:?} has no bytes", rung.lod);
-        }
-        let lods: Vec<Lod> = out.tessellations.iter().map(|t| t.lod).collect();
-        assert_eq!(
-            lods,
-            vec![Lod::L0, Lod::L1, Lod::L2],
-            "produce asked for all three in ascending order, and the output preserves it"
-        );
-    }
-
-    #[tokio::test]
-    async fn asking_for_one_rung_produces_exactly_that_rung_and_no_thumbnail() {
-        // The bug this whole slice removes: a kernel that built everything regardless of
-        // `produce`. Asking for one rung must return one rung, and no thumbnail at all.
+    async fn asking_for_one_export_produces_exactly_that_export() {
         let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
         let params = KernelParams {
             linear_deflection_mm: None,
             format: "stl".to_owned(),
-            produce: vec![DerivativeKind::TessellationL1],
+            produce: vec![DerivativeKind::Export3mf],
         };
         let out = MeshKernel.process(bytes, &params).await.expect("ingests");
-        assert_eq!(out.tessellations.len(), 1);
-        assert_eq!(out.tessellations[0].lod, Lod::L1);
-        assert!(out.thumbnail_webp.is_none());
+        let kinds: Vec<_> = out.exports.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(kinds, vec![DerivativeKind::Export3mf]);
+        assert!(out.exports.iter().all(|(_, bytes)| !bytes.is_empty()));
     }
 
     #[tokio::test]
     async fn asking_for_nothing_still_measures() {
         // `KernelParams::produce` promises that empty is legal and means measurements
-        // only. The measurement assertions are the point of this test, not decoration:
-        // without them it would pass equally against a `process` that saw an empty
-        // `produce`, returned early and measured nothing — and measurement is the one
-        // thing ingest needs in order to decide anything at all.
+        // only — which is what every ingest asks for now. The measurement assertions are
+        // the point of this test, not decoration: without them it would pass equally
+        // against a `process` that saw an empty `produce`, returned early and measured
+        // nothing, and measurement is the one thing ingest needs in order to decide
+        // anything at all.
         let bytes = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl");
         let params = KernelParams {
             linear_deflection_mm: None,
@@ -281,8 +203,7 @@ mod tests {
             produce: Vec::new(),
         };
         let out = MeshKernel.process(bytes, &params).await.expect("ingests");
-        assert!(out.tessellations.is_empty());
-        assert!(out.thumbnail_webp.is_none());
+        assert!(out.exports.is_empty());
         assert!(out.measurements.triangle_count > 0);
         assert!(out.measurements.surface_area_mm2 > 0.0);
         assert!(
@@ -295,8 +216,14 @@ mod tests {
     #[tokio::test]
     async fn the_reported_version_pins_the_parser_the_writer_and_the_rasterizer() {
         // derivative.kernel_version must change when output bytes could change, or a
-        // regenerated thumbnail is indistinguishable from a stale one. Three things can
+        // regenerated export is indistinguishable from a stale one. Three things can
         // change them independently, so all three are named.
+        //
+        // **R3 left this string exactly as it was**, rasterizer included, although nothing
+        // rasterizes any more: `PgJobs::enqueue_stale_derivatives` still compares it against
+        // every stored export row, so changing it re-queues every export in the corpus at
+        // the next worker start. The string names the build, not the run. R5 owns the
+        // modules behind `GLB_VERSION` and `RASTER_VERSION` and can retire them together.
         let v = MeshKernel.version(&stl_params());
         assert_eq!(v.implementation, "mesh");
         assert_eq!(
@@ -334,7 +261,6 @@ mod tests {
             .await
             .expect("ingests");
         assert!(out.measurements.triangle_count > 0);
-        assert!(out.thumbnail_webp.is_some_and(|w| !w.is_empty()));
     }
 
     #[tokio::test]
@@ -360,8 +286,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_format_with_no_parser_is_an_error_rather_than_a_panic() {
-        // "step" stands in for any format the scan cannot yet route here: 3MF gained a
-        // parser this task, so it can no longer serve as the unsupported case.
+        // "step" stands in for any format the scan cannot route here: it is refused by name
+        // at ingest now (R2), and a job misrouted here must still fail rather than panic.
         let err = MeshKernel
             .process(b"anything", &params("step"))
             .await

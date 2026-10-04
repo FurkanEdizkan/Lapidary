@@ -159,17 +159,6 @@ fn hash_of(seed: u32) -> BlobHash {
 
 /// A part with a real ingest record behind it: a `blob` row, a revision and a source file.
 async fn seed(pool: &sqlx::PgPool, name: &str, path: &str, format: &str, blob: u32) -> PartId {
-    seed_with(pool, name, path, format, blob, None).await
-}
-
-async fn seed_with(
-    pool: &sqlx::PgPool,
-    name: &str,
-    path: &str,
-    format: &str,
-    blob: u32,
-    thumbnail: Option<&[u8]>,
-) -> PartId {
     let stored = format!("libraries/default/{path}");
     PgIngest(pool.clone())
         .record(IngestRequest {
@@ -193,10 +182,7 @@ async fn seed_with(
                 is_watertight: true,
             },
             provenance: MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: thumbnail,
-            kernel_version: "mesh stl-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("seeds the part")
@@ -321,12 +307,13 @@ fn queue(library: &str) -> serde_json::Value {
     serde_json::json!({ "kind": "queue", "library": library })
 }
 
-fn duplicates(library: &str) -> serde_json::Value {
-    serde_json::json!({ "kind": "duplicates", "library": library })
-}
-
-/// A full dashboard: every one of the seven kinds, twelve tiles, three kinds twice — a real layout
+/// A full dashboard: every one of the six kinds, twelve tiles, several kinds twice — a real layout
 /// carries more than one facet tile.
+///
+/// It was seven kinds until R3 deleted the duplicates tile with shape similarity. Twelve tiles is
+/// kept, because twelve in one round trip is Phase 6's measured exit criterion; the twelfth is a
+/// second `savedFilter`, and deliberately not a second `queue` — `eleven_that_never_read_the_queue`
+/// below filters by kind, so two queue tiles would leave it ten.
 fn twelve(filter: &str) -> Vec<serde_json::Value> {
     let library = SEEDED_LIBRARY;
     vec![
@@ -338,7 +325,7 @@ fn twelve(filter: &str) -> Vec<serde_json::Value> {
         ask("f", facet(library, "material", 5)),
         ask("g", facet(library, "tag", 5)),
         ask("h", queue(library)),
-        ask("i", duplicates(library)),
+        ask("i", saved_filter(library, filter, 3)),
         ask("j", storage(library)),
         ask("k", recent(library, 3)),
         ask("l", facet(library, "format", 1)),
@@ -431,11 +418,11 @@ async fn twelve_widgets_answer_in_the_order_they_were_asked(pool: sqlx::PgPool) 
         value(&json, "h")["value"],
         serde_json::json!({ "pending": 1, "running": 1, "failed": 1 })
     );
-    assert_eq!(value(&json, "i")["kind"], "duplicates");
+    assert_eq!(value(&json, "i")["kind"], "savedFilter");
     assert_eq!(
-        value(&json, "i")["value"],
-        serde_json::json!({ "clusters": 0, "unprofiled": 3 }),
-        "nothing is profiled yet, and the tile says so rather than claiming no duplicates"
+        value(&json, "i")["value"]["name"],
+        "PETG, printed",
+        "the same kind asked twice answers twice, under each key"
     );
     assert_eq!(
         value(&json, "l")["value"],
@@ -498,10 +485,6 @@ async fn an_unknown_library_fails_only_its_own_keys(pool: sqlx::PgPool) {
     corpus(&pool).await;
     queued(&pool).await;
     let widgets = vec![
-        // `duplicates` first, because it is the one that would not have noticed: G3's `clusters`
-        // answers an empty queue for a library that does not exist rather than an error, so a tile
-        // without its own existence check would read as "no duplicates here".
-        ask("gone-duplicates", duplicates(NO_SUCH_LIBRARY)),
         ask("gone-storage", storage(NO_SUCH_LIBRARY)),
         ask("gone-queue", queue(NO_SUCH_LIBRARY)),
         ask("gone-recent", recent(NO_SUCH_LIBRARY, 6)),
@@ -512,13 +495,7 @@ async fn an_unknown_library_fails_only_its_own_keys(pool: sqlx::PgPool) {
 
     let json = resolved(pool, widgets).await;
 
-    for key in [
-        "gone-duplicates",
-        "gone-storage",
-        "gone-queue",
-        "gone-recent",
-        "gone-facet",
-    ] {
+    for key in ["gone-storage", "gone-queue", "gone-recent", "gone-facet"] {
         assert!(
             message(&json, key).contains("No library with that id exists"),
             "{key}"
@@ -937,16 +914,13 @@ async fn three_resolves_at_once_all_answer_every_key(pool: sqlx::PgPool) {
 /// the goal's Record. Run it with
 /// `cargo xtask heavy -- cargo test --release -p lapidary-api --test dashboard -- --ignored --nocapture`.
 ///
-/// The corpus is deliberately duplicate-free — every descriptor is 0.05 apart and
-/// `NEAR_DUPLICATE_DISTANCE` is 0.04 — while the sizes are 0.05 mm apart, so the near-duplicate sweep
-/// still compares every neighbour inside the ±2% size band and then finds nothing. A library that *has*
-/// duplicates pays what G3 measured on top of this: cards for every part in every cluster.
+/// **The figure moved when R3 landed and this is the run that re-measures it.** The duplicates tile
+/// was the dearest of the twelve — G3 measured its cluster read at 234 ms on a duplicate-heavy
+/// library, mostly in the cards it built and threw away — and it is gone, as is the shape profile
+/// each part carried. The twelfth tile is a second `queue` now.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 #[ignore = "a measurement; see the goal's Record for the numbers"]
 async fn ten_thousand_parts_resolve_twelve_widgets_inside_the_budget(pool: sqlx::PgPool) {
-    use lapidary_core::{DESCRIPTOR_LEN, ShapeProfile};
-    use lapidary_db::{PgRevisions, PgShapes};
-
     const PARTS: usize = 10_000;
 
     let seeding = Instant::now();
@@ -957,41 +931,15 @@ async fn ten_thousand_parts_resolve_twelve_widgets_inside_the_budget(pool: sqlx:
         for n in chunk.iter().copied() {
             let pool = pool.clone();
             seeds.spawn(async move {
-                // A preview of about the size a real one is, so a card carries the base64 a real
-                // card carries.
-                let thumbnail = vec![0x57u8; 3_072];
                 let path = format!("bay-{:02}/washer-{n:05}.stl", n % 64);
-                let part = seed_with(
+                let part = seed(
                     &pool,
                     &format!("Washer, {n:05}"),
                     &path,
                     if n % 7 == 0 { "step" } else { "stl" },
                     n as u32,
-                    Some(&thumbnail),
                 )
                 .await;
-                let mut descriptor = [0.12_f32; DESCRIPTOR_LEN];
-                descriptor[0] += n as f32 * 0.05;
-                let revision = PgRevisions(pool.clone())
-                    .current(library(), &path)
-                    .await
-                    .expect("reads the current revision")
-                    .expect("the part has one")
-                    .revision;
-                assert!(
-                    PgShapes(pool.clone())
-                        .record(
-                            part,
-                            revision,
-                            BlobHash::from_bytes([0x71; 32]),
-                            &ShapeProfile {
-                                size_mm: 10.0 + n as f64 * 0.05,
-                                descriptor,
-                            },
-                        )
-                        .await
-                        .expect("records the profile")
-                );
                 // A third of the library carries a tag and a material, so the facet tiles have values
                 // to rank. Every part would be 20,000 more round trips for the same three numbers.
                 if n % 3 == 0 && n < 900 {
@@ -1031,9 +979,9 @@ async fn ten_thousand_parts_resolve_twelve_widgets_inside_the_budget(pool: sqlx:
     let first = resolved(app.clone(), twelve(&filter.to_string())).await;
     assert_eq!(statuses(&first), ["ok"; 12], "{first}");
     println!(
-        "seeded {PARTS} profiled parts in {:.1?}; duplicates tile {}, savedFilter cards {}",
+        "seeded {PARTS} parts in {:.1?}; the second savedFilter {}, savedFilter cards {}",
         seeded,
-        value(&first, "i")["value"],
+        value(&first, "i")["value"]["name"],
         value(&first, "d")["value"]["parts"]
             .as_array()
             .expect("cards")

@@ -137,10 +137,7 @@ async fn seed_part(
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part");

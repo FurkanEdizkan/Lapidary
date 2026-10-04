@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
-use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow, TessellationRow};
+use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow};
 use lapidary_storage::DerivativeStore;
 use tower::ServiceExt;
 
@@ -26,11 +26,11 @@ fn measurements() -> MeshMeasurements {
     }
 }
 
-/// Bytes that stand in for a rung. Not real glTF: nothing here parses them, and a fake
-/// that looked like glTF would invite a later reader to think something did.
+/// Bytes that stand in for a mesh export. Not real STL: nothing here parses them, and a fake
+/// that looked like one would invite a later reader to think something did.
 const RUNG: &[u8] = b"pretend-this-is-a-glb";
 
-/// The source file's hash in [`seed_reachable_rung`]. It gets a `blob` row like any other
+/// The source file's hash in [`seed_reachable_export`]. It gets a `blob` row like any other
 /// blob, but nothing in `derivative` names it, so asking this route for it is refused at
 /// the reachability gate -- which makes it the one hash that can prove where the touch
 /// sits relative to that gate.
@@ -57,12 +57,15 @@ async fn last_read_us(
     .expect("the blob row exists")
 }
 
-/// Stores `RUNG` in the derivative store and records a part whose L0 points at it.
-async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> BlobHash {
+/// Stores `RUNG` in the derivative store and records a part whose STL export points at it.
+///
+/// Two steps since R3: ingest writes no derivative at all, so the part is recorded and the
+/// derivative is upserted after — which is what a `derive` job does.
+async fn seed_reachable_export(pool: &sqlx::PgPool, root: &std::path::Path) -> BlobHash {
     let stored = DerivativeStore::open(root)
         .put(RUNG)
-        .expect("stores the rung");
-    PgIngest(pool.clone())
+        .expect("stores the export");
+    let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
@@ -78,23 +81,41 @@ async fn seed_reachable_rung(pool: &sqlx::PgPool, root: &std::path::Path) -> Blo
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[TessellationRow {
-                kind: "tessellation_l0",
-                blob: StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid: Some(32),
-            }],
         })
         .await
         .expect("records");
+    file_export(pool, part, &stored).await;
     stored.hash
+}
+
+/// One export onto a part's latest revision, as a `derive` job files one.
+async fn file_export(
+    pool: &sqlx::PgPool,
+    part: lapidary_core::PartId,
+    stored: &lapidary_storage::StoredBlob,
+) {
+    let revision: sqlx::types::Uuid =
+        sqlx::query_scalar("SELECT id FROM revision WHERE part_id = $1 ORDER BY id DESC LIMIT 1")
+            .bind(part.as_uuid())
+            .fetch_one(pool)
+            .await
+            .expect("the revision");
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            lapidary_core::RevisionId::from_uuid(revision),
+            lapidary_core::DerivativeKind::ExportStl,
+            &StoredBlobRow {
+                hash: stored.hash,
+                size_bytes: stored.size_bytes,
+                stored_bytes: stored.stored_bytes,
+                zstd_level: stored.zstd_level,
+            },
+            None,
+            "mesh stl-1+glb-2+cpu-1",
+        )
+        .await
+        .expect("the export lands");
 }
 
 async fn get(app: axum::Router, hash: &str) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
@@ -132,18 +153,20 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// The overlay's ghost is an earlier revision's rung. It stays served once a newer revision is
-/// current, because reachability asks whether any revision of a live part points at the bytes,
-/// not whether the newest one does.
+/// An earlier revision's export stays served once a newer revision is current, because
+/// reachability asks whether any revision of a live part points at the bytes, not whether the
+/// newest one does.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(pool: sqlx::PgPool) {
+async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current(
+    pool: sqlx::PgPool,
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let earlier = DerivativeStore::open(root.path())
         .put(RUNG)
-        .expect("stores the rung");
+        .expect("stores the export");
     // Filed in its model directory, as every file ingest writes now: a revision is recorded
     // only on top of a file with a `storage_path` to set aside.
-    PgIngest(pool.clone())
+    let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
@@ -159,22 +182,11 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[TessellationRow {
-                kind: "tessellation_l0",
-                blob: StoredBlobRow {
-                    hash: earlier.hash,
-                    size_bytes: earlier.size_bytes,
-                    stored_bytes: earlier.stored_bytes,
-                    zstd_level: earlier.zstd_level,
-                },
-                grid: Some(32),
-            }],
         })
         .await
         .expect("revision 1");
+    file_export(&pool, part, &earlier).await;
     let earlier = earlier.hash;
     let revisions = lapidary_db::PgRevisions(pool.clone());
     let current = revisions
@@ -184,7 +196,7 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
         .expect("the part");
     let newer = DerivativeStore::open(root.path())
         .put(b"pretend-this-is-the-wider-bracket")
-        .expect("stores the newer rung");
+        .expect("stores the newer export");
     revisions
         .record_revision(
             lapidary_db::RevisionRequest {
@@ -200,24 +212,13 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
                 },
                 measurements: &measurements(),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                thumbnail_webp: None,
-                kernel_version: "mesh stl-1+glb-1+cpu-1",
                 format: "stl",
-                tessellations: &[TessellationRow {
-                    kind: "tessellation_l0",
-                    blob: StoredBlobRow {
-                        hash: newer.hash,
-                        size_bytes: newer.size_bytes,
-                        stored_bytes: newer.stored_bytes,
-                        zstd_level: newer.zstd_level,
-                    },
-                    grid: Some(32),
-                }],
             },
             |_, _| Ok(()),
         )
         .await
         .expect("revision 2");
+    file_export(&pool, part, &newer).await;
     let app = router(
         AppState {
             db: pool,
@@ -237,7 +238,7 @@ async fn an_earlier_revisions_rung_is_still_served_once_a_newer_one_is_current(p
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let hash = seed_reachable_export(&pool, root.path()).await;
     let app = router(
         AppState {
             db: pool,
@@ -321,7 +322,7 @@ async fn an_unknown_hash_is_not_found_with_the_same_body(pool: sqlx::PgPool) {
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let hash = seed_reachable_export(&pool, root.path()).await;
     let app = router(
         AppState {
             db: pool,
@@ -344,7 +345,7 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
 async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
     let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let hash = seed_reachable_export(&pool, root.path()).await;
     let app = router(
         AppState {
             db: pool.clone(),
@@ -386,7 +387,7 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
 async fn reading_a_blob_again_the_same_day_does_not_write_it_again(pool: sqlx::PgPool) {
     let touches = lapidary_db::Touches::default();
     let root = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let hash = seed_reachable_export(&pool, root.path()).await;
     let state = AppState {
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
@@ -416,7 +417,7 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
     // database and absent from the store it serves -- an evicted derivative, exactly.
     let elsewhere = tempfile::tempdir().expect("temp dir");
     let served = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, elsewhere.path()).await;
+    let hash = seed_reachable_export(&pool, elsewhere.path()).await;
     let state = AppState {
         db: pool.clone(),
         blob_root: served.path().to_path_buf(),
@@ -461,7 +462,7 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
     // and swapping `get` for an explicit `on(MethodFilter::GET, ...)` would silently take
     // it away.
     let root = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, root.path()).await;
+    let hash = seed_reachable_export(&pool, root.path()).await;
     let state = AppState {
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
@@ -502,92 +503,17 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
     );
 }
 
-/// A two-part assembly's tree, as ingest stores it: JSON, not a GLB.
-const TREE: &[u8] = br#"{"roots":[{"name":"fixture-plate-assembly-lp-9000-00","prototype":"0:1:1:1","transform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"children":[]}],"parts":1,"prototypes":1}"#;
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_assembly_tree_is_named_by_its_part_and_served_as_json(pool: sqlx::PgPool) {
-    // The page reads the tree the way it reads every derivative: the detail route names the
-    // hash, and the blob route serves the bytes. Served as `model/gltf-binary`, as every
-    // non-WebP derivative was, a browser would be told a JSON document is a 3D model.
-    let root = tempfile::tempdir().expect("temp dir");
-    let stored = DerivativeStore::open(root.path())
-        .put(TREE)
-        .expect("stores the tree");
-    let part = PgIngest(pool.clone())
-        .record(IngestRequest {
-            origin: lapidary_core::RevisionOrigin::Ingest,
-            folder: None,
-            storage_path: None,
-            library: library(),
-            name: "fixture-plate-assembly-lp-9000-00",
-            source_path: "fixture-plate-assembly-lp-9000-00.step",
-            blob: &StoredBlobRow {
-                hash: source_hash(),
-                size_bytes: 204_800,
-                stored_bytes: 204_800,
-                zstd_level: 0,
-            },
-            measurements: &measurements(),
-            provenance: lapidary_core::MeasurementProvenance::ANALYTIC,
-            thumbnail_webp: None,
-            kernel_version: "occt occt-8.0.1-bridge-1+deflection-0.1+glb-1+cpu-1",
-            format: "step",
-            tessellations: &[TessellationRow {
-                kind: "structure",
-                blob: StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid: None,
-            }],
-        })
-        .await
-        .expect("records");
-    let app = router(
-        AppState {
-            db: pool,
-            blob_root: root.path().to_path_buf(),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            touches: Default::default(),
-        },
-        Role::Api,
-    );
-
-    let detail = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/parts/{part}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    let detail: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(detail.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("the detail is JSON");
-    assert_eq!(detail["structure"], stored.hash.to_hex());
-
-    let (status, headers, body) = get(app, &stored.hash.to_hex()).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, TREE, "the tree comes back exactly as stored");
-    assert_eq!(header(&headers, "content-type"), Some("application/json"));
-}
-
-/// A rung the database points at and the store has lost is rebuilt from its source, and the
+/// An export the database points at and the store has lost is rebuilt from its source, and the
 /// answer says so. Asking twice builds it once.
+///
+/// **The promise has to be keepable.** `rebuild` asked `rungs_for_blob` before R3, so after it a
+/// lost rung would have been answered "being rebuilt" by a pipeline that no longer exists. It
+/// asks `exports_for_blob` now, and a rung's bytes get the other sentence.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_missing_rung_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPool) {
+async fn a_missing_export_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPool) {
     let elsewhere = tempfile::tempdir().expect("temp dir");
     let served = tempfile::tempdir().expect("temp dir");
-    let hash = seed_reachable_rung(&pool, elsewhere.path()).await;
+    let hash = seed_reachable_export(&pool, elsewhere.path()).await;
     let state = AppState {
         db: pool.clone(),
         blob_root: served.path().to_path_buf(),
@@ -619,7 +545,91 @@ async fn a_missing_rung_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPool)
             .expect("derive jobs");
     assert_eq!(
         payloads,
-        vec![serde_json::json!({ "revision": revision.to_string(), "produce": "tessellation_l0" })],
-        "one rebuild of the lost L0"
+        vec![serde_json::json!({ "revision": revision.to_string(), "produce": "export_stl" })],
+        "one rebuild of the lost export"
     );
+}
+
+/// **A rung's bytes are not rebuildable, and the route must not promise they are.**
+///
+/// `rebuild` asked `rungs_for_blob` before R3. Keep that and a lost rung is answered "that file
+/// is being rebuilt" by a pipeline that no longer exists — the viewer waits for a job that
+/// cannot run, and `enqueue_derive_if_absent` leaves a `derive` row naming a kind nothing builds.
+/// So the other sentence, and no job at all.
+///
+/// The row is written as raw SQL: `tessellation_l0` is not a kind this build can name, and it is
+/// what a library that pre-dates the pivot is full of until migration `0055` (R4) deletes them.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_missing_rung_is_not_promised_a_rebuild_and_queues_nothing(pool: sqlx::PgPool) {
+    let elsewhere = tempfile::tempdir().expect("temp dir");
+    let served = tempfile::tempdir().expect("temp dir");
+    // A part with a real revision, and a rung row pointing at bytes only `elsewhere` holds.
+    let hash = seed_reachable_export(&pool, elsewhere.path()).await;
+    let rung = DerivativeStore::open(elsewhere.path())
+        .put(b"glTF\x02\x00\x00\x00 a rung an older pipeline wrote")
+        .expect("stores the rung");
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($1, $2, $2, NULL, 1) ON CONFLICT (blake3) DO NOTHING",
+    )
+    .bind(rung.hash.to_hex())
+    .bind(rung.size_bytes as i64)
+    .execute(&pool)
+    .await
+    .expect("the rung's blob row");
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
+         SELECT uuidv7(), id, 'tessellation_l0', $1, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+           FROM revision ORDER BY id DESC LIMIT 1",
+    )
+    .bind(rung.hash.to_hex())
+    .execute(&pool)
+    .await
+    .expect("the rung's row");
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_root: served.path().to_path_buf(),
+        upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+        host_storage_root: None,
+        touches: Default::default(),
+    };
+
+    let (status, _, body) = get(router(state.clone(), Role::Api), &rung.hash.to_hex()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+    let message = json["message"].as_str().expect("a sentence");
+    assert!(
+        message.contains("cannot be rebuilt on its own"),
+        "a rung is not rebuildable and the sentence has to say so: {message}"
+    );
+    assert!(
+        !message.contains("being rebuilt"),
+        "and must not promise a rebuild nothing will do: {message}"
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
+        .fetch_one(&pool)
+        .await
+        .expect("counts the queue");
+    assert_eq!(
+        queued, 0,
+        "and queues nothing, because nothing could run it"
+    );
+
+    // The export beside it, same part, is rebuildable — so this is a discrimination assertion
+    // and not merely the absence of a feature.
+    let (status, _, body) = get(router(state, Role::Api), &hash.to_hex()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        message_of(&body).contains("being rebuilt"),
+        "{}",
+        message_of(&body)
+    );
+}
+
+fn message_of(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| json["message"].as_str().map(str::to_owned))
+        .unwrap_or_default()
 }

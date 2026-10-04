@@ -114,10 +114,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -169,10 +166,7 @@ async fn seed_at_path(
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -478,10 +472,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"the-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -1056,36 +1047,16 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
     );
 }
 
-/// A tessellation downloads under a name that says Lapidary built it, with its exact bytes, and a
-/// rung that does not exist yet is a 404 naming the route that builds it.
+/// **A stale bookmark gets a sentence, not a 500.** `?variant=l0|l1|l2` was the viewer's own
+/// download while rungs existed, so the links are in people's history and in the e2e rig. Nothing
+/// builds a rung now, so the three fall through to the unknown-variant refusal — and that sentence
+/// must stop advertising them, or it answers "`l0` is not a download variant. This server serves
+/// ... `l0`".
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_tessellation_downloads_under_a_lapidary_name_and_an_absent_one_says_how_to_ask(
-    pool: sqlx::PgPool,
-) {
+async fn a_rung_variant_is_refused_in_words_that_no_longer_offer_a_rung(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");
     let root = root.path();
     let seeded = seed(&pool, root, "Bracket, LP-1042-03", "stl", &ascii_stl()).await;
-    let glb = b"glTF\x02\x00\x00\x00 an L1 rung".to_vec();
-    let stored = lapidary_storage::DerivativeStore::open(root)
-        .put(&glb)
-        .expect("stores the rung");
-    PgIngest(pool.clone())
-        .upsert_derivative(
-            seeded.revision,
-            lapidary_core::DerivativeKind::TessellationL1,
-            lapidary_db::DerivativeBytes::Hashed {
-                blob: &StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid: Some(96),
-            },
-            "mesh stl-1+glb-1+cpu-1",
-        )
-        .await
-        .expect("the rung lands");
     let app = || {
         router(
             AppState {
@@ -1099,22 +1070,40 @@ async fn a_tessellation_downloads_under_a_lapidary_name_and_an_absent_one_says_h
         )
     };
 
-    let (status, headers, body) = get(app(), &download_uri(seeded.revision, "?variant=l1")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, glb, "the rung's own bytes");
-    assert_eq!(header(&headers, "content-type"), Some("model/gltf-binary"));
-    assert!(
-        header(&headers, "content-disposition")
-            .is_some_and(|value| value.contains("Bracket, LP-1042-03.lapidary.l1.glb")),
-        "named as something Lapidary built: {headers:?}"
-    );
-
-    let (status, _, body) = get(app(), &download_uri(seeded.revision, "?variant=l2")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(
-        message(&body).contains("rungs/l2"),
-        "the 404 names the route that builds the rung"
-    );
+    for level in ["l0", "l1", "l2"] {
+        let (status, _, body) = get(
+            app(),
+            &download_uri(seeded.revision, &format!("?variant={level}")),
+        )
+        .await;
+        let body = message(&body);
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "`{level}` is not a variant this server has: {body}"
+        );
+        assert!(
+            body.contains(&format!("`{level}` is not a download variant")),
+            "and the refusal names what was asked for: {body}"
+        );
+        // **The whole point**, and it has to be asserted on what the sentence *offers* rather
+        // than on the whole sentence: the refusal quotes `l0` back, legitimately, so a bare
+        // `!contains("l0")` would be unsatisfiable. What must not name a rung is everything
+        // after "This server serves".
+        let (_, offers) = body
+            .split_once("This server serves")
+            .unwrap_or_else(|| panic!("the refusal says what is served: {body}"));
+        for rung in ["l0", "l1", "l2", "tessellation"] {
+            assert!(
+                !offers.contains(rung),
+                "the refusal still advertises {rung}: {offers}"
+            );
+        }
+        assert!(
+            offers.contains("variant=original"),
+            "and it still says what does work: {offers}"
+        );
+    }
 }
 
 /// A format is a download of that one format (`DATA.md` §5.1): the part's own file when it is
@@ -1166,15 +1155,13 @@ async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_me
         .upsert_derivative(
             seeded.revision,
             lapidary_core::DerivativeKind::Export3mf,
-            lapidary_db::DerivativeBytes::Hashed {
-                blob: &StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                grid: None,
+            &StoredBlobRow {
+                hash: stored.hash,
+                size_bytes: stored.size_bytes,
+                stored_bytes: stored.stored_bytes,
+                zstd_level: stored.zstd_level,
             },
+            None,
             "mesh stl-1+cpu-1",
         )
         .await

@@ -88,8 +88,6 @@ pub enum Widget {
     },
     /// A library's work in the queue.
     Queue { library: LibraryId },
-    /// How many groups of near-duplicates a library holds, waiting for a person to decide.
-    Duplicates { library: LibraryId },
 }
 
 /// Which facet a [`Widget::Facet`] counts.
@@ -169,7 +167,6 @@ pub enum WidgetValue {
     SavedFilter(FilteredParts),
     Facet(Vec<FacetValue>),
     Queue(QueueSummary),
-    Duplicates(DuplicateSummary),
 }
 
 /// A saved filter's parts, with its name as it is now — renamed since the layout was saved, it shows the new
@@ -190,16 +187,6 @@ pub struct QueueSummary {
     pub pending: u32,
     pub running: u32,
     pub failed: u32,
-}
-
-/// The duplicates review queue in brief; the duplicates page holds the groups themselves.
-#[derive(Debug, Clone, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct DuplicateSummary {
-    pub clusters: u32,
-    /// Parts with no shape profile yet, so not compared.
-    pub unprofiled: u32,
 }
 
 /// `POST /api/dashboard/resolve` — every widget on the screen, in one round trip.
@@ -354,7 +341,6 @@ async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, Widget
             limit,
         } => one_facet(&app.db, *library, *facet, *limit).await,
         Widget::Queue { library } => queue(&app.db, *library).await,
-        Widget::Duplicates { library } => duplicates(&app.db, *library).await,
     }
 }
 
@@ -515,36 +501,17 @@ async fn queue(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetRef
     }))
 }
 
-/// [`Widget::Duplicates`] — how many groups of near-duplicates are waiting for somebody to decide.
+/// Whether the library is there at all, through `PgParts::library_exists` — the probe
+/// `scan.rs` uses, and what `auto_thumbnail` was really being asked before R3 dropped the
+/// setting it also carried.
 ///
-/// ponytail: `likeness::clusters` builds a card, inline thumbnail and all, for every part in every
-/// cluster, and this widget counts the groups and throws the cards away. One definition of a cluster
-/// is worth that: G3 measured the whole read at 234 ms on a deliberately duplicate-heavy library of
-/// 10,000 parts, mostly in the cards. A count-only read is the upgrade if a real library measures slow.
-async fn duplicates(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetRefusal> {
-    // This widget's own probe, and not belt-and-braces: `clusters` answers an empty queue for a
-    // library that does not exist rather than an error (G3's Record says so), so without this an
-    // unknown library would read as "no duplicates here" instead of failing its key.
-    exists(db, library).await?;
-    let found = crate::likeness::clusters(db, library, None)
-        .await
-        .map_err(|err| failed(&err, "dashboard duplicates read failed"))?;
-    Ok(WidgetValue::Duplicates(DuplicateSummary {
-        clusters: u32::try_from(found.clusters.len()).unwrap_or(u32::MAX),
-        unprofiled: found.unprofiled,
-    }))
-}
-
-/// Whether the library is there at all, through `PgParts::auto_thumbnail` — the existence probe
-/// `derive.rs` and G3's routes already use.
-///
-/// Only the widgets whose own read cannot tell the difference ask this. `recent`, `facet` and `queue`
-/// each answer emptily for an id naming nothing, and `duplicates` does too; `storage` and
-/// `savedFilter` say so themselves, and `instanceStorage` names no library.
+/// Only the widgets whose own read cannot tell the difference ask this. `recent`, `facet` and
+/// `queue` each answer emptily for an id naming nothing; `storage` and `savedFilter` say so
+/// themselves, and `instanceStorage` names no library.
 async fn exists(db: &PgPool, library: LibraryId) -> Result<(), WidgetRefusal> {
-    match PgParts(db.clone()).auto_thumbnail(library).await {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(no_such_library()),
+    match PgParts(db.clone()).library_exists(library).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(no_such_library()),
         Err(err) => Err(failed(&err, "dashboard library lookup failed")),
     }
 }

@@ -46,6 +46,8 @@ import type {
   FolderNode,
   LibraryStorage,
   PartCard,
+  PartImage,
+  PartImageId,
   PartsPage,
 } from "../lib/types";
 
@@ -337,16 +339,32 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
 });
 
 /**
- * Two real lossless WebPs — 2x2 blue and 4x2 orange — base64'd exactly as
- * `PartCard.thumbnail` carries them. They differ deliberately: when every fixture shared
- * one payload, `src === part.thumbnail` compared identical strings, so a card rendering
- * `parts[0].thumbnail` for every part — every user seeing the wrong preview — passed the
- * whole suite. Distinct bytes are what make the card-to-thumbnail association testable.
+ * Two real lossless WebPs — 2x2 blue and 4x2 orange — base64'd exactly as a card's inline
+ * `PartImage.src` carries them. They differ deliberately: when every fixture shared one payload,
+ * `src === part.image.src` compared identical strings, so a card rendering `parts[0]`'s picture
+ * for every part — every user seeing the wrong one — passed the whole suite. Distinct bytes are
+ * what make the card-to-picture association testable.
+ *
+ * They were `PartCard.thumbnail` until R3 stopped rendering; a card's picture is the part's own
+ * `part_image` now, and these are what an inline one looks like on the wire.
  */
 const WEBP_BLUE =
   "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQ1LrVv/+BiOh/AAA=";
 const WEBP_ORANGE =
   "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvA0AAAAdQvJoXpf+BiOh/AAA=";
+
+/** One stored picture, framed as `0019`'s defaults frame an unadjusted one. */
+function picture(src: string): PartImage {
+  return {
+    id: "01931b6e-0000-7000-8000-0000000c0001" as PartImageId,
+    src,
+    origin: "uploaded",
+    sourceUrl: null,
+    fit: "cover",
+    focusX: 0.5,
+    focusY: 0.5,
+  };
+}
 
 const MOTOR_MOUNT: PartCard = {
   id: "01931b6e-0000-7000-8000-0000000a0001",
@@ -355,12 +373,10 @@ const MOTOR_MOUNT: PartCard = {
   name: "NEMA 17 motor mount, 42 mm face",
   sourcePath: "motors/nema17/LP-3105-A-mount.stl",
   partNumber: "LP-3105-A",
-  thumbnail: WEBP_BLUE,
   sourceFormat: "stl",
-  image: null,
+  image: picture(WEBP_BLUE),
   triangleCount: 12486,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "33237f7971cb1497a5417c667e9a459c240943c7378b44fcd4f6404590363895",
   sourceBytes: 624_384,
@@ -380,12 +396,10 @@ const HEX_NUT: PartCard = {
   name: "Hex nut M8, DIN 934",
   sourcePath: "fasteners/nuts/DIN934-M8-A2.stl",
   partNumber: "DIN934-M8-A2",
-  thumbnail: WEBP_ORANGE,
   sourceFormat: "stl",
-  image: null,
+  image: picture(WEBP_ORANGE),
   triangleCount: 1984,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "a0763a33d499b598864ddd26eeca15f6d9794ce44185883fd969888941de365d",
   sourceBytes: 99_284,
@@ -399,7 +413,7 @@ const HEX_NUT: PartCard = {
 };
 
 /**
- * Ingested, but the worker has not rasterized a thumbnail derivative for it yet. Also
+ * Ingested, and nobody has given it a picture. Also
  * the only 3MF of the three, so it is the fixture that carries the `AsIs` storage
  * shape: a 3MF is already a zip, the ingest policy stores it uncompressed, and its two
  * sizes agree. The other two would let a card that rendered `sourceBytes` where
@@ -412,12 +426,10 @@ const SHAFT_COUPLER: PartCard = {
   name: "Flexible shaft coupler, 5 mm to 8 mm",
   sourcePath: "couplers/LP-4420-B.stl",
   partNumber: "LP-4420-B",
-  thumbnail: null,
   sourceFormat: "3mf",
   image: null,
   triangleCount: 7320,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "c6b1d88498005800fb68ccc2f54588d00bbc1603243fcef5ef8f8000d1be2a70",
   sourceBytes: 148_930,
@@ -931,7 +943,7 @@ test("does not show the empty state when the library has parts", async () => {
   expect(screen.queryByText(strings.emptyLibrary.body)).toBeNull();
 });
 
-test("renders a card per part with that part own thumbnail bytes inline", async () => {
+test("renders a card per part with that part own picture inline", async () => {
   const fetchMock = stubFetch({ parts: ok(page([MOTOR_MOUNT, HEX_NUT])) });
   renderIndex();
 
@@ -941,7 +953,7 @@ test("renders a card per part with that part own thumbnail bytes inline", async 
   expect(within(nut).getByText(HEX_NUT.partNumber!)).toBeDefined();
 
   // The two payloads differ, so this is an association assertion and not merely a
-  // presence one: a card wired to the first part's thumbnail fails on the second card.
+  // presence one: a card wired to the first part's picture fails on the second card.
   expect(within(mount).getByRole("img").getAttribute("src")).toBe(WEBP_BLUE);
   expect(within(nut).getByRole("img").getAttribute("src")).toBe(WEBP_ORANGE);
   for (const card of [mount, nut]) {
@@ -952,12 +964,12 @@ test("renders a card per part with that part own thumbnail bytes inline", async 
 
   // Alt text literal, not read back from strings.ts: an alt of '' or 'image' would still
   // satisfy the constant-based form, and the description is what a screen-reader user
-  // gets instead of the render.
+  // gets instead of the picture.
   expect(within(mount).getByRole("img").getAttribute("alt")).toBe(
-    "Rendered preview of NEMA 17 motor mount, 42 mm face",
+    "Picture of NEMA 17 motor mount, 42 mm face",
   );
   expect(within(nut).getByRole("img").getAttribute("alt")).toBe(
-    "Rendered preview of Hex nut M8, DIN 934",
+    "Picture of Hex nut M8, DIN 934",
   );
 
   // The library in the path, and the page size the grid asked for. `limit` is always sent
@@ -976,10 +988,10 @@ test("shows a placeholder instead of an empty image when a part has no thumbnail
   expect(within(card).getByText(strings.parts.noPicture("3mf"))).toBeDefined();
 });
 
-// A page is a mix in practice — the worker rasterizes as it goes — and the two cases were
-// only ever rendered alone. A missing thumbnail must not shift the neighbouring card's
-// bytes onto the wrong part, nor suppress the render of the part that does have one.
-test("renders a thumbnailed part and a thumbnail-less part side by side", async () => {
+// A page is a mix in practice — some parts have a photograph and some do not — and the two cases
+// were only ever rendered alone. A part with no picture must not shift the neighbouring card's
+// bytes onto the wrong part, nor suppress the picture of the part that does have one.
+test("renders a part with a picture and a part without one side by side", async () => {
   stubFetch({ parts: ok(page([SHAFT_COUPLER, HEX_NUT])) });
   renderIndex();
 
@@ -1562,99 +1574,6 @@ test("refetches the grid as the worker commits parts", async () => {
   expect(partsCalls).toBeGreaterThan(1);
 });
 
-// The test this task exists for. `Outcome::Rendered` is a terminal outcome the settled
-// count did not know about, and a thumbnail sweep settles EVERY job as `rendered` — so a
-// count that omits it reads 0 for the whole batch, the invalidation never fires, and the
-// grid keeps showing "No preview yet" over parts whose previews are rendered and stored.
-// No backend test can see that: every job succeeded and every row is correct.
-//
-// The fixture is the load-bearing part. `ingested`, `skipped` and `failedTotal` are all
-// zero on purpose — the obvious fixture, a batch with a couple of ingests in it, passes
-// happily with `rendered` dropped from the count, which is exactly the drift this exists
-// to catch. The assertion below pins that property so a later edit cannot quietly restore
-// it. Driven from `?batch=` rather than from the sweep button, so nothing but the settled
-// count can be what refetches the grid.
-test("a batch whose jobs all settle as rendered refetches the grid exactly once", async () => {
-  const swept = batchStatus({
-    total: 4,
-    pending: 0,
-    running: 0,
-    rendered: 4,
-    finishedAt: "2026-09-05T10:14:02.116Z",
-  });
-  expect(swept.ingested + swept.skipped + swept.failedTotal).toBe(0);
-  expect(swept.rendered).toBe(4);
-
-  // Same part either side of the sweep: without a preview, then with one. That is the
-  // user-visible symptom the count controls — a blank card that never fills in.
-  const rendered: PartCard = { ...SHAFT_COUPLER, thumbnail: WEBP_ORANGE };
-  let partsCalls = 0;
-  let batchCalls = 0;
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: async () => {
-      partsCalls += 1;
-      return {
-        ok: true,
-        json: async () =>
-          partsCalls === 1 ? page([SHAFT_COUPLER]) : page([rendered]),
-      };
-    },
-    batch: async () => {
-      batchCalls += 1;
-      return {
-        ok: true,
-        json: async () =>
-          batchCalls === 1 ? batchStatus({ total: 4, pending: 4 }) : swept,
-      };
-    },
-  });
-
-  const client = newClient();
-  // Spied before mount, and calling through, so the refetch it triggers still happens.
-  const invalidate = vi.spyOn(client, "invalidateQueries");
-  renderIndex({ batch: BATCH_ID, client });
-
-  // Nothing has settled on the first poll: the card is there and still has no preview.
-  const before = await screen.findByRole("article", {
-    name: SHAFT_COUPLER.name,
-  });
-  expect(within(before).getByText(strings.parts.noPicture("3mf"))).toBeDefined();
-  expect(partsCalls).toBe(1);
-
-  // The second poll reports four renders, and the preview arrives with no reload.
-  const card = await screen.findByRole(
-    "article",
-    { name: SHAFT_COUPLER.name },
-    { timeout: 4000 },
-  );
-  await waitFor(
-    () =>
-      expect(within(card).getByRole("img").getAttribute("src")).toBe(
-        WEBP_ORANGE,
-      ),
-    { timeout: 4000 },
-  );
-  expect(partsCalls).toBe(2);
-
-  // And the line above the grid says what happened, in copy that is true of a render:
-  // `strings.scan.finished` reads the ingest counters and would call these four rendered
-  // previews "Scan complete — 0 added."
-  expect(screen.getByText(strings.render.finished(4))).toBeDefined();
-
-  // Exactly one, not "at least one": the effect is keyed on the settled count, so a poll
-  // that reports the same numbers again must cost no refetch. Filtered by key, because
-  // the count is the claim — an invalidation of some other cache entry is not this one.
-  const partsInvalidations = invalidate.mock.calls.filter(([filters]) => {
-    const key = (filters as { queryKey?: unknown } | undefined)?.queryKey;
-    return Array.isArray(key) && key[0] === "parts";
-  });
-  expect(partsInvalidations).toHaveLength(1);
-  expect(partsInvalidations[0]?.[0]).toEqual({
-    queryKey: ["parts", DEFAULT_LIBRARY_ID],
-  });
-});
-
 /**
  * The blind window this fix round closes. `migrating` counts ROWS of kind
  * `migrate_storage`, not settled outcomes, so it is already 1 the instant the worker's
@@ -1721,13 +1640,9 @@ test("a batch whose jobs all settle as migrated reads as a migration, not a scan
   renderIndex({ batch: BATCH_ID });
 
   expect(await screen.findByText(strings.migrate.finished(0))).toBeTruthy();
-  // Neither of the other two kinds' copy leaked in — `scan.finished` would call three
-  // moved files "added", and `render.finished` would call them rendered previews. Not a
-  // bare `/preview/i` check: the action bar's own static copy ("Generate missing
-  // previews", "Render preview") always contains that word and would make this
-  // assertion fire on correct output.
+  // The other kind's copy did not leak in: `scan.finished` would call three moved files
+  // "added".
   expect(screen.queryByText(/Scan complete/)).toBeNull();
-  expect(screen.queryByText(strings.render.finished(3))).toBeNull();
 });
 
 /**
@@ -1859,176 +1774,6 @@ test("a batch with nothing migrating or rendered still reads as a scan", async (
  * after — otherwise a component that never resolved anything would pass the one assertion
  * this test is named for.
  */
-test("the auto-thumbnail toggle shows off for a library the server says is off", async () => {
-  let release: (response: StubResponse) => void = () => {};
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    library: () => new Promise<StubResponse>((resolve) => (release = resolve)),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  // Before the read lands there is no position to take, and a confident "on" here is the
-  // same lie in a shorter window.
-  const toggle = (await screen.findByRole("checkbox", {
-    name: strings.library.autoThumbnail,
-  })) as HTMLInputElement;
-  expect(toggle.indeterminate).toBe(true);
-  expect(toggle.checked).toBe(false);
-  expect(toggle.disabled).toBe(true);
-
-  release({ ok: true, json: async () => ({ autoThumbnail: false }) });
-
-  await waitFor(() => expect(toggle.disabled).toBe(false));
-  expect(toggle.checked).toBe(false);
-  expect(toggle.indeterminate).toBe(false);
-  expect(fetchMock).toHaveBeenCalledWith(
-    `/api/libraries/${DEFAULT_LIBRARY_ID}`,
-  );
-  expect(screen.queryByText(strings.library.autoThumbnailUnknown)).toBeNull();
-});
-
-// The read is the toggle's starting position, so a read that never answers must not be
-// papered over with the default — that is the same wrong "on" arriving by another route.
-// The control stays mixed and unclickable, and says why.
-test("a settings read that fails leaves the toggle unknown rather than guessing", async () => {
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    library: async () => ({ ok: false, status: 503 }),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  expect(
-    await screen.findByText(strings.library.autoThumbnailUnknown),
-  ).toBeTruthy();
-  const toggle = screen.getByRole("checkbox", {
-    name: strings.library.autoThumbnail,
-  }) as HTMLInputElement;
-  expect(toggle.indeterminate).toBe(true);
-  expect(toggle.checked).toBe(false);
-  expect(toggle.disabled).toBe(true);
-});
-
-// A PATCH the server refused leaves the library where the GET said it was. `variables`
-// covers the round trip and nothing after it: a value the server rejected is not a
-// position this library is in, and now that there is something true to fall back to,
-// holding the failed click on screen under a "could not change this" message would show
-// two contradictory facts at once.
-test("a rejected setting change falls back to what the server said, not to the click", async () => {
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    library: ok({ autoThumbnail: true }),
-    settings: async () => ({ ok: false, status: 503 }),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  const toggle = (await screen.findByRole("checkbox", {
-    name: strings.library.autoThumbnail,
-  })) as HTMLInputElement;
-  await waitFor(() => expect(toggle.checked).toBe(true));
-
-  fireEvent.click(toggle);
-
-  expect(
-    await screen.findByText(strings.library.autoThumbnailFailed),
-  ).toBeTruthy();
-  expect(toggle.checked).toBe(true);
-  expect(toggle.indeterminate).toBe(false);
-});
-
-// The write half, over a library the server says is on. The request is asserted whole,
-// header and body included: `derive.rs`'s `bad_body` names the Content-Type explicitly,
-// and a PATCH without it is a 400 the user would see as the setting silently refusing to
-// change.
-test("the auto-thumbnail toggle sends the setting and reflects what the server echoes", async () => {
-  // Held open on purpose. A stub that resolves immediately never renders the in-flight
-  // frame, and that frame is where this control was wrong: react-query clears a
-  // mutation's `data` the moment it goes pending, so a position read from `data` alone
-  // springs back to its old value and sits there, disabled, until the response lands.
-  let release: (response: StubResponse) => void = () => {};
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    library: ok({ autoThumbnail: true }),
-    settings: () => new Promise<StubResponse>((resolve) => (release = resolve)),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  // The server's answer, not a default: this library is on.
-  const toggle = await screen.findByRole("checkbox", {
-    name: strings.library.autoThumbnail,
-  });
-  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true));
-
-  fireEvent.click(toggle);
-  await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/libraries/${DEFAULT_LIBRARY_ID}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: '{"autoThumbnail":false}',
-      },
-    ),
-  );
-  expect((toggle as HTMLInputElement).checked).toBe(false);
-
-  // And the echo is what it settles on, not the click.
-  release({ ok: true, json: async () => ({ autoThumbnail: false }) });
-  await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(false));
-});
-
-// Two cards, and the second one is clicked: with one card on screen a handler wired to
-// `parts[0].id` cannot fail, which is the same hole the two distinct WebP fixtures were
-// introduced to close. The batch id in the `202` is then asserted to be the one polled —
-// that is what proves the acceptance was consumed rather than merely received.
-test("the per-card action renders that part, and polls the batch it was handed", async () => {
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
-    partThumbnail: ok({ batchId: RENDER_BATCH_ID, queued: 1 }),
-    batch: ok(batchStatus({ batchId: RENDER_BATCH_ID, total: 1, pending: 1 })),
-    partDetail: ok(detailFor(HEX_NUT)),
-  });
-  renderIndex();
-
-  const panel = await openPanel(HEX_NUT.name);
-  fireEvent.click(
-    within(panel).getByRole("button", {
-      name: strings.render.partFor(HEX_NUT.name),
-    }),
-  );
-
-  await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/parts/${HEX_NUT.id}/thumbnail`,
-      {
-        method: "POST",
-      },
-    ),
-  );
-  expect(fetchMock).not.toHaveBeenCalledWith(
-    `/api/parts/${MOTOR_MOUNT.id}/thumbnail`,
-    {
-      method: "POST",
-    },
-  );
-
-  // A batch of one, watched through the same poll a scan uses, and reported in the copy
-  // that is true of a render — `strings.scan.finished` would call 151 rendered previews
-  // "Scan complete — 0 added."
-  expect(await screen.findByText(strings.render.running(0, 1))).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledWith(
-    `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${RENDER_BATCH_ID}`,
-  );
-});
-
 /**
  * The task's own exit criterion: a scan started from the browser, no terminal.
  *
@@ -2036,11 +1781,9 @@ test("the per-card action renders that part, and polls the batch it was handed",
  * to is `/api/libraries/{id}/scan` on the api service — `deploy/web/Caddyfile` proxies
  * `/api/*` there and to nothing else, so a route mounted under `Role::Worker` is a button
  * that cannot work. And the batch it polls has to read as a *scan*: the progress copy is
- * picked from what was clicked, not from the counters, and before this button existed
- * "this page started it" meant "a preview render" — a scan inheriting that would report a
- * folder of 150 new parts as "Rendering previews — 0 of 1."
+ * picked from what was clicked, not from the counters.
  */
-test("the scan button starts a scan and watches it as a scan, not as a render", async () => {
+test("the scan button starts a scan and watches it as a scan", async () => {
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([])),
@@ -2070,7 +1813,6 @@ test("the scan button starts a scan and watches it as a scan, not as a render", 
   // line read "Scanning — 0 of 1 files.", counting the walk as a file.
   expect(await screen.findByText("Reading the folder…")).toBeTruthy();
   expect(screen.queryByText(/of 1 files/)).toBeNull();
-  expect(screen.queryByText(strings.render.running(0, 1))).toBeNull();
   expect(fetchMock).toHaveBeenCalledWith(
     `/api/libraries/${DEFAULT_LIBRARY_ID}/jobs/${SCAN_BATCH_ID}`,
   );
@@ -2226,49 +1968,12 @@ test("the progress line follows a batch whose total grows after the first poll",
   ).toBeTruthy();
 });
 
-// `queued: 0` on a library that exists means every part already has a preview. That is a
-// success, and reading it as a failure is the easy mistake — a library that does not
-// exist answers 404 instead, which is what the error copy is for. Such a batch has no
-// status resource either, so polling it would 404 a moment later and tell the user their
-// successful action failed.
-test("a sweep that finds nothing missing reads as success, not as an error", async () => {
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    sweep: ok({ batchId: RENDER_BATCH_ID, queued: 0 }),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  fireEvent.click(screen.getByRole("button", { name: strings.render.sweep }));
-
-  expect(await screen.findByText(strings.render.nothingMissing)).toBeTruthy();
-  expect(screen.queryByText(strings.render.queueFailed)).toBeNull();
-  expect(fetchMock).toHaveBeenCalledWith(
-    `/api/libraries/${DEFAULT_LIBRARY_ID}/thumbnails`,
-    {
-      method: "POST",
-    },
-  );
-  expect(
-    fetchMock.mock.calls.filter(([url]) => String(url).includes("/jobs/")),
-  ).toHaveLength(0);
-});
-
-/**
- * A revision whose source `file` row is gone. Not something ingest writes — it is what a
- * half-repaired database looks like — and the part still has to appear, because its owner
- * is the one person who needs to find it to delete or re-scan it. All four source fields
- * are absent together, which is the shape `PartCard` documents.
- */
 const RECOVERED_BRACKET: PartCard = {
   ...SHAFT_COUPLER,
   id: "01931b6e-0000-7000-8000-0000000a0006",
   revision: "01931b6e-0000-7000-8000-0000000b0006",
   name: "Angle bracket, 40 x 40 x 3 mm",
   partNumber: "LP-1042-03",
-  tessellationL0: null,
   sourceHash: null,
   sourceBytes: null,
   storedBytes: null,
@@ -2763,12 +2468,10 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   name: "Basalt cliff face, 180 mm span",
   sourcePath: "Terrain/Rocks/basalt-cliff-face.stl",
   partNumber: "LP-7710-C",
-  thumbnail: WEBP_BLUE,
   sourceFormat: "stl",
   image: null,
   triangleCount: 148_302,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "5b8c1f2e9a47d0c3b6154e88f0a2d97361cc4e5b0f18a7d2946b3e5107cd82af",
   sourceBytes: 7_412_880,
@@ -2789,12 +2492,10 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   name: "Corner bracket, 40 x 40 mm, 4 mm wall",
   sourcePath: "brackets/corner-bracket-40x40.stl",
   partNumber: "LP-2280-A",
-  thumbnail: WEBP_ORANGE,
   sourceFormat: "stl",
   image: null,
   triangleCount: 3204,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "e41d2b7c05986aa3f0d4b8172c9e5a63d081fb42c7e9503a186dd47b2c9f0e35",
   sourceBytes: 212_004,
@@ -3208,15 +2909,12 @@ function detailFor(card: typeof MOTOR_MOUNT) {
     name: card.name,
     partNumber: card.partNumber,
     tags: [],
-    pmi: null,
     sourcePath: card.sourcePath,
-    thumbnail: card.thumbnail,
     triangleCount: card.triangleCount,
     isWatertight: true,
     bboxMm: { value: [61, 42, 18.5], approximate: true },
     volumeMm3: { value: 21478.5, approximate: true },
     surfaceAreaMm2: { value: 9804.25, approximate: true },
-    kernelVersion: "mesh stl-1+cpu-1",
     lock: null,
     sharedBy: null,
     sourceHash: card.sourceHash,
@@ -3224,8 +2922,6 @@ function detailFor(card: typeof MOTOR_MOUNT) {
     sourceBytes: card.sourceBytes,
     storedBytes: card.storedBytes,
     compressed: card.compressed,
-    tessellationL0: null,
-    tessellationL0Bytes: null,
     createdAt: card.createdAt,
     updatedAt: card.updatedAt,
   };
@@ -3267,9 +2963,7 @@ const MOTOR_MOUNT_DETAIL = {
   name: MOTOR_MOUNT.name,
   partNumber: MOTOR_MOUNT.partNumber,
   tags: [],
-  pmi: null,
   sourcePath: MOTOR_MOUNT.sourcePath,
-  thumbnail: MOTOR_MOUNT.thumbnail,
   triangleCount: MOTOR_MOUNT.triangleCount,
   isWatertight: true,
   // Mesh-derived, so `Figure` must label it — which is what proves the dialog renders the
@@ -3277,7 +2971,6 @@ const MOTOR_MOUNT_DETAIL = {
   bboxMm: { value: [61, 42, 18.5], approximate: true },
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
-  kernelVersion: "mesh stl-1+cpu-1",
   lock: null,
   sharedBy: null,
   sourceHash: MOTOR_MOUNT.sourceHash,
@@ -3285,8 +2978,6 @@ const MOTOR_MOUNT_DETAIL = {
   sourceBytes: MOTOR_MOUNT.sourceBytes,
   storedBytes: MOTOR_MOUNT.storedBytes,
   compressed: MOTOR_MOUNT.compressed,
-  tessellationL0: null,
-  tessellationL0Bytes: null,
   createdAt: MOTOR_MOUNT.createdAt,
   updatedAt: MOTOR_MOUNT.updatedAt,
 };

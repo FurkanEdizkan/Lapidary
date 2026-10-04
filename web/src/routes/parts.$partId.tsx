@@ -7,7 +7,6 @@ import {
   fetchInstanceStorage,
   fetchPartDetail,
   removePart,
-  renderPartThumbnail,
 } from '../lib/api'
 import { Detail } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
@@ -120,12 +119,6 @@ function PartActions({ part }: { part: PartDetail }) {
     queryKey: ['instance-storage', false],
     queryFn: () => fetchInstanceStorage(false),
   })
-  const render = useMutation({
-    mutationFn: () => renderPartThumbnail(part.id),
-    // The preview arrives through the worker, so there is nothing to refetch here except
-    // this part — the grid picks its own up on the next poll.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['part', part.id] }),
-  })
   const remove = useMutation({
     mutationFn: () => removePart(part.id),
     onSuccess: async () => {
@@ -141,17 +134,6 @@ function PartActions({ part }: { part: PartDetail }) {
     <>
       <Menu id="part-menu" label={strings.detail.more} icon="more">
         <div className="flex flex-col gap-0.5">
-          <button
-            type="button"
-            onClick={(event) => {
-              closeMenu(event.currentTarget)
-              render.mutate()
-            }}
-            disabled={render.isPending}
-            className={ITEM}
-          >
-            {strings.render.part}
-          </button>
           <button
             type="button"
             onClick={(event) => {
@@ -176,11 +158,6 @@ function PartActions({ part }: { part: PartDetail }) {
           <p className="mt-1 px-2 text-xs text-[var(--color-muted)]">{strings.removal.removeHint}</p>
         </div>
       </Menu>
-      {render.isError ? (
-        <span role="alert" className="text-xs text-[var(--color-muted)]">
-          {strings.render.queueFailed}
-        </span>
-      ) : null}
       {remove.isError ? (
         <span role="alert" className="text-xs text-[var(--color-muted)]">
           {strings.removal.removeFailed}

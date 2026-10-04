@@ -1,8 +1,6 @@
 //! The handler, exercised the way the worker exercises it.
 
-use lapidary_cad::{
-    CadError, CadMetadata, Kernel, KernelOutput, KernelParams, KernelVersion, MeshKernel,
-};
+use lapidary_cad::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, MeshKernel};
 use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
@@ -92,23 +90,6 @@ async fn only_revision(pool: &PgPool) -> RevisionId {
     RevisionId::from_uuid(id)
 }
 
-/// A library that declines to render (migration `0005`). The seeded row is updated rather
-/// than a second library inserted, so every helper above keeps working unchanged.
-async fn stop_rendering(pool: &PgPool, library: LibraryId) {
-    sqlx::query("UPDATE library SET auto_thumbnail = false WHERE id = $1")
-        .bind(library.as_uuid())
-        .execute(pool)
-        .await
-        .expect("turns auto_thumbnail off");
-}
-
-async fn thumbnail_rows(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM derivative WHERE kind = 'thumbnail'")
-        .fetch_one(pool)
-        .await
-        .expect("count query")
-}
-
 async fn part_count(pool: &PgPool) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM part")
         .fetch_one(pool)
@@ -181,7 +162,7 @@ fn all_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail(pool: PgPool) {
+async fn a_real_stl_ingests_with_its_real_measurements(pool: PgPool) {
     // The direct descendant of slice 1's `scanning_one_real_stl_ingests_it_once`. Moving
     // ingest behind a queue puts a brand-new seam exactly where the untested one was, so
     // it gets its guard on day one instead of in a fix wave.
@@ -203,26 +184,16 @@ async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail
     let outcome = handler.handle(&job_for(BRACKET)).await.expect("ingests");
     assert_eq!(outcome, Outcome::Ingested);
 
-    let (name, tri, x, y, z, watertight, thumb): (
-        String,
-        i32,
-        f64,
-        f64,
-        f64,
-        bool,
-        Option<Vec<u8>>,
-    ) = sqlx::query_as(
-        "SELECT p.name, r.triangle_count, r.bbox_x, r.bbox_y, r.bbox_z, r.is_watertight, \
-                d.thumb_bytes \
+    let (name, tri, x, y, z, watertight): (String, i32, f64, f64, f64, bool) = sqlx::query_as(
+        "SELECT p.name, r.triangle_count, r.bbox_x, r.bbox_y, r.bbox_z, r.is_watertight \
          FROM part p \
          JOIN revision r ON r.part_id = p.id \
-         JOIN derivative d ON d.revision_id = r.id AND d.kind = 'thumbnail' \
          WHERE p.library_id = $1",
     )
     .bind(seeded().as_uuid())
     .fetch_one(&pool)
     .await
-    .expect("the part, its measurements and its thumbnail all landed");
+    .expect("the part and its measurements landed");
 
     assert_eq!(name, "bracket-lp-1042-03");
     assert_eq!(tri, 20, "the fixture's real triangle count");
@@ -232,10 +203,6 @@ async fn a_real_stl_ingests_with_its_real_measurements_and_a_decodable_thumbnail
         "the fixture's real bounding box"
     );
     assert!(watertight);
-
-    let thumb = thumb.expect("a thumbnail was written");
-    let decoded = image::load_from_memory(&thumb).expect("the thumbnail decodes as an image");
-    assert_eq!(decoded.width(), 512, "the thumbnail is a real 512px render");
 }
 
 /// A `JobRow` shaped exactly as `lapidary-api`'s upload commit writes one: the kind is
@@ -625,11 +592,14 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
     // in its own reapable list. Reaping them on the way to `Skipped` leaves the winner's
     // `derivative` rows pointing at bytes that are no longer there, and every assertion
     // above this one still passes while it happens.
-    let rungs: Vec<String> =
-        sqlx::query_scalar("SELECT blake3 FROM derivative WHERE blake3 IS NOT NULL")
-            .fetch_all(&pool)
-            .await
-            .expect("the winner's hash-addressed derivatives");
+    // The winner's **source** blob, since R3: ingest writes no derivative, so the bytes a
+    // losing worker could wrongly reap are the file both jobs read. The rule and the risk are
+    // unchanged — only bytes this job introduced may be reaped — and `blobs/` is where a
+    // content-addressed copy would be if one were written.
+    let rungs: Vec<String> = sqlx::query_scalar("SELECT blake3 FROM blob")
+        .fetch_all(&pool)
+        .await
+        .expect("the winner's blobs");
     // Verified by restoring the bug: with the guard flipped to an unconditional reap this
     // goes red on the runs where the two handlers genuinely overlap, and stays green on the
     // runs where the scheduler serialises them -- in which case the second job
@@ -639,16 +609,22 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
     // `handler.rs` pins the branch condition itself, deterministically and without a
     // scheduler. Forcing the overlap here would mean a barrier in the pipeline, which is a
     // larger change than the thing it would pin.
-    assert!(!rungs.is_empty(), "the ingest wrote at least one rung");
+    assert!(!rungs.is_empty(), "the ingest wrote at least one blob row");
     for hash in rungs {
-        let path = blob_root
-            .path()
-            .join(format!("blobs/{}/{}/{hash}", &hash[0..2], &hash[2..4]));
-        assert!(
-            path.exists(),
-            "a derivative row points at {hash}, which is not on disk: the losing worker \
-             reaped bytes the winning row still serves"
-        );
+        let filed: Vec<String> = sqlx::query_scalar(
+            "SELECT storage_path FROM file WHERE blake3 = $1 AND storage_path IS NOT NULL",
+        )
+        .bind(&hash)
+        .fetch_all(&pool)
+        .await
+        .expect("where the row says the bytes are");
+        for rel in filed {
+            assert!(
+                blob_root.path().join(&rel).exists(),
+                "a file row points at {rel}, which is not on disk: the losing worker \
+                 reaped bytes the winning row still serves"
+            );
+        }
     }
 }
 
@@ -697,10 +673,7 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             blob: &blob,
             measurements: &measurements,
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seeding the already-held part");
@@ -759,9 +732,8 @@ async fn a_second_library_gets_its_own_part_for_bytes_another_library_holds(pool
     );
     assert_eq!(
         all_files(&blob_root.path().join("blobs")).len(),
-        1,
-        "derivatives are still content-addressed and still deduplicated: every rung of a \
-         20-triangle bracket clusters to the same mesh, so the ladder is one blob"
+        0,
+        "and no content-addressed copy: ingest writes no derivative at all"
     );
     let copies: Vec<PathBuf> = all_files(&blob_root.path().join("libraries"))
         .into_iter()
@@ -813,9 +785,10 @@ async fn two_differently_named_files_with_identical_bytes_are_two_parts_sharing_
     assert_eq!(part_count(&pool).await, 2);
     assert_eq!(blob_rows(&pool).await, 1);
     assert_eq!(ref_count(&pool).await, 2);
-    // One blob row and one rung on disk -- both parts are the same mesh, so their rungs
-    // are the same bytes -- but two source files, because two models are two directories.
-    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 1);
+    // One blob row, and nothing content-addressed on disk: ingest writes no derivative, and
+    // a source file lives in its model's own directory. Two source files, because two models
+    // are two directories.
+    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 0);
     assert_eq!(all_files(&blob_root.path().join("libraries")).len(), 4);
 }
 
@@ -888,8 +861,8 @@ async fn a_failed_link_to_existing_bytes_leaves_the_first_parts_blobs_alone(pool
     let after_first = all_files(blob_root.path());
     assert_eq!(
         after_first.len(),
-        3,
-        "the ladder's one rung, the first model's file and its manifest: {after_first:?}"
+        2,
+        "the first model's file and its manifest, and no derivative: {after_first:?}"
     );
 
     // Same bytes, so `blobs.exists` sends this down link_existing; a constraint only the
@@ -929,8 +902,11 @@ async fn refuse_this_file(pool: &PgPool, pattern: &str) {
     .expect("adds the refusing constraint");
 }
 
+/// **Ingest writes no derivative and no derivative byte.** This test was "one tessellation blob
+/// and row"; the ladder it checked is gone, and what is worth keeping is the other half of the
+/// same claim — that nothing is written where a rung used to be, store included.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_real_stl_writes_one_tessellation_blob_and_row(pool: PgPool) {
+async fn a_real_stl_writes_no_derivative_blob_and_no_derivative_row(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
@@ -944,26 +920,16 @@ async fn a_real_stl_writes_one_tessellation_blob_and_row(pool: PgPool) {
         .fetch_all(&pool)
         .await
         .expect("kinds");
-    // Exactly one tessellation row, and it is L0. L1 and L2 are no longer ingest's to
-    // write -- they arrive through a `derive` job, which is what this slice exists for.
-    assert_eq!(kinds, vec!["tessellation_l0", "thumbnail"]);
-
-    // The rung row points at bytes that are really on disk, through a blob row that
-    // really exists -- the whole chain migration 0004's foreign key exists to require.
-    let hashes: Vec<String> = sqlx::query_scalar(
-        "SELECT d.blake3 FROM derivative d JOIN blob b ON b.blake3 = d.blake3 \
-         WHERE d.kind LIKE 'tessellation%'",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("hashes");
-    assert_eq!(hashes.len(), 1, "one rung, with a blob row");
-    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
-    for hex in &hashes {
-        let hash = BlobHash::parse_hex(hex).expect("a stored hash parses");
-        let bytes = store.get(&hash).expect("the rung's bytes are on disk");
-        assert_eq!(&bytes[0..4], b"glTF", "a rung is a glTF binary file");
-    }
+    assert!(kinds.is_empty(), "no derivative row at all: {kinds:?}");
+    assert!(
+        all_files(&blob_root.path().join("derivatives")).is_empty(),
+        "and nothing in the derivative store"
+    );
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(blobs, 1, "the source blob, and only it");
 }
 
 const IDLER_OBJ: &str = "idler-bracket-lp-2210-01.obj";
@@ -991,15 +957,9 @@ async fn a_real_obj_yields_the_same_with_its_format_recorded(pool: PgPool) {
         Outcome::Ingested
     );
 
-    let kinds: Vec<String> = derivatives(&pool)
-        .await
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
-    assert_eq!(
-        kinds,
-        vec!["tessellation_l0", "thumbnail"],
-        "an OBJ produces the same two derivatives an STL does"
+    assert!(
+        derivatives(&pool).await.is_empty(),
+        "an OBJ writes no derivative at ingest, exactly as an STL does: nothing renders"
     );
 
     let format: String = sqlx::query_scalar("SELECT format FROM file")
@@ -1016,8 +976,9 @@ async fn a_real_obj_yields_the_same_with_its_format_recorded(pool: PgPool) {
     assert_eq!(name, "idler-bracket-lp-2210-01");
 }
 
+/// Read off the exports, because ingest writes no derivative to read it off.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPool) {
+async fn the_kernel_version_differs_between_an_stl_and_an_obj_source(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write stl");
@@ -1025,6 +986,19 @@ async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPoo
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler.handle(&job_for(BRACKET)).await.expect("stl");
     handler.handle(&job_for(IDLER_OBJ)).await.expect("obj");
+    let revisions: Vec<sqlx::types::Uuid> = sqlx::query_scalar("SELECT id FROM revision")
+        .fetch_all(&pool)
+        .await
+        .expect("both revisions");
+    for revision in revisions {
+        handler
+            .handle(&derive_job(
+                RevisionId::from_uuid(revision),
+                DerivativeKind::Export3mf,
+            ))
+            .await
+            .expect("derives a 3MF from each");
+    }
 
     let versions: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT kernel_version FROM derivative ORDER BY kernel_version",
@@ -1038,89 +1012,6 @@ async fn the_kernel_version_differs_between_an_stl_and_an_obj_ingest(pool: PgPoo
     assert_eq!(
         versions,
         vec!["mesh obj-1+glb-3+cpu-1", "mesh stl-1+glb-3+cpu-1"]
-    );
-}
-
-/// Triangle count read out of a stored `.glb`, by a reader that shares nothing with the
-/// writer. Task 4 gives the reason: a self-consistent writer passes a reader built from
-/// its own arithmetic every time.
-fn triangles_in_glb(bytes: &[u8]) -> u64 {
-    let u32_at = |at: usize| {
-        let mut four = [0u8; 4];
-        four.copy_from_slice(&bytes[at..at + 4]);
-        u32::from_le_bytes(four)
-    };
-    assert_eq!(&bytes[0..4], b"glTF", "magic");
-    assert_eq!(u32_at(4), 2, "glTF 2.0");
-    assert_eq!(
-        u32_at(8) as usize,
-        bytes.len(),
-        "the declared length is the real length"
-    );
-    let json_len = u32_at(12) as usize;
-    let json: serde_json::Value =
-        serde_json::from_slice(&bytes[20..20 + json_len]).expect("the JSON chunk parses");
-    // Accessor 1 is the index accessor; three indices per triangle.
-    json["accessors"][1]["count"].as_u64().expect("count") / 3
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn each_rung_is_valid_gltf_and_l0_is_smaller_than_l2(pool: PgPool) {
-    // Deliberately not the bracket: at 20 triangles it is coarser than L0's grid and
-    // clusters to itself, so its rungs are identical by design (spec §3.6). Proving the
-    // ladder actually ladders needs a mesh dense enough to decimate.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    assert_eq!(
-        handler.handle(&job_for(GEAR)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-
-    // Ingest writes L0 alone now, so the two rungs this test compares against have to be
-    // built the way anything else will build them: a `derive` job each. Trimming the
-    // assertion to what ingest still writes would leave L0 compared with itself, which
-    // passes whatever the clusterer does and proves nothing.
-    let revision = only_revision(&pool).await;
-    for rung in [
-        DerivativeKind::TessellationL1,
-        DerivativeKind::TessellationL2,
-    ] {
-        assert_eq!(
-            handler
-                .handle(&derive_job(revision, rung))
-                .await
-                .unwrap_or_else(|error| panic!("derives {}: {error:?}", rung.as_str())),
-            Outcome::Rendered,
-            "a derive job renders; it does not ingest"
-        );
-    }
-
-    let store = lapidary_storage::DerivativeStore::open(blob_root.path());
-    let mut counts = Vec::new();
-    for (kind, blake3) in derivatives(&pool).await {
-        let Some(hex) = blake3 else {
-            assert_eq!(kind, "thumbnail", "only the thumbnail is stored inline");
-            continue;
-        };
-        let hash = BlobHash::parse_hex(&hex).expect("a stored hash parses");
-        let bytes = store.get(&hash).expect("the rung's bytes are on disk");
-        counts.push((kind, triangles_in_glb(&bytes)));
-    }
-
-    assert_eq!(counts.len(), 3);
-    let count = |k: &str| counts.iter().find(|(kind, _)| kind == k).expect("rung").1;
-    assert!(
-        count("tessellation_l0") < count("tessellation_l2"),
-        "L0 {} must be coarser than L2 {} -- a ladder wired up but not laddered passes \
-         every row count above and still ships three copies of the full mesh",
-        count("tessellation_l0"),
-        count("tessellation_l2")
-    );
-    assert!(
-        count("tessellation_l1") <= count("tessellation_l2"),
-        "L1 must never exceed L2"
     );
 }
 
@@ -1184,8 +1075,10 @@ async fn a_derive_job_writes_a_slicer_its_stl_and_3mf_with_every_triangle(pool: 
     );
 }
 
+/// A 3MF ingests through its own parser, and the format and the version its export records say
+/// which parser ran. Nothing is derived at ingest, so the version is read off an export.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
+async fn a_real_3mf_is_parsed_and_its_export_records_the_3mf_parser(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
@@ -1195,15 +1088,17 @@ async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
         Outcome::Ingested
     );
 
-    let kinds: Vec<String> = derivatives(&pool)
-        .await
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    assert!(
+        derivatives(&pool).await.is_empty(),
+        "nothing is derived at ingest"
+    );
+    let revision = only_revision(&pool).await;
     assert_eq!(
-        kinds,
-        vec!["tessellation_l0", "thumbnail"],
-        "a 3MF produces the same two derivatives an STL does"
+        handler
+            .handle(&derive_job(revision, DerivativeKind::ExportStl))
+            .await
+            .expect("derives an STL from the 3MF"),
+        Outcome::Rendered
     );
 
     let (format, version): (String, String) = sqlx::query_as(
@@ -1214,7 +1109,10 @@ async fn a_real_3mf_yields_a_thumbnail_and_one_rung(pool: PgPool) {
     .await
     .expect("row");
     assert_eq!(format, "3mf");
-    assert_eq!(version, "mesh 3mf-1+glb-3+cpu-1");
+    assert_eq!(
+        version, "mesh 3mf-1+glb-3+cpu-1",
+        "the version names the parser that ran, not the kind that was asked for"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -1321,86 +1219,78 @@ async fn a_refused_3mf_leaves_no_part_and_no_blob(pool: PgPool) {
     );
 }
 
+/// **Ingest writes no derivative at all, and every part is still in the grid.**
+///
+/// This was the slice-3 exit criterion for a library with `auto_thumbnail = false`: zero
+/// thumbnail rows, and the part still showing "no preview yet" rather than missing from the
+/// grid, because a row missing from the grid is data the user cannot see. R3 made that state
+/// the only state there is — nothing renders — so the assertion is the same one with no
+/// setting to turn off.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_that_declines_to_render_gets_no_thumbnail_and_still_fills_the_grid(
-    pool: PgPool,
-) {
-    // The slice's exit criterion, one part wide: a library with `auto_thumbnail = false`
-    // ingests with zero thumbnail rows, and every part is still IN the grid showing "no
-    // preview yet". A row missing from the grid would be data the user cannot see.
+async fn an_ingest_writes_no_derivative_and_the_part_is_still_in_the_grid(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
-    stop_rendering(&pool, seeded()).await;
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     assert_eq!(
         handler.handle(&job_for(BRACKET)).await.expect("ingests"),
         Outcome::Ingested
     );
 
-    assert_eq!(
-        thumbnail_rows(&pool).await,
-        0,
-        "a library that declines to render must write no thumbnail row at all: an empty \
-         bytea is not NULL, so it would reach the grid as a broken image"
+    assert!(
+        derivatives(&pool).await.is_empty(),
+        "no thumbnail, no rung, no CAD read: the card shows the part's own picture now"
     );
-    let kinds: Vec<String> = derivatives(&pool)
-        .await
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
-    assert_eq!(
-        kinds,
-        vec!["tessellation_l0"],
-        "the rung is still written -- it is the grid's own LOD, not a preview"
+    assert!(
+        all_files(&blob_root.path().join("derivatives")).is_empty(),
+        "and nothing was written to the derivative store either"
     );
 
     let page = PgParts(pool.clone())
         .page(&GridQuery::new(seeded(), 10), Sort::Newest)
         .await
         .expect("page");
-    assert_eq!(page.len(), 1, "a part with no preview is still a part");
+    assert_eq!(page.len(), 1, "a part with no picture is still a part");
     assert_eq!(page[0].summary.name, "bracket-lp-1042-03");
-    assert_eq!(page[0].summary.triangle_count, Some(20));
-    assert_eq!(page[0].thumbnail_webp, None);
+    assert_eq!(
+        page[0].summary.triangle_count,
+        Some(20),
+        "and it is measured, which is what ingest is for"
+    );
 }
 
+/// A derive job re-reads the **source blob** for the revision it names, not the ingest mount —
+/// which is the only copy still guaranteed to exist once the mount the file arrived on is gone.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_derive_job_fills_the_missing_thumbnail_and_reports_rendered(pool: PgPool) {
+async fn a_derive_job_reads_the_source_blob_and_reports_rendered(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
-    stop_rendering(&pool, seeded()).await;
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
-    assert_eq!(thumbnail_rows(&pool).await, 0, "nothing rendered at ingest");
+    assert!(derivatives(&pool).await.is_empty(), "nothing at ingest");
 
-    // The ingest directory is irrelevant from here: a derive job re-reads the SOURCE BLOB
-    // for the revision it names, which is the only copy still guaranteed to exist once
-    // the mount the file arrived on is gone.
     std::fs::remove_file(ingest_dir.path().join(BRACKET)).expect("removes the ingested file");
     let revision = only_revision(&pool).await;
     assert_eq!(
         handler
-            .handle(&derive_job(revision, DerivativeKind::Thumbnail))
+            .handle(&derive_job(revision, DerivativeKind::ExportStl))
             .await
-            .expect("derives the thumbnail"),
+            .expect("derives the export from the stored source"),
         Outcome::Rendered
     );
 
-    assert_eq!(thumbnail_rows(&pool).await, 1);
-    let page = PgParts(pool.clone())
-        .page(&GridQuery::new(seeded(), 10), Sort::Newest)
-        .await
-        .expect("page");
-    let thumb = page[0]
-        .thumbnail_webp
-        .clone()
-        .expect("the grid now has bytes to show");
-    // Decoded rather than length-checked: a zeroed or empty WebP has a length too, and
-    // only a decode proves the row holds the image the kernel actually rendered.
-    let decoded = image::load_from_memory(&thumb).expect("the thumbnail decodes as an image");
-    assert_eq!(decoded.width(), 512, "a real 512px render");
+    let rows = derivatives(&pool).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, "export_stl");
+    let hex = rows[0].1.clone().expect("an export is hash-addressed");
+    let bytes = lapidary_storage::DerivativeStore::open(blob_root.path())
+        .get(&BlobHash::parse_hex(&hex).expect("a stored hash parses"))
+        .expect("the export's bytes are on disk");
+    // Decoded rather than length-checked: a zeroed file has a length too, and only reading
+    // the count back proves the row holds the mesh the kernel actually wrote.
+    let count = u32::from_le_bytes(bytes[80..84].try_into().expect("four bytes"));
+    assert_eq!(count, 20, "the bracket's own triangles, in a binary STL");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -1434,18 +1324,17 @@ async fn an_unknown_job_kind_fails_permanently_naming_the_kind(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_derive_job_naming_another_librarys_revision_renders_nothing(pool: PgPool) {
+async fn a_derive_job_naming_another_librarys_revision_writes_nothing(pool: PgPool) {
     // A revision id is a uuid a caller might hold from anywhere, and the payload carries
-    // one. Without the scope this job renders onto a revision its library does not own --
+    // one. Without the scope this job writes onto a revision its library does not own --
     // a cross-tenant WRITE, which is the direction that cannot be undone. CLAUDE.md:
     // content addressing is not authorization, and neither is knowing a revision id.
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
-    stop_rendering(&pool, seeded()).await;
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
-    assert_eq!(thumbnail_rows(&pool).await, 0, "nothing rendered at ingest");
+    assert!(derivatives(&pool).await.is_empty(), "nothing at ingest");
     let revision = only_revision(&pool).await;
     let other_library = second_library(&pool).await;
 
@@ -1453,10 +1342,10 @@ async fn a_derive_job_naming_another_librarys_revision_renders_nothing(pool: PgP
         .handle(&derive_job_for(
             other_library,
             revision,
-            DerivativeKind::Thumbnail,
+            DerivativeKind::ExportStl,
         ))
         .await
-        .expect_err("a library that does not own this revision must not render onto it");
+        .expect_err("a library that does not own this revision must not write onto it");
 
     let message = format!("{err:?}");
     assert!(
@@ -1471,10 +1360,9 @@ async fn a_derive_job_naming_another_librarys_revision_renders_nothing(pool: PgP
         matches!(err, HandlerError::Permanent { .. }),
         "a revision this library will never own is not worth three retries, got: {err:?}"
     );
-    assert_eq!(
-        thumbnail_rows(&pool).await,
-        0,
-        "the refusal has to happen before the render, or the row is already written"
+    assert!(
+        derivatives(&pool).await.is_empty(),
+        "the refusal has to happen before the write, or the row is already there"
     );
 }
 
@@ -1516,13 +1404,40 @@ async fn an_ingest_job_for_a_library_that_does_not_exist_fails_permanently_namin
     );
 }
 
-/// The L0 rung's blob hash and recorded kernel version — between them, the whole of what
-/// "a lazily-built rung must not differ from an eager one" is a claim about.
-async fn l0_row(pool: &PgPool) -> (String, String) {
-    sqlx::query_as("SELECT blake3, kernel_version FROM derivative WHERE kind = 'tessellation_l0'")
-        .fetch_one(pool)
+/// **And it refuses before the parse**, which is the whole of what step 3a buys.
+///
+/// `library_slug` further down the ladder is a second guard with the same shape of message, so
+/// removing step 3a leaves the case above passing — `mutate-r3.sh`'s `library-exists-always`
+/// survived on exactly that. What tells them apart is a file that cannot parse: with the probe
+/// where it is, the refusal names the library; without it, the mesh parser fails first and the
+/// operator is told to re-export a file whose library does not exist.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_job_for_a_library_that_does_not_exist_is_refused_before_the_parse(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        ingest_dir.path().join("notes.stl"),
+        b"LP-1042-03 revision notes: chamfer the mounting face.\n",
+    )
+    .expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let absent = LibraryId::new();
+
+    let err = handler
+        .handle(&job_for_library(absent, "notes.stl"))
         .await
-        .expect("exactly one L0 row, with bytes and a version on it")
+        .expect_err("a job naming a library that does not exist cannot ingest anything");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains(&absent.to_string()),
+        "the library, not the file: nothing should have read a byte of it yet, got {message}"
+    );
+    assert!(
+        !message.contains("Could not read this stl"),
+        "the parse must not have run: step 3a sits above it so a re-scan costs one query, got \
+         {message}"
+    );
 }
 
 /// Every `blob` row, source and derivative alike — unlike `blob_rows` above, which is
@@ -1544,43 +1459,60 @@ async fn refs_to(pool: &PgPool, blake3: &str) -> i32 {
         .expect("the rung's blob row")
 }
 
+/// Design section 10's byte-identity criterion, asked of the thing it can still be asked of: an
+/// export derived twice from the same source is the same bytes, at the same version, in one blob
+/// with one reference.
+///
+/// It named L2 once, then L0 when ingest stopped building the finer rungs. Ingest builds nothing
+/// now, so there is no eager derivative to compare a lazy one against at all — and the rule the
+/// criterion exists for is still live: a second build of the same file must not store a second
+/// copy or inflate `ref_count`, or eviction would leave bytes nothing points at.
+///
+/// The gear, not the bracket: a bigger mesh is a bigger export, so a writer that silently
+/// truncated would show.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_derived_l0_is_byte_identical_to_the_one_ingest_wrote(pool: PgPool) {
-    // Design section 10's byte-identity criterion, asked of the rung it can actually be
-    // asked of. It named L2, and that is unaskable now: ingest builds no L2 at all, which
-    // is the point of this slice, so there is no eager rung to compare a lazy one against.
-    // L0 is built both ways, so L0 is the one that can drift.
-    //
-    // The gear, not the bracket: at 20 triangles the bracket is coarser than L0's grid and
-    // clusters to itself, so its rungs are identical whatever level produced them and this
-    // test would pass under exactly the drift it exists to catch.
-    //
-    // `auto_thumbnail` stays on, so ingest asks the kernel for [Thumbnail, L0] while the
-    // derive asks for [L0]. That difference is the point of the version assertion below:
-    // `kernel.version()` names the build, not the run, and must not vary with `produce`.
+async fn an_export_derived_twice_is_one_blob_with_one_reference(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(GEAR), GEAR_FIXTURE).expect("write fixture");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler.handle(&job_for(GEAR)).await.expect("ingests");
+    let revision = only_revision(&pool).await;
+    let export = |pool: &PgPool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT blake3, kernel_version FROM derivative WHERE kind = 'export_stl'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("exactly one export row, with bytes and a version on it")
+        }
+    };
 
-    let (hash_before, version_before) = l0_row(&pool).await;
+    assert_eq!(
+        handler
+            .handle(&derive_job(revision, DerivativeKind::ExportStl))
+            .await
+            .expect("derives the export"),
+        Outcome::Rendered
+    );
+    let (hash_before, version_before) = export(&pool).await;
     let blobs_before = all_blob_rows(&pool).await;
     let refs_before = refs_to(&pool, &hash_before).await;
 
-    let revision = only_revision(&pool).await;
     assert_eq!(
         handler
-            .handle(&derive_job(revision, DerivativeKind::TessellationL0))
+            .handle(&derive_job(revision, DerivativeKind::ExportStl))
             .await
-            .expect("derives an L0 over the one ingest already built"),
+            .expect("derives it again over the one already there"),
         Outcome::Rendered
     );
 
-    let (hash_after, version_after) = l0_row(&pool).await;
+    let (hash_after, version_after) = export(&pool).await;
     assert_eq!(
         hash_after, hash_before,
-        "the same bytes from the same source must hash the same however they were asked for"
+        "the same bytes from the same source must hash the same however often they are asked for"
     );
     assert_eq!(
         version_after, version_before,
@@ -1594,7 +1526,7 @@ async fn a_derived_l0_is_byte_identical_to_the_one_ingest_wrote(pool: PgPool) {
     assert_eq!(
         refs_to(&pool, &hash_before).await,
         refs_before,
-        "re-rendering the same bytes moves no reference, so `ref_count` must not inflate"
+        "re-writing the same bytes moves no reference, so `ref_count` must not inflate"
     );
 }
 
@@ -2125,20 +2057,16 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
 
     // Branch two is the one that could leak, and did: it reached the constraint only after
     // writing the changed file's rung, and a `Skipped` is not reaped, so `blobs/` held two
-    // files — this count said 2 and called that "no orphan". It now settles before the
-    // kernel runs. The source lives in the model directory, so `blobs/` holds derivatives
-    // only: the original part's one rung, and nothing else.
+    // files — this count said 2 and called that "no orphan". It settles before the kernel
+    // runs now, and ingest writes no derivative at all, so the only row that may exist is
+    // the first part's source.
     let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
         .fetch_one(&pool)
         .await
         .expect("blob count");
-    assert_eq!(
-        blobs, 2,
-        "the first part's source and its one rung, and no more"
-    );
-    assert_eq!(
-        all_files(&blob_root.path().join("blobs")).len(),
-        1,
+    assert_eq!(blobs, 1, "the first part's source, and no more");
+    assert!(
+        all_files(&blob_root.path().join("blobs")).is_empty(),
         "a re-scan of a changed file at a deleted path must not orphan its bytes on disk"
     );
 }
@@ -2527,10 +2455,10 @@ fn zero_extent_stl() -> Vec<u8> {
 
 /// **The Phase 1 exit criterion's fourth clause, at the level that decides it.**
 ///
-/// *"every part appears — with a thumbnail where the library renders them automatically, and
-/// with 'No preview yet' … where it does not"*. It did not: a mesh no picture could be made
-/// of failed the ingest job, so no part row was written and the model was absent from the
-/// library entirely. Measured, on a real corpus, at one file in 1,095.
+/// *"every part appears"*. It did not: a mesh no picture could be made of failed the ingest job,
+/// so no part row was written and the model was absent from the library entirely. Measured, on a
+/// real corpus, at one file in 1,095. The clause about a thumbnail went with the renders (R3);
+/// the clause that mattered is this one.
 ///
 /// A derivative is not the part. The mesh parses, the measurements are real, and losing the
 /// model because its preview could not be drawn is the wrong way round.
@@ -2556,19 +2484,17 @@ async fn a_model_no_picture_can_be_made_of_is_still_ingested(pool: PgPool) {
         "and it is in the library, which is the whole of what was wrong"
     );
 
-    // No thumbnail row, which is exactly the state the grid renders as "No preview yet" —
-    // the same state a library with `auto_thumbnail = false` produces, and which
-    // `POST /api/libraries/{id}/thumbnails` exists to have another go at.
-    let thumbnails: i64 = sqlx::query_scalar(
+    // No derivative row, which since R3 is every part's state: the card shows the part's own
+    // picture, or names its format where it has none.
+    let derivatives: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM derivative d JOIN revision r ON r.id = d.revision_id \
-         JOIN part p ON p.id = r.part_id \
-         WHERE p.library_id = $1 AND d.kind = 'thumbnail'",
+         JOIN part p ON p.id = r.part_id WHERE p.library_id = $1",
     )
     .bind(seeded().as_uuid())
     .fetch_one(&pool)
     .await
     .expect("counts");
-    assert_eq!(thumbnails, 0, "no preview yet, rather than no part");
+    assert_eq!(derivatives, 0, "no derivative, rather than no part");
 }
 
 /// The other half, so the change is not "nothing is fatal any more": a file that does not
@@ -2639,48 +2565,146 @@ async fn every_b_rep_format_is_refused_by_name_and_ingests_nothing(pool: PgPool)
     assert_eq!(parts, 0, "and no part is added for any of them");
 }
 
-/// A rung an older pipeline wrote is queued when the worker starts and rebuilt at the version
-/// this worker's kernel reports, and nothing current is queued beside it.
+/// **The test R3 exists for: a worker start queues nothing for work nothing can do.**
+///
+/// Four mechanisms used to queue a render for ever, and all four ran from this one call
+/// (`derive.rs`'s `enqueue_stale_derivatives`, which sweeps stale derivatives, stale shape
+/// profiles and centreless revisions in turn). Seeded here with exactly the shapes that
+/// triggered them:
+///
+/// - a `thumbnail` row, which `revisions_missing` would report missing for ever once nothing
+///   fills one;
+/// - `tessellation_l0`/`l1`/`l2`, `structure`, `entities` and `pmi` rows at a kernel version
+///   no build reports, which the per-format `produce` ladder would re-queue for ever;
+/// - a mesh revision with a volume and no centre of mass, which the centre backfill would
+///   queue an L0 rebuild for at every start;
+/// - a part with no L0 at all, which the shape sweep's inner join made invisible — the
+///   silent one.
+///
+/// **Twice**, because once proves only that the first run drained something. The job table
+/// must gain zero rows both times.
+///
+/// The last leg is the positive control, and it is not decoration: `enqueue_stale_derivatives`
+/// logs and swallows every database error, so a sweep whose SQL no longer parses also queues
+/// nothing. An export row at a stale version must still queue exactly one rebuild — without
+/// that leg this test passes on a sweep that does nothing at all.
+///
+/// Written against `derivative.kind` and `job.kind` as strings rather than through
+/// `DerivativeKind`, because the point is rows this build can no longer name: the strings are
+/// in the database on every row ever written, and R4 is what deletes them.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_rung_an_older_kernel_wrote_is_rebuilt_at_the_current_version(pool: PgPool) {
+async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
+    std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
-    let (_, current) = l0_row(&pool).await;
+    handler.handle(&job_for(CARRIER)).await.expect("ingests");
 
-    handler.enqueue_stale_derivatives().await;
-    let jobs = lapidary_db::PgJobs(pool.clone());
-    assert!(
-        jobs.dequeue("worker-a", std::time::Duration::from_secs(60))
-            .await
-            .expect("dequeues")
-            .is_none(),
-        "a rung the current kernel wrote is not stale"
-    );
-
+    // Every dead kind, on every revision, at a version no build reports. Inline rather than
+    // hash-addressed so the seed needs no `blob` rows: `derivative_storage_is_exclusive`
+    // (0004) asks for exactly one of the two, and says nothing about which kind uses which.
+    for kind in [
+        "thumbnail",
+        "tessellation_l0",
+        "tessellation_l1",
+        "tessellation_l2",
+        "structure",
+        "entities",
+        "pmi",
+    ] {
+        sqlx::query(
+            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+             SELECT uuidv7(), r.id, $1, '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+               FROM revision r \
+             ON CONFLICT (revision_id, kind) DO UPDATE \
+                SET kernel_version = 'mesh stl-1+glb-1+cpu-1'",
+        )
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .expect("seeds a derivative of a kind nothing builds any more");
+    }
+    // A mesh revision that has a volume and no centre of mass: what every revision read
+    // before L3 recorded centres looks like.
+    sqlx::query("UPDATE revision SET mass_props_json = NULL")
+        .execute(&pool)
+        .await
+        .expect("takes the centres away");
+    // And the silent one: **one** part whose latest revision has no L0 at all. One, not both:
+    // deleting every L0 row would leave the stale-derivative ladder nothing to find, and a
+    // render kind put back into it would then be caught by nothing — which is exactly what the
+    // first version of this seed did (`mutate-r3.sh`'s `ladder-sweeps-a-rung-again` survived).
     sqlx::query(
-        "UPDATE derivative SET kernel_version = 'mesh stl-1+glb-1+cpu-1' \
-         WHERE kind = 'tessellation_l0'",
+        "DELETE FROM derivative d USING revision r, part p \
+         WHERE d.revision_id = r.id AND r.part_id = p.id \
+           AND d.kind = 'tessellation_l0' AND p.source_path = $1",
     )
+    .bind(CARRIER)
     .execute(&pool)
     .await
-    .expect("ages the rung");
+    .expect("leaves one part with no viewer mesh");
+
+    let queued = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM job")
+            .fetch_one(&pool)
+            .await
+            .expect("counts the queue")
+    };
+    assert_eq!(queued(pool.clone()).await, 0, "the queue starts empty");
     handler.enqueue_stale_derivatives().await;
-    let job = jobs
-        .dequeue("worker-a", std::time::Duration::from_secs(60))
-        .await
-        .expect("dequeues")
-        .expect("the old rung is queued");
     assert_eq!(
-        handler.handle(&job).await.expect("rebuilds"),
-        Outcome::Rendered
+        queued(pool.clone()).await,
+        0,
+        "a worker start queues nothing for derivatives nothing produces"
     );
+    handler.enqueue_stale_derivatives().await;
     assert_eq!(
-        l0_row(&pool).await.1,
-        current,
-        "written at the current version"
+        queued(pool.clone()).await,
+        0,
+        "and the second start queues nothing either — a sweep that re-queues for ever is \
+         what this asserts against"
+    );
+
+    // The positive control. An export is still built on demand, so an export row an older
+    // writer left is still swept — and this is what proves the sweep ran at all.
+    let version = MeshKernel.version(&KernelParams {
+        linear_deflection_mm: None,
+        format: "stl".to_owned(),
+        produce: Vec::new(),
+    });
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
+         SELECT uuidv7(), r.id, 'export_stl', '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
+           FROM revision r JOIN part p ON p.id = r.part_id WHERE p.source_path = $1",
+    )
+    .bind(BRACKET)
+    .execute(&pool)
+    .await
+    .expect("seeds a stale export");
+    handler.enqueue_stale_derivatives().await;
+    let swept: Vec<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT kind, payload FROM job ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("reads the queue");
+    assert_eq!(
+        swept.len(),
+        1,
+        "the sweep is alive: a stale export is queued, and exactly once — {swept:?}"
+    );
+    assert_eq!(swept[0].0, "derive");
+    assert_eq!(swept[0].1["produce"], "export_stl");
+    assert_ne!(
+        version.version, "stl-1+glb-1+cpu-1",
+        "and the seed is stale against what this build reports"
+    );
+    handler.enqueue_stale_derivatives().await;
+    assert_eq!(
+        queued(pool.clone()).await,
+        1,
+        "a rebuild already queued is left to the job that holds it"
     );
 }
 
@@ -2742,248 +2766,6 @@ async fn a_closed_meshs_centre_of_mass_is_recorded_on_its_revision(pool: PgPool)
         axes.iter()
             .all(|axis| axis.as_f64().is_some_and(f64::is_finite)),
         "{centre}"
-    );
-}
-
-/// A revision from before centres of mass were recorded gets one back: a worker start queues a rebuild
-/// of its L0 rung, and rebuilding the rung is what fills the centre in (L3, item 1).
-///
-/// The rung is left exactly as it was, which is why the sweep keys on the missing centre and not on the
-/// kernel version — the mesh kernel's version names its format, its GLB writer and its rasteriser, and
-/// nothing about how it measures, so the stale-derivative sweep never finds one of these.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_revision_with_no_centre_of_mass_is_queued_for_one_when_a_worker_starts(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    handler.handle(&job_for(BRACKET)).await.expect("ingests");
-    let recorded: serde_json::Value = sqlx::query_scalar("SELECT mass_props_json FROM revision")
-        .fetch_one(&pool)
-        .await
-        .expect("the revision");
-    let jobs = lapidary_db::PgJobs(pool.clone());
-
-    // As a revision read before Lapidary recorded centres was left.
-    sqlx::query("UPDATE revision SET mass_props_json = NULL")
-        .execute(&pool)
-        .await
-        .expect("takes the centre away");
-
-    // What a worker does as it comes up.
-    handler.enqueue_stale_derivatives().await;
-    let job = jobs
-        .dequeue("worker-a", std::time::Duration::from_secs(60))
-        .await
-        .expect("dequeues")
-        .expect("a revision with no centre is queued");
-    assert_eq!(
-        handler.handle(&job).await.expect("rebuilds"),
-        Outcome::Rendered
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, serde_json::Value>("SELECT mass_props_json FROM revision")
-            .fetch_one(&pool)
-            .await
-            .expect("the revision"),
-        recorded,
-        "and the same read that rebuilt the rung recorded the same centre as ingest did"
-    );
-
-    // It converges: the row now has one, so the next start leaves it alone. The job table is emptied
-    // first, or `enqueue_if_absent` would decline for the job this test already dequeued and the leg
-    // would pass whatever the sweep's predicate said.
-    sqlx::query("DELETE FROM job")
-        .execute(&pool)
-        .await
-        .expect("empties the queue");
-    handler.enqueue_stale_derivatives().await;
-    assert!(
-        jobs.dequeue("worker-b", std::time::Duration::from_secs(60))
-            .await
-            .expect("dequeues")
-            .is_none(),
-        "a revision that has a centre is not queued again"
-    );
-
-    // And a closed mesh enclosing nothing has a volume of 0 and no centre, for ever: queueing it
-    // would be the board's "re-attempted by every scan" in a new place, so `volume > 0` is the test.
-    sqlx::query("DELETE FROM job")
-        .execute(&pool)
-        .await
-        .expect("empties the queue");
-    sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 0")
-        .execute(&pool)
-        .await
-        .expect("empties the revision");
-    handler.enqueue_stale_derivatives().await;
-    assert!(
-        jobs.dequeue("worker-c", std::time::Duration::from_secs(60))
-            .await
-            .expect("dequeues")
-            .is_none(),
-        "a revision with no volume has no centre to ask for"
-    );
-
-    // And a CAD revision is never this sweep's, whatever its row says. `handler_over` has no CAD
-    // kernel, so a `Derive` job for a STEP file would fail `Permanent` here and be queued again at
-    // every start — which is the very bug the sweep must not reintroduce. The stale-derivative sweep
-    // is what re-reads a pre-bridge-8 STEP revision, because the bridge version is inside the kernel
-    // version it keys on.
-    sqlx::query("DELETE FROM job")
-        .execute(&pool)
-        .await
-        .expect("empties the queue");
-    sqlx::query("UPDATE revision SET mass_props_json = NULL, volume = 35840")
-        .execute(&pool)
-        .await
-        .expect("gives the revision a volume and no centre again");
-    sqlx::query("UPDATE file SET format = 'step' WHERE role = 'source'")
-        .execute(&pool)
-        .await
-        .expect("makes it a CAD source");
-    handler.enqueue_stale_derivatives().await;
-    assert!(
-        jobs.dequeue("worker-d", std::time::Duration::from_secs(60))
-            .await
-            .expect("dequeues")
-            .is_none(),
-        "a CAD revision is the stale-derivative sweep's, never this one's"
-    );
-}
-
-/// The one part's materials, and whether a person typed them.
-async fn materials_of(pool: &PgPool) -> (Vec<String>, bool) {
-    sqlx::query_as("SELECT materials, materials_typed FROM part")
-        .fetch_one(pool)
-        .await
-        .expect("the part")
-}
-
-/// The mesh kernel, plus a header the file is taken to state: one material, and the system that
-/// wrote it.
-///
-/// Nothing shipped reports a header any anymore — `CadMetadata` was read off a B-rep, and those are
-/// refused by name now. The double stays because the rule underneath it is still live and still
-/// reachable through `index`: ingest writes what a file states, and a material a *person* typed
-/// outranks it. When R3 takes the header machinery out, this double goes with it.
-struct StatesAMaterial;
-
-#[async_trait::async_trait]
-impl Kernel for StatesAMaterial {
-    fn version(&self, params: &KernelParams) -> KernelVersion {
-        MeshKernel.version(params)
-    }
-
-    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
-        let mut output = MeshKernel.process(bytes, params).await?;
-        output.metadata = Some(CadMetadata {
-            originating_system: Some("SOLIDWORKS 2025".to_owned()),
-            materials: vec!["AISI 1045 steel".to_owned()],
-            ..CadMetadata::default()
-        });
-        Ok(output)
-    }
-}
-
-/// A material a person typed is kept when a revised file states another, while what the revised
-/// file says about itself is still recorded. **An empty typed list is kept just as firmly** — it says the
-/// part holds no material — and `unset_materials` is the only way back to what the file states.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_typed_material_outlasts_a_revision_whose_file_states_another(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = WorkerHandler {
-        kernel: Some(Arc::new(StatesAMaterial)),
-        ..handler_over(&pool, ingest_dir.path(), blob_root.path())
-    };
-    make_controlled(&pool, seeded()).await;
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-    assert_eq!(
-        materials_of(&pool).await,
-        (vec!["AISI 1045 steel".to_owned()], false),
-        "what the file states, and nobody typed it"
-    );
-    let part = lapidary_core::PartId::from_uuid(
-        sqlx::query_scalar("SELECT id FROM part")
-            .fetch_one(&pool)
-            .await
-            .expect("the part"),
-    );
-    lapidary_db::PgParts(pool.clone())
-        .set_materials(part, &["EN AW-6082 T6".to_owned()])
-        .await
-        .expect("a material is typed");
-    // As an older reading left it, so the revision is seen to read the file again.
-    sqlx::query(
-        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{cad,originating_system}', '\"CATIA V5\"')",
-    )
-    .execute(&pool)
-    .await
-    .expect("ages the header");
-
-    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("revises"),
-        Outcome::Revised
-    );
-    assert_eq!(
-        materials_of(&pool).await,
-        (vec!["EN AW-6082 T6".to_owned()], true),
-        "the typed material, not the one the revised file states"
-    );
-    let system: serde_json::Value =
-        sqlx::query_scalar("SELECT metadata_json->'cad'->'originating_system' FROM part")
-            .fetch_one(&pool)
-            .await
-            .expect("the header");
-    assert_eq!(
-        system, "SOLIDWORKS 2025",
-        "while what the revised file says about itself is recorded"
-    );
-
-    // L3, item 4: an empty typed list is "holds no material", and a file naming one does not undo it.
-    // This is the assertion the item exists for — the state is only worth having if it survives the
-    // next read of a file that states a material.
-    lapidary_db::PgParts(pool.clone())
-        .set_materials(part, &[])
-        .await
-        .expect("the part is said to hold none");
-    assert_eq!(
-        materials_of(&pool).await,
-        (Vec::<String>::new(), true),
-        "holds none, and a person decided so"
-    );
-    sqlx::query(
-        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{cad,originating_system}', '\"CATIA V5\"')",
-    )
-    .execute(&pool)
-    .await
-    .expect("ages the header");
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("revises"),
-        Outcome::Revised
-    );
-    assert_eq!(
-        materials_of(&pool).await,
-        (Vec::<String>::new(), true),
-        "and the file naming AISI 1045 steel again does not put it back"
-    );
-
-    // `unset_materials` is the way back, and only it.
-    lapidary_db::PgParts(pool.clone())
-        .unset_materials(part)
-        .await
-        .expect("the part is handed back to its file");
-    assert_eq!(
-        materials_of(&pool).await,
-        (vec!["AISI 1045 steel".to_owned()], false),
-        "handed back, the part holds what its file states again"
     );
 }
 

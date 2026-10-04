@@ -5,11 +5,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use lapidary_api::{AppState, Role, router};
-use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements};
-use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow, TessellationRow};
+use lapidary_core::{BlobHash, LibraryId, MeshMeasurements};
+use lapidary_db::{IngestRequest, PgIngest, StoredBlobRow};
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path
@@ -40,15 +38,8 @@ fn measurements() -> MeshMeasurements {
 /// Records one part through `PgIngest`, the same repository the scan handler uses —
 /// this endpoint only reads, so there is no API of its own to create fixture data with.
 /// `seed` distinguishes the blob hash between calls; a real hash would do just as well,
-/// but nothing here inspects the bytes' content, only their round trip through the
-/// thumbnail column.
-async fn seed_part(
-    pool: &sqlx::PgPool,
-    library: LibraryId,
-    seed: u8,
-    name: &str,
-    thumbnail_webp: &[u8],
-) {
+/// but nothing here inspects the bytes' content.
+async fn seed_part(pool: &sqlx::PgPool, library: LibraryId, seed: u8, name: &str) {
     let blob = StoredBlobRow {
         hash: BlobHash::from_bytes([seed; 32]),
         size_bytes: 2_048,
@@ -66,10 +57,7 @@ async fn seed_part(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(thumbnail_webp),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part");
@@ -125,9 +113,9 @@ async fn an_empty_library_returns_no_parts_and_no_next(pool: sqlx::PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn three_parts_come_back_newest_first(pool: sqlx::PgPool) {
-    seed_part(&pool, library(), 0x01, "Bracket, LP-1042-03", b"webp-1").await;
-    seed_part(&pool, library(), 0x02, "Spacer, LP-2001-00", b"webp-2").await;
-    seed_part(&pool, library(), 0x03, "Cable clip, LP-3300-01", b"webp-3").await;
+    seed_part(&pool, library(), 0x01, "Bracket, LP-1042-03").await;
+    seed_part(&pool, library(), 0x02, "Spacer, LP-2001-00").await;
+    seed_part(&pool, library(), 0x03, "Cable clip, LP-3300-01").await;
 
     let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
     assert_eq!(status, StatusCode::OK);
@@ -152,9 +140,9 @@ async fn three_parts_come_back_newest_first(pool: sqlx::PgPool) {
 async fn limit_is_honoured_and_next_is_the_last_id_only_while_a_further_page_exists(
     pool: sqlx::PgPool,
 ) {
-    seed_part(&pool, library(), 0x11, "Bracket, LP-1042-03", b"webp-1").await;
-    seed_part(&pool, library(), 0x12, "Spacer, LP-2001-00", b"webp-2").await;
-    seed_part(&pool, library(), 0x13, "Cable clip, LP-3300-01", b"webp-3").await;
+    seed_part(&pool, library(), 0x11, "Bracket, LP-1042-03").await;
+    seed_part(&pool, library(), 0x12, "Spacer, LP-2001-00").await;
+    seed_part(&pool, library(), 0x13, "Cable clip, LP-3300-01").await;
 
     let (status, first) = get_page(pool.clone(), SEEDED_LIBRARY, "limit=2").await;
     assert_eq!(status, StatusCode::OK);
@@ -186,37 +174,13 @@ async fn limit_is_honoured_and_next_is_the_last_id_only_while_a_further_page_exi
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_thumbnail_is_a_data_url_that_decodes_to_the_ingested_bytes(pool: sqlx::PgPool) {
-    let original = b"a small deterministic stand-in for a real WebP payload";
-    seed_part(&pool, library(), 0x21, "Bracket, LP-1042-03", original).await;
-
-    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
-    assert_eq!(status, StatusCode::OK);
-    let thumbnail = json["parts"][0]["thumbnail"]
-        .as_str()
-        .expect("thumbnail is a string");
-
-    let prefix = "data:image/webp;base64,";
-    assert!(thumbnail.starts_with(prefix), "got {thumbnail}");
-    // Decode and compare the exact bytes, not just the prefix — a truncated or
-    // wrongly-encoded payload would still pass a prefix-only check.
-    let decoded = BASE64
-        .decode(&thumbnail[prefix.len()..])
-        .expect("the payload after the prefix is valid base64");
-    assert_eq!(
-        decoded, original,
-        "the decoded bytes must be exactly what was ingested"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_card_carries_the_revision_and_the_storage_figures(pool: sqlx::PgPool) {
     // `to_card` is a hand-written mapping of five new fields, and it is the only seam
     // the rest of the suite does not cross: `PgParts::page`'s test asserts the domain
     // shape, and the web fixtures are hand-built `PartCard`s that never travel through
     // here. A mapper that dropped `revision`, or that assigned `sourceBytes` to both
     // size fields, would leave every one of those green and reach the browser wrong.
-    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03", b"webp").await;
+    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03").await;
     // As text: this crate does not depend on `uuid`, and comparing the JSON string to a
     // string is the same assertion without a dependency added to make a test read nicer.
     let revision: String = sqlx::query_scalar(
@@ -263,8 +227,8 @@ async fn a_part_in_another_library_never_appears(pool: sqlx::PgPool) {
         .await
         .expect("insert second library");
 
-    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03", b"webp-a").await;
-    seed_part(&pool, other_library, 0x32, "Widget, LP-9999-00", b"webp-b").await;
+    seed_part(&pool, library(), 0x31, "Bracket, LP-1042-03").await;
+    seed_part(&pool, other_library, 0x32, "Widget, LP-9999-00").await;
 
     let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
     assert_eq!(status, StatusCode::OK);
@@ -291,7 +255,6 @@ async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: 
             library(),
             (i % 256) as u8,
             &format!("Fixture part {i:03}"),
-            b"webp",
         )
         .await;
     }
@@ -332,7 +295,7 @@ async fn limit_is_capped_at_max_limit_and_an_oversized_value_does_not_400(pool: 
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn an_empty_after_and_limit_are_treated_as_absent(pool: sqlx::PgPool) {
-    seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03", b"webp-a").await;
+    seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03").await;
 
     // The literal shape this endpoint's own docs use:
     // `after=${cursor ?? ''}&limit=${n}` sends exactly this on the first page, before
@@ -386,7 +349,7 @@ async fn a_database_failure_returns_a_generic_scrubbed_message(pool: sqlx::PgPoo
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_corrupt_rows_own_error_text_reaches_the_client_verbatim(pool: sqlx::PgPool) {
-    seed_part(&pool, library(), 0x51, "Bracket, LP-1042-03", b"webp").await;
+    seed_part(&pool, library(), 0x51, "Bracket, LP-1042-03").await;
     sqlx::query(
         "UPDATE revision SET triangle_count = -7 WHERE part_id = (SELECT id FROM part LIMIT 1)",
     )
@@ -458,9 +421,8 @@ async fn seed_sized_part(
     name: &str,
     format: &str,
     blob: StoredBlobRow,
-    thumbnail_webp: &[u8],
     storage_path: &str,
-) {
+) -> lapidary_core::PartId {
     assert_eq!(blob.hash, BlobHash::from_bytes([seed; 32]));
     PgIngest(pool.clone())
         .record(IngestRequest {
@@ -473,13 +435,10 @@ async fn seed_sized_part(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(thumbnail_webp),
-            kernel_version: "mesh stl-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
-        .expect("seed part");
+        .expect("seed part")
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -489,7 +448,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     // could not produce 266,094. Both are shaped as ingest writes them since the store
     // became a folder tree: one file per part at its own path, uncompressed, so
     // `size_bytes` is what the file occupies.
-    seed_sized_part(
+    let bracket = seed_sized_part(
         &pool,
         0xe1,
         "Bracket, LP-1042-03",
@@ -500,7 +459,6 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
             stored_bytes: 204_800,
             zstd_level: 0,
         },
-        b"webp-bracket",
         "libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl",
     )
     .await;
@@ -515,8 +473,17 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
             stored_bytes: 61_294,
             zstd_level: 0,
         },
-        b"webp-impeller",
         "libraries/default/impeller-lp-5501-02/impeller-lp-5501-02.3mf",
+    )
+    .await;
+    // One export, so the derivative total and the ratio are figures rather than zeroes. The
+    // derivative half of this panel is the exports now: ingest writes no derivative at all.
+    file_export(
+        &pool,
+        bracket,
+        lapidary_core::DerivativeKind::ExportStl,
+        0xe3,
+        12_405,
     )
     .await;
 
@@ -526,9 +493,8 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     let derivative = json["derivativeBytes"].as_u64().expect("a JSON number");
     assert_eq!(source, 204_800 + 61_294);
     assert_eq!(
-        derivative,
-        ("webp-bracket".len() + "webp-impeller".len()) as u64,
-        "both previews, counted where they are actually stored"
+        derivative, 12_405,
+        "the one export, counted where it is actually stored"
     );
 
     // Numbers, not strings: `u64` would reach ts-rs as `bigint` and serde as a number,
@@ -542,7 +508,7 @@ async fn the_storage_route_reports_both_totals_and_the_ratio_between_them(pool: 
     );
     assert!(
         ratio < 1.0,
-        "two previews against 260 KB of sources is a small fraction; a ratio above 1 \
+        "12 KB of export against 260 KB of sources is a small fraction; a ratio above 1 \
          here would mean the division is inverted: {ratio}"
     );
 }
@@ -591,10 +557,7 @@ async fn seed_filed_part(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed filed part");
@@ -699,7 +662,7 @@ async fn a_card_carries_the_model_directory_or_null_while_it_has_none(pool: sqlx
         "libraries/default/Terrain/Rocks/basalt cliff face/cliff.stl",
     )
     .await;
-    seed_part(&pool, library(), 0x72, "Corner bracket, LP-2280-A", b"webp").await;
+    seed_part(&pool, library(), 0x72, "Corner bracket, LP-2280-A").await;
 
     let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
 
@@ -746,92 +709,6 @@ async fn the_worker_role_does_not_serve_the_storage_route(pool: sqlx::PgPool) {
         json,
         serde_json::Value::Null,
         "the storage route is mounted on the worker, which no browser can reach"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_card_carries_the_l0_rung_hash_so_those_bytes_are_addressable(pool: sqlx::PgPool) {
-    // Every ingest since slice 3 has written an L0 glTF, reference-counted, and nothing
-    // carried its hash — so `GET /api/blob/{blake3}` had no possible caller and roughly
-    // 7.5 MB per 1,000 parts was written and unreachable. One field closes it.
-    let library = library();
-    let rung = BlobHash::from_bytes([0x7a; 32]);
-    let blob = StoredBlobRow {
-        hash: BlobHash::from_bytes([0x11; 32]),
-        size_bytes: 2_048,
-        stored_bytes: 1_024,
-        zstd_level: 3,
-    };
-    PgIngest(pool.clone())
-        .record(IngestRequest {
-            origin: lapidary_core::RevisionOrigin::Ingest,
-            library,
-            name: "LP-1042-03",
-            source_path: "brackets/LP-1042-03.stl",
-            // Staged through the content-addressed writer, so this row is one that has
-            // not migrated: no folder, no storage path.
-            folder: None,
-            storage_path: None,
-            blob: &blob,
-            measurements: &measurements(),
-            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(&[0x52, 0x49, 0x46, 0x46]),
-            kernel_version: "mesh stl-1+cpu-1",
-            format: "stl",
-            tessellations: &[TessellationRow {
-                kind: DerivativeKind::TessellationL0.as_str(),
-                blob: StoredBlobRow {
-                    hash: rung,
-                    size_bytes: 7_500,
-                    stored_bytes: 7_500,
-                    zstd_level: 0,
-                },
-                grid: Some(64),
-            }],
-        })
-        .await
-        .expect("seed part with a rung");
-
-    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json["parts"][0]["tessellationL0"],
-        rung.to_hex(),
-        "the card must name the rung it has: {}",
-        json["parts"][0]
-    );
-    // The thumbnail is still inline and still separate — the two derivative LATERALs read
-    // different kinds off one revision, which is the thing a plain join would fan out on.
-    assert!(
-        json["parts"][0]["thumbnail"]
-            .as_str()
-            .expect("a thumbnail")
-            .starts_with("data:image/webp;base64,")
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_part_with_no_rung_says_so_rather_than_naming_bytes_that_do_not_exist(
-    pool: sqlx::PgPool,
-) {
-    // A part ingested before the LOD ladder, or one whose derive job has not run. `None`
-    // has to survive to the wire: a hash invented here would be a 404 the user meets
-    // later, at the point where they clicked something.
-    seed_part(
-        &pool,
-        library(),
-        0x22,
-        "LP-2001-00",
-        &[0x52, 0x49, 0x46, 0x46],
-    )
-    .await;
-
-    let (status, json) = get_page(pool, SEEDED_LIBRARY, "").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        json["parts"][0]["tessellationL0"].is_null(),
-        "got: {}",
-        json["parts"][0]["tessellationL0"]
     );
 }
 
@@ -975,22 +852,8 @@ async fn get_page_with(pool: sqlx::PgPool, query: &str) -> (StatusCode, serde_js
 /// Two parts whose names carry real identifiers, which is the shape a corpus actually has:
 /// nothing writes `part_number`, so `lp-3310` lives inside the name or nowhere.
 async fn seed_two_parts(pool: &sqlx::PgPool) {
-    seed_part(
-        pool,
-        library(),
-        0xe1,
-        "flange-dn40-lp-3310-02",
-        b"webp-flange",
-    )
-    .await;
-    seed_part(
-        pool,
-        library(),
-        0xe2,
-        "spur-gear-m2-20t-lp-5140-00",
-        b"webp-gear",
-    )
-    .await;
+    seed_part(pool, library(), 0xe1, "flange-dn40-lp-3310-02").await;
+    seed_part(pool, library(), 0xe2, "spur-gear-m2-20t-lp-5140-00").await;
 }
 
 /// The route branches on the query and returns the same cards either way — same shape, same
@@ -1082,15 +945,8 @@ async fn put_part_number(pool: sqlx::PgPool, part: &str, body: serde_json::Value
 /// finds that part first, ahead of a part merely named for the same digits.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_part_number_set_through_the_api_is_found_first_by_its_fragment(pool: sqlx::PgPool) {
-    seed_part(
-        &pool,
-        library(),
-        0xf1,
-        "bracket-1234-mount",
-        b"webp-bracket",
-    )
-    .await;
-    seed_part(&pool, library(), 0xf2, "coupler-flexible", b"webp-coupler").await;
+    seed_part(&pool, library(), 0xf1, "bracket-1234-mount").await;
+    seed_part(&pool, library(), 0xf2, "coupler-flexible").await;
     let (_, coupler) = get_page_with(pool.clone(), "q=coupler").await;
     let id = coupler["parts"][0]["id"]
         .as_str()
@@ -1128,7 +984,7 @@ async fn a_part_number_set_through_the_api_is_found_first_by_its_fragment(pool: 
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_part_number_for_no_part_or_past_the_limit_is_refused(pool: sqlx::PgPool) {
-    seed_part(&pool, library(), 0xf3, "coupler-flexible", b"webp-coupler").await;
+    seed_part(&pool, library(), 0xf3, "coupler-flexible").await;
     let (_, page) = get_page_with(pool.clone(), "").await;
     let id = page["parts"][0]["id"].as_str().expect("an id").to_owned();
 
@@ -1162,10 +1018,7 @@ async fn seed_format(pool: &sqlx::PgPool, seed: u8, name: &str, format: &str) {
             },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format,
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -1262,10 +1115,7 @@ async fn seed_volume(pool: &sqlx::PgPool, seed: u8, name: &str, volume_mm3: Opti
                 ..measurements()
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records");
@@ -1403,14 +1253,7 @@ async fn tags_request(
 async fn materials_typed_through_the_api_are_counted_and_an_empty_list_means_none(
     pool: sqlx::PgPool,
 ) {
-    seed_part(
-        &pool,
-        library(),
-        0xe3,
-        "flange-dn40-lp-3310-02",
-        b"webp-flange",
-    )
-    .await;
+    seed_part(&pool, library(), 0xe3, "flange-dn40-lp-3310-02").await;
     let (_, page) = get_page_with(pool.clone(), "q=flange").await;
     let id = page["parts"][0]["id"]
         .as_str()
@@ -1513,15 +1356,8 @@ async fn materials_typed_through_the_api_are_counted_and_an_empty_list_means_non
 /// narrows the grid, the facets count tags, and the part's page lists them.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn tags_set_through_the_api_narrow_the_grid_and_are_counted(pool: sqlx::PgPool) {
-    seed_part(
-        &pool,
-        library(),
-        0xe1,
-        "bracket-lp-1042-03",
-        b"webp-bracket",
-    )
-    .await;
-    seed_part(&pool, library(), 0xe2, "coupler-flexible", b"webp-coupler").await;
+    seed_part(&pool, library(), 0xe1, "bracket-lp-1042-03").await;
+    seed_part(&pool, library(), 0xe2, "coupler-flexible").await;
     let (_, coupler) = get_page_with(pool.clone(), "q=coupler").await;
     let id = coupler["parts"][0]["id"]
         .as_str()
@@ -1609,23 +1445,17 @@ async fn tags_set_through_the_api_narrow_the_grid_and_are_counted(pool: sqlx::Pg
     );
 }
 
-/// "Free cache space" end to end through the router: a rung nobody has read in 90 days is
-/// counted, removed and quarantined; L0 and the source file stay; and the part asks for its L1
-/// again the way a freshly ingested part does.
+/// "Free cache space" end to end through the router: an export nobody has read in 90 days is
+/// counted, removed and quarantined; the source file stays; and the part asks for the export
+/// again the way one never built is.
+///
+/// **It is the exports alone since R3.** `cache_kinds` named the L1 and L2 rungs too, and after
+/// the pivot evicting one of those would be data loss dressed as a cache sweep — nothing can
+/// rebuild a rung. The rows are still in the table; R4's migration deletes them.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_again(
+async fn freeing_cache_space_quarantines_old_exports_and_the_part_asks_for_them_again(
     pool: sqlx::PgPool,
 ) {
-    let rung = |kind: &'static str, seed: u8, stored: u64| lapidary_db::TessellationRow {
-        kind,
-        blob: lapidary_db::StoredBlobRow {
-            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
-            size_bytes: stored,
-            stored_bytes: stored,
-            zstd_level: 0,
-        },
-        grid: Some(64),
-    };
     let part = lapidary_db::PgIngest(pool.clone())
         .record(lapidary_db::IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
@@ -1650,16 +1480,18 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"idler-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
             format: "stl",
-            tessellations: &[
-                rung("tessellation_l0", 0xc0, 9_140),
-                rung("tessellation_l1", 0xc1, 48_210),
-            ],
         })
         .await
         .expect("records");
+    file_export(
+        &pool,
+        part,
+        lapidary_core::DerivativeKind::Export3mf,
+        0xc1,
+        48_210,
+    )
+    .await;
     sqlx::query(
         "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
     )
@@ -1672,7 +1504,7 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
         get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
     assert_eq!(
         before["renderCacheBytes"], 48_210,
-        "the L1 only: L0 is not cache"
+        "the export only: a source file is never cache"
     );
 
     let app = router(
@@ -1717,165 +1549,58 @@ async fn freeing_cache_space_quarantines_old_rungs_and_the_part_asks_for_them_ag
     .fetch_all(&pool)
     .await
     .expect("kinds");
-    assert_eq!(kinds, ["tessellation_l0", "thumbnail"]);
+    assert!(
+        kinds.is_empty(),
+        "the evicted export's row goes too: {kinds:?}"
+    );
+    let source: i64 = sqlx::query_scalar("SELECT count(*) FROM file WHERE role = 'source'")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(source, 1, "and the user's own file is untouched");
 
     let rebuilt = app
-        .oneshot(post(format!("/api/parts/{part}/rungs/l1")))
+        .oneshot(post(format!("/api/parts/{part}/exports/3mf")))
         .await
         .expect("responds");
     assert_eq!(
         rebuilt.status(),
         StatusCode::ACCEPTED,
-        "an evicted L1 is asked for again, as one never built is"
+        "an evicted export is asked for again, as one never built is"
     );
 }
 
-/// Rungs are served `immutable`, so a browser holding one never asks the blob route again: opening
-/// the part is what says its previews are in use, before the render cache counts them.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn opening_a_part_keeps_its_previews_out_of_the_render_cache(pool: sqlx::PgPool) {
-    let part = an_aged_part_with_previews(&pool).await;
-    let store = tempfile::tempdir().expect("a store");
-    let (_, before) =
-        get_instance_storage(pool.clone(), store.path().to_path_buf(), None, "").await;
-    assert_eq!(before["renderCacheBytes"], 48_210);
-
-    let touches = lapidary_db::Touches::default();
-    let response = router(
-        AppState {
-            db: pool.clone(),
-            blob_root: store.path().to_path_buf(),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            touches: touches.clone(),
-        },
-        Role::Api,
-    )
-    .oneshot(
-        Request::builder()
-            .uri(format!("/api/parts/{part}"))
-            .body(Body::empty())
-            .expect("request builds"),
-    )
-    .await
-    .expect("responds");
-    assert_eq!(response.status(), StatusCode::OK);
-    touches.flush(&pool).await.expect("flushes the reads");
-
-    let (_, after) = get_instance_storage(pool, store.path().to_path_buf(), None, "").await;
-    assert_eq!(
-        after["renderCacheBytes"], 0,
-        "a part just opened has no cold previews"
-    );
-}
-
-/// "Free cache space" runs in the process that holds the reads not yet written, so a part opened a
-/// moment ago keeps its previews whenever the next flush is due.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn freeing_cache_space_keeps_the_previews_of_a_part_opened_moments_ago(pool: sqlx::PgPool) {
-    let part = an_aged_part_with_previews(&pool).await;
-    let store = tempfile::tempdir().expect("a store");
-    let app = router(
-        AppState {
-            db: pool.clone(),
-            blob_root: store.path().to_path_buf(),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            touches: lapidary_db::Touches::default(),
-        },
-        Role::Api,
-    );
-    let opened = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/parts/{part}"))
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("responds");
-    assert_eq!(opened.status(), StatusCode::OK);
-
-    let freed = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/storage/render-cache")
-                .body(Body::empty())
-                .expect("request builds"),
-        )
-        .await
-        .expect("responds");
-    assert_eq!(freed.status(), StatusCode::OK);
-    let body: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(freed.into_body(), 64 * 1024)
+/// One hash-addressed derivative onto a part's latest revision, as a `derive` job files one.
+///
+/// After the ingest, not inside it: ingest writes no derivative since R3.
+async fn file_export(
+    pool: &sqlx::PgPool,
+    part: lapidary_core::PartId,
+    kind: lapidary_core::DerivativeKind,
+    seed: u8,
+    stored: u64,
+) {
+    let revision: sqlx::types::Uuid =
+        sqlx::query_scalar("SELECT id FROM revision WHERE part_id = $1 ORDER BY id DESC LIMIT 1")
+            .bind(part.as_uuid())
+            .fetch_one(pool)
             .await
-            .expect("body reads"),
-    )
-    .expect("json");
-    assert_eq!(body["removed"], 0, "{body}");
-    let l1: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM derivative WHERE kind = 'tessellation_l1'")
-            .fetch_one(&pool)
-            .await
-            .expect("counts");
-    assert_eq!(l1, 1, "the open part's L1 is still there");
-}
-
-/// A mounting plate with an L0 and an L1 whose blobs are 120 days old and never read.
-async fn an_aged_part_with_previews(pool: &sqlx::PgPool) -> lapidary_core::PartId {
-    let rung = |kind: &'static str, seed: u8, stored: u64| lapidary_db::TessellationRow {
-        kind,
-        blob: lapidary_db::StoredBlobRow {
-            hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
-            size_bytes: stored,
-            stored_bytes: stored,
-            zstd_level: 0,
-        },
-        grid: Some(64),
-    };
-    let part = lapidary_db::PgIngest(pool.clone())
-        .record(lapidary_db::IngestRequest {
-            origin: lapidary_core::RevisionOrigin::Ingest,
-            folder: None,
-            storage_path: Some(
-                "libraries/default/mounting-plate-lp-1180-01/mounting-plate-lp-1180-01.stl",
-            ),
-            library: lapidary_core::LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid")),
-            name: "Mounting plate, LP-1180-01",
-            source_path: "mounting-plate-lp-1180-01.stl",
-            blob: &lapidary_db::StoredBlobRow {
-                hash: lapidary_core::BlobHash::from_bytes([0xe9; 32]),
-                size_bytes: 91_204,
-                stored_bytes: 91_204,
+            .expect("the revision");
+    lapidary_db::PgIngest(pool.clone())
+        .upsert_derivative(
+            lapidary_core::RevisionId::from_uuid(revision),
+            kind,
+            &lapidary_db::StoredBlobRow {
+                hash: lapidary_core::BlobHash::from_bytes([seed; 32]),
+                size_bytes: stored,
+                stored_bytes: stored,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
-                bbox_mm: [120.0, 80.0, 6.0],
-                triangle_count: 2_412,
-                surface_area_mm2: 21_540.0,
-                volume_mm3: Some(52_110.0),
-                is_watertight: true,
-            },
-            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"plate-thumbnail"),
-            kernel_version: "mesh stl-1+glb-1+cpu-1",
-            format: "stl",
-            tessellations: &[
-                rung("tessellation_l0", 0xe0, 9_140),
-                rung("tessellation_l1", 0xe1, 48_210),
-            ],
-        })
+            None,
+            "mesh stl-1+glb-2+cpu-1",
+        )
         .await
-        .expect("records");
-    sqlx::query(
-        "UPDATE blob SET created_at = now() - interval '120 days', last_accessed_at = NULL",
-    )
-    .execute(pool)
-    .await
-    .expect("ages every blob");
-    part
+        .expect("the export lands");
 }
 
 /// A part's own mass is on its page, worked out from its one material's density when the page is read
@@ -1884,14 +1609,7 @@ async fn an_aged_part_with_previews(pool: &sqlx::PgPool) -> lapidary_core::PartI
 /// page is given what it needs to say which of the reasons it is.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_parts_own_mass_is_on_its_page_and_is_always_approximate(pool: sqlx::PgPool) {
-    seed_part(
-        &pool,
-        library(),
-        0xe7,
-        "sleeve-d20-lp-3120-01",
-        b"webp-sleeve",
-    )
-    .await;
+    seed_part(&pool, library(), 0xe7, "sleeve-d20-lp-3120-01").await;
     // A B-rep's figures, so this part's volume carries no mark of its own and the mass's mark cannot
     // be the volume's leaking through.
     sqlx::query(
@@ -1993,7 +1711,7 @@ async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(po
         (0xd3, "dragon-ancient-red-lp-7802-a"),
         (0xd4, "spacer-lp-2001-00"),
     ] {
-        seed_part(&pool, library(), seed, name, b"webp").await;
+        seed_part(&pool, library(), seed, name).await;
     }
     // The tags a terrain-and-miniatures library actually carries, including one with a space and one
     // with a slash — `PUT /api/parts/{id}/tags` accepts both, so both have to be reachable.

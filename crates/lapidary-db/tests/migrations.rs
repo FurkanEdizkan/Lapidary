@@ -1,6 +1,8 @@
 //! The schema constraints slice 2 adds are load-bearing, not decoration: one of them is
 //! what makes at-least-once job delivery safe. Each is tested by trying to violate it.
 
+use lapidary_core::{BatchId, LibraryId};
+use lapidary_db::PgJobs;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -233,7 +235,9 @@ async fn pre_existing_tessellation_rungs_survive_the_auto_thumbnail_migration(po
         .expect("tessellation rung inserts");
     }
 
-    migrator.run(&pool).await.expect("0005 applies");
+    // `run_to(5)`, not `run`: 0054 drops `auto_thumbnail` again, and this case is about what
+    // 0005 does to rows that pre-date it.
+    migrator.run_to(5, &pool).await.expect("0005 applies");
 
     let has_column: bool = sqlx::query_scalar(
         "SELECT exists (SELECT 1 FROM information_schema.columns \
@@ -811,4 +815,249 @@ async fn a_share_made_before_member_lists_still_reaches_everyone(pool: PgPool) {
         audience, "everyone",
         "a share nobody picked people for goes on reaching whoever is paired"
     );
+}
+
+/// `0054`: production stops. The queue loses the jobs no handler can run, the similarity tables
+/// go, the thumbnail setting goes — and **finished history keeps its word**.
+///
+/// Run by hand up to `0052` so the rows genuinely pre-date `0054` rather than being inserted into
+/// a database that has already dropped the tables they live in. `0053` is reserved for another
+/// goal and does not exist yet, so `0052` is the version before this one.
+#[sqlx::test(migrations = false)]
+async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(52, &pool)
+        .await
+        .expect("migrations up to 0052 apply");
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+
+    let part = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
+        .bind(part)
+        .bind(library)
+        .bind("Bracket, LP-1042-03")
+        .bind("brackets/bracket-lp-1042-03.stl")
+        .execute(&pool)
+        .await
+        .expect("a part");
+    let revision = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision)
+    .bind(part)
+    .execute(&pool)
+    .await
+    .expect("a revision");
+
+    // One batch holding the whole mixture, so "its batch still totals correctly" is a real
+    // assertion about one batch rather than about three.
+    let batch = Uuid::now_v7();
+    let queued = async |state: &'static str, kind: &'static str, produce: Option<&'static str>| {
+        let id = Uuid::now_v7();
+        let payload = match produce {
+            Some(produce) => serde_json::json!({ "revision": revision, "produce": produce }),
+            None => serde_json::json!({ "revision": revision }),
+        };
+        sqlx::query(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome, \
+                              last_error, leased_by, lease_expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, \
+                     CASE WHEN $6 = 'done' THEN $7 END, \
+                     CASE WHEN $6 = 'failed' THEN 'the reason this job gave' END, \
+                     CASE WHEN $6 = 'running' THEN 'worker-a' END, \
+                     CASE WHEN $6 = 'running' THEN now() + interval '60 seconds' END)",
+        )
+        .bind(id)
+        .bind(batch)
+        .bind(library)
+        .bind(kind)
+        .bind(&payload)
+        .bind(state)
+        .bind(if kind == "profile_shape" {
+            "profiled"
+        } else {
+            "rendered"
+        })
+        .execute(&pool)
+        .await
+        .expect("a job row");
+        id
+    };
+
+    let pending_profile = queued("pending", "profile_shape", None).await;
+    // **`running`, not only pending.** `dequeue` reclaims a running row whose lease expires, so
+    // one left behind is claimed by the next worker and fails on a payload it cannot parse.
+    let running_rung = queued("running", "derive", Some("tessellation_l0")).await;
+    let pending_thumb = queued("pending", "derive", Some("thumbnail")).await;
+    let done_profile = queued("done", "profile_shape", None).await;
+    let done_rung = queued("done", "derive", Some("tessellation_l2")).await;
+    // **Failed rows of a dead kind stay**, deliberately: deleting them would change the totals of
+    // a batch somebody already read. `PgJobs::retry` is what must not put them back — see below.
+    let failed_profile = queued("failed", "profile_shape", None).await;
+    let failed_thumb = queued("failed", "derive", Some("thumbnail")).await;
+    // Live work, and it must survive: the exports are still built on demand.
+    let pending_export = queued("pending", "derive", Some("export_stl")).await;
+    let failed_export = queued("failed", "derive", Some("export_3mf")).await;
+    let pending_ingest = queued("pending", "ingest_file", None).await;
+
+    sqlx::query(
+        "INSERT INTO part_shape (part_id, library_id, revision_id, l0_blake3, version, size_mm, descriptor) \
+         VALUES ($1, $2, $3, repeat('a', 64), 1, 12.5, array_fill(0.1::real, ARRAY[35]))",
+    )
+    .bind(part)
+    .bind(library)
+    .bind(revision)
+    .execute(&pool)
+    .await
+    .expect("a shape profile");
+    let other = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
+        .bind(other)
+        .bind(library)
+        .bind("Bracket, LP-1042-04")
+        .bind("brackets/bracket-lp-1042-04.stl")
+        .execute(&pool)
+        .await
+        .expect("a second part");
+    sqlx::query(
+        "INSERT INTO part_link (part_id, other_id, library_id, kind) \
+         VALUES (least($1, $2), greatest($1, $2), $3, 'variant')",
+    )
+    .bind(part)
+    .bind(other)
+    .bind(library)
+    .execute(&pool)
+    .await
+    .expect("a decision about a pair");
+
+    migrator.run(&pool).await.expect("0054 applies");
+
+    let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM job ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .expect("reads the queue");
+    for (id, what) in [
+        (pending_profile, "a pending profile_shape"),
+        (running_rung, "a running rung rebuild"),
+        (pending_thumb, "a pending thumbnail"),
+    ] {
+        assert!(
+            !surviving.contains(&id),
+            "{what} names work no handler can run and must be gone"
+        );
+    }
+    for (id, what) in [
+        (done_profile, "a finished profile_shape"),
+        (done_rung, "a finished rung rebuild"),
+        (failed_profile, "a failed profile_shape"),
+        (failed_thumb, "a failed thumbnail rebuild"),
+        (pending_export, "a pending export"),
+        (failed_export, "a failed export"),
+        (pending_ingest, "a pending ingest"),
+    ] {
+        assert!(surviving.contains(&id), "{what} must survive");
+    }
+
+    // **Finished history keeps its word.** `0047` added `profiled` to `job_outcome_known` and a
+    // done row still holds it; `job_done_has_outcome` requires a finished job to say how it
+    // finished, so dropping the value would make those rows unwritable and the constraint a lie
+    // about the table's own contents.
+    let outcome: String = sqlx::query_scalar("SELECT outcome FROM job WHERE id = $1")
+        .bind(done_profile)
+        .fetch_one(&pool)
+        .await
+        .expect("reads it back");
+    assert_eq!(outcome, "profiled", "a finished job keeps what it said");
+    sqlx::query("UPDATE job SET outcome = 'profiled' WHERE id = $1")
+        .bind(done_rung)
+        .execute(&pool)
+        .await
+        .expect("`profiled` is still a value `job_outcome_known` admits");
+    // Put back, because the counts below are about this row: writing `profiled` over its
+    // `rendered` is a probe of the constraint, not a fact about the batch.
+    sqlx::query("UPDATE job SET outcome = 'rendered' WHERE id = $1")
+        .bind(done_rung)
+        .execute(&pool)
+        .await
+        .expect("restores what the row said");
+
+    // **And the batch still adds up, read through `PgJobs::batch_status` itself** rather than
+    // through a copy of its SQL — a copy would pass just as happily if the real aggregate were
+    // broken. Seven rows left: two finished, two pending, three failed.
+    let library = LibraryId::from_uuid(library);
+    let status = PgJobs(pool.clone())
+        .batch_status(library, BatchId::from_uuid(batch))
+        .await
+        .expect("the batch reads")
+        .expect("the batch is there");
+    assert_eq!(status.total, 7);
+    assert_eq!(status.pending, 2);
+    assert_eq!(status.failed_total, 3);
+    assert_eq!(
+        status.rendered, 1,
+        "the finished rung rebuild still counts as a render"
+    );
+    // Every failure is listed, including the two of kinds this build cannot name: `failures` is
+    // pure SQL and never parses a payload, so an old row is a row and not a 500.
+    assert_eq!(status.failed.len(), 3);
+
+    // **And `retry` leaves the dead ones where they are.** Retrying one would put it back in the
+    // queue for a handler that cannot parse its payload, and hand the person who pressed Retry
+    // "this job's payload is malformed" about work that was removed from the product.
+    let retried = PgJobs(pool.clone())
+        .retry(library, BatchId::from_uuid(batch), None)
+        .await
+        .expect("retries");
+    assert_eq!(retried, 1, "the failed export, and nothing else");
+    let back: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM job WHERE state = 'pending' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("reads the queue");
+    assert!(
+        back.contains(&failed_export),
+        "the export is runnable again"
+    );
+    for (id, what) in [
+        (failed_profile, "a failed profile_shape"),
+        (failed_thumb, "a failed thumbnail rebuild"),
+    ] {
+        assert!(
+            !back.contains(&id),
+            "{what} must stay failed: nothing can run it"
+        );
+    }
+
+    for table in ["part_shape", "part_link"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT exists (SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = 'public' AND table_name = $1)",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("the catalogue reads");
+        assert!(!exists, "{table} is gone with shape similarity");
+    }
+    let has_setting: bool = sqlx::query_scalar(
+        "SELECT exists (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'library' AND column_name = 'auto_thumbnail')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the catalogue reads");
+    assert!(
+        !has_setting,
+        "there is no thumbnail left for a library to decide about"
+    );
+
+    // The parts themselves are untouched. "We never delete user data implicitly" — the rows this
+    // migration removes are ours, not theirs.
+    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(parts, 2, "both parts are still here");
 }

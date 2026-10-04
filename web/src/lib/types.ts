@@ -13,11 +13,6 @@ export type { Delta } from '../bindings/Delta'
 export type { FacetValue } from '../bindings/FacetValue'
 export type { Facets } from '../bindings/Facets'
 export type { FieldFacet } from '../bindings/FieldFacet'
-export type { AssemblyNode } from '../bindings/AssemblyNode'
-export type { AssemblyTree } from '../bindings/AssemblyTree'
-export type { Entity } from '../bindings/Entity'
-export type { Pmi } from '../bindings/Pmi'
-export type { PmiFace } from '../bindings/PmiFace'
 export type { BatchId } from '../bindings/BatchId'
 export type { BatchStatus } from '../bindings/BatchStatus'
 export type { BlobHash } from '../bindings/BlobHash'
@@ -53,7 +48,6 @@ export type { StoredImage } from '../bindings/StoredImage'
 export type { NewFolder } from '../bindings/NewFolder'
 export type { LibraryId } from '../bindings/LibraryId'
 export type { LibraryMode } from '../bindings/LibraryMode'
-export type { LibrarySettings } from '../bindings/LibrarySettings'
 export type { LibrarySummary } from '../bindings/LibrarySummary'
 export type { NewLibrary } from '../bindings/NewLibrary'
 export type { LibraryStorage } from '../bindings/LibraryStorage'
@@ -79,7 +73,7 @@ export type { FailurePage } from '../bindings/FailurePage'
 export type { JobFailure } from '../bindings/JobFailure'
 export type { JobId } from '../bindings/JobId'
 export type { RetryAccepted } from '../bindings/RetryAccepted'
-export type { RungReady } from '../bindings/RungReady'
+export type { ExportReady } from '../bindings/ExportReady'
 export type { AddPeer } from '../bindings/AddPeer'
 export type { Introduction } from '../bindings/Introduction'
 export type { AnswerIntroduction } from '../bindings/AnswerIntroduction'
@@ -105,23 +99,12 @@ export type { SharedBy } from '../bindings/SharedBy'
 export type { StartPull } from '../bindings/StartPull'
 export type { PeerShareId } from '../bindings/PeerShareId'
 
-// Phase 6's likeness wire types (W0's contracts, G3's routes). `Fold` and `PartLinkKind`
-// come with them: the removed page reads the first and `SetLink` is typed by the second.
-export type { DuplicateCluster } from '../bindings/DuplicateCluster'
-export type { DuplicateClusters } from '../bindings/DuplicateClusters'
-export type { Fold } from '../bindings/Fold'
-export type { FoldPart } from '../bindings/FoldPart'
-export type { Likeness } from '../bindings/Likeness'
-export type { PartLinkKind } from '../bindings/PartLinkKind'
-export type { SetLink } from '../bindings/SetLink'
-
 // Phase 6's dashboard and event wire types (W0's contracts, G4's resolve, G1's stream). One
-// contiguous block, appended the way G6 appended the likeness one: this is still the only file
-// that may import from `../bindings`, and G5.md does not name it, so it is a shared-file edit.
+// contiguous block: this is still the only file that may import from `../bindings`.
+// The likeness block that sat above it went with shape similarity (R3).
 // `Widget` is the config schema — the registry is keyed off `Widget['kind']`, so a kind added
 // in Rust fails `tsc` in the web until it is drawn.
 export type { AppEvent } from '../bindings/AppEvent'
-export type { DuplicateSummary } from '../bindings/DuplicateSummary'
 export type { FacetKind } from '../bindings/FacetKind'
 export type { FilteredParts } from '../bindings/FilteredParts'
 export type { KeyResult } from '../bindings/KeyResult'

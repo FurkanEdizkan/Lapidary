@@ -360,37 +360,30 @@ impl PgJobs {
         Ok((BatchId::from_uuid(batch), queued))
     }
 
-    /// Queue a rebuild of every tessellation, and of every CAD read, of a `format` source that a
-    /// different kernel version wrote, and return how many were queued.
+    /// Queue a rebuild of every export of a `format` source that a different kernel version
+    /// wrote, and return how many were queued.
     ///
-    /// A CAD read is the structure, entities and PMI one bridge run reads together, and its
-    /// `structure` row stands for all three: a derive of it writes them all, `structure` last. That
-    /// is how a part ingested before the bridge read PMI gets its PMI, and why a file that specifies
-    /// none, and so has no PMI row, is not queued again once its tree is current.
+    /// **Exports only, and that is the whole of R3 in this function.** The ladder used to name
+    /// the three tessellations and the CAD `structure` read beside them; nothing produces any of
+    /// those now, so leaving them here would re-queue the whole corpus at every worker start,
+    /// for ever, for work no handler can do. The rows are still in the table until migration
+    /// `0055` (R4) removes them — they are simply not swept, because `ANY($3)` names only what
+    /// something can still build.
     ///
     /// A worker calls this as it starts, with the version its own kernel reports for `format`.
-    /// `PgParts::derivative_hash` and the grid serve a kind's row whatever wrote it, so a rung
-    /// from before a pipeline change is served forever unless something rewrites it. One batch
-    /// per library; a rung whose rebuild is already queued is left to that job; deleted parts
-    /// are skipped, as `PgParts::revisions_missing` skips them. The source format is the
-    /// revision's newest source file's, the file `PgParts::revision_source` hands a derive.
-    // ponytail: a large library queues its whole ladder at once and worker concurrency bounds
+    /// `PgParts::derivative_hash` and the download route serve a kind's row whatever wrote it, so
+    /// an export from before a pipeline change is served forever unless something rewrites it.
+    /// One batch per library; an export whose rebuild is already queued is left to that job;
+    /// deleted parts are skipped. The source format is the revision's newest source file's, the
+    /// file `PgParts::revision_source` hands a derive.
+    // ponytail: a large library queues every stale export at once and worker concurrency bounds
     // the work. Trickle it if the rebuild starves ingest.
     pub async fn enqueue_stale_derivatives(
         &self,
         format: &str,
         kernel_version: &str,
     ) -> Result<u64, DbError> {
-        let rungs: Vec<&str> = [
-            DerivativeKind::TessellationL0,
-            DerivativeKind::TessellationL1,
-            DerivativeKind::TessellationL2,
-            DerivativeKind::Structure,
-            DerivativeKind::ExportStl,
-            DerivativeKind::Export3mf,
-        ]
-        .map(DerivativeKind::as_str)
-        .to_vec();
+        let rebuildable: Vec<&str> = DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec();
         let queued = sqlx::query(
             "WITH stale AS ( \
                  SELECT p.library_id, \
@@ -415,7 +408,7 @@ impl PgJobs {
         )
         .bind(format)
         .bind(kernel_version)
-        .bind(&rungs)
+        .bind(&rebuildable)
         .execute(&self.0)
         .await?
         .rows_affected();
@@ -493,6 +486,9 @@ impl PgJobs {
     /// `UPDATE` matches zero rows instead of overwriting a real result. "Measurement must
     /// not lie" (CLAUDE.md) -- a part that ingested must never be reported failed because
     /// a second, abandoned attempt finished after it.
+    ///
+    /// `profiled` is not here and must not come back: R3 deleted `Outcome::Profiled` with shape
+    /// similarity, while `job_outcome_known` keeps the value because finished rows hold it.
     pub async fn complete(&self, id: JobId, outcome: Outcome) -> Result<(), DbError> {
         let outcome_str = match outcome {
             Outcome::Ingested => "ingested",
@@ -503,7 +499,6 @@ impl PgJobs {
             Outcome::Described => "described",
             Outcome::Revised => "revised",
             Outcome::Unkept => "unkept",
-            Outcome::Profiled => "profiled",
         };
         let result = sqlx::query(
             "UPDATE job SET state = 'done', outcome = $2, leased_by = NULL, \
@@ -803,21 +798,45 @@ impl PgJobs {
     /// `migrate_storage` is left out. `job_migrate_storage_pending_per_library` allows one
     /// pending migration per library, migrations re-enqueue themselves
     /// (`reenqueue_migration_if_absent`), and a retry here would collide with that successor.
+    ///
+    /// **And a row no handler can run is left out, which R3 is why.** Migration `0054` deleted the
+    /// *pending and running* `profile_shape` and render-kind `derive` rows, deliberately leaving
+    /// the **failed** ones where they are — a finished batch keeps its totals. Retrying one would
+    /// put it back in the queue for a handler that cannot parse its payload, and the person who
+    /// pressed Retry would be handed "this job's payload is malformed" about work that was
+    /// removed from the product. So the filter is positive: a kind `JobPayload` still names, and
+    /// for a `derive`, a `produce` `DerivativeKind` still names. Both lists come off the types,
+    /// so deleting another variant is a compile error here rather than a row set pending that
+    /// nothing can run.
     pub async fn retry(
         &self,
         library: LibraryId,
         batch: BatchId,
         job: Option<JobId>,
     ) -> Result<u64, DbError> {
+        let runnable: Vec<&str> = vec![
+            JobPayload::INGEST_FILE,
+            JobPayload::DERIVE,
+            JobPayload::SCAN_DIRECTORY,
+            JobPayload::INGEST_BLOB,
+            JobPayload::IMPORT_BUNDLE,
+            JobPayload::IMPORT_PART,
+            JobPayload::DESCRIBE_PART,
+        ];
+        let buildable: Vec<&str> = DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec();
         let retried = sqlx::query(
             "UPDATE job SET state = 'pending', attempts = 0, run_after = now(), \
                             leased_by = NULL, lease_expires_at = NULL, updated_at = now() \
              WHERE batch_id = $1 AND library_id = $2 AND state = 'failed' \
-               AND kind <> 'migrate_storage' AND ($3::uuid IS NULL OR id = $3)",
+               AND kind = ANY($4) \
+               AND (kind <> 'derive' OR payload->>'produce' = ANY($5)) \
+               AND ($3::uuid IS NULL OR id = $3)",
         )
         .bind(batch.as_uuid())
         .bind(library.as_uuid())
         .bind(job.map(|job| job.as_uuid()))
+        .bind(&runnable)
+        .bind(&buildable)
         .execute(&self.0)
         .await?
         .rows_affected();

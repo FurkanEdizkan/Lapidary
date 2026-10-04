@@ -1,8 +1,8 @@
 //! `GET /api/parts/{id}/revisions` — one part's history, newest first.
 //!
-//! Still the open path: `revision`, `derivative` and `file` rows, and a thumbnail that
-//! travels inline out of its row exactly as `detail.rs` serves one. No source file is read
-//! and no geometry parsed. Every figure keeps its provenance, for the reason `detail.rs`'s
+//! Still the open path: `revision` and `file` rows only. No derivative, no source file read
+//! and no geometry parsed — R3 took the inline thumbnail and the two rung hashes off this
+//! shape with the pipeline that filled them. Every figure keeps its provenance, for the reason `detail.rs`'s
 //! module doc gives — a history that dropped the ≈ would be the one place a mesh figure
 //! passed for an exact one.
 
@@ -14,8 +14,6 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{
     Approximate, BlobHash, PartId, Provenance, RevisionDiff, RevisionId, RevisionOrigin,
@@ -36,8 +34,6 @@ pub struct PartRevision {
     pub rev_label: String,
     pub origin: RevisionOrigin,
     pub created_at: Timestamp,
-    /// `data:image/webp;base64,…`, as `PartDetail.thumbnail` is.
-    pub thumbnail: Option<String>,
     pub triangle_count: Option<u32>,
     /// The B-rep's faces and edges, counted exactly by the CAD kernel. `None` for a mesh.
     pub face_count: Option<u32>,
@@ -59,11 +55,6 @@ pub struct PartRevision {
     /// What changed from the revision this one was recorded on top of. `None` for a part's
     /// first revision.
     pub delta_from_parent: Option<RevisionDiff>,
-    /// This revision's own rungs, which the overlay draws as a ghost behind the current part.
-    /// Ingest writes L0; an L1 exists only if somebody opened the part while this revision was
-    /// current, so an earlier revision usually has L0 alone.
-    pub tessellation_l0: Option<BlobHash>,
-    pub tessellation_l1: Option<BlobHash>,
 }
 
 /// A part that is not there — never existed, or deleted — answers the `404` its page does:
@@ -210,9 +201,6 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
         rev_label: row.rev_label,
         origin: row.origin,
         created_at: row.created_at,
-        thumbnail: row
-            .thumbnail
-            .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),
         triangle_count: count("revision.triangle_count", row.triangle_count)?,
         face_count: count("revision.face_count", row.face_count)?,
         edge_count: count("revision.edge_count", row.edge_count)?,
@@ -248,7 +236,5 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
             .transpose()?,
         // Filled in once the whole history is read: a parent is another row.
         delta_from_parent: None,
-        tessellation_l0: row.tessellation_l0,
-        tessellation_l1: row.tessellation_l1,
     })
 }

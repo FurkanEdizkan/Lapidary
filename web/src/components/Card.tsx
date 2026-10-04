@@ -79,8 +79,8 @@ const FOOTER: Record<Layout, string> = {
  *
  * **The browser does the framing**, here and in the gallery's `Framed` alike, so this is one
  * definition rather than two: a picture cropped one way on a card and another way on the part's
- * own page would be two answers to the same question. `null` is the rendered thumbnail, which
- * has no framing of its own and is shown whole.
+ * own page would be two answers to the same question. `null` is a part with no picture, shown
+ * whole.
  */
 export function pictureStyle(image: PartImage | null): CSSProperties {
   if (image === null) return { objectFit: 'contain' }
@@ -92,8 +92,6 @@ export function pictureStyle(image: PartImage | null): CSSProperties {
 
 export function Card({
   part,
-  onRender,
-  busy,
   hostRoot,
   layout,
   selecting,
@@ -103,8 +101,6 @@ export function Card({
   onLook,
 }: {
   part: PartCard
-  onRender: (part: PartId) => void
-  busy: boolean
   hostRoot: string | null
   layout: Layout
   selecting: boolean
@@ -128,12 +124,12 @@ export function Card({
   // bare-strings gate as copy.
   const clampedName = layout === 'list' ? undefined : part.name
   /*
-    **The part's own picture, and the rendered thumbnail only as a fallback.** R1 turns the card
-    from a render into a picture, and R3 then stops rendering; until the renders are purged a part
-    nobody has photographed still has one, and showing it is better than an empty well. Once they
-    are gone this is the part's image or the honest placeholder, with nothing in between.
+    **The part's own picture, or the honest placeholder — nothing in between.** R1 turned the card
+    from a render into a picture and kept the render behind it; R3 stopped rendering, so the
+    fallback has no producer and no field on the wire. A part nobody has photographed names its
+    format instead of apologising for a picture it does not have.
   */
-  const src = part.image?.src ?? part.thumbnail
+  const src = part.image?.src ?? null
   return (
     <article
       aria-labelledby={nameId}
@@ -223,7 +219,7 @@ export function Card({
         ) : (
           <img
             src={src}
-            alt={part.image === null ? strings.parts.thumbnailAlt(part.name) : strings.parts.pictureAlt(part.name)}
+            alt={strings.parts.pictureAlt(part.name)}
             className="h-full w-full"
             style={pictureStyle(part.image)}
           />

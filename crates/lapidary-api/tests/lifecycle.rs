@@ -87,10 +87,7 @@ async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part")
@@ -185,8 +182,8 @@ async fn deleting_a_part_hides_it_from_every_read_path_and_restoring_brings_it_a
     assert_eq!(
         (refs, blobs),
         (2, 2),
-        "one blob per source, each still referenced once. The two thumbnails have no \
-         blob rows of their own — they travel inline in `derivative.thumb_bytes`"
+        "one blob per source, each still referenced once. No derivative blob beside them: \
+         ingest writes no derivative at all since R3"
     );
 
     let (status, _) = call(pool.clone(), "POST", &format!("/api/parts/{gone}/restore")).await;
@@ -197,19 +194,12 @@ async fn deleting_a_part_hides_it_from_every_read_path_and_restoring_brings_it_a
     assert_eq!(names, vec!["Bracket, LP-1042-03", "Impeller, LP-5501-02"]);
     assert_eq!(source_bytes(&pool).await, 91_204 * 2);
 
-    // Whole, not merely present: the revision's figures and the preview came back with it,
-    // because nothing ever removed them.
+    // Whole, not merely present: the revision's figures came back with it, because nothing
+    // ever removed them.
     let (status, json) = call(pool.clone(), "GET", &format!("/api/parts/{gone}")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["triangleCount"], 48_112);
     assert_eq!(json["volumeMm3"]["value"], 21_478.5);
-    assert!(
-        json["thumbnail"]
-            .as_str()
-            .expect("a data URL")
-            .starts_with("data:image/webp;base64,"),
-        "the preview survived the round trip"
-    );
     assert_eq!(
         call(
             pool.clone(),
@@ -328,10 +318,7 @@ async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> 
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed sharing part")
@@ -619,9 +606,8 @@ async fn the_storage_panel_does_not_report_a_removal_as_a_saving(pool: sqlx::PgP
         "the library is one part smaller"
     );
     assert_eq!(
-        json["removedBytes"],
-        91_204 + "webp-preview".len(),
-        "and the difference is accounted for rather than vanishing — source blob and \
-         inline thumbnail both, because both are still on the volume"
+        json["removedBytes"], 91_204,
+        "and the difference is accounted for rather than vanishing: the source file is \
+         still on the volume"
     );
 }

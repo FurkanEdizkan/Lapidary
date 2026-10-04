@@ -10,15 +10,13 @@ mod mesh_kernel;
 mod mock;
 mod obj;
 mod raster;
-mod shape;
 mod stl;
 mod tmf;
 
 pub use cluster::{Lod, Tessellation, cluster};
 pub use glb::{GLB_VERSION, read_triangles};
 pub use kernel::{
-    AssemblyNode, AssemblyTree, CadError, CadMetadata, Entity, Kernel, KernelOutput, KernelParams,
-    KernelVersion, MeasurementProvenance, Unproduced,
+    CadError, Kernel, KernelOutput, KernelParams, KernelVersion, MeasurementProvenance, Unproduced,
 };
 pub use measure::measure;
 pub use mesh_kernel::MeshKernel;
@@ -26,7 +24,6 @@ pub use mesh_kernel::MeshKernel;
 pub use mock::MockKernel;
 pub use obj::parse_obj;
 pub use raster::{MAX_THUMB_BYTES, RASTER_VERSION, THUMB_PX, render_thumbnail};
-pub use shape::profile;
 pub use stl::{Mesh, parse_stl, write_stl};
 pub use tmf::{parse_3mf, write_3mf};
 
@@ -76,83 +73,45 @@ mod tests {
         );
     }
 
-    /// The measurement invariant, now held by the type system rather than by this test.
-    ///
-    /// `CLAUDE.md` requires that mesh-derived values are labelled approximate, always —
-    /// which downstream code decides by asking whether the kernel returned any analytic
-    /// entities. Slice 3 made `Entity` an uninhabited enum, so `Vec<Entity>` is provably
-    /// empty for every input, not just for mesh input. That is a stronger guarantee than
-    /// this test was: it cannot be broken by a careless kernel, only by giving `Entity` a
-    /// variant.
-    ///
-    /// **Phase 2 must restore the contrast.** The moment STEP ingest adds a variant, this
-    /// test stops proving anything on its own and needs its old shape back: a B-rep input
-    /// yielding entities beside a mesh input yielding none.
-    #[tokio::test]
-    async fn mesh_input_yields_no_analytic_entities() {
-        let kernel = MockKernel::new();
-        let out = kernel
-            .process(b"ignored by the double", &params("stl"))
-            .await
-            .expect("mock kernel processes a mesh format");
-        assert!(
-            out.entities.is_empty(),
-            "mesh input must yield no analytic entities — every measurement taken from it \
-             is approximate, and an entity list is what tells callers otherwise"
-        );
-    }
-
-    /// The ladder is always three rungs, and they are not the same rung three times.
-    #[tokio::test]
-    async fn the_ladder_is_three_distinguishable_rungs() {
-        let kernel = MockKernel::new();
-        let out = kernel
-            .process(b"ignored by the double", &params("stl"))
-            .await
-            .expect("processes");
-        let counts: Vec<u32> = out.tessellations.iter().map(|t| t.triangle_count).collect();
-        assert_eq!(counts.len(), 3);
-        assert!(
-            counts[0] < counts[1] && counts[1] < counts[2],
-            "rungs must ascend in detail, got {counts:?}"
-        );
-    }
-
     /// The double honours `produce` too. `MockKernel` is unreachable from the ingest path
     /// today — `handler.rs` names `MeshKernel` directly — so this is not a live bug, but a
     /// double whose contract has drifted from the trait's is how a future test of
     /// selectivity passes without proving anything.
     #[tokio::test]
-    async fn the_mock_produces_only_the_rungs_it_was_asked_for() {
+    async fn the_mock_produces_only_the_exports_it_was_asked_for() {
         let kernel = MockKernel::new();
         let params = KernelParams {
             linear_deflection_mm: None,
             format: "stl".to_owned(),
-            produce: vec![lapidary_core::DerivativeKind::TessellationL1],
+            produce: vec![lapidary_core::DerivativeKind::Export3mf],
         };
         let out = kernel
             .process(b"ignored by the double", &params)
             .await
             .expect("processes");
-        assert_eq!(out.tessellations.len(), 1);
-        assert_eq!(out.tessellations[0].lod, Lod::L1);
-        assert!(out.thumbnail_webp.is_none());
+        assert_eq!(
+            out.exports
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>(),
+            vec![lapidary_core::DerivativeKind::Export3mf]
+        );
         // Measurements are unconditional, here as in `MeshKernel`.
         assert_eq!(out.measurements.triangle_count, 12_940);
     }
 
-    /// Request order, not ladder order — `KernelOutput.tessellations` promises "in the
-    /// order requested", and a double that sorted its output would quietly disagree with
-    /// `MeshKernel` for any caller that asks out of order.
+    /// Request order, not declaration order — `KernelOutput.exports` promises "one for each
+    /// export `params.produce` asked for", and a double that sorted its output would quietly
+    /// disagree with `MeshKernel` for any caller that asks out of order.
     #[tokio::test]
-    async fn the_mock_returns_the_rungs_in_the_order_they_were_asked_for() {
+    async fn the_mock_returns_the_exports_in_the_order_they_were_asked_for() {
         let kernel = MockKernel::new();
         let params = KernelParams {
             linear_deflection_mm: None,
             format: "stl".to_owned(),
             produce: vec![
-                lapidary_core::DerivativeKind::TessellationL2,
-                lapidary_core::DerivativeKind::TessellationL0,
+                lapidary_core::DerivativeKind::Export3mf,
+                lapidary_core::DerivativeKind::ExportStl,
             ],
         };
         let out = kernel
@@ -160,13 +119,19 @@ mod tests {
             .await
             .expect("processes");
         assert_eq!(
-            out.tessellations.iter().map(|t| t.lod).collect::<Vec<_>>(),
-            vec![Lod::L2, Lod::L0]
+            out.exports
+                .iter()
+                .map(|(kind, _)| *kind)
+                .collect::<Vec<_>>(),
+            vec![
+                lapidary_core::DerivativeKind::Export3mf,
+                lapidary_core::DerivativeKind::ExportStl
+            ]
         );
     }
 
     /// Empty `produce` is legal and means measurements only — the same contract
-    /// `mesh_kernel.rs` pins for the real thing.
+    /// `mesh_kernel.rs` pins for the real thing, and what every ingest now asks for.
     #[tokio::test]
     async fn the_mock_asked_for_nothing_still_measures() {
         let kernel = MockKernel::new();
@@ -179,8 +144,7 @@ mod tests {
             .process(b"ignored by the double", &params)
             .await
             .expect("processes");
-        assert!(out.tessellations.is_empty());
-        assert!(out.thumbnail_webp.is_none());
+        assert!(out.exports.is_empty());
         assert_eq!(out.measurements.triangle_count, 12_940);
     }
 }

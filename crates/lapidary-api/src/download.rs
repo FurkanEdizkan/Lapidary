@@ -67,14 +67,6 @@ use ts_rs::TS;
 /// caller is told what to send rather than what not to.
 const ORIGINAL: &str = "original";
 
-/// The tessellations this route also serves, by the name a URL asks for them with. Lapidary built
-/// these, so their filenames say so: `<part>.lapidary.l1.glb`.
-const RUNGS: [(&str, DerivativeKind); 3] = [
-    ("l0", DerivativeKind::TessellationL0),
-    ("l1", DerivativeKind::TessellationL1),
-    ("l2", DerivativeKind::TessellationL2),
-];
-
 /// A cap on the synthesized filename, in bytes rather than characters and below the 255
 /// every filesystem this runs on allows. `NAME_MAX` counts bytes: a Turkish `ğ` is two of
 /// them, so a character cap is a byte cap only for ASCII names. The headroom is for the
@@ -376,7 +368,7 @@ fn percent_encode(name: &str) -> String {
 /// A file Lapidary built from a part, as this route serves it.
 struct Built {
     kind: DerivativeKind,
-    /// How a message names it: `l1 tessellation`, `3mf export`.
+    /// How a message names it: `3mf export`.
     what: String,
     /// What follows `<part>.lapidary.` in its filename.
     extension: String,
@@ -385,22 +377,17 @@ struct Built {
     route: String,
 }
 
-/// What `variant` names for a part whose own file is in `source_format`: a tessellation, a
-/// mesh export, or `None` for the part's own file when that is already the format asked for.
+/// What `variant` names for a part whose own file is in `source_format`: a mesh export, or
+/// `None` for the part's own file when that is already the format asked for.
 ///
 /// A format is a download of that one format, negotiated as any hand-over is (`DATA.md`
 /// §5.1): never a mesh for a B-rep format, and never an export of a file already in it. A
 /// refusal is the message of a 400.
 fn built_for(variant: &str, source_format: &str) -> Result<Option<Built>, String> {
-    if let Some((level, kind)) = RUNGS.iter().find(|(name, _)| *name == variant) {
-        return Ok(Some(Built {
-            kind: *kind,
-            what: format!("{level} tessellation"),
-            extension: format!("{level}.glb"),
-            content_type: "model/gltf-binary",
-            route: format!("rungs/{level}"),
-        }));
-    }
+    // `l0`, `l1` and `l2` used to be answered here, from the rung ladder. They fall through to
+    // `unknown_variant` now, and that is deliberate (R3): the links are in people's history and
+    // in the e2e rig, nothing builds a rung, and a stale bookmark deserves a sentence rather
+    // than a 404 naming a route that no longer exists. The sentence below no longer offers them.
     let Some(format) = Format::named(variant) else {
         return Err(unknown_variant(variant));
     };
@@ -541,11 +528,14 @@ fn missing_variant() -> Response {
 /// real question — which downloads there are — and telling them to add a parameter they
 /// already sent answers a question they did not ask.
 fn unknown_variant(got: &str) -> String {
+    // **It must not name a rung.** `l0`, `l1` and `l2` were variants until R3, and this is the
+    // sentence they now land on: offering them back would answer "`l0` is not a download
+    // variant — this server serves … `l0`", which is worse than the 404 it replaced.
     format!(
         "`{got}` is not a download variant. This server serves `variant={ORIGINAL}`, the \
-         ingested bytes unconverted; `l0`, `l1` or `l2`, the tessellations Lapidary built; and \
-         a format — `3mf` or `stl` is a mesh Lapidary writes from any part, and the part's own \
-         format is its original file. Everything Lapidary built is named `*.lapidary.*`."
+         ingested bytes unconverted, and a format — `3mf` or `stl` is a mesh Lapidary writes \
+         from any part, and the part's own format is its original file. Everything Lapidary \
+         built is named `*.lapidary.*`."
     )
 }
 

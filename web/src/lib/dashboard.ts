@@ -49,18 +49,18 @@ export const MAX_WIDGETS = 32
 export const MAX_LIMIT = 12
 
 /**
- * **A widget kind the web draws**, which is fewer than Rust offers.
+ * **A widget kind the web draws.** Every kind Rust offers, since R3 — `duplicates` was the one
+ * exclusion, and it is gone from the Rust union too now that shape similarity is.
  *
- * `duplicates` is still in the api's `Widget` union and is no longer one of these: the owner's
- * decision (2026-10-03) is that duplicates are not a feature — identity is the content hash in
- * the background — so the queue it linked to is gone, and R3 deletes the backend behind it. The
- * kind is **excluded by type** rather than left out of a table, so `registry` stays a mapped type
- * over exactly the kinds that have a renderer and every `registry[kind]` keeps compiling.
+ * Kept as its own name rather than collapsed into `Widget`: `registry` is a mapped type over it,
+ * `widgetFrom` answers it, and the next kind the web cannot draw yet goes back in the `Exclude`
+ * here rather than being left out of a table — which is what kept `registry[kind]` compiling.
  *
- * `widgetFrom` is the one gate: a saved layout holding a `duplicates` widget drops it, which is
- * how a board saved before this goal still loads, with its other widgets where they were.
+ * `widgetFrom` is the one gate on what `localStorage` holds: a saved layout naming a kind this
+ * build does not know drops it, which is how a board saved with a `duplicates` widget still
+ * loads, with its other widgets where they were.
  */
-export type DrawnWidget = Exclude<Widget, { kind: 'duplicates' }>
+export type DrawnWidget = Widget
 
 /** A named group of widgets: one titled `<section>` with its own grid. */
 export type Group = { id: string; name: string }

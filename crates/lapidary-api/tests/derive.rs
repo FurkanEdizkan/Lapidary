@@ -1,13 +1,18 @@
-//! Task 8: the three enqueue routes. `PATCH /api/libraries/{id}`,
-//! `POST /api/parts/{id}/thumbnail` and `POST /api/libraries/{id}/thumbnails`, driven
-//! through this crate's router against a live, migrated Postgres. Task 10 adds the read
-//! half of the first of them, `GET /api/libraries/{id}`.
+//! `POST /api/parts/{id}/exports/{format}` — the one enqueue route left in `derive.rs`, driven
+//! through this crate's router against a live, migrated Postgres.
+//!
+//! **R3 deleted the rest of this file with the routes it covered.** `GET`/`PATCH
+//! /api/libraries/{id}` (the ingest-time thumbnail setting), `POST /api/parts/{id}/thumbnail`,
+//! `POST /api/libraries/{id}/thumbnails` and `POST /api/parts/{id}/rungs/{level}` are gone:
+//! nothing renders, so a rung request answered `202` with a batch id for work that would never
+//! land and the viewer polled it for ever. The two exports are still built on demand, and this
+//! is how something asks.
 //!
 //! Rows are seeded through `PgIngest` — the repository the scan handler itself uses — so
-//! a part these tests create is indistinguishable from one a scan produced. The two
-//! enqueue routes are then read back through the *existing* batch-status route rather
-//! than through the `job` table, because "the polling works unchanged" is the claim being
-//! made and a direct row count would not test it.
+//! a part these tests create is indistinguishable from one a scan produced. The batch is read
+//! back through the *existing* batch-status route rather than through the `job` table, because
+//! "the polling works unchanged" is the claim being made and a direct row count would not test
+//! it.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -54,17 +59,9 @@ fn measurements() -> MeshMeasurements {
     }
 }
 
-/// Records one part and hands back its id. `thumbnail` decides whether the revision gets
-/// a `thumbnail` derivative, which is exactly what `revisions_missing` filters on — a
-/// part seeded with `None` is one the sweep must find, and one seeded with `Some` is one
-/// it must leave alone.
-async fn seed_part(
-    pool: &sqlx::PgPool,
-    library: LibraryId,
-    seed: u8,
-    name: &str,
-    thumbnail: Option<&[u8]>,
-) -> PartId {
+/// Records one part and hands back its id. No derivative: ingest writes none since R3, and
+/// every derivative in these tests is filed afterwards, as a `derive` job files one.
+async fn seed_part(pool: &sqlx::PgPool, library: LibraryId, seed: u8, name: &str) -> PartId {
     let blob = StoredBlobRow {
         hash: BlobHash::from_bytes([seed; 32]),
         size_bytes: 2_048,
@@ -82,10 +79,7 @@ async fn seed_part(
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: thumbnail,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seed part")
@@ -102,7 +96,6 @@ async fn send(
     role: Role,
     method: &str,
     uri: String,
-    body: Option<serde_json::Value>,
 ) -> (StatusCode, serde_json::Value) {
     let app = router(
         AppState {
@@ -114,14 +107,11 @@ async fn send(
         },
         role,
     );
-    let builder = Request::builder().method(method).uri(uri);
-    let request = match body {
-        Some(json) => builder
-            .header("content-type", "application/json")
-            .body(Body::from(json.to_string()))
-            .expect("request builds"),
-        None => builder.body(Body::empty()).expect("request builds"),
-    };
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .expect("request builds");
     let response = app.oneshot(request).await.expect("router responds");
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
@@ -131,56 +121,17 @@ async fn send(
     (status, json)
 }
 
-async fn patch_library(
-    pool: sqlx::PgPool,
-    role: Role,
-    library: LibraryId,
-    on: bool,
-) -> (StatusCode, serde_json::Value) {
-    send(
-        pool,
-        role,
-        "PATCH",
-        format!("/api/libraries/{library}"),
-        Some(serde_json::json!({ "autoThumbnail": on })),
-    )
-    .await
-}
-
-async fn get_library(
-    pool: sqlx::PgPool,
-    role: Role,
-    library: LibraryId,
-) -> (StatusCode, serde_json::Value) {
-    send(pool, role, "GET", format!("/api/libraries/{library}"), None).await
-}
-
-async fn post_part_thumbnail(
+async fn post_export(
     pool: sqlx::PgPool,
     role: Role,
     part: PartId,
+    format: &str,
 ) -> (StatusCode, serde_json::Value) {
     send(
         pool,
         role,
         "POST",
-        format!("/api/parts/{part}/thumbnail"),
-        None,
-    )
-    .await
-}
-
-async fn post_sweep(
-    pool: sqlx::PgPool,
-    role: Role,
-    library: LibraryId,
-) -> (StatusCode, serde_json::Value) {
-    send(
-        pool,
-        role,
-        "POST",
-        format!("/api/libraries/{library}/thumbnails"),
-        None,
+        format!("/api/parts/{part}/exports/{format}"),
     )
     .await
 }
@@ -196,327 +147,129 @@ async fn get_batch(
         Role::Api,
         "GET",
         format!("/api/libraries/{library}/jobs/{batch}"),
-        None,
     )
     .await
 }
 
-/// The `batchId` an enqueue answered with, parsed the way a client would have to.
-fn accepted_batch(json: &serde_json::Value) -> BatchId {
-    json["batchId"]
-        .as_str()
-        .expect("the body carries a batchId")
-        .parse()
-        .expect("the batchId is an id")
-}
-
+/// An export not built yet is queued as a derive job for that format; asking again while that
+/// build is queued watches the same job; once it exists, asking answers with its hash and queues
+/// nothing. A format Lapidary does not write a mesh to is refused by name.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn turning_the_ingest_thumbnail_off_answers_with_the_value_that_landed(pool: sqlx::PgPool) {
-    let (status, json) = patch_library(pool.clone(), Role::Api, library(), false).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json, serde_json::json!({ "autoThumbnail": false }));
-    assert_eq!(
-        PgParts(pool)
-            .auto_thumbnail(library())
-            .await
-            .expect("reads"),
-        Some(false),
-        "the row itself has to change, not just the response"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_setting_can_be_turned_back_on(pool: sqlx::PgPool) {
-    patch_library(pool.clone(), Role::Api, library(), false).await;
-    let (status, json) = patch_library(pool.clone(), Role::Api, library(), true).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json, serde_json::json!({ "autoThumbnail": true }));
-    assert_eq!(
-        PgParts(pool)
-            .auto_thumbnail(library())
-            .await
-            .expect("reads"),
-        Some(true)
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn patching_a_library_that_does_not_exist_is_a_404_not_a_silent_success(pool: sqlx::PgPool) {
-    // A `UPDATE ... WHERE id = $1` that matches nothing is a successful statement. Without
-    // `set_auto_thumbnail`'s row count this answers 200 and tells a person their setting
-    // was saved.
-    let absent = LibraryId::new();
-    let (status, json) = patch_library(pool, Role::Api, absent, false).await;
-
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("No library with that id")),
-        "the 404 has to be this crate's message, not axum's empty body: {json}"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_that_renders_nothing_reads_back_as_off(pool: sqlx::PgPool) {
-    // Switched off through the repository rather than through `PATCH`, so this cannot pass
-    // by the route echoing its own request back: the value on the wire has to have come
-    // out of the `library` row. Without a `GET` at all the grid renders design §3.2's
-    // default here, and an owner who turned rendering off sees it reported as on.
-    PgParts(pool.clone())
-        .set_auto_thumbnail(library(), false)
-        .await
-        .expect("switches the setting off");
-
-    let (status, json) = get_library(pool, Role::Api, library()).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json, serde_json::json!({ "autoThumbnail": false }));
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_nobody_has_touched_reads_back_as_the_migrations_default(pool: sqlx::PgPool) {
-    let (status, json) = get_library(pool, Role::Api, library()).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json, serde_json::json!({ "autoThumbnail": true }));
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn reading_a_library_that_does_not_exist_is_a_404_not_the_documented_default(
+async fn an_export_not_built_yet_is_queued_and_one_that_exists_answers_with_its_hash(
     pool: sqlx::PgPool,
 ) {
-    // T8-B again, on the read side: answering `{ "autoThumbnail": true }` for an id that
-    // names nothing is a plausible-looking body that gets believed. The message is asserted
-    // whole rather than by its shared opening, because `no_such_library`'s "so nothing was
-    // changed" would satisfy a prefix check while telling a reader their edit did not land.
-    let absent = LibraryId::new();
-    let (status, json) = get_library(pool, Role::Api, absent).await;
+    let part = seed_part(&pool, library(), 0x42, "Ball knob, LP-9020-00").await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("no settings to show")),
-        "the read gets the read's 404, not the writer's: {json}"
+    let (status, json) = post_export(pool.clone(), Role::Api, part, "3mf").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(json["queued"], 1);
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
+            .fetch_one(&pool)
+            .await
+            .expect("one derive job");
+    assert_eq!(
+        payload["produce"],
+        serde_json::to_value(lapidary_core::DerivativeKind::Export3mf).expect("serializes")
     );
-}
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn patching_one_library_leaves_another_tenants_setting_alone(pool: sqlx::PgPool) {
-    let other = other_library(&pool).await;
+    // Asking again while that build is still queued watches the same job rather than queuing a
+    // second build of the same file.
+    let batch = json["batchId"].clone();
+    let (status, json) = post_export(pool.clone(), Role::Api, part, "3mf").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(json["batchId"], batch, "the batch already building it");
+    let derives: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'derive'")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(derives, 1, "no second build of an export already queued");
 
-    let (status, _) = patch_library(pool.clone(), Role::Api, library(), false).await;
+    let revision = PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("a revision");
+    let export = StoredBlobRow {
+        hash: BlobHash::from_bytes([0x5a; 32]),
+        size_bytes: 11_264,
+        stored_bytes: 11_264,
+        zstd_level: 0,
+    };
+    PgIngest(pool.clone())
+        .upsert_derivative(
+            revision,
+            lapidary_core::DerivativeKind::Export3mf,
+            &export,
+            None,
+            "mesh stl-1+glb-2+cpu-1",
+        )
+        .await
+        .expect("the export lands");
+
+    let (status, json) = post_export(pool.clone(), Role::Api, part, "3mf").await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["hash"], export.hash.to_hex());
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(jobs, 1, "an export that exists queues nothing");
 
-    let parts = PgParts(pool);
-    assert_eq!(
-        parts.auto_thumbnail(library()).await.expect("reads"),
-        Some(false)
-    );
-    assert_eq!(
-        parts.auto_thumbnail(other).await.expect("reads"),
-        Some(true),
-        "the other library keeps the migration's default"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_body_that_is_not_the_expected_shape_is_a_400_that_says_what_to_send(pool: sqlx::PgPool) {
-    let (status, json) = send(
-        pool,
-        Role::Api,
-        "PATCH",
-        format!("/api/libraries/{}", library()),
-        Some(serde_json::json!({ "autoThumbnail": "yes" })),
-    )
-    .await;
-
+    let (status, json) = post_export(pool.clone(), Role::Api, part, "step").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         json["message"]
             .as_str()
-            .is_some_and(|m| m.contains("autoThumbnail")),
-        "the message names the field a caller has to send: {json}"
+            .is_some_and(|message| message.contains("`step`") && message.contains("`3mf` or `stl`")),
+        "names what was sent and what to send: {json}"
     );
-}
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn one_parts_thumbnail_is_a_batch_of_one_the_existing_poll_can_read(pool: sqlx::PgPool) {
-    let part = seed_part(&pool, library(), 0x11, "Bracket, LP-1042-03", None).await;
-
-    let (status, json) = post_part_thumbnail(pool.clone(), Role::Api, part).await;
-
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 1);
-    let batch = accepted_batch(&json);
-
-    // The claim this route makes is that it reuses the scan's response shape so the
-    // existing polling works unchanged. Reading the batch back through that very route is
-    // the only thing that tests it.
-    let (status, json) = get_batch(pool, library(), batch).await;
-    assert_eq!(status, StatusCode::OK);
-    let body: BatchStatus = serde_json::from_value(json).expect("body is a BatchStatus");
-    assert_eq!(body.batch_id, batch);
-    assert_eq!(body.library_id, library());
-    assert_eq!(body.total, 1);
-    assert_eq!(body.pending, 1);
-    assert_eq!(body.rendered, 0);
-    assert_eq!(body.failed_total, 0);
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_thumbnail_for_a_part_that_does_not_exist_is_a_404(pool: sqlx::PgPool) {
-    let (status, json) = post_part_thumbnail(pool, Role::Api, PartId::new()).await;
-
+    let (status, _) = post_export(pool, Role::Api, PartId::new(), "stl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("No part with that id")),
-        "expected this crate's 404 body, got {json}"
-    );
 }
 
+/// **`?variant=l0` is not this route's any more, and neither is `rungs/l1`.** Both are links
+/// people hold — the viewer's own download and the rung request behind it — so each must answer
+/// in words rather than as a 500 or a route that half works. The rung route is gone from the
+/// router entirely, so axum answers it with an empty 404.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_deleted_part_is_not_worth_rendering_and_answers_the_same_404(pool: sqlx::PgPool) {
-    let part = seed_part(&pool, library(), 0x12, "Spacer, LP-2001-00", None).await;
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(part.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("soft-deletes the part");
-
-    let (status, json) = post_part_thumbnail(pool.clone(), Role::Api, part).await;
-
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(json["message"].as_str().is_some_and(|m| m.contains("part")));
+async fn the_rung_route_is_gone_and_a_stale_bookmark_meets_axums_own_404(pool: sqlx::PgPool) {
+    let part = seed_part(&pool, library(), 0x43, "Bracket, LP-1042-03").await;
+    for level in ["l0", "l1", "l2"] {
+        let (status, json) = send(
+            pool.clone(),
+            Role::Api,
+            "POST",
+            format!("/api/parts/{part}/rungs/{level}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            json,
+            serde_json::Value::Null,
+            "an empty body is what says the route is not mounted rather than refusing"
+        );
+    }
     let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
         .fetch_one(&pool)
         .await
         .expect("counts jobs");
-    assert_eq!(queued, 0, "a deleted part must enqueue nothing at all");
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_sweep_queues_one_job_for_each_revision_with_no_thumbnail(pool: sqlx::PgPool) {
-    seed_part(&pool, library(), 0x21, "Bracket, LP-1042-03", None).await;
-    seed_part(&pool, library(), 0x22, "Spacer, LP-2001-00", None).await;
-    seed_part(&pool, library(), 0x23, "Jig, LP-3072-01", Some(b"webp-3")).await;
-
-    let (status, json) = post_sweep(pool.clone(), Role::Api, library()).await;
-
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(
-        json["queued"], 2,
-        "the part that already has one is skipped"
-    );
-    let batch = accepted_batch(&json);
-
-    let (status, json) = get_batch(pool, library(), batch).await;
-    assert_eq!(status, StatusCode::OK);
-    let body: BatchStatus = serde_json::from_value(json).expect("body is a BatchStatus");
-    assert_eq!(body.total, 2);
-    assert_eq!(body.pending, 2);
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_with_nothing_missing_queues_nothing_and_that_is_a_success(pool: sqlx::PgPool) {
-    seed_part(
-        &pool,
-        library(),
-        0x31,
-        "Bracket, LP-1042-03",
-        Some(b"webp-1"),
-    )
-    .await;
-    seed_part(
-        &pool,
-        library(),
-        0x32,
-        "Spacer, LP-2001-00",
-        Some(b"webp-2"),
-    )
-    .await;
-
-    let (status, json) = post_sweep(pool.clone(), Role::Api, library()).await;
-
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 0);
-    let batch = accepted_batch(&json);
-
-    // `ScanAccepted`'s doc: a batch with zero jobs has no status resource and must not be
-    // polled. Pinning the 404 keeps the two halves of that contract in one place.
-    let (status, _) = get_batch(pool, library(), batch).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_sweep_over_a_library_that_does_not_exist_is_a_404_like_patch_is(pool: sqlx::PgPool) {
-    // `revisions_missing` finds nothing for a library that does not exist and nothing for
-    // one with every preview already rendered, so without an existence check the route
-    // answers both with `202 queued: 0` and someone who mistyped an id reads it as
-    // "nothing was missing". The non-disclosure that asymmetry was defended with is not
-    // obtained either: `PATCH` on this very id says 404 and discloses the same fact.
-    let absent = LibraryId::new();
-    let (status, json) = post_sweep(pool.clone(), Role::Api, absent).await;
-
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("No library with that id")),
-        "the 404 has to be this crate's message, not axum's empty body: {json}"
-    );
-    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
-        .fetch_one(&pool)
-        .await
-        .expect("counts jobs");
-    assert_eq!(
-        queued, 0,
-        "a 404 must not leave a batch behind on its way out"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_sweep_counts_only_the_revisions_of_the_library_it_names(pool: sqlx::PgPool) {
-    let other = other_library(&pool).await;
-    seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03", None).await;
-    seed_part(&pool, library(), 0x42, "Spacer, LP-2001-00", None).await;
-    seed_part(&pool, other, 0x43, "Vee block, LP-3072-02", None).await;
-    seed_part(&pool, other, 0x44, "Collet, LP-4110-07", None).await;
-    seed_part(&pool, other, 0x45, "Shim, LP-5003-11", None).await;
-
-    let (status, json) = post_sweep(pool.clone(), Role::Api, library()).await;
-
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(
-        json["queued"], 2,
-        "the other tenant's three revisions are not this library's work"
-    );
-    let batch = accepted_batch(&json);
-
-    let (status, json) = get_batch(pool.clone(), library(), batch).await;
-    assert_eq!(status, StatusCode::OK);
-    let body: BatchStatus = serde_json::from_value(json).expect("body is a BatchStatus");
-    assert_eq!(body.total, 2);
-
-    // And the other library still has all three to do, so nothing was rendered onto it.
-    let (status, json) = post_sweep(pool, Role::Api, other).await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 3);
+    assert_eq!(queued, 0, "and nothing was queued on the way");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_batch_is_enqueued_under_the_parts_own_library_and_no_other(pool: sqlx::PgPool) {
     let other = other_library(&pool).await;
-    let part = seed_part(&pool, other, 0x51, "Vee block, LP-3072-02", None).await;
+    let part = seed_part(&pool, other, 0x51, "Vee block, LP-3072-02").await;
 
-    let (status, json) = post_part_thumbnail(pool.clone(), Role::Api, part).await;
+    let (status, json) = post_export(pool.clone(), Role::Api, part, "stl").await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let batch = accepted_batch(&json);
+    let batch: BatchId = json["batchId"]
+        .as_str()
+        .expect("the body carries a batchId")
+        .parse()
+        .expect("the batchId is an id");
 
     // The route has no library in its path, so the only thing that can scope the batch is
     // the part's own `library_id`. It has to be readable from that library...
@@ -546,207 +299,24 @@ async fn a_batch_is_enqueued_under_the_parts_own_library_and_no_other(pool: sqlx
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_worker_role_serves_none_of_these_routes(pool: sqlx::PgPool) {
-    // Every id here is one that *works* under `Role::Api` — the seeded library, and a real
-    // part. A 404 for an id that does not exist would prove nothing, because a mounted
-    // handler answers 404 for those too. What separates "not mounted" from "mounted and
-    // says no" is the body: axum's own 404 is empty.
-    let part = seed_part(&pool, library(), 0x61, "Bracket, LP-1042-03", None).await;
+async fn the_worker_role_does_not_serve_the_export_route(pool: sqlx::PgPool) {
+    // The id here is one that *works* under `Role::Api`. A 404 for an id that does not exist
+    // would prove nothing, because a mounted handler answers 404 for those too. What separates
+    // "not mounted" from "mounted and says no" is the body: axum's own 404 is empty.
+    let part = seed_part(&pool, library(), 0x61, "Bracket, LP-1042-03").await;
 
-    let (status, json) = patch_library(pool.clone(), Role::Worker, library(), false).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(json, serde_json::Value::Null, "PATCH is mounted on worker");
-
-    let (status, json) = get_library(pool.clone(), Role::Worker, library()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(json, serde_json::Value::Null, "GET is mounted on worker");
-
-    let (status, json) = post_part_thumbnail(pool.clone(), Role::Worker, part).await;
+    let (status, json) = post_export(pool.clone(), Role::Worker, part, "stl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
         json,
         serde_json::Value::Null,
-        "the part thumbnail route is mounted on worker"
+        "the export route is mounted on worker"
     );
 
-    let (status, json) = post_sweep(pool.clone(), Role::Worker, library()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(
-        json,
-        serde_json::Value::Null,
-        "the sweep route is mounted on worker"
-    );
-
-    // Nothing reached the database through any of them.
-    assert_eq!(
-        PgParts(pool.clone())
-            .auto_thumbnail(library())
-            .await
-            .expect("reads"),
-        Some(true)
-    );
+    // Nothing reached the database through it.
     let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
         .fetch_one(&pool)
         .await
         .expect("counts jobs");
     assert_eq!(queued, 0);
-}
-
-/// An export is asked for as a rung is, queued as a derive job for that format; a format
-/// Lapidary does not write a mesh to is refused by name.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_export_not_built_yet_is_queued_and_a_format_lapidary_does_not_write_is_refused(
-    pool: sqlx::PgPool,
-) {
-    let part = seed_part(&pool, library(), 0x42, "Ball knob, LP-9020-00", None).await;
-
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/exports/3mf"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 1);
-    let payload: serde_json::Value =
-        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
-            .fetch_one(&pool)
-            .await
-            .expect("one derive job");
-    assert_eq!(
-        payload["produce"],
-        serde_json::to_value(lapidary_core::DerivativeKind::Export3mf).expect("serializes")
-    );
-
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/exports/step"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("`step`") && message.contains("`3mf` or `stl`")),
-        "names what was sent and what to send: {json}"
-    );
-}
-
-/// A rung not built yet is queued as a derive job for that level; once it exists, asking again
-/// answers with its hash and queues nothing. L0 and anything else is refused by name.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_rung_not_built_yet_is_queued_and_one_that_exists_answers_with_its_hash(
-    pool: sqlx::PgPool,
-) {
-    let part = seed_part(&pool, library(), 0x41, "Bracket, LP-1042-03", None).await;
-
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/rungs/l1"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["queued"], 1);
-    let payload: serde_json::Value =
-        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'derive'")
-            .fetch_one(&pool)
-            .await
-            .expect("one derive job");
-    assert_eq!(
-        payload["produce"],
-        serde_json::to_value(lapidary_core::DerivativeKind::TessellationL1).expect("serializes")
-    );
-
-    // Asking again while that build is still queued watches the same job rather than queuing a
-    // second build of the same rung.
-    let batch = json["batchId"].clone();
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/rungs/l1"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(json["batchId"], batch, "the batch already building it");
-    let derives: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'derive'")
-        .fetch_one(&pool)
-        .await
-        .expect("counts");
-    assert_eq!(derives, 1, "no second build of a rung already queued");
-
-    let revision = lapidary_db::PgParts(pool.clone())
-        .latest_revision(part)
-        .await
-        .expect("query")
-        .expect("a revision");
-    let rung = StoredBlobRow {
-        hash: BlobHash::from_bytes([0x5a; 32]),
-        size_bytes: 11_264,
-        stored_bytes: 11_264,
-        zstd_level: 0,
-    };
-    PgIngest(pool.clone())
-        .upsert_derivative(
-            revision,
-            lapidary_core::DerivativeKind::TessellationL1,
-            lapidary_db::DerivativeBytes::Hashed {
-                blob: &rung,
-                grid: Some(96),
-            },
-            "mesh stl-1+glb-1+cpu-1",
-        )
-        .await
-        .expect("the rung lands");
-
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/rungs/l1"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["hash"], rung.hash.to_hex());
-    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job")
-        .fetch_one(&pool)
-        .await
-        .expect("counts");
-    assert_eq!(jobs, 1, "a rung that exists queues nothing");
-
-    let (status, json) = send(
-        pool.clone(),
-        Role::Api,
-        "POST",
-        format!("/api/parts/{part}/rungs/l0"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        json["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("`l1` or `l2`")),
-        "{json}"
-    );
-
-    let (status, _) = send(
-        pool,
-        Role::Api,
-        "POST",
-        format!("/api/parts/{}/rungs/l2", PartId::new()),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }

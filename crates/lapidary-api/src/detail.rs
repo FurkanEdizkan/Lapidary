@@ -34,8 +34,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use jiff::Timestamp;
 use lapidary_core::{Approximate, BlobHash, LibraryId, PartId, Provenance, RevisionId};
 use lapidary_db::{PartDetailRow, PgDensities, PgLocks, PgParts, PgPulls};
@@ -75,8 +73,6 @@ pub struct PartDetail {
     /// `bracket` in two folders are told apart by this and by nothing else, which is
     /// exactly why the page shows it.
     pub source_path: String,
-    /// `data:image/webp;base64,<...>`, as on the card.
-    pub thumbnail: Option<String>,
     /// Mesh facts. `None` on a revision whose measurements were never written.
     pub triangle_count: Option<u32>,
     /// Whether the mesh is closed. This is the reason `volume` may be absent on a part
@@ -99,10 +95,6 @@ pub struct PartDetail {
     /// came from a B-rep. `None` without a volume, or unless the part holds exactly one material and
     /// its library has a density for it — the page says which of those it is.
     pub mass_g: Option<Approximate<f64>>,
-    /// What produced the derivatives — the kernel and its version, as ingest recorded it.
-    /// Two parts with different values here were measured by different code, which is the
-    /// first thing to look at when two figures disagree.
-    pub kernel_version: Option<String>,
     pub source_hash: Option<BlobHash>,
     /// `stl`, `3mf`, `obj` — what the ingested file actually is, not what its name says.
     pub source_format: Option<String>,
@@ -111,25 +103,6 @@ pub struct PartDetail {
     #[ts(type = "number | null")]
     pub stored_bytes: Option<u64>,
     pub compressed: Option<bool>,
-    /// The L0 tessellation, and what it occupies. The first honest caller of
-    /// `GET /api/blob/{blake3}`: until this page, every ingest wrote a rung nothing could
-    /// address. Showing its hash and size is what tells a user their part has a usable
-    /// derivative at all.
-    pub tessellation_l0: Option<BlobHash>,
-    #[ts(type = "number | null")]
-    pub tessellation_l0_bytes: Option<u64>,
-    /// The assembly tree a CAD kernel read, as JSON at `GET /api/blob/{blake3}`. `None` for a
-    /// mesh, which has no assembly.
-    pub structure: Option<BlobHash>,
-    /// The finer rungs, `None` until `POST /api/parts/{id}/rungs/{level}` has had them built.
-    pub tessellation_l1: Option<BlobHash>,
-    pub tessellation_l2: Option<BlobHash>,
-    /// The analytic faces and edges a CAD kernel read, which measurement snaps to. `None` for a
-    /// mesh, which has none.
-    pub entities: Option<BlobHash>,
-    /// The dimensions, tolerances and datums the file specifies, as JSON at `GET /api/blob/{blake3}`.
-    /// `None` for a mesh, and for a CAD file whose exporter wrote only geometry.
-    pub pmi: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root.
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
@@ -165,7 +138,6 @@ pub struct SharedBy {
 /// same reason: distinguishing them would confirm that a part exists to someone who
 /// cannot see it.
 pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
-    let touches = state.touches.clone();
     match PgParts(state.db.clone()).detail(part).await {
         // The lock is its own read rather than a column on the detail query: it is a row of
         // its own table, and that query is already at its column ceiling.
@@ -174,20 +146,10 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
             PgPulls(state.db.clone()).provenance(part).await,
         ) {
             (Ok(lock), Ok(provenance)) => {
-                // Opening a part is using its previews. Rungs are served `immutable`, so a
-                // browser that holds one never asks the blob route again, and only this uncached
-                // read can say the part is still in use before the render cache counts it
-                // (Phase 4 slice 2 spec §4).
-                for rung in [
-                    row.tessellation_l0,
-                    row.tessellation_l1,
-                    row.tessellation_l2,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    touches.record(&rung);
-                }
+                // Opening a part no longer touches a derivative: it has none to touch. The
+                // rungs this recorded a read of were what told the render cache a part was
+                // still in use before it counted it (Phase 4 slice 2 spec §4), and nothing
+                // produces one. An export's read is recorded by the blob route that serves it.
                 let shared_by = provenance.map(|(device, name)| SharedBy {
                     device_id: device.to_string(),
                     name,
@@ -247,9 +209,6 @@ fn to_detail(
         materials_typed: row.materials_typed,
         custom: row.custom,
         source_path: row.source_path,
-        thumbnail: row
-            .thumbnail_webp
-            .map(|bytes| format!("data:image/webp;base64,{}", BASE64.encode(bytes))),
         triangle_count: row.triangle_count,
         is_watertight: row.is_watertight,
         // The box has no provenance column of its own: it is derived from the same
@@ -266,19 +225,11 @@ fn to_detail(
         surface_area_mm2: pair(row.surface_area_mm2, row.surface_area_source),
         // Filled in once the part's density is read, as `revisions.rs` fills a revision's.
         mass_g: None,
-        kernel_version: row.kernel_version,
         source_hash: row.source_hash,
         source_format: row.source_format,
         source_bytes: row.source_bytes,
         stored_bytes: row.stored_bytes,
         compressed: row.compressed,
-        tessellation_l0: row.tessellation_l0,
-        tessellation_l0_bytes: row.tessellation_l0_bytes,
-        structure: row.structure,
-        tessellation_l1: row.tessellation_l1,
-        tessellation_l2: row.tessellation_l2,
-        entities: row.entities,
-        pmi: row.pmi,
         directory: row.directory,
         storage_path: row.storage_path,
         created_at: row.created_at,

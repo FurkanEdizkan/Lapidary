@@ -28,13 +28,15 @@ export function jobsSettled(status: BatchStatus): number {
 /**
  * Which copy the progress line uses. `BatchStatus` carries counters, not job kinds, so
  * this is read from two things instead: a batch this page started is whichever kind the
- * click that started it was — the state below carries that alongside the id, and it has
- * to, now that this page can start a scan, a render or a migration. Failing that, a
- * batch is read by what it CONTAINS: any `migrate_storage` row at all means a migration,
- * else any settled `derive` job means a render, else it is read as a scan. This is what
- * a batch this page never clicked into falls back to: a sweep or a migration started
- * with `curl`, or a migration the worker queued on its own at startup and nothing on
- * this page ever asked for.
+ * click that started it was — the state below carries that alongside the id. Failing that, a
+ * batch is read by what it CONTAINS: any `migrate_storage` row at all means a migration, else
+ * it is read as a scan. This is what a batch this page never clicked into falls back to: a
+ * scan started with `curl`, or a migration the worker queued on its own at startup and
+ * nothing on this page ever asked for.
+ *
+ * **`render` was a third kind and R3 took it.** Nothing queues a render; the one batch that
+ * still settles as `Outcome::Rendered` is an export, and the part page polls that itself with
+ * its own copy rather than through this line.
  *
  * Migration is checked on `migrating` (rows of that kind), not `migrated` (settled
  * outcomes), and checked first. `migrated` stays 0 until a `migrate_storage` job
@@ -42,22 +44,16 @@ export function jobsSettled(status: BatchStatus): number {
  * can exist, so every migration a browser can watch starts at `migrating: 1, migrated:
  * 0` — reading `migrated` here would misreport every migration as a scan for the whole
  * duration of its first run, which is worst on exactly the large corpus where that run
- * is slowest. `render` has no rows-based equivalent yet and keeps reading `rendered`
- * (settled outcomes), so it keeps the same one-job blind window `migrate` used to have —
- * a pre-existing gap this task does not extend, not one it closes.
  *
  * What this reads at all is a batch mixing more than one kind: nothing enqueues one —
  * `enqueue` is called once per payload kind, a scan's own children are all
  * `ingest_file`, and a migration's are all `migrate_storage`.
  */
-export type BatchKind = 'scan' | 'render' | 'migrate' | 'upload'
+export type BatchKind = 'scan' | 'migrate' | 'upload'
 
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
     const settled = jobsSettled(status)
-    if (kind === 'render') {
-      return strings.render.running(settled, status.total)
-    }
     if (kind === 'migrate') {
       return strings.migrate.running
     }
@@ -74,13 +70,10 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     }
     return strings.scan.running(settled - status.scanned, status.total - status.scanned)
   }
-  if (kind === 'render') {
-    return strings.render.finished(status.rendered)
-  }
   if (kind === 'migrate') {
     // The failure count, so the sentence can stop claiming every file arrived when the
-    // line beside it says some did not. `scan.finished` and `render.finished` both report
-    // what happened and let the failure line qualify them; this used to assert a total.
+    // line beside it says some did not. `scan.finished` reports what happened and lets the
+    // failure line qualify it; this used to assert a total.
     return strings.migrate.finished(status.failedTotal)
   }
   if (kind === 'upload') {
@@ -323,7 +316,7 @@ export function ScanProgress({
       void queryClient.invalidateQueries({ queryKey: ['batch', library, batch] })
     },
   })
-  // Picked once, out here: a `kind === 'render' ? … : …` inside JSX puts the discriminator
+  // Picked once, out here: a `kind === 'migrate' ? … : …` inside JSX puts the discriminator
   // itself in a child expression, where `no-bare-strings.test.ts` reads it — correctly —
   // as a bare literal reaching the screen.
   //
@@ -334,19 +327,17 @@ export function ScanProgress({
   // never started a scan. A non-destructive failure worded as data loss is the one class of
   // mistake this product treats as a correctness bug.
   const copy =
-    kind === 'render'
-      ? strings.render
-      : kind === 'migrate'
-        ? strings.migrate
-        : kind === 'upload'
-          ? // Scan's per-file failure line, which never says "scan", and an unknown line of its
-            // own: `scan.unknown` tells somebody who never started one about a scan.
-            { failed: strings.scan.failed, unknown: strings.upload.batchUnknown }
-          : strings.scan
+    kind === 'migrate'
+      ? strings.migrate
+      : kind === 'upload'
+        ? // Scan's per-file failure line, which never says "scan", and an unknown line of its
+          // own: `scan.unknown` tells somebody who never started one about a scan.
+          { failed: strings.scan.failed, unknown: strings.upload.batchUnknown }
+        : strings.scan
   if (isError) {
     // `alert`, because this replaces the progress line rather than following it: a status poll
     // that fails leaves the page silent about a batch somebody just started, and the sentence
-    // says which of the four kinds of batch it could not find.
+    // says which of the three kinds of batch it could not find.
     return (
       <p role="alert" className="mb-4 max-w-prose text-[var(--color-muted)]">
         {copy.unknown}

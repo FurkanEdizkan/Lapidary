@@ -119,8 +119,8 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "crates/lapidary-db/tests/repo.rs",
-        content: "55d5e6b6b6d3bb02",
-        reason: "a multi-line SQL query string, indented for readability across its four sub-selects; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose)",
+        content: "52dcf3a518a7e4a8",
+        reason: "a multi-line SQL query string, indented for readability across its four sub-selects; not prose, and not a backslash continuation at all (the line breaks are real, embedded newlines the string keeps on purpose). Re-keyed by R3, which dropped the `AND d.kind = 'thumbnail'` from the fourth sub-select: the digest keys on the literal's own text, so it moved — which is the check doing its job",
     },
     Exemption {
         file: "crates/lapidary-db/tests/migrations.rs",

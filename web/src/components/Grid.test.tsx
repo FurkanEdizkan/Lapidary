@@ -45,10 +45,8 @@ function card(id: string, name: string, extra: Partial<PartCard> = {}): PartCard
     id: id as PartId,
     name,
     partNumber: null,
-    thumbnail: null,
     sourceFormat: 'stl',
     image: null,
-    tessellationL0: `b3${id.slice(-4)}`,
     triangleCount: 784,
     approximate: true,
     directory: 'flanges',
@@ -68,7 +66,6 @@ function Harness({ initial = [FLANGE, GEAR] }: { initial?: PartCard[] }) {
   return (
     <Grid
       parts={parts}
-      onRender={() => {}}
       hostRoot={null}
       density="comfortable"
       layout="detail"
@@ -138,13 +135,12 @@ test('a card shows its own picture, inline or addressed, and names the format wh
   const bare = card('01931b6e-0000-7000-8000-0000000b0013', 'vee-block-lp-3072-02', {
     sourceFormat: '3mf',
   })
-  // **A part with both**, which is every part today and the one case the precedence can be wrong
-  // in. The thumbnail is a fallback for the window before R4 purges the renders, so the picture has
-  // to win — and without this card the two orders are indistinguishable, which is how the first
-  // version of this test passed against `thumbnail ?? image`.
+  // The render that used to sit behind the picture is gone (R3), so there is no precedence left
+  // to get wrong: a card shows its image or names its format. This one carries a picture and the
+  // format a bare card would name, so a card that fell back to the format would show.
   const both = card('01931b6e-0000-7000-8000-0000000b0015', 'hex-spacer-m4x20-lp-2145-01', {
     image: picture(WEBP),
-    thumbnail: RENDER,
+    sourceFormat: 'stl',
   })
   const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
   vi.stubGlobal('fetch', fetchMock)
@@ -166,7 +162,7 @@ test('a card shows its own picture, inline or addressed, and names the format wh
   expect(shown(bare)).toBeNull()
   expect(
     shown(both)?.getAttribute('src') === WEBP,
-    'a part with both shows its picture, not the render it still has',
+    'a card with a picture shows it rather than falling back to its format',
   ).toBe(true)
 
   // Alt text as a literal, not read back from strings.ts: an alt of '' satisfies the constant form

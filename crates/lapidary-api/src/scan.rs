@@ -34,13 +34,12 @@ use lapidary_db::PgParts;
 /// A library that does not exist is a `404`, as it is on the thumbnail sweep next door
 /// and for the same reason: the walk would otherwise run, find files, enqueue them, and
 /// fail every one of them against a library id that names nothing — a hundred and fifty
-/// identical failures for one mistyped id. The existence probe is `auto_thumbnail`'s
-/// `None`, which is the one question this crate already knows how to ask of a `library`
-/// row.
+/// identical failures for one mistyped id. The probe is `PgParts::library_exists`, which was
+/// `auto_thumbnail` until R3 dropped the setting and kept the question.
 pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>) -> Response {
-    match PgParts(state.db.clone()).auto_thumbnail(library).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return no_such_library(),
+    match PgParts(state.db.clone()).library_exists(library).await {
+        Ok(true) => {}
+        Ok(false) => return no_such_library(),
         Err(err) => return internal_error(&err, "library lookup failed"),
     }
     accept(state.db, library, &[JobPayload::ScanDirectory]).await

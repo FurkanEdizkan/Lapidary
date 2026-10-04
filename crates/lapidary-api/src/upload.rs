@@ -695,9 +695,9 @@ fn staged_path(upload_dir: &std::path::Path, library: LibraryId, hash: &BlobHash
 /// against a mistyped library id writes blobs, fails the enqueue on a foreign key, and
 /// reports a database error for what is one wrong character in a URL.
 async fn library_exists(state: &AppState, library: LibraryId) -> Result<(), Response> {
-    match PgParts(state.db.clone()).auto_thumbnail(library).await {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(no_such_library()),
+    match PgParts(state.db.clone()).library_exists(library).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(no_such_library()),
         Err(err) => Err(internal_error(&err, "library lookup failed")),
     }
 }

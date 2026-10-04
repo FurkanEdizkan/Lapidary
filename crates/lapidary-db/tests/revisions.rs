@@ -47,10 +47,7 @@ async fn seed(pool: &sqlx::PgPool) -> PartId {
             blob: &blob_row(0x31),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: Some(b"webp-preview"),
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("seeds the part")
@@ -70,10 +67,7 @@ fn request<'a>(
         blob,
         measurements,
         provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-        thumbnail_webp: None,
-        kernel_version: "mesh stl-1+cpu-1",
         format: "stl",
-        tessellations: &[],
     }
 }
 
@@ -109,32 +103,6 @@ async fn a_manifest_waits_for_a_change_to_its_part_and_holds_it(pool: sqlx::PgPo
     assert_eq!(
         manifest.part.metadata["custom"],
         serde_json::json!({ "supplier": "Misumi" })
-    );
-}
-
-/// A revision's faces and edges, written after it commits, come back with its history; a revision never
-/// given any has none, not zero.
-#[sqlx::test(migrations = "./migrations")]
-async fn a_revisions_faces_and_edges_come_back_with_its_history(pool: sqlx::PgPool) {
-    let part = seed(&pool).await;
-    let revisions = PgRevisions(pool.clone());
-    let history = revisions.history(part).await.expect("reads");
-    assert_eq!((history[0].face_count, history[0].edge_count), (None, None));
-
-    revisions
-        .set_topology(
-            history[0].id,
-            lapidary_core::Topology {
-                faces: 38,
-                edges: 96,
-            },
-        )
-        .await
-        .expect("records the counts");
-    let history = revisions.history(part).await.expect("reads");
-    assert_eq!(
-        (history[0].face_count, history[0].edge_count),
-        (Some(38), Some(96))
     );
 }
 
@@ -189,10 +157,7 @@ async fn a_revision_moves_its_part_in_the_grids_order(pool: sqlx::PgPool) {
                     ..measurements()
                 },
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                thumbnail_webp: None,
-                kernel_version: "mesh stl-1+cpu-1",
                 format: "stl",
-                tessellations: &[],
             })
             .await
             .expect("seeds the part");
@@ -291,7 +256,6 @@ async fn a_revision_goes_on_top_and_the_previous_file_is_set_aside_under_its_own
     assert_eq!(history[1].origin, RevisionOrigin::Ingest);
     assert_eq!(history[0].storage_path.as_deref(), Some(STORED));
     assert_eq!(history[1].storage_path.as_deref(), Some(ASIDE));
-    assert_eq!(history[1].thumbnail.as_deref(), Some(&b"webp-preview"[..]));
 
     let now = revisions
         .current(library(), PATH)

@@ -16,7 +16,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { RemovedPage } from "./removed";
 import { strings } from "../lib/strings";
-import type { Fold, PartCard } from "../lib/types";
+import type { PartCard } from "../lib/types";
 
 /**
  * The removed list, which is two things at once: the only route back to a part somebody
@@ -37,12 +37,10 @@ const MOUNTING: PartCard = {
   name: "Bracket, LP-1042-03",
   sourcePath: "mounting/LP-1042-03.stl",
   partNumber: "LP-1042-03",
-  thumbnail: null,
   sourceFormat: 'stl',
   image: null,
   triangleCount: 48112,
   approximate: true,
-  tessellationL0: null,
   sourceHash:
     "2222222222222222222222222222222222222222222222222222222222222222",
   sourceBytes: 204800,
@@ -76,7 +74,6 @@ function stub(
     quarantined: 1,
     quarantinedBytes: 91204,
   },
-  folds: Fold[] = [],
 ) {
   const calls: { url: string; method: string }[] = [];
   vi.stubGlobal(
@@ -88,11 +85,6 @@ function stub(
       }
       if (url.includes("/restore")) {
         return { ok: true, status: 204, json: async () => ({}) };
-      }
-      // Which of these were folded, and into what (Phase 6). An array, not a parts page: the
-      // catch-all below answers with one, and `folds.map` would be handed an object.
-      if (url.includes("/folds")) {
-        return { ok: true, status: 200, json: async () => folds };
       }
       return {
         ok: true,

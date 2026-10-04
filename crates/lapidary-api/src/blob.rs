@@ -70,7 +70,7 @@ pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) ->
             )
                 .into_response()
         }
-        // Referenced but missing. A rung is evictable by design and is rebuilt from its
+        // Referenced but missing. An export is evictable by design and is rebuilt from its
         // source; anything else stored this way cannot be rebuilt from here. Logged either
         // way, because an operator needs to see that bytes went missing.
         Err(err) => {
@@ -95,24 +95,29 @@ pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) ->
     }
 }
 
-/// Queue a rebuild of every rung stored as `hash`, and say whether one is on its way -- queued
-/// by this call or an earlier one. `false` when the bytes back no rung or the queue could not
-/// be reached, and the caller then promises nothing.
+/// Queue a rebuild of every export stored as `hash`, and say whether one is on its way --
+/// queued by this call or an earlier one. `false` when the bytes back nothing rebuildable or
+/// the queue could not be reached, and the caller then promises nothing.
+///
+/// **Only what something still builds.** This asked `rungs_for_blob` before R3, and after it
+/// the message "that file is being rebuilt" would have been a promise nothing could keep for
+/// a tessellation. A gallery image is not rebuildable either, and the other branch of the
+/// message says so.
 async fn rebuild(db: PgPool, hash: &BlobHash) -> bool {
-    let rungs = match PgParts(db.clone()).rungs_for_blob(hash).await {
-        Ok(rungs) => rungs,
+    let exports = match PgParts(db.clone()).exports_for_blob(hash).await {
+        Ok(exports) => exports,
         Err(error) => {
-            tracing::error!(%error, "could not look up the rungs a missing blob backs");
+            tracing::error!(%error, "could not look up the exports a missing blob backs");
             return false;
         }
     };
     let jobs = PgJobs(db);
     let mut rebuilding = false;
-    for (library, revision, kind) in rungs {
+    for (library, revision, kind) in exports {
         match jobs.enqueue_derive_if_absent(library, revision, kind).await {
             Ok(_) => rebuilding = true,
             Err(error) => {
-                tracing::error!(%error, %revision, "could not queue a rebuild of a missing rung")
+                tracing::error!(%error, %revision, "could not queue a rebuild of a missing export")
             }
         }
     }
@@ -142,10 +147,9 @@ fn internal_error(err: &DbError) -> Response {
 
 /// What these bytes are, read from the bytes.
 ///
-/// This route serves two kinds of blob now — tessellation rungs and gallery images — and it
-/// cannot tell them apart from the hash, which is the point of a hash. It can tell from the
-/// first twelve bytes, which is cheaper than a second database read and cannot disagree with
-/// what is actually being sent.
+/// This route serves gallery images and the two mesh exports, and it cannot tell them apart
+/// from the hash, which is the point of a hash. It can tell from the first twelve bytes, which
+/// is cheaper than a second database read and cannot disagree with what is actually being sent.
 ///
 /// A wrong type here is not cosmetic: a WebP labelled `model/gltf-binary` renders in an
 /// `<img>` only because browsers sniff, and sniffing is a behaviour to be grateful for

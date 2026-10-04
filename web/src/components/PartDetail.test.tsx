@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, crea
 import { expect, test, vi } from 'vitest'
 import { Detail } from './PartDetail'
 import { strings } from '../lib/strings'
-import type { AssemblyNode, AssemblyTree, PartDetail, PartRevision } from '../lib/types'
+import type { PartDetail, PartRevision } from '../lib/types'
 
 const { mounts } = vi.hoisted(() => ({ mounts: [] as string[] }))
 
@@ -38,16 +38,13 @@ const BRACKET: PartDetail = {
   materials: [],
   materialsTyped: false,
   custom: {},
-  pmi: null,
   sourcePath: 'cad/angle-bracket-60x60x40-lp-9004-00.igs',
-  thumbnail: null,
   triangleCount: 44,
   isWatertight: true,
   bboxMm: { value: [60, 40, 60], approximate: false },
   volumeMm3: { value: 35840, approximate: false },
   surfaceAreaMm2: { value: 11392, approximate: false },
   massG: null,
-  kernelVersion: 'occt occt-8.0.1-bridge-4+deflection-0.1+glb-1+cpu-1',
   lock: null,
   sharedBy: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
@@ -55,12 +52,6 @@ const BRACKET: PartDetail = {
   sourceBytes: 18204,
   storedBytes: 6120,
   compressed: true,
-  tessellationL0: '3333333333333333333333333333333333333333333333333333333333333333',
-  tessellationL0Bytes: 1400,
-  structure: null,
-  tessellationL1: null,
-  tessellationL2: null,
-  entities: null,
   directory: 'libraries/default/cad',
   storagePath: 'libraries/default/cad/angle-bracket-60x60x40-lp-9004-00.igs',
   createdAt: '2026-09-13T10:00:00Z',
@@ -70,7 +61,6 @@ const PIN: PartDetail = {
   ...BRACKET,
   id: '01931b6e-0000-7000-8000-00000000cccc',
   name: 'stop-pin-d10x20-lp-9007-00',
-  tessellationL0: '5555555555555555555555555555555555555555555555555555555555555555',
 }
 
 /**
@@ -291,169 +281,6 @@ test('a part that holds no material says so where the list cannot be edited', as
   expect(screen.queryByRole('button', { name: strings.materials.reset })).toBeNull()
 })
 
-const IDENTITY: AssemblyNode['transform'] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-const leaf = (name: string): AssemblyNode => ({ name, prototype: '0:1:1:2', transform: IDENTITY, children: [] })
-/** A plate beside a station of two parts: three placed parts, the station's the second and third. */
-const FIXTURE: AssemblyTree = {
-  roots: [
-    {
-      name: 'fixture-plate-assembly-lp-9000-00',
-      prototype: '0:1:1:1',
-      transform: IDENTITY,
-      children: [
-        leaf('base-plate-lp-9001-00'),
-        {
-          name: 'bracket-station-lp-9002-00',
-          prototype: '0:1:1:3',
-          transform: IDENTITY,
-          children: [leaf('angle-bracket-lp-9004-00'), leaf('stop-pin-d10x20-lp-9007-00')],
-        },
-      ],
-    },
-  ],
-  parts: 3,
-  prototypes: 3,
-}
-
-function renderAssembly() {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () => (url.startsWith('/api/blob/') ? FIXTURE : []),
-    })),
-  )
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={client}>
-      <Detail part={{ ...BRACKET, structure: '6666666666666666666666666666666666666666666666666666666666666666' }} />
-    </QueryClientProvider>,
-  )
-}
-
-/**
- * **The tree reads, and no longer hides** (R1).
- *
- * Hiding and isolating a part needed `extras.parts` — the per-part triangle runs `glb.rs` wrote
- * into a rung — so the viewer could draw the mesh with one part left out. It draws the original
- * file now, which carries no such thing, so there is nothing to hide a part *in*. Two tests stood
- * here, one driving the hide buttons and one asserting they were absent for a rung that counted no
- * parts; the second would now pass against anything at all.
- *
- * What the tree says about the assembly is unchanged, and that is what this asserts: the counts,
- * the nesting, and a branch whose rows are drawn only once it is opened.
- */
-test('an assembly lists its tree, each branch a disclosure, and offers nothing to hide', async () => {
-  renderAssembly()
-  const section = (await screen.findByRole('heading', { name: strings.detail.assembly })).closest('section')
-  expect(section).not.toBeNull()
-  expect(section!.textContent).toContain(strings.detail.assemblyCounts(3, 3))
-
-  const station = 'bracket-station-lp-9002-00'
-  const branch = screen.getByText(station).closest('details') as HTMLDetailsElement
-  // Closed, so the station's own two parts are not rows yet.
-  expect(screen.queryByText('stop-pin-d10x20-lp-9007-00')).toBeNull()
-  branch.open = true
-  fireEvent(branch, new Event('toggle'))
-  expect(await screen.findByText('stop-pin-d10x20-lp-9007-00')).toBeTruthy()
-
-  // No control in the section: the words below are what the hide, isolate and show-all buttons said.
-  expect(section!.querySelectorAll('button')).toHaveLength(0)
-  vi.unstubAllGlobals()
-})
-
-/** What the file specifies is listed as specified, each annotation on the face it names. */
-test('a part lists the dimensions and tolerances its file specifies, labelled as specified', async () => {
-  const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
-  const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
-  const cylinder = { prototype: '0:1:1:1', face: 1 }
-  const base = { prototype: '0:1:1:1', face: 2 }
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith(pmiHash)
-          ? {
-              dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }],
-              tolerances: [{ type: 'perpendicularity', value: 0.05, datums: ['A'], faces: [cylinder] }],
-              datums: [{ name: 'A', faces: [base] }],
-            }
-          : url.endsWith(entitiesHash)
-            ? [
-                { type: 'cylinder', prototype: '0:1:1:1', face: 1, radius: 11, origin: [0, 0, 0], axis: [0, 0, 1] },
-                { type: 'plane', prototype: '0:1:1:1', face: 2, origin: [0, 0, 0], normal: [0, 0, -1] },
-              ]
-            : [],
-    })),
-  )
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={client}>
-      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash }} />
-    </QueryClientProvider>,
-  )
-
-  expect(await screen.findByText(strings.pmi.note)).toBeTruthy()
-  const item = (text: string) => screen.getByText(text).closest('li')?.textContent
-  await waitFor(() =>
-    expect(item(strings.pmi.dimension('diameter', 22, 0.05, 0))).toContain(strings.pmi.face('cylinder')),
-  )
-  expect(strings.pmi.dimension('diameter', 22, 0.05, 0)).toBe('⌀22 mm +0.05 / 0')
-  expect(item(strings.pmi.tolerance('perpendicularity', 0.05, ['A']))).toContain(strings.pmi.face('cylinder'))
-  expect(item(strings.pmi.datum('A'))).toContain(strings.pmi.face('plane'))
-  expect(screen.queryByText(/≈/)).toBeNull()
-  vi.unstubAllGlobals()
-})
-
-/**
- * **PMI is a list and not an overlay** (R1).
- *
- * Two tests stood here: one toggling the annotations into the 3D view, one about faces that could
- * not be read. Both needed the analytic entities placed by the assembly tree — geometry we
- * produced — to know where on the part a face is. The viewer draws the original file now and has
- * no entities, so there is no "show in view" and nothing to say about which annotations it could
- * not place. The list above says what the file specifies, which was always the honest surface.
- *
- * What is asserted here is the absence, because the list and the overlay shared a section and a
- * leftover control would be a press that does nothing.
- */
-test('the specified list offers nothing to draw in the view', async () => {
-  const pmiHash = '7777777777777777777777777777777777777777777777777777777777777777'
-  const entitiesHash = '8888888888888888888888888888888888888888888888888888888888888888'
-  const cylinder = { prototype: '0:1:1:1', face: 1 }
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith(pmiHash)
-          ? {
-              dimensions: [{ type: 'diameter', value: 22, upper: 0.05, lower: 0, faces: [cylinder] }],
-              tolerances: [],
-              datums: [],
-            }
-          : url.endsWith(entitiesHash)
-            ? [{ type: 'cylinder', prototype: '0:1:1:1', face: 1, radius: 11, origin: [0, 0, 0], axis: [0, 0, 1] }]
-            : [],
-    })),
-  )
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={{ ...BRACKET, pmi: pmiHash, entities: entitiesHash, sourceFormat: 'stl' }} />
-    </QueryClientProvider>,
-  )
-
-  const row = await screen.findByText(strings.pmi.dimension('diameter', 22, 0.05, 0))
-  expect(row.closest('li')?.textContent).toContain(strings.pmi.face('cylinder'))
-  const section = row.closest('section')
-  expect(section?.querySelectorAll('button')).toHaveLength(0)
-  vi.unstubAllGlobals()
-})
-
 /** One revision is the Identity row, said once; two are a history, each with its origin, its ≈ and its original. */
 test('the history appears once a part has a second revision, and says where each came from', async () => {
   const second = {
@@ -462,7 +289,6 @@ test('the history appears once a part has a second revision, and says where each
     revLabel: '2',
     origin: 'agent',
     createdAt: '2026-09-14T09:30:00Z',
-    thumbnail: null,
     triangleCount: 44,
     faceCount: null,
     edgeCount: null,
@@ -474,8 +300,6 @@ test('the history appears once a part has a second revision, and says where each
     sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
     sourceFormat: 'stl',
     sourceBytes: 20124,
-    tessellationL0: null,
-    tessellationL1: null,
     deltaFromParent: {
       volumeMm3: { from: 35840, to: 39424, change: 3584, percent: 10, approximate: true },
       surfaceAreaMm2: null,
@@ -565,16 +389,18 @@ test('the history appears once a part has a second revision, and says where each
   expect(table.textContent).toContain(strings.detail.mass)
   expect(table.textContent).toContain(strings.detail.massChange(28.134, 10))
   expect(screen.getByText(strings.detail.massNote)).toBeTruthy()
-  // A centre of mass neither revision recorded is said so per axis, not shown as no movement — and
-  // because both revisions have a volume, what it says is that a re-read is queued for it (L3, item
-  // 1), not "not measured in both", which would be a claim about a measurement nobody attempted.
+  // **A centre of mass neither revision recorded says so per axis, and says nothing more.** This
+  // used to read "a re-read is queued for it", keyed on a predicate that had to equal the worker's
+  // centre-of-mass backfill — and R3 deleted that backfill, because it worked by rebuilding an L0
+  // rung to obtain one float. A revision recorded before centres were keeps none until somebody
+  // re-ingests the file, and the honest word for that is the ordinary one.
   const centre = (axis: 0 | 1 | 2) =>
     [...table.querySelectorAll('tr')].find(
       (tr) => tr.querySelector('th')?.textContent === strings.detail.centreAxis(axis),
     )
   expect(table.textContent).toContain(strings.detail.centreAxis(2))
   for (const axis of [0, 1, 2] as const) {
-    expect(centre(axis)?.querySelector('td')?.textContent).toBe(strings.detail.centreQueued)
+    expect(centre(axis)?.querySelector('td')?.textContent).toBe(strings.detail.notInBoth)
   }
   vi.unstubAllGlobals()
 })
@@ -588,7 +414,6 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
     revLabel,
     origin: parent === null ? 'ingest' : 'agent',
     createdAt: '2026-09-15T13:00:00Z',
-    thumbnail: null,
     triangleCount: 28576,
     faceCount: faces,
     edgeCount: edges,
@@ -601,8 +426,6 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
     sourceFormat: 'step',
     sourceBytes: 190356,
     deltaFromParent: null,
-    tessellationL0: null,
-    tessellationL1: null,
   })
   const [first, second] = ['01931b6e-0000-7000-8000-0000000000e1', '01931b6e-0000-7000-8000-0000000000e2']
   const exact = (from: number, to: number) => ({ from, to, change: to - from, percent: ((to - from) / from) * 100, approximate: false })
@@ -631,100 +454,9 @@ test('the comparison shows a CAD revision’s faces and edges exactly', async ()
   await waitFor(() => expect(row(strings.detail.faces)?.textContent).toContain(strings.detail.countChange(4, (4 / 38) * 100)))
   expect(row(strings.detail.faces)?.textContent).not.toContain(strings.detail.approximate)
   expect(row(strings.detail.edges)?.textContent).toContain(strings.detail.countChange(12, (12 / 96) * 100))
-  // Neither of these revisions recorded a volume, so there is no centre to queue a re-read for and
-  // the row falls back to the ordinary words. Without this the "queued" wording would be untested
-  // against the case it must not claim.
   expect(row(strings.detail.centreAxis(0))?.querySelector('td')?.textContent).toBe(
     strings.detail.notInBoth,
   )
-})
-
-test('a centre nothing will re-read says so, rather than promising a job that is not queued', async () => {
-  // L3, item 1. The page may only say "a re-read is queued" where the worker sweep really queues one,
-  // and that sweep takes mesh formats with a volume above zero. A STEP revision is the
-  // stale-derivative sweep's and waits on a worker with a CAD kernel; an open mesh has no volume and
-  // never gets a centre at all. Both get the ordinary words.
-  const revision = (
-    id: string,
-    revLabel: string,
-    parent: string | null,
-    sourceFormat: string,
-    volumeMm3: number | null,
-  ): PartRevision => ({
-    id,
-    parent,
-    revLabel,
-    origin: parent === null ? 'ingest' : 'agent',
-    createdAt: '2026-09-15T13:00:00Z',
-    thumbnail: null,
-    triangleCount: 28576,
-    faceCount: null,
-    edgeCount: null,
-    bboxMm: null,
-    volumeMm3: volumeMm3 === null ? null : { value: volumeMm3, approximate: true },
-    surfaceAreaMm2: null,
-    massG: null,
-    centreMm: null,
-    sourceHash: null,
-    sourceFormat,
-    sourceBytes: 190356,
-    deltaFromParent: null,
-    tessellationL0: null,
-    tessellationL1: null,
-  })
-  const [first, second] = ['01931b6e-0000-7000-8000-0000000000f1', '01931b6e-0000-7000-8000-0000000000f2']
-  const pair = async (history: PartRevision[]) => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => ({
-        ok: true,
-        status: 200,
-        json: async () =>
-          url.endsWith('/revisions')
-            ? history
-            : url.includes('/diff?')
-              ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, centreMm: null, triangleCount: null, faceCount: null, edgeCount: null }
-              : [],
-      })),
-    )
-    const view = render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <Detail part={BRACKET} />
-      </QueryClientProvider>,
-    )
-    const table = await screen.findByRole('table')
-    const said = [...table.querySelectorAll('tr')]
-      .find((tr) => tr.querySelector('th')?.textContent === strings.detail.centreAxis(0))
-      ?.querySelector('td')?.textContent
-    view.unmount()
-    vi.unstubAllGlobals()
-    return said
-  }
-
-  // Two STEP revisions with a volume and no centre: nothing this sweep will ever touch.
-  expect(
-    await pair([
-      revision(second, '2', first, 'step', 39424),
-      revision(first, '1', null, 'step', 35840),
-    ]),
-  ).toBe(strings.detail.notInBoth)
-
-  // A mesh the sweep will fill beside an open mesh it never can. `every`, not `some`: claiming a job
-  // for the pair would come true for one revision and never for the other.
-  expect(
-    await pair([
-      revision(second, '2', first, 'stl', null),
-      revision(first, '1', null, 'stl', 35840),
-    ]),
-  ).toBe(strings.detail.notInBoth)
-
-  // Both meshes with a volume: this is the pair the sweep does queue.
-  expect(
-    await pair([
-      revision(second, '2', first, 'stl', 39424),
-      revision(first, '1', null, 'stl', 35840),
-    ]),
-  ).toBe(strings.detail.centreQueued)
 })
 
 test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {
@@ -790,7 +522,6 @@ test('the comparison follows the part on screen instead of keeping the last part
     revLabel,
     origin: parent === null ? 'ingest' : 'agent',
     createdAt: '2026-09-14T09:30:00Z',
-    thumbnail: null,
     triangleCount: 44,
     faceCount: null,
     edgeCount: null,
@@ -803,8 +534,6 @@ test('the comparison follows the part on screen instead of keeping the last part
     sourceFormat: 'stl',
     sourceBytes: 20124,
     deltaFromParent: null,
-    tessellationL0: null,
-    tessellationL1: null,
   })
   const [b1, b2] = ['01931b6e-0000-7000-8000-0000000000b1', '01931b6e-0000-7000-8000-0000000000b2']
   const [c1, c2] = ['01931b6e-0000-7000-8000-0000000000c1', '01931b6e-0000-7000-8000-0000000000c2']
@@ -868,7 +597,6 @@ test('the comparison keeps its pickers and offers no ghost', async () => {
     revLabel,
     origin: parent === null ? 'ingest' : 'agent',
     createdAt: '2026-09-15T08:10:00Z',
-    thumbnail: null,
     triangleCount: 44,
     faceCount: null,
     edgeCount: null,
@@ -881,8 +609,6 @@ test('the comparison keeps its pickers and offers no ghost', async () => {
     sourceFormat: 'stl',
     sourceBytes: 20124,
     deltaFromParent: null,
-    tessellationL0: 'a0'.repeat(32),
-    tessellationL1: null,
   })
   const [first, second] = ['01931b6e-0000-7000-8000-0000000000d1', '01931b6e-0000-7000-8000-0000000000d2']
   const history = [revision(second, '2', first), revision(first, '1', null)]

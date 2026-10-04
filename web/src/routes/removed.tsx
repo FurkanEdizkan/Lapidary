@@ -117,8 +117,8 @@ function RemovedRow({ card }: { card: PartCard }) {
   const [confirming, setConfirming] = useState(false)
   // `typeof`, not `=== null`: the response is cast, and a server from before this field sends none.
   const removedAt = typeof card.removedAt === 'string' ? card.removedAt : null
-  // The part's own picture, with the render behind it while there still is one — `Card.tsx`'s rule.
-  const picture = card.image?.src ?? card.thumbnail
+  // The part's own picture, or nothing — `Card.tsx`'s rule, and there is no render behind it.
+  const picture = card.image?.src ?? null
   const quiet =
     'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2.5 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 

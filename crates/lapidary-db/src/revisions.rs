@@ -2,13 +2,11 @@
 //! and the history. See `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md`.
 
 use crate::DbError;
-use crate::repo::{
-    RevisionWrite, StoredBlobRow, TessellationRow, detail_hash, detail_stamp, insert_revision_chain,
-};
+use crate::repo::{RevisionWrite, StoredBlobRow, detail_hash, detail_stamp, insert_revision_chain};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::{
-    BlobHash, DerivativeKind, LibraryId, LibraryMode, LockId, MeasurementProvenance,
-    MeshMeasurements, PartId, RevisionId, RevisionOrigin,
+    BlobHash, LibraryId, LibraryMode, LockId, MeasurementProvenance, MeshMeasurements, PartId,
+    RevisionId, RevisionOrigin,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -39,18 +37,7 @@ pub struct RevisionRequest<'a> {
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
-    pub thumbnail_webp: Option<&'a [u8]>,
-    pub kernel_version: &'a str,
     pub format: &'a str,
-    pub tessellations: &'a [TessellationRow<'a>],
-}
-
-/// A revision missing its centre of mass, and the library whose job queue a re-derive of it belongs in.
-/// See [`PgRevisions::centreless_revisions`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CentrelessRevision {
-    pub library: LibraryId,
-    pub revision: RevisionId,
 }
 
 /// One revision in a part's history.
@@ -77,16 +64,10 @@ pub struct RevisionRow {
     pub centre_source: Option<String>,
     pub is_watertight: Option<bool>,
     pub units: Option<String>,
-    /// The inline preview, as the grid serves it. Rows only — the open path reads no file.
-    pub thumbnail: Option<Vec<u8>>,
     pub format: Option<String>,
     pub source_hash: Option<BlobHash>,
     pub size_bytes: Option<i64>,
     pub storage_path: Option<String>,
-    /// This revision's own rungs, for the overlay's ghost. Ingest writes L0; L1 exists only once
-    /// somebody opened the part while this revision was current.
-    pub tessellation_l0: Option<BlobHash>,
-    pub tessellation_l1: Option<BlobHash>,
 }
 
 /// Matched by column name, for `DetailColumns`' reason: more columns than sqlx implements
@@ -115,13 +96,10 @@ struct HistoryColumns {
     centre_source: Option<String>,
     is_watertight: Option<bool>,
     units: Option<String>,
-    thumb_bytes: Option<Vec<u8>>,
     format: Option<String>,
     blake3: Option<String>,
     size_bytes: Option<i64>,
     storage_path: Option<String>,
-    l0_blake3: Option<String>,
-    l1_blake3: Option<String>,
 }
 
 pub struct PgRevisions(pub PgPool);
@@ -313,10 +291,7 @@ impl PgRevisions {
                 blob: req.blob,
                 measurements: req.measurements,
                 provenance: req.provenance,
-                thumbnail_webp: req.thumbnail_webp,
-                kernel_version: req.kernel_version,
                 format: req.format,
-                tessellations: req.tessellations,
             },
         )
         .await?;
@@ -328,25 +303,6 @@ impl PgRevisions {
         }
         tx.commit().await?;
         Ok(RevisionId::from_uuid(revision))
-    }
-
-    /// The faces and edges a CAD kernel counted on `revision`'s B-rep, written after the revision commits, as
-    /// a file's header is. A mesh revision never gets any.
-    pub async fn set_topology(
-        &self,
-        revision: RevisionId,
-        topology: lapidary_core::Topology,
-    ) -> Result<(), DbError> {
-        let count = |column: &'static str, value: u32| {
-            i32::try_from(value).map_err(|_| DbError::TriangleCountTooLarge { column, value })
-        };
-        sqlx::query("UPDATE revision SET face_count = $2, edge_count = $3 WHERE id = $1")
-            .bind(revision.as_uuid())
-            .bind(count("revision.face_count", topology.faces)?)
-            .bind(count("revision.edge_count", topology.edges)?)
-            .execute(&self.0)
-            .await?;
-        Ok(())
     }
 
     /// The centre of `revision`'s volume and where it came from, written after the revision commits as its
@@ -370,51 +326,6 @@ impl PgRevisions {
         Ok(())
     }
 
-    /// Revisions of a file in `formats` whose centre of mass was never recorded although their volume
-    /// says they have one, newest first, at most `limit` — what a worker re-derives at startup (L3,
-    /// item 1).
-    ///
-    /// **`formats` is the mesh formats, and a CAD format must never be in it.** A mesh revision from
-    /// before `measure::measured` computed centres is the whole population this exists for: the
-    /// stale-derivative sweep never finds one, because `MeshKernel::version` names the format, the GLB
-    /// writer and the rasteriser and nothing about how it measures, so the rung is current. A STEP
-    /// revision read by a bridge before 8 wrote no centre either, but that sweep *does* find it — the
-    /// bridge version is inside the kernel version it keys on, and the `Structure` branch has always
-    /// recorded a centre. Queueing STEP here would re-read it twice on a worker that has a CAD kernel,
-    /// and on a worker that has none it would queue a job that fails `Permanent` at every start, for
-    /// ever: the board's "permanently-failing file re-attempted by every scan", in a new place.
-    ///
-    /// `volume > 0`, not `volume IS NOT NULL`, is the other half of what makes the sweep terminate: the
-    /// mesh kernel gates its centre on `is_watertight && signed_volume != 0.0` and its volume on
-    /// `is_watertight` alone, so a closed mesh enclosing nothing has a volume of 0 and no centre, for
-    /// ever.
-    pub async fn centreless_revisions(
-        &self,
-        limit: i64,
-        formats: &[&str],
-    ) -> Result<Vec<CentrelessRevision>, DbError> {
-        let formats: Vec<&str> = formats.to_vec();
-        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT p.library_id, r.id FROM revision r \
-             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
-             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
-             WHERE r.volume > 0 AND r.mass_props_json IS NULL AND s.format = ANY($2) \
-             ORDER BY r.created_at DESC, r.id DESC LIMIT $1",
-        )
-        .bind(limit)
-        .bind(&formats)
-        .fetch_all(&self.0)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(library, revision)| CentrelessRevision {
-                library: LibraryId::from_uuid(library),
-                revision: RevisionId::from_uuid(revision),
-            })
-            .collect())
-    }
-
     /// Every revision of `part`, newest first — the order the grid calls the first one current.
     pub async fn history(&self, part: PartId) -> Result<Vec<RevisionRow>, DbError> {
         Self::history_on(&mut *self.0.acquire().await?, part).await
@@ -435,18 +346,8 @@ impl PgRevisions {
                     (r.mass_props_json->'centre_mm'->>1)::float8 AS centre_y, \
                     (r.mass_props_json->'centre_mm'->>2)::float8 AS centre_z, \
                     r.mass_props_json->>'source' AS centre_source, \
-                    t.thumb_bytes, f.format, f.blake3, f.size_bytes, f.storage_path, \
-                    l0.blake3 AS l0_blake3, l1.blake3 AS l1_blake3 \
+                    f.format, f.blake3, f.size_bytes, f.storage_path \
              FROM revision r \
-             LEFT JOIN LATERAL (SELECT thumb_bytes FROM derivative \
-                                WHERE revision_id = r.id AND kind = $2 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) t ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
-                                WHERE revision_id = r.id AND kind = $3 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative \
-                                WHERE revision_id = r.id AND kind = $4 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l1 ON true \
              LEFT JOIN LATERAL (SELECT format, blake3, size_bytes, storage_path FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY id LIMIT 1) f ON true \
@@ -454,9 +355,6 @@ impl PgRevisions {
              ORDER BY r.created_at DESC, r.id DESC",
         )
         .bind(part.as_uuid())
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
-        .bind(DerivativeKind::TessellationL1.as_str())
         .fetch_all(&mut *conn)
         .await?;
 
@@ -493,13 +391,10 @@ impl PgRevisions {
                     centre_source: c.centre_source,
                     is_watertight: c.is_watertight,
                     units: c.units,
-                    thumbnail: c.thumb_bytes,
                     format: c.format,
                     source_hash: detail_hash("file.blake3", c.blake3)?,
                     size_bytes: c.size_bytes,
                     storage_path: c.storage_path,
-                    tessellation_l0: detail_hash("derivative.blake3", c.l0_blake3)?,
-                    tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
                 })
             })
             .collect()

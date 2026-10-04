@@ -27,31 +27,21 @@ import { Menu } from './Menu'
  * visit (search, Upload, the places) stays on it.
  *
  * Menus are native popovers (`styles.css` has why). Every control inside one stays in the
- * document while the menu is closed, which is what keeps a test that finds the auto-thumbnail
- * checkbox by role meaningful — and also what would let such a test pass if the menu could
- * never be opened at all, so `index.test.tsx` asserts the trigger is wired to its menu, and
- * the keyboard pass in the browser is the check that it opens.
+ * document while the menu is closed, which is what keeps a test that finds a control by role
+ * meaningful — and also what would let such a test pass if the menu could never be opened at
+ * all, so `index.test.tsx` asserts the trigger is wired to its menu, and the keyboard pass in
+ * the browser is the check that it opens.
  */
 export function LibraryMenu({
-  autoThumbnail,
-  onAutoThumbnail,
-  settingsBusy,
   onScan,
   scanBusy,
-  onSweep,
-  sweepBusy,
   library,
   onSelectLibrary,
   onImport,
   importBusy,
 }: {
-  autoThumbnail: boolean | undefined
-  onAutoThumbnail: (on: boolean) => void
-  settingsBusy: boolean
   onScan: () => void
   scanBusy: boolean
-  onSweep: () => void
-  sweepBusy: boolean
   library: LibraryId
   onSelectLibrary?: (library: LibraryId) => void
   /** Opens the picker for a bundle exported from Lapidary. */
@@ -61,33 +51,6 @@ export function LibraryMenu({
   return (
     <Menu id="library-menu" label={strings.toolbar.library}>
         <LibrarySwitcher library={library} onSelect={onSelectLibrary} />
-      <label className="flex items-center gap-2 text-sm" title={strings.library.autoThumbnailDetail}>
-        {/*
-          `undefined` is "not known yet", and the checkbox says so in the way a checkbox
-          says it: mixed, and not clickable until there is a state to click away from.
-          Painting a confident "on" for the tick before the read lands is the same lie in a
-          shorter window, and a box that flips under the cursor is worse than one that
-          waits. It stays mixed if the read fails outright — `settingsNote` says why and
-          says to reload — because there is nothing honest to put there.
-
-          `indeterminate` is a DOM property with no attribute, so it is set through the ref
-          rather than rendered. Block body: a React 19 ref callback that returns a value is
-          read as a cleanup function.
-        */}
-        <input
-          type="checkbox"
-          checked={autoThumbnail ?? false}
-          ref={(el) => {
-            if (el !== null) {
-              el.indeterminate = autoThumbnail === undefined
-            }
-          }}
-          disabled={settingsBusy || autoThumbnail === undefined}
-          onChange={(event) => onAutoThumbnail(event.target.checked)}
-          className="accent-[var(--color-accent)]"
-        />
-        {strings.library.autoThumbnail}
-      </label>
         <button
           type="button"
           onClick={onScan}
@@ -95,14 +58,6 @@ export function LibraryMenu({
           className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
         >
           {strings.scan.start}
-        </button>
-        <button
-          type="button"
-          onClick={onSweep}
-          disabled={sweepBusy}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {strings.render.sweep}
         </button>
         <FieldsMenuItem library={library} />
         <DensitiesMenuItem library={library} />
@@ -128,7 +83,6 @@ export function LibraryMenu({
  */
 export function Toolbar({
   scope,
-  settingsNote,
   note,
   pageSize,
   onPageSize,
@@ -144,7 +98,6 @@ export function Toolbar({
 }: {
   /** The folder's name and how many parts are showing, built by the page that knows both. */
   scope: ReactNode
-  settingsNote: string | null
   note: string | null
   pageSize: PageSize
   onPageSize: (size: PageSize) => void
@@ -244,14 +197,12 @@ export function Toolbar({
         </div>
       </div>
       {/*
-        Outside the menus, always. A note that says the scan failed or that previews could not
-        be queued answers a control that may live in a closed menu, and a message inside a
-        closed menu is a message nobody reads.
+        Outside the menus, always. A note that says the scan failed answers a control that may
+        live in a closed menu, and a message inside a closed menu is a message nobody reads.
       */}
-      {settingsNote === null && note === null ? null : (
+      {note === null ? null : (
         <p className="mb-3 flex flex-wrap gap-x-4 text-sm text-[var(--color-muted)]">
-          {settingsNote === null ? null : <span>{settingsNote}</span>}
-          {note === null ? null : <span>{note}</span>}
+          <span>{note}</span>
         </p>
       )}
     </>

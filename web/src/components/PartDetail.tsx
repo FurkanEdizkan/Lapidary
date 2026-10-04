@@ -9,14 +9,11 @@ import {
   exportUrl,
   fetchBatchStatus,
   fetchDiff,
-  fetchEntities,
   fetchFields,
   fetchLibraries,
   fetchPartImages,
   fetchPartSources,
-  fetchPmi,
   fetchRevisions,
-  fetchStructure,
   openLink,
   releaseLock,
   requestExport,
@@ -34,7 +31,6 @@ import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
 import { breakable, pictureStyle } from './Card'
 import type {
-  AssemblyNode,
   BatchId,
   BlobHash,
   CustomField,
@@ -44,8 +40,6 @@ import type {
   PartImage,
   PartLock,
   PartRevision,
-  Pmi,
-  PmiFace,
   RevisionId,
 } from '../lib/types'
 
@@ -689,9 +683,8 @@ const FRAME =
  * gallery image — the same one the card shows, off the request `Gallery` below already makes —
  * and **view** is what replaces it with the model, read from the original file in the browser.
  *
- * The thumbnail is still the fallback, for the window between this goal and R4's purge: a part
- * nobody has photographed has a render, and showing it beats an empty frame. After the purge
- * this is the picture or nothing.
+ * **The picture or nothing**, since R3: the rendered thumbnail that stood behind it has no
+ * producer and no field on the wire any more.
  *
  * The button appears only where there is something to draw and something to draw it with: one of
  * the three mesh formats, and WebGL. A STEP part has no **view** — `mesh.ts` has no loader for it
@@ -721,12 +714,12 @@ export function Preview({
   })
   const image = images.data?.[0] ?? null
   const frame = stage ? 'stage-lamp relative h-full min-h-[16rem] w-full overflow-hidden rounded-md' : FRAME
-  const src = image?.src ?? part.thumbnail
+  const src = image?.src ?? null
   const poster =
     src === null ? null : (
       <img
         src={src}
-        alt={image === null ? strings.parts.thumbnailAlt(part.name) : strings.parts.pictureAlt(part.name)}
+        alt={strings.parts.pictureAlt(part.name)}
         className="h-full w-full"
         style={pictureStyle(image)}
       />
@@ -764,9 +757,9 @@ export function Preview({
 const slicerReads = ['stl', '3mf']
 
 /**
- * `lapidary_core::MESH_EXTENSIONS`, which is what the worker's centre-of-mass sweep takes
- * (`PgRevisions::centreless_revisions`). Not `slicerReads`: that is what a slicer can open, a
- * different question with a different answer for `obj`.
+ * `lapidary_core::MESH_EXTENSIONS` — the three formats this library parses, and so the three
+ * `mesh.ts` has a loader for. Not `slicerReads`: that is what a slicer can open, a different
+ * question with a different answer for `obj`.
  */
 const MESH_FORMATS = ['stl', 'obj', '3mf']
 
@@ -1088,10 +1081,6 @@ export function Detail({
   )
   const rest = (
     <>
-      {part.structure === null ? null : <Assembly hash={part.structure} />}
-
-      <Specified part={part} />
-
       <Section id="part-file" title={strings.detail.file}>
         <Row label={strings.detail.format}>
           {part.sourceFormat === null ? strings.detail.unknown : part.sourceFormat}
@@ -1119,27 +1108,6 @@ export function Detail({
             <code className="text-xs break-all">{part.sourceHash}</code>
           )}
         </Row>
-        <Row label={strings.detail.preview3d}>
-          {/*
-            The first caller `GET /api/blob/{blake3}` has ever had. Every ingest since the
-            LOD ladder wrote this rung and nothing carried its hash, so the bytes were
-            written, reference-counted and unreachable. A link, not a fetch, for the reason
-            the download link is one: the browser does the transfer.
-          */}
-          {part.tessellationL0 === null ? (
-            strings.detail.noPreview3d
-          ) : (
-            <a
-              href={blobUrl(part.tessellationL0)}
-              download
-              className="underline underline-offset-2"
-            >
-              {part.tessellationL0Bytes === null
-                ? strings.detail.download3d
-                : strings.detail.download3dSized(part.tessellationL0Bytes)}
-            </a>
-          )}
-        </Row>
       </Section>
 
       <Section id="part-identity" title={strings.detail.identity}>
@@ -1157,9 +1125,6 @@ export function Detail({
             <LockLine part={part.id} lock={part.lock} recordable={recordable} />
           </Row>
         )}
-        <Row label={strings.detail.kernel}>
-          {part.kernelVersion === null ? strings.detail.unknown : part.kernelVersion}
-        </Row>
       </Section>
 
       <History part={part.id} />
@@ -1286,175 +1251,12 @@ function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) 
  */
 
 /**
- * The assembly tree a CAD kernel read, for a STEP or IGES part.
- *
- * Nested native disclosures rather than a hand-rolled ARIA tree: a `<summary>` takes focus and
- * opens on Enter or Space with no script, and assistive technology announces it expanded or
- * collapsed. The top level starts open, since it is the assembly itself; everything under it
- * starts closed. A single part with nothing under it is not a tree worth a section.
- */
-/**
- * What the file specifies about the part's sizes and form: its dimensions, geometric tolerances and
- * datums. Said as specified, never through `Figure`: a designer's value is neither a measurement
- * nor approximate, and the ≈ mark would claim it was one or the other. Each annotation says which
- * face it is on by the entity measurement reads there, when the part has entities.
- */
-function Specified({ part }: { part: PartDetailData }) {
-  const pmi = useQuery({
-    queryKey: ['pmi', part.pmi],
-    queryFn: () => fetchPmi(part.pmi as BlobHash),
-    enabled: part.pmi !== null,
-  })
-  const entities = useQuery({
-    queryKey: ['entities', part.entities],
-    queryFn: () => fetchEntities(part.entities as BlobHash),
-    enabled: part.pmi !== null && part.entities !== null,
-  })
-  if (part.pmi === null) return null
-  const heading = (
-    <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-      {strings.pmi.title}
-    </h3>
-  )
-  if (pmi.isError) {
-    return (
-      <section id="part-specified" className="mb-6 scroll-mt-20">
-        {heading}
-        <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
-          {strings.pmi.failed}
-        </p>
-      </section>
-    )
-  }
-  if (pmi.data === undefined) return null
-  const where = (faces: readonly PmiFace[]) =>
-    faces
-      .map((face) => {
-        const entity = (entities.data ?? []).find(
-          (candidate) =>
-            'face' in candidate && candidate.prototype === face.prototype && candidate.face === face.face,
-        )
-        return strings.pmi.face(face.face === null ? null : (entity?.type ?? ''))
-      })
-      .join(', ')
-  const rows = annotationsOf(pmi.data).map((annotation) => ({
-    what: annotation.text,
-    on: where(annotation.faces),
-  }))
-  return (
-    <section id="part-specified" className="mb-6 scroll-mt-20">
-      {heading}
-      <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.pmi.note}</p>
-      <ul role="list" className="space-y-0.5 text-sm">
-        {rows.map((row, index) => (
-          <li key={index}>
-            {row.what}
-            {row.on === '' ? null : (
-              <span className="text-[var(--color-muted)]">
-                {' · '}
-                {row.on}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-/** One annotation as the list says it, and the faces it names. */
-type Annotation = { text: string; faces: readonly PmiFace[] }
-
-/**
- * The file's annotations in the order the list shows them: dimensions, then tolerances, then datums.
- *
- * Here rather than in `lib/annotations.ts`, which R1 deleted: the rest of that module existed to
- * place a label beside the face it names **in the 3D view**, which needed the analytic entities
- * placed by the assembly tree — geometry we produced and no longer do. The list is what is left,
- * and it is the honest surface for PMI anyway: it says what the file specifies, and never implies
- * we worked out where on the part that is.
- */
-function annotationsOf(pmi: Pmi): Annotation[] {
-  return [
-    ...pmi.dimensions.map((d) => ({ text: strings.pmi.dimension(d.type, d.value, d.upper, d.lower), faces: d.faces })),
-    ...pmi.tolerances.map((t) => ({ text: strings.pmi.tolerance(t.type, t.value, t.datums), faces: t.faces })),
-    ...pmi.datums.map((d) => ({ text: strings.pmi.datum(d.name), faces: d.faces })),
-  ]
-}
-
-/**
- * The assembly tree a CAD kernel read, as a list.
- *
- * **Reading only, since R1.** Hiding and isolating a part needed `extras.parts` — the per-part
- * triangle runs `glb.rs` wrote into the rung — so that a mesh could be drawn with one part left
- * out. The viewer draws the original file now and no stock loader carries that, so there is
- * nothing to hide a part *in*. What the tree says about the assembly is unchanged.
- */
-function Assembly({ hash }: { hash: BlobHash }) {
-  const tree = useQuery({ queryKey: ['structure', hash], queryFn: () => fetchStructure(hash) })
-  const heading = (
-    <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-      {strings.detail.assembly}
-    </h3>
-  )
-  if (tree.isError) {
-    return (
-      <section id="part-assembly" className="mb-6 scroll-mt-20">
-        {heading}
-        <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
-          {strings.detail.assemblyFailed}
-        </p>
-      </section>
-    )
-  }
-  if (tree.data === undefined) return null
-  const { roots, parts, prototypes } = tree.data
-  if (roots.length === 1 && roots[0]?.children.length === 0) return null
-  return (
-    <section id="part-assembly" className="mb-6 scroll-mt-20">
-      {heading}
-      <p className="mb-2 text-xs text-[var(--color-muted)]">
-        {strings.detail.assemblyCounts(parts, prototypes)}
-      </p>
-      <ul role="list" className="text-sm">
-        {roots.map((node, index) => (
-          <AssemblyBranch key={index} node={node} open />
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-function AssemblyBranch({ node, open = false }: { node: AssemblyNode; open?: boolean }) {
-  // Whether the branch's rows are drawn: only once it has been opened, so a closed branch of a large
-  // assembly is one row and not every part under it.
-  const [expanded, setExpanded] = useState(open)
-  if (node.children.length === 0) {
-    return <li className="py-0.5 pl-4">{node.name}</li>
-  }
-  return (
-    <li>
-      <details open={open} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-        <summary className="cursor-pointer py-0.5">{node.name}</summary>
-        {expanded ? (
-          <ul role="list" className="ml-1.5 border-l border-[var(--color-edge)] pl-2">
-            {node.children.map((child, index) => (
-              <AssemblyBranch key={index} node={child} />
-            ))}
-          </ul>
-        ) : null}
-      </details>
-    </li>
-  )
-}
-
-/**
  * Every revision of the part, newest first (Phase 4 slice 1). Drawn once there is more than
  * one: a history of one revision is the Identity row above it, said twice.
  *
- * Rows and inline thumbnails only, so the open path. Each volume goes through `Figure`, so a
- * mesh-derived figure keeps its ≈ here as everywhere, and each revision's original is a plain
- * download link, byte-identical to what that revision ingested.
+ * Rows only, so the open path — there is no preview per revision to show since R3. Each volume
+ * goes through `Figure`, so a mesh-derived figure keeps its ≈ here as everywhere, and each
+ * revision's original is a plain download link, byte-identical to what that revision ingested.
  */
 function History({ part }: { part: PartId }) {
   const revisions = useQuery({
@@ -1478,13 +1280,6 @@ function History({ part }: { part: PartId }) {
       <ol role="list" className="flex flex-col gap-2 text-sm">
         {all.map((revision) => (
           <li key={revision.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            {revision.thumbnail === null ? null : (
-              <img
-                src={revision.thumbnail}
-                alt=""
-                className="size-10 rounded-[var(--radius-ctl)] object-cover"
-              />
-            )}
             <span className="font-medium">{strings.detail.historyRevision(revision.revLabel)}</span>
             <span className="text-[var(--color-muted)]">
               {strings.detail.origin[revision.origin]} ·{' '}
@@ -1634,25 +1429,6 @@ function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] 
     </label>
   )
   const diff = compared.data
-  // Whether a re-read is actually queued for every revision here that is missing a centre, which is
-  // the only case the page may say so. **This predicate has to equal the worker sweep's**
-  // (`PgRevisions::centreless_revisions`): a mesh source, and a volume above zero. Say it of a STEP
-  // revision and the sentence is a promise nothing will keep — the sweep takes mesh formats only,
-  // deliberately. `every` and not `some`, because a pair of one fillable mesh and one open mesh would
-  // otherwise claim a job for the open one and then fall back to "not measured in both" the moment
-  // the real job finished.
-  const earlier = revisions.find((revision) => revision.id === from)
-  const later = revisions.find((revision) => revision.id === to)
-  const centreless = [earlier, later].filter(
-    (revision): revision is PartRevision => revision !== undefined && revision.centreMm === null,
-  )
-  const centreQueued =
-    centreless.length > 0 &&
-    centreless.every(
-      (revision) =>
-        (revision.volumeMm3?.value ?? 0) > 0 &&
-        MESH_FORMATS.includes(revision.sourceFormat ?? ''),
-    )
   const rows =
     diff === undefined
       ? []
@@ -1691,11 +1467,13 @@ function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] 
             label: strings.detail.centreAxis(axis),
             delta: diff.centreMm?.[axis] ?? null,
             render: strings.detail.lengthChange,
-            // "Not measured in both" would be wrong here: a revision with a volume above zero has a
-            // centre to record, and a worker start queues a re-read of the file for exactly those
-            // (`PgRevisions::centreless_revisions`). Read off the two revisions themselves, which
-            // the page already holds, rather than off a flag the diff would have to carry.
-            missing: centreQueued ? strings.detail.centreQueued : strings.detail.notInBoth,
+            // **"Not measured in both", and nothing more hopeful than that.** This used to say "a
+            // re-read is queued", keyed on a predicate that had to equal the worker's
+            // centre-of-mass backfill. R3 deleted that backfill — it worked by rebuilding an L0
+            // rung to obtain one float — so a revision recorded before centres were keeps none
+            // until somebody re-ingests the file. `handler.rs` records the centre on the ingest
+            // path, so nothing from here on is missing one.
+            missing: strings.detail.notInBoth,
           })),
           {
             label: strings.detail.triangles,

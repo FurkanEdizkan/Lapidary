@@ -210,10 +210,7 @@ async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPoo
                 is_watertight: true,
             },
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            thumbnail_webp: None,
-            kernel_version: "mesh stl-1+cpu-1",
             format: "stl",
-            tessellations: &[],
         })
         .await
         .expect("records the bracket");

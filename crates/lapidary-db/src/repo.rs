@@ -7,18 +7,14 @@ use lapidary_core::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// A grid row paired with its thumbnail bytes. Not `PartSummary` on its own:
-/// `PartSummary.thumbnail` is a content hash for a future hash-addressed thumbnail
-/// endpoint, and slice 1 has no such endpoint — it stores the WebP inline as `bytea`
-/// and the grid renders it directly. `PgParts::page` already fetches that column (it
-/// is a `LEFT JOIN` away from every row it reads regardless), so the bytes ride along
-/// here rather than being fetched and thrown away.
+/// A grid row paired with the wire concerns of the grid itself — the part's own picture, its
+/// format and where its file sits. Not folded into `PartSummary`, which is the shape the
+/// viewer and the detail page share: these are facts a *card* needs.
 #[derive(Debug)]
 pub struct PartRow {
     pub summary: PartSummary,
-    pub thumbnail_webp: Option<Vec<u8>>,
     /// `file.format` for the revision's source — `stl`, `obj`, `3mf`, `step`. Here rather
-    /// than on [`PartSummary`] for `thumbnail_webp`'s reason: it is what a card with no
+    /// than on [`PartSummary`]: it is what a card with no
     /// picture says about the part instead of apologising for the picture it does not have,
     /// and what decides whether the part has a **view** at all.
     pub source_format: Option<String>,
@@ -26,7 +22,7 @@ pub struct PartRow {
     ///
     /// The picture the card shows, read in the page's one query rather than fetched per
     /// card. Over the 64 KB line it carries a hash instead of bytes and the card addresses
-    /// `/api/blob/{hash}`; under it the bytes ride on the row, as a thumbnail always has.
+    /// `/api/blob/{hash}`; under it the bytes ride on the row.
     pub image: Option<PartImageRow>,
     /// The model's own directory in the store, relative to the storage root — the parent
     /// of `file.storage_path`, never an absolute host path, because the api runs in a
@@ -35,7 +31,7 @@ pub struct PartRow {
     ///
     /// `None` means the same thing `storage_path` being NULL means: this part predates the
     /// folder layout and its bytes are still content-addressed, with no directory of its
-    /// own to show or to rename. Here for the same reason `thumbnail_webp` is — it is a
+    /// own to show or to rename. Here for the same reason `image` is — it is a
     /// wire concern of the grid, not a fact `PartSummary` should carry into the viewer.
     pub directory: Option<String>,
     /// `file.storage_path` itself — the directory above with the model's filename back on.
@@ -225,12 +221,10 @@ pub struct RenderCacheFreed {
 /// the source when asked. Never L0, which keeps the open path drawing, and never structure,
 /// entities or PMI, which nothing can rebuild (`lapidary-ingest`'s `derive.rs`).
 fn cache_kinds() -> Vec<&'static str> {
-    vec![
-        DerivativeKind::TessellationL1.as_str(),
-        DerivativeKind::TessellationL2.as_str(),
-        DerivativeKind::ExportStl.as_str(),
-        DerivativeKind::Export3mf.as_str(),
-    ]
+    // The exports, and nothing else, since R3: the L1 and L2 rungs that used to be here are
+    // not rebuildable any more, so evicting one would be data loss dressed as a cache sweep.
+    // The rows themselves are R4's to delete (migration `0055`).
+    DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec()
 }
 
 /// Which side of `deleted_at` a page reads.
@@ -412,56 +406,6 @@ pub struct StoredBlobRow {
     pub zstd_level: i16,
 }
 
-/// One LOD rung as it is stored.
-///
-/// Carries a whole `StoredBlobRow` rather than just a hash because every rung needs a
-/// `blob` row of its own before `derivative_blake3_references_blob` will accept the
-/// derivative that points at it, and that row needs the sizes.
-pub struct TessellationRow<'a> {
-    /// `derivative.kind`: a tessellation rung, or the `structure` or `entities` JSON a CAD
-    /// kernel read, which are stored the same way.
-    pub kind: &'a str,
-    pub blob: StoredBlobRow,
-    /// Cells per axis, or `None` for the finest grid. Persisted as `params_json` so that
-    /// `kernel_version` and `params_json` together reproduce these exact bytes, which is
-    /// what lets a derivative be evicted and regenerated rather than backed up.
-    pub grid: Option<u32>,
-}
-
-/// Where one derivative's bytes live — the two shapes `derivative` can hold.
-///
-/// An enum rather than two `Option` fields because `derivative_storage_is_exclusive`
-/// (migration `0004`) requires exactly one of `thumb_bytes` and `blake3` to be non-null:
-/// a pair of options can also express "both" and "neither", and each of those is a
-/// constraint violation discovered at runtime instead of a shape the caller cannot write.
-pub enum DerivativeBytes<'a> {
-    /// Inline in `thumb_bytes`. How a thumbnail is stored: small enough that the grid
-    /// serves it straight out of the row it already reads.
-    Inline(&'a [u8]),
-    /// Hash-addressed in `blake3`. How a tessellation rung is stored — the `blob` row is
-    /// written by the same call, because `derivative_blake3_references_blob` refuses a
-    /// derivative naming bytes the `blob` table has never heard of.
-    Hashed {
-        blob: &'a StoredBlobRow,
-        /// Cells per axis, or `None` for the finest grid — see [`TessellationRow::grid`].
-        grid: Option<u32>,
-    },
-}
-
-/// `params_json` for a thumbnail, and for a rung.
-///
-/// Built here rather than by each caller because `kernel_version` and `params_json`
-/// together are what let a derivative be evicted and regenerated instead of backed up: a
-/// re-render must record the same parameters the original ingest did, and it can only do
-/// that if both writers read the shape off the same line.
-fn thumbnail_params() -> serde_json::Value {
-    serde_json::json!({ "px": 512 })
-}
-
-fn rung_params(grid: Option<u32>) -> serde_json::Value {
-    serde_json::json!({ "grid": grid })
-}
-
 pub struct IngestRequest<'a> {
     pub library: LibraryId,
     pub name: &'a str,
@@ -495,21 +439,8 @@ pub struct IngestRequest<'a> {
     pub measurements: &'a MeshMeasurements,
     /// Where each of `measurements`' figures came from; written to the `*_source` columns.
     pub provenance: MeasurementProvenance,
-    /// The rendered preview, or `None` when nothing rendered one — a library with
-    /// `auto_thumbnail = false`, or a kernel that was not asked for a thumbnail.
-    ///
-    /// `None` writes no `derivative` row at all, rather than a row holding no bytes. An
-    /// empty `bytea` is not NULL, so it satisfies `derivative_storage_is_exclusive`
-    /// (migration `0004`), reads back as `Some(vec![])`, and reaches the grid as
-    /// `data:image/webp;base64,` — a broken image where "no preview yet" belongs. The
-    /// absent row is what the grid's `LEFT JOIN LATERAL` is already written to handle.
-    pub thumbnail_webp: Option<&'a [u8]>,
-    pub kernel_version: &'a str,
     /// The source format, lowercase and without a dot. Was the SQL literal `'stl'`.
     pub format: &'a str,
-    /// L0, L1 and L2. Empty is legal and means the caller wrote no rungs — the schema
-    /// does not require them, and a revision without them still shows a thumbnail.
-    pub tessellations: &'a [TessellationRow<'a>],
 }
 
 pub struct PgBlobs(pub PgPool);
@@ -1025,42 +956,21 @@ impl PgIngest {
     }
 
     /// Write one derivative onto a revision that already exists, replacing whatever was
-    /// there. The `derive` job's only writer — ingest writes its derivatives inside
-    /// [`insert_part_chain`]'s transaction, and everything produced afterwards arrives
-    /// here, one kind at a time.
+    /// there. The `derive` job's only writer — ingest writes no derivative at all since R3,
+    /// and the two exports arrive here, one kind at a time, when something asks for one.
     ///
-    /// `kind` is passed rather than read off `bytes`, because the storage shape does not
-    /// name a rung: all three LOD levels are `Hashed`.
-    ///
-    /// Two shapes are refused before anything is written, and both are refused *here*
-    /// rather than at the call sites so that a new caller is covered without having to
-    /// know. Each writes a row that is perfectly valid and permanently invisible: `page`
-    /// reads a thumbnail only out of `thumb_bytes`, so a hash-addressed one shows as "no
-    /// preview yet" — and [`PgParts::revisions_missing`] then *excludes* that revision,
-    /// because a row exists, so the sweep never heals it either. An empty `Inline` is the
-    /// same failure one step further on: `Some(vec![])` reaches the grid as
-    /// `data:image/webp;base64,`, the broken `<img>` `insert_part_chain` already refuses
-    /// to write. Failing loudly is the trade `CLAUDE.md` asks for everywhere else.
+    /// Hash-addressed, always: both remaining kinds are a file for another tool, and the
+    /// inline `thumb_bytes` shape had exactly one producer — the thumbnail renderer that left
+    /// with the pivot. The column and the rows in it stay until migration `0055` (R4);
+    /// nothing in this crate writes one.
     pub async fn upsert_derivative(
         &self,
         revision: RevisionId,
         kind: DerivativeKind,
-        bytes: DerivativeBytes<'_>,
+        blob: &StoredBlobRow,
+        grid: Option<u32>,
         kernel_version: &str,
     ) -> Result<(), DbError> {
-        match bytes {
-            DerivativeBytes::Hashed { .. } if kind == DerivativeKind::Thumbnail => {
-                return Err(DbError::ThumbnailNotInline { revision });
-            }
-            DerivativeBytes::Inline([]) => {
-                return Err(DbError::EmptyDerivative {
-                    kind: kind.as_str(),
-                    revision,
-                });
-            }
-            _ => {}
-        }
-
         let mut tx = self.0.begin().await?;
         // What this (revision, kind) pointed at before, locked so that a concurrent
         // upsert of the same row cannot interleave with the `ref_count` arithmetic below.
@@ -1081,32 +991,25 @@ impl PgIngest {
         .await?;
         let previous_hash = previous.flatten();
 
-        let (thumb_bytes, hash, params) = match bytes {
-            DerivativeBytes::Inline(webp) => (Some(webp), None, thumbnail_params()),
-            DerivativeBytes::Hashed { blob, grid } => {
-                // The blob row first, exactly as the ladder does at ingest: the foreign
-                // key means a derivative cannot name bytes the blob table has never heard
-                // of, and `ON CONFLICT DO NOTHING` because a rung whose bytes another
-                // revision already stored is the ordinary case.
-                sqlx::query(
-                    "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
-                     VALUES ($1, $2, $2, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
-                )
-                .bind(blob.hash.to_hex())
-                .bind(blob.size_bytes as i64)
-                .execute(&mut *tx)
-                .await?;
-                (None, Some(blob.hash.to_hex()), rung_params(grid))
-            }
-        };
+        // The blob row first: the foreign key means a derivative cannot name bytes the blob
+        // table has never heard of, and `ON CONFLICT DO NOTHING` because an export whose bytes
+        // another revision already stored is the ordinary case.
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, $2, $2, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
+        )
+        .bind(blob.hash.to_hex())
+        .bind(blob.size_bytes as i64)
+        .execute(&mut *tx)
+        .await?;
+        let hash = Some(blob.hash.to_hex());
 
-        // Both storage columns are set from `excluded`, never only the one this call
-        // fills: an upsert over a row stored the other way that set just `thumb_bytes`
-        // would leave the old `blake3` in place, and a row with both non-null trips
-        // `derivative_storage_is_exclusive`.
+        // `thumb_bytes` is written from `excluded` too, never left alone: an upsert over a row
+        // stored inline that set only `blake3` would leave the old bytes in place, and a row
+        // with both non-null trips `derivative_storage_is_exclusive`.
         sqlx::query(
             "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, blake3, kernel_version, params_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             VALUES ($1, $2, $3, NULL, $4, $5, $6) \
              ON CONFLICT (revision_id, kind) DO UPDATE SET thumb_bytes = excluded.thumb_bytes, \
              blake3 = excluded.blake3, kernel_version = excluded.kernel_version, \
              params_json = excluded.params_json",
@@ -1114,10 +1017,9 @@ impl PgIngest {
         .bind(Uuid::now_v7())
         .bind(revision.as_uuid())
         .bind(kind.as_str())
-        .bind(thumb_bytes)
         .bind(hash.as_deref())
         .bind(kernel_version)
-        .bind(params)
+        .bind(serde_json::json!({ "grid": grid }))
         .execute(&mut *tx)
         .await?;
 
@@ -1220,10 +1122,7 @@ async fn insert_part_chain(
             blob: req.blob,
             measurements: req.measurements,
             provenance: req.provenance,
-            thumbnail_webp: req.thumbnail_webp,
-            kernel_version: req.kernel_version,
             format: req.format,
-            tessellations: req.tessellations,
         },
     )
     .await?;
@@ -1243,10 +1142,7 @@ pub(crate) struct RevisionWrite<'a> {
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
-    pub thumbnail_webp: Option<&'a [u8]>,
-    pub kernel_version: &'a str,
     pub format: &'a str,
-    pub tessellations: &'a [TessellationRow<'a>],
 }
 
 pub(crate) async fn insert_revision_chain(
@@ -1352,72 +1248,6 @@ pub(crate) async fn insert_revision_chain(
     .execute(&mut **tx)
     .await?;
 
-    // No thumbnail, no row. Skipped entirely rather than written empty — see
-    // `IngestRequest::thumbnail_webp` for why an empty `bytea` is worse than nothing.
-    if let Some(thumbnail) = req.thumbnail_webp {
-        sqlx::query(
-            "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(revision)
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(thumbnail)
-        .bind(req.kernel_version)
-        .bind(thumbnail_params())
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    for rung in req.tessellations {
-        // The blob row first: task 1's foreign key means a derivative cannot name bytes
-        // the blob table has never heard of. `ON CONFLICT DO NOTHING` because a rung
-        // whose bytes another revision already stored is the ordinary case for anything
-        // under the L0 budget -- three identical rungs on a small part are one blob.
-        //
-        // `zstd_level` is NULL and `stored_bytes` equals `size_bytes`: derivatives are
-        // never compressed, because they are regenerated rather than kept.
-        sqlx::query(
-            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
-             VALUES ($1, $2, $2, NULL, 0) ON CONFLICT (blake3) DO NOTHING",
-        )
-        .bind(rung.blob.hash.to_hex())
-        .bind(rung.blob.size_bytes as i64)
-        .execute(&mut **tx)
-        .await?;
-
-        // One derivative inserted below -> one reference, exactly as the source file's
-        // increment above works. This is what makes eviction safe: the reap only removes
-        // bytes nothing points at.
-        sqlx::query(
-            // Rides along on the row this statement already locks and writes, so
-            // it costs nothing. Without it, a blob somebody re-ingested stays
-            // flagged until the next hourly sweep notices. That is harmless --
-            // the reaper re-checks reachability and declines it -- but it makes
-            // "a referenced blob is never quarantined" true only eventually
-            // rather than continuously, and an operator reading the column
-            // would see a lie for up to an hour.
-            "UPDATE blob SET ref_count = ref_count + 1, quarantined_at = NULL \
-             WHERE blake3 = $1",
-        )
-        .bind(rung.blob.hash.to_hex())
-        .execute(&mut **tx)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO derivative (id, revision_id, kind, blake3, kernel_version, params_json) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(revision)
-        .bind(rung.kind)
-        .bind(rung.blob.hash.to_hex())
-        .bind(req.kernel_version)
-        .bind(serde_json::json!({ "grid": rung.grid }))
-        .execute(&mut **tx)
-        .await?;
-    }
-
     Ok(())
 }
 
@@ -1483,7 +1313,6 @@ pub struct PartDetailRow {
     /// dropped folder reported for it.
     pub source_path: String,
     pub rev_label: String,
-    pub thumbnail_webp: Option<Vec<u8>>,
     pub triangle_count: Option<u32>,
     pub is_watertight: Option<bool>,
     /// All three axes or none. A box missing one axis is not a box, and rendering two of
@@ -1493,24 +1322,11 @@ pub struct PartDetailRow {
     pub volume_source: Option<Provenance>,
     pub surface_area_mm2: Option<f64>,
     pub surface_area_source: Option<Provenance>,
-    pub kernel_version: Option<String>,
     pub source_hash: Option<BlobHash>,
     pub source_format: Option<String>,
     pub source_bytes: Option<u64>,
     pub stored_bytes: Option<u64>,
     pub compressed: Option<bool>,
-    pub tessellation_l0: Option<BlobHash>,
-    pub tessellation_l0_bytes: Option<u64>,
-    /// The assembly tree a CAD kernel read, for a STEP or IGES part.
-    pub structure: Option<BlobHash>,
-    /// The finer rungs, built on demand, and `None` until something has asked for them.
-    pub tessellation_l1: Option<BlobHash>,
-    pub tessellation_l2: Option<BlobHash>,
-    /// The analytic faces and edges a CAD kernel read, as JSON. `None` for a mesh.
-    pub entities: Option<BlobHash>,
-    /// The dimensions, tolerances and datums the file specifies, as JSON. `None` for a mesh, and
-    /// for a CAD file that specifies none.
-    pub pmi: Option<BlobHash>,
     /// The model's own directory in the store, relative to the storage root — the same
     /// value and the same nullability as [`PartRow::directory`], derived the same way.
     ///
@@ -1545,7 +1361,6 @@ struct DetailColumns {
     custom_json: Option<String>,
     source_path: String,
     rev_label: String,
-    thumb_bytes: Option<Vec<u8>>,
     triangle_count: Option<i32>,
     is_watertight: Option<bool>,
     bbox_x: Option<f64>,
@@ -1555,20 +1370,12 @@ struct DetailColumns {
     volume_source: Option<String>,
     surface_area: Option<f64>,
     surface_area_source: Option<String>,
-    kernel_version: Option<String>,
     source_blake3: Option<String>,
     source_format: Option<String>,
     source_size_bytes: Option<i64>,
     source_stored_bytes: Option<i64>,
     source_zstd_level: Option<i16>,
     storage_path: Option<String>,
-    l0_blake3: Option<String>,
-    l0_stored_bytes: Option<i64>,
-    structure_blake3: Option<String>,
-    l1_blake3: Option<String>,
-    l2_blake3: Option<String>,
-    entities_blake3: Option<String>,
-    pmi_blake3: Option<String>,
     created_us: i64,
     updated_us: i64,
 }
@@ -1585,19 +1392,24 @@ struct DetailColumns {
 /// is not one. The effect is what a const would have given — one definition, spliced at
 /// compile time, no string building anywhere near a query.
 ///
-/// The nine columns after the timestamps are the picture the card now shows: the source
+/// The nine columns after the timestamps are the picture the card shows: the source
 /// file's format, for a part with no picture at all, and the part's first `part_image`
 /// (`R1`). The grid carries only **inline** bytes, so an image over the 64 KB line arrives
 /// as its hash and the card addresses it at `/api/blob/{hash}` — which `blob.rs` serves with
 /// immutable caching after checking reachability, because content addressing is not
 /// authorization.
+///
+/// **R3 took the rendered thumbnail and the L0 hash out of this list**, and with them the two
+/// derivative LATERALs that bound `$4` and `$5` — which renumbered every later bind in `page`,
+/// `search` and [`sorted_page!`]. The picture is the part's own image or an honest
+/// placeholder; nothing renders a card any more.
 macro_rules! grid_columns {
     () => {
         "p.id AS id, p.library_id AS library_id, r.id AS revision_id, p.name AS name, \
      p.part_number AS part_number, p.source_path AS source_path, \
-     d.thumb_bytes AS thumb_bytes, r.triangle_count AS triangle_count, \
+     r.triangle_count AS triangle_count, \
      s.blake3 AS source_blake3, s.size_bytes AS source_bytes, s.stored_bytes AS stored_bytes, \
-     s.zstd_level AS zstd_level, s.storage_path AS storage_path, l0.blake3 AS l0_blake3, \
+     s.zstd_level AS zstd_level, s.storage_path AS storage_path, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
      (extract(epoch FROM p.deleted_at) * 1000000)::bigint AS removed_us, \
@@ -1609,8 +1421,8 @@ macro_rules! grid_columns {
     };
 }
 
-/// The five LATERALs behind those columns: the latest revision, its thumbnail, its L0 rung,
-/// its source file and the part's own first picture.
+/// The three LATERALs behind those columns: the latest revision, its source file and the
+/// part's own first picture.
 ///
 /// Shared for the same reason as [`grid_columns`], and named separately because search puts
 /// a join between the two — its candidates come from a CTE, and the LATERALs then run for
@@ -1623,8 +1435,6 @@ macro_rules! grid_laterals {
     () => {
         "\
      JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-     LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $4 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-     LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 ORDER BY created_at DESC, id DESC LIMIT 1) l0 ON true \
      LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level, f.format \
                         FROM file f \
                         WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -1639,13 +1449,15 @@ macro_rules! grid_laterals {
 
 /// [`PgParts::sorted`]'s query for one sort key. `$key` is the part row's copy of the key, spelled as that
 /// key's index spells it (`0035`), so the page is read off the index in order. The filters are `page`'s
-/// newest-first query's, with the same numbering, and a part with no revision is left out before the limit: the cards'
+/// newest-first query's, with the same numbering — which R3 shifted down by two when the thumbnail
+/// and L0 LATERALs went, so the two must be read together — and a part with no revision is left out
+/// before the limit: the cards'
 /// join to the latest revision would drop it after, and a short page reads as the last one.
 macro_rules! sorted_page {
     ($key:literal) => {
         concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $7 \
+             SELECT id FROM folder WHERE id = $5 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
@@ -1656,19 +1468,19 @@ macro_rules! sorted_page {
                SELECT p.id, ",
             $key,
             " AS value FROM part p \
-                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
                   AND EXISTS (SELECT 1 FROM revision WHERE part_id = p.id) \
                   AND ($2::uuid IS NULL OR (",
             $key,
             ", p.id) < (SELECT value, id FROM anchor)) \
-                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                       AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
+                  AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-                  AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
-                  AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
-                  AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
-                  AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
+                  AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
+                  AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
+                  AND ($9::jsonb IS NULL OR p.metadata_json->'custom' @> $9::jsonb) \
+                  AND ($10::jsonpath IS NULL OR p.metadata_json->'custom' @? $10::jsonpath) \
                 ORDER BY ",
             $key,
             " DESC, p.id DESC LIMIT $3) \
@@ -2023,36 +1835,16 @@ impl PgParts {
                     p.part_number, p.tags, p.materials, p.materials_typed, \
                     (p.metadata_json->'custom')::text AS custom_json, \
                     p.source_path, r.rev_label, \
-                    d.thumb_bytes, d.kernel_version, \
                     r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
                     r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
                     s.blake3 AS source_blake3, s.format AS source_format, \
                     s.size_bytes AS source_size_bytes, \
                     s.stored_bytes AS source_stored_bytes, \
                     s.zstd_level AS source_zstd_level, s.storage_path, \
-                    l0.blake3 AS l0_blake3, l0.stored_bytes AS l0_stored_bytes, \
-                    st.blake3 AS structure_blake3, \
-                    l1.blake3 AS l1_blake3, l2.blake3 AS l2_blake3, ent.blake3 AS entities_blake3, \
-                    pm.blake3 AS pmi_blake3, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN LATERAL (SELECT * FROM derivative WHERE revision_id = r.id AND kind = $2 ORDER BY created_at DESC, id DESC LIMIT 1) d ON true \
-             LEFT JOIN LATERAL (SELECT dv.blake3, b.stored_bytes FROM derivative dv \
-                                JOIN blob b ON b.blake3 = dv.blake3 \
-                                WHERE dv.revision_id = r.id AND dv.kind = $3 \
-                                ORDER BY dv.created_at DESC, dv.id DESC LIMIT 1) l0 ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $4 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) st ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $5 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l1 ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $6 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) l2 ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $7 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) ent ON true \
-             LEFT JOIN LATERAL (SELECT blake3 FROM derivative WHERE revision_id = r.id AND kind = $8 \
-                                ORDER BY created_at DESC, id DESC LIMIT 1) pm ON true \
              LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
                                 FROM file f \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
@@ -2060,16 +1852,6 @@ impl PgParts {
              WHERE p.id = $1 AND p.deleted_at IS NULL",
         )
         .bind(part.as_uuid())
-        // Off `DerivativeKind`, never a literal, for the reason `page` gives: a reader
-        // spelling a kind differently from the writer reads nothing while looking
-        // entirely correct.
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
-        .bind(DerivativeKind::Structure.as_str())
-        .bind(DerivativeKind::TessellationL1.as_str())
-        .bind(DerivativeKind::TessellationL2.as_str())
-        .bind(DerivativeKind::Entities.as_str())
-        .bind(DerivativeKind::Pmi.as_str())
         .fetch_optional(&self.0)
         .await?;
 
@@ -2090,7 +1872,6 @@ impl PgParts {
             materials_typed: c.materials_typed,
             source_path: c.source_path,
             rev_label: c.rev_label,
-            thumbnail_webp: c.thumb_bytes,
             triangle_count: c
                 .triangle_count
                 .map(|t| {
@@ -2109,7 +1890,6 @@ impl PgParts {
             volume_source: detail_provenance(c.volume_source)?,
             surface_area_mm2: c.surface_area,
             surface_area_source: detail_provenance(c.surface_area_source)?,
-            kernel_version: c.kernel_version,
             source_hash,
             source_format: c.source_format,
             source_bytes: c
@@ -2123,19 +1903,9 @@ impl PgParts {
             // Keyed off the source row's presence, never off `zstd_level`'s — see
             // `PartSummary::compressed` for the whole argument.
             compressed: source_hash.map(|_| c.source_zstd_level.is_some_and(|l| l != 0)),
-            tessellation_l0: detail_hash("derivative.blake3", c.l0_blake3)?,
-            tessellation_l0_bytes: c
-                .l0_stored_bytes
-                .map(|v| bytes_column("blob.stored_bytes", v))
-                .transpose()?,
             // Derived here rather than on the client, for the reason `PartRow::directory`
             // gives: the client cannot know when the store has not been migrated yet, and a
             // path assembled from slugs would be confidently wrong exactly where it matters.
-            structure: detail_hash("derivative.blake3", c.structure_blake3)?,
-            tessellation_l1: detail_hash("derivative.blake3", c.l1_blake3)?,
-            tessellation_l2: detail_hash("derivative.blake3", c.l2_blake3)?,
-            entities: detail_hash("derivative.blake3", c.entities_blake3)?,
-            pmi: detail_hash("derivative.blake3", c.pmi_blake3)?,
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
             created_at: detail_stamp("part.created_at", c.created_us)?,
@@ -2143,23 +1913,28 @@ impl PgParts {
         }))
     }
 
-    /// Whether this library wants a thumbnail rendered at ingest (migration `0005`,
-    /// default true). `None` means there is no such library.
+    /// Whether a library with this id exists at all.
     ///
-    /// The caller decides what a missing library means, because only it knows what it was
-    /// about to do: a `NULL`-vs-absent distinction collapsed into `false` here would have
-    /// a job for a deleted library quietly ingest without a preview instead of saying so.
-    pub async fn auto_thumbnail(&self, library: LibraryId) -> Result<Option<bool>, DbError> {
+    /// This was `auto_thumbnail`, and it was three things at once: the ingest-time thumbnail
+    /// setting (migration `0005`), and — because it was the one question this crate knew how
+    /// to ask of a `library` row — the existence probe for ingest and for every route that
+    /// must answer 404 before a sweep collapses "no such library" and "nothing to do" into the
+    /// same empty answer. R3 dropped the setting and the column with it (`0054`), and kept
+    /// the probe, renamed to say what every caller was really asking.
+    ///
+    /// A `bool` rather than an `Option<()>`: there is nothing left to read, only to confirm.
+    pub async fn library_exists(&self, library: LibraryId) -> Result<bool, DbError> {
         Ok(
-            sqlx::query_scalar("SELECT auto_thumbnail FROM library WHERE id = $1")
+            sqlx::query_scalar::<_, bool>("SELECT true FROM library WHERE id = $1")
                 .bind(library.as_uuid())
                 .fetch_optional(&self.0)
-                .await?,
+                .await?
+                .unwrap_or(false),
         )
     }
 
     /// This library's own directory inside `libraries/`. `None` means there is no such
-    /// library, exactly as [`PgParts::auto_thumbnail`] means it.
+    /// library, exactly as [`PgParts::library_exists`] answers `false` for one.
     ///
     /// Lowercased after slugging, which is the one place in the store where case is
     /// flattened: the seeded library is named `Default` and the layout in the spec (§1)
@@ -2179,34 +1954,18 @@ impl PgParts {
         Ok(name.map(|name| lapidary_core::slug::slugify(&name).to_lowercase()))
     }
 
-    /// Turn this library's ingest-time thumbnail on or off — the write side of
-    /// [`PgParts::auto_thumbnail`], and the only statement in this crate that changes a
-    /// `library` row. It sits here, beside its own reader, rather than on a `PgLibraries`
-    /// newtype that would exist to hold one method and split library access across two
-    /// types.
-    ///
-    /// Returns whether a row matched, because a caller cannot tell the two outcomes apart
-    /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
-    /// perfectly successful statement that changes nothing, and a route reporting 200 for
-    /// it would tell a person their setting was saved when no such library exists.
     /// Switch a library to `controlled`: from here on, a changed file becomes a revision
     /// (Phase 4 slice 1 spec §1). One-way — nothing in this crate writes `hobby` back, since a
     /// controlled library switched back would hold revisions no screen shows. Idempotent.
     ///
-    /// Returns whether a row matched, for [`PgParts::set_auto_thumbnail`]'s reason.
+    /// Returns whether a row matched, because a caller cannot tell the two outcomes apart
+    /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
+    /// perfectly successful statement that changes nothing, and a route reporting 204 for
+    /// it would tell a person their change landed when no such library exists.
     pub async fn make_controlled(&self, library: LibraryId) -> Result<bool, DbError> {
         let result = sqlx::query("UPDATE library SET mode = $2 WHERE id = $1")
             .bind(library.as_uuid())
             .bind(lapidary_core::LibraryMode::Controlled.as_str())
-            .execute(&self.0)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn set_auto_thumbnail(&self, library: LibraryId, on: bool) -> Result<bool, DbError> {
-        let result = sqlx::query("UPDATE library SET auto_thumbnail = $2 WHERE id = $1")
-            .bind(library.as_uuid())
-            .bind(on)
             .execute(&self.0)
             .await?;
         Ok(result.rows_affected() > 0)
@@ -2437,11 +2196,6 @@ impl PgParts {
             // Who a pulled part came from (sharing S3), for `part_source`'s reason: after a purge there is no part for
             // it to be about.
             "DELETE FROM part_provenance WHERE part_id = $1",
-            // The shape profile (Phase 6): a derived value, and it references `revision`, so it goes before it.
-            "DELETE FROM part_shape WHERE part_id = $1",
-            // What a person decided about this part and another, from either side: "these two are variants"
-            // means nothing once one of them is gone.
-            "DELETE FROM part_link WHERE part_id = $1 OR other_id = $1",
             "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
             "DELETE FROM revision WHERE part_id = $1",
@@ -2597,18 +2351,18 @@ impl PgParts {
         detail_hash("derivative.blake3", hex)
     }
 
-    /// The rungs stored as `hash`, on parts not deleted: what the blob route rebuilds when those
-    /// bytes have gone from the store. Tessellations only, the kinds a `derive` job builds from
-    /// a source; a tree, entities or an image are not rebuilt this way.
-    pub async fn rungs_for_blob(
+    /// The exports stored as `hash`, on parts not deleted: what the blob route rebuilds when
+    /// those bytes have gone from the store.
+    ///
+    /// **Only what something still builds.** This was `rungs_for_blob` and it named the three
+    /// tessellations; `blob.rs` turns a non-empty answer into "that file is being rebuilt",
+    /// which after R3 would have been a promise nothing could keep for a rung. A gallery image
+    /// is not rebuilt this way either — it is bytes a person uploaded, and the route says so.
+    pub async fn exports_for_blob(
         &self,
         hash: &BlobHash,
     ) -> Result<Vec<(LibraryId, RevisionId, DerivativeKind)>, DbError> {
-        let rungs = [
-            DerivativeKind::TessellationL0,
-            DerivativeKind::TessellationL1,
-            DerivativeKind::TessellationL2,
-        ];
+        let rebuildable = DerivativeKind::ALL;
         let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
             "SELECT p.library_id, d.revision_id, d.kind FROM derivative d \
              JOIN revision r ON r.id = d.revision_id \
@@ -2616,13 +2370,13 @@ impl PgParts {
              WHERE d.blake3 = $1 AND d.kind = ANY($2)",
         )
         .bind(hash.to_hex())
-        .bind(rungs.map(DerivativeKind::as_str).to_vec())
+        .bind(rebuildable.map(DerivativeKind::as_str).to_vec())
         .fetch_all(&self.0)
         .await?;
         Ok(rows
             .into_iter()
             .filter_map(|(library, revision, kind)| {
-                let kind = rungs.into_iter().find(|rung| rung.as_str() == kind)?;
+                let kind = rebuildable.into_iter().find(|made| made.as_str() == kind)?;
                 Some((
                     LibraryId::from_uuid(library),
                     RevisionId::from_uuid(revision),
@@ -3115,46 +2869,6 @@ impl PgParts {
         })
     }
 
-    /// Every revision in `library` with no generated derivative of `kind` — the set a
-    /// sweep enqueues a `derive` job for.
-    ///
-    /// "Missing" deliberately means missing a *generated* derivative, and asks nothing
-    /// about a user-supplied image. A part whose photo is removed later must fall back to
-    /// a rendered thumbnail rather than to nothing, so the render is worth having even
-    /// while a photo hides it. (`part_image` is slice 5's table and does not exist yet;
-    /// this is written down now so that adding it does not turn into "and skip parts that
-    /// have one".)
-    ///
-    /// Per revision, not per part: a rung belongs to the revision it was tessellated
-    /// from, and Phase 2's second revision needs its own rather than inheriting the
-    /// first's. Soft-deleted parts are excluded — they are hidden everywhere else, and
-    /// rendering for one is work whose output nothing will display.
-    ///
-    /// Newest first, matching the grid's own order, so that a sweep over a large library
-    /// fills the page the user is looking at before it works backwards through pages
-    /// nobody has scrolled to.
-    pub async fn revisions_missing(
-        &self,
-        library: LibraryId,
-        kind: DerivativeKind,
-    ) -> Result<Vec<RevisionId>, DbError> {
-        let ids: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT r.id FROM revision r JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = $1 AND p.deleted_at IS NULL \
-               AND NOT EXISTS (SELECT 1 FROM derivative d \
-                               WHERE d.revision_id = r.id AND d.kind = $2) \
-             ORDER BY r.created_at DESC, r.id DESC",
-        )
-        .bind(library.as_uuid())
-        .bind(kind.as_str())
-        .fetch_all(&self.0)
-        .await?;
-        Ok(ids
-            .into_iter()
-            .map(|(id,)| RevisionId::from_uuid(id))
-            .collect())
-    }
-
     /// Everything the move route has to know before it can decide where a part goes.
     ///
     /// One query rather than four, and the same LATERALs the grid page uses, so the
@@ -3383,21 +3097,19 @@ impl PartRepository for PgParts {
         // timestamps are pulled out as epoch microseconds and reassembled below rather
         // than adding a second date-time crate just to carry the value across.
         //
-        // Both LATERALs below pick one row deterministically out of a set that could
+        // Every LATERAL below picks one row deterministically out of a set that could
         // hold more than one, newest (`created_at DESC, id DESC`) first: the revision
-        // LATERAL because a part could in principle carry more than one revision (only
-        // Phase 2 will actually write a second one), and the derivative LATERAL because a
-        // revision legitimately carries several derivatives of *different* kinds — the
-        // LOD ladder slice 3 adds writes exactly that. `derivative_kind_unique_per_revision`
-        // (migration 0003) forbids a second row of the *same* kind, so two thumbnail rows
-        // for one revision cannot happen — but nothing stops `lod0`, `lod1`, thumbnail all
-        // coexisting on one revision, and a plain (non-LATERAL) LEFT JOIN would fan out on
-        // those: several derivative rows for one revision means several identical grid
-        // cards for one part, and a page of `limit` rows holding fewer than `limit` distinct
-        // parts, silently under-reporting `next`.
+        // LATERAL because a part could in principle carry more than one revision, and the
+        // picture LATERAL because a part legitimately carries several `part_image` rows.
+        // A plain (non-LATERAL) LEFT JOIN would fan out on those: several rows for one
+        // part means several identical grid cards for it, and a page of `limit` rows
+        // holding fewer than `limit` distinct parts, silently under-reporting `next`.
         //
-        // The source LATERAL is a third of the same shape, and it is a LEFT one for the
-        // reason the derivative's is: a revision whose source `file` row is missing is a
+        // **R3 removed two of them** — the thumbnail and the L0 rung — which is why this
+        // query binds ten parameters where it used to bind twelve. The derivative table is
+        // not read by the grid at all now.
+        //
+        // The source LATERAL is a LEFT one for the picture's reason: a revision whose source `file` row is missing is a
         // part whose owner most needs to see it in the grid, to delete or re-scan it. An
         // inner join would answer that by hiding the part. Its `role = 'source'` filter
         // and `created_at DESC, id DESC` ordering are character for character
@@ -3411,22 +3123,19 @@ impl PartRepository for PgParts {
         // them. That also makes this grid checkable against the storage panel over it —
         // `storage_totals` sums the same `file` rows.
         //
-        // `is_watertight` is deliberately not selected. It was read into `_watertight` and
-        // dropped, and the merge that brought the folder filter alongside the LOD rung put
-        // this select one column over sqlx's sixteen-tuple `FromRow` ceiling -- so the
-        // column nothing reads is the one that goes. `GridRow` is a named struct now
-        // (`removed_us` was the seventeenth), so a card that ever needs it costs a field.
+        // `is_watertight` is deliberately not selected: nothing on a card reads it.
+        // `GridRow` is a named struct, so a card that ever needs it costs a field.
         //
         // The folder filter is the recursive CTE at the top, and it is inline here rather
         // than a separate "give me the descendants" call for one reason: the descent and
         // the page are one question — "the cards in this category" — and splitting them
         // would put query composition in `lapidary-api` (an id list bound into a filter) or
         // give the tree two descent implementations to keep in step. `down` is empty and
-        // costs nothing when `$7` is NULL, and the `IS NULL` guard beside it is what makes
+        // costs nothing when `$5` is NULL, and the `IS NULL` guard beside it is what makes
         // an absent filter mean the whole library.
         let rows: Vec<GridRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $7 \
+             SELECT id FROM folder WHERE id = $5 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
@@ -3434,30 +3143,22 @@ impl PartRepository for PgParts {
             grid_columns!(),
             " FROM part p ",
             grid_laterals!(),
-            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
+            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
                AND ($2::uuid IS NULL OR p.id < $2) \
-               AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
+               AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
-               AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
-               AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
-               AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
+               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
+               AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
+               AND ($9::jsonb IS NULL OR p.metadata_json->'custom' @> $9::jsonb) \
+               AND ($10::jsonpath IS NULL OR p.metadata_json->'custom' @? $10::jsonpath) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
-        // The kind string comes off `DerivativeKind`, never a literal: the write side
-        // stopped spelling it out in task 5, and a reader spelling it differently from
-        // the writer reads nothing while looking entirely correct.
-        .bind(DerivativeKind::Thumbnail.as_str())
-        // Same rule as the line above: off `DerivativeKind`, never a literal. The two
-        // kinds are read by one query now, so a reader spelling either differently from
-        // the writer reads nothing while looking entirely correct.
-        .bind(DerivativeKind::TessellationL0.as_str())
-        // The predicate is `(deleted_at IS NOT NULL) = $6` rather than two branches of
+        // The predicate is `(deleted_at IS NOT NULL) = $4` rather than two branches of
         // SQL, so both pages are provably the same query: a column added to one is added
         // to the other, and the removed list cannot quietly fall behind the grid.
         .bind(shows == Shows::Removed)
@@ -3569,31 +3270,31 @@ impl PartRepository for PgParts {
         // rename-during-scroll window would be more machinery than the case deserves.
         let rows: Vec<GridRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $7 \
+             SELECT id FROM folder WHERE id = $5 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
              hits AS ( \
                SELECT p.id, \
-                      ( (coalesce(p.part_number, '') ILIKE $9)::int * 8 \
-                      + (p.name ILIKE $9)::int * 4 \
-                      + (p.search @@ plainto_tsquery('simple', $8))::int * 2 \
-                      + (p.source_path ILIKE $9)::int \
-                      + least(ts_rank(p.search, plainto_tsquery('simple', $8)), 0.999) ) AS rank \
+                      ( (coalesce(p.part_number, '') ILIKE $7)::int * 8 \
+                      + (p.name ILIKE $7)::int * 4 \
+                      + (p.search @@ plainto_tsquery('simple', $6))::int * 2 \
+                      + (p.source_path ILIKE $7)::int \
+                      + least(ts_rank(p.search, plainto_tsquery('simple', $6)), 0.999) ) AS rank \
                  FROM part p \
-                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $6 \
-                  AND ($7::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ($10::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                       AND f.format = $10 AND f.revision_id = (SELECT id FROM revision \
+                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
+                  AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-                  AND ($11::text IS NULL OR p.materials @> ARRAY[$11::text]) \
-                  AND ($12::text IS NULL OR p.tags @> ARRAY[$12::text]) \
-                  AND ($13::jsonb IS NULL OR p.metadata_json->'custom' @> $13::jsonb) \
-                  AND ($14::jsonpath IS NULL OR p.metadata_json->'custom' @? $14::jsonpath) \
-                  AND ( p.part_number ILIKE $9 \
-                     OR p.name ILIKE $9 \
-                     OR p.source_path ILIKE $9 \
-                     OR p.search @@ plainto_tsquery('simple', $8) ) ), \
+                  AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
+                  AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
+                  AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
+                  AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
+                  AND ( p.part_number ILIKE $7 \
+                     OR p.name ILIKE $7 \
+                     OR p.source_path ILIKE $7 \
+                     OR p.search @@ plainto_tsquery('simple', $6) ) ), \
              anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
              top AS ( \
                SELECT id, rank FROM hits \
@@ -3608,8 +3309,6 @@ impl PartRepository for PgParts {
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
         .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         // The raw query, for `plainto_tsquery`, which must not see the LIKE escapes.
@@ -3630,35 +3329,6 @@ impl PartRepository for PgParts {
 }
 
 impl PgParts {
-    /// The grid's rows for these parts, in the order asked (Phase 6: the parts a likeness or a duplicates
-    /// cluster names, ranked by the caller). An id not in `library`, or on the other side of `shows`, is
-    /// left out rather than refused; so is one purged since it was named.
-    pub async fn rows_by_id(
-        &self,
-        library: LibraryId,
-        ids: &[PartId],
-        shows: Shows,
-    ) -> Result<Vec<PartRow>, DbError> {
-        let ids: Vec<Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
-        let rows: Vec<GridRow> = sqlx::query_as(concat!(
-            "SELECT ",
-            grid_columns!(),
-            " FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted (id, n) \
-              JOIN part p ON p.id = wanted.id ",
-            grid_laterals!(),
-            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $3 \
-             ORDER BY wanted.n",
-        ))
-        .bind(library.as_uuid())
-        .bind(&ids)
-        .bind(shows == Shows::Removed)
-        .bind(DerivativeKind::Thumbnail.as_str())
-        .bind(DerivativeKind::TessellationL0.as_str())
-        .fetch_all(&self.0)
-        .await?;
-        rows.into_iter().map(to_part_row).collect()
-    }
-
     /// [`PartRepository::page`] in an order other than newest: `query` is [`sorted_page!`] for
     /// one key.
     ///
@@ -3685,8 +3355,6 @@ impl PgParts {
             .bind(grid.library.as_uuid())
             .bind(grid.after.map(|a| a.as_uuid()))
             .bind(i64::from(grid.limit))
-            .bind(DerivativeKind::Thumbnail.as_str())
-            .bind(DerivativeKind::TessellationL0.as_str())
             .bind(grid.shows == Shows::Removed)
             .bind(grid.folder.map(|f| f.as_uuid()))
             .bind(grid.format)
@@ -4052,14 +3720,12 @@ struct GridRow {
     name: String,
     part_number: Option<String>,
     source_path: String,
-    thumb_bytes: Option<Vec<u8>>,
     triangle_count: Option<i32>,
     source_blake3: Option<String>,
     source_bytes: Option<i64>,
     stored_bytes: Option<i64>,
     zstd_level: Option<i16>,
     storage_path: Option<String>,
-    l0_blake3: Option<String>,
     created_us: i64,
     updated_us: i64,
     removed_us: Option<i64>,
@@ -4091,14 +3757,12 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         name,
         part_number,
         source_path,
-        thumb_bytes,
         triangle_count: triangles,
         source_blake3: source_hash,
         source_bytes,
         stored_bytes,
         zstd_level,
         storage_path,
-        l0_blake3: tessellation_l0,
         created_us,
         updated_us,
         removed_us,
@@ -4129,18 +3793,6 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
             .map(|hex| {
                 BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
                     column: "file.blake3",
-                    value: hex,
-                })
-            })
-            .transpose()?;
-        // Refused rather than dropped, same as the source hash above: a
-        // derivative row whose `blake3` is not a digest is a corrupt row, and
-        // reporting it as "this part has no rung" would hide the corruption
-        // behind a state that looks ordinary.
-        let tessellation_l0 = tessellation_l0
-            .map(|hex| {
-                BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
-                    column: "derivative.blake3",
                     value: hex,
                 })
             })
@@ -4200,15 +3852,10 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                 name,
                 part_number,
                 source_path,
-                // The hash is not carried in slice 1: thumbnails arrive inline
-                // and the grid renders them directly. A hash-addressed
-                // thumbnail endpoint arrives with the viewer.
-                thumbnail: None,
                 triangle_count,
                 // Every figure on a mesh part is tessellated, so any is all.
                 approximate: true,
                 source_hash,
-                tessellation_l0,
                 source_bytes: bytes("file.size_bytes", source_bytes)?,
                 stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
                 compressed,
@@ -4235,7 +3882,6 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                     })
                     .transpose()?,
             },
-            thumbnail_webp: thumb_bytes,
             source_format,
             image,
             directory: storage_path.as_deref().and_then(model_directory),

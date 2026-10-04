@@ -1,29 +1,22 @@
 //! Domain types shared by every Lapidary crate. Depends on no other Lapidary crate.
 
 mod approximate;
-mod assembly;
 mod derivative;
 mod device;
 mod diff;
-mod entity;
 mod error;
 mod event;
 mod ids;
 mod job;
-mod link;
 pub mod manifest;
 mod measurement;
 mod part;
-mod pmi;
-pub mod shape;
 pub mod slug;
 
 pub use approximate::Approximate;
-pub use assembly::{AssemblyNode, AssemblyTree};
 pub use derivative::DerivativeKind;
 pub use device::DeviceId;
 pub use diff::{Delta, RevisionDiff};
-pub use entity::Entity;
 pub use error::CoreError;
 pub use event::AppEvent;
 pub use ids::{
@@ -31,14 +24,11 @@ pub use ids::{
     PeerShareId, PullId, RevisionId, SavedFilterId, ShareId,
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
-pub use link::PartLinkKind;
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
     CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal,
     is_ignored, is_model_file, path_escapes, source_format,
 };
-pub use pmi::{Pmi, PmiDatum, PmiDimension, PmiFace, PmiTolerance};
-pub use shape::{DESCRIPTOR_LEN, SHAPE_VERSION, ShapeProfile};
 
 #[cfg(test)]
 mod tests {
@@ -77,11 +67,9 @@ mod tests {
             name: "Bearing block, 608ZZ".to_owned(),
             part_number: Some("LP-1042-03".to_owned()),
             source_path: "bearings/608ZZ-block.stl".to_owned(),
-            thumbnail: Some(BlobHash::from_bytes([0x11; 32])),
             triangle_count: Some(48_112),
             approximate: true,
             source_hash: Some(BlobHash::from_bytes([0x22; 32])),
-            tessellation_l0: Some(BlobHash::from_bytes([0x33; 32])),
             source_bytes: Some(204_800),
             stored_bytes: Some(91_204),
             compressed: Some(true),
@@ -94,7 +82,7 @@ mod tests {
         assert!(json.get("part_number").is_none());
         assert!(json.get("createdAt").is_some());
         assert_eq!(
-            json["thumbnail"], "1111111111111111111111111111111111111111111111111111111111111111",
+            json["sourceHash"], "2222222222222222222222222222222222222222222222222222222222222222",
             "a blob hash must go over the wire as hex, never as a byte array"
         );
         assert!(

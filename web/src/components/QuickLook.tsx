@@ -116,8 +116,6 @@ export function QuickLook({
   part,
   from,
   hostRoot,
-  busy,
-  onRender,
   onMove,
   onClose,
   pane,
@@ -126,8 +124,6 @@ export function QuickLook({
   /** Where this part's render sat on the grid when it was clicked. */
   from: DOMRect
   hostRoot: string | null
-  busy: boolean
-  onRender: (id: PartId) => void
   /** `null` for a model still in the shared store, which has no directory to rename. */
   onMove: (() => void) | null
   onClose: () => void
@@ -167,21 +163,12 @@ export function QuickLook({
           part={detail.data}
           /*
             The tools the card used to carry. They are here because the card is a picture and
-            a name now: a control that hides the render it sits on is a control fighting the
-            one job this product has. Owner decision, 2026-09-08 — click gives you the
-            essential information and the tools; the full page gives you depth.
+            a name: click gives you the essential information and the tools, and the full page
+            gives you depth (owner decision, 2026-09-08). "Render preview" was the first of
+            them, and it went with the renders (R3).
           */
           actions={
             <>
-              <button
-                type="button"
-                onClick={() => onRender(part.id)}
-                disabled={busy}
-                aria-label={strings.render.partFor(part.name)}
-                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-              >
-                {strings.render.part}
-              </button>
               {onMove === null ? (
                 <span className="text-xs text-[var(--color-muted)]">
                   {strings.folders.notMigrated}

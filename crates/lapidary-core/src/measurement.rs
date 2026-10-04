@@ -44,6 +44,11 @@ impl std::str::FromStr for Provenance {
 /// Per figure, because the kinds do not agree within one part: a STEP part's triangle count
 /// is always tessellated while its volume is read off the B-rep. Ingest writes it to the
 /// `*_source` columns, so an exact figure is never stored as approximate or the reverse.
+///
+/// Only [`TESSELLATED`](Self::TESSELLATED) is constructible from this build — the kernel that
+/// read a B-rep is gone (R2) — but the per-figure shape and `Provenance::Analytic` stay,
+/// because rows written before it still say `analytic` and CLAUDE.md's rule is that a
+/// mesh-derived figure is labelled approximate, always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeasurementProvenance {
     pub volume: Provenance,
@@ -56,11 +61,6 @@ impl MeasurementProvenance {
         volume: Provenance::Tessellated,
         surface_area: Provenance::Tessellated,
         bbox: Provenance::Tessellated,
-    };
-    pub const ANALYTIC: Self = Self {
-        volume: Provenance::Analytic,
-        surface_area: Provenance::Analytic,
-        bbox: Provenance::Analytic,
     };
 }
 
