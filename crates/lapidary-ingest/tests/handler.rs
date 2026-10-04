@@ -1404,6 +1404,42 @@ async fn an_ingest_job_for_a_library_that_does_not_exist_fails_permanently_namin
     );
 }
 
+/// **And it refuses before the parse**, which is the whole of what step 3a buys.
+///
+/// `library_slug` further down the ladder is a second guard with the same shape of message, so
+/// removing step 3a leaves the case above passing — `mutate-r3.sh`'s `library-exists-always`
+/// survived on exactly that. What tells them apart is a file that cannot parse: with the probe
+/// where it is, the refusal names the library; without it, the mesh parser fails first and the
+/// operator is told to re-export a file whose library does not exist.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_job_for_a_library_that_does_not_exist_is_refused_before_the_parse(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        ingest_dir.path().join("notes.stl"),
+        b"LP-1042-03 revision notes: chamfer the mounting face.\n",
+    )
+    .expect("write fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let absent = LibraryId::new();
+
+    let err = handler
+        .handle(&job_for_library(absent, "notes.stl"))
+        .await
+        .expect_err("a job naming a library that does not exist cannot ingest anything");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains(&absent.to_string()),
+        "the library, not the file: nothing should have read a byte of it yet, got {message}"
+    );
+    assert!(
+        !message.contains("Could not read this stl"),
+        "the parse must not have run: step 3a sits above it so a re-scan costs one query, got \
+         {message}"
+    );
+}
+
 /// Every `blob` row, source and derivative alike — unlike `blob_rows` above, which is
 /// scoped to source bytes. A derive that reproduces bytes already stored must add none.
 async fn all_blob_rows(pool: &PgPool) -> i64 {
@@ -2596,11 +2632,19 @@ async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool
         .execute(&pool)
         .await
         .expect("takes the centres away");
-    // And the silent one: a part whose latest revision has no L0 at all.
-    sqlx::query("DELETE FROM derivative WHERE kind = 'tessellation_l0'")
-        .execute(&pool)
-        .await
-        .expect("leaves a part with no viewer mesh");
+    // And the silent one: **one** part whose latest revision has no L0 at all. One, not both:
+    // deleting every L0 row would leave the stale-derivative ladder nothing to find, and a
+    // render kind put back into it would then be caught by nothing — which is exactly what the
+    // first version of this seed did (`mutate-r3.sh`'s `ladder-sweeps-a-rung-again` survived).
+    sqlx::query(
+        "DELETE FROM derivative d USING revision r, part p \
+         WHERE d.revision_id = r.id AND r.part_id = p.id \
+           AND d.kind = 'tessellation_l0' AND p.source_path = $1",
+    )
+    .bind(CARRIER)
+    .execute(&pool)
+    .await
+    .expect("leaves one part with no viewer mesh");
 
     let queued = |pool: PgPool| async move {
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM job")
