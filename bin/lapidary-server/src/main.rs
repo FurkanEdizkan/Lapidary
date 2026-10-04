@@ -84,16 +84,16 @@ struct Config {
     // image, which `deploy/Containerfile` builds with no features at all. Figment ignores
     // environment variables that match no field, so setting one of these against an `api`
     // build is inert either way — and an `api` process has no worker for them to configure.
-    #[cfg(feature = "mock-kernel")]
+    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     worker_concurrency: Option<usize>,
-    #[cfg(feature = "mock-kernel")]
+    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     job_lease_secs: Option<u64>,
-    #[cfg(feature = "mock-kernel")]
+    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     job_poll_secs: Option<u64>,
-    #[cfg(feature = "mock-kernel")]
+    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     worker_id: Option<String>,
 }
@@ -120,7 +120,7 @@ struct Config {
 /// took the worker down with
 /// `invalid type: found unsigned int 10, expected a string for key "JOB_LEASE_SECS"`,
 /// which is the opposite of the failure it was written to prevent.
-#[cfg(feature = "mock-kernel")]
+#[cfg(feature = "worker")]
 fn empty_str_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -169,40 +169,31 @@ fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
 }
 
-/// Human-readable kernel description for the startup log. `deploy/Containerfile` takes the
-/// feature list as a build arg, empty by default, and `deploy/compose.yaml` sets it only for
-/// the `worker` service — so only `worker`'s image links a kernel and prints this branch;
-/// `api` prints the `not(feature = "mock-kernel")` line below instead. This is the only way
-/// an operator can tell from `podman logs` whether that feature chain actually held, so it
-/// names the kernel files really go to and the formats it reads. There is one: STEP and IGES
-/// are refused by name (`lapidary_core::cad_refusal`).
-#[cfg(feature = "mock-kernel")]
-fn kernel_description() -> String {
-    use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-    // `version` describes one run, and this line has no file in hand -- what it answers is
-    // which kernels are linked at all, which is `implementation`, the same for every
-    // format, so the params here name a representative one rather than a real job's.
-    let params = KernelParams {
-        linear_deflection_mm: None,
-        format: "stl".to_owned(),
-        // `version` never looks at `produce` -- nothing here is asking the kernel to
-        // build anything, only to name itself.
-        produce: Vec::new(),
-    };
-    let mesh = MeshKernel.version(&params).implementation;
-    format!("{mesh}, for stl, obj and 3mf")
+/// What this build can read, for the startup log. `deploy/Containerfile` takes the feature
+/// list as a build arg, empty by default, and `deploy/compose.yaml` sets it only for the
+/// `worker` service — so only `worker`'s image links the parsers and prints this branch;
+/// `api` prints the `not(feature = "worker")` line below instead. This is the only way an
+/// operator can tell from `podman logs` whether that feature chain actually held, so it names
+/// the parsers files really go to and the formats they read. STEP and IGES are refused by
+/// name (`lapidary_core::cad_refusal`).
+#[cfg(feature = "worker")]
+fn parsers_description() -> String {
+    // Asked of `lapidary-cad` rather than written out here, because that is what makes this
+    // line evidence: a literal would print the same words in a build that never linked the
+    // crate at all.
+    format!("{}, for stl, obj and 3mf", lapidary_cad::IMPLEMENTATION)
 }
 
-#[cfg(not(feature = "mock-kernel"))]
-fn kernel_description() -> String {
-    "none (build with --features mock-kernel to compile one in)".to_owned()
+#[cfg(not(feature = "worker"))]
+fn parsers_description() -> String {
+    "none — this build has no parsers and no ingest (build with --features worker)".to_owned()
 }
 
 /// Builds the worker process's router: `lapidary-api`'s (health only — `Role::Worker`
 /// mounts nothing else) merged with `lapidary-ingest`'s (the scan route). Only this
 /// build's feature gates whether that merge is even possible — see
-/// `Cargo.toml`'s `mock-kernel` feature doc.
-#[cfg(feature = "mock-kernel")]
+/// `Cargo.toml`'s `worker` feature doc.
+#[cfg(feature = "worker")]
 fn worker_router(
     db: lapidary_db::PgPool,
     ingest_dir: Option<PathBuf>,
@@ -237,13 +228,13 @@ fn worker_router(
 /// Seed the bundled example parts, if this build has ingest and the image has the files.
 ///
 /// Split by feature the same way `worker_router` is, and for the same reason: the `api`
-/// image is built without `mock-kernel` and therefore does not link `lapidary-ingest` at
+/// image is built without `worker` and therefore does not link `lapidary-ingest` at
 /// all, so a call to it has to be absent from that build rather than merely unreachable.
 ///
 /// Best-effort inside `seed_examples`: it logs and returns zero rather than failing, so a
 /// server that cannot load its demo content still starts. An operator has both a scan
 /// button and a drop target to fill the grid with.
-#[cfg(feature = "mock-kernel")]
+#[cfg(feature = "worker")]
 async fn seed_examples(db: &lapidary_db::PgPool, config: &Config) {
     if let (Some(examples), Some(blobs)) = (&config.example_dir, &config.blob_root) {
         lapidary_ingest::seed_examples(db.clone(), blobs, examples).await;
@@ -252,7 +243,7 @@ async fn seed_examples(db: &lapidary_db::PgPool, config: &Config) {
 
 /// No ingest in this build, so nothing to seed with. The `api` image takes this arm and
 /// never runs as a worker anyway.
-#[cfg(not(feature = "mock-kernel"))]
+#[cfg(not(feature = "worker"))]
 async fn seed_examples(_db: &lapidary_db::PgPool, _config: &Config) {}
 
 /// This build was not compiled with the feature that pulls `lapidary-ingest` in at all
@@ -260,7 +251,7 @@ async fn seed_examples(_db: &lapidary_db::PgPool, _config: &Config) {}
 /// route. `deploy/compose.yaml` always builds the worker image with the feature, so this
 /// only fires when someone runs a default-featured binary manually with
 /// `LAPIDARY_ROLE=worker`.
-#[cfg(not(feature = "mock-kernel"))]
+#[cfg(not(feature = "worker"))]
 fn worker_router(
     _db: lapidary_db::PgPool,
     _ingest_dir: Option<PathBuf>,
@@ -268,7 +259,7 @@ fn worker_router(
 ) -> Result<axum::Router> {
     bail!(
         "Could not start as worker: this binary was built without ingest support. Rebuild \
-         with `--features mock-kernel` — deploy/compose.yaml does this automatically for \
+         with `--features worker` — deploy/compose.yaml does this automatically for \
          the worker service."
     );
 }
@@ -278,7 +269,7 @@ fn worker_router(
 /// never has to hand-write `INSERT INTO job` -- the gap Task 8b closes. Worker role
 /// only: called from the `Role::Worker` arm alone, never from `Role::Api`.
 ///
-/// Not gated by the `mock-kernel` feature, unlike `worker_router` and `spawn_worker`
+/// Not gated by the `worker` feature, unlike `worker_router` and `spawn_worker`
 /// beside it: this touches only `lapidary-db`, which both images link unconditionally,
 /// and neither the CAD kernel nor `lapidary-ingest`. Nothing here can pull either into
 /// the api image.
@@ -333,7 +324,7 @@ async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
 /// Returns the loop's `JoinHandle` so `main` can wait for it. That wait is not optional —
 /// `lapidary_jobs::run` releases this worker's leases as its last act, and a process that
 /// exits without letting it get there leaves every in-flight job leased until it expires.
-#[cfg(feature = "mock-kernel")]
+#[cfg(feature = "worker")]
 fn spawn_worker(
     db: lapidary_db::PgPool,
     config: &Config,
@@ -365,7 +356,7 @@ fn spawn_worker(
         listen: true,
     };
 
-    // The counterpart to the `role` and `kernel` lines above: an operator reading
+    // The counterpart to the `role` and `parsers` lines above: an operator reading
     // container logs can see the worker started and with what, without attaching a
     // debugger to find out whether the loop is running at all.
     tracing::info!(
@@ -380,7 +371,7 @@ fn spawn_worker(
         db: db.clone(),
         ingest_dir,
         blob_root: blob_root.clone(),
-        kernel: None,
+        pause: None,
     });
 
     // The quarantine sweep rides along with the worker rather than getting a process or a
@@ -416,7 +407,7 @@ fn spawn_worker(
 /// Unreachable in practice — `worker_router` bails on this same build before `main` gets
 /// here — but it must compile, and if it ever does run it says the same thing that one
 /// does rather than starting a worker that would drain nothing.
-#[cfg(not(feature = "mock-kernel"))]
+#[cfg(not(feature = "worker"))]
 fn spawn_worker(
     _db: lapidary_db::PgPool,
     _config: &Config,
@@ -424,7 +415,7 @@ fn spawn_worker(
 ) -> Result<tokio::task::JoinHandle<()>> {
     bail!(
         "Could not start the worker loop: this binary was built without ingest support. \
-         Rebuild with `--features mock-kernel` — deploy/compose.yaml does this \
+         Rebuild with `--features worker` — deploy/compose.yaml does this \
          automatically for the worker service."
     );
 }
@@ -531,7 +522,7 @@ async fn main() -> Result<()> {
     // 8081) and only the router differs between them — this line is what lets `podman
     // logs` tell an operator which one a given container actually took.
     tracing::info!(role = %role_str, "role");
-    tracing::info!(kernel = %kernel_description(), "kernel");
+    tracing::info!(parsers = %parsers_description(), "parsers");
     let shutdown = tokio_util::sync::CancellationToken::new();
     // Set by the `Role::Peer` arm alone, and read at the one `serve` below. A variable rather than
     // a fourth element on the match's tuple: the api and worker arms have nothing to say about
@@ -780,7 +771,7 @@ mod ceiling_tests {
     }
 }
 
-#[cfg(all(test, feature = "mock-kernel"))]
+#[cfg(all(test, feature = "worker"))]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -831,8 +822,8 @@ mod tests {
     }
 
     #[test]
-    fn kernel_description_names_the_kernel_this_build_links_and_what_it_reads() {
-        let description = kernel_description();
+    fn the_startup_line_names_the_parsers_this_build_links_and_what_they_read() {
+        let description = parsers_description();
         assert!(description.starts_with("mesh"), "got: {description}");
         for format in lapidary_core::MESH_EXTENSIONS {
             assert!(

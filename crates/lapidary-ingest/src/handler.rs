@@ -1,10 +1,10 @@
 //! One file's worth of ingest, as a job. The pipeline below is slice 1's, moved rather
 //! than rewritten: read, BLAKE3, library_holds, measure, write, record.
 //!
-//! **R3 took every derivative out of it.** Nothing renders, so step 4 asks the kernel for
-//! measurements only and there is no step 5: no thumbnail, no L0 rung, no CAD read. The
-//! centre of mass is still recorded here, from the same measurement output, which is what
-//! let the historical backfill job go.
+//! **R3 took every derivative out of it, and R5 took the kernel.** Nothing renders, so step 4
+//! parses the mesh and measures it and there is no step 5: no thumbnail, no L0 rung, no CAD
+//! read. The centre of mass is still recorded here, from the same measurement output, which is
+//! what let the historical backfill job go.
 //!
 //! # Ordering
 //!
@@ -20,7 +20,7 @@
 //!    written before either refusal
 //!    3a. `parts.library_exists(library)` — the library is still there;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
-//! 4. `kernel.process(bytes, params)` — parse + measure, and nothing else: `produce` is empty
+//! 4. `lapidary_cad::parse(bytes, format)` then `measure(&mesh)` — and nothing else
 //!    5a. a controlled part's next revision: `revisions.record_revision(...)` locks the part,
 //!    sets its current file aside under `revisions/<label>/` and writes these bytes where it
 //!    was, then `metadata.json` is rewritten from the rows -> `Revised`. Steps 6 to 10 are
@@ -109,14 +109,14 @@
 //!
 //! # Error classification
 //!
-//! The kernel's errors are `Permanent`: blobs are content-addressed and immutable, so
+//! The parser's errors are `Permanent`: blobs are content-addressed and immutable, so
 //! re-parsing the same bytes is guaranteed to produce the same error, and a retry only
 //! delays an answer that is already available. Database, blob-store and I/O errors are
 //! `Transient` — the file is fine, something else was not, and worth another attempt.
 //! When genuinely unsure, this module chooses `Transient`: a retried permanent failure
 //! costs one wasted parse, while a non-retried transient failure costs the user a file.
 
-use lapidary_cad::{CadError, Kernel, KernelParams, MeshKernel};
+use lapidary_cad::CadError;
 use lapidary_core::slug::{disambiguate, disambiguate_with, slugify};
 use lapidary_core::{
     BlobHash, FolderId, JobPayload, LibraryId, LibraryMode, MeasurementProvenance, Outcome,
@@ -143,15 +143,27 @@ pub struct WorkerHandler {
     /// Root of the blob store. This crate is the one place in the workspace allowed to
     /// construct a `SourceStore` over it — see `lib.rs`'s module doc.
     pub blob_root: PathBuf,
-    /// A kernel to use instead of [`MeshKernel`]. `None` everywhere a worker really runs —
-    /// there is one kernel and it is in-process.
+    /// Suspends an ingest just before it parses. `None` everywhere a worker really runs.
     ///
-    /// The seam is kept because it is the only place a test can suspend a job mid-parse, which
-    /// is how the two races over one new path in `tests/handler.rs` are staged at all. It was
-    /// `cad: Option<Arc<dyn Kernel>>`, the OCCT sidecar STEP and IGES went to; those formats are
-    /// refused by name now (see [`kernel_for`](Self::kernel_for)), so a field named for them
-    /// would name something that no longer exists.
-    pub kernel: Option<Arc<dyn Kernel>>,
+    /// **This is all that is left of the `Kernel` trait, and it is all the trait was for.**
+    /// `WorkerHandler.cad` was `Option<Arc<dyn Kernel>>` so the OCCT sidecar could be swapped
+    /// in; R2 refused those formats and kept the field, renamed, because parsing is synchronous
+    /// all the way down — so it is the only instant at which one of two jobs racing over one
+    /// new path can be held while the other finishes, and the two slice-1 §3.3 races in
+    /// `tests/handler.rs` are staged through it. A trait with one implementation is not worth
+    /// keeping to obtain one await point; two `Notify` handles are.
+    pub pause: Option<Pause>,
+}
+
+/// The await point above, and nothing else. A test holds a job here, lets another job run to
+/// completion, and then releases this one. The two races in `tests/handler.rs` that need it are
+/// the ones over a new path: one with other bytes already there, one with the same bytes. Neither
+/// can be written without an instant at which the loser is suspended.
+pub struct Pause {
+    /// Notified when the job reaches the parse.
+    pub reached: Arc<tokio::sync::Notify>,
+    /// Awaited before the parse runs.
+    pub release: Arc<tokio::sync::Notify>,
 }
 
 impl JobHandler for WorkerHandler {
@@ -288,23 +300,6 @@ impl WorkerHandler {
                 "could not record the file's centre of mass; its revision diff leaves it out"
             );
         }
-    }
-
-    /// The kernel for a file of `format`, or the refusal a STEP or IGES file gets.
-    ///
-    /// `Permanent`, and that is the point: the bytes are immutable and there is no longer a
-    /// feature to build in, so a retry would reach exactly the same answer. The sentence names the
-    /// format and what this library does take; it lives in `lapidary-core` because the upload
-    /// route refuses the same files before a byte moves and must say the same thing.
-    ///
-    /// Everything else goes to the mesh kernel, which answers an unknown format itself.
-    pub(crate) fn kernel_for(&self, format: &str) -> Result<&dyn Kernel, HandlerError> {
-        if CAD_FORMATS.contains(&format) {
-            return Err(HandlerError::Permanent {
-                message: lapidary_core::cad_refusal(format),
-            });
-        }
-        Ok(self.kernel.as_deref().unwrap_or(&MeshKernel))
     }
 
     /// One file on the ingest mount, start to finish. See this module's doc for the
@@ -585,28 +580,24 @@ impl WorkerHandler {
                 ),
             });
         }
-        // **Nothing to produce.** Empty `produce` is legal and means measurements only
-        // (`KernelParams::produce`), and measurements are the whole of what ingest needs: the
+        // **Nothing else is produced.** Measurements are the whole of what ingest needs: the
         // card shows the part's own picture, the viewer loads the original file when somebody
         // asks, and the two exports are built on demand. Ingest used to write an L0 rung always
         // and a thumbnail if the library wanted one.
-        let params = KernelParams {
-            linear_deflection_mm: None,
-            format: source_format(source_path),
-            produce: Vec::new(),
-        };
-        let kernel = self.kernel_for(&params.format)?;
+        let format = source_format(source_path);
+        refuse_b_rep(&format)?;
+        if let Some(pause) = &self.pause {
+            pause.reached.notify_one();
+            pause.release.notified().await;
+        }
 
         // 4. Parse + measure. Nothing has been written yet, so a failure here
         // needs no cleanup. This runs even when the bytes are already in the blob store,
         // because the new part needs its own measurements; only the
         // bytes are shared, and they are already in memory from step 1. The bytes are
-        // immutable, so a refusal is the final answer about them; a kernel that crashed or
-        // ran out of time says nothing about the file and is retried (`classify_cad`).
-        let output = kernel
-            .process(&bytes, &params)
-            .await
-            .map_err(classify_cad)?;
+        // immutable, so every parse failure is the final answer about them (`classify_cad`).
+        let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
+        let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
 
         // 5a. The next revision of the part at step 3b (spec §3.1). It has its folder and its
         // directory already, and its transaction writes the blob row itself, so steps 6 to 9
@@ -630,12 +621,12 @@ impl WorkerHandler {
                         origin,
                         lock,
                         blob: &blob,
-                        measurements: &output.measurements,
+                        measurements: &measurements,
                         // Every figure a mesh gives is tessellated, and a mesh is all this
                         // library takes (R2). The kernel used to report this per figure
                         // because a B-rep read some of them off the solid.
                         provenance: MeasurementProvenance::TESSELLATED,
-                        format: &params.format,
+                        format: &format,
                     },
                     |current, aside| {
                         set_aside(&relocator, &source, &self.blob_root, current, aside, &bytes)?;
@@ -647,7 +638,7 @@ impl WorkerHandler {
             if let Ok(revision) = &recorded {
                 self.record_centre_of_mass(
                     *revision,
-                    output.centre_of_mass_mm,
+                    centre_of_mass_mm,
                     Provenance::Tessellated,
                     source_path,
                 )
@@ -828,10 +819,10 @@ impl WorkerHandler {
             folder,
             storage_path: Some(&storage_path),
             blob: &blob,
-            measurements: &output.measurements,
+            measurements: &measurements,
             // Tessellated, for the revision branch's reason: a mesh is all this library takes.
             provenance: MeasurementProvenance::TESSELLATED,
-            format: &params.format,
+            format: &format,
         };
 
         // 9. One transaction, and nothing fallible between it and the write above. The
@@ -934,7 +925,7 @@ impl WorkerHandler {
             Ok(Some(revision)) => {
                 self.record_centre_of_mass(
                     revision,
-                    output.centre_of_mass_mm,
+                    centre_of_mass_mm,
                     Provenance::Tessellated,
                     source_path,
                 )
@@ -1238,17 +1229,34 @@ pub(crate) fn classify_db(error: DbError) -> HandlerError {
     }
 }
 
-/// A kernel error, sorted the way `classify_db` sorts a database one. A crash, a timeout
-/// and a kernel that would not start are the worker's trouble, not the file's, so they are
-/// retried. Every other `CadError` is the file's own verdict, the same on every attempt.
+/// Every `CadError` is `Permanent`, sorted the way `classify_db` sorts a database one.
+///
+/// **It had three exceptions and R2 took all three with the sidecar.** A crash, a timeout and a
+/// kernel that would not start were the worker's trouble rather than the file's, so they were
+/// retried; nothing out-of-process reads a file now, so what is left is four parser and writer
+/// verdicts on immutable bytes — three attempts would reach the same one three times. The
+/// function stays, rather than collapsing into `HandlerError::Permanent { .. }` at every call
+/// site, because this is where that judgement belongs: a `CadError` worth retrying would get
+/// one arm here instead of a decision at each caller.
 pub(crate) fn classify_cad(error: CadError) -> HandlerError {
-    let message = error.to_string();
-    match error {
-        CadError::KernelCrashed { .. }
-        | CadError::Timeout { .. }
-        | CadError::KernelUnavailable { .. } => HandlerError::Transient { message },
-        _ => HandlerError::Permanent { message },
+    HandlerError::Permanent {
+        message: error.to_string(),
     }
+}
+
+/// The refusal a STEP or IGES file gets, for a file a scan found.
+///
+/// `Permanent`, and that is the point: the bytes are immutable and there is no parser to build
+/// in, so a retry would reach exactly the same answer. The sentence names the format and what
+/// this library does take; it lives in `lapidary-core` because the upload route refuses the
+/// same files before a byte moves and must say the same thing.
+pub(crate) fn refuse_b_rep(format: &str) -> Result<(), HandlerError> {
+    if CAD_FORMATS.contains(&format) {
+        return Err(HandlerError::Permanent {
+            message: lapidary_core::cad_refusal(format),
+        });
+    }
+    Ok(())
 }
 
 /// A unique violation on `part_source_path_unique_per_library` is not a failure: another
@@ -1280,44 +1288,38 @@ mod tests {
         assert_eq!(part_name("bracket-lp-1042-03.stl"), "bracket-lp-1042-03");
     }
 
-    /// A refused derivative shape is not a database that might be back in a moment. If
-    /// this ever reads `Transient` again, the queue will retry a write that is refused
-    /// deterministically -- three attempts, three identical refusals, and a failure
-    /// recorded four backoffs after it was already known.
-    /// A crash, a timeout and a bridge that would not start say nothing about the file,
-    /// so they are retried. A refusal is the file's own verdict, and retrying it three
-    /// times only delays the same answer.
+    /// **Every one of the four, not a representative one.** A file this build cannot read is
+    /// the file's own verdict on immutable bytes: if any of these ever reads `Transient` again,
+    /// the queue retries a parse that is refused deterministically -- three attempts, three
+    /// identical refusals, and a failure recorded four backoffs after it was already known.
+    /// The three that *were* retried (a crash, a timeout, a bridge that would not start) went
+    /// with the sidecar they described.
     #[test]
-    fn a_kernel_crash_is_retried_not_recorded_as_a_refusal() {
-        let retried = [
-            CadError::KernelCrashed {
+    fn every_parser_verdict_is_permanent_rather_than_retried() {
+        let verdicts = [
+            CadError::MalformedMesh {
+                format: "stl".to_owned(),
+                detail: "the header declares 48 triangles and the file holds 3".to_owned(),
+            },
+            CadError::ArchiveRefused {
+                format: "3mf".to_owned(),
+                detail: "an entry expands past the ratio cap".to_owned(),
+            },
+            CadError::UnsupportedFormat {
                 format: "step".to_owned(),
-                status: "signal 11".to_owned(),
-                stderr_tail: String::new(),
             },
-            CadError::Timeout {
-                path: "fixture-plate-lp-9000-00.step".to_owned(),
-                seconds: 45,
-            },
-            CadError::KernelUnavailable {
-                detail: "No such file or directory".to_owned(),
+            CadError::ExportFailed {
+                format: "stl".to_owned(),
+                detail: "more triangles than a binary STL's count can name".to_owned(),
             },
         ];
-        for error in retried {
+        for error in verdicts {
             let text = error.to_string();
             match classify_cad(error) {
-                HandlerError::Transient { message } => assert_eq!(message, text),
-                other => panic!("a kernel failure must be retried, got {other:?}"),
+                HandlerError::Permanent { message } => assert_eq!(message, text),
+                other => panic!("a parser verdict must not be retried, got {other:?}"),
             }
         }
-        let refusal = CadError::CadRefused {
-            format: "step".to_owned(),
-            detail: "no shapes in the file".to_owned(),
-        };
-        assert!(matches!(
-            classify_cad(refusal),
-            HandlerError::Permanent { .. }
-        ));
     }
 
     /// Every `DbError` is a retry now. The two that were not — `ThumbnailNotInline` and

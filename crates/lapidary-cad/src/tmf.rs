@@ -4,7 +4,7 @@
 //! security boundary — zip64, data descriptors, local-versus-central header mismatch —
 //! and a bug here is a vulnerability rather than a wrong mesh. See spec §3.2.
 
-use crate::kernel::CadError;
+use crate::CadError;
 use crate::stl::{Mesh, finish};
 use std::io::Read;
 
