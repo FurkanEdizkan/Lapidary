@@ -3982,6 +3982,42 @@ goal lands, so the history stays legible. The plan is the goal files R1–R6 on 
   - **Left for R4, and it matters:** the kernel version string is **unchanged on purpose**, because
     `enqueue_stale_derivatives` compares it against every stored export row — changing it would re-queue every export
     in the corpus at the next worker start. R4.md's stage 1 had assumed R3 changed it.
+- **R5, `lapidary-cad` is parsers and measurement** (merged `270309a`, gate 14 green in 271.44 s on the merged tree).
+  **33 files, +513 / −2,559.** The crate's `src` goes from **4,483 lines in 11 files to 2,496 in 6**, its public API
+  from 23 items to **8**, its dependencies from 9 to **4**, and its inline tests from 100 to 64. `Cargo.lock` loses
+  `meshopt` and `float-cmp`. What is left is what the product needs: parse an `stl`, `obj` or `3mf`, and say how big
+  it is.
+  - **The `Kernel` trait is gone and both race tests kept** — the question the goal file posed, answered by noticing
+    the races never needed a kernel. They need an **await point** between the read that finds no part at a path and the
+    insert that claims it. So `WorkerHandler.pause: Option<Pause>` is that await point and nothing else: two
+    `Arc<Notify>` in a named struct, awaited exactly where the old double suspended. Every assertion survives, and a
+    24-line double became a 4-line struct literal. Gone with the trait: `KernelParams`, `KernelOutput`,
+    `KernelVersion`, `MockKernel`, `async_trait` on the hot path, and `derive.rs`'s `missing()` — a runtime branch
+    for "the kernel returned nothing it was asked for" that one exhaustive `match` now makes a compile error.
+  - **A test that could hang instead of fail.** Awaiting the race's notify bare meant a failure blocked for ever —
+    under the compile lock, with no message. It is bounded at ten seconds now, and the mutation reports
+    `WorkerHandler::pause never fired: Elapsed(())`.
+  - **The kernel version string is frozen deliberately** at `mesh {format}-1+glb-3+cpu-1`, now one function with the
+    reason in its doc and a test of three literals so a bump goes red. Nothing R5 removed can change an export's bytes,
+    so by the column's own contract the string must not move — and moving it would queue a rebuild of every export in
+    the corpus to produce byte-identical files.
+  - **`mock-kernel` became an explicit `worker` feature**, gating the same optional dependencies so `check-deploy`
+    reads the same shape. **Stage 2's second half is invisible to the gate** — `--all-features` never builds the
+    `not(feature)` arms — so it was run by hand: the `worker` build starts and logs `parsers=mesh, for stl, obj and
+    3mf`; the default build refuses with *"Rebuild with `--features worker`"* and exits 1.
+  - **Eleven mutations, eleven caught**, each failure message read. One was split in two because `$A && $B` stopped at
+    the first red and left the stored-column layer untested; and "a derive writes the kind it was asked for" is now
+    **held by the type**, so it is described that way rather than counted — the same discipline R3 applied one goal
+    earlier.
+  - **It flagged its own commit message as overstating** and did not amend it, because that would have changed the
+    gated sha: the message says splitting `kernel_for` exposed an unprotected path, where the truth is R2 already
+    refused there and R5 found the path reachable but **untested**. The Record carries the corrected wording.
+  - **For R6:** `docs/ARCHITECTURE.md` now holds the most false text in the repository — line 81's "Kernel trait +
+    OCCT sidecar driver", line 142's `mock-kernel` feature, and the whole of § "The kernel simplification", which
+    prints a trait signature, a seven-field `KernelOutput`, `OcctKernel` and `occt-bridge convert`. None of it
+    exists. Two one-token staleness bugs are left named rather than fixed, because each would cost a full gate and a
+    turn of the compile lock: a test comment in `xtask/src/layers.rs` and a changed-file fixture string in
+    `verify.rs` naming `raster.rs`, a path that is gone (it is only ever treated as text).
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
