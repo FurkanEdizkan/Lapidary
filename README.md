@@ -108,11 +108,11 @@ can reach — and the api container mounts no ingest directory to walk, delibera
 Enqueueing a job is a database write, which the api may do; walking a mount and parsing
 geometry is not.
 
-The split the ports draw is the one that matters and is unchanged: opening a part must
-never invoke the CAD kernel, so `lapidary-api` is forbidden from depending on
-`lapidary-cad` at all (`cargo xtask check-layers`) — which means the ingest handler, which
-parses and rasterizes, cannot live in it. It lives in `lapidary-ingest`, and only the
-`worker` image compiles that in:
+The split the ports draw is the one that matters and is unchanged: opening a part must never
+read a model file, so `lapidary-api` is forbidden from depending on `lapidary-cad` at all
+(`cargo xtask check-layers`) — which means the ingest handler, which parses a mesh and
+measures it, cannot live in it. It lives in `lapidary-ingest`, and only the `worker` image
+compiles that in:
 
 ```sh
 cargo tree -p lapidary-server                    | grep lapidary-cad   # nothing
