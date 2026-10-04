@@ -88,7 +88,12 @@ for mjs in "$HERE"/*.mjs; do
     no "node --check $(basename "$mjs")"; node --check "$mjs"
   fi
 done
+# There are none left — `exit2.py` and `skew-stl.py` went with Phase 6's second exit and the duplicate
+# fixtures — and the guard is what keeps an unmatched glob from reading as a failing file. The python
+# this rig still runs is embedded in `stack.sh`'s heredocs, which `code_of` below reads as strings and
+# nothing parses; that is a gap, and it is the same gap `check.sh` exists inside rather than a new one.
 for py in "$HERE"/*.py; do
+  [ -e "$py" ] || continue
   if python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$py"; then
     ok "python parses $(basename "$py")"
   else no "python parses $(basename "$py")"; fi
@@ -116,77 +121,43 @@ echo "== stack.sh still defines every function it needs"
 # disappearing under an edit to its neighbour — and costs one line when a helper is added.
 for fn in die refuse note ask_owner lane_var assert_project compose or_none free_gb ram_gib field json \
   sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
-  build_ingest_tree check_worker_sees_ingest library_named upload_file \
+  build_ingest_tree check_worker_sees_ingest library_named upload_file seed_picture \
   tag_borrowed_images untag_borrowed_images \
-  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_exit2 cmd_peer; do
+  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_peer; do
   if grep -qE "^$fn\(\) \{" "$HERE/stack.sh"; then
     pass=$((pass + 1))
   else
     no "stack.sh no longer defines $fn()"
   fi
 done
-ok "all 37 of stack.sh's functions are defined (counted individually above)"
+# And the list is the whole list: a function defined and not named here would be one this check cannot
+# protect, which is how the four helpers it was written for came to be deleted in the first place.
+defined=$(grep -cE '^[a-z_]+\(\) \{' "$HERE/stack.sh")
+if [ "$defined" = 37 ]; then ok "all 37 of stack.sh's functions are defined, and 37 is all there are"
+else no "stack.sh defines $defined functions and this check names 37 — add the new one to the list above"; fi
 
-echo "== skew-stl.py makes the geometry it claims to"
-# The two duplicate fixtures carry the whole meaning of the near-duplicate case, so their geometry is
-# asserted rather than assumed: a rotation preserves volume and swaps two bounding-box sides, and a
-# 1.15 scale multiplies volume by 1.15 cubed. If either stopped being true, `duplicates` would be
-# testing something other than what `docs/phase-6.md` claims.
-probe=$WORK/probe
-mkdir -p "$probe"
-flange=$ROOT/example/parts/flange-dn40-lp-3310-02.stl
-if python3 "$HERE/skew-stl.py" --rotate "$flange" "$probe/rotated.stl" > /dev/null &&
-  python3 "$HERE/skew-stl.py" --scale 1.15 "$flange" "$probe/scaled.stl" > /dev/null; then
-  if python3 - "$flange" "$probe/rotated.stl" "$probe/scaled.stl" <<'PYEOF'
-import struct, sys
-
-def triangles(path):
-    data = open(path, "rb").read()
-    count = struct.unpack_from("<I", data, 80)[0]
-    return [struct.unpack_from("<9f", data, 84 + i * 50 + 12) for i in range(count)]
-
-def bbox(tris):
-    axes = []
-    for start in (0, 1, 2):
-        values = [v[start + j] for v in tris for j in (0, 3, 6)]
-        axes.append(max(values) - min(values))
-    return axes
-
-def volume(tris):
-    total = 0.0
-    for v in tris:
-        a, b, c = v[0:3], v[3:6], v[6:9]
-        total += (a[0] * (b[1] * c[2] - b[2] * c[1])
-                  - a[1] * (b[0] * c[2] - b[2] * c[0])
-                  + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6
-    return abs(total)
-
-o, r, s = (triangles(p) for p in sys.argv[1:4])
-problems = []
-if not (len(o) == len(r) == len(s)):
-    problems.append(f"triangle counts differ: {len(o)}, {len(r)}, {len(s)}")
-if abs(volume(r) / volume(o) - 1) > 1e-4:
-    problems.append(f"--rotate changed the volume by {volume(r) / volume(o):.6f}x; a rotation must not")
-if abs(volume(s) / volume(o) - 1.15 ** 3) > 1e-3:
-    problems.append(f"--scale 1.15 changed the volume by {volume(s) / volume(o):.6f}x, not {1.15 ** 3:.6f}x")
-bo, br = bbox(o), bbox(r)
-if abs(bo[0] - br[0]) > 1e-3 or abs(bo[1] - br[2]) > 1e-3 or abs(bo[2] - br[1]) > 1e-3:
-    problems.append(f"--rotate should send (x, y, z) to (x, -z, y): {bo} became {br}")
-print(f"  {bo[0]:.2f} x {bo[1]:.2f} x {bo[2]:.2f} mm, {volume(o):.0f} mm3 -> "
-      f"rotated {br[0]:.2f} x {br[1]:.2f} x {br[2]:.2f}, scaled {volume(s) / volume(o):.4f}x volume")
-for problem in problems:
-    print("  " + problem)
-sys.exit(1 if problems else 0)
-PYEOF
-  then ok "--rotate preserves volume and swaps Y/Z; --scale 1.15 cubes to 1.5209x"
-  else no "skew-stl.py's geometry is not what the duplicate cases need"; fi
-else no "skew-stl.py would not run against example/parts/flange-dn40-lp-3310-02.stl"; fi
+# `skew-stl.py` is gone, and with it the block that stood here.
+#
+# It asserted the geometry of the two duplicate fixtures — that `--rotate` preserved volume to 1.000000
+# and swapped the Y and Z bounding-box sides, and that `--scale 1.15` multiplied volume by 1.520875 —
+# because `duplicates` rested on exactly that and `docs/phase-6.md` claimed the descriptor was
+# rotation-invariant. R3 deleted `part_shape`, `part_link` and every likeness route, so both fixtures
+# were fixtures for nothing and the script had no other caller. What is left in `alike/` is one pair
+# with identical bytes, which needs no geometry asserted: `cp` is the whole of it.
 
 echo "== every string the flows match still exists in strings.ts"
 # The flows have no test ids to work with — this application has none, and T1 owns none of `web/` — so a
 # dozen of them match rendered text. A copy change should therefore break *this*, at commit time, rather
 # than a flow twenty minutes into a run against a live stack. Every literal below is one a flow matches; if
 # one moves, either the flow follows it or the rename was not meant.
+#
+# **Ten came out with the pivot and two went in.** Out: `Point to point`, `Show in the 3D view`,
+# `Explode` and `Loading the full-detail mesh` with measuring, the section plane and the L2 wait; `Looks
+# alike`, `Possible duplicates`, `Identical`, `Near-duplicates`, `Fold into this` and `Not the same` with
+# shape similarity. `Read from an analytic CAD entity` is still IN `strings.ts` — rows a STEP file wrote
+# before the pivot carry it — but no flow matches it any more, and this list is the flows' list, not the
+# file's. In: `View in 3D`, which is the whole of `view-original`, and `Picture of`, which is the alt text
+# `pictures` finds a card's own image by.
 strings=$ROOT/web/src/lib/strings.ts
 if [ ! -f "$strings" ]; then no "no $strings to check against"; else
   gone=''
@@ -201,18 +172,15 @@ Order
 Cards per page
 Save this filter
 Name for this filter
-Point to point
-Show in the 3D view
-Explode
 Remove from library
 Restore
 Scan the ingest folder
 Storage
 This installation
 Upload complete —
-Loading the full-detail mesh
+View in 3D
+Picture of
 Derived from tessellated
-Read from an analytic CAD entity
 Nothing here yet
 Upload a folder
 Search this library
@@ -223,17 +191,11 @@ Reading the folder
 Asking which files are new
 Finishing the upload
 Scan complete —
-Looks alike
-Possible duplicates
-Identical
-Near-duplicates
-Fold into this
-Not the same
 LITERALS
   if [ -n "$gone" ]; then
     printf '    these are matched by a flow and are no longer in strings.ts:%s\n' "$gone"
     no "a string a flow depends on has been renamed"
-  else ok "all 34 strings the flows match are still in strings.ts"; fi
+  else ok "all 25 strings the flows match are still in strings.ts"; fi
 fi
 
 echo "== the override says nothing check-deploy cannot see"

@@ -7,11 +7,11 @@
 | [`../PRODUCT.md`](../PRODUCT.md) | Who the product is for, what it promises, and the WCAG 2.2 AA commitment | Any user-facing decision, and before trading accessibility for anything |
 | [`../DESIGN.md`](../DESIGN.md) | The visual system: palette with measured contrast, type, radii, components, named rules. The live tokens are `web/src/styles.css`; this is why they are what they are | Any change to how the web app looks |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Checkout setup, the commit-message rules, the verification bar, what a PR needs. Not yet open to outside contributions | Your first commit |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate graph and layering, deployment topology, full tech stack, kernel trait, supply chain policy, licensing | Any structural work, new crate, dependency, or deployment change |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate graph and layering, deployment topology, full tech stack, supply chain policy, licensing | Any structural work, new crate, dependency, or deployment change |
 | [`DATA.md`](DATA.md) | Blob CAS, compression and tiering, deletion semantics, fast-open path, metadata extraction, schema, search, source links, upload/download, versioning, watcher | Anything touching storage, the database, ingest, search, or the round-trip |
 | [`FEATURES.md`](FEATURES.md) | Complete feature list by area with phase tags and explicit non-goals; detailed build-graph spec | Scoping any feature, or checking whether something is deliberately excluded |
 | [`ROADMAP.md`](ROADMAP.md) | Ten phases with hard exit criteria, commercial model, open items | Planning work order, or deciding whether something is in scope yet |
-| [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types, search, or `lapidary-cad` LOD. Search lives in `lapidary-db` and migrations `0016`/`0020` today; `lapidary-index` is a placeholder crate that Phase 2's metadata extractor fills |
+| [`prototype-notes.md`](prototype-notes.md) | What the deleted Node prototype established: domain shape, search payload, LOD approach | Designing `lapidary-core` types or search. Its LOD half is history: there is no ladder since 2026-10-03. Search lives in `lapidary-db` and migrations `0016`/`0020` today; `lapidary-index` is a placeholder crate that Phase 2's metadata extractor fills |
 | [`goals/`](goals) | The work in flight: [`PROTOCOL.md`](goals/PROTOCOL.md) (how several sessions work at once), [`BOARD.md`](goals/BOARD.md) (who holds which goal), and one file per goal | **Before starting any work** — then the goal you claimed |
 | [`superpowers/specs/`](superpowers/specs) | Per-slice design specs: the decisions, data flow, schema and testing plan for one slice | Working on a slice — the spec for it is the closest thing to a contract for what it does |
 | [`superpowers/plans/`](superpowers/plans) | The execution plans those specs were built from, and historical handoffs | Tracing why something was built the way it was; not a description of the current system |
@@ -74,8 +74,9 @@ this one owns. Committing it would fork the skills, which is what moving them ou
   syntax, `Containerfile` naming, `:Z` labels, Quadlet for systemd.
 - **REST or gRPC?** REST + `ts-rs` + SSE. gRPC was evaluated and rejected —
   `ARCHITECTURE.md` has the reasoning.
-- **Where does the CAD kernel run?** Native OCCT in the worker container, always. There
-  is no WASM variant.
+- **Where does the CAD kernel run?** Nowhere — there is none (owner, 2026-10-03). The
+  worker parses `stl`, `obj` and `3mf` with `lapidary-cad`'s own parsers and refuses a STEP
+  or IGES file by name. `ARCHITECTURE.md` § "No kernel at all" has what left and why.
 - **Can I add a dependency?** Check `cargo-deny`'s `[sources]` allow-list, and prefer the
   boring multi-maintainer option.
 - **Is this feature planned?** `FEATURES.md`. Items marked `[—]` are deliberate
@@ -87,13 +88,21 @@ this one owns. Committing it would fork the skills, which is what moving them ou
   columns cannot be indexed.
 - `blob.last_accessed_at` is updated in batches every 5 minutes, not per read.
 - Bundle ZIPs use STORE, not DEFLATE.
-- Thumbnails under 64 KB live in Postgres as `bytea`, deliberately — there is no
-  `images/` directory in the store, and no config file in it either.
+- A part's picture under 64 KB lives in Postgres as `bytea` on its `part_image` row,
+  deliberately — there is no `images/` directory in the store, and no config file in it
+  either. `derivative.thumb_bytes` was the same trick for rendered thumbnails and the column
+  survives with no writer; `DATA.md` §1.5 says why dropping it costs more than it returns.
 - The derivative cache is `<storage-root>/blobs/`, a sibling of `libraries/`, not
   `cache/blobs/` as the slice spec drew it. This is the one entry in this list that is a
   gap rather than a decision: `DATA.md` §1.1 says what the name costs and why renaming it
   is a follow-up.
-- `blob.quarantined_at` is a column with nothing behind it yet. Soft delete is built;
-  purge, quarantine and the 30-day sweep are design (`DATA.md` §1.6).
+- `recount` and `reap` count `file` and `derivative` and **not** `part_image`, so a
+  gallery blob is never quarantined and never reaped. Latent, checked rather than assumed,
+  and the first route that removes a picture lands in it (`DATA.md` §1.6).
+- `derivative` holds only `export_stl` and `export_3mf`, and `0055`'s predicate says
+  `kind NOT IN (those two)` rather than naming the seven kinds it deleted — so a kind nobody
+  thought to list is settled too.
+- A card shows no picture for most parts, because nothing produces one. That is the product,
+  not a missing feature: a picture is something a person adds.
 - The file watcher lives in the native `lapidary agent` binary, never in a container —
   inotify does not propagate through Docker Desktop bind mounts on macOS or Windows.

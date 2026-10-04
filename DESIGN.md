@@ -18,7 +18,38 @@
      first-run bench, one header, page anatomy). The lamp ground, the z scale, the xs
      breakpoint and motion.ts are recorded; the headline hierarchy and the weight Don't are
      rewritten to what the build does, and the stale accent hex and tile-border Don't are
-     corrected. Where a rule changed, the section says so. -->
+     corrected. Where a rule changed, the section says so.
+
+     2026-10-03, THE PIVOT — READ THIS BEFORE ANYTHING BELOW IT. Lapidary is a visual
+     library: pictures and search, and a 3D view only when somebody presses **view**. The
+     render pipeline and the CAD kernel are gone (`docs/ROADMAP.md` § "The pivot" has the
+     shas), and this document has not had its full pass yet. Six things it names no longer
+     exist, and every rule that rests on one of them is history rather than guidance:
+
+       * THE TURNTABLE. A card has no hover handler at all. Nothing draws, fetches or warms
+         because a pointer crossed a tile, and `Grid.test.tsx` asserts no <canvas> appears on
+         hover at any setting. So "the turntable's step back", the 150 ms rest, the
+         canvas-matches-the-inset rule and the picture-to-3D crossfade are all gone.
+       * THE RENDER ITSELF. A card shows the part's own `part_image` picture, framed by that
+         row's `fit`/`focus`, or — for most parts, because nothing produces a picture — the
+         part's FORMAT as text in the well. "The Inset Picture Rule" still holds for a
+         picture; "renders inset 7%" is about a thing that is no longer made.
+       * THUMBNAIL SHADING. `raster.rs` is deleted, so the rule that the turntable and bench
+         match its shading to the byte has nothing to match. `studio.ts` lost
+         `rasterLights`/`rasterMaterial` with it; ONE lit pair remains.
+       * THE FOUR LIT PLACES. three.js draws in exactly ONE place now — the viewer a **view**
+         press opens, on the part page or the quick look's stage. The turntable, the Space
+         stage's own canvas and the first-run bench (deleted with `web/public/first-run/`)
+         are not among them.
+       * THE ASSEMBLY AND PMI SECTIONS of the part page, and the revision ghost. The sections
+         that render are file, identity and history; "assembly, PMI" in the page-anatomy list
+         is stale.
+       * MEASURING, the section plane and explode. No toolbars; the figures a part shows are
+         read from its mesh and every one is labelled approximate.
+
+     The palette, the type, the shapes, the z scale, the breakpoints and every motion value
+     are UNAFFECTED and still authoritative — `web/src/styles.css` is the live copy. A full
+     pass over the prose below is a goal of its own; it is named in R6's Record. -->
 ---
 name: Lapidary
 description: A visual index for 3D part libraries, where the part is lit and the bench is not.

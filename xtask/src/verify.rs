@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn a_rust_only_change_skips_deny_and_the_web_suite() {
-        let changed = ["crates/lapidary-cad/src/raster.rs".to_owned()];
+        let changed = ["crates/lapidary-cad/src/measure.rs".to_owned()];
         let got = names(&steps(Tier::Task, Some(&changed)));
         assert!(!got.contains(&"deny"), "deny ran for a source-only change");
         assert!(

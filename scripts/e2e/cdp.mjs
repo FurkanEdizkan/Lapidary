@@ -13,10 +13,10 @@
 //   * the profile directory is **removed on close**. verify.mjs leaks one per session into `out`.
 //
 // The helpers are verify.mjs's, lifted as they are because they were tuned against this application:
-// `shot`, `go`, `mouse`, `click`, `key`, `rect`, the device-metrics override, `setEmulatedMedia` for
-// reduced motion, and the `matchMedia('(hover: hover)')` shim — headless Chrome reports a screen that
-// cannot hover, and a good deal of the grid hangs off that query, so without the shim the cards under
-// test are not the cards anybody uses.
+// `shot`, `go`, `mouse`, `click`, `key`, `rect`, the device-metrics override and `setEmulatedMedia` for
+// reduced motion and for hover — headless Chrome reports a screen that cannot hover, and Tailwind wraps
+// every `hover:` utility in a media query no script can reach, so without the CSS emulation a row's own
+// actions stay invisible and a click by coordinate lands on whatever is underneath.
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -317,33 +317,30 @@ export async function session({
   })
   // One call, because `setEmulatedMedia` replaces the whole feature list rather than adding to it.
   //
-  // `hover`/`any-hover`/`pointer` are the CSS half of the hover problem and the shim below is the JS
-  // half: Tailwind wraps every `hover:` utility in `@media (hover: hover)`, and a `matchMedia` shim
-  // cannot reach a media query the stylesheet asks. Without these, a row's own actions — Rename,
-  // Delete, Share in the category tree — stay `opacity-0 pointer-events-none` and a click by
-  // coordinate silently lands on whatever is underneath.
+  // `hover`/`any-hover`/`pointer` are the whole of the hover problem now: Tailwind wraps every
+  // `hover:` utility in `@media (hover: hover)`, and no script can reach a media query the stylesheet
+  // asks. Without these, a row's own actions — Rename, Delete, Share in the category tree — stay
+  // `opacity-0 pointer-events-none` and a click by coordinate silently lands on whatever is underneath.
   const features = []
   if (reducedMotion) features.push({ name: 'prefers-reduced-motion', value: 'reduce' })
   if (hover) {
     features.push({ name: 'hover', value: 'hover' }, { name: 'any-hover', value: 'hover' }, { name: 'pointer', value: 'fine' })
   }
   if (features.length > 0) await send('Emulation.setEmulatedMedia', { features })
-  if (hover) {
-    // The JS half. `Card.tsx`'s turntable asks `matchMedia('(hover: hover)')` directly and declines a
-    // pointer-triggered spin outright when it is false, so without this the cards under test are not
-    // the cards anybody uses. Installed before any document runs, so the first render already sees it.
-    await send('Page.addScriptToEvaluateOnNewDocument', {
-      source: `const real = window.matchMedia.bind(window)
-        window.matchMedia = (q) =>
-          q === '(hover: hover)'
-            ? { matches: true, media: q, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false } }
-            : real(q)`,
-    })
-  }
+  // **The JS half is gone, because the thing that asked for it is.** A `matchMedia('(hover: hover)')`
+  // shim used to be installed here as well: `Card.tsx`'s turntable asked that query directly and
+  // declined a pointer-triggered spin when it was false, so without the shim the cards under test were
+  // not the cards anybody used. There is no turntable — a card has no hover handler at all since R1 —
+  // and nothing in `web/src/` asks that query any more; `QuickLook`'s own `matchMedia` is the 1280px
+  // pane boundary, which the device-metrics override above already moves. The CSS emulation stays and
+  // is the half that was always load-bearing: Tailwind wraps every `hover:` utility in
+  // `@media (hover: hover)`, which no script can reach, and without it the category tree's per-row
+  // Rename, Delete and Share stay `opacity-0 pointer-events-none` and a coordinate click lands on the
+  // row underneath.
 
   // The grid pages on an `IntersectionObserver`, and an observer never fires in a tab that is not the
-  // frontmost one. A driver that skips this sees a grid that will not page and a lazy thumbnail that
-  // never loads, and both look like application bugs.
+  // frontmost one. A driver that skips this sees a grid that simply will not page, which looks exactly
+  // like an application bug.
   await send('Page.bringToFront')
 
   return {

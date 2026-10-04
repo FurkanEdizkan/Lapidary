@@ -30,7 +30,7 @@ industrial and defence buyers are exactly those cases.
                          │                      │
               ┌──────────▼─────────┐  ┌─────────▼──────────┐
               │  db (postgres:18)  │  │ worker  ×N          │
-              │  named volume      │  │ OCCT native sidecar │
+              │  named volume      │  │ mesh parsers only   │
               └────────────────────┘  └────────────────────┘
                          ▲
                          │ leases over HTTP, outbound only
@@ -78,10 +78,10 @@ crates/
 ├── lapidary-core/        L0  domain types, errors, ts-rs exports. Depends on nothing.
 ├── lapidary-db/          L1  sqlx, migrations, repository traits. ALL SQL lives here.
 ├── lapidary-storage/     L1  blob CAS, object_store, zstd, tiering, quarantine
-├── lapidary-cad/         L2  Kernel trait + OCCT sidecar driver
+├── lapidary-cad/         L2  mesh parsers (stl, obj, 3mf), measurement, the two export writers
 ├── lapidary-jobs/        L2  Postgres queue, leases, heartbeats, SSE progress
 ├── lapidary-index/       L2  metadata extraction, tsvector + trigram search, facets
-├── lapidary-vcs/         L2  revisions, lineage DAG, locks, geometric diff
+├── lapidary-vcs/         L2  revisions, lineage DAG, locks, figure comparison
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
 ├── lapidary-api/         L3          axum Router: the open path (grid, health) and the
@@ -95,7 +95,10 @@ crates/
 │                                     crate allowed to depend on lapidary-cad and to hold
 │                                     a SourceStore — see its module doc for why this is a
 │                                     separate crate from lapidary-api rather than a role
-│                                     check inside it. A LIBRARY.
+│                                     check inside it. It is also where a STEP or IGES file
+│                                     is refused by name, since `is_model_file` still admits
+│                                     one so that a scan reports it rather than skipping it
+│                                     in silence. A LIBRARY.
 ├── lapidary-peer/        L3          the peer protocol: the raw-public-key TLS listener
 │                                     pinned to paired device ids, the hello, and the
 │                                     hello round that refreshes who is paired and
@@ -112,7 +115,6 @@ crates/
 bin/
 ├── lapidary-server/          container entrypoint: api, worker, or peer when sharing is on
 └── lapidary/                 desktop binary: agent | worker | up
-sidecar/occt-bridge/          C++ OCCT → {mesh.stl, structure.json, entities.json, measurements.json}
 web/                          React SPA
 deploy/                       Containerfile, compose, quadlet, install.sh, install.ps1
 ```
@@ -133,47 +135,47 @@ are named-pair and per-crate checks in `FORBIDDEN_PAIRS` and `check_publish`
 this branch put the scan handler in `lapidary-api` behind a runtime `Role::Worker` check,
 reasoning that the open path never *mounting* the route was enough. It is not: the `api`
 and `worker` container images are also split at build time by `deploy/Containerfile`'s
-`SERVER_FEATURES` arg, specifically so the `api` image never *links* the kernel — and
+`SERVER_FEATURES` arg, specifically so the `api` image never *links* the parsers — and
 `lapidary-api` depending on `lapidary-cad` at all, even for a route `Role::Api` never
 mounts, makes the `api` image link it regardless. `cargo tree -p lapidary-server -e
 normal | grep lapidary-cad` is what caught it. `lapidary-ingest` exists so
 `FORBIDDEN_PAIRS` can forbid `lapidary-api -> lapidary-cad` unconditionally again, with
-the actual kernel-touching code sitting in a crate that may depend on it freely.
-`bin/lapidary-server` links `lapidary-ingest` only behind the same `mock-kernel` Cargo
-feature that already gated `lapidary-cad`'s mock implementation, and merges its router
-into the process's router only when running as the worker.
+the actual file-reading code sitting in a crate that may depend on it freely.
+`bin/lapidary-server` links `lapidary-ingest` behind its `worker` Cargo feature — which
+gates `lapidary-cad`, `lapidary-ingest` and `lapidary-jobs` together — and merges its
+router into the process's router only when running as the worker.
 
-## The kernel simplification
+## No kernel at all (owner, 2026-10-03)
 
-Container-first removes the WASM kernel variant entirely. OCCT always runs native in the
-worker container, as a separate process — `occt-bridge` — so a crash inside OCCT fails one job
-rather than the worker. Keep the `Kernel` trait for test doubles and the mesh kernel, and ship
-**one** CAD implementation, `OcctKernel` (`crates/lapidary-cad/src/occt.rs`). This deletes the
-highest-risk item in the original plan.
+**There is no CAD kernel, no `Kernel` trait and no sidecar.** This section used to print
+the trait's signature, a seven-field `KernelOutput`, `OcctKernel` and `occt-bridge
+convert`; `docs/ROADMAP.md` § "The pivot" carries the shas where each of them left. What
+replaced all of it is two free functions in `lapidary-cad`:
 
 ```rust
-trait Kernel {
-    fn version(&self, params: &KernelParams) -> KernelVersion;  // pinned across the fleet — see below
-    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError>;
-}
-// KernelOutput = { measurements, provenance (per figure), thumbnail_webp,
-//                  tessellations (L0/L1/L2 GLB), entities, structure, unproduced }
+pub fn parse(bytes: &[u8], format: &str) -> Result<Mesh, CadError>;
+pub fn measure(mesh: &Mesh) -> (MeshMeasurements, Option<[f64; 3]>);
 ```
 
-Bytes, not a path: ingest has already hashed them, and a kernel that re-opened a path could read
-something different from what was recorded. `OcctKernel` writes them into a scratch directory
-and runs `occt-bridge convert`, which writes `mesh.stl`, `structure.json`, `entities.json` and
-`measurements.json` back (`sidecar/occt-bridge/README.md`). The mesh goes through the mesh
-kernel's own clustering, rasterizer and GLB writer; the B-rep's volume, surface area and
-bounding box replace the mesh's and are marked analytic. A refusal (exit 2), a crash and a
-timeout are three different errors, because only the first is a verdict on the file.
+Bytes, not a path, for the reason that always held: ingest has already hashed them, and
+anything that re-opened the path could read something different from what was recorded.
+`lapidary-ingest`'s handler calls the two in order and writes the figures; it produces no
+derivative at all. A parser's verdict on immutable bytes is always `Permanent` — there is
+nothing left that could be a timeout, a crash or an unavailable process, so `CadError` is
+four variants and `classify_cad` has no `Transient` arm.
 
-**Pin the kernel version across the whole worker fleet.** Different OCCT builds produce
-different tessellations from identical input. `derivative.kernel_version` records it and
-geometric diff depends on determinism. `OcctKernel` names the OCCT build, the bridge and the
-linear deflection in that version. The coordinator must reject leases from workers
-whose kernel hash does not match the pool's pinned build, or two revisions of an
-unchanged part will show a phantom volume delta depending on which machine processed it.
+**A STEP or IGES file is refused by name**, in `lapidary_core::cad_refusal`, from four
+paths with one sentence: a scan's per-file job, an upload's probe and commit, and the
+folder agent's manifest. It is never skipped in silence, which is why `CAD_FORMATS` is
+still chained into `is_model_file`.
+
+**`derivative.kernel_version` is now a cache key for the two export writers**, and it is
+frozen at `mesh {format}-1+glb-3+cpu-1` with the dead `glb-3` and `cpu-1` tokens inlined
+(R5). The column's contract is "the bytes this build would write could differ", nothing in
+the pivot changed `write_stl` or `write_3mf` by a byte, and
+`PgJobs::enqueue_stale_derivatives` compares the string against every stored export row —
+so bumping it would queue a byte-identical rebuild of every export in the corpus at the
+next worker start. The reason is in the function's own doc; read it before touching it.
 
 ## Tech stack
 
@@ -207,11 +209,11 @@ unchanged part will show a phantom volume delta depending on which machine proce
 | Data | TanStack Query |
 | Styling | Tailwind v4 (`@tailwindcss/vite`, CSS-first) |
 | Components | shadcn/ui (new-york) — copy-in source, not a dependency |
-| 3D | three.js + glTF with `EXT_meshopt_compression` |
+| 3D | three.js, loading the part's **original** mesh on a **view** press — `STLLoader`, `OBJLoader`, `ThreeMFLoader` (`web/src/components/mesh.ts`). No glTF, no meshopt: nothing produces either |
 | Grid | `@tanstack/react-virtual` |
 | Node editor | `@xyflow/react` (React Flow) |
 | Layout | Hand-rolled, on a 12-column CSS grid (`web/src/components/dashboard/layout.ts`, pure and unit-tested). Not `react-grid-layout`: its CSS transitions fight the motion rules, and the keyboard move/resize WCAG needs is code we would write anyway (G5, 2026-09-27) |
-| Motion | CSS transitions + Web Animations API. **No anime.js** |
+| Motion | CSS transitions for everything a single element does, and **anime.js (pinned)** for sequenced or staggered motion — imported by `web/src/lib/motion.ts` and nowhere else. `CLAUDE.md` § Style holds the durations, the curve and the reduced-motion rule |
 
 ### Why not gRPC
 
@@ -247,8 +249,10 @@ Policy, all CI-enforced:
 - SBOM generated per release: CycloneDX for the crate graph, `syft` for images.
 - Sign everything: cosign for images, and Authenticode + Apple notarization once the
   Tauri app ships.
-- OCCT built from source in our own CI. LGPL-2.1 output stays a separately replaceable
-  file.
+- **No bundled C or C++ anywhere in the tree.** OCCT was built from source in our own CI
+  and `meshopt`'s build script compiled bundled C++; both left with the pivot, and nothing
+  in the workspace compiles a native library today. A new dependency that does is a
+  supply-chain decision, not a convenience.
 
 ## Licensing — decided: AGPL-3.0-only
 
