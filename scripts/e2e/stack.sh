@@ -2,7 +2,7 @@
 # The whole application, up and driven: one compose stack on this lane's port block, a library worth
 # testing seeded into it, and a real browser over the real api.
 #
-#   scripts/e2e/stack.sh build [--min-free <gb>]   # the five images, one at a time, disk-guarded
+#   scripts/e2e/stack.sh build            # deploy/'s five images, one service at a time, disk-guarded
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
@@ -438,40 +438,17 @@ cmd_build() {
   [ -z "$AS" ] || die "an installation with AS=$AS borrows the lane's images; it never builds its own.
   Build once with no AS set (\`cargo xtask heavy -- scripts/e2e/stack.sh build\`), then bring each
   installation up — \`up\` tags the lane's five images under this project's names."
-  # The disk floor is a default, not a constant, and going under it is an argument somebody has to make
-  # out loud — the same shape `up --min-ram` already has, and for the same reason: `--min-free <gb>` is
-  # recorded in the log of the run that used it, so the number somebody chose is in the record beside
-  # what it bought.
+  # **The 8 GB floor below is the protocol's and this rig does not let anybody past it.**
   #
-  # **8 GB is the floor for a COLD build**, which is the rust toolchain image plus a full release
-  # compile. Once that stage is cached the remaining services are a runtime layer and one binary each —
-  # tens of megabytes — and the default would stop a build that needs a fiftieth of what it asks for.
-  # Measured on 2026-10-04 (R6): the worker took `/` from 10 GB to 6 GB and produced the stage; `api`
-  # then cost 0.1 GB, and `db`, `web` and `peer` together cost nothing new.
-  local min_free=8
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --min-free)
-        min_free=${2:-}
-        case "$min_free" in
-          '' | *[!0-9]*) die "--min-free takes a whole number of GB; got \`$min_free\`." ;;
-        esac
-        shift 2
-        ;;
-      *) die "\`build\` takes --min-free <gb> and nothing else; got \`$1\`." ;;
-    esac
-  done
-  # 2 GB is where this refuses whatever anybody asks, and the number is chosen rather than rounded:
-  # `deploy/compose.sharing.yaml` builds `peer` from `target: api`, so once `api` exists that build is a
-  # pure cache hit and writes a TAG and no layers — zero bytes, which no floor should be able to forbid.
-  # Below 2 GB a build that does write something can fill `/`, and a full root loses every log this rig
-  # writes about what went wrong (measured here on 2026-10-04: the five images cost about 7.5 GB of a
-  # 9.3 GB root, so this machine has no room to spare and the next container goal should know it).
-  [ "$min_free" -ge 2 ] || die "--min-free $min_free is under 2 GB, which this refuses however it is
-  asked. Below that a build that writes anything can fill \`/\`, and a full root loses every log this
-  rig writes about what went wrong."
-  [ "$min_free" = 8 ] ||
-    note "--min-free $min_free: building under the 8 GB default on purpose. Say why in the goal file."
+  # R6 (2026-10-04) measured what a build of all five actually costs on this machine and it is 7.5 GB:
+  # `worker` alone took `/` from 10 GB to 6 GB building the shared release stage, `api` then cost
+  # 0.1 GB, `web` 2 GB (its npm build), and `peer` — which is `target: api` in
+  # `deploy/compose.sharing.yaml` — cost **nothing at all**, because once `api` exists that build is a
+  # cache hit that writes a tag and no layers. So the floor is right for a cold build and much too high
+  # for the services after it, and a `--min-free <gb>` override in the shape of `up --min-ram` was
+  # written here and then taken out again: loosening a guard `docs/goals/PROTOCOL.md` states is the
+  # owner's call, not a lane's. If the four cheap services are all that is left, that is the argument to
+  # put to the owner; `ask_owner` below is how this rig asks.
   local services=${SERVICES:-db web api peer worker}
   write_env
   verify_ports
@@ -482,11 +459,11 @@ cmd_build() {
     # The guard, before each service and not once at the top: a release build layer alone can move
     # root free space by a gigabyte or more, and the api and worker stages each build one. Under it we
     # stop and ask — we never prune, because this rig's cache is not the only thing in that cache.
-    [ "$(free_gb /)" -ge "$min_free" ] || ask_owner "/ has $(free_gb /) GB free, under the $min_free GB
-  this build is allowed, before service \`$svc\`. This rig never prunes: it does not own the builder
-  cache and cannot tell which of it is somebody else's. Free space elsewhere, or — if the heavy stage is
-  already cached and the service left is a runtime layer and one binary — say \`--min-free <gb>\` and
-  record the number you chose."
+    [ "$(free_gb /)" -ge 8 ] || ask_owner "/ has $(free_gb /) GB free, under the 8 GB this build needs,
+  before service \`$svc\`. This rig never prunes: it does not own the builder cache and cannot tell
+  which of it is somebody else's. Free space elsewhere, or say to go ahead — and if what is left to
+  build is a runtime layer and one binary each, say so, because that is a different argument from a
+  cold build and the floor cannot tell them apart."
     [ "$(free_gb "$ROOT")" -ge 20 ] || ask_owner "$ROOT has $(free_gb "$ROOT") GB free, under 20 GB,
   before service \`$svc\`."
 
@@ -522,13 +499,13 @@ cmd_up() {
   # loud: `--min-ram <gib>` says so in the log of the run that used it. The default's premise is one stack
   # whose declared ceilings total 4.3 GB; three installations that are never seeded are a different case,
   # and the number they were brought up on belongs in whichever goal file quotes their captures.
-  # `--min-free <gb>` for the same reason, and `build` has it too. **6 GB was never what this stack
-  # costs on `/`**: the store and the ingest tree are bind mounts under `target/e2e/`, which is on the
-  # big filesystem, so what lands on the root is the database volume, the containers' writable layers
-  # and the headless profiles in /tmp — measured at well under 500 MB for a 404-part library, against a
-  # figure chosen when the root had 13 GB on it. The floor stays 6 because a figure that is usually
-  # generous is the right default; going under it names a number in the log.
-  local min_ram=5 min_free=6
+  # **6 GB is more than this stack costs on `/` and it stays all the same.** R6 measured it: the store
+  # and the ingest tree are bind mounts under `target/e2e/`, which is on the big filesystem, so what
+  # lands on the root is the database volume, the containers' writable layers and the headless profiles
+  # in /tmp — well under 500 MB for a 404-part library. A `--min-free` override was written here and
+  # taken out again for the reason above `cmd_build`'s own floor: a guard the protocol states is the
+  # owner's to lower.
+  local min_ram=5
   while [ $# -gt 0 ]; do
     case "$1" in
       --min-ram)
@@ -538,24 +515,13 @@ cmd_up() {
         esac
         shift 2
         ;;
-      --min-free)
-        min_free=${2:-}
-        case "$min_free" in
-          '' | *[!0-9]*) die "--min-free takes a whole number of GB; got \`$min_free\`." ;;
-        esac
-        shift 2
-        ;;
-      *) die "\`up\` takes --min-ram <gib> and --min-free <gb> and nothing else; got \`$1\`." ;;
+      *) die "\`up\` takes --min-ram <gib> and nothing else; got \`$1\`." ;;
     esac
   done
-  [ "$min_free" -ge 2 ] || die "--min-free $min_free is under 2 GB, which this refuses however it is
-  asked: Postgres filling \`/\` takes the whole machine's containers with it, not only this stack's."
-  [ "$min_free" = 6 ] ||
-    note "--min-free $min_free: brought up under the 6 GB default on purpose. Say why in the goal file."
-  [ "$(free_gb /)" -ge "$min_free" ] || ask_owner "/ has $(free_gb /) GB free, under the $min_free GB
-  this stack is allowed. The store and the ingest tree are bind mounts on the big filesystem, so what
-  this needs on the root is the database volume and the containers' own layers — if that is all that is
-  left to come, say \`--min-free <gb>\` and record the number you chose."
+  [ "$(free_gb /)" -ge 6 ] || ask_owner "/ has $(free_gb /) GB free, under the 6 GB this stack needs.
+  What this actually puts on the root is the database volume and the containers' own layers — the store
+  and the ingest tree are bind mounts on the big filesystem — so if that is all that is left to come,
+  that is the argument to put to the owner rather than a floor to lower."
   [ "$min_ram" = 5 ] ||
     note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
   # The declared ceilings in deploy/ total 4.3 GB. A stack brought up beside a cargo build is how a
@@ -1374,7 +1340,7 @@ case "${1:-}" in
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
-    echo "  up [--min-ram <gib>] [--min-free <gb>]   build [--min-free <gb>]   peer <stop|start>" >&2
+    echo "  up [--min-ram <gib>]   peer <stop|start>" >&2
     echo "  AS=a|b|c for one of three installations on this lane's block; scripts/e2e/group.sh runs three" >&2
     exit 2
     ;;

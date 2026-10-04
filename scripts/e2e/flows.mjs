@@ -306,22 +306,32 @@ const FLOWS = [
         `${got.nothing} of ${got.cards} cards show neither a picture nor their format — an empty well is the one thing a card may not be`,
       )
 
-      // **Nothing fetches per card.** Per-part data would have to be addressed by a part id or a blob
-      // hash, so those two shapes are what this looks for: the grid's own code asks for nothing beyond
-      // the page, the facets, the folders and the storage panel, and the number it asks for does not
-      // grow with the number of cards. A card that fetched its own picture would appear here fifty times.
+      // **Nothing fetches per card** — and R1's rule is about an API request, not about every byte.
+      //
+      // Per-part DATA would have to be addressed by a part id or a revision id, so those are what this
+      // forbids outright. A **blob** is deliberately not in that list: an image over `INLINE_LIMIT`
+      // (64 KB) arrives on the grid row as a hash and the card emits `/api/blob/{hash}`, which is one
+      // immutable `<img>` load and never a second API request. Forbidding it would fail against
+      // correct behaviour the first time somebody attaches a large picture. So blob requests are
+      // *bounded by the number of cards showing a picture* instead, which is the real rule: at most
+      // one per pictured card, and none at all for a card showing its format.
       const urls = net.urls()
-      const perPart = urls.filter((u) => /\/api\/(parts|blob|revisions)\//.test(u))
+      const perPart = urls.filter((u) => /\/api\/(parts|revisions)\//.test(u))
       expect(
         perPart.length === 0,
-        `${perPart.length} of ${urls.length} requests address a part or a blob, so something fetched per card: ${JSON.stringify(perPart.slice(0, 3))}`,
+        `${perPart.length} of ${urls.length} requests address a part or a revision, so something fetched per card: ${JSON.stringify(perPart.slice(0, 3))}`,
       )
-      const api = urls.filter((u) => u.includes('/api/'))
+      const blobs = urls.filter((u) => u.includes('/api/blob/'))
+      expect(
+        blobs.length <= got.picture,
+        `${blobs.length} blob loads for ${got.picture} card(s) showing a picture — a card without one must load nothing: ${JSON.stringify(blobs.slice(0, 3))}`,
+      )
+      const api = urls.filter((u) => u.includes('/api/') && !u.includes('/api/blob/'))
       expect(
         api.length < got.cards,
         `${api.length} api requests for ${got.cards} cards — that is per-card, whatever it is addressed by: ${JSON.stringify(api.slice(0, 4))}`,
       )
-      return `${got.picture} picture(s) + ${got.format} format placeholder(s) = ${got.cards} cards, none empty; ${api.length} api request(s) for the page, none naming a part or a blob`
+      return `${got.picture} picture(s) + ${got.format} format placeholder(s) = ${got.cards} cards, none empty; ${api.length} api request(s) for the page and ${blobs.length} blob load(s), none naming a part or a revision`
     },
   },
   {
