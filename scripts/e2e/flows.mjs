@@ -545,7 +545,11 @@ const FLOWS = [
       // The whole section is absent with nothing saved and no filter set, so the flow filters first —
       // which is also the only order a person can do it in.
       const name = `e2e ${ctx.stamp}`
-      await page.go(grid(ctx.sweep.id, '&format=step'), gridReady)
+      // **3MF, not STEP.** This filtered to `format=step` and waited for a card, which with six STEP
+      // fixtures was five cards and is now none at all — they are refused at ingest. A filter with no
+      // results is a legitimate thing to save, but it is not what this flow is for: it needs the grid
+      // to be showing the filter it is about to save, and `aria-current` to say so.
+      await page.go(grid(ctx.sweep.id, '&format=3mf'), gridReady)
       await cardsSettled(page)
       await openRail(page)
       const opened = await page.evaluate(`(() => {
@@ -554,7 +558,7 @@ const FLOWS = [
         b.click()
         return true
       })()`)
-      expect(opened, `filtering to STEP showed no "${T.saveThisFilter}" button`)
+      expect(opened, `filtering to 3MF showed no "${T.saveThisFilter}" button`)
       await sleep(300)
       const box = await page.evaluate(`(() => {
         const l = [...document.querySelectorAll('label')].find((e) => e.textContent.startsWith(${JSON.stringify(T.filterNameLabel)}))
@@ -585,7 +589,7 @@ const FLOWS = [
       )
       const mine = saved.find((f) => f.name === name)
       expect(mine !== undefined, `the filter was not saved: ${JSON.stringify(saved.map((f) => f.name))}`)
-      expect(mine.search.format === 'step', `it saved ${JSON.stringify(mine.search)} rather than format=step`)
+      expect(mine.search.format === '3mf', `it saved ${JSON.stringify(mine.search)} rather than format=3mf`)
       // aria-current marks the filter the grid currently matches, which is the only visible proof the
       // saved thing and the shown thing are the same thing.
       const current = await page.settle(
@@ -604,7 +608,7 @@ const FLOWS = [
       )
       // Put it back: a run must not leave the next one a longer list.
       await ctx.del(`/api/libraries/${ctx.sweep.id}/filters/${mine.id}`)
-      return `saved ${JSON.stringify(name)} as format=step, marked current, then removed`
+      return `saved ${JSON.stringify(name)} as format=3mf, marked current, then removed`
     },
   },
   {

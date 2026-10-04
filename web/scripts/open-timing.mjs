@@ -166,9 +166,19 @@ async function open(page, name) {
   await sleep(dwell)
   await mouse('mousePressed')
   await mouse('mouseReleased')
-  // The close control is the quick look's, at either width, and it mounts with the panel's content
-  // rather than with its frame — so it is the panel being usable and not merely present.
-  await page.waitFor(`document.querySelector('button[aria-label="Close"]') !== null`)
+  // **The part being on screen, not the panel's frame being on screen**, and the difference cost a
+  // reading. Waiting for the Close button returns as soon as the surface mounts, which is before the
+  // detail query has answered and therefore before `Preview` — and so before the **view** button — has
+  // rendered at all. Round 0 then had six "this part offers no 3D view" and round 1 had six draws,
+  // purely because react-query had the answer cached the second time round.
+  //
+  // So: the panel, and then the panel naming this part. That is also the number `DATA.md` §2.5's "part
+  // open" means now that nothing is drawn on an open — the part's own content, read and shown.
+  const surface = 'aside[aria-labelledby], [role="dialog"][aria-modal="true"]'
+  await page.waitFor(`(() => {
+    const s = document.querySelector(${JSON.stringify(surface)})
+    return s !== null && s.textContent.includes(${JSON.stringify(name)})
+  })()`)
   return page.evaluate('performance.now() - window.__down')
 }
 
@@ -181,6 +191,13 @@ async function open(page, name) {
  * and not from when Node got round to asking — and `open` has already read its own.
  */
 async function draw(page) {
+  // Waited for, not demanded: a button that has not rendered yet and a part that offers no view look
+  // identical to one `querySelector`, and only one of them is a finding.
+  // 5 s, not the 60 s default: a part that genuinely offers no view — a STEP revision from before the
+  // pivot — must say so quickly rather than hold the whole run for a minute per part.
+  await page
+    .waitFor(`[...document.querySelectorAll('button')].some((e) => e.textContent.trim() === ${JSON.stringify(VIEW)})`, 5000)
+    .catch(() => undefined)
   const point = await page.evaluate(`(() => {
     const b = [...document.querySelectorAll('button')].find((e) => e.textContent.trim() === ${JSON.stringify(VIEW)})
     if (b === undefined) return null
@@ -268,8 +285,11 @@ if (args.direct) {
         let drawn = null
         try {
           drawn = await draw(page)
-        } catch {
-          /* no view button on this part */
+        } catch (error) {
+          // Said out loud, once per part, rather than swallowed: a silently skipped draw makes the
+          // count at the bottom ("6 of 12 parts offer a view") read as a property of the library when
+          // it may be a property of this script.
+          console.log(`  no draw for ${name} (round ${round}): ${error.message.slice(0, 120)}`)
         }
         rows.push({ round, ms, draw: drawn })
         await shut(page)

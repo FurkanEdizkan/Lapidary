@@ -2,7 +2,7 @@
 # The whole application, up and driven: one compose stack on this lane's port block, a library worth
 # testing seeded into it, and a real browser over the real api.
 #
-#   scripts/e2e/stack.sh build            # deploy/'s five images, one service at a time, disk-guarded
+#   scripts/e2e/stack.sh build [--min-free <gb>]   # the five images, one at a time, disk-guarded
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
@@ -236,7 +236,14 @@ sql() { compose exec -T db psql -U lapidary -d lapidary -Atc "$1"; }
 # reporting 0 checks. `check.sh` grew a called-but-never-defined check off the back of it.
 seed_fail=0
 seed_check() { # name, 1|0, detail
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$WORK/seed-checks.tsv"
+  # **The detail is flattened to one line, and that is not tidiness.** This file is
+  # `name<TAB>ok<TAB>detail` and the python below splits each line on tabs with `maxsplit=2`; a detail
+  # written across two source lines carries a real newline into it, and the second half is then a line
+  # with no tabs at all. That happened: `seed.json` was never written, the traceback went to stdout,
+  # and the seed exited 0 all the same.
+  local flat
+  flat=$(printf '%s' "$3" | tr '\n\t' '  ' | tr -s ' ')
+  printf '%s\t%s\t%s\n' "$1" "$2" "$flat" >> "$WORK/seed-checks.tsv"
   if [ "$2" = 1 ]; then
     echo "  ok    $1 — $3"
   else
@@ -431,6 +438,40 @@ cmd_build() {
   [ -z "$AS" ] || die "an installation with AS=$AS borrows the lane's images; it never builds its own.
   Build once with no AS set (\`cargo xtask heavy -- scripts/e2e/stack.sh build\`), then bring each
   installation up — \`up\` tags the lane's five images under this project's names."
+  # The disk floor is a default, not a constant, and going under it is an argument somebody has to make
+  # out loud — the same shape `up --min-ram` already has, and for the same reason: `--min-free <gb>` is
+  # recorded in the log of the run that used it, so the number somebody chose is in the record beside
+  # what it bought.
+  #
+  # **8 GB is the floor for a COLD build**, which is the rust toolchain image plus a full release
+  # compile. Once that stage is cached the remaining services are a runtime layer and one binary each —
+  # tens of megabytes — and the default would stop a build that needs a fiftieth of what it asks for.
+  # Measured on 2026-10-04 (R6): the worker took `/` from 10 GB to 6 GB and produced the stage; `api`
+  # then cost 0.1 GB, and `db`, `web` and `peer` together cost nothing new.
+  local min_free=8
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --min-free)
+        min_free=${2:-}
+        case "$min_free" in
+          '' | *[!0-9]*) die "--min-free takes a whole number of GB; got \`$min_free\`." ;;
+        esac
+        shift 2
+        ;;
+      *) die "\`build\` takes --min-free <gb> and nothing else; got \`$1\`." ;;
+    esac
+  done
+  # 2 GB is where this refuses whatever anybody asks, and the number is chosen rather than rounded:
+  # `deploy/compose.sharing.yaml` builds `peer` from `target: api`, so once `api` exists that build is a
+  # pure cache hit and writes a TAG and no layers — zero bytes, which no floor should be able to forbid.
+  # Below 2 GB a build that does write something can fill `/`, and a full root loses every log this rig
+  # writes about what went wrong (measured here on 2026-10-04: the five images cost about 7.5 GB of a
+  # 9.3 GB root, so this machine has no room to spare and the next container goal should know it).
+  [ "$min_free" -ge 2 ] || die "--min-free $min_free is under 2 GB, which this refuses however it is
+  asked. Below that a build that writes anything can fill \`/\`, and a full root loses every log this
+  rig writes about what went wrong."
+  [ "$min_free" = 8 ] ||
+    note "--min-free $min_free: building under the 8 GB default on purpose. Say why in the goal file."
   local services=${SERVICES:-db web api peer worker}
   write_env
   verify_ports
@@ -441,9 +482,11 @@ cmd_build() {
     # The guard, before each service and not once at the top: a release build layer alone can move
     # root free space by a gigabyte or more, and the api and worker stages each build one. Under it we
     # stop and ask — we never prune, because this rig's cache is not the only thing in that cache.
-    [ "$(free_gb /)" -ge 8 ] || ask_owner "/ has $(free_gb /) GB free, under the 8 GB this build needs,
-  before service \`$svc\`. This rig never prunes: it does not own the builder cache and cannot tell
-  which of it is somebody else's. Free space elsewhere, or say to go ahead."
+    [ "$(free_gb /)" -ge "$min_free" ] || ask_owner "/ has $(free_gb /) GB free, under the $min_free GB
+  this build is allowed, before service \`$svc\`. This rig never prunes: it does not own the builder
+  cache and cannot tell which of it is somebody else's. Free space elsewhere, or — if the heavy stage is
+  already cached and the service left is a runtime layer and one binary — say \`--min-free <gb>\` and
+  record the number you chose."
     [ "$(free_gb "$ROOT")" -ge 20 ] || ask_owner "$ROOT has $(free_gb "$ROOT") GB free, under 20 GB,
   before service \`$svc\`."
 
@@ -479,7 +522,13 @@ cmd_up() {
   # loud: `--min-ram <gib>` says so in the log of the run that used it. The default's premise is one stack
   # whose declared ceilings total 4.3 GB; three installations that are never seeded are a different case,
   # and the number they were brought up on belongs in whichever goal file quotes their captures.
-  local min_ram=5
+  # `--min-free <gb>` for the same reason, and `build` has it too. **6 GB was never what this stack
+  # costs on `/`**: the store and the ingest tree are bind mounts under `target/e2e/`, which is on the
+  # big filesystem, so what lands on the root is the database volume, the containers' writable layers
+  # and the headless profiles in /tmp — measured at well under 500 MB for a 404-part library, against a
+  # figure chosen when the root had 13 GB on it. The floor stays 6 because a figure that is usually
+  # generous is the right default; going under it names a number in the log.
+  local min_ram=5 min_free=6
   while [ $# -gt 0 ]; do
     case "$1" in
       --min-ram)
@@ -489,10 +538,24 @@ cmd_up() {
         esac
         shift 2
         ;;
-      *) die "\`up\` takes --min-ram <gib> and nothing else; got \`$1\`." ;;
+      --min-free)
+        min_free=${2:-}
+        case "$min_free" in
+          '' | *[!0-9]*) die "--min-free takes a whole number of GB; got \`$min_free\`." ;;
+        esac
+        shift 2
+        ;;
+      *) die "\`up\` takes --min-ram <gib> and --min-free <gb> and nothing else; got \`$1\`." ;;
     esac
   done
-  [ "$(free_gb /)" -ge 6 ] || ask_owner "/ has $(free_gb /) GB free, under the 6 GB this stack needs."
+  [ "$min_free" -ge 2 ] || die "--min-free $min_free is under 2 GB, which this refuses however it is
+  asked: Postgres filling \`/\` takes the whole machine's containers with it, not only this stack's."
+  [ "$min_free" = 6 ] ||
+    note "--min-free $min_free: brought up under the 6 GB default on purpose. Say why in the goal file."
+  [ "$(free_gb /)" -ge "$min_free" ] || ask_owner "/ has $(free_gb /) GB free, under the $min_free GB
+  this stack is allowed. The store and the ingest tree are bind mounts on the big filesystem, so what
+  this needs on the root is the database volume and the containers' own layers — if that is all that is
+  left to come, say \`--min-free <gb>\` and record the number you chose."
   [ "$min_ram" = 5 ] ||
     note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
   # The declared ceilings in deploy/ total 4.3 GB. A stack brought up beside a cargo build is how a
@@ -891,32 +954,84 @@ print(count(json.load(sys.stdin)))')
   seed_check "derivative holds no render kinds" "$(holds "${bad_kinds:-99}" -eq 0)" \
     "${bad_kinds:-?} rows of a kind nothing builds; kinds present: ${kinds:-none}"
 
-  # A RESTARTED WORKER QUEUES NOTHING — the one check that catches every boot loop at once.
+  # A RESTARTED WORKER QUEUES NOTHING IT CANNOT RUN — with a positive control, which is the half
+  # that makes the check mean anything.
   #
-  # Four mechanisms used to re-queue the whole corpus at every worker start, and each of them failed
-  # silently rather than loudly: `revisions_missing(Thumbnail)` reported every revision for ever,
-  # `jobs.rs`'s per-format `produce` ladder swept every rung and CAD read, the rung route answered 202
-  # for work that would never land, and `PgShapes::stale_revisions` inner-joined the L0 so a part without
-  # one was never profiled and the sweep said "nothing stale". R3 holds all four shut with
+  # Four mechanisms used to re-queue the whole corpus at every worker start, and each failed silently
+  # rather than loudly: `revisions_missing(Thumbnail)` reported every revision for ever, `jobs.rs`'s
+  # per-format `produce` ladder swept every rung and CAD read, the rung route answered 202 for work
+  # that would never land, and `PgShapes::stale_revisions` inner-joined the L0 so a part without one
+  # was never profiled and the sweep said "nothing stale". R3 holds all four shut with
   # `DerivativeKind::ALL`, under a unit test. This is the same assertion against the real binary, the
-  # real schema and a real 403-part library: the only thing a worker start may do to the `job` table is
-  # nothing.
+  # real schema and a real 404-part library.
   #
-  # Counted across the whole table and not one library's, because `enqueue_stale_derivatives` is
-  # instance-wide — a sweep that re-queued the Default library's six examples would be just as wrong.
-  local jobs_before jobs_after
+  # **"The job table gained nothing" would pass on a sweep that no longer runs at all**, and that is
+  # not a hypothetical: `enqueue_stale_derivatives` logs and swallows every database error, so a sweep
+  # whose SQL stopped parsing is exactly as quiet as one with nothing to do — R3 found this and gave
+  # its own test a positive control for it. So one stale thing is planted first, of the one kind
+  # something can still build, and the assertion is that the restart queues **exactly that and
+  # nothing else**. Zero now fails too, and it fails saying the sweep did not run.
+  #
+  # The plant is an `export_stl` row with a kernel version that is not this build's, stored inline as
+  # one byte so it needs no blob and no foreign key, on a part whose source is an STL. Removed again
+  # with the job it produced, because `drive` runs against this library afterwards.
+  #
+  # Counted across the whole `job` table and not one library's: the sweep is instance-wide, so a
+  # re-queue of the Default library's six examples would be just as wrong.
+  # **Counted off a watermark, not off a clock.** The first draft asked for jobs `created_at > now() -
+  # interval '5 minutes'` and read **1,649** — the whole scan, which had finished two minutes earlier.
+  # `job.id` is a uuidv7 and so time-ordered, which makes `id > <the last id before the restart>` an
+  # exact "what this restart added" with no window to get wrong.
+  local plant_rev watermark jobs_before jobs_after queued_kinds
+  # `derivative` is `UNIQUE (revision_id, kind)`, so the revision must not already carry an
+  # `export_stl` — and after one run of this check it does, because the sweep queued the rebuild and the
+  # worker WROTE it. That is the check working; it also made the second run of this seed die on a
+  # duplicate key. So: a revision with no export yet, and the cleanup below takes the real export away
+  # again, which leaves the library with no derivatives at all — what a freshly seeded one has.
+  plant_rev=$(sql "SELECT r.id FROM revision r JOIN part p ON p.id = r.part_id
+                     JOIN file f ON f.revision_id = r.id AND f.role = 'source' AND f.format = 'stl'
+                    WHERE p.library_id = '$sweep' AND p.deleted_at IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM derivative d
+                                       WHERE d.revision_id = r.id AND d.kind = 'export_stl')
+                    LIMIT 1")
+  [ -n "$plant_rev" ] || die "no STL revision in Sweep to plant a stale export on."
+  # `params_json` is NOT NULL and `thumb_bytes` XOR `blake3` is `derivative_storage_is_exclusive` —
+  # one byte inline is the cheapest row that satisfies both and needs no blob and no foreign key.
+  sql "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json)
+       VALUES (uuidv7(), '$plant_rev', 'export_stl', '\\x00'::bytea, 'mesh stl-0+stale-for-the-rig', '{}'::jsonb)" > /dev/null ||
+    die "could not plant the stale export the restart check needs."
   jobs_before=$(sql "SELECT count(*) FROM job")
-  note "restarting the worker to prove a boot queues nothing (job rows now: ${jobs_before:-?})"
+  # `max(id::text)`, because **there is no `max(uuid)` in Postgres** — the first draft read an empty
+  # watermark, every later query failed on `uuid > ''`, and the check reported `? job(s)`, which is the
+  # shape of a check that silently stopped measuring. Text is exact here and not a fudge: a uuidv7 puts
+  # its timestamp in the leading hex digits, so lexicographic order on the canonical form *is* time
+  # order.
+  watermark=$(sql "SELECT coalesce(max(id::text), '00000000-0000-0000-0000-000000000000') FROM job")
+  note "restarting the worker: one stale export planted, job rows now ${jobs_before:-?}"
   compose restart worker > /dev/null 2>&1 || die "could not restart the worker."
   wait_for "$WORKER_URL/api/healthz" "the restarted worker" 120 ||
     die "the worker did not come back after a restart."
-  # The start-up sweep runs after the job loop is up, so health is not enough on its own: give it time to
-  # do the wrong thing. 20 s against a sweep that is one query is generous by an order of magnitude.
-  sleep 20
-  jobs_after=$(sql "SELECT count(*) FROM job")
-  seed_check "a restarted worker queues nothing" \
-    "$(holds "${jobs_after:-1}" -eq "${jobs_before:-0}")" \
-    "${jobs_before:-?} job rows before the restart, ${jobs_after:-?} after$([ "${jobs_after:-1}" != "${jobs_before:-0}" ] && echo " — new kinds: $(sql "SELECT coalesce(string_agg(DISTINCT kind, ', '), 'none') FROM job WHERE created_at > now() - interval '1 minute'")")"
+  # The start-up sweep runs after the job loop is up, so health is not enough on its own: give it time
+  # to do both the right thing and the wrong one. 25 s against a sweep that is one query is generous
+  # by an order of magnitude, and the planted row is what proves the wait was long enough.
+  sleep 25
+  jobs_after=$(sql "SELECT count(*) FROM job WHERE id::text > '$watermark'")
+  queued_kinds=$(sql "SELECT coalesce(string_agg(DISTINCT coalesce(payload->>'produce', kind), ', ' ORDER BY coalesce(payload->>'produce', kind)), 'none')
+                        FROM job WHERE id::text > '$watermark'")
+  # `${jobs_after:-99}` on purpose: an empty answer is a query that failed, and it must read as a
+  # failure rather than as zero. That is not hypothetical — see the watermark note above.
+  seed_check "a restarted worker queues the one stale export and nothing else" \
+    "$(holds "${jobs_after:-99}" -eq 1 -a "x$queued_kinds" = "xexport_stl")" \
+    "${jobs_after:-?} job(s) queued by the restart, of kind(s) ${queued_kinds:-none} — 1 export_stl is
+    right, 0 means the sweep did not run at all, and anything else is a kind nothing can build"
+  # Put the library back: the planted row and whatever the restart made of it, off the same watermark.
+  sql "DELETE FROM job WHERE id::text > '$watermark'" > /dev/null
+  sql "DELETE FROM derivative WHERE kernel_version = 'mesh stl-0+stale-for-the-rig'" > /dev/null
+  # And the export the rebuild actually wrote, on that one revision. It is cache and it is rebuildable,
+  # so removing it loses nothing; leaving it would make the next run of this seed die on the unique key
+  # and would leave one part's storage figure different from every other part's.
+  sql "DELETE FROM derivative WHERE revision_id = '$plant_rev' AND kind = 'export_stl'" > /dev/null
+  echo "  the plant, its job and the export it produced are removed again"
 
   echo "== THE DEFAULT LIBRARY, left as the Phase 3 exit timed it"
   # The literal from `web/src/lib/api.ts`'s DEFAULT_LIBRARY_ID, seeded by migration 0002. Not
@@ -932,7 +1047,19 @@ print(count(json.load(sys.stdin)))')
   local governed revised
   governed=$(library_named Governed controlled)
   [ -n "$governed" ] || die "could not create the Governed library."
+  # **Skipped when the path is already held, and that is a fix rather than an optimisation.** The
+  # vee-block's path holds the *stamped* bytes after the re-upload below, so on a second seed the
+  # pristine file at that same path is new bytes at an old path — which in a controlled library is a
+  # REVISION, correctly. So the plain upload loop was quietly adding a third revision per run and the
+  # "not adding another" guard underneath it never saw them: it only ever guarded its own re-upload.
+  # Measured: a stack seeded three times had three revisions on that part, and the fixture is "two".
   for name in flange-dn40-lp-3310-02 hex-spacer-m4x20-lp-2145-01 mounting-plate-lp-1180-01 vee-block-lp-3072-02; do
+    local held
+    held=$(sql "SELECT count(*) FROM part WHERE library_id = '$governed' AND source_path = 'uploads/$name.stl' AND deleted_at IS NULL")
+    if [ "${held:-0}" -gt 0 ]; then
+      echo "  upload $name.stl: already a part at uploads/$name.stl; not uploading over it"
+      continue
+    fi
     echo "  upload $name.stl: $(upload_file "$governed" "$ROOT/example/parts/$name.stl" "uploads/$name.stl")"
   done
   # A second revision, which is the only way to a history, a diff and a lock: a scan has no subpath so
@@ -983,6 +1110,12 @@ json.dump({
     ],
 }, open(sys.argv[1], "w"), indent=2)
 EOF
+  # **Checked, because it was not.** This heredoc's failure was swallowed: `seed.json` is what `drive`
+  # reads to address the libraries by id, and a seed that could not write one still printed its note and
+  # exited 0 — a pass with no file behind it, which is the silent pass this rig exists to prevent.
+  [ -s "$WORK/seed.json" ] || die "the seed's checks passed but $WORK/seed.json was not written — read
+  the python traceback above. \`drive\` reads that file for the library ids, so without it a run would
+  test nothing, or test whatever a re-seed happened to name."
   note "seed facts and $(wc -l < "$WORK/seed-checks.tsv") checks in $WORK/seed.json"
   [ "$seed_fail" = 0 ] || die "$seed_fail of the seed's checks failed (listed above, and in
   $WORK/seed.json). Driving a library that is not what stage 3 describes would test the wrong thing."
@@ -1017,9 +1150,18 @@ cmd_drive() {
     node "$ROOT/scripts/e2e/flows.mjs" \
       --out "$run" --web "$WEB" --api "$API" --seed "$WORK/seed.json" ${only:+--only "$only"}
     echo "flows exit $?"
-    echo "== TIMING (web/scripts/open-timing.mjs, not reimplemented here)"
-    # --url is explicit: its default is the owner's localhost:3000.
-    node "$ROOT/web/scripts/open-timing.mjs" --url "$WEB" --rounds 2
+    # **Skipped under `--only`, for the reason `flows.mjs` skips its own extra sessions**: `--only` means
+    # run one flow, not open twelve more browsers. It is not only slow — it is twelve 60-second waits
+    # when the thing under test is a viewer that does not paint, which is exactly when somebody reaches
+    # for `--only`. Measured: a `--only view-original` run against a deliberately broken viewer spent
+    # 12 minutes here after the flow had already failed in one second.
+    if [ -n "$only" ]; then
+      echo "== TIMING skipped (--only $only)"
+    else
+      echo "== TIMING (web/scripts/open-timing.mjs, not reimplemented here)"
+      # --url is explicit: its default is the owner's localhost:3000.
+      node "$ROOT/web/scripts/open-timing.mjs" --url "$WEB" --rounds 2
+    fi
   } 2>&1 | tee "$run/run.log"
 
   python3 - "$run" "$WORK/stack.json" "$WORK/seed.json" "$(git -C "$ROOT" rev-parse HEAD)" <<'EOF'
@@ -1232,7 +1374,7 @@ case "${1:-}" in
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
-    echo "  up [--min-ram <gib>]   peer <stop|start>" >&2
+    echo "  up [--min-ram <gib>] [--min-free <gb>]   build [--min-free <gb>]   peer <stop|start>" >&2
     echo "  AS=a|b|c for one of three installations on this lane's block; scripts/e2e/group.sh runs three" >&2
     exit 2
     ;;
