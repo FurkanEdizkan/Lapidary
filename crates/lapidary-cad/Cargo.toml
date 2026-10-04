@@ -7,28 +7,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-default = []
-mock-kernel = []
-
 [dependencies]
 lapidary-core.workspace = true
-async-trait.workspace = true
-image.workspace = true
-serde.workspace = true
-# glb.rs builds the glTF document. Already a workspace dependency used by four other
-# crates, so nothing new enters Cargo.lock or the licence audit. Hand-formatting was
-# considered and rejected: the accessor min/max are f32 values, and float-to-JSON
-# formatting is what a format! string gets wrong once, silently.
-serde_json.workspace = true
-# glb.rs compresses both buffers of every rung.
-meshopt.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
+# tmf.rs reads the 3MF package, which is a ZIP, and writes one back out.
 zip.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+# measure.rs checks its bounding boxes against fixtures/bbox-mm.json, which is the contract
+# the owner's own corpus was measured against.
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -8,7 +8,7 @@
 //! publishes. Burak pulls it whole. **Ayşe stops answering.** Cem still browses Terrain through Burak's copy,
 //! marked as Burak read it; Cem opens a part he does not hold and it comes from Burak. Ayşe comes back and
 //! takes Cem off the folder: Cem's copies stay, the folder leaves his list, and Burak refuses his next file.
-#![cfg(feature = "mock-kernel")]
+#![cfg(feature = "worker")]
 
 use lapidary_core::{
     BlobHash, DeviceId, LibraryId, MeshMeasurements, PartId, PeerShareId, ShareId,
@@ -119,7 +119,7 @@ async fn install(name: &'static str, suffix: &str) -> (Installation, String) {
             db: db.clone(),
             ingest_dir: ingest.path().to_path_buf(),
             blob_root: store.path().to_path_buf(),
-            kernel: None,
+            pause: None,
         }),
         lapidary_jobs::WorkerConfig {
             poll_interval: Duration::from_millis(100),

@@ -133,8 +133,8 @@ services:
       # the file's last stage, whatever that becomes.
       target: worker
       args:
-        # Only the worker links a kernel and the scan route — the open path (api) never does.
-        SERVER_FEATURES: mock-kernel
+        # Only the worker links the parsers and the scan route — the open path (api) never does.
+        SERVER_FEATURES: worker
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8081

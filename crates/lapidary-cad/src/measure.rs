@@ -4,17 +4,17 @@ use crate::stl::Mesh;
 use lapidary_core::MeshMeasurements;
 use std::collections::HashMap;
 
-pub fn measure(mesh: &Mesh) -> MeshMeasurements {
-    measured(mesh).0
-}
-
 /// The mesh's measurements, and the centre of its volume where it has one.
+///
+/// Every figure here is approximate by construction — it is read off triangles — and the UI
+/// labels it so, always (CLAUDE.md). There is no analytic half any more, which is what makes
+/// that rule simpler rather than weaker.
 ///
 /// The centre is summed in the loop the volume is: each tetrahedron (origin, a, b, c) weighs in at its
 /// signed volume, centred at (a + b + c) / 4, and the sum is divided by the signed total rather than its
 /// absolute value, so a mesh wound inside out has the same centre. Closed meshes only, for the volume's
 /// reason.
-pub(crate) fn measured(mesh: &Mesh) -> (MeshMeasurements, Option<[f64; 3]>) {
+pub fn measure(mesh: &Mesh) -> (MeshMeasurements, Option<[f64; 3]>) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     let mut area = 0.0f64;
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_closed_cube_measures_its_bbox_and_volume() {
-        let m = measure(&unit_cube());
+        let m = measure(&unit_cube()).0;
         assert_eq!(m.triangle_count, 12);
         assert_eq!(m.bbox_mm, [1.0, 1.0, 1.0]);
         assert!(m.is_watertight);
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn a_closed_cube_has_its_centre_of_mass_at_its_middle_whichever_way_it_is_wound() {
         for inward in [false, true] {
-            let centre = measured(&moved_cube(inward))
+            let centre = measure(&moved_cube(inward))
                 .1
                 .expect("a closed mesh has a centre of mass");
             for (got, want) in centre.iter().zip([10.5, 20.5, 30.5]) {
@@ -193,7 +193,7 @@ mod tests {
     fn an_open_mesh_reports_no_volume() {
         let mut mesh = unit_cube();
         mesh.triangles.pop(); // remove one face: no longer closed
-        let (m, centre) = measured(&mesh);
+        let (m, centre) = measure(&mesh);
         assert!(!m.is_watertight);
         assert!(
             m.volume_mm3.is_none(),
@@ -209,7 +209,7 @@ mod tests {
     fn surface_area_is_always_reported_even_when_open() {
         let mut mesh = unit_cube();
         mesh.triangles.pop();
-        let m = measure(&mesh);
+        let m = measure(&mesh).0;
         // 11 of 12 unit-cube triangles, each of area 0.5.
         assert!((m.surface_area_mm2 - 5.5).abs() < 1e-4);
     }
@@ -290,7 +290,7 @@ mod tests {
                 .collect(),
         };
 
-        let m = measure(&mesh);
+        let m = measure(&mesh).0;
         assert!(
             m.is_watertight,
             "a cube is closed regardless of which f32 neighbour of each corner a facet happened to store"
@@ -349,7 +349,7 @@ mod tests {
         ];
         for (name, bytes, parse) in files {
             let mesh = parse(bytes).unwrap_or_else(|err| panic!("{name} parses: {err}"));
-            let got = measure(&mesh).bbox_mm;
+            let got = measure(&mesh).0.bbox_mm;
             let want = stated(name);
             for axis in 0..3 {
                 assert!(

@@ -28,9 +28,8 @@
 //! `upsert_derivative` is `Permanent` too — `classify_db` decides that, per variant, so a
 //! new call site cannot get it wrong by picking the mapper.
 
-use crate::handler::{CAD_FORMATS, WorkerHandler, classify_cad, classify_db, reap};
+use crate::handler::{WorkerHandler, classify_cad, classify_db, reap};
 use crate::scan::MESH_EXTENSIONS;
-use lapidary_cad::KernelParams;
 use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
 use lapidary_db::{PgBlobs, PgIngest, PgJobs, PgParts, StoredBlobRow};
 use lapidary_jobs::HandlerError;
@@ -48,29 +47,18 @@ impl WorkerHandler {
     /// parts are covered without a job at all.
     ///
     /// The version is asked per format exactly as [`derive_one`](Self::derive_one) asks it, so
-    /// an export is stale when rebuilding it here would record a different version. The B-rep
-    /// formats are walked and skipped: `kernel_for` refuses them, so there is no version to
-    /// compare and nothing this worker could rebuild. Never fails: a database that will not
-    /// answer at startup costs a rebuild delayed to the next start, not a worker that never
-    /// came up — which is also why the positive control in
+    /// an export is stale when rebuilding it here would record a different version. **The mesh
+    /// formats only**: a B-rep file is refused by name (`refuse_b_rep`), so no export row can
+    /// name one and there would be no version to compare. R2 walked all six and dropped the
+    /// B-rep three inside the loop, which read as if they were swept and found nothing.
+    /// Never fails: a database that will not answer at startup costs a rebuild delayed to the
+    /// next start, not a worker that never came up — which is also why the positive control in
     /// `a worker start queues nothing`'s test is not decoration. A sweep whose SQL stopped
     /// parsing would be just as silent as a sweep with nothing to do.
     pub async fn enqueue_stale_derivatives(&self) {
         let jobs = PgJobs(self.db.clone());
-        for format in MESH_EXTENSIONS.iter().chain(&CAD_FORMATS) {
-            let Ok(kernel) = self.kernel_for(format) else {
-                continue;
-            };
-            // Empty, and it costs nothing: `KernelVersion` names the build rather than the run —
-            // the parser, the glTF writer and the rasteriser — so what `produce` asks for does
-            // not change the string this compares against.
-            let params = KernelParams {
-                linear_deflection_mm: None,
-                format: (*format).to_owned(),
-                produce: Vec::new(),
-            };
-            let version = kernel.version(&params);
-            let kernel_version = format!("{} {}", version.implementation, version.version);
+        for format in MESH_EXTENSIONS {
+            let kernel_version = lapidary_cad::kernel_version(format);
             match jobs
                 .enqueue_stale_derivatives(format, &kernel_version)
                 .await
@@ -142,32 +130,22 @@ impl WorkerHandler {
             message: e.to_string(),
         })?;
 
-        let params = KernelParams {
-            linear_deflection_mm: None,
-            format,
-            produce: vec![want],
-        };
-        let kernel = self.kernel_for(&params.format)?;
-        let version = kernel.version(&params);
-        let kernel_version = format!("{} {}", version.implementation, version.version);
-        let output = kernel
-            .process(&bytes, &params)
-            .await
-            .map_err(classify_cad)?;
+        crate::handler::refuse_b_rep(&format)?;
+        let kernel_version = lapidary_cad::kernel_version(&format);
+        let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
 
         // A file for another tool, written from the part's mesh, and served as `*.lapidary.*`.
-        // `want` is what gets written, never a kind read back off the output: the kernel was
-        // asked for exactly one thing, and a file filed under a kind nobody asked for is a cache
-        // entry that can never be hit.
-        if let Some(refused) = output.unproduced.iter().find(|u| u.kind == want) {
-            return Err(HandlerError::Permanent {
-                message: refused.reason.clone(),
-            });
+        // **`want` picks the writer, and the match is exhaustive on purpose.** The kernel used
+        // to take a `produce` list and hand back whatever it managed, so this had to look up
+        // what it asked for and raise a bug report when the answer was missing — a branch no
+        // shipped kernel could reach. One writer per kind makes that unreachable branch a
+        // compile error instead: a third `DerivativeKind` stops the build here.
+        let written = match want {
+            DerivativeKind::ExportStl => lapidary_cad::write_stl(&mesh),
+            DerivativeKind::Export3mf => lapidary_cad::write_3mf(&mesh),
         }
-        let Some((_, bytes)) = output.exports.iter().find(|(made, _)| *made == want) else {
-            return Err(missing(kind, revision));
-        };
-        self.store_hashed(revision, want, bytes, None, &kernel_version)
+        .map_err(classify_cad)?;
+        self.store_hashed(revision, want, &written, None, &kernel_version)
             .await?;
         Ok(Outcome::Rendered)
     }
@@ -212,17 +190,5 @@ impl WorkerHandler {
             return Err(classify_db(db_err));
         }
         Ok(())
-    }
-}
-
-/// The kernel was asked for one thing and returned nothing. Unreachable through
-/// `MeshKernel`, which produces whatever `produce` names or fails, but the output type
-/// permits it and a silent `Ok` here would report a derivative that was never written.
-fn missing(kind: &str, revision: RevisionId) -> HandlerError {
-    HandlerError::Permanent {
-        message: format!(
-            "The kernel produced no {kind} for revision {revision} despite being asked for \
-             one. This is a bug in Lapidary; please report it with the part's file."
-        ),
     }
 }
