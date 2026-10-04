@@ -13,9 +13,16 @@ Treating these the same is the most common way this kind of app becomes slow and
 
 | Class | Examples | Size | Re-derivable? | Access |
 |---|---|---|---|---|
-| **Source** | STEP, STL, 3MF, OBJ, drawing PDF | 1 MB – 2 GB | **Never** | Cold |
-| **Derivative** | glTF LODs, structure, entities, PMI | 100 KB – 200 MB | Yes, deterministically | Warm |
-| **Preview** | thumbnails | 5 – 60 KB | Yes, cheaply | **Hot** |
+| **Source** | STL, 3MF, OBJ — and the STEP and IGES files an install held before they were refused | 1 MB – 2 GB | **Never** | Cold |
+| **Derivative** | the two slicer exports, `export_stl` and `export_3mf` | 100 KB – 200 MB | Yes, deterministically | Warm |
+| **Preview** | a part's own `part_image` pictures | 5 – 60 KB | **No** — somebody chose them | **Hot** |
+
+**The middle row used to read "glTF LODs, structure, entities, PMI" and the bottom one
+"thumbnails".** Nothing produces any of those (R3), and `0055` deleted their rows (R4). The
+bottom row changing class is the part worth noticing: a preview is no longer something we
+derive cheaply, it is a picture a person added, so it is **not re-derivable** and the
+`ref_count` rules that protect a source protect it too. That is also the one reference class
+the quarantine machinery does not yet know about — see R4's finding, repeated under §1.6.
 
 ```
 <storage-root>/                        LAPIDARY_STORAGE_ROOT; a host directory, bind-mounted
@@ -28,8 +35,10 @@ Treating these the same is the most common way this kind of app becomes slow and
 
 That is the whole of it, and it is what the code writes: `SourceStore::put_at` for the
 model directories, `blob_path` — `root.join("blobs")` — for the cache. Two things a
-reader might expect are deliberately absent. **Thumbnails are not files**: they live in
-Postgres as `bytea` on the derivative row (§1.5), so no `images/` directory is written.
+reader might expect are deliberately absent. **Pictures are not files**: a `part_image`
+under `INLINE_LIMIT` (64 KB) lives in Postgres and a larger one is a blob, so no `images/`
+directory is written. (`derivative.thumb_bytes` was the `bytea` that made this true for
+rendered thumbnails; the column survives with no writer — §1.5.)
 **There is no config file in the store**: nothing in the workspace reads or writes a
 `lapidary.toml`, and configuration is environment variables the container gets
 (`deploy/.env.example` names them). The root itself is not chosen in a first-run dialog
@@ -132,8 +141,9 @@ give it a second copy to rot.
 into your subuid range, or `sudo chown -R 10001:10001 storage` under rootful Docker.
 
 **Skip the copy and nothing fails at boot** — which is what makes this worth reading. The
-grid renders normally, because thumbnails are `bytea` in Postgres (§1.5) and never came
-from the store at all. The first symptom is a download answering 500: the row names a
+grid renders normally, because a card's picture comes from `part_image` — inline on the page
+query, or one immutable `/api/blob/{hash}` load — and never from the store's model
+directories at all. The first symptom is a download answering 500: the row names a
 source file that is in the volume, not in the new root. Two classes of bytes are stranded
 and only one of them is cheap — the derivative cache would rebuild itself, but a source
 blob still sitting at `blobs/ab/cd/<hash>` because `migrate_storage` has not moved it yet
@@ -156,8 +166,8 @@ for ~2% space and an added decode stage.
 | Binary STL, OBJ | zstd -3 → -19 when cold. ~2–2.5× |
 | 3MF | **as-is** — already a deflate ZIP |
 | PDF, PNG, JPEG | **as-is** |
-| glTF derivatives | **never** — already meshopt-packed, hot path |
-| Thumbnails | **never** |
+| The two slicer exports | **never** — a slicer is handed them on a download, so they are the hot path |
+| Pictures (`part_image`) | **never** — already PNG/WebP, and the grid reads them on every page |
 
 **Zstd dictionaries are the real win.** A library is hundreds of structurally similar
 STEP files sharing headers and unit definitions. Train per library:
@@ -194,7 +204,8 @@ point** — a read arriving mid-recompression gets the old blob. Never blocks a 
 - **Why.** The job recompresses a source in place. A source file now lives raw in its model directory
   so that a file manager, a slicer and a re-scan all see the real file, and compressing it would break
   that.
-- **What that leaves.** Nothing is tiered today. Space comes from freeing render cache (§1.5) instead.
+- **What that leaves.** Nothing is tiered today. Space comes from freeing the slicer exports (§1.5)
+  instead — which, now that the renders are gone, is the only cache there is.
 - **When to revisit.** Only with a store that also keeps a raw copy the owner opens.
 
 ### 1.4 Access tracking
@@ -219,30 +230,58 @@ precision is plenty for a 30-day rule.
 ### 1.5 Eviction beats compression — for derivatives only
 
 - **Source blobs:** compress hard, **never delete**. `ref_count` guards removal.
-- **Derivative blobs:** never compress, **evict freely**. `kernel_version` +
-  `params_json` make regeneration deterministic.
+- **Derivative blobs:** never compress, **evict freely**. `kernel_version` makes
+  regeneration deterministic.
 
-A "clear render cache" action dropping derivatives for parts untouched in 90 days
-recovers far more than compression would. **UI wording is a product rule:** it must say
-render cache, show what it reclaims, and state that source files are untouched. A user
-who reads "reclaim 40 GB" and fears for their models has lost trust in the thing we sell.
+**Since the pivot the derivatives are the two slicer exports and nothing else.**
+`DerivativeKind` is `ExportStl` and `Export3mf` (R3), migration `0055` deleted every
+`thumbnail`, `tessellation_l0/l1/l2`, `structure`, `entities` and `pmi` row (R4), and
+nothing can rebuild one of those because nothing produces them. So this section is about a
+much smaller table than it used to describe, and the rule it states is simpler: **the
+`derivative` table holds only what something can still build.** `0055`'s predicate is
+written `kind NOT IN ('export_stl', 'export_3mf')` so that it says that invariant rather
+than listing seven kinds somebody has to keep in step.
+
+**UI wording is still a product rule:** the eviction action must show what it reclaims and
+state that source files are untouched. A user who reads "reclaim 40 GB" and fears for
+their models has lost trust in the thing we sell. The strings say *slicer files* now,
+because the three that said "detailed 3D previews", "opens at once on its coarse preview
+while the detailed one is rebuilt" and "render cache" all described a rebuild nothing can
+perform (R4). The wire names (`renderCacheBytes`, `POST /api/storage/render-cache`) are
+unchanged.
 
 **Built in Phase 4 slice 2** (`docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §4).
-- **What is evictable.** "Free cache space" removes L1 and L2 rung rows, and since goal 4 the 3MF and STL
-  exports written for slicers, whose blob was last read more than 90 days ago. A blob never read since
-  tracking began counts from when it was written.
-- **What it never touches.** L0, thumbnails, structure, entities, PMI and source files. Structure,
-  entities and PMI cannot be rebuilt, and L0 keeps the open path drawing.
+- **What is evictable.** "Free cache space" removes the 3MF and STL exports written for slicers whose
+  blob was last read more than 90 days ago. A blob never read since tracking began counts from when it
+  was written. `cache_kinds` is `DerivativeKind::ALL`, so the list *is* what something can still build.
+- **What it never touches.** Source files — and, while an upgraded installation still held them, any row
+  of an unrebuildable kind: evicting one would have been data loss dressed as a cache sweep.
+  **Two clauses name a kind in that SQL and the second is the guard**; dropping either alone changes
+  nothing, which is precisely how both come to be dropped by somebody tidying up (R4 found this by a
+  mutation that survived). The finding is written into the statement where it was found.
 - **Where the bytes go.** The rows go, `ref_count` is recomputed the way purge recomputes it, and a
   blob nothing else references enters the 30-day quarantine. The bytes leave with the hourly sweep.
 - **What it reports.** Bytes entering quarantine, never "freed", because nothing is gone on the day.
-- **What happens next.** A part opened afterwards draws L0 and asks for L1 again. An export is written
-  again when it is next asked for.
+  The quarantine clause no longer says "purged" either: after `0055` most of that figure is what
+  *Lapidary* deleted, and telling somebody who has purged nothing that their store holds purged data is
+  the data-loss reading `CLAUDE.md` forbids. It reads `N on hold for 30 days before the space comes back`.
+- **What happens next.** An export is written again when it is next asked for. There is no rung to fall
+  back to and no part that stops opening: a part's page shows its picture, and **view** reads the
+  original file.
 
-**Thumbnails are the exception to "no blobs in Postgres."** Store WebP under 64 KB as
-`bytea` on the derivative row so they arrive in the same query as the grid page instead
-of costing 100 filesystem round trips per scroll. This is worth more to perceived speed
-than any compression decision above.
+**`derivative.thumb_bytes` survives with no writer** (R4, deliberately). It was the
+exception to "no blobs in Postgres" — WebP under 64 KB on the derivative row, so a
+thumbnail arrived in the same query as the grid page instead of costing a filesystem round
+trip per card. `0055` deleted every row of it and `upsert_derivative` writes the column
+`NULL`, so it can only ever read zero; `inline_preview_bytes` was therefore removed from
+the wire and the panel rather than left printing "0 B of thumbnails in the database" for
+ever. The column itself stays because dropping it would need
+`derivative_storage_is_exclusive` restated and would return no space without the same
+`VACUUM FULL derivative` the deleted rows already need — risk without a byte to show for
+it. **The grid's one-query property is unchanged**, and now comes from `part_image`: the
+page query carries the first picture's inline bytes on the row, and an image over
+`INLINE_LIMIT` arrives as a hash the card emits as `/api/blob/{hash}` — one immutable
+`<img>` load, never a second API request (R1).
 
 ### 1.6 Deletion is three steps
 
@@ -274,6 +313,19 @@ folder-tree work) that a second tree built now would be built against.
 deleting a referenced row raises a constraint violation whatever any query says. The
 reaper's reachability check is what lets it *decline* such a row instead of failing the
 whole sweep on it.
+
+*And the third foreign key nothing counts — `part_image.blake3`.* **Latent, with no
+reachable path found; checked rather than assumed** (R4). `recount` and `PgBlobs::reap`'s
+`DELETE` both count `file` and `derivative` alone, and `purge`'s `doomed` set is a part's
+`file` and `derivative` hashes only — so a picture's hash never reaches the recount, and a
+gallery blob is therefore never quarantined and never reaped. Nothing is lost today, and
+two parts sharing one picture are safe **for that reason rather than by design**. The trap
+is the next person's: if such a blob were ever quarantined, the reaper's delete would be
+refused by `part_image_blake3_fkey` rather than declined by its own `NOT EXISTS`, and
+because the sweep is one transaction **the whole hourly sweep would roll back, every hour,
+for ever**. The first route that removes a picture, or any widening of `purge`'s `doomed`
+set, lands in it: it wants the third term in `recount`, in `doomed` and in `reap`'s
+predicate, added together with the remove-a-picture route that would be its first caller.
 
 *What the panel does not say.* A purged blob has no `file` row, no revision, no part and
 therefore no library, so quarantined bytes cannot be attributed to a library's storage
@@ -328,45 +380,51 @@ removal for as long as their file sat there.
 
 ## 2. Fast open
 
-> **The open path never touches a source file and never invokes the CAD kernel.**
+> **Opening a part reads metadata and pictures, never a model file.** The one exception is
+> deliberate and asked for: pressing **view** hands the browser the original mesh to draw,
+> which is the whole point of the button. Nothing loads a model because a page opened or a
+> pointer moved.
 
-### 2.1 LOD ladder — L0 at ingest, L1 and L2 on demand
+### 2.1 No ladder: the picture at ingest, the original on a **view** press
 
-| LOD | Triangles | Used for | Built |
-|---|---|---|---|
-| `thumb` | — | 512px WebP, grid card | At ingest, unless the library sets `auto_thumbnail = false`; `POST /api/libraries/{id}/thumbnails` fills the rest |
-| `L0` | ~5 k | instant viewer paint, hover preview | At ingest, always |
-| `L1` | ~50 k | default inspector | On demand, the first time something asks for it |
-| `L2` | full | measurement, zoom | On demand, the first time something asks for it |
+**The LOD ladder is gone** (owner, 2026-10-03). This section used to be a four-row table —
+`thumb` at ingest, `L0` at ingest, `L1` and `L2` on demand — and the argument for which of
+them to build when. Nothing produces any of them: R3 deleted the kinds, R4 deleted the
+rows, and `docs/ROADMAP.md` § "The pivot" carries the shas.
 
-**This reverses the rule that stood here — "all generated at ingest", on the grounds that
-deriving lazily on first open is the tempting optimization that makes first open slow,
-which is the impression that sticks.** That reasoning was not wrong when it was written.
-Two things changed it, and neither was available at the time.
+What a part costs to open now:
 
-The first is a measurement. Slice 3's exit run built the whole ladder over a 150-file
-corpus and recorded what each rung cost: **L0 7.3 MB, L1 41 MB, L2 52 MB**. Ninety-three
-per cent of the bytes sit in the two rungs the grid never opens. Slice 4's exit run over
-the same corpus writes **7.5 MB** — the same L0 and nothing else, a **92.5%** drop.
+| | Where it comes from | When |
+|---|---|---|
+| The card's picture | `part_image`, the part's own first image — inline bytes on the grid row under `INLINE_LIMIT` (64 KB), else `/api/blob/{hash}` | Whenever somebody adds one. A part with none names its format instead |
+| The part page | the same metadata the grid reads, plus the gallery's own request | On open |
+| The 3D view | `GET /api/revisions/{id}/download?variant=original`, read by three's own loader for the format (`web/src/components/mesh.ts`) | **Only on a `view` press** |
 
-The second is the constraint that number runs into. Not every computer has this kind of
-free memory: the stack is built for a modest workstation, and `deploy/compose.yaml` says
-so in ceilings — a 2 GiB worker, a 1 GiB database, a 512 MB api. Spending 93 MB per 150
-parts on rungs nothing has asked for is not a latency decision at that ratio; it is a
-decision to spend somebody else's disk on a refinement that may never be opened.
+**Ingest writes no derivative at all.** `produce` is empty: the handler parses the mesh,
+measures it, writes the figures, and stops. That is what makes the ingest rate what it is,
+and it is also why there is nothing for a stale-derivative sweep to re-queue — R3's
+`two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing` holds that shut, with
+a positive control, because `enqueue_stale_derivatives` logs and swallows every database
+error and a sweep whose SQL no longer parses is exactly as silent as one with nothing to do.
 
-**What the old rule protected is still protected, by the same mechanism.** L0 is still
-built at ingest, so the open path still has bytes to paint without touching a source file
-or the kernel. Only the refine step behind it is deferred. If that step ever reads as
-slow, the answer is a background sweep after ingest — the machinery slice 4 built for
-thumbnails — not a return to building three rungs per part on the chance one is opened.
+**The trade, said plainly rather than left as an oversight:** a large mesh is a large
+download with nothing to paint first. There is no coarse rung, so a 200 MB STL is 200 MB
+before anything appears. The picture holds the frame until it does, and a failure says to
+download the file and open it in a real tool. That is the honest shape of a visual library
+that is not a renderer.
 
-### 2.2 meshopt, not Draco
+### 2.2 meshopt, not Draco — and then neither
 
-Draco compresses ~15–20% smaller; **meshopt decodes roughly an order of magnitude
-faster** and is SIMD-friendly. Decode latency dominates for visual triage. Default
-`EXT_meshopt_compression` everywhere; encode Draco additionally only for the cloud tier
-where egress bytes cost money.
+Kept as a ledger entry, because the choice was made carefully and then made moot. Draco
+compressed ~15–20% smaller; **meshopt decoded roughly an order of magnitude faster** and
+was SIMD-friendly, and decode latency dominates for visual triage — so
+`EXT_meshopt_compression` was the default everywhere, with Draco held for a cloud tier
+where egress costs money.
+
+There is no glTF to compress now. `glb.rs` went with the render pipeline and `meshopt`
+left `Cargo.lock` with its `[workspace.dependencies]` pin (R5) — it was the one dependency
+whose build script compiled bundled C++. The browser reads the ingested mesh as it is. If a
+coarse rung ever comes back, this is the decision to reopen; nothing else here depends on it.
 
 ### 2.3 Immutable caching — free, from content addressing
 
@@ -384,37 +442,56 @@ Repeat opens hit the browser cache with no round trip and no invalidation logic.
 principal has access to a part referencing that blob in their tenant. Hashes leak into
 manifests, logs, bundles and support tickets — knowing one must never be a capability.
 
-### 2.4 Prefetch on intent
+### 2.4 Nothing prefetches, and nothing warms
 
-Hover a grid card → prefetch `L0`. Open the inspector → prefetch `L1` for the next and
-previous parts in sort order. Bound the pool at 2 concurrent and cancel on navigate, or
-fast scrolling saturates the queue with parts already passed.
+**This section said "Hover a grid card → prefetch `L0`" and it is now a rule in the other
+direction** (R1): a card has no hover handler at all. Not an omission — a spin or a
+prefetch on hover would fetch an *original* mesh per hovered card, which is fifty files for
+one sweep down a grid, and `Grid.test.tsx` asserts that no `<canvas>` appears on hover at
+any setting.
 
-The same hover warms the viewer: its chunk loads and its shaders compile. A part's own page warms
-it as it opens, for a link. Where a tap or a press before the pointer rested gives the grid no
-hover, the grid loads the viewer's chunk once the browser is idle, and only that: a visitor who
-never opens a part holds no WebGL context, and a part opened with no hover compiles as it opens.
+Deleted with it: `lib/prefetch.ts`, `turntable.ts`, `warmViewer`, `prepare()` (which
+created a `WebGLRenderer`, and therefore a canvas, on hover) and `loadViewerWhenIdle`. The
+three.js chunk is reached only through the **view** press —
+`grep -l WebGLRenderer web/dist/assets/*.js` matches that chunk and nothing else.
+
+What is left in its place is one lazy boundary and one honest cost: pressing **view** loads
+the renderer chunk and the file together, so the first press in a session is slower than
+the ones after it, and the picture is what a person looks at until it is not.
+
+The remaining prefetch-shaped idea worth having is the picture, not the mesh: `QuickLook`
+could hand `Preview` the card's own `image` as its placeholder, so the part page's stage
+does not open on an empty frame while `['part-images', id]` answers. Named in R1's Record
+as the fix when it matters.
 
 ### 2.5 Targets — treat as regression tests
 
 | Operation | Warm | Cold |
 |---|---|---|
 | Grid page of 100 | < 80 ms | < 250 ms |
-| Part open → first paint | < 120 ms | < 400 ms |
-| Part open → L2 | < 600 ms | < 1.5 s |
+| Part open → the part on screen | < 120 ms | < 400 ms |
+| **view** press → first frame | — | the file's own size; see below |
 | Search, 100 k parts | < 150 ms | — |
 | Facet counts, 100 k parts | < 300 ms | — |
 
-**Timing an open.** `web/scripts/open-timing.mjs` measures the part-open rows against a running
-stack, with nothing but Node and `google-chrome`: `node web/scripts/open-timing.mjs --gl
-swiftshader` opens every card in the grid three rounds over, and `--part <name>` times one part's
-open and its L2 from a fresh session each run. `--gl gpu` draws on the machine's GPU instead,
-`--throttle` emulates 100 Mbit, and `--dwell` is how long the pointer rests on a card before it
-presses, which is the time the hover has to prefetch. `--direct` opens each part's own page from a
-link instead, a fresh session each time, and times navigation start to the first frame. It needs a
-stack and a browser, so it is not a verify gate; `ROADMAP.md` records what it measured and how. A
-stack need not be compose: `lapidary-server` run natively as `api` and `worker`, with the built web
-served by `npx vite preview`, whose `/api` proxy is the dev server's, times the same pages.
+**The third row has no number on purpose**, and that is the pivot in one line. It used to be
+"Part open → L2, < 600 ms warm", which was a promise about *our* tessellation of a part. There
+is no tessellation: a **view** press downloads the ingested file and reads it in the browser, so
+the time is the file's size over the link plus one parse, and a 200 MB STL takes as long as 200
+MB takes. A target here would be a target on somebody else's mesh. What is held instead is that
+**nothing at all is loaded until the press** — `DATA.md` §2.4, and `Grid.test.tsx` asserts it.
+
+**Timing both presses.** `web/scripts/open-timing.mjs` measures them against a running stack,
+with nothing but Node and `google-chrome`: `node web/scripts/open-timing.mjs --gl swiftshader`
+opens every card in the grid three rounds over and presses **view** on each, reporting the two
+numbers separately. `--part <name>` does one part from a fresh session each run. `--gl gpu` draws
+on the machine's GPU instead, `--throttle` emulates 100 Mbit, and `--dwell` is how long the
+pointer rests on a card before it presses. `--direct` opens each part's own page from a link
+instead, a fresh session each time, and times the view press on a cold page. It needs a stack and
+a browser, so it is not a verify gate; `ROADMAP.md` records what it measured and how. A stack need
+not be compose: `lapidary-server` run natively as `api` and `worker`, with the built web served by
+`npx vite preview`, whose `/api` proxy is the dev server's, times the same pages. `scripts/e2e/`
+drives it as the `TIMING` half of a `stack.sh drive` run.
 
 ---
 
@@ -425,13 +502,22 @@ served by `npx vite preview`, whose `/api` proxy is the dev server's, times the 
 1. **Identity** — BLAKE3, size, format sniff, filename. Always succeeds. **A known hash
    short-circuits the entire pipeline** and the part appears instantly. This is what
    makes re-import feel free.
-2. **Structural** — assembly tree, instances, transforms (`structure.json`)
-3. **Geometric** — bbox, volume, area, centre of mass, inertia, triangle count,
-   watertightness, units
-4. **Semantic** — material, author, originating CAD system, PMI/GD&T, STEP header
-5. **Derived** — thumbnails, LODs, embedding vector (later)
+2. **Geometric** — bbox, volume, area, centre of mass, triangle count, watertightness,
+   units. Read from the mesh, so **every figure is approximate and labelled so** — there is
+   no analytic half any more, which makes `CLAUDE.md`'s "figures must not lie" simpler
+   rather than weaker.
+3. **Semantic** — the name, the part number and the path the file came in under; material
+   and the user-defined fields a person types (Phase 5).
 
-A stage-4 failure still leaves a usable, searchable part.
+A stage-3 failure still leaves a usable, searchable part.
+
+**Two stages left with the pivot, and the numbering shifted with them.** Stage 2 was
+*Structural* — the assembly tree, instances and transforms out of `structure.json` — and
+stage 5 was *Derived*: thumbnails, LODs and an embedding vector. Nothing produces any of it
+(R3), and what stage 4 read out of a STEP header is unreachable because a STEP file is now
+refused at ingest by name. `revision.face_count` and `edge_count` are still columns and
+still read, because an install upgraded across the pivot holds revisions a STEP file
+ingested before it, and dropping them would lose real data from a page.
 
 ### 3.2 Columns vs JSONB — one rule
 
@@ -498,8 +584,8 @@ blob(
 
 derivative(
   id uuid PRIMARY KEY, revision_id uuid,
-  kind text,                            -- tessellation_l0|l1|l2|structure|entities|pmi|thumbnail
-  blake3 text, thumb_bytes bytea,       -- inline if < 64 KB
+  kind text,                            -- export_stl|export_3mf, and nothing else since 0054/0055
+  blake3 text, thumb_bytes bytea,       -- thumb_bytes has no writer: see §1.5
   kernel_version text, params_json jsonb, created_at timestamptz
 );
 
@@ -514,7 +600,8 @@ part_source(
 part_image(
   id uuid PRIMARY KEY, part_id uuid NOT NULL,
   blake3 text, image_webp bytea,        -- always cached locally, never hotlinked
-  origin text NOT NULL,                 -- uploaded|url_supplied|og_fetched|rendered
+  origin text NOT NULL,                 -- uploaded|url_supplied|og_fetched|rendered; `rendered`
+                                        -- is in the CHECK constraint and has never had a producer
   source_url text, position integer, created_at timestamptz,
   fit text, focus_x double precision, focus_y double precision
 );
@@ -628,38 +715,40 @@ material, keyed by the material exactly as parts hold it, and removed with its l
 - **What it is for:** a part's mass, worked out when read from its volume and the density of its one
   material, and always approximate (goal 5).
 
-### 3.8 Shape profiles, and what somebody decided about a pair (Phase 6)
+### 3.8 Shape similarity, removed — and the two tables that went with it (Phase 6)
 
-`part_shape(part_id PK, library_id, revision_id, l0_blake3, version smallint, size_mm float8,
-descriptor real[35], computed_at)` (`0047`) and
-`part_link(part_id, other_id, library_id, kind, created_at, PK (part_id, other_id))` (`0048`).
+**`part_shape` and `part_link` no longer exist.** Migration `0054` dropped both (R3), and the
+owner's decision behind it is one sentence: **duplicates are not a feature. Identity is the
+content hash in the background, and no real file is ever refused for sharing a name.**
 
-- **The profile is derived, never authored.** The worker computes it from the part's stored **L0
-  tessellation** — never the source file, never the kernel — in line inside the ingest job, so a batch
-  that reports finished has its profiles. 35 floats: 32 D2-distribution bins stored as **square roots**
-  of their probabilities (which makes Euclidean distance Hellinger distance), then λ2/λ1, λ3/λ1 and
-  `ln(area/m²)`; `size_mm` is the mean distance between two points on the surface, so an open mesh has one.
-- **A row is stale, not wrong.** `version` is `lapidary_core::SHAPE_VERSION` and `l0_blake3` is the rung
-  it was computed from; either being out of date, or a newer revision existing, makes the row ignored and
-  recomputed. Readers define "current" as **this build's version and no newer revision** — deliberately
-  *not* the L0 hash, which would cost a second lateral on a 50 ms path (G3, 2026-09-27).
-- **No pgvector** (owner, 2026-09-21): a plain `real[]` compared exactly in Rust. The ceiling is about
-  100k parts a library; the upgrade is one statement,
-  `ALTER TABLE part_shape ALTER descriptor TYPE vector(35) USING descriptor::vector`.
-- **Known limit, measured** (G2 and T1, 2026-09-26/27): `ln(area/m²)` carries a re-tessellation, so an
-  off-axis rotation or a finer triangulation of the *same* surface moves the descriptor — 0.09 against a
-  0.04 threshold on dense meshes — and `size_mm` itself moved 1.55 % under a rigid turn, which it cannot
-  legitimately do. The hypothesis on record is that L0's mesh depends on orientation. Simple parts are
-  unaffected. Accepted for now, with the cost of the alternatives recorded in the ROADMAP.
-- **`part_link` is a decision, not a derivation.** `variant` and `distinct` take a pair out of the
-  duplicates queue for good; `folded_into` records that a part was soft-removed **as a duplicate of**
-  another, and is the roadmap's "merge" renamed, because CLAUDE.md keeps "no merge" for versioning.
-  Nothing is moved and nothing is deleted: Restore undoes a fold, and a fold's removal shares its link's
-  transaction stamp so that an ordinary later removal cannot masquerade as one.
-- A `variant`/`distinct` pair is stored once with the smaller id first; `folded_into` keeps its direction.
-  Both tables are deleted with the part by `PgParts::purge`, before `revision`, and the catalogue test
-  knows them. Purging the part something was folded *into* removes that row too, leaving an ordinary
-  removed part — expected, not an orphan.
+This section described `part_shape(part_id PK, library_id, revision_id, l0_blake3, version
+smallint, size_mm float8, descriptor real[35], computed_at)` (`0047`) and
+`part_link(part_id, other_id, library_id, kind, created_at)` (`0048`), the 35-float descriptor —
+32 D2-distribution bins stored as square roots so that Euclidean distance is Hellinger distance,
+then λ2/λ1, λ3/λ1 and `ln(area/m²)` — and the `variant` / `distinct` / `folded_into` decisions a
+person could record about a pair. `docs/ROADMAP.md` § "The pivot" carries the shas; the routes
+(`/likeness`, `/duplicates`, `/fold`, `/folds`, the link routes) and the queue page went with
+them.
+
+**It was not removed because it did not work; it was removed because the thing it was derived
+from is gone.** The profile was computed from the part's stored **L0 tessellation**, in line
+inside the ingest job, and there is no L0. Two measurements are worth keeping, because they are
+what any future attempt starts from rather than re-discovers:
+
+- On a simple part the descriptor is **exactly** rotation-invariant: a 20-triangle bracket turned
+  37° off-axis scored a distance of **0.000000** against a 0.04 threshold, with `size_mm`
+  identical to four decimals (T1).
+- On a real corpus mesh it is not. `ln(area/m²)` carries the re-tessellation, so the same solid
+  turned off-axis scored **0.105 — 2.6× the threshold** at 84,418 triangles, while sitting
+  comfortably inside the size band; and **`size_mm` itself moved 1.55 % under a rigid turn**,
+  which a mean surface point-pair distance cannot legitimately do. The band was being spent on
+  re-tessellation noise before any real size difference was considered (T1).
+
+So the honest reading is that the approach needed an orientation-independent tessellation it
+never had. What survives of the idea, and is enough for what the product promises, is the
+**content hash**: `PgBlobs::library_holds` joins on `source_path` **and** hash, so the same bytes
+at a second path are a second part rather than a skipped file — and the store gives that second
+part a row and transfers nothing. "Hash first, always", visible from outside.
 
 ---
 
@@ -699,9 +788,14 @@ We are storage. This changes what we are liable for.
 ### 5.1 Download — never silently convert
 
 ```
-GET /api/revisions/{id}/download?variant=original  → bracket_v3.step
-GET /api/revisions/{id}/download?variant=3mf       → bracket_v3.lapidary.3mf
+GET /api/revisions/{id}/download?variant=original  → bracket-lp-1042-03.stl
+GET /api/revisions/{id}/download?variant=3mf       → bracket-lp-1042-03.lapidary.3mf
 ```
+
+**`?variant=original` is also what the browser's 3D view reads** (R1): pressing **view**
+fetches this exact URL and hands the bytes to three's own loader. So this route is no longer
+only a download — it is the one path by which a model file reaches anybody, which is why the
+re-hash below matters to more than a save dialog.
 
 `original` returns byte-identical ingested bytes, verifiable against the stored BLAKE3 —
 **show the hash next to the button** so a user can check it themselves. Anything we
@@ -734,7 +828,12 @@ would leave heuristic freshness free to hand back a stale file.
 
 Nothing converts on the download itself. An export not written yet is a 404 naming
 `POST /api/parts/{id}/exports/{format}`, which queues it as a derive job and answers with
-the batch, as a rung request does. `lapidary open` negotiates with this computer's apps as
+the batch. **`?variant=l0|l1|l2` falls through to `unknown_variant`** (R3), whose sentence no
+longer offers a rung — those links are in people's bookmarks and in older harnesses, and a
+stale one deserves a sentence rather than a 500. An export of a pre-pivot STEP revision is
+refused in `cad_refusal`'s own words rather than the parser's, because that path is reachable
+on an upgraded install: `build()` reads `latest_revision(part)` without looking at its format
+(R5). `lapidary open` negotiates with this computer's apps as
 the target: a STEP part on a computer with a slicer and no CAD app opens as a read-only
 3MF under `exports/` in the workspace, no lock taken, and it says that nothing saved from
 it comes back.
@@ -802,13 +901,22 @@ textual diff, branches, rebase.
 
 So: **immutable snapshots + lineage DAG + pessimistic locks.**
 
-### 6.1 Geometric diff replaces textual diff
+### 6.1 The figures are the diff
 
-Between two revisions: Δ volume (absolute and %), Δ bbox per axis, Δ mass and centre of
-mass, Δ triangle/face/edge count, plus a visual overlay (old as grey ghost, new solid).
+Between two revisions: Δ volume (absolute and %), Δ bbox per axis, Δ centre of mass, Δ
+triangle count — and, for revisions a STEP file ingested before the pivot, Δ face and edge
+count, because those columns are still there and still read.
 
-Per-face Hausdorff heatmap is the premium version — expensive, async job, cached result.
-Never in the synchronous diff path.
+**The shapes are not compared, and that is the pivot rather than a gap.** This section used
+to promise a visual overlay — the earlier revision drawn as a translucent ghost through the
+current solid — and a per-face Hausdorff heatmap as the premium version. Both needed
+geometry we produced: a tessellation of each revision, in one frame, rung for rung. There is
+none, so the ghost went with the render pipeline (R1) and the heatmap was never built. Every
+figure in the list above is read from the mesh and therefore **approximate and labelled so**,
+on both sides of the comparison.
+
+What a person gets instead is honest and cheap: the numbers, the two revisions' files, and
+**view** on either of them. A shape comparison is what the tool the part is opened in does.
 
 ### 6.2 External round-trip (agent binary)
 
@@ -888,17 +996,16 @@ The design is `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-desig
   - enforced only while held;
   - a forced release is recorded.
 
-### 6.5 The overlay and `lapidary://` (Phase 4 slice 2)
+### 6.5 `lapidary://` (Phase 4 slice 2) — and the overlay that went with the renders
 
 The design is `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §2–3.
 
-**Overlay.**
-- The earlier revision is drawn as a translucent amber ghost, through the part: its L1, else its L0.
-  It is amber, not grey, because a grey ghost over the grey part was barely visible.
-- It sits in the same scene frame as the current solid. Rungs are never recentred, so a ghost's offset
-  is the file's own.
-- It is never picked.
-- An earlier revision with no mesh says so instead of drawing nothing.
+**The overlay is gone** (R1). It drew the earlier revision as a translucent amber ghost
+through the current part — amber rather than grey, because a grey ghost over a grey part was
+barely visible — from that revision's L1 or else its L0, in the same scene frame, never
+picked. Every clause of that depended on a rung per revision, and there are no rungs. What a
+revision comparison shows is §6.1's figures; the files themselves are a download away, and
+**view** draws either one on its own.
 
 **`lapidary://open?part=<uuid>`** is the only shape accepted.
 - `lapidary register` writes an XDG handler that carries the server and workspace, so a link can never
@@ -968,6 +1075,14 @@ primary key, `address` (`host:port`, no scheme), `name` as that installation's l
 data.** `peer_share` holds each share somebody offers — their id for it, its name, part count, the `digest` it was last
 read under and `synced_at`; `peer_share_part` its catalogue by `source_path`, with name, part number, tags, licences,
 BLAKE3, size, format and a thumbnail kept only under 64 KB.
+- **A shared part has no picture today, and that is a known gap rather than a design**
+  (R3 predicted it, R4 confirmed it has arrived). `PgShares::catalogue` and
+  `PgShares::thumbnail` read `kind = 'thumbnail'` as a SQL literal, and after `0055` there
+  is nothing to read: the catalogue's `LEFT JOIN LATERAL` still lists the part with
+  `thumbnail: false` and the route answers 404 rather than 500, so nothing breaks — the
+  shared-library page is simply pictureless, and `strings.parts.thumbnailAlt` survives for
+  a page that will never have an image to describe. **Shares should mirror `part_image`
+  instead.** That is a goal, not a line.
 - **The hello round writes it,** re-reading only a share whose digest moved, and replacing a catalogue whole in one
   transaction.
 - **What a sharer stops offering is deleted from the mirror.** That is a cache catching up; the page says the sharer

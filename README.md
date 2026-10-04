@@ -2,9 +2,9 @@
 
 **A visual index for 3D part libraries, with a return path.**
 
-Scan hundreds of parts, decide if one fits, hand it to the tool that actually edits it,
-and get the result back versioned. Hobbyist STL collections and industrial STEP
-assemblies, same architecture.
+Look through pictures, search the metadata, download the file. Scan hundreds of parts,
+decide if one fits, hand it to the tool that actually edits it, and get the result back
+versioned. Hobbyist STL collections and industrial mesh libraries, same architecture.
 
 Lapidary is not a CAD editor, not a slicer, and not a PDM system. It is the layer that
 makes the parts you already have findable, inspectable, and reachable from the tools you
@@ -17,31 +17,42 @@ thing that will ship. The Node/Fastify prototype that validated the product idea
 what it established is written up in `docs/prototype-notes.md`, which is the part worth
 keeping.
 
-Phase 1 runs. A library ingests STL, 3MF and OBJ from a mounted directory or a browser
-drop, through a crash-resumable job queue, and renders a paged grid of cards with real
-thumbnails. Parts live in a folder tree mirrored on disk — one directory per model, its
-file under its own name with a `metadata.json` beside it — under categories you can create
-and drag models between. Removing a part is reversible; purging it is a separate, explicit
-action.
+A library ingests STL, 3MF and OBJ from a mounted directory or a browser drop, through a
+crash-resumable job queue, and shows a paged grid of cards. Each card carries the part's
+own picture, or names its format when nobody has given it one. Parts live in a folder tree
+mirrored on disk — one directory per model, its file under its own name with a
+`metadata.json` beside it — under categories you can create and drag models between. Full
+text and part-number search, format and category facets, saved filters, a quick-look panel,
+revisions and locks for a `controlled` library, a dashboard, and sharing between two
+installations that were paired by hand. Removing a part is reversible; purging it is a
+separate, explicit action.
 
-What is still ahead, from the list below: **no search**, no viewer, no versioning, and no
-library picker — every screen is the one library migration `0002_parts.sql` seeds. Search
-is the next substantial piece of Phase 1; `docs/superpowers/plans/` holds the current
-plan and what it is blocked on.
+**The pivot of 2026-10-03 is the thing to know before reading anything older.** Lapidary is
+a visual library: pictures and search, downloads, and a 3D view only when somebody presses
+**view**. The render pipeline, the CAD kernel, measurement, the assembly tree and shape
+similarity were built, measured, and then deliberately removed — about 19,000 lines.
+`docs/ROADMAP.md` § "The pivot" carries the ledger and the shas; `CLAUDE.md` carries the
+rules that came out of it. Anything in `docs/superpowers/` is a record of intent at a
+moment and predates it.
 
 ## What it does
 
-- **Ingest** — drop a folder of STL, 3MF, OBJ, STEP or IGES. Content-addressed and
-  deduplicated. Today: STL, 3MF and OBJ, from a mounted directory or a browser upload,
-  through a crash-resumable job queue. STEP and IGES need the CAD kernel and are Phase 2.
-- **Triage** — a fast virtualized grid with real thumbnails, full-text and part-number
-  search, faceted filters.
-- **Inspect** — a 3D viewer with measurement that snaps to analytic B-rep entities, so
-  the numbers are exact rather than tessellated approximations.
-- **Version** — immutable content-addressed revisions with a lineage DAG and geometric
-  diff. Open a part in FreeCAD, save it, and a new revision appears automatically.
-- **Route** — automatic format negotiation. Slicers get 3MF, CAD gets STEP, the viewer
-  gets glTF. Never hand a mesh to someone who needed B-rep.
+- **Ingest** — drop a folder of STL, 3MF or OBJ, from a mounted directory or a browser
+  upload, through a crash-resumable job queue. Content-addressed: BLAKE3 first, and a hash
+  already in the store short-circuits the whole pipeline. A STEP or IGES file is **refused
+  by name**, in a sentence that says to export a mesh instead — never skipped in silence.
+- **Triage** — a fast virtualized grid of pictures, full-text and part-number search,
+  faceted filters, saved filters.
+- **Inspect** — the part's figures (bounding box, volume, surface area, triangle count),
+  every one read from the mesh and so labelled approximate, always. **View in 3D** loads the
+  original file in the browser; there is no measuring here, because measuring a mesh against
+  entities that were never placed would be a number that lies.
+- **Version** — immutable content-addressed revisions with a lineage DAG, pessimistic locks
+  and a figure-by-figure comparison. Open a part in FreeCAD, save it, and a new revision
+  appears automatically.
+- **Route** — automatic format negotiation. A slicer gets the part's own file when it
+  already reads it, and a `*.lapidary.*` export written from its mesh when it does not.
+  Nothing is silently converted.
 - **Plan** — a node-based board for authoring manufacturing process graphs, and a
   mobile-shaped guide view that answers "what do I make next".
 
@@ -60,8 +71,8 @@ open http://localhost:3000
 **Upgrading an existing deployment?** Read `docs/DATA.md` §1.1, *"Upgrading a store created
 before this layout"*, **before** you bring the stack up. The store moved out of a named volume
 and into a host directory, and nothing copies it across for you. Nothing fails at boot if you
-skip it — the grid still renders, because thumbnails live in Postgres — so the first sign is a
-download returning 500.
+skip it — the grid still renders, because a card's picture comes from `part_image` and not from
+the store — so the first sign is a download returning 500.
 
 Then press **Scan the ingest folder** in the grid. Or, headless, post to the worker
 directly — the same job, and the same batch to poll:
@@ -80,8 +91,8 @@ that instead; see `deploy/.env.example`. The UUID is the library seeded by migra
 `0002_parts.sql`; slice 1 has no library picker, so it is the only one there is.
 
 Scanning is idempotent. BLAKE3 is computed before anything else, and a hash already in
-the blob store short-circuits the whole pipeline — no parse, no raster, no write. Run the
-same scan twice and the second batch settles every file as `skipped` rather than
+the blob store short-circuits the whole pipeline — no parse, no measurement, no write. Run
+the same scan twice and the second batch settles every file as `skipped` rather than
 `ingested`, which the grid reports as "6 already here".
 
 ### Why the ports are split, and why both of them scan
@@ -109,10 +120,12 @@ Enqueueing a job is a database write, which the api may do; walking a mount and 
 geometry is not.
 
 The split the ports draw is the one that matters and is unchanged: opening a part must never
-read a model file, so `lapidary-api` is forbidden from depending on `lapidary-cad` at all
-(`cargo xtask check-layers`) — which means the ingest handler, which parses a mesh and
-measures it, cannot live in it. It lives in `lapidary-ingest`, and only the `worker` image
-compiles that in:
+read a model file on the server, so `lapidary-api` is forbidden from depending on
+`lapidary-cad` at all (`cargo xtask check-layers`) — which means the ingest handler, which
+parses a mesh and measures it, cannot live in it. (Pressing **view** does read the original
+file, and it is the *browser* that reads it: the api serves the ingested bytes through
+`download?variant=original` and parses nothing.) It lives in `lapidary-ingest`, and only the
+`worker` image compiles that in:
 
 ```sh
 cargo tree -p lapidary-server                    | grep lapidary-cad   # nothing

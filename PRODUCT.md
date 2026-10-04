@@ -6,9 +6,9 @@
 
 web
 
-Tauri is Phase 10 of `docs/ROADMAP.md` and bundles only our own binaries — never Postgres,
-never OCCT. It is a later shell around this same web interface, not a second design
-language, so the platform of record stays `web`.
+Tauri is Phase 10 of `docs/ROADMAP.md` and bundles only our own binaries — never Postgres.
+It is a later shell around this same web interface, not a second design language, so the
+platform of record stays `web`.
 
 ## Users
 
@@ -18,15 +18,19 @@ their own modelling, organised by folder and increasingly unfindable. They are l
 "the bracket I printed last spring", they will decide from a picture in under a second, and
 they open the result in Orca, Blender or FreeCAD.
 
-**Secondary: the engineer with an industrial STEP library.** The same scanning job at a
+**Secondary: the engineer with an industrial mesh library.** The same scanning job at a
 different scale and under different rules — revisions, approvals, locks, air-gapped
-deployment. Phase 8 and the `controlled` library mode exist for them.
+deployment. Phase 8 and the `controlled` library mode exist for them. **A STEP or IGES file
+is refused at ingest, by name** (owner, 2026-10-03): they export a mesh from the CAD tool
+that owns the part, and the CAD file stays in the system that is built for it. That is a
+real narrowing of this audience and it was taken deliberately — the kernel that read B-rep
+cost 766 s of an 849 s build and existed to feed a renderer this product no longer has.
 
 **The tie-break, decided 2026-09-08: the hobbyist leads.** Where the two audiences pull
 apart on a design decision — density against delight, ceremony against speed,
 approachability against precision — the maker wins and the engineer inherits a tool that
-also happens to scale. This does not soften any correctness rule: "measurement must not
-lie" and the deletion guarantees are constraints, not register.
+also happens to scale. This does not soften any correctness rule: "figures must not lie"
+and the deletion guarantees are constraints, not register.
 
 ## Product Purpose
 
@@ -45,8 +49,13 @@ Three things a neighbouring product cannot truthfully copy without becoming this
 - **The return path.** Every other viewer is a dead end — you look, you download, and
   whatever happens next is untracked. Lapidary hands a part out and takes the edited result
   back as a versioned, content-addressed snapshot.
-- **Format negotiation is automatic.** Slicers get 3MF/STL, CAD gets STEP, the viewer gets
-  glTF. A mesh is never handed to someone who needed B-rep.
+- **Meshes in, meshes out.** The library takes `stl`, `obj` and `3mf`, and `Target`
+  negotiation hands a slicer the part's own file when it is already in a format the slicer
+  reads, or a `*.lapidary.*` export written from its mesh when it is not. Nothing is
+  silently converted: `variant=original` is byte-identical to what was ingested, verified
+  against the stored BLAKE3 on the way out. *(Until 2026-10-03 this read "CAD gets STEP, the
+  viewer gets glTF"; the kernel that made the first true and the pipeline that made the
+  second are both gone.)*
 - **Governance is opt-in per library.** Hobby libraries have no revisions, states or
   approvals at all. The same binary serves a folder of printed brackets and a controlled
   industrial catalogue, because the machinery is flipped on per library rather than sold as
@@ -84,18 +93,24 @@ Local free, Team, Enterprise, Cloud).
 
 Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
 
-- **Geometry is never edited.** Visualise, measure, route, version.
-- **Measurement must not lie.** Analytic values from B-rep where available; mesh-derived
-  values are labelled approximate in the UI, always, wherever they appear.
+- **Geometry is never edited.** Catalogue, picture, search, route, version.
+- **Figures must not lie.** Every figure now comes from reading a mesh, so every one of them
+  is approximate and **labelled so in the UI, always**, wherever it appears. There is no
+  analytic half any more, which makes the rule simpler rather than weaker: if a number
+  reaches a person without its `≈`, that is a bug.
 - **Deletion is three steps.** Delete is soft, purge is separate and explicit, blobs
   quarantine 30 days before removal. Derivative cache eviction is a different action with
   different wording and must never read as data loss.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
   ingested bytes; anything produced is named `*.lapidary.*`.
 - **Versioning is Perforce-shaped, not Git-shaped.** Immutable content-addressed snapshots,
-  lineage DAG, pessimistic locks. No merge, no branches, no textual diff — geometric diff
-  replaces textual diff.
-- **The open path never touches a source file and never invokes the CAD kernel.**
+  lineage DAG, pessimistic locks. No merge, no branches, no textual diff. A revision's
+  **figures** are compared; the geometric diff that compared shapes went with the render
+  pipeline.
+- **Opening a part reads metadata and pictures, never a model file.** The one exception is
+  deliberate and asked for: pressing **view** hands the browser the original mesh to draw,
+  which is the whole point of the button. Nothing loads a model because a page opened or a
+  pointer moved.
 - Phase 1 ships ingest, folder tree, grid, search, images and source links. Phases 2–10 are
   sequenced in `docs/ROADMAP.md`.
 
@@ -110,8 +125,14 @@ Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
   code is not wrong; it is honest about a gap that is now scheduled to close.
 - `part` has no tags or materials columns. Search covers names and part numbers; the
   user-defined fields Phase 5 owns are where tags and materials would live.
-- A user-supplied image does not yet win over the generated render on a grid card. The
-  gallery shows it one click away.
+- **Settled, and the other way round:** a grid card shows the part's own first image, framed
+  as its row says, and a part nobody has photographed names its format rather than
+  apologising for a picture it does not have. The grid carries only inline bytes, so an image
+  over `INLINE_LIMIT` arrives as a hash and the card emits `/api/blob/{hash}` — one immutable
+  image load, never a second API request.
+- **Nothing produces a picture.** Every one is something a person added, which makes an
+  unphotographed library a real state of the product rather than a transitional one. Whether
+  that wants a bulk way in — a folder of images matched to parts by name, say — is open.
 
 ## Brand Commitments
 
@@ -122,8 +143,10 @@ Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
 - **No bare user-facing strings.** Every string routes through `web/src/lib/strings.ts`,
   enforced by an AST gate (`web/src/no-bare-strings.test.ts`). English only today; Turkish
   is the planned second locale, so nothing may assume English word order or length.
-- **Errors say what broke and what to do.** "Could not read this STEP file — it may use an
-  unsupported AP schema. Re-export from your CAD tool and retry." Never "parse failed (3)."
+- **Errors say what broke and what to do.** "Lapidary is a visual library of meshes and does
+  not read STEP files. Export the part as STL, OBJ or 3MF from your CAD tool and add it
+  again; the same file is refused the same way every time." Never "parse failed (3)."
+
 - **Real content in every example and fixture.** Plausible part numbers, real dimensions.
   Never "Part 1 / Part 2".
 - **Prefer the boring option.** Solo-maintained, and destined for air-gapped industrial
@@ -152,10 +175,12 @@ may claim deployment, adoption, or a security audit.
 
 ## Product Principles
 
-1. **The picture is the interface.** A person decides from a thumbnail in under a second;
-   everything else on a card is there to confirm that decision, not to compete with it.
-2. **Never lie about what is on disk.** Measurements carry their provenance, totals name
-   what they exclude, and no wording lets an eviction read as data loss.
+1. **The picture is the interface.** A person decides from a picture in under a second;
+   everything else on a card is there to confirm that decision, not to compete with it. This
+   is the principle the 2026-10-03 pivot was decided on: a preview we render is complexity
+   bought for a picture we can simply store.
+2. **Never lie about what is on disk.** Figures carry their provenance, totals name what
+   they exclude, and no wording lets an eviction read as data loss.
 3. **The store stays legible.** A user can open the storage root in a file manager and
    understand it. Any change that trades that away for internal convenience is the wrong
    trade.

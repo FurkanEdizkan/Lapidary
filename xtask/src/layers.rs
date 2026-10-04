@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn allows_ingest_depending_on_cad_and_storage() {
         // The whole reason lapidary-ingest exists: it is the crate allowed to depend on
-        // lapidary-cad (for MeshKernel) and lapidary-storage (for SourceStore).
+        // lapidary-cad (for parse and measure) and lapidary-storage (for SourceStore).
         // FORBIDDEN_PAIRS names no prohibition for lapidary-ingest, so this is an
         // ordinary, permitted L3->L2 edge — same shape as the lapidary-api rejection
         // above, opposite crate.

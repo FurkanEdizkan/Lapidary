@@ -6,7 +6,6 @@
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
-#   scripts/e2e/stack.sh exit2 [<part.stl> …]    # Phase 6 exit 2, with the numbers behind the verdict
 #   scripts/e2e/stack.sh down [--keep|--purge]   # reverse the chown, remove the project and the store
 #   scripts/e2e/stack.sh status
 #
@@ -37,8 +36,9 @@
 # is what makes them testable without a container (see `scripts/e2e/README` in this file's own tests,
 # and the goal file's stage 0).
 #
-# Never `docker builder prune`: the OCCT stage is 30–40 minutes to rebuild. Never `docker volume prune`,
-# never `docker system prune`, and never remove an image this project did not tag.
+# Never `docker builder prune`, never `docker volume prune`, never `docker system prune`, and never
+# remove an image this project did not tag. The pivot took the OCCT stage out, so a cold worker build is
+# about 155 s rather than 916 s — but a prune here would still reach cache this rig did not create.
 set -uo pipefail
 
 # ---------------------------------------------------------------------------------------------------
@@ -438,12 +438,12 @@ cmd_build() {
   echo "== $(date -Is) build of $PROJECT from $(git -C "$ROOT" rev-parse --short HEAD); / $(free_gb /) GB free; /mnt/Storage $(free_gb "$ROOT") GB free" > "$summary"
   git -C "$ROOT" rev-parse HEAD > "$WORK/built-from.sha"
   for svc in $services; do
-    # The guard, before each service and not once at the top: the OCCT worker stage alone can move
-    # root free space by several gigabytes. Under it we stop and ask — we never prune, because
-    # `docker builder prune` drops the cached OCCT layer and costs a 30-40 minute rebuild.
+    # The guard, before each service and not once at the top: a release build layer alone can move
+    # root free space by a gigabyte or more, and the api and worker stages each build one. Under it we
+    # stop and ask — we never prune, because this rig's cache is not the only thing in that cache.
     [ "$(free_gb /)" -ge 8 ] || ask_owner "/ has $(free_gb /) GB free, under the 8 GB this build needs,
-  before service \`$svc\`. This rig never prunes: \`docker builder prune\` would drop the cached OCCT
-  layer and cost a 30-40 minute rebuild. Free space elsewhere, or say to go ahead."
+  before service \`$svc\`. This rig never prunes: it does not own the builder cache and cannot tell
+  which of it is somebody else's. Free space elsewhere, or say to go ahead."
     [ "$(free_gb "$ROOT")" -ge 20 ] || ask_owner "$ROOT has $(free_gb "$ROOT") GB free, under 20 GB,
   before service \`$svc\`."
 
@@ -574,10 +574,20 @@ build_ingest_tree() {
   find "$INGEST" -mindepth 1 -delete
   mkdir -p "$INGEST/step" "$INGEST/misc" "$INGEST/alike"
 
-  # step/: the six B-rep fixtures, which is what sends work through the OCCT worker at all.
+  # step/: the six B-rep fixtures, kept on purpose and for the opposite reason they were put here.
+  #
+  # They used to be what sent work through the OCCT worker. Since R2 a STEP or IGES file is **refused at
+  # ingest, by name**, so these six are now the natural fixture for that refusal — `fixtures/step/` was
+  # kept for exactly this. The seed asserts six refused jobs, each naming its own format and what this
+  # library takes; a scan that *skipped* them in silence is the failure this directory now exists to
+  # catch, and it is the one `is_model_file` still chains `CAD_FORMATS` in to prevent.
   cp "$ROOT"/fixtures/step/* "$INGEST/step/" || die "fixtures/step is not where it was."
-  # misc/: the two non-STL mesh formats, so the format facet has five values and not three.
+  # misc/: the two non-STL mesh formats, so the format facet has three values and not one — and the
+  # bracket, which is the one part in this tree we have a real picture of. `pictures` attaches
+  # `fixtures/bracket-lp-1042-03.thumb.webp` to it after the scan, so the flow can assert a card drawing
+  # the part's OWN image and not only the format placeholder every other card shows.
   cp "$ROOT"/fixtures/*.obj "$ROOT"/fixtures/*.3mf "$INGEST/misc/" || die "the .obj/.3mf fixtures moved."
+  cp "$ROOT/fixtures/bracket-lp-1042-03.stl" "$INGEST/misc/" || die "the bracket fixture moved."
 
   # The corpus slice: real creator/set/part paths, kept as they are. `corpus-1000/` holds symlinks into
   # /mnt/Storage2 and a container cannot follow one out of its own mount, so `-L` — dereference — is
@@ -628,22 +638,20 @@ build_ingest_tree() {
   can spare; remake it, or lower CORPUS_SLICE and say so in the goal's Record."
   echo "  corpus slice: $copied files from $rows rows ($dangling dangling links skipped), $(du -sh --apparent-size "$INGEST" | cut -f1) so far"
 
-  # alike/: the three deliberate duplicate cases, beside the part they are duplicates *of* — a
-  # duplicate needs both halves in one library to be one.
+  # alike/: one pair, the same bytes at two paths.
+  #
+  # This directory held four files and three cases — identical, a rotation and a 15 % scale — because
+  # shape similarity was a feature and `docs/phase-6.md` claimed the descriptor was rotation-invariant.
+  # R3 deleted `part_shape`, `part_link` and every likeness route, so the rotation and the scale were
+  # fixtures for nothing; they went, and `skew-stl.py` with them.
+  #
+  # **The identical pair stays, because the property it shows is the store's and not the detector's.**
+  # `PgBlobs::library_holds` joins on `source_path` *and* hash, so the same bytes at a second path are a
+  # second PART rather than a `Skipped` job — and the content-addressed store gives that second part a
+  # row and transfers nothing. Two flanges here are also what `search` narrows to.
   local flange=$ROOT/example/parts/flange-dn40-lp-3310-02.stl
   cp "$flange" "$INGEST/alike/flange-dn40-lp-3310-02.stl"
-  # Identical: the same bytes at a second path. `PgBlobs::library_holds` joins on source_path *and*
-  # hash, so this is a second part rather than a `Skipped` job — which is precisely the case a
-  # duplicate finder has to catch and an ingest-time hash check cannot.
   cp "$flange" "$INGEST/alike/flange-dn40-lp-3310-02-second-copy.stl"
-  # Near-duplicate: the same solid stood on a different axis. docs/phase-6.md claims exactly this
-  # invariance, so it is exactly what the fixture should be.
-  python3 "$ROOT/scripts/e2e/skew-stl.py" --rotate "$flange" "$INGEST/alike/flange-dn40-lp-3310-02-rotated.stl" ||
-    die "skew-stl.py --rotate failed."
-  # Similar but not near: 15 % larger, far outside the ln(1.02) band by design. A detector that calls
-  # this one a near-duplicate is wrong, and this is how we would find out.
-  python3 "$ROOT/scripts/e2e/skew-stl.py" --scale 1.15 "$flange" "$INGEST/alike/flange-dn40-lp-3310-02-scaled-115.stl" ||
-    die "skew-stl.py --scale failed."
 
   # Readable by the container's uid, which is 10001 and not this user.
   #
@@ -729,6 +737,24 @@ upload_file() { # library, local file, source path in the library
   settle "$lib" "$(echo "$commit" | field 'value["batchId"]')" 600
 }
 
+# A part's own picture, attached the way a person attaches one.
+#
+# `POST /api/parts/{id}/images` takes the bytes and nothing else: the server normalizes, re-encodes to
+# WebP and decides inline-or-blob at the 64 KB line itself (`images.rs`), so nothing here has to know
+# that rule. **Nothing in this product produces a picture** — every one is something somebody added —
+# so without this the whole grid shows format placeholders and the `pictures` flow could only ever test
+# half of what it claims. Idempotent by checking the gallery first: `add_part_image` appends a position
+# rather than replacing, so re-seeding one stack would otherwise grow a gallery per run.
+seed_picture() { # part id, image file
+  local have
+  have=$(curl -sf "$API/api/parts/$1/images" | field 'len(value)')
+  if [ "${have:-0}" -gt 0 ]; then echo "already has ${have} picture(s)"; return 0; fi
+  curl -sf -X POST --data-binary "@$2" "$API/api/parts/$1/images" > /dev/null ||
+    { echo "  the server would not take $2 for part $1"; return 1; }
+  curl -sf "$API/api/parts/$1/images" |
+    field '"%d picture, %s" % (len(value), "inline" if (value[0]["src"] or "").startswith("data:") else value[0]["src"][:40])'
+}
+
 cmd_seed() {
   wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
   echo "== INGEST TREE"
@@ -763,44 +789,84 @@ cmd_seed() {
   ingested=$(counter "$scanned" ingested)
   failed_total=$(counter "$scanned" failedTotal)
   echo "  this batch: ingested=${ingested:-none} of $(counter "$scanned" total) queued"
+
+  # THE SIX B-REP FIXTURES ARE REFUSED BY NAME, and that is now the headline assertion of this seed.
+  #
+  # `is_model_file` still chains `CAD_FORMATS`, deliberately, so a `.step` file is QUEUED and then
+  # refused out loud — the alternative is a scan that skips it in silence, which is the failure this
+  # repository keeps finding. So all six appear in `failed`, each with `cad_refusal`'s own sentence, and
+  # that sentence must NAME THE FORMAT of the file it refused: a `.igs` refused as "STEP" would send
+  # somebody to re-export the wrong thing. Read per file rather than counted, because six refusals that
+  # all said the same format would pass a count.
+  local refused refused_mismatch
+  refused=$(curl -sf "$API/api/libraries/$sweep/jobs/$batch" | field '
+sum(1 for f in value.get("failed", [])
+    if f["path"].startswith("step/")
+    and "does not read" in (f.get("reason") or "")
+    and f["path"].rsplit(".", 1)[-1].upper() in (f.get("reason") or ""))')
+  refused_mismatch=$(curl -sf "$API/api/libraries/$sweep/jobs/$batch" | field '
+"; ".join(f["path"] + " -> " + (f.get("reason") or "")[:90]
+          for f in value.get("failed", [])
+          if f["path"].startswith("step/")
+          and f["path"].rsplit(".", 1)[-1].upper() not in (f.get("reason") or ""))')
+  seed_check "the six B-rep fixtures are refused, each naming its own format" \
+    "$(holds "${refused:-0}" -eq 6)" \
+    "${refused:-0} of 6 refused by name${refused_mismatch:+ — mismatched: $refused_mismatch}"
+
   # Stage 3 said "no failures". That is not what a slice of 400 real downloaded files can promise: one of
   # them has a non-finite coordinate at triangle 49957 and the application says so, precisely and
-  # actionably, which is the behaviour we want rather than a regression. So the check is that failures
-  # stay within the one known-bad file **and that every one of them explains itself** — a failure with an
-  # empty reason would break this repository's own rule that errors say what broke and what to do.
-  seed_check "at most the one known-corrupt file fails" "$(holds "${failed_total:-99}" -le 1)" \
+  # actionably, which is the behaviour we want rather than a regression. Add the six refusals, which are
+  # correct behaviour too, and the bound is seven. **And every failure must explain itself** — a failure
+  # with an empty reason would break this repository's own rule that errors say what broke and what to do.
+  seed_check "nothing fails but the six refusals and the one known-corrupt file" \
+    "$(holds "${failed_total:-99}" -le 7)" \
     "failedTotal=${failed_total:-none} of $(counter "$scanned" total)"
   seed_check "every failure explains itself" "$(holds "${unexplained:-99}" -eq 0)" \
     "${unexplained:-?} of ${failed_total:-?} failures carry no reason"
 
-  local parts thumbs folders formats
+  local parts folders formats
   parts=$(sql "SELECT count(*) FROM part WHERE library_id = '$sweep' AND deleted_at IS NULL")
-  local thumb_sql="SELECT count(DISTINCT p.id) FROM part p JOIN revision r ON r.part_id = p.id JOIN derivative d ON d.revision_id = r.id WHERE p.library_id = '$sweep' AND d.kind = 'thumbnail'"
-  # Waited for, not sampled: thumbnails are their own jobs and finish after the ingest batch settles, so
-  # counting once would fail on a library that is perfectly fine thirty seconds later.
-  local waited=0
-  thumbs=$(sql "$thumb_sql")
-  while [ "${thumbs:-0}" -lt "${parts:-1}" ] && [ "$waited" -lt 600 ]; do
-    sleep 5
-    waited=$((waited + 5))
-    thumbs=$(sql "$thumb_sql")
-  done
+  # **The thumbnail wait loop is gone, and nothing replaces it.** It waited for a `thumbnail` derivative
+  # per part, because thumbnails were their own jobs that landed after the ingest batch settled. Nothing
+  # renders (R3) and `0055` deleted every such row (R4), so the loop would have waited out its full 600 s
+  # and then failed — on a library that is exactly right.
   folders=$(curl -sf "$API/api/libraries/$sweep/folders" | python3 -c 'import json,sys
 def count(nodes): return sum(1 + count(n.get("children") or []) for n in nodes)
 print(count(json.load(sys.stdin)))')
   formats=$(curl -sf "$API/api/libraries/$sweep/facets" | field '", ".join(f["value"] for f in value["formats"])')
-  echo "  parts $parts, thumbnails $thumbs (after ${waited} s), folders $folders, formats: $formats"
-  # 400 corpus + 6 step + 2 misc + 4 alike = 412, less the one corrupt file = 411; 409 is stage 3's floor.
-  # Asserted on what the library holds, not on this batch's `ingested`: a second seed against a library
-  # that already has the tree ingests nothing new and would fail a per-batch check while being correct.
-  seed_check "the library holds at least 409 parts" "$(holds "${parts:-0}" -ge 409)" "$parts parts"
-  seed_check "a thumbnail for every part" "$(holds "${thumbs:-0}" -eq "${parts:-1}")" "$thumbs of $parts"
+  echo "  parts $parts, folders $folders, formats: $formats"
+  # 400 corpus + 3 misc + 2 alike = 405, less the one corrupt file = 404. The six `step/` files are
+  # queued and refused, so they are in `total` and in `failed` and in no part count — which is the drop
+  # this floor records. Asserted on what the library HOLDS, not on this batch's `ingested`: a second seed
+  # against a library that already has the tree ingests nothing new and would fail a per-batch check
+  # while being perfectly correct.
+  seed_check "the library holds at least 404 parts" "$(holds "${parts:-0}" -ge 404)" "$parts parts"
   seed_check "at least 8 categories" "$(holds "${folders:-0}" -ge 8)" "$folders"
-  local missing=''
-  for want in stl step igs obj 3mf; do
+  # Three formats, and **step and igs must be ABSENT**. The facet is the one place the refusal is visible
+  # from outside without reading a job: a B-rep file that had ingested anyway would show up here.
+  local missing='' present=''
+  for want in stl obj 3mf; do
     case ",${formats// /}," in *",$want,"*) ;; *) missing="$missing $want" ;; esac
   done
-  seed_check "five formats present" "$(holds -z "\"$missing\"")" "${formats:-none}${missing:+ (missing$missing)}"
+  for banned in step stp iges igs; do
+    case ",${formats// /}," in *",$banned,"*) present="$present $banned" ;; esac
+  done
+  seed_check "the three mesh formats are present and no B-rep format is" \
+    "$(holds -z "\"$missing$present\"")" \
+    "${formats:-none}${missing:+ (missing$missing)}${present:+ (REFUSED FORMAT INGESTED:$present)}"
+
+  echo "== ONE PART'S OWN PICTURE"
+  local bracket
+  bracket=$(sql "SELECT id FROM part WHERE library_id = '$sweep' AND source_path = 'misc/bracket-lp-1042-03.stl'")
+  if [ -n "$bracket" ]; then
+    echo "  bracket-lp-1042-03: $(seed_picture "$bracket" "$ROOT/fixtures/bracket-lp-1042-03.thumb.webp")"
+  fi
+  local pictured
+  pictured=$(sql "SELECT count(*) FROM part_image i JOIN part p ON p.id = i.part_id WHERE p.library_id = '$sweep'")
+  # One, and exactly one: the flow asserts that the bracket's card draws a picture AND that every other
+  # card names its format instead, so a second picture arriving from somewhere would weaken both halves.
+  seed_check "exactly one part in Sweep has a picture" "$(holds "${pictured:-0}" -eq 1)" \
+    "${pictured:-?} part_image rows; the bracket's own photograph, inline under the 64 KB line"
 
   echo "  re-scan settles all-skipped:"
   local again rescan
@@ -808,22 +874,49 @@ print(count(json.load(sys.stdin)))')
   rescan=$(settle "$sweep" "$again" 3600)
   echo "    $rescan"
   seed_check "the re-scan adds nothing" \
-    "$(holds "$(counter "$rescan" ingested)" -eq 0 -a "$(counter "$rescan" skipped)" -ge 409)" \
-    "$rescan (the corrupt file is retried and fails again, which is why skipped is one short of total)"
+    "$(holds "$(counter "$rescan" ingested)" -eq 0 -a "$(counter "$rescan" skipped)" -ge 404)" \
+    "$rescan (seven short of total: the six B-rep files are refused again — the refusal is Permanent for
+    one job, not a memory across scans — and the corrupt file fails again)"
 
-  # The PMI cylinder's detail, check-plain.sh's assertions kept: this is what proves the real kernel
-  # ran and not the mock.
-  local pmi_part detail
-  pmi_part=$(sql "SELECT id FROM part WHERE library_id = '$sweep' AND source_path LIKE '%pmi%' LIMIT 1")
-  if [ -n "$pmi_part" ]; then
-    detail=$(curl -sf "$API/api/parts/$pmi_part")
-    local pmi_ok
-    pmi_ok=$(echo "$detail" | field 'int(all(value.get(k) is not None for k in ("structure", "entities", "pmi", "kernelVersion")))')
-    seed_check "the real kernel read the PMI cylinder" "${pmi_ok:-0}" \
-      "format $(echo "$detail" | field 'value["sourceFormat"]'), kernel $(echo "$detail" | field 'value["kernelVersion"]'), structure/entities/pmi $(echo "$detail" | field '[value.get(k) is not None for k in ("structure","entities","pmi")]')"
-  else
-    seed_check "the real kernel read the PMI cylinder" 0 "no part matched '%pmi%' in Sweep — the STEP scan did not land"
-  fi
+  # THE DERIVATIVE TABLE HOLDS ONLY WHAT SOMETHING CAN STILL BUILD.
+  #
+  # `DerivativeKind` is `export_stl` and `export_3mf` (R3) and `0055` deleted every row of the other
+  # seven kinds (R4). This asserts it from outside, over a library built from nothing by this very run —
+  # which is the case a migration test cannot make, because the migration tests seed the dead rows in raw
+  # SQL and then check they are gone. Here nothing ever wrote one. The predicate is the migration's own,
+  # `kind NOT IN (the two exports)`, so a kind nobody thought to list fails this too.
+  local bad_kinds kinds
+  bad_kinds=$(sql "SELECT count(*) FROM derivative WHERE kind NOT IN ('export_stl', 'export_3mf')")
+  kinds=$(sql "SELECT coalesce(string_agg(DISTINCT kind, ', ' ORDER BY kind), 'none') FROM derivative")
+  seed_check "derivative holds no render kinds" "$(holds "${bad_kinds:-99}" -eq 0)" \
+    "${bad_kinds:-?} rows of a kind nothing builds; kinds present: ${kinds:-none}"
+
+  # A RESTARTED WORKER QUEUES NOTHING — the one check that catches every boot loop at once.
+  #
+  # Four mechanisms used to re-queue the whole corpus at every worker start, and each of them failed
+  # silently rather than loudly: `revisions_missing(Thumbnail)` reported every revision for ever,
+  # `jobs.rs`'s per-format `produce` ladder swept every rung and CAD read, the rung route answered 202
+  # for work that would never land, and `PgShapes::stale_revisions` inner-joined the L0 so a part without
+  # one was never profiled and the sweep said "nothing stale". R3 holds all four shut with
+  # `DerivativeKind::ALL`, under a unit test. This is the same assertion against the real binary, the
+  # real schema and a real 403-part library: the only thing a worker start may do to the `job` table is
+  # nothing.
+  #
+  # Counted across the whole table and not one library's, because `enqueue_stale_derivatives` is
+  # instance-wide — a sweep that re-queued the Default library's six examples would be just as wrong.
+  local jobs_before jobs_after
+  jobs_before=$(sql "SELECT count(*) FROM job")
+  note "restarting the worker to prove a boot queues nothing (job rows now: ${jobs_before:-?})"
+  compose restart worker > /dev/null 2>&1 || die "could not restart the worker."
+  wait_for "$WORKER_URL/api/healthz" "the restarted worker" 120 ||
+    die "the worker did not come back after a restart."
+  # The start-up sweep runs after the job loop is up, so health is not enough on its own: give it time to
+  # do the wrong thing. 20 s against a sweep that is one query is generous by an order of magnitude.
+  sleep 20
+  jobs_after=$(sql "SELECT count(*) FROM job")
+  seed_check "a restarted worker queues nothing" \
+    "$(holds "${jobs_after:-1}" -eq "${jobs_before:-0}")" \
+    "${jobs_before:-?} job rows before the restart, ${jobs_after:-?} after$([ "${jobs_after:-1}" != "${jobs_before:-0}" ] && echo " — new kinds: $(sql "SELECT coalesce(string_agg(DISTINCT kind, ', '), 'none') FROM job WHERE created_at > now() - interval '1 minute'")")"
 
   echo "== THE DEFAULT LIBRARY, left as the Phase 3 exit timed it"
   # The literal from `web/src/lib/api.ts`'s DEFAULT_LIBRARY_ID, seeded by migration 0002. Not
@@ -874,7 +967,7 @@ print(count(json.load(sys.stdin)))')
   python3 - "$WORK/seed.json" <<EOF
 import json, sys
 json.dump({
-    "sweep": {"id": "$sweep", "parts": $parts, "thumbnails": $thumbs, "folders": $folders,
+    "sweep": {"id": "$sweep", "parts": $parts, "pictures": ${pictured:-0}, "folders": $folders,
               "formats": [f.strip() for f in "$formats".split(",") if f.strip()],
               "scan": "$scanned"},
     "default": {"id": "$default_lib", "parts": $default_count},
@@ -1009,67 +1102,6 @@ EOF
 }
 
 # ---------------------------------------------------------------------------------------------------
-# exit2: Phase 6's second exit, measured — "uploading a known part surfaces its near-duplicates".
-#
-# One library per pair, because near-duplicates are found within a library and two pairs in one library
-# would be each other's candidates. The original goes in, then the same solid turned **off-axis** by 37
-# degrees goes in at a second path, and the question is whether `/likeness` surfaces it. The numbers behind
-# the verdict are read from `part_shape` rather than inferred: the 35-float descriptor and `size_mm` are
-# both columns, so the Euclidean distance and the size-band position are exact rather than estimated.
-#
-# No score is shown in the interface, on purpose — `phase-6.md` says a figure like 0.038 invites a
-# judgement nobody can calibrate — so reading the database is the only way to report one, and this is the
-# place it is legitimate to.
-cmd_exit2() {
-  wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
-  local sources=("$@")
-  [ ${#sources[@]} -gt 0 ] || sources=("$ROOT/fixtures/bracket-lp-1042-03.stl")
-  local degrees=${TURN_DEGREES:-37}
-  local stamp; stamp=$(date +%s)
-  local out=$WORK/exit2-$stamp.json
-  echo "[" > "$out"
-  local first=1
-
-  for source in "${sources[@]}"; do
-    [ -f "$source" ] || die "no such file: $source"
-    local name; name=$(basename "$source" .stl)
-    local turned=$WORK/exit2-$name-turn$degrees.stl
-    python3 "$ROOT/scripts/e2e/skew-stl.py" --turn "$degrees" "$source" "$turned" > /dev/null ||
-      die "skew-stl.py --turn $degrees failed on $source"
-
-    local lib
-    lib=$(library_named "Exit 2 $name $stamp" hobby)
-    [ -n "$lib" ] || die "could not make a library for $name"
-    echo "== $name into ${lib:0:8}…"
-    local began=$SECONDS
-    echo "  the known part:  $(upload_file "$lib" "$source" "pair/$name.stl")"
-    echo "  turned $degrees degrees: $(upload_file "$lib" "$turned" "pair/$name-turn$degrees.stl")"
-    local settled=$((SECONDS - began))
-
-    local a b
-    a=$(sql "SELECT id FROM part WHERE library_id = '$lib' AND source_path = 'pair/$name.stl'")
-    b=$(sql "SELECT id FROM part WHERE library_id = '$lib' AND source_path = 'pair/$name-turn$degrees.stl'")
-    # Both profiles, and how many parts of this library have none. Profiling runs in line inside the ingest
-    # job, so a settled batch should leave nothing unprofiled and no `profile_shape` job behind.
-    local rows stray
-    rows=$(sql "SELECT p.source_path || E'\t' || s.size_mm || E'\t' || array_to_string(s.descriptor, ',') FROM part p JOIN part_shape s ON s.part_id = p.id WHERE p.library_id = '$lib' ORDER BY p.source_path")
-    stray=$(sql "SELECT count(*) FROM job WHERE library_id = '$lib' AND kind LIKE '%profile%'")
-    local unprofiled
-    unprofiled=$(sql "SELECT count(*) FROM part p WHERE p.library_id = '$lib' AND p.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM part_shape s WHERE s.part_id = p.id)")
-    local likeness
-    likeness=$(curl -sf "$API/api/parts/$a/likeness")
-
-    WORK=$WORK TURN_DEGREES=$degrees PAIR_NAME=$name SETTLED=$settled STRAY=${stray:-?} UNPROFILED=${unprofiled:-?} \
-      TURNED_ID=$b LIKENESS=$likeness ROWS=$rows python3 "$ROOT/scripts/e2e/exit2.py" | tee "$WORK/exit2-$name.txt"
-    [ "$first" = 1 ] || echo "," >> "$out"
-    first=0
-    cat "$WORK/exit2-$name.json" >> "$out"
-  done
-  echo "]" >> "$out"
-  note "exit 2 measurements in $out"
-}
-
-# ---------------------------------------------------------------------------------------------------
 # down
 
 # What `down` keeps, and why.
@@ -1193,7 +1225,6 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   up) shift; cmd_up "$@" ;;
   seed) shift; cmd_seed "$@" ;;
-  exit2) shift; cmd_exit2 "$@" ;;
   drive) shift; cmd_drive "$@" ;;
   peer) shift; cmd_peer "$@" ;;
   down) shift; cmd_down "$@" ;;
@@ -1203,7 +1234,6 @@ case "${1:-}" in
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
     echo "  up [--min-ram <gib>]   peer <stop|start>" >&2
     echo "  AS=a|b|c for one of three installations on this lane's block; scripts/e2e/group.sh runs three" >&2
-    echo "  exit2 [<part.stl> …]   Phase 6 exit 2: a known part, then the same solid turned off-axis" >&2
     exit 2
     ;;
 esac
