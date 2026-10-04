@@ -445,21 +445,41 @@ cmd_build() {
   # 0.1 GB, `web` 2 GB (its npm build), and `peer` — which is `target: api` in
   # `deploy/compose.sharing.yaml` — cost **nothing at all**, because once `api` exists that build is a
   # cache hit that writes a tag and no layers. So the floor is right for a cold build and much too high
-  # for the services after it, and a `--min-free <gb>` override in the shape of `up --min-ram` was
-  # written here and then taken out again: loosening a guard `docs/goals/PROTOCOL.md` states is the
-  # owner's call, not a lane's. If the four cheap services are all that is left, that is the argument to
-  # put to the owner; `ask_owner` below is how this rig asks.
+  # for the services after it.
+  #
+  # **The owner settled this on 2026-10-04: `--min-free <gb>` exists, and using it is recorded.** R6
+  # wrote the override, used it at 4 GB and then 2 GB to finish, took it back out, and said so at the top
+  # of its hand-back — loosening a guard `docs/goals/PROTOCOL.md` states is the owner's call, and it had
+  # not asked. The owner's answer was to keep the flag rather than the round trip, on the condition that
+  # it is deliberate and visible: it must be passed by hand, it says so in the log of the run that used
+  # it, and the goal file says why. That is the same bargain `up --min-ram` already makes. `ask_owner`
+  # below is still what happens when nobody passes it.
+  local min_free=8
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --min-free)
+        min_free=${2:-}
+        case "$min_free" in
+          '' | *[!0-9]*) die "--min-free takes a whole number of GB; got \`$min_free\`." ;;
+        esac
+        shift 2
+        ;;
+      *) die "\`build\` takes --min-free <gb> and nothing else; got \`$1\`." ;;
+    esac
+  done
+  [ "$min_free" = 8 ] ||
+    note "--min-free $min_free: built under the 8 GB default on purpose. Say why in the goal file."
   local services=${SERVICES:-db web api peer worker}
   write_env
   verify_ports
   local summary=$WORK/build-summary.txt
-  echo "== $(date -Is) build of $PROJECT from $(git -C "$ROOT" rev-parse --short HEAD); / $(free_gb /) GB free; /mnt/Storage $(free_gb "$ROOT") GB free" > "$summary"
+  echo "== $(date -Is) build of $PROJECT from $(git -C "$ROOT" rev-parse --short HEAD); / $(free_gb /) GB free; /mnt/Storage $(free_gb "$ROOT") GB free${min_free:+; floor ${min_free} GB}" > "$summary"
   git -C "$ROOT" rev-parse HEAD > "$WORK/built-from.sha"
   for svc in $services; do
     # The guard, before each service and not once at the top: a release build layer alone can move
     # root free space by a gigabyte or more, and the api and worker stages each build one. Under it we
     # stop and ask — we never prune, because this rig's cache is not the only thing in that cache.
-    [ "$(free_gb /)" -ge 8 ] || ask_owner "/ has $(free_gb /) GB free, under the 8 GB this build needs,
+    [ "$(free_gb /)" -ge "$min_free" ] || ask_owner "/ has $(free_gb /) GB free, under the $min_free GB this build needs,
   before service \`$svc\`. This rig never prunes: it does not own the builder cache and cannot tell
   which of it is somebody else's. Free space elsewhere, or say to go ahead — and if what is left to
   build is a runtime layer and one binary each, say so, because that is a different argument from a

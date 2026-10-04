@@ -294,6 +294,17 @@ done
 if [ -n "$hits" ]; then printf '%s\n' "$hits"; no "a \`docker compose\` call that is not the one -p'd function"
 else ok "every \`docker compose\` goes through the -p \$PROJECT function"; fi
 
+# The exception must not quietly become the rule. `--min-free` exists because the owner weighed it on
+# 2026-10-04 (a build of the four cheap services costs ~0.1 GB and `peer` costs nothing at all), and the
+# bargain was that it is passed by hand and recorded — not that the floor moves. R6 reached for the
+# override under time pressure and did not ask; a lowered *default* is how that happens without anybody
+# noticing at all.
+if grep -qE '^ *local min_free=8$' "$HERE/stack.sh"; then ok "the build floor defaults to the protocol's 8 GB"
+else no "the build floor's default is not 8 GB — \`--min-free\` is the exception, not a new default"; fi
+if grep -q 'built under the 8 GB default on purpose' "$HERE/stack.sh"; then
+  ok "a build under the floor says so in its own log"
+else no "\`--min-free\` no longer announces itself; an exception nobody can see is not recorded"; fi
+
 for forbidden in 'builder prune' 'volume prune' 'system prune' 'image prune'; do
   hits=''
   for f in "${scanned[@]}"; do
